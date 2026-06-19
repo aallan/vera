@@ -301,23 +301,33 @@ class TestTesterRefinementTypeAlias:
     def test_refinement_type_alias_param(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A function with a refinement type alias param."""
+        """A function with a refinement type alias param.
+
+        The ensures is *false even given* the param's refinement predicate
+        (`@PosInt.0 > 0` does not imply `@PosInt.0 > @PosInt.0`), so the body
+        still fails verification.  This keeps the test exercising both the
+        tester's RefinementType param handling AND its "verifier error →
+        FAILED" classification under #746 — `double_pos`'s old
+        `ensures(@Int.result > 0)` now *verifies* because the param predicate
+        is assumed (the refinement-predicate feature), so it no longer drives
+        the error path.
+        """
         source = """\
 type PosInt = { @Int | @Int.0 > 0 };
 
-public fn double_pos(@PosInt -> @Int)
+public fn strictly_greater(@PosInt -> @Int)
   requires(true)
-  ensures(@Int.result > 0)
+  ensures(@Int.result > @PosInt.0)
   effects(pure)
 {
-  @PosInt.0 * 2
+  @PosInt.0
 }
 """
         path = _write_vera(tmp_path, source)
         rc = cmd_test(path, trials=10)
         assert rc == 1
         out = capsys.readouterr().out
-        # Verifier errors are now classified as failed, not silently verified.
+        # Verifier errors are classified as failed, not silently verified.
         assert "Testing:" in out
         assert "FAILED" in out
         assert "verification error (E500)" in out

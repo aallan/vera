@@ -50,6 +50,10 @@ ObligationKind = Literal[
     "nat_bind",   # @Int value narrowing into a @Nat slot at a binding
                   # site — let / call-arg / effect-op-arg / ctor-field /
                   # match-bind / destructure (#552, generalising #520)
+    "refine_bind",  # a value narrowing into a user RefinedType slot at a
+                    # binding site or return position — the predicate must
+                    # hold (#746, generalising nat_bind from the baked-in
+                    # `>= 0` to an arbitrary translated predicate)
     "call_pre",   # callee precondition at a call site (#C7d); recorded
                   # only on violation in Phase A — successful call-site
                   # checks discharge silently inside the SMT layer and

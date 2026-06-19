@@ -3004,6 +3004,17 @@ private fn sum(@List<Int> -> @Int)
           arguments, generic-instantiated fields/args whose @Nat erases to
           i64 — #754) still warn, and no example exercises one: +0
           tier3_unguarded.
+        * 258/28/286/1 after #746 generalised the @Nat discharge to arbitrary
+          refinement predicates.  `refinement_types.vera` gains 2 T1 — the
+          `safe_divide(10, 3)` argument now discharges `3 > 0` into its
+          `@PosInt` formal, and `to_percentage`'s body now discharges its
+          `@Percentage` return predicate (`>= 0 && <= 100`) — and 1
+          tier3_unguarded: `head([42, 1, 2])` narrows into `@NonEmptyArray`,
+          whose `array_length(...) > 0` predicate is over a *non-primitive*
+          (`Array`) base and is untranslatable to the decidable fragment, so
+          it is an E506 Tier-3 warning excluded from the totals (refined
+          narrowings have no codegen runtime guard yet — the #746 follow-up).
+          Net: +2 T1, +0 T3, +2 total, +1 tier3_unguarded.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3016,10 +3027,10 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 256, f"Expected 256 T1, got {t1}"
+        assert t1 == 258, f"Expected 258 T1, got {t1}"
         assert t3 == 28, f"Expected 28 T3, got {t3}"
-        assert total == 284, f"Expected 284 total, got {total}"
-        assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
+        assert total == 286, f"Expected 286 total, got {total}"
+        assert t3u == 1, f"Expected 1 tier3_unguarded, got {t3u}"
 
 
 # =====================================================================
