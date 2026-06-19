@@ -72,6 +72,32 @@ class ContractsMixin:
                        and base_node.name not in bseen):
                     bseen.add(base_node.name)
                     base_node = self._type_aliases[base_node.name]
+                if isinstance(base_node, ast.RefinementType):
+                    # Refinement-over-refinement (e.g. `type Tiny = { @Pos |
+                    # @Pos.0 < 10 }` where `Pos = { @Int | @Int.0 > 0 }`): the
+                    # outer guard would compile only the outer predicate and
+                    # silently DROP the inner `> 0` membership — a soundness
+                    # hole that wrongly accepts `f(-1)`.  The verifier already
+                    # records such a narrowing as a Tier-3 E506 (its
+                    # `_base_slot_name` returns None for a non-primitive base),
+                    # so reject it loudly here at codegen (the "reject before
+                    # codegen" choice) with a clean E600 — a non-zero-exit
+                    # diagnostic, not a partial guard.  Returns None after
+                    # recording the error so the helper stays total; the
+                    # recorded error fails the compile.  This IS reachable.
+                    inner = ast.format_type_expr(base_node.base_type)
+                    self._error(
+                        te,
+                        f"Refinement base '{base.name}' resolves to another "
+                        f"refinement ({{ {inner} | ... }}); a refinement base "
+                        "must be a primitive type or an alias to one.",
+                        rationale="Composing nested refinement membership "
+                        "predicates is unsupported — the runtime guard would "
+                        "silently drop the inner base predicate, so codegen "
+                        "rejects this rather than emit a partial guard.",
+                        error_code="E600",
+                    )
+                    return None
                 if (isinstance(base_node, ast.NamedType)
                         and base_node.name == "Unit"):
                     # `@Unit` is zero-size / erased: there is no value to load

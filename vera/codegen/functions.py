@@ -111,7 +111,22 @@ class FunctionCompilationMixin:
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
-                # Unit parameter — skip in WASM signature
+                # Unit parameter — skipped in the WASM signature (zero-size).
+                # A `@Unit` refinement is codegen-UNguardable: its binder is
+                # erased, so there is no local to check a boundary predicate
+                # against.  `_refinement_guard_parts` returns None for a `@Unit`
+                # base and the verifier records such a narrowing
+                # `tier3_unguarded` (an honest E506, not a claimed guard), so
+                # there is nothing to emit here.  Fail loud rather than silently
+                # drop a declared boundary invariant should a future change ever
+                # make a `@Unit` param carry guard parts (CR 8afb51a/e6f17b7).
+                if self._refinement_guard_parts(param_te) is not None:
+                    raise ValueError(  # pragma: no cover — invariant guard
+                        f"refined @Unit parameter in '{decl.name}' carries "
+                        "runtime guard parts but has no WASM local to check "
+                        "them against; a @Unit refinement must be recorded "
+                        "tier3_unguarded, not guarded"
+                    )
                 continue
             if wt == "unsupported":
                 self._warning(

@@ -5538,6 +5538,55 @@ public fn f(@SmallAge -> @Age)
             execute(result, fn_name="f", args=[-1])
         assert _run(src, fn="f", args=[7]) == 7
 
+    def test_bool_base_param_guard_traps_on_false(self) -> None:
+        """A `{ @Bool | P }` parameter guard fires at the boundary: passing the
+        violating value (`false` for `@Bool.0`) traps via the refinement
+        channel, while the satisfying value (`true`) flows through.  Bool args
+        cross the WASM boundary as i32 0/1."""
+        src = """
+type TrueOnly = { @Bool | @Bool.0 };
+public fn f(@TrueOnly -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @TrueOnly.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[0])  # false violates `@Bool.0`
+        assert _run(src, fn="f", args=[1]) == 1  # true satisfies it
+
+    def test_float64_base_param_guard_traps_on_violation(self) -> None:
+        """A `{ @Float64 | P }` parameter guard fires at the boundary: a value
+        on the wrong side of the predicate (`-1.5` for `@Float64.0 > 0.0`)
+        traps, while a satisfying value (`2.5`) passes.  Float64 args cross the
+        boundary as Python floats."""
+        src = """
+type PosF = { @Float64 | @Float64.0 > 0.0 };
+public fn f(@PosF -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ @PosF.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[-1.5])
+        assert _run_float(src, fn="f", args=[2.5]) == 2.5
+
+    def test_nested_refinement_base_rejected_e600(self) -> None:
+        """A refinement whose base resolves to ANOTHER refinement —
+        `type Tiny = { @Pos | @Pos.0 < 10 }` over `type Pos = { @Int | @Int.0 >
+        0 }` — is rejected at codegen with a clean E600, NOT a partial guard
+        that checks only `< 10` and silently drops the inner `> 0` (which would
+        wrongly accept `-1`).  The 'reject before codegen' choice (CR
+        e6f17b7)."""
+        src = """
+type Pos = { @Int | @Int.0 > 0 };
+type Tiny = { @Pos | @Pos.0 < 10 };
+public fn f(@Tiny -> @Int) requires(true) ensures(true) effects(pure) { 0 }
+"""
+        result = _compile(src)
+        errs = [d for d in result.diagnostics
+                if d.severity == "error" and d.error_code == "E600"]
+        assert errs, (
+            f"expected E600 rejecting the nested refinement base; "
+            f"diagnostics: {result.diagnostics}"
+        )
+        assert "resolves to another refinement" in errs[0].description
+
 
 # =====================================================================
 # C6.5e: String and Array types in function signatures

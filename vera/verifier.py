@@ -2429,6 +2429,21 @@ class ContractVerifier:
                 var = smt.declare_string(z3_name)
             elif self._is_float64_type(param_ty):
                 var = smt.declare_float64(z3_name)  # Real sort, as non-generic
+            elif self._is_array_type(param_ty):
+                # Concrete Array param — declare a proper array sort (as the
+                # non-generic path does) so a refined return proven via
+                # `array_length(...)` / `arr[i]` keeps Tier 1 instead of
+                # falling to a false E506.  Falls back to declare_int when the
+                # element type isn't Z3-representable, exactly as non-generic.
+                array_var = self._declare_array_var(smt, z3_name, param_ty)
+                var = array_var if array_var is not None else smt.declare_int(
+                    z3_name)
+            elif self._is_adt_type(param_ty):
+                # Concrete ADT param — declare an ADT sort so projections used
+                # by the return predicate translate (mirrors non-generic).
+                adt_var = smt.declare_adt(z3_name, param_ty)
+                var = adt_var if adt_var is not None else smt.declare_int(
+                    z3_name)
             else:
                 var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
             slot_env = slot_env.push(type_name, var)

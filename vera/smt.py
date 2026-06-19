@@ -22,6 +22,7 @@ from vera.types import (
     TypeVar,
     BOOL,
     FLOAT64,
+    INT,
     NAT,
     STRING,
 )
@@ -1185,11 +1186,21 @@ class SmtContext:
         # #746: a refined return type is an implicit postcondition — assume
         # its predicate on the fresh call result so a caller can rely on a
         # verified refined return (the producing function discharges the
-        # predicate at its return position).  Only a primitive base has a
-        # substitutable binder; the base-`@Nat` `>= 0` is already carried by
-        # the `declare_nat` above, so the predicate alone suffices here.
-        if isinstance(ret_type, RefinedType) and isinstance(
-            ret_type.base, PrimitiveType
+        # predicate at its return position).  Only the 5 statically-modelled
+        # primitive bases (Int/Nat/Bool/Float64/String) have a substitutable
+        # binder *and* a runtime-guarded producer; an unmodelled base such as
+        # `@Byte` or `@Unit` must NOT let the caller assume the predicate (for
+        # `@Unit` it isn't even runtime-guarded, so assuming e.g.
+        # `always_false(@Unit.0)` would add `false` → UNSAT → vacuously
+        # discharge the caller's own obligations).  The base-`@Nat` `>= 0` is
+        # already carried by the `declare_nat` above, so the predicate alone
+        # suffices here.
+        if isinstance(ret_type, RefinedType) and ret_type.base in (
+            INT,
+            NAT,
+            BOOL,
+            FLOAT64,
+            STRING,
         ):
             inner_env = SlotEnv().push(ret_type.base.name, ret_var)
             z3_pred = self.translate_expr(ret_type.predicate, inner_env)
