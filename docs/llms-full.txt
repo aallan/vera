@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.173. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.174. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -2302,6 +2302,7 @@ These are known limitations in the current reference implementation. Most are tr
 
 | Limitation | Details | Issue |
 |-----------|---------|-------|
+| Refinement predicates verified statically, not runtime-guarded | A refinement type `{ @T \| P }` has its predicate discharged **statically** at every narrowing site (`let`, call argument, constructor field, effect-op argument, match binding, tuple component) and at refined return positions — a violation is an `E505` error, an untranslatable case an `E506` Tier-3 warning. The compiler does not yet emit a *runtime* guard for a predicate it cannot prove statically (non-primitive base, undecidable construct, timeout), so such a Tier-3 narrowing — including at a `public`/FFI boundary — is unchecked at run time. Write a `requires(...)` implying the predicate, or keep refined values flowing only from already-refined sources. | [#762](https://github.com/aallan/vera/issues/762) |
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
@@ -3130,6 +3131,8 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E502**: @Nat subtraction underflow obligation not discharged
 - **E503**: @Nat binding-site narrowing may be negative
 - **E504**: @Nat narrowing unverified and not runtime-guarded
+- **E505**: Refinement predicate may be violated at narrowing site
+- **E506**: Refinement narrowing unverified and not runtime-guarded
 - **E520**: Cannot verify contract (generic function)
 - **E521**: Cannot verify precondition (undecidable)
 - **E522**: Cannot verify postcondition (body undecidable)

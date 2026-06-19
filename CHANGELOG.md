@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.174] - 2026-06-19
+
+### Added
+
+- **Static verification of refinement-type predicates** ([#746](https://github.com/aallan/vera/issues/746)).  A user refinement type `{ @T | P }` (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) previously parsed but its predicate was never checked — a violating value verified silently (a Tier-0 silent failure).  The verifier now discharges the predicate as a Tier-1 obligation at every site where a value narrows into a refined slot — `let` bindings, call arguments, constructor fields, effect-operation arguments, match bindings, and tuple-destructure components — and at a refined **return** position; a refined **parameter** is dually *assumed* to satisfy its predicate in the body (sound precisely because every call site discharges the obligation).  A provably-violating narrowing is an `E505` error with a counterexample; a predicate or value outside the decidable fragment — an undecidable construct, a non-primitive base such as `{ @Array<Int> | array_length(...) > 0 }`, or a solver timeout — is an `E506` Tier-3 warning, never a silent pass.  This generalises the `@Nat` discharge machinery from the baked-in `>= 0` to an arbitrary translated predicate (the forward-promise in the 0.0.172 notes).  As with the `@Nat` narrowing's deferred runtime guards ([#754](https://github.com/aallan/vera/issues/754)/[#757](https://github.com/aallan/vera/issues/757)), codegen does not yet emit a *runtime* guard for a general refinement predicate, so a Tier-3 narrowing — including at a `public`/FFI boundary — is statically obligated but not runtime-checked; no statically-verified program is weakened.  Tracked as the follow-up [#762](https://github.com/aallan/vera/issues/762).
+
 ### Changed
 
 - **Internal: hardened the `@Nat` narrowing guard data structures** ([#759](https://github.com/aallan/vera/issues/759)).  Single-sourced the checker→verifier side-table span key through `ast.span_key` (previously hand-rolled at three sites), and added a `ConstructorLayout.__post_init__` assertion that `nat_fields` stays length-aligned with `field_offsets`, so a drifted built-in literal fails loudly at construction rather than as a silently mis-indexed guard.  Also pinned the [#757](https://github.com/aallan/vera/issues/757) generic-instantiated-constructor-field runtime deferral with a codegen test ([#760](https://github.com/aallan/vera/issues/760)).  No behaviour change — internal robustness follow-ups from the #756 review.
@@ -2524,7 +2530,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.173...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.174...HEAD
+[0.0.174]: https://github.com/aallan/vera/compare/v0.0.173...v0.0.174
 [0.0.173]: https://github.com/aallan/vera/compare/v0.0.172...v0.0.173
 [0.0.172]: https://github.com/aallan/vera/compare/v0.0.171...v0.0.172
 [0.0.171]: https://github.com/aallan/vera/compare/v0.0.170...v0.0.171
