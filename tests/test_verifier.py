@@ -3932,3 +3932,28 @@ private fn use_it(@PosInt -> @Int)
 """)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
         assert self._refine_obligations(exempt) == []
+
+    def test_generic_concrete_refined_return_discharged(self) -> None:
+        """A *concrete* refined return on a generic function is discharged
+        statically (its obligation is independent of the type parameter), even
+        though the generic body otherwise skips SMT: `forall<T> fn bad(@T ->
+        @PosInt) { 0 }` is an E505, and `{ 5 }` verifies."""
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+public forall<T> fn bad(@T -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the generic concrete refined return"
+
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+public forall<T> fn good(@T -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1

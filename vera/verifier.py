@@ -706,6 +706,16 @@ class ContractVerifier:
                         decl.name, self._contract_kind(contract),
                         contract, "verified",
                     )
+            # #746/#555: a *concrete* refined return on a generic function is
+            # T-independent, so it can be discharged statically even though the
+            # generic body otherwise skips SMT — catching e.g.
+            # `forall<T> fn bad(@T -> @PosInt) { 0 }`.  The runtime guard covers
+            # it on the monomorphised instance regardless.
+            generic_ret = self._resolve_type(decl.return_type)
+            if (decl.body is not None
+                    and self._is_refined_type(generic_ret)
+                    and not contains_typevar(generic_ret)):
+                self._check_generic_refined_return(decl, generic_ret)
             return
 
         if self._shared_smt is not None:
@@ -2280,6 +2290,71 @@ class ContractVerifier:
             error_code="E506",
         )
         self._report_refined_runtime(decl, value_node, site)
+
+    def _check_generic_refined_return(
+        self, decl: ast.FnDecl, ret_type: Type,
+    ) -> None:
+        """Discharge a *concrete* refined return on a generic function (#746).
+
+        The generic path skips full SMT (TypeVar params/contracts can't be
+        represented), but a concrete refined return obligation is independent
+        of the type parameters, so a minimal context — TypeVar params falling
+        back to ``declare_int`` — suffices to translate the body and discharge
+        the predicate.  Verified at Tier 1; a counterexample is an E505; an
+        untranslatable body or predicate falls to the runtime guard (E506,
+        ``tier3``), exactly as on the non-generic path."""
+        if decl.body is None:  # pragma: no cover — caller guards this
+            return
+        smt = SmtContext(
+            timeout_ms=self.timeout_ms,
+            fn_lookup=self.env.lookup_function,
+            module_fn_lookup=self._lookup_module_function,
+        )
+        for adt_info in self.env.data_types.values():
+            smt.register_adt(adt_info)
+        slot_env = SlotEnv()
+        for param_te in decl.params:
+            param_ty = self._resolve_type(param_te)
+            type_name = self._type_expr_to_slot_name(param_te)
+            z3_name = f"@{type_name}.{self._count_slots(slot_env, type_name)}"
+            if self._is_nat_type(param_ty):
+                var = smt.declare_nat(z3_name)
+            elif self._is_bool_type(param_ty):
+                var = smt.declare_bool(z3_name)
+            elif self._is_string_type(param_ty):
+                var = smt.declare_string(z3_name)
+            elif self._is_float64_type(param_ty):
+                var = smt.declare_int(z3_name)  # Real-sort body unlikely here
+            else:
+                var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
+            slot_env = slot_env.push(type_name, var)
+
+        body_expr = smt.translate_expr(decl.body, slot_env)
+        self.summary.total += 1
+        goal = (
+            self._translate_refined_predicate(smt, ret_type, body_expr)
+            if body_expr is not None else None
+        )
+        if goal is None:
+            self._record_refined_bind_tier3(decl, decl.body, "return type")
+            return
+        result = smt.check_valid(goal, [])
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "refine_bind", decl.body, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "refine_bind", decl.body, "violated",
+                error_code="E505", counterexample=result.counterexample,
+            )
+            self._report_refined_binding(
+                decl, decl.body, ret_type, "return type",
+                result.counterexample,
+            )
+        else:  # pragma: no cover — solver timeout
+            self._record_refined_bind_tier3(decl, decl.body, "return type")
 
     def _check_refined_binding_obligation_term(
         self,
