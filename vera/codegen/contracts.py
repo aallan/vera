@@ -55,20 +55,31 @@ class ContractsMixin:
                             return None
                     name = f"{base.name}<{', '.join(arg_names)}>"
                 predicate = node.predicate
-                if name == "Nat":
-                    # `{ @Nat | P }`'s membership is `@Nat.0 >= 0 && P` — the
-                    # `@Nat` base contributes an implicit `>= 0` (mirrors the
-                    # verifier's `_translate_refined_predicate` conjoin).  Fold
-                    # it into the guard predicate so the runtime check (and its
-                    # trap message, both derived from here) reject a negative
-                    # value satisfying P — e.g. `-1` for `{ @Nat | @Nat.0 < 10
-                    # }` — at an FFI/public boundary (CR f1f2a26).
+                # Conjoin the `@Nat` base's implicit `>= 0` when the base
+                # resolves to `@Nat` — directly OR through an alias chain
+                # (`type Age = Nat`).  The *decision* follows the base's
+                # aliases, but the synthetic slot ref uses `name` (the binder
+                # key the predicate uses and the guard pushes the value under,
+                # e.g. `@Age.0`), NOT a literal `@Nat.0` which wouldn't resolve.
+                # Mirrors the verifier's `_translate_refined_predicate` so the
+                # runtime guard (and its trap message, both derived here) reject
+                # a negative value satisfying P — `-1` for `{ @Age | @Age.0 < 10
+                # }` — at an FFI/public boundary (CR f1f2a26, db24433).
+                base_node: ast.TypeExpr = base
+                bseen: set[str] = set()
+                while (isinstance(base_node, ast.NamedType)
+                       and base_node.name in self._type_aliases
+                       and base_node.name not in bseen):
+                    bseen.add(base_node.name)
+                    base_node = self._type_aliases[base_node.name]
+                if (isinstance(base_node, ast.NamedType)
+                        and base_node.name == "Nat"):
                     predicate = ast.BinaryExpr(
                         op=ast.BinOp.AND,
                         left=ast.BinaryExpr(
                             op=ast.BinOp.GE,
                             left=ast.SlotRef(
-                                type_name="Nat", type_args=None, index=0),
+                                type_name=name, type_args=None, index=0),
                             right=ast.IntLit(value=0),
                         ),
                         right=predicate,

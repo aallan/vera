@@ -5519,6 +5519,25 @@ public fn f(@Small -> @Nat)
             execute(result, fn_name="f", args=[-1])
         assert _run(src, fn="f", args=[7]) == 7
 
+    def test_aliased_nat_base_param_guard_enforces_ge_zero(self) -> None:
+        """The `@Nat` `>= 0` conjoin follows the base's ALIAS chain: `type Age
+        = Nat; type SmallAge = { @Age | @Age.0 < 10 }` is guarded too, so a
+        negative value satisfying P (`-1 < 10`) is rejected at an FFI boundary
+        — not only refinements written directly over `@Nat` (CR db24433).  The
+        synthetic `>= 0` ref uses the binder key `@Age.0` (not `@Nat.0`) so it
+        resolves against the pushed slot."""
+        src = """
+type Age = Nat;
+type SmallAge = { @Age | @Age.0 < 10 };
+public fn f(@SmallAge -> @Age)
+  requires(true) ensures(true) effects(pure)
+{ @SmallAge.0 }
+"""
+        result = _compile_ok(src)
+        with pytest.raises(RuntimeError, match=r"@Age\.0 >= 0"):
+            execute(result, fn_name="f", args=[-1])
+        assert _run(src, fn="f", args=[7]) == 7
+
 
 # =====================================================================
 # C6.5e: String and Array types in function signatures

@@ -3696,10 +3696,16 @@ class ContractVerifier:
         For ``{ @Int | @Int.0 > 0 }`` the predicate's ``SlotRef`` is
         ``("Int", 0)`` — the *base* primitive's name, not the alias.  So the
         binder is substituted by pushing the refined value under this name.
-        Returns None for a non-primitive base (predicate left untranslatable
-        → Tier 3, never a silent pass).
+        Returns None for a non-primitive base, OR a primitive the verifier
+        does not model here: only ``Int`` / ``Nat`` / ``Bool`` / ``Float64`` /
+        ``String`` have an SMT sort and (for ``Nat``) a base invariant.  A
+        ``Byte`` / ``Unit`` base would otherwise translate WITHOUT its base
+        semantics (``Byte``'s ``0..255`` range is never asserted), yielding a
+        wrong Tier-1 / false E505 instead of the documented Tier-3 / E506
+        fallback (CR db24433) — so those return None and fall to Tier 3.
         """
-        if isinstance(base, PrimitiveType):
+        if isinstance(base, PrimitiveType) and base in (
+                INT, NAT, BOOL, FLOAT64, STRING):
             return base.name
         return None
 

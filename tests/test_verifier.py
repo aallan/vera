@@ -3708,6 +3708,25 @@ private fn caller(@Unit -> @Int)
         assert len(self._refine_obligations(result, "tier3")) == 1
         assert self._refine_obligations(result, "tier3_unguarded") == []
 
+    def test_unmodelled_primitive_base_is_tier3_e506(self) -> None:
+        """A refinement over a primitive base the verifier does NOT model
+        (`@Byte`, whose `0..255` range has no SMT sort here) is Tier-3 (E506),
+        not a wrong Tier-1 / false E505 from translating the predicate without
+        the base invariant — only Int/Nat/Bool/Float64/String are modelled, so
+        `_base_slot_name` returns None for the rest (CR db24433)."""
+        result = _verify("""
+type SmallByte = { @Byte | @Byte.0 < 200 };
+
+public fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+
+public fn g(@Unit -> @Byte) requires(true) ensures(true) effects(pure)
+{ let @SmallByte = f(5); @SmallByte.0 }
+""")
+        # No false E505 from treating @Byte as an unconstrained Int.
+        assert [d for d in result.diagnostics if d.error_code == "E505"] == []
+        assert any(d.error_code == "E506" for d in result.diagnostics)
+
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
     def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:
