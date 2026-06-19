@@ -1785,11 +1785,21 @@ class ContractVerifier:
 
         if isinstance(expr, ast.Block):
             cur_env = slot_env
+            # Block-local assumptions: a refined/@Nat slot bound by a let or
+            # destructure in this block seeds its *source* type's invariant
+            # here, so a later re-narrowing in the same block can discharge
+            # against it (#746).  We copy rather than mutate the shared
+            # `assumptions` list: a seeded fact is valid only within this
+            # block's scope — leaking it into a sibling scope (e.g. across
+            # match arms, which share the caller's `assumptions`) would be
+            # unsound (a fact established on one arm's binding does not hold on
+            # another's).
+            block_assumptions = list(assumptions)
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
                     # Site 1: `let @Nat = <Int>` / `let @Refined = <value>`.
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
+                        decl, stmt.value, smt, cur_env, block_assumptions,
                     )
                     let_ty = self._resolve_type(stmt.type_expr)
                     # Refined-first: a refinement-over-@Nat let discharges its
@@ -1798,22 +1808,34 @@ class ContractVerifier:
                     if (self._is_refined_type(let_ty)
                             and self._narrows_into_refined(stmt.value, let_ty)):
                         self._check_refined_binding_obligation(
-                            decl, stmt.value, let_ty, smt, cur_env, assumptions,
+                            decl, stmt.value, let_ty, smt, cur_env,
+                            block_assumptions,
                             site="let binding", guarded=False,
                         )
                     elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
                         self._check_nat_binding_obligation(
-                            decl, stmt.value, smt, cur_env, assumptions,
+                            decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
                         )
                     # Rebind the let slot in cur_env so a later obligation
                     # translates against this value, not a stale outer binding
-                    # of the same slot name.  An untranslatable RHS (e.g.
-                    # `let @Int = E.next(())`) falls back to a fresh slot var
-                    # carrying its type invariant only, so the stale outer
-                    # binding is never reused for a later obligation — mirrors
-                    # the destructure path (CodeRabbit, PR #748).
+                    # of the same slot name.  When the RHS translates, `val` is
+                    # its exact term — and `translate_expr` already asserts a
+                    # refined-return predicate / `declare_nat`'s `>= 0` on a
+                    # call result (#746), so a later re-narrowing of the bound
+                    # slot (`let @NonNeg = @PosInt.0` after `let @PosInt =
+                    # mk()`) discharges with no extra seeding here.  An
+                    # untranslatable RHS (e.g. `let @Int = E.next(())`) falls
+                    # back to a fresh slot var carrying its type invariant only,
+                    # so the stale outer binding is never reused for a later
+                    # obligation — mirrors the destructure path (PR #748).  We
+                    # deliberately do NOT seed the resolved source type over a
+                    # fresh fallback var: a fresh var is disconnected from the
+                    # value, so asserting its declared type would be an
+                    # unchecked assumption (and the checker types `0 - 5` as
+                    # `Nat`, so `>= 0` over the value `-5` would vacuously
+                    # discharge later obligations).
                     val = smt.translate_expr(stmt.value, cur_env)
                     if val is None:
                         val = self._fresh_slot_var(smt, stmt.type_expr)
@@ -1829,7 +1851,7 @@ class ContractVerifier:
                     # component-wise out of the translated RHS, now that the
                     # SMT layer models a tuple as a projectable datatype.
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
+                        decl, stmt.value, smt, cur_env, block_assumptions,
                     )
                     lit_args: tuple[ast.Expr, ...] = ()
                     if (isinstance(stmt.value, ast.ConstructorCall)
@@ -1844,13 +1866,14 @@ class ContractVerifier:
                                     and self._narrows_into_refined(sub, comp_ty)):
                                 self._check_refined_binding_obligation(
                                     decl, sub, comp_ty, smt, cur_env,
-                                    assumptions, site="tuple destructure",
+                                    block_assumptions,
+                                    site="tuple destructure",
                                     guarded=False,
                                 )
                             elif (self._is_nat_type(comp_ty)
                                     and self._narrows_into_nat(sub)):
                                 self._check_nat_binding_obligation(
-                                    decl, sub, smt, cur_env, assumptions,
+                                    decl, sub, smt, cur_env, block_assumptions,
                                     site="tuple destructure",
                                 )
                     else:
@@ -1858,36 +1881,87 @@ class ContractVerifier:
                         # components out of the translated RHS and obligate
                         # each @Nat narrowing.
                         self._obligate_destructure_narrowings(
-                            decl, stmt, smt, cur_env, assumptions)
+                            decl, stmt, smt, cur_env, block_assumptions)
                     # Rebind every destructured slot in cur_env so a later
-                    # obligation translates against the destructured value,
-                    # not a stale outer binding of the same slot name
-                    # (CodeRabbit, PR #748).  A literal component is
-                    # translated in the *outer* env first (avoiding same-type
-                    # self-shadowing); a non-literal source — or a component
-                    # the SMT layer can't translate — falls back to a fresh
-                    # slot var carrying only its type invariant, so the stale
-                    # outer binding is never reused for a later obligation.
+                    # obligation translates against the destructured value, not
+                    # a stale outer binding of the same slot name (PR #748).  A
+                    # literal component is translated in the *outer* env first
+                    # (avoiding same-type self-shadowing); a non-literal source —
+                    # or a component the SMT layer can't translate — falls back
+                    # to a fresh slot var carrying only its type invariant, so
+                    # the stale outer binding is never reused.
+                    #
+                    # #746: alongside the rebind, seed the bound slot's *source*
+                    # component type fact into the block assumptions so a later
+                    # re-narrowing of that slot can discharge.  The fact is read
+                    # from the RHS's resolved tuple type (`type_args[i]`) and is
+                    # only seeded when (a) the source value PROVABLY has that
+                    # type and (b) the component is non-literal — see the gate
+                    # below.  It is never the (possibly-unproven) target
+                    # sub-pattern type, so a component whose source genuinely
+                    # lacks the fact still obligates and (correctly) errors.
+                    src_tuple_ty = self._resolved_type_of(stmt.value)
+                    src_args = (
+                        src_tuple_ty.type_args
+                        if isinstance(src_tuple_ty, AdtType)
+                        else ()
+                    )
+                    # A source whose declared type the value PROVABLY has — a
+                    # `SlotRef` (a param/let access, guaranteed by R1's param-
+                    # assume / the let's own checked binding) or a call (its
+                    # callee discharged the return type) — lets us seed the
+                    # source component type's fact (below).  A literal
+                    # `ConstructorCall`, an `if`/`match`, or an arithmetic
+                    # source is EXCLUDED: the checker types those optimistically
+                    # (e.g. `Tuple(0 - 5, ...)` and `if ... Tuple(0 - 1, ...)`
+                    # are both typed `Tuple<Nat, Nat>`), embedding a deferred,
+                    # still-unproven narrowing — seeding `Nat`'s `>= 0` over the
+                    # value `-5`/`-1` would assert a falsehood and vacuously
+                    # discharge every later obligation.
+                    source_guaranteed = isinstance(
+                        stmt.value,
+                        (ast.SlotRef, ast.FnCall, ast.ModuleCall),
+                    )
                     pushed: list[tuple[str, object]] = []
+                    seeds: list[object] = []
                     for i, te in enumerate(stmt.type_bindings):
                         type_name = smt._type_expr_to_slot_name(te)
                         if type_name is None:
                             continue
                         slot_val: object | None = None
                         if i < len(lit_args):
+                            # Literal component: exact value; no seed needed.
                             slot_val = smt.translate_expr(lit_args[i], cur_env)
                         if slot_val is None:
+                            # Non-literal / untranslatable component: a fresh var
+                            # invalidates the stale outer binding (PR #748).
                             slot_val = self._fresh_slot_var(smt, te)
                         if slot_val is not None:
                             pushed.append((type_name, slot_val))
+                            # #746: seed the source component type's fact over
+                            # the bound var, so a later re-narrowing of this slot
+                            # (`let @NonNeg = @PosInt.0`) discharges against it.
+                            # Only for a guaranteed source and a non-literal
+                            # component (a literal's slot var is its exact value,
+                            # which carries its own entailments) — never the
+                            # (possibly-unproven) target sub-pattern type, so a
+                            # component whose source genuinely lacks the fact
+                            # still obligates and (correctly) errors.
+                            if (source_guaranteed and i >= len(lit_args)
+                                    and i < len(src_args)):
+                                comp_fact = self._term_source_fact(
+                                    smt, src_args[i], slot_val)
+                                if comp_fact is not None:
+                                    seeds.append(comp_fact)
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
+                    block_assumptions.extend(seeds)
                 elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.expr, smt, cur_env, assumptions,
+                        decl, stmt.expr, smt, cur_env, block_assumptions,
                     )
             self._walk_for_nat_binding_obligations(
-                decl, expr.expr, smt, cur_env, assumptions,
+                decl, expr.expr, smt, cur_env, block_assumptions,
             )
             return
 

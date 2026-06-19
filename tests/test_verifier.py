@@ -3960,6 +3960,170 @@ private fn use_it(@PosInt -> @Int)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
         assert self._refine_obligations(exempt) == []
 
+    def test_destructure_bound_slot_refinement_retained(self) -> None:
+        """#746: a destructured slot's *source* component refinement is retained
+        as a block assumption, so a later re-narrowing of that slot discharges
+        at Tier 1.
+
+        `let Tuple<@PosInt, @Int> = @Tuple<PosInt, Int>.0` binds `@PosInt` whose
+        source component type is `PosInt` (`> 0`); the subsequent
+        `let @NonNeg = @PosInt.0` (`>= 0`) proves only because the source `> 0`
+        fact was seeded over the bound slot.  Before the fix this was a false
+        E505 (the slot lost its refinement at the rebind)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+public fn f(@Tuple<PosInt, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@PosInt, @Int> = @Tuple<PosInt, Int>.0;
+  let @NonNeg = @PosInt.0;
+  @NonNeg.0
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        # The re-narrowing obligation (@NonNeg) is discharged at Tier 1; the
+        # destructure component (@PosInt from a PosInt source) is R3-exempt, so
+        # exactly one refine_bind obligation is recorded and verified.
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_destructure_retained_fact_not_overassumed(self) -> None:
+        """#746 soundness: the retained fact is the *source* component type, not
+        the (possibly-unproven) target sub-pattern.  A bare `Int` source
+        destructured as `Tuple<@PosInt, @Int>` obligates the `@PosInt`
+        narrowing (E505), and a later `let @NonNeg = @PosInt.0` is NOT silently
+        accepted via a bogus fact — the `@PosInt` slot carries no `> 0` premise
+        (its source is bare `Int`), so the re-narrowing also (correctly) fails
+        rather than being papered over."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+private fn mk(@Unit -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(0 - 5, 3) }
+
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@PosInt, @Int> = mk(@Unit.0);
+  let @NonNeg = @PosInt.0;
+  @NonNeg.0
+}
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E505"]
+        # The original @PosInt destructure narrowing E505s; the fix must not
+        # have papered it (or the dependent re-narrow) over with a bogus fact.
+        assert errs, "expected E505 — a bare-Int source must still obligate"
+
+    def test_let_bound_slot_refinement_retained_and_sound(self) -> None:
+        """#746: a let-bound slot whose RHS is a refined-return call retains the
+        refinement, and a bare-return source still obligates a re-narrow.
+
+        `let @PosInt = mk()` where `mk` returns `@PosInt`: the call's
+        translated result already carries the refined-return predicate (the
+        producing function discharged it), so the later `let @NonNeg =
+        @PosInt.0` discharges at Tier 1 without leaking the (possibly-unproven)
+        target type.  When `mk` returns bare `@Int`, the `@PosInt` narrowing
+        E505s and the dependent re-narrow is not silently accepted — guards
+        against a let rebind that wrongly assumes the resolved source type over
+        a value that does not provably carry it."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+private fn mk(@Unit -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @PosInt = mk(@Unit.0);
+  let @NonNeg = @PosInt.0;
+  @NonNeg.0
+}
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+private fn mk(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @PosInt = mk(@Unit.0);
+  let @NonNeg = @PosInt.0;
+  @NonNeg.0
+}
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 — a bare-Int let source must still obligate"
+
+    def test_literal_destructure_source_not_overassumed(self) -> None:
+        """#746 soundness: a *literal* destructure source is excluded from
+        fact-seeding, because the checker types it optimistically.
+
+        `Tuple(0 - 5, 0 - 5)` is typed `Tuple<Nat, Nat>`, but its component
+        VALUES are negative — that `Int -> Nat` narrowing is deferred to
+        verification, so the `Nat` component type is an unproven claim, not a
+        sound premise.  Were it seeded over the bound slot, `>= 0` over `-5`
+        would assert a falsehood and vacuously discharge the *later*
+        `takes_nat(@Int.0)` obligation.  Asserts that obligation still fires
+        ('may be negative'), i.e. the literal source poisoned nothing.  (This
+        is the same hazard the #748 stale-binding tests pin, re-checked under
+        the fact-retention path.)"""
+        result = _verify("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(0 - 5, 0 - 5);
+  takes_nat(@Int.0)
+}
+""")
+        errs = [d for d in result.diagnostics if d.severity == "error"]
+        assert any("may be negative" in e.description for e in errs), (
+            "literal-source seeding must NOT vacuously discharge the later "
+            f"@Nat narrowing; got: {[e.description for e in errs]}"
+        )
+
+    def test_destructure_retained_fact_no_cross_statement_bleed(self) -> None:
+        """#746: the seeded fact is scoped to its own slot — it does not wrongly
+        constrain an unrelated later binding.
+
+        `@PosInt`'s seeded `> 0` (from the `PosInt` source component) must not
+        leak onto a *separate* `let @PosInt2 = @Int.0` whose value is genuinely
+        unconstrained: that second narrowing must still E505 rather than ride
+        the first slot's fact."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+public fn f(@Tuple<PosInt, Int>, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@PosInt, @Int> = @Tuple<PosInt, Int>.0;
+  let @PosInt = @Int.0;
+  @PosInt.0
+}
+""")
+        # The first @PosInt (from a PosInt source) is R3-exempt; the second
+        # narrows an unconstrained @Int param into @PosInt and must E505 — the
+        # first slot's seeded `> 0` fact does not bleed onto the second.
+        errs = [d for d in result.diagnostics if d.error_code == "E505"]
+        assert errs, (
+            "the second, independent @PosInt narrowing must still obligate"
+        )
+
     def test_projected_field_uses_source_refinement_fact(self) -> None:
         """A projected ADT field's own declared type is a sound premise for the
         target predicate (#746, CR a48cd2c): a `@Nat` field bound into
