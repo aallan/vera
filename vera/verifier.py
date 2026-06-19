@@ -2776,29 +2776,33 @@ class ContractVerifier:
         site: str,
     ) -> None:
         """Emit an E506 warning for a refinement narrowing the SMT layer could
-        not discharge and codegen does not runtime-guard (#746).
+        not discharge (#746).
 
-        The refinement analogue of :py:meth:`_report_nat_binding_unguarded`:
-        because no codegen runtime guard exists yet for arbitrary refinement
-        predicates (deferred to the #746 follow-up), an undischarged narrowing
-        is neither statically proven nor runtime-checked — so it is surfaced
-        rather than silently passed (R7)."""
+        Codegen runtime-guards refinements over a *primitive* base (Int / Nat /
+        Bool / Float64 / String) at the function boundary — a refined parameter
+        is checked at entry and a refined return at exit, with internal
+        narrowings caught transitively when they reach a boundary.  This
+        warning therefore fires mainly for a refinement over a *non-primitive*
+        base (e.g. ``Array``), whose predicate the translator does not lower:
+        it is neither statically discharged nor refinement-runtime-guarded, so
+        it is surfaced rather than silently passed (R7).  Runtime guards for
+        non-primitive bases are tracked as the #746 follow-up."""
         self._warning(
             node,
             (
                 f"Value narrowing into a refined {site} in '{decl.name}' "
-                "could not be verified statically and is not runtime-guarded "
-                "— add a `requires(...)` implying the predicate, or guard the "
-                "binding with an `if` testing the predicate."
+                "could not be verified statically — add a `requires(...)` "
+                "implying the predicate, or guard the binding with an `if` "
+                "testing the predicate."
             ),
             rationale=(
                 "The narrowed value or the refinement predicate is outside "
                 "Z3's decidable fragment (untranslatable, a non-primitive "
-                "base, or the solver timed out), so the predicate obligation "
-                "could not be discharged.  Unlike @Nat narrowings, codegen "
-                "does not yet emit a runtime guard for general refinement "
-                "predicates, so this narrowing is neither statically proven "
-                "nor runtime-checked."
+                "base such as Array, or the solver timed out), so the "
+                "predicate obligation could not be discharged statically.  "
+                "Codegen runtime-guards refinements over a primitive base at "
+                "the function boundary, but not over a non-primitive base, so "
+                "this narrowing is not refinement-runtime-checked either."
             ),
             spec_ref=(
                 'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '

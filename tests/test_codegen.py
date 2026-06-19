@@ -5300,6 +5300,106 @@ public fn to_percentage(@Int -> @Percentage)
         assert '(export "to_percentage"' in result.wat
 
 
+class TestRefinementRuntimeGuards:
+    """#746: refined params/returns carry a runtime predicate guard, so an
+    unverified compile traps (via ``$vera.contract_fail``) on a violating
+    value rather than silently storing it.  The function boundary (param entry
+    + return exit) is where the refinement invariant is relied upon; call
+    arguments are covered transitively by the callee's param guard."""
+
+    _PRE = "type PosInt = { @Int | @Int.0 > 0 };\n"
+
+    def test_refined_param_guard_traps_on_negative(self) -> None:
+        src = self._PRE + """
+public fn use_it(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+"""
+        _run_trap(src, fn="use_it", args=[-5])
+        assert _run(src, fn="use_it", args=[7]) == 7
+
+    def test_refined_param_guard_traps_on_zero(self) -> None:
+        src = self._PRE + """
+public fn use_it(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+"""
+        _run_trap(src, fn="use_it", args=[0])
+
+    def test_refined_return_guard_traps(self) -> None:
+        src = self._PRE + """
+public fn mk(@Int -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        _run_trap(src, fn="mk", args=[-5])
+        assert _run(src, fn="mk", args=[7]) == 7
+
+    def test_call_argument_guarded_transitively(self) -> None:
+        """A violating call argument traps via the callee's param guard — no
+        separate call-site guard is needed."""
+        src = self._PRE + """
+public fn use_it(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+public fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_it(@Int.0) }
+"""
+        _run_trap(src, fn="caller", args=[-3])
+        assert _run(src, fn="caller", args=[9]) == 9
+
+    def test_valid_value_passes_param_and_return_guards(self) -> None:
+        """A satisfying value flows through both the entry and exit guards."""
+        src = self._PRE + """
+public fn id_pos(@PosInt -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+"""
+        assert _run(src, fn="id_pos", args=[42]) == 42
+        _run_trap(src, fn="id_pos", args=[-1])
+
+    def test_refined_string_param_guard_traps(self) -> None:
+        src = """
+type NonEmpty = { @String | string_length(@String.0) > 0 };
+public fn use_s(@NonEmpty -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(@NonEmpty.0) }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_s("") }
+"""
+        _run_trap(src, fn="entry")
+
+    def test_refined_string_return_guard_traps(self) -> None:
+        src = """
+type NonEmpty = { @String | string_length(@String.0) > 0 };
+public fn mk(@String -> @NonEmpty)
+  requires(true) ensures(true) effects(pure)
+{ @String.0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(mk("")) }
+"""
+        _run_trap(src, fn="entry")
+
+    def test_generic_refined_return_guarded_after_monomorphization(self) -> None:
+        """A generic function with a *concrete* refined return is runtime-guarded
+        on its monomorphised instance (the static obligation is skipped for
+        generics — #555 — but codegen monomorphises and the return guard
+        fires)."""
+        src = self._PRE + """
+public forall<T> fn coerce(@T -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ 0 - 1 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ coerce(5) }
+"""
+        _run_trap(src, fn="entry")
+
+
 # =====================================================================
 # C6.5e: String and Array types in function signatures
 # =====================================================================

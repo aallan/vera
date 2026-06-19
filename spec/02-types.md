@@ -252,7 +252,13 @@ A refined **parameter** is, conversely, *assumed* to satisfy its predicate insid
 
 An obligation drops to Tier 3 — reported as an `E506` warning rather than silently accepted — in two cases: (1) the predicate uses a construct outside the decidable fragment (§2.6.1); or (2) the refinement is over a non-primitive base, such as `{ @Array<Int> | array_length(...) > 0 }`, which the predicate translator does not lower — only primitive bases (`@Int`, `@Nat`, `@Bool`, `@Float64`, `@String`) have their binder substituted, so a non-primitive base is Tier 3 even when its predicate (here `array_length(...) > 0`) is itself in the fragment.
 
-> **Limitation (runtime guards).** Unlike the built-in `@Nat` narrowing, the compiler does not yet emit a *runtime* guard for a general refinement predicate it cannot discharge statically. A narrowing that falls to Tier 3 — including at a `public`/FFI boundary — is therefore neither statically proved nor runtime-checked. No statically-verified program is weakened by this; it only bounds the Tier-3 fallback. Tracked as the [#746](https://github.com/aallan/vera/issues/746) follow-up [#762](https://github.com/aallan/vera/issues/762).
+### 2.6.5 Runtime Guards
+
+A refinement over a **primitive base** (`@Int`, `@Nat`, `@Bool`, `@Float64`, `@String`) is also guarded at **runtime**: the compiler emits a predicate check at the function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value at a `public`/FFI boundary rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. A call argument is covered by the callee's entry guard, so the boundary checks compose to cover every narrowing whose result is actually consumed.
+
+The guard is *defense in depth* for the unverified path: a `vera verify`-clean program proves the predicate statically, so the runtime guard is never reached.
+
+> **Limitation.** Refinements over a **non-primitive base** (e.g. `{ @Array<Int> | array_length(...) > 0 }`) are not yet runtime-guarded — they remain Tier 3 statically (the predicate translator does not lower a collection binder), and the underlying operations' own runtime checks (such as array bounds) provide the safety net instead. Tracked as [#762](https://github.com/aallan/vera/issues/762).
 
 ## 2.7 Parametric Polymorphism
 

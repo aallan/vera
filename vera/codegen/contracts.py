@@ -10,8 +10,78 @@ from vera import ast
 from vera.wasm import WasmContext, WasmSlotEnv
 
 
+_PRIMITIVE_REFINE_BASES = frozenset(
+    {"Int", "Nat", "Bool", "Float64", "String"}
+)
+
+
 class ContractsMixin:
     """Methods for compiling runtime contract checks."""
+
+    def _refinement_guard_parts(
+        self, te: ast.TypeExpr,
+    ) -> tuple[ast.Expr, str] | None:
+        """(predicate, base slot-name) if *te* is a refinement over a
+        primitive base, else None — the codegen counterpart of the verifier's
+        ``_refined_parts`` / ``_base_slot_name`` (#746).
+
+        Resolves an alias chain (``type PosInt = { @Int | ... }``; also
+        ``type P2 = PosInt``) to the underlying ``RefinementType``.  Only
+        primitive bases are guarded — a non-primitive base (e.g. ``Array``) has
+        no slot binder the predicate translator can substitute, exactly as on
+        the verify side, so it yields None (no runtime guard, matching the
+        Tier-3 static outcome).
+        """
+        node: ast.TypeExpr = te
+        seen: set[str] = set()
+        while (isinstance(node, ast.NamedType)
+               and node.name in self._type_aliases
+               and node.name not in seen):
+            seen.add(node.name)
+            node = self._type_aliases[node.name]
+        if isinstance(node, ast.RefinementType):
+            base = node.base_type
+            if (isinstance(base, ast.NamedType)
+                    and base.name in _PRIMITIVE_REFINE_BASES):
+                return (node.predicate, base.name)
+        return None
+
+    def _emit_refinement_check(
+        self,
+        ctx: WasmContext,
+        predicate: ast.Expr,
+        base_name: str,
+        value_local: int,
+        message: str,
+    ) -> list[str] | None:
+        """Compile a refinement-predicate runtime guard over *value_local*
+        (#746).
+
+        The predicate is closed over the binder ``@<base>.0``; translating it
+        against a fresh slot env binding that base to *value_local* reads the
+        value and yields an i32 boolean, exactly like a ``requires`` clause.
+        Traps via the ``$vera.contract_fail`` host import (the same channel
+        used for precondition / postcondition failures) when the predicate is
+        false.  Returns None when the predicate falls outside the compilable
+        fragment (no guard emitted — the static side already surfaced it as
+        Tier 3)."""
+        guard_env = WasmSlotEnv().push(base_name, value_local)
+        cond = ctx.translate_expr(predicate, guard_env)
+        if cond is None:
+            return None
+        ptr, length = self.string_pool.intern(message)
+        self._needs_contract_fail = True
+        self._needs_memory = True
+        return [
+            *cond,
+            "i32.eqz",
+            "if",
+            f"  i32.const {ptr}",
+            f"  i32.const {length}",
+            "  call $vera.contract_fail",
+            "  unreachable",
+            "end",
+        ]
 
     def _format_contract_message(
         self,
@@ -37,6 +107,26 @@ class ContractsMixin:
         sig = ast.format_fn_signature(decl)
         expr_text = ast.format_expr(contract.expr)
         return f"{kind} violation in {sig}\n  {clause}({expr_text}) failed"
+
+    def _format_refinement_message(
+        self,
+        decl: ast.FnDecl,
+        te: ast.TypeExpr,
+        role: str,
+    ) -> str:
+        """Build a refinement-violation message for a runtime guard (#746).
+
+        e.g. ``Refinement violation in clamp(@Int -> @Percentage)
+        / return value: @Int.0 >= 0 && @Int.0 <= 100 failed``.  *role* is
+        ``"parameter"`` or ``"return value"``.
+        """
+        sig = ast.format_fn_signature(decl)
+        parts = self._refinement_guard_parts(te)
+        pred_text = ast.format_expr(parts[0]) if parts is not None else "?"
+        return (
+            f"Refinement violation in {sig}\n"
+            f"  {role}: {pred_text} failed"
+        )
 
     def _compile_preconditions(
         self,
@@ -114,13 +204,42 @@ class ContractsMixin:
                 if not self._is_trivial_contract(contract):
                     ensures_clauses.append(contract)
 
-        if not ensures_clauses:
+        # #746: a refined return type is an implicit postcondition on the
+        # result — guarded here alongside the explicit ensures, so a function
+        # returning a refinement-violating value traps even with trivial
+        # ensures.
+        refined_ret = self._refinement_guard_parts(decl.return_type)
+
+        if not ensures_clauses and refined_ret is None:
             return []
 
-        # Pair returns (String/Array) don't support postcondition checks
-        # — can't save/restore a two-value result with a single local
+        # Pair returns (String/Array) don't support general ensures checks
+        # — can't bind `@T.result` to a two-value result.  A refinement guard,
+        # however, needs only the value's primary local (the ptr; string_length
+        # reads the length from memory, as the param-guard path shows), so a
+        # refined String return IS guarded by saving both halves around the
+        # check.  Array bases are non-primitive, so `refined_ret` is None and
+        # they get no guard — matching their Tier-3 static status (#746).
         if ret_wt == "i32_pair":
-            return []
+            if refined_ret is None:
+                return []
+            predicate, base_name = refined_ret
+            ptr_l = ctx.alloc_local("i32")
+            len_l = ctx.alloc_local("i32")
+            msg = self._format_refinement_message(
+                decl, decl.return_type, "return value")
+            guard = self._emit_refinement_check(
+                ctx, predicate, base_name, ptr_l, msg)
+            if guard is None:
+                return []
+            # Result is (ptr, len) with len on top of the stack.
+            return [
+                f"local.set {len_l}",
+                f"local.set {ptr_l}",
+                *guard,
+                f"local.get {ptr_l}",
+                f"local.get {len_l}",
+            ]
 
         instrs: list[str] = []
 
@@ -149,6 +268,15 @@ class ContractsMixin:
 
                 instrs.append("  unreachable")
                 instrs.append("end")
+
+            if refined_ret is not None:
+                predicate, base_name = refined_ret
+                msg = self._format_refinement_message(
+                    decl, decl.return_type, "return value")
+                guard = self._emit_refinement_check(
+                    ctx, predicate, base_name, result_local, msg)
+                if guard is not None:
+                    instrs.extend(guard)
 
             # Push result back
             instrs.append(f"local.get {result_local}")

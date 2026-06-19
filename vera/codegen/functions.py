@@ -103,6 +103,9 @@ class FunctionCompilationMixin:
         # Allocate parameters and track pointer params for GC prologue
         param_parts: list[str] = []
         gc_pointer_params: list[int] = []
+        # #746: refined params get a runtime predicate guard at entry (the
+        # value's local + its type expr), emitted after the preconditions.
+        refined_param_checks: list[tuple[int, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -126,6 +129,8 @@ class FunctionCompilationMixin:
                 type_name = self._type_expr_to_slot_name(param_te)
                 if type_name:
                     env = env.push(type_name, ptr_idx)
+                if self._refinement_guard_parts(param_te) is not None:
+                    refined_param_checks.append((ptr_idx, param_te))
                 gc_pointer_params.append(ptr_idx)
                 continue
             local_idx = ctx.alloc_param()
@@ -134,6 +139,8 @@ class FunctionCompilationMixin:
             type_name = self._type_expr_to_slot_name(param_te)
             if type_name:
                 env = env.push(type_name, local_idx)
+            if self._refinement_guard_parts(param_te) is not None:
+                refined_param_checks.append((local_idx, param_te))
             # Track i32 pointer params (ADT/closure, not Bool/Byte,
             # not opaque host handles — Map/Set/Decimal are i32
             # indices into Python-side stores, not Vera-heap
@@ -190,6 +197,24 @@ class FunctionCompilationMixin:
 
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
+
+        # #746: refined parameters carry a runtime predicate guard at entry —
+        # a refinement is an implicit precondition on the value, so an
+        # untrusted (incl. FFI/public) caller passing a violating value traps
+        # via $vera.contract_fail rather than the function relying on an
+        # invariant the value never established.  Emitted after the explicit
+        # preconditions so a `requires` that would rule the value out fires
+        # first.
+        for value_local, param_te in refined_param_checks:
+            parts = self._refinement_guard_parts(param_te)
+            if parts is None:  # pragma: no cover — collected only when not None
+                continue
+            predicate, base_name = parts
+            msg = self._format_refinement_message(decl, param_te, "parameter")
+            guard = self._emit_refinement_check(
+                ctx, predicate, base_name, value_local, msg)
+            if guard is not None:
+                pre_instrs.extend(guard)
 
         # Snapshot old state for postcondition old() references
         snapshot_instrs = self._snapshot_old_state(ctx, decl)
