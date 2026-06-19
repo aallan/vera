@@ -3652,6 +3652,12 @@ public fn coerce(@AnyInt -> @Nat)
 """)
         errs = [d for d in result.diagnostics if d.error_code == "E505"]
         assert errs, "base-mismatch narrowing must obligate, not be R3-exempted"
+        # The message surfaces the implicit `@Nat` base invariant rather than
+        # rendering only the user predicate `true` / suggesting a no-op
+        # `requires(true)` (CR d338946).
+        assert "@Nat.0 >= 0" in errs[0].description, (
+            f"E505 should surface the implicit >= 0: {errs[0].description}"
+        )
 
     def test_stronger_refinement_source_discharges(self) -> None:
         """A source with a STRONGER refinement (`@Percentage`, `>= 0 && <=

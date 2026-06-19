@@ -2463,11 +2463,21 @@ class ContractVerifier:
         — a refined source's full predicate (incl. its `>= 0` Nat conjoin), or
         `>= 0` for a bare `@Nat` field — so a projection from a refined/Nat
         field isn't rejected for lack of the invariant the field already carries
-        (#746).  ``None`` for an unconstrained base (e.g. bare `@Int`).  Refined
-        is checked first since a refinement-over-`@Nat` satisfies both
-        predicates (the full predicate subsumes `>= 0`)."""
+        (#746).  ``None`` for an unconstrained base (e.g. bare `@Int`).
+
+        Refined is checked first since a refinement-over-`@Nat` subsumes
+        `>= 0`.  But when that full predicate is Tier 3 (untranslatable), we
+        must NOT drop to ``None``: a refinement *over* `@Nat` still guarantees
+        the base `>= 0`, so we fall through to the bare-`@Nat` fact rather than
+        letting a projection into a weaker `{ @Nat | true }` falsely model a
+        negative payload the field forbids (CR d338946)."""
         if self._is_refined_type(source_ty):
-            return self._translate_refined_predicate(smt, source_ty, term)
+            pred = self._translate_refined_predicate(smt, source_ty, term)
+            if pred is not None:
+                refined_fact: object = pred  # widen to silence z3 Any leak
+                return refined_fact
+            # Full predicate untranslatable — keep the base invariant if @Nat
+            # (falls through to the check below); else no fact.
         if self._is_nat_type(source_ty):
             nat_fact: object = term >= 0  # z3 BoolRef; widen to silence Any leak
             return nat_fact
@@ -2889,7 +2899,18 @@ class ContractVerifier:
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
         parts = self._refined_parts(refined_ty)
-        pred_src = ast.format_expr(parts[1]) if parts is not None else "the predicate"
+        if parts is not None:
+            pred_src = ast.format_expr(parts[1])
+            # A refinement over @Nat carries an implicit `>= 0` base invariant
+            # that IS part of the checked goal (`value >= 0 && P`).  Surface it
+            # so the message — and the suggested `requires(...)` — reflect the
+            # real obligation when the base invariant, not P, is what fails
+            # (e.g. `{ @Nat | true }`: rendering only `true` / suggesting
+            # `requires(true)` would be misleading; CR d338946).
+            if parts[0] == NAT:
+                pred_src = f"@Nat.0 >= 0 && {pred_src}"
+        else:
+            pred_src = "the predicate"
 
         description = (
             f"Value narrowing into a refined {site} in '{decl.name}' "
