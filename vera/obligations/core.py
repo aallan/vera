@@ -68,9 +68,10 @@ ObligationStatus = Literal[
     "tier3_unguarded",  # untranslatable/timeout at a narrowing site with no
                         # runtime guard, excluded from totals — surfaced as an
                         # E504 warning for an unguarded @Nat narrowing
-                        # (nat_bind, #552/#747) or an E506 warning for any
-                        # refinement narrowing (refine_bind, #746, which has no
-                        # runtime guard yet)
+                        # (nat_bind, #552/#747) or an E506 warning for an
+                        # *internal* refinement narrowing (refine_bind, #746:
+                        # let / field / match / destructure — boundary sites
+                        # ARE runtime-guarded and recorded `tier3` instead)
 ]
 
 

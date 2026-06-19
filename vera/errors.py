@@ -501,7 +501,7 @@ ERROR_CODES: dict[str, str] = {
     "E503": "@Nat binding-site narrowing may be negative",
     "E504": "@Nat narrowing unverified and not runtime-guarded",
     "E505": "Refinement predicate may be violated at narrowing site",
-    "E506": "Refinement narrowing unverified and not runtime-guarded",
+    "E506": "Refinement narrowing not statically verified (Tier-3)",
     "E520": "Cannot verify contract (generic function)",
     "E521": "Cannot verify precondition (undecidable)",
     "E522": "Cannot verify postcondition (body undecidable)",

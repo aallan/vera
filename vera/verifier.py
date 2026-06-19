@@ -2349,7 +2349,7 @@ class ContractVerifier:
             elif self._is_string_type(param_ty):
                 var = smt.declare_string(z3_name)
             elif self._is_float64_type(param_ty):
-                var = smt.declare_int(z3_name)  # Real-sort body unlikely here
+                var = smt.declare_float64(z3_name)  # Real sort, as non-generic
             else:
                 var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
             slot_env = slot_env.push(type_name, var)

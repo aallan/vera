@@ -3980,3 +3980,19 @@ public forall<T> fn fromreq(@Int, @T -> @PosInt)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 { @Int.0 }
 """)
+
+    def test_generic_refined_return_float64_uses_real_sort(self) -> None:
+        """The generic return check must model a concrete `@Float64` param
+        with the Real sort, not Int — otherwise a real-sensitive predicate
+        like `!= 0.5` is vacuously 'verified' over integers while a runtime
+        0.5 violates it (soundness; CR re-review of 100f938)."""
+        # An unconstrained @Float64 param returned into a `!= 0.5` refinement
+        # MUST be E505: the counterexample 0.5 is reachable only under Real.
+        errs = _verify_err("""
+type NotHalf = { @Float64 | @Float64.0 != 0.5 };
+
+public forall<T> fn echo_f(@Float64, @T -> @NotHalf)
+  requires(true) ensures(true) effects(pure)
+{ @Float64.0 }
+""", "may violate the refinement predicate")
+        assert any(e.error_code == "E505" for e in errs)

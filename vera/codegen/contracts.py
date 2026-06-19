@@ -227,11 +227,13 @@ class ContractsMixin:
 
         # Pair returns (String/Array) don't support general ensures checks
         # — can't bind `@T.result` to a two-value result.  A refinement guard,
-        # however, needs only the value's primary local (the ptr; string_length
-        # reads the length from memory, as the param-guard path shows), so a
-        # refined String return IS guarded by saving both halves around the
-        # check.  Array bases are non-primitive, so `refined_ret` is None and
-        # they get no guard — matching their Tier-3 static status (#746).
+        # however, needs only the value's primary local (the ptr; the length
+        # is read from memory, as the param-guard path shows), so a refined
+        # String *or* Array return IS guarded by saving both halves around the
+        # check.  `_refinement_guard_parts` resolves the canonical base name
+        # for a collection base too, so a `@NonEmptyArray` return is guarded
+        # here despite being Tier-3 *statically* (#746) — see
+        # test_array_return_guard_traps_on_empty.
         if ret_wt == "i32_pair":
             if refined_ret is None:
                 return []

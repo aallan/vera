@@ -5408,20 +5408,25 @@ public fn entry(@Unit -> @Int)
         """A refinement over a non-primitive (`Array`) base is runtime-guarded
         too — the predicate is compiled to WASM directly (Z3 cannot decide
         `array_length`, but codegen can), so an empty array into a
-        `@NonEmptyArray` parameter traps."""
+        `@NonEmptyArray` parameter traps.
+
+        The body returns ``array_length(...)`` rather than indexing
+        ``[0]``: absent the guard, an empty array would return 0 normally
+        instead of trapping on an out-of-bounds index, so the trap on
+        ``count([])`` isolates the *guard* as the sole cause."""
         src = self._ARR + """
-public fn head(@NonEmptyArray -> @Int)
+public fn count(@NonEmptyArray -> @Int)
   requires(true) ensures(true) effects(pure)
-{ @NonEmptyArray.0[0] }
+{ array_length(@NonEmptyArray.0) }
 public fn empty(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ head([]) }
+{ count([]) }
 public fn nonempty(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ head([42, 7]) }
+{ count([42, 7]) }
 """
         _run_trap(src, fn="empty")
-        assert _run(src, fn="nonempty") == 42
+        assert _run(src, fn="nonempty") == 2
 
     def test_array_return_guard_traps_on_empty(self) -> None:
         """A refined `@NonEmptyArray` return is runtime-guarded at exit."""
@@ -5434,6 +5439,29 @@ public fn entry(@Unit -> @Int)
 { let @NonEmptyArray = mk([]); 0 }
 """
         _run_trap(src, fn="entry")
+
+    def test_param_guard_fires_before_precondition(self) -> None:
+        """The refined-parameter guard runs *before* explicit preconditions:
+        a `requires` that itself depends on the refined param must not trap
+        first.  Passing `0` to a `@NonZero` parameter reports the refinement
+        violation (a contract-fail ``RuntimeError``) rather than the
+        precondition's `10 / 0` integer-divide-by-zero WASM trap (CR
+        re-review of 100f938)."""
+        src = """
+type NonZero = { @Int | @Int.0 != 0 };
+public fn risky(@NonZero -> @Int)
+  requires(10 / @NonZero.0 > 0) ensures(true) effects(pure)
+{ @NonZero.0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ risky(0) }
+"""
+        result = _compile_ok(src)
+        # The contract-fail channel raises RuntimeError carrying the
+        # refinement message; a div-by-zero (i.e. precondition-first) would
+        # instead surface as a bare wasmtime trap, failing this match.
+        with pytest.raises(RuntimeError, match="Refinement violation"):
+            execute(result, fn_name="entry")
 
 
 # =====================================================================

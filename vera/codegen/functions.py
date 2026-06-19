@@ -195,16 +195,22 @@ class FunctionCompilationMixin:
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
-        # Compile precondition checks
-        pre_instrs = self._compile_preconditions(ctx, decl, env)
+        # Compile precondition checks.  A `requires(...)` may *assume* the
+        # refined parameters' invariants, so it runs after the refinement
+        # guards emitted below (the call stays here so its ctx side effects
+        # are unchanged; only the emitted-instruction order is reversed).
+        precond_instrs = self._compile_preconditions(ctx, decl, env)
 
         # #746: refined parameters carry a runtime predicate guard at entry —
-        # a refinement is an implicit precondition on the value, so an
-        # untrusted (incl. FFI/public) caller passing a violating value traps
-        # via $vera.contract_fail rather than the function relying on an
-        # invariant the value never established.  Emitted after the explicit
-        # preconditions so a `requires` that would rule the value out fires
-        # first.
+        # a refinement is the parameter's *type* invariant, so an untrusted
+        # (incl. FFI/public) caller passing a violating value traps via
+        # $vera.contract_fail rather than the function relying on an invariant
+        # the value never established.  Emitted *before* the explicit
+        # preconditions: a `requires(...)` may itself depend on the invariant
+        # (e.g. `requires(10 / @NonZero.0 > 0)` would trap on the division
+        # before the guard could report the boundary violation), so the guard
+        # must establish the refinement first.
+        refine_guard_instrs: list[str] = []
         for value_local, param_te in refined_param_checks:
             parts = self._refinement_guard_parts(param_te)
             if parts is None:  # pragma: no cover — collected only when not None
@@ -214,7 +220,9 @@ class FunctionCompilationMixin:
             guard = self._emit_refinement_check(
                 ctx, predicate, base_name, value_local, msg, env)
             if guard is not None:
-                pre_instrs.extend(guard)
+                refine_guard_instrs.extend(guard)
+
+        pre_instrs = refine_guard_instrs + precond_instrs
 
         # Snapshot old state for postcondition old() references
         snapshot_instrs = self._snapshot_old_state(ctx, decl)
