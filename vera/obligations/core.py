@@ -65,9 +65,12 @@ ObligationStatus = Literal[
     "violated",  # Z3 produced a counterexample; an error was emitted
     "tier3",     # outside the decidable fragment; runtime check emitted
     "timeout",   # solver returned unknown; falls back to runtime check
-    "tier3_unguarded",  # untranslatable/timeout at a non-let narrowing
-                        # site with no runtime guard — surfaced as an E504
-                        # warning, excluded from totals (#552/#747)
+    "tier3_unguarded",  # untranslatable/timeout at a narrowing site with no
+                        # runtime guard, excluded from totals — surfaced as an
+                        # E504 warning for an unguarded @Nat narrowing
+                        # (nat_bind, #552/#747) or an E506 warning for any
+                        # refinement narrowing (refine_bind, #746, which has no
+                        # runtime guard yet)
 ]
 
 

@@ -41,6 +41,7 @@ from vera.types import (
     AdtType,
     EffectRowType,
     FunctionType,
+    PrimitiveType,
     PureEffectRow,
     RefinedType,
     Type,
@@ -993,7 +994,7 @@ class ContractVerifier:
                 # with no runtime guard (E506), never a silent pass (R7).
                 self._record_refined_bind_tier3(decl, ret_node, "return type")
             else:
-                ret_result = smt.check_valid(goal, assumptions)
+                ret_result = smt.check_valid(goal, list(assumptions))
                 if ret_result.status == "verified":
                     self.summary.tier1_verified += 1
                     self._record_obligation(
@@ -3253,7 +3254,6 @@ class ContractVerifier:
         Returns None for a non-primitive base (predicate left untranslatable
         → Tier 3, never a silent pass).
         """
-        from vera.types import PrimitiveType
         if isinstance(base, PrimitiveType):
             return base.name
         return None

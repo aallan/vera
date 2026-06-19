@@ -3750,3 +3750,90 @@ private fn build(@Int -> @Box)
 """)
         errs = [d for d in bad.diagnostics if d.error_code == "E505"]
         assert errs, "expected E505 on the unconstrained constructor field"
+
+    def test_let_binding_discharges(self) -> None:
+        """The let site's *discharge* direction (the violation is covered by
+        `test_let_violation_reports_e505`): `let @PosInt = @Int.0` under
+        `requires(@Int.0 > 0)` proves at Tier 1."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ let @PosInt = @Int.0; @PosInt.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_effect_operation_argument_discharges_and_violates(self) -> None:
+        """A refined effect-operation formal obligates its argument (the #747
+        instantiated-`param_types` path), at both discharge and violation."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+effect Counter { op bump(PosInt -> Unit); }
+
+private fn run(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.bump(5) }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+effect Counter { op bump(PosInt -> Unit); }
+
+private fn run(@Int -> @Unit)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.bump(@Int.0) }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the unconstrained effect-op argument"
+
+    def test_match_binding_discharges_and_violates(self) -> None:
+        """A top-level `match` binding into a refined pattern obligates the
+        scrutinee, at both discharge and violation."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match 5 { @PosInt -> @PosInt.0 } }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { @PosInt -> @PosInt.0 } }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the unconstrained match binding"
+
+    def test_tuple_destructure_discharges_and_violates(self) -> None:
+        """A refined tuple-destructure component obligates its sub-expression,
+        at both discharge and violation."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = Tuple(7, 3); @PosInt.0 }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = Tuple(@Int.0, 3); @PosInt.0 }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the unconstrained tuple component"

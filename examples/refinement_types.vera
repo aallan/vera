@@ -6,8 +6,9 @@
 -- `safe_divide(10, 3)` discharges `3 > 0` into its `@PosInt` parameter and
 -- `to_percentage` discharges its `@Percentage` return predicate — both at
 -- Tier 1, no runtime check.  The one exception is `head([42, 1, 2])`: its
--- `@NonEmptyArray` predicate is over a non-primitive (`Array`) base whose
--- `array_length` is uninterpreted in the SMT encoding, so that narrowing
+-- `@NonEmptyArray` predicate is over a non-primitive (`Array`) base, which the
+-- predicate translator does not encode (only primitive bases — @Int, @Nat,
+-- @Bool, @Float64, @String — have their binder substituted), so that narrowing
 -- falls to Tier 3 (an E506 "not runtime-guarded" warning) — the boundary
 -- tracked as the #746 follow-up (#762).
 --

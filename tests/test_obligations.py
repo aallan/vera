@@ -251,6 +251,39 @@ class TestObligationKinds:
         assert violated[0].counterexample is not None
         _assert_summary_consistent("refine-bind-violation", result)
 
+    def test_refine_bind_tier3_excluded_from_totals(self) -> None:
+        """A Tier-3 refinement narrowing (non-primitive `Array` base, an E506
+        `tier3_unguarded` outcome) is excluded from `summary.total` and is NOT
+        counted as a runtime-guarded `tier3_runtime` — the bespoke bookkeeping
+        `_assert_summary_consistent` does not otherwise exercise (it never sees
+        the `tier3_unguarded` status or the `total -= 1`).  A bug dropping the
+        `total -= 1` (double-counting an unguarded narrowing as discharged)
+        would pass every other test."""
+        source = (
+            "type NonEmptyArray = "
+            "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
+            "\n"
+            "public fn head(@NonEmptyArray -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @NonEmptyArray.0[0] }\n"
+            "\n"
+            "public fn caller(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ head([42, 1, 2]) }\n"
+        )
+        result = self._verify_source(source)
+        tier3_unguarded = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+        ]
+        assert len(tier3_unguarded) == 1
+        assert tier3_unguarded[0].error_code == "E506"
+        # Excluded from the discharged totals and not a runtime-guarded tier3.
+        assert result.summary.tier3_runtime == 0
+        verified = sum(1 for o in result.obligations if o.status == "verified")
+        assert result.summary.total == verified
+        _assert_summary_consistent("refine-bind-tier3", result)
+
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (
             "public fn bad(@Int -> @Int)\n"
