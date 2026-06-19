@@ -54,7 +54,26 @@ class ContractsMixin:
                         else:
                             return None
                     name = f"{base.name}<{', '.join(arg_names)}>"
-                return (node.predicate, name)
+                predicate = node.predicate
+                if name == "Nat":
+                    # `{ @Nat | P }`'s membership is `@Nat.0 >= 0 && P` — the
+                    # `@Nat` base contributes an implicit `>= 0` (mirrors the
+                    # verifier's `_translate_refined_predicate` conjoin).  Fold
+                    # it into the guard predicate so the runtime check (and its
+                    # trap message, both derived from here) reject a negative
+                    # value satisfying P — e.g. `-1` for `{ @Nat | @Nat.0 < 10
+                    # }` — at an FFI/public boundary (CR f1f2a26).
+                    predicate = ast.BinaryExpr(
+                        op=ast.BinOp.AND,
+                        left=ast.BinaryExpr(
+                            op=ast.BinOp.GE,
+                            left=ast.SlotRef(
+                                type_name="Nat", type_args=None, index=0),
+                            right=ast.IntLit(value=0),
+                        ),
+                        right=predicate,
+                    )
+                return (predicate, name)
         return None
 
     def _emit_refinement_check(

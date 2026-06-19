@@ -5499,6 +5499,26 @@ public fn entry(@Unit -> @Int)
         # div-by-zero trap that would fail this match.
         _run_refine_trap(src, fn="entry")
 
+    def test_nat_base_param_guard_enforces_ge_zero(self) -> None:
+        """A `{ @Nat | P }` parameter guard conjoins the implicit `>= 0` base
+        invariant, so a negative value satisfying P (e.g. `-1` for `@Nat.0 <
+        10`) is rejected at the boundary — not just P (CR f1f2a26).  Calling
+        the public fn directly models an untrusted / FFI caller that bypasses
+        any Vera call-site nat-narrowing guard, so only the entry guard
+        protects the boundary."""
+        src = """
+type Small = { @Nat | @Nat.0 < 10 };
+public fn f(@Small -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Small.0 }
+"""
+        result = _compile_ok(src)
+        # -1 satisfies `< 10` but not `>= 0`: the guard message proves the
+        # base invariant is conjoined into the lowered check.
+        with pytest.raises(RuntimeError, match=r"@Nat\.0 >= 0"):
+            execute(result, fn_name="f", args=[-1])
+        assert _run(src, fn="f", args=[7]) == 7
+
 
 # =====================================================================
 # C6.5e: String and Array types in function signatures
