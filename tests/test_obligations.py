@@ -205,6 +205,52 @@ class TestObligationKinds:
         assert ("count", "requires", "verified") in kinds
         assert ("count", "ensures", "verified") in kinds
 
+    def test_refine_bind_kind_enumerated(self) -> None:
+        """#746: a refinement narrowing records a `refine_bind` obligation —
+        discharged at the call argument and at the refined return position."""
+        source = (
+            "type PosInt = { @Int | @Int.0 > 0 };\n"
+            "\n"
+            "public fn use(@PosInt -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @PosInt.0 }\n"
+            "\n"
+            "public fn mk(@Int -> @PosInt)\n"
+            "  requires(@Int.0 > 0) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+            "\n"
+            "public fn caller(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ use(5) }\n"
+        )
+        result = self._verify_source(source)
+        kinds = [(o.fn_name, o.kind, o.status) for o in result.obligations]
+        # call argument `use(5)` discharges `5 > 0`
+        assert ("caller", "refine_bind", "verified") in kinds
+        # `mk`'s body discharges the `@PosInt` return predicate
+        assert ("mk", "refine_bind", "verified") in kinds
+        _assert_summary_consistent("refine-bind", result)
+
+    def test_refine_bind_violation_carries_e505(self) -> None:
+        """A refuted refinement narrowing records `refine_bind`/`violated`
+        with error code E505 and a counterexample."""
+        source = (
+            "type PosInt = { @Int | @Int.0 > 0 };\n"
+            "\n"
+            "public fn bad(@Int -> @PosInt)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+        )
+        result = self._verify_source(source)
+        violated = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "violated"
+        ]
+        assert len(violated) == 1
+        assert violated[0].error_code == "E505"
+        assert violated[0].counterexample is not None
+        _assert_summary_consistent("refine-bind-violation", result)
+
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (
             "public fn bad(@Int -> @Int)\n"

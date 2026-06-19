@@ -3399,3 +3399,354 @@ class TestRefinementPredicateTranslation:
         assert ContractVerifier._base_slot_name(INT) == "Int"
         # @Nat is NOT a RefinedType — kept disjoint from the refine_bind path.
         assert ContractVerifier._refined_parts(NAT) is None
+
+    def test_refinement_over_nat_conjoins_base_invariant(self) -> None:
+        """A refinement *over* `@Nat` (`{ @Nat | P }`) yields `value >= 0 && P`,
+        re-introducing the base intrinsic `>= 0` so P is never the only check
+        — substituting v=4 (even, >=0) -> True, v=3 (odd) -> False, v=-2 (even
+        but negative) -> False (the `>= 0` conjunct catches it)."""
+        import z3
+        from vera.smt import SmtContext
+        from vera.types import RefinedType, NAT
+        from vera.verifier import ContractVerifier
+
+        pred = self._predicate_of("type EN = { @Nat | @Nat.0 % 2 == 0 };\n")
+        refined = RefinedType(NAT, pred)
+        smt = SmtContext()
+        v = z3.Int("v")
+        result = ContractVerifier._translate_refined_predicate(smt, refined, v)
+        assert result is not None
+        assert z3.is_true(z3.simplify(z3.substitute(result, (v, z3.IntVal(4)))))
+        assert z3.is_false(z3.simplify(z3.substitute(result, (v, z3.IntVal(3)))))
+        # negative-but-even: the base `>= 0` conjunct must reject it
+        assert z3.is_false(z3.simplify(z3.substitute(result, (v, z3.IntVal(-2)))))
+
+
+class TestRefinementPredicateVerification:
+    """#746 — refinement-type predicates are statically discharged at binding
+    sites and return positions, generalising the @Nat ``>= 0`` machinery to an
+    arbitrary translated predicate.
+
+    Covers the soundness risks pinned in the plan: the param-assume <-> call-
+    site matched pair (R1), the already-refined-source exemption (R3), the
+    return-binder substitution (R5), untranslatable -> Tier-3-not-silent (R7),
+    @Nat/refine_bind disjointness (R9), and multi-slot / fn-call predicates
+    (R8).
+    """
+
+    @staticmethod
+    def _refine_obligations(result, status=None):
+        obs = [o for o in result.obligations if o.kind == "refine_bind"]
+        if status is not None:
+            obs = [o for o in obs if o.status == status]
+        return obs
+
+    # -- discharge (Tier 1) ------------------------------------------------
+
+    def test_call_argument_literal_discharges(self) -> None:
+        """`use(5)` into a `@PosInt` formal discharges `5 > 0` at the call."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(5) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        verified = self._refine_obligations(result, "verified")
+        assert len(verified) == 1
+
+    def test_call_argument_discharges_from_requires(self) -> None:
+        """A `@Int` argument under `requires(@Int.0 > 0)` discharges the
+        `@PosInt` formal — the precondition implies the predicate."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ use(@Int.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_return_position_discharges(self) -> None:
+        """`clamp_percent`'s body discharges the `@Percentage` return
+        predicate (`>= 0 && <= 100`) from its branch path conditions."""
+        result = _verify("""
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+private fn clamp(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_param_assume_enables_body_proof(self) -> None:
+        """A refined param's predicate is assumed into the body (R1): the
+        ensures `@Bool.result` over `@PosInt.0 > 0` proves only because the
+        param is known positive."""
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn is_pos(@PosInt -> @Bool)
+  requires(true) ensures(@Bool.result) effects(pure)
+{ @PosInt.0 > 0 }
+""")
+
+    def test_multislot_and_predicate_discharges(self) -> None:
+        """A multi-conjunct predicate (`>= 0 && <= 100`) discharges at a
+        literal call argument (R8)."""
+        result = _verify("""
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+private fn use(@Percentage -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Percentage.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(50) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_string_length_predicate_discharges(self) -> None:
+        """A predicate calling a builtin (`string_length(...) > 0`) discharges
+        a non-empty string literal at a call argument (R8)."""
+        result = _verify("""
+type NonEmpty = { @String | string_length(@String.0) > 0 };
+
+private fn use(@NonEmpty -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use("hi") }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    # -- violation (E505) --------------------------------------------------
+
+    def test_let_violation_reports_e505(self) -> None:
+        """`let @PosInt = @Int.0 - 100` cannot prove `> 0` -> E505 with a
+        counterexample."""
+        matched = _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @PosInt = @Int.0 - 100; @PosInt.0 }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    def test_call_violation_reports_e505(self) -> None:
+        """An unconstrained `@Int` argument into a `@PosInt` formal -> E505."""
+        matched = _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(@Int.0) }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    def test_return_violation_reports_e505(self) -> None:
+        """R5: a body that returns an unconstrained value into a refined return
+        is CAUGHT — proves the return binder is actually bound (a wrong
+        push-key would leave the predicate unconstrained and silently
+        verify)."""
+        matched = _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn bad(@Int -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    def test_literal_return_violation_reports_e505(self) -> None:
+        """A literal return `{ 0 }` into `@PosInt` fails `0 > 0` -> E505."""
+        matched = _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn zero(@Unit -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    # -- R3: already-refined source exemption ------------------------------
+
+    def test_already_refined_source_no_obligation(self) -> None:
+        """R3: an already-`@PosInt` value into a `@PosInt` formal raises NO
+        obligation (predicate-AST match), so zero refine_bind records and no
+        diagnostics."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(@PosInt.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert self._refine_obligations(result) == []
+
+    def test_distinct_refinements_still_obligated(self) -> None:
+        """R3 correctness: a `@Percentage` source into a `@PosInt` formal is
+        NOT exempted (distinct predicates) and is refuted — `@Percentage`
+        admits 0, which violates `> 0`.  Uses predicate-AST equality, not
+        types_equal (which ignores predicates and would wrongly match)."""
+        matched = _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Percentage -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(@Percentage.0) }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    def test_stronger_refinement_source_discharges(self) -> None:
+        """A source with a STRONGER refinement (`@Percentage`, `>= 0 && <=
+        100`) into a `>= 0` slot is not exempted but DISCHARGES — the implied
+        predicate is proven from the source's assumed refinement, so no false
+        positive."""
+        result = _verify("""
+type NonNeg = { @Int | @Int.0 >= 0 };
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+private fn use(@NonNeg -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @NonNeg.0 }
+
+private fn caller(@Percentage -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(@Percentage.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    # -- R7: untranslatable -> Tier-3 E506, never silent -------------------
+
+    def test_non_primitive_base_is_tier3_e506(self) -> None:
+        """R7: a refinement over a non-primitive (`Array`) base cannot be
+        translated, so a narrowing into it is an E506 Tier-3 warning excluded
+        from the totals — never a silent `tier1_verified`."""
+        result = _verify("""
+type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+private fn head(@NonEmptyArray -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @NonEmptyArray.0[0] }
+
+private fn caller(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ head([42, 1, 2]) }
+""")
+        warns = [d for d in result.diagnostics if d.error_code == "E506"]
+        assert warns, "expected an E506 Tier-3 warning"
+        assert warns[0].severity == "warning"
+        # Never counted as statically verified.
+        assert self._refine_obligations(result, "verified") == []
+        assert len(self._refine_obligations(result, "tier3_unguarded")) == 1
+
+    # -- R9: @Nat / refine_bind disjointness -------------------------------
+
+    def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:
+        """R9: a bare `@Nat` narrowing yields exactly one `nat_bind`
+        obligation and NO `refine_bind` (the two paths stay disjoint)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ let @Nat = @Int.0; @Nat.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert self._refine_obligations(result) == []
+        assert any(o.kind == "nat_bind" for o in result.obligations)
+
+    def test_refinement_over_nat_discharges_full_predicate(self) -> None:
+        """A refinement *over* `@Nat` (`{ @Nat | P }`) is a refine_bind and
+        discharges BOTH the base `>= 0` and the predicate P — the refined-first
+        gate keeps P from being silently dropped by the nat path."""
+        # Even-Nat literal 4 satisfies `>= 0 && 4 % 2 == 0`: discharges.
+        result = _verify("""
+type EvenNat = { @Nat | @Nat.0 % 2 == 0 };
+
+private fn use(@EvenNat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @EvenNat.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(4) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+
+    def test_refinement_over_nat_predicate_violation_caught(self) -> None:
+        """`{ @Nat | even }` narrowing an odd literal (`3`) is refuted on the
+        predicate even though `3 >= 0` holds — proving P is not dropped."""
+        matched = _verify_err("""
+type EvenNat = { @Nat | @Nat.0 % 2 == 0 };
+
+private fn use(@EvenNat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @EvenNat.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use(3) }
+""", "refinement predicate")
+        assert matched[0].error_code == "E505"
+
+    # -- other binding sites ----------------------------------------------
+
+    def test_constructor_field_discharges_and_violates(self) -> None:
+        """A refined constructor field obligates its argument."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+private data Box { Mk(PosInt) }
+
+private fn build(@Unit -> @Box)
+  requires(true) ensures(true) effects(pure)
+{ Mk(7) }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+private data Box { Mk(PosInt) }
+
+private fn build(@Int -> @Box)
+  requires(true) ensures(true) effects(pure)
+{ Mk(@Int.0) }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the unconstrained constructor field"

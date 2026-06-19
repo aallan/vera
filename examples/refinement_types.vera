@@ -1,4 +1,16 @@
--- Refinement types — types constrained by predicates
+-- Refinement types — types constrained by predicates.
+--
+-- Since #746 the predicates are verified STATICALLY: a value narrowing into a
+-- refined slot (call argument, let, constructor field, ...) or returned at a
+-- refined return position carries a Tier-1 proof obligation.  Below,
+-- `safe_divide(10, 3)` discharges `3 > 0` into its `@PosInt` parameter and
+-- `to_percentage` discharges its `@Percentage` return predicate — both at
+-- Tier 1, no runtime check.  The one exception is `head([42, 1, 2])`: its
+-- `@NonEmptyArray` predicate is over a non-primitive (`Array`) base whose
+-- `array_length` is uninterpreted in the SMT encoding, so that narrowing
+-- falls to Tier 3 (an E506 "not runtime-guarded" warning) — the boundary
+-- tracked as the #746 follow-up (#762).
+--
 -- A positive integer
 type PosInt = { @Int | @Int.0 > 0 };
 
@@ -46,10 +58,12 @@ private fn head(@NonEmptyArray -> @Int)
   @NonEmptyArray.0[0]
 }
 
--- Entry point: exercise safe_divide, to_percentage, and head
--- (head exercises refinement-of-Array — `@NonEmptyArray.0[0]` —
--- which v0.0.146 fixed by unwrapping `RefinementType` layers in
--- the array-element-type alias resolver).
+-- Entry point: exercise safe_divide, to_percentage, and head.
+-- `safe_divide(10, 3)` and `to_percentage(150)` discharge their refinement
+-- obligations at Tier 1 (#746).  `head([42, 1, 2])` exercises
+-- refinement-of-Array element access (`@NonEmptyArray.0[0]`, fixed in
+-- v0.0.146 by unwrapping `RefinementType` layers in the array-element-type
+-- alias resolver); its `array_length(...) > 0` narrowing is Tier 3 (#762).
 public fn test_refine(@Unit -> @Int)
   requires(true)
   ensures(true)

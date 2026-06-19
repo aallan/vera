@@ -236,6 +236,24 @@ Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @I
 
 However, type aliases create distinct namespaces for slot references (see Chapter 3): `@PosInt.0` counts only `PosInt` bindings, not `Int` bindings.
 
+### 2.6.4 Predicate Verification
+
+The type checker treats a refined type as its base for assignability (it permits a base value to flow into a refined slot) and **defers the predicate proof to verification**. The verifier discharges the predicate as a Tier-1 proof obligation at every site where a value narrows into a refined slot:
+
+- `let @PosInt = ...` — let bindings
+- `f(...)` where a formal is refined — call arguments
+- `Ctor(...)` where a field is refined — constructor fields
+- effect-operation arguments
+- `match v { @PosInt.0 -> ... }` — match bindings
+- tuple destructure components
+- the function's **return position** when the declared return type is refined
+
+A refined **parameter** is, conversely, *assumed* to satisfy its predicate inside the body — sound precisely because every call site discharges the obligation. If the solver finds inputs violating the predicate, verification fails with error `E505` and a counterexample. A discharge proved from the surrounding `requires` clauses, path conditions, or an already-refined source carries no runtime cost.
+
+When a predicate or the narrowed value falls outside the decidable fragment (§2.6.1) — for example a refinement over a non-primitive base such as `{ @Array<Int> | array_length(...) > 0 }`, whose `array_length` is uninterpreted — the obligation drops to Tier 3 and is reported as an `E506` warning rather than silently accepted.
+
+> **Limitation (runtime guards).** Unlike the built-in `@Nat` narrowing, the compiler does not yet emit a *runtime* guard for a general refinement predicate it cannot discharge statically. A narrowing that falls to Tier 3 — including at a `public`/FFI boundary — is therefore neither statically proved nor runtime-checked. No statically-verified program is weakened by this; it only bounds the Tier-3 fallback. Tracked as the [#746](https://github.com/aallan/vera/issues/746) follow-up [#762](https://github.com/aallan/vera/issues/762).
+
 ## 2.7 Parametric Polymorphism
 
 Functions and data types may be parameterised by type variables:
