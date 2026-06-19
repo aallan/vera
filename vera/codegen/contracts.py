@@ -22,8 +22,10 @@ class ContractsMixin:
         Resolves an alias chain (``type PosInt = { @Int | ... }``; also
         ``type P2 = PosInt``) to the underlying ``RefinementType`` and returns
         its predicate plus the base type's *name* (the binder slot, e.g.
-        ``Int`` for ``{ @Int | ... }`` or ``Array`` for
-        ``{ @Array<Int> | array_length(@Array<Int>.0) > 0 }``).  Unlike the
+        ``Int`` for ``{ @Int | ... }`` or the canonical ``Array<Int>`` for
+        ``{ @Array<Int> | array_length(@Array<Int>.0) > 0 }`` — matching
+        ``_translate_slot_ref``'s key, since a bare ``Array`` would never
+        resolve).  Unlike the
         verify side — where Z3 cannot decide ``array_length`` so a collection
         base is Tier 3 — the runtime guard compiles the predicate to WASM
         directly, so it covers any base whose predicate
@@ -263,6 +265,22 @@ class ContractsMixin:
             ctx.set_result_local(result_local)
             instrs.append(f"local.set {result_local}")
 
+            # #746: emit the refined-return guard BEFORE the explicit ensures
+            # — an `ensures(...)` may depend on the return's refinement
+            # invariant (e.g. divide by `@NonZero.result`), so the guard must
+            # establish it first and report the boundary violation via
+            # $vera.contract_fail rather than letting the postcondition trap on
+            # the bad value (symmetric with the param-guard ordering in
+            # functions.py).
+            if refined_ret is not None:
+                predicate, base_name = refined_ret
+                msg = self._format_refinement_message(
+                    decl, decl.return_type, "return value")
+                guard = self._emit_refinement_check(
+                    ctx, predicate, base_name, result_local, msg, env)
+                if guard is not None:
+                    instrs.extend(guard)
+
             for ensures in ensures_clauses:
                 cond_instrs = ctx.translate_expr(ensures.expr, env)
                 if cond_instrs is None:
@@ -282,15 +300,6 @@ class ContractsMixin:
 
                 instrs.append("  unreachable")
                 instrs.append("end")
-
-            if refined_ret is not None:
-                predicate, base_name = refined_ret
-                msg = self._format_refinement_message(
-                    decl, decl.return_type, "return value")
-                guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, result_local, msg, env)
-                if guard is not None:
-                    instrs.extend(guard)
 
             # Push result back
             instrs.append(f"local.get {result_local}")

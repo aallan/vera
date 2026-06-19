@@ -2410,18 +2410,24 @@ class ContractVerifier:
         *,
         site: str,
         node: ast.Expr,
+        source_ty: Type | None = None,
     ) -> None:
         """Discharge a refinement predicate for a *projected* value — an ADT
         sub-pattern field or a non-literal destructure component — whose Z3
         *term* we already have (#746, the refinement analogue of
         :py:meth:`_check_nat_binding_obligation_term`).
 
-        The term is an uninterpreted accessor carrying no facts, so an
-        undischarged obligation is a genuine E505 (Z3 witnesses a
-        predicate-violating payload).  An untranslatable predicate / non-
-        primitive base yields an E506 Tier-3 warning; these projection sites
-        (ADT sub-pattern, non-literal destructure) are internal narrowings with
-        no codegen guard, hence ``guarded=False``.  *node* gives the
+        The accessor term carries no *intrinsic* facts, but *source_ty* — the
+        projected field/component's own declared type — does: a `@Nat` field is
+        ``>= 0``, a refined field satisfies its predicate.  Those invariants are
+        sound premises about *term* (the field already carries them, established
+        at construction), so they are assumed before the target check.  Without
+        them a projection from a `@Nat` field into `{ @Nat | true }` would be a
+        false E505 — Z3 inventing a negative payload the field type forbids (CR
+        a48cd2c).  An obligation still undischarged under those premises is a
+        genuine E505; an untranslatable predicate / non-primitive base yields an
+        E506 Tier-3 warning.  These projection sites are internal narrowings
+        with no codegen guard, hence ``guarded=False``.  *node* gives the
         diagnostic location.
         """
         self.summary.total += 1
@@ -2429,7 +2435,12 @@ class ContractVerifier:
         if goal is None:
             self._record_refined_bind_tier3(decl, node, site, guarded=False)
             return
-        result = smt.check_valid(goal, list(assumptions))
+        local_assumptions = list(assumptions)
+        if source_ty is not None:
+            src_fact = self._term_source_fact(smt, source_ty, term)
+            if src_fact is not None:
+                local_assumptions.append(src_fact)
+        result = smt.check_valid(goal, local_assumptions)
         if result.status == "verified":
             self.summary.tier1_verified += 1
             self._record_obligation(decl.name, "refine_bind", node, "verified")
@@ -2443,6 +2454,23 @@ class ContractVerifier:
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
             self._record_refined_bind_tier3(decl, node, site, guarded=False)
+
+    def _term_source_fact(
+        self, smt: SmtContext, source_ty: Type, term: z3.ExprRef,
+    ) -> object | None:
+        """A sound Z3 fact a projected *term*'s declared *source_ty* guarantees
+        — a refined source's full predicate (incl. its `>= 0` Nat conjoin), or
+        `>= 0` for a bare `@Nat` field — so a projection from a refined/Nat
+        field isn't rejected for lack of the invariant the field already carries
+        (#746).  ``None`` for an unconstrained base (e.g. bare `@Int`).  Refined
+        is checked first since a refinement-over-`@Nat` satisfies both
+        predicates (the full predicate subsumes `>= 0`)."""
+        if self._is_refined_type(source_ty):
+            return self._translate_refined_predicate(smt, source_ty, term)
+        if self._is_nat_type(source_ty):
+            nat_fact: object = term >= 0  # z3 BoolRef; widen to silence Any leak
+            return nat_fact
+        return None
 
     def _instantiated_field_types(
         self, ctor_name: str, scrut_ty: Type | None,
@@ -2541,6 +2569,7 @@ class ContractVerifier:
                     self._check_refined_binding_obligation_term(
                         decl, field_term, target, smt, assumptions,
                         site="ADT sub-pattern bind", node=scrutinee,
+                        source_ty=field_ty,
                     )
                 else:
                     # Opaque, unprojectable scrutinee: an internal narrowing with
@@ -2669,6 +2698,7 @@ class ContractVerifier:
             self._check_refined_binding_obligation_term(
                 decl, comp_term, target, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
+                source_ty=source_args[i],
             )
 
     def _record_nat_bind_tier3(

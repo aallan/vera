@@ -98,6 +98,20 @@ def _run_trap(
         execute(result, fn_name=fn, args=args)
 
 
+def _run_refine_trap(
+    source: str, fn: str | None = None, args: list[int] | None = None
+) -> None:
+    """Compile, execute, and assert a *refinement-guard* trap specifically — a
+    `$vera.contract_fail` ``RuntimeError`` carrying 'Refinement violation', not
+    merely *some* runtime trap (which an unrelated fault — e.g. an
+    out-of-bounds index — could also raise).  Use this for refinement
+    runtime-guard tests so they prove the guard fired, not just that the
+    program trapped for any reason."""
+    result = _compile_ok(source)
+    with pytest.raises(RuntimeError, match="Refinement violation"):
+        execute(result, fn_name=fn, args=args)
+
+
 # =====================================================================
 # 5a: Literals
 # =====================================================================
@@ -5315,7 +5329,7 @@ public fn use_it(@PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @PosInt.0 }
 """
-        _run_trap(src, fn="use_it", args=[-5])
+        _run_refine_trap(src, fn="use_it", args=[-5])
         assert _run(src, fn="use_it", args=[7]) == 7
 
     def test_refined_param_guard_traps_on_zero(self) -> None:
@@ -5324,7 +5338,7 @@ public fn use_it(@PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @PosInt.0 }
 """
-        _run_trap(src, fn="use_it", args=[0])
+        _run_refine_trap(src, fn="use_it", args=[0])
 
     def test_refined_return_guard_traps(self) -> None:
         src = self._PRE + """
@@ -5332,7 +5346,7 @@ public fn mk(@Int -> @PosInt)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
-        _run_trap(src, fn="mk", args=[-5])
+        _run_refine_trap(src, fn="mk", args=[-5])
         assert _run(src, fn="mk", args=[7]) == 7
 
     def test_call_argument_guarded_transitively(self) -> None:
@@ -5347,7 +5361,7 @@ public fn caller(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { use_it(@Int.0) }
 """
-        _run_trap(src, fn="caller", args=[-3])
+        _run_refine_trap(src, fn="caller", args=[-3])
         assert _run(src, fn="caller", args=[9]) == 9
 
     def test_valid_value_passes_param_and_return_guards(self) -> None:
@@ -5358,7 +5372,7 @@ public fn id_pos(@PosInt -> @PosInt)
 { @PosInt.0 }
 """
         assert _run(src, fn="id_pos", args=[42]) == 42
-        _run_trap(src, fn="id_pos", args=[-1])
+        _run_refine_trap(src, fn="id_pos", args=[-1])
 
     def test_refined_string_param_guard_traps(self) -> None:
         src = """
@@ -5370,7 +5384,7 @@ public fn entry(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { use_s("") }
 """
-        _run_trap(src, fn="entry")
+        _run_refine_trap(src, fn="entry")
 
     def test_refined_string_return_guard_traps(self) -> None:
         src = """
@@ -5382,7 +5396,7 @@ public fn entry(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { string_length(mk("")) }
 """
-        _run_trap(src, fn="entry")
+        _run_refine_trap(src, fn="entry")
 
     def test_generic_refined_return_guarded_after_monomorphization(self) -> None:
         """A generic function with a *concrete* refined return is runtime-guarded
@@ -5397,7 +5411,7 @@ public fn entry(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { coerce(5) }
 """
-        _run_trap(src, fn="entry")
+        _run_refine_trap(src, fn="entry")
 
     _ARR = (
         "type NonEmptyArray = "
@@ -5425,7 +5439,7 @@ public fn nonempty(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { count([42, 7]) }
 """
-        _run_trap(src, fn="empty")
+        _run_refine_trap(src, fn="empty")
         assert _run(src, fn="nonempty") == 2
 
     def test_array_return_guard_traps_on_empty(self) -> None:
@@ -5438,7 +5452,7 @@ public fn entry(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { let @NonEmptyArray = mk([]); 0 }
 """
-        _run_trap(src, fn="entry")
+        _run_refine_trap(src, fn="entry")
 
     def test_param_guard_fires_before_precondition(self) -> None:
         """The refined-parameter guard runs *before* explicit preconditions:
@@ -5462,6 +5476,28 @@ public fn entry(@Unit -> @Int)
         # instead surface as a bare wasmtime trap, failing this match.
         with pytest.raises(RuntimeError, match="Refinement violation"):
             execute(result, fn_name="entry")
+
+    def test_return_guard_fires_before_ensures(self) -> None:
+        """The refined-return guard runs *before* explicit ensures (symmetric
+        with the param ordering): an `ensures(...)` that divides by the result
+        must not trap first.  `coerce(0)` narrowing `0` into a `@NonZero`
+        return reports the refinement violation, not the ensures' `100 / 0`
+        integer-divide-by-zero (CR full-review of a48cd2c).  The ensures is a
+        tautology (`x == x`) so it verifies, yet still emits the dividing
+        expression at run time."""
+        src = """
+type NonZero = { @Int | @Int.0 != 0 };
+public fn coerce(@Int -> @NonZero)
+  requires(true)
+  ensures(100 / @NonZero.result == 100 / @NonZero.result) effects(pure)
+{ @Int.0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ coerce(0) }
+"""
+        # Guard-first -> "Refinement violation"; ensures-first -> a bare
+        # div-by-zero trap that would fail this match.
+        _run_refine_trap(src, fn="entry")
 
 
 # =====================================================================

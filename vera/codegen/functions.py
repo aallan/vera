@@ -104,7 +104,9 @@ class FunctionCompilationMixin:
         param_parts: list[str] = []
         gc_pointer_params: list[int] = []
         # #746: refined params get a runtime predicate guard at entry (the
-        # value's local + its type expr), emitted after the preconditions.
+        # value's local + its type expr), emitted *before* the preconditions
+        # (a `requires(...)` may depend on the refined invariant — see the
+        # emission site below).
         refined_param_checks: list[tuple[int, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)

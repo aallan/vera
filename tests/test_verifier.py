@@ -3933,6 +3933,48 @@ private fn use_it(@PosInt -> @Int)
         assert [d for d in exempt.diagnostics if d.severity == "error"] == []
         assert self._refine_obligations(exempt) == []
 
+    def test_projected_field_uses_source_refinement_fact(self) -> None:
+        """A projected ADT field's own declared type is a sound premise for the
+        target predicate (#746, CR a48cd2c): a `@Nat` field bound into
+        `{ @Nat | true }` verifies — without the source fact Z3 would invent a
+        negative payload the field type forbids (a false E505)."""
+        ok = _verify("""
+type Trivial = { @Nat | true };
+
+private data Box {
+  Box(Nat)
+}
+
+public fn unbox(@Box -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Box.0 {
+    Box(@Trivial) -> @Trivial.0
+  }
+}
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+
+        # Not over-assumed: a stronger target the `>= 0` source fact does NOT
+        # imply is still E505 (the projection from a `@Nat` field can be 0..5).
+        bad = _verify("""
+type GtFive = { @Nat | @Nat.0 > 5 };
+
+private data Box {
+  Box(Nat)
+}
+
+public fn unbox(@Box -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Box.0 {
+    Box(@GtFive) -> @GtFive.0
+  }
+}
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert len(errs) == 1, "expected one E505 on the violating projection"
+
     def test_generic_concrete_refined_return_discharged(self) -> None:
         """A *concrete* refined return on a generic function is discharged
         statically (its obligation is independent of the type parameter), even
