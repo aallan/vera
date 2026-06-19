@@ -2598,8 +2598,11 @@ class ContractVerifier:
         PR-review fix), a refined parameter by R1 param-assume (callers
         discharge it), a refined return at the return position.  So a
         ``SlotRef`` / ``FnCall`` source provably carries its component
-        refinements (the lone residual is a tuple-component-refined param
-        crossing an untrusted FFI boundary, which is not component-guarded).
+        refinements.  At an untrusted FFI boundary the R1 param-assume for a
+        tuple-component-refined parameter (and a tuple-component-refined return)
+        is additionally backed at run time by codegen's per-component boundary
+        guard (``_emit_component_refinement_guards``), so even an external
+        caller cannot launder a violating component past the assume.
 
         Refined is checked first since a refinement-over-`@Nat` subsumes
         `>= 0`.  But when that full predicate is Tier 3 (untranslatable), we

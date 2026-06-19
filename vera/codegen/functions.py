@@ -108,6 +108,12 @@ class FunctionCompilationMixin:
         # (a `requires(...)` may depend on the refined invariant — see the
         # emission site below).
         refined_param_checks: list[tuple[int, ast.TypeExpr]] = []
+        # #746 PR-review: a tuple param whose *components* are refined / @Nat
+        # carries no top-level refinement, so it needs per-component boundary
+        # guards (the FFI gap the projection-fact assumption opened — see
+        # `_emit_component_refinement_guards`).  Collected alongside the
+        # directly-refined params and emitted in the same pre-body block.
+        component_param_checks: list[tuple[int, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -158,6 +164,16 @@ class FunctionCompilationMixin:
                 env = env.push(type_name, local_idx)
             if self._refinement_guard_parts(param_te) is not None:
                 refined_param_checks.append((local_idx, param_te))
+            else:
+                # A tuple param (heap pointer, wt == "i32") may have refined /
+                # @Nat components needing boundary guards; the helper returns no
+                # instructions for a non-tuple or component-free param, so this
+                # collection is harmless for ordinary ADT / closure params.
+                node = self._resolve_type_alias(param_te)
+                if (isinstance(node, ast.NamedType)
+                        and node.name == "Tuple"
+                        and node.type_args):
+                    component_param_checks.append((local_idx, param_te))
             # Track i32 pointer params (ADT/closure, not Bool/Byte,
             # not opaque host handles — Map/Set/Decimal are i32
             # indices into Python-side stores, not Vera-heap
@@ -238,6 +254,15 @@ class FunctionCompilationMixin:
                 ctx, predicate, base_name, value_local, msg, env)
             if guard is not None:
                 refine_guard_instrs.extend(guard)
+
+        # #746 PR-review: per-component boundary guards for tuple params — a
+        # `Tuple<PosInt, Int>` carries no top-level refinement, so an FFI caller
+        # passing a refinement-violating component would otherwise slip past the
+        # callee's entry checks (the verifier *assumes* the component holds).
+        for value_local, param_te in component_param_checks:
+            refine_guard_instrs.extend(
+                self._emit_component_refinement_guards(
+                    ctx, decl, param_te, value_local, env, "parameter"))
 
         pre_instrs = refine_guard_instrs + precond_instrs
 

@@ -5454,6 +5454,91 @@ public fn entry(@Unit -> @Int)
 """
         _run_refine_trap(src, fn="entry")
 
+    def test_tuple_component_param_guard_traps_on_negative(self) -> None:
+        """A `Tuple<PosInt, Int>` parameter carries no *top-level* refinement,
+        but its refined *components* are guarded at the boundary (the
+        PR-review-found FFI gap): an external caller passing `Tuple(-5, 3)`
+        traps on the violating component, while `Tuple(7, 3)` flows through.
+        Calling the public fn with a Vera-constructed tuple models the FFI
+        boundary — the construction site is value-position (statically
+        obligated, no runtime guard), so only the callee's entry decomposition
+        protects the boundary against an unverified / external caller."""
+        src = self._PRE + """
+public fn first(@Tuple<PosInt, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry_bad(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ first(Tuple(0 - 5, 3)) }
+public fn entry_ok(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ first(Tuple(7, 3)) }
+"""
+        _run_refine_trap(src, fn="entry_bad")
+        assert _run(src, fn="entry_ok") == 0
+
+    def test_tuple_component_return_guard_traps(self) -> None:
+        """Symmetric exit guard: a `fn -> Tuple<PosInt, Int>` whose body yields
+        a refinement-violating component traps at the boundary rather than
+        handing back a Tier-1-violating tuple.  Exercises the
+        `_has_guardable_tuple_components` early-return fix — the return has no
+        top-level refinement and trivial ensures, yet must not short-circuit."""
+        src = self._PRE + """
+public fn mk(@Int -> @Tuple<PosInt, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@Int.0, 3) }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Tuple<PosInt, Int> = mk(0 - 9); 0 }
+"""
+        _run_refine_trap(src, fn="entry")
+
+    def test_nested_tuple_component_guard_traps(self) -> None:
+        """Component decomposition recurses into nested tuples: a violating
+        `PosInt` deep in `Tuple<Tuple<PosInt, Int>, Int>` traps at the
+        boundary."""
+        src = self._PRE + """
+public fn nest(@Tuple<Tuple<PosInt, Int>, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nest(Tuple(Tuple(0 - 1, 2), 3)) }
+"""
+        _run_refine_trap(src, fn="entry")
+
+    def test_nat_tuple_component_guard_traps(self) -> None:
+        """A bare `@Nat` tuple component is guarded with the synthesised
+        implicit `>= 0` (the message proves the base invariant is what fired),
+        so a negative component into `Tuple<Nat, Int>` traps at the boundary."""
+        src = """
+public fn natc(@Tuple<Nat, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ natc(Tuple(0 - 4, 3)) }
+"""
+        result = _compile_ok(src)
+        with pytest.raises(RuntimeError, match=r"@Nat\.0 >= 0"):
+            execute(result, fn_name="entry")
+
+    def test_valid_tuple_components_pass_both_guards(self) -> None:
+        """A satisfying tuple flows through both the exit (mk's return) and
+        entry (first's param) component guards without a false trap."""
+        src = self._PRE + """
+public fn mk(@Int -> @Tuple<PosInt, Int>)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ Tuple(@Int.0, 3) }
+public fn first(@Tuple<PosInt, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ first(mk(5)) }
+"""
+        assert _run(src, fn="entry") == 0
+
     def test_param_guard_fires_before_precondition(self) -> None:
         """The refined-parameter guard runs *before* explicit preconditions:
         a `requires` that itself depends on the refined param must not trap
