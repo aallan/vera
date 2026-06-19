@@ -2879,6 +2879,58 @@ class ContractVerifier:
         return ty == FLOAT64 or (isinstance(ty, RefinedType) and ty.base == FLOAT64)
 
     @staticmethod
+    def _refined_parts(ty: Type) -> "tuple[Type, ast.Expr] | None":
+        """The (base type, predicate AST) of a user refinement type, or None.
+
+        ``@Nat`` is a distinct ``PrimitiveType`` (its ``>= 0`` is baked into
+        ``declare_nat``), NOT a ``RefinedType`` — so it is deliberately *not*
+        matched here, keeping the #552/#747 ``nat_bind`` path and the #746
+        ``refine_bind`` path disjoint (one obligation per site, never both).
+        """
+        if isinstance(ty, RefinedType):
+            return (ty.base, ty.predicate)
+        return None
+
+    @staticmethod
+    def _base_slot_name(base: Type) -> str | None:
+        """The slot type-name a refinement predicate's binder uses.
+
+        For ``{ @Int | @Int.0 > 0 }`` the predicate's ``SlotRef`` is
+        ``("Int", 0)`` — the *base* primitive's name, not the alias.  So the
+        binder is substituted by pushing the refined value under this name.
+        Returns None for a non-primitive base (predicate left untranslatable
+        → Tier 3, never a silent pass).
+        """
+        from vera.types import PrimitiveType
+        if isinstance(base, PrimitiveType):
+            return base.name
+        return None
+
+    @staticmethod
+    def _translate_refined_predicate(
+        smt: "SmtContext", refined_ty: Type, value_term: z3.ExprRef,
+    ) -> z3.ExprRef | None:
+        """Translate a refinement predicate to Z3 with its binder substituted
+        by *value_term* (the Z3 term for the value being refined).
+
+        The predicate is type-level — closed over the single binder
+        ``@<base>.0`` with no access to function parameters — so it translates
+        against a *fresh* ``SlotEnv`` holding only the refined value, pushed
+        under the base type-name (see :py:meth:`_base_slot_name`).  Returns
+        None when the base isn't a primitive or the predicate falls outside
+        the decidable fragment (caller treats None as Tier 3, #746).
+        """
+        parts = ContractVerifier._refined_parts(refined_ty)
+        if parts is None:
+            return None
+        base, predicate = parts
+        base_name = ContractVerifier._base_slot_name(base)
+        if base_name is None:
+            return None
+        inner_env = SlotEnv().push(base_name, value_term)
+        return smt.translate_expr(predicate, inner_env)
+
+    @staticmethod
     def _count_slots(env: SlotEnv, type_name: str) -> int:
         """Count how many slots exist for a type name."""
         stack = env._stacks.get(type_name, [])

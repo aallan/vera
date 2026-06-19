@@ -3305,3 +3305,86 @@ private fn identity(@Flag -> @Bool)
 }
 """)
         assert result.summary.tier3_runtime == 0
+
+
+class TestRefinementPredicateTranslation:
+    """#746 Step 1 — the predicate-translation primitive substitutes the
+    refinement binder (`@<base>.0`) with the value being refined, against a
+    fresh slot env keyed on the base type-name (not the alias)."""
+
+    @staticmethod
+    def _predicate_of(source: str):
+        """Extract the first RefinementType's predicate AST from *source*."""
+        import vera.ast as A
+        mod = parse_to_ast(source)
+        found: list = []
+
+        def walk(node: object) -> None:
+            if isinstance(node, A.RefinementType):
+                found.append(node)
+            for f in getattr(node, "__dataclass_fields__", {}):
+                v = getattr(node, f)
+                if isinstance(v, A.Node):
+                    walk(v)
+                elif isinstance(v, (list, tuple)):
+                    for x in v:
+                        if isinstance(x, A.Node):
+                            walk(x)
+
+        walk(mod)
+        assert found, "no RefinementType in source"
+        return found[0].predicate
+
+    def test_substitutes_binder_with_value(self) -> None:
+        """`{ @Int | @Int.0 > 0 }` translated with value `v` yields `v > 0`:
+        substituting v=5 simplifies True, v=-1 False — proving the binder is
+        actually bound (a wrong push-key would leave it unconstrained and
+        silently 'verify')."""
+        import z3
+        from vera.smt import SmtContext
+        from vera.types import RefinedType, INT
+        from vera.verifier import ContractVerifier
+
+        pred = self._predicate_of("type PosInt = { @Int | @Int.0 > 0 };\n")
+        refined = RefinedType(INT, pred)
+        smt = SmtContext()
+        v = z3.Int("v")
+        result = ContractVerifier._translate_refined_predicate(smt, refined, v)
+        assert result is not None
+        assert z3.is_true(z3.simplify(z3.substitute(result, (v, z3.IntVal(5)))))
+        assert z3.is_false(z3.simplify(z3.substitute(result, (v, z3.IntVal(-1)))))
+
+    def test_string_predicate_with_builtin_call(self) -> None:
+        """A predicate calling a builtin (`string_length(@String.0) > 0`)
+        translates with the binder substituted — same surface as a `requires`
+        clause, so `translate_expr` handles it."""
+        import z3
+        from vera.smt import SmtContext
+        from vera.types import RefinedType, STRING
+        from vera.verifier import ContractVerifier
+
+        pred = self._predicate_of(
+            "type NEStr = { @String | string_length(@String.0) > 0 };\n"
+        )
+        refined = RefinedType(STRING, pred)
+        smt = SmtContext()
+        s = z3.Const("s", z3.StringSort())
+        result = ContractVerifier._translate_refined_predicate(smt, refined, s)
+        assert result is not None
+        assert z3.is_true(
+            z3.simplify(z3.substitute(result, (s, z3.StringVal("ab"))))
+        )
+        assert z3.is_false(
+            z3.simplify(z3.substitute(result, (s, z3.StringVal(""))))
+        )
+
+    def test_non_primitive_base_is_none(self) -> None:
+        """A non-primitive base yields None (caller → Tier 3, never a silent
+        pass) — `_base_slot_name` only resolves primitive bases."""
+        from vera.types import AdtType, INT, NAT
+        from vera.verifier import ContractVerifier
+
+        assert ContractVerifier._base_slot_name(AdtType("Array", (INT,))) is None
+        assert ContractVerifier._base_slot_name(INT) == "Int"
+        # @Nat is NOT a RefinedType — kept disjoint from the refine_bind path.
+        assert ContractVerifier._refined_parts(NAT) is None
