@@ -3946,7 +3946,10 @@ public forall<T> fn bad(@T -> @PosInt)
 { 0 }
 """)
         errs = [d for d in bad.diagnostics if d.error_code == "E505"]
-        assert errs, "expected E505 on the generic concrete refined return"
+        assert len(errs) == 1, "expected exactly one E505"
+        # No other diagnostics — guards against a spurious extra error.
+        assert [d for d in bad.diagnostics
+                if d.error_code != "E505"] == []
 
         ok = _verify("""
 type PosInt = { @Int | @Int.0 > 0 };
@@ -3957,3 +3960,23 @@ public forall<T> fn good(@T -> @PosInt)
 """)
         assert [d for d in ok.diagnostics if d.severity == "error"] == []
         assert len(self._refine_obligations(ok, "verified")) == 1
+
+    def test_generic_refined_return_uses_param_predicate(self) -> None:
+        """The generic return check seeds the function's assumptions: a return
+        justified by a refined param (or a `requires`) is NOT a false E505."""
+        # @PosInt param justifies the @PosInt return.
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+public forall<T> fn keep(@PosInt, @T -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+""")
+        # A `requires` implying the predicate also discharges it.
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+public forall<T> fn fromreq(@Int, @T -> @PosInt)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+""")

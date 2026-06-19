@@ -1025,8 +1025,10 @@ class ContractVerifier:
             )
             if goal is None:
                 # Untranslatable body / predicate / non-primitive base — Tier 3
-                # with no runtime guard (E506), never a silent pass (R7).
-                self._record_refined_bind_tier3(decl, ret_node, "return type")
+                # checked by the codegen return guard (guarded), never a silent
+                # pass (R7).
+                self._record_refined_bind_tier3(
+                    decl, ret_node, "return type", guarded=True)
             else:
                 ret_result = smt.check_valid(goal, list(assumptions))
                 if ret_result.status == "verified":
@@ -1046,7 +1048,7 @@ class ContractVerifier:
                     )
                 else:  # pragma: no cover — solver timeout
                     self._record_refined_bind_tier3(
-                        decl, ret_node, "return type")
+                        decl, ret_node, "return type", guarded=True)
 
         # 8. Handle decreases clauses — attempt verification
         # Build mutual recursion group for decreases checking
@@ -1606,6 +1608,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="call argument",
+                            guarded=True,
                         )
                     elif (self._nat_binding_target(arg, None)
                             and self._narrows_into_nat(arg)):
@@ -1651,6 +1654,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="call argument",
+                            guarded=True,
                         )
                     elif (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
@@ -1688,6 +1692,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="constructor field",
+                            guarded=False,
                         )
                     elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
@@ -1726,6 +1731,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="effect-operation argument",
+                            guarded=False,
                         )
                     elif (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
@@ -1792,7 +1798,7 @@ class ContractVerifier:
                             and self._narrows_into_refined(stmt.value, let_ty)):
                         self._check_refined_binding_obligation(
                             decl, stmt.value, let_ty, smt, cur_env, assumptions,
-                            site="let binding",
+                            site="let binding", guarded=False,
                         )
                     elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
@@ -1838,6 +1844,7 @@ class ContractVerifier:
                                 self._check_refined_binding_obligation(
                                     decl, sub, comp_ty, smt, cur_env,
                                     assumptions, site="tuple destructure",
+                                    guarded=False,
                                 )
                             elif (self._is_nat_type(comp_ty)
                                     and self._narrows_into_nat(sub)):
@@ -1946,6 +1953,7 @@ class ContractVerifier:
                             self._check_refined_binding_obligation(
                                 decl, expr.scrutinee, pat_ty, smt, slot_env,
                                 assumptions, site="match binding",
+                                guarded=False,
                             )
                         elif (self._is_nat_type(pat_ty)
                                 and self._narrows_into_nat(expr.scrutinee)):
@@ -2218,6 +2226,7 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
+        guarded: bool,
     ) -> None:
         """Discharge a refinement-predicate obligation at one binding site.
 
@@ -2230,22 +2239,23 @@ class ContractVerifier:
         counterexample an E505 error.
 
         An untranslatable value, an untranslatable / non-primitive-base
-        predicate, or a solver timeout is surfaced as an E506 warning and
-        excluded from the totals (:py:meth:`_record_refined_bind_tier3`) —
-        **never** a silent ``tier1_verified``.  Unlike @Nat narrowings, refined
-        narrowings have no codegen runtime guard yet (deferred to the #746
-        follow-up), so every Tier-3 outcome here is genuinely unguarded (R7,
-        the anti-Tier-0 requirement).
+        predicate, or a solver timeout is surfaced as an E506 warning, never a
+        silent ``tier1_verified`` (R7).  *guarded* says whether codegen
+        runtime-guards this site (a call argument, caught by the callee's entry
+        guard, is ``True``; an internal narrowing is ``False``) — see
+        :py:meth:`_record_refined_bind_tier3`.
         """
         self.summary.total += 1
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
-            self._record_refined_bind_tier3(decl, value_node, site)
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded)
             return
 
         goal = self._translate_refined_predicate(smt, refined_ty, val)
         if goal is None:
-            self._record_refined_bind_tier3(decl, value_node, site)
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded)
             return
 
         result = smt.check_valid(goal, list(assumptions))
@@ -2264,32 +2274,46 @@ class ContractVerifier:
             self._report_refined_binding(
                 decl, value_node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
-            self._record_refined_bind_tier3(decl, value_node, site)
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded)
 
     def _record_refined_bind_tier3(
         self,
         decl: ast.FnDecl,
         value_node: ast.Expr,
         site: str,
+        *,
+        guarded: bool,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate could not be
         discharged statically (a non-primitive base such as ``Array``, an
-        undecidable construct, or a solver timeout) — as a runtime-checked
-        Tier-3 (#746).
+        undecidable construct, or a solver timeout) — distinguishing
+        codegen-guarded boundary sites from unguarded internal ones (#746),
+        mirroring :py:meth:`_record_nat_bind_tier3`.
 
-        Codegen now emits a runtime guard for refinement predicates at the
-        function boundary (a refined parameter at entry, a refined return at
-        exit; call arguments via the callee's entry guard), so an
-        undischarged narrowing falls to that guard rather than being silently
-        accepted (R7).  Counted as ``tier3_runtime`` with an informational
-        E506 warning, exactly like any other Tier-3 contract Vera checks at
-        run time."""
-        self.summary.tier3_runtime += 1
-        self._record_obligation(
-            decl.name, "refine_bind", value_node, "tier3",
-            error_code="E506",
-        )
-        self._report_refined_runtime(decl, value_node, site)
+        Codegen emits a runtime guard at the function boundary: a refined
+        parameter at entry and a refined return at exit, so a *return* narrowing
+        and a *call argument* (caught by the callee's entry guard) are
+        ``guarded=True`` — counted ``tier3_runtime`` with an informational E506,
+        like any other Tier-3 contract Vera checks at run time.  An *internal*
+        narrowing — ``let`` / constructor-field / effect-op-arg / match-bind /
+        tuple-destructure / ADT-sub-pattern — has no codegen guard, so it is
+        ``guarded=False`` — surfaced as an E506 warning and excluded from the
+        totals rather than overstating a runtime check it never gets (R7)."""
+        if guarded:
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "tier3",
+                error_code="E506",
+            )
+            self._report_refined_runtime(decl, value_node, site)
+        else:
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "tier3_unguarded",
+                error_code="E506",
+            )
+            self._report_refined_unguarded(decl, value_node, site)
 
     def _check_generic_refined_return(
         self, decl: ast.FnDecl, ret_type: Type,
@@ -2313,6 +2337,7 @@ class ContractVerifier:
         for adt_info in self.env.data_types.values():
             smt.register_adt(adt_info)
         slot_env = SlotEnv()
+        assumptions: list[object] = []
         for param_te in decl.params:
             param_ty = self._resolve_type(param_te)
             type_name = self._type_expr_to_slot_name(param_te)
@@ -2328,6 +2353,23 @@ class ContractVerifier:
             else:
                 var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
             slot_env = slot_env.push(type_name, var)
+            # Assume a refined param's predicate (parallel to the non-generic
+            # param-assume), so a return justified by `@PosInt` etc. proves.
+            if self._is_refined_type(param_ty):
+                pred = self._translate_refined_predicate(smt, param_ty, var)
+                if pred is not None:
+                    assumptions.append(pred)
+        # Assume translatable preconditions too — a `requires(...)` may imply
+        # the return predicate.
+        for contract in decl.contracts:
+            if isinstance(contract, ast.Requires) and not self._is_trivial(
+                contract
+            ):
+                z3_pre = smt.translate_expr(contract.expr, slot_env)
+                if z3_pre is not None:
+                    assumptions.append(z3_pre)
+        for a in assumptions:
+            smt.solver.add(a)
 
         body_expr = smt.translate_expr(decl.body, slot_env)
         self.summary.total += 1
@@ -2336,9 +2378,10 @@ class ContractVerifier:
             if body_expr is not None else None
         )
         if goal is None:
-            self._record_refined_bind_tier3(decl, decl.body, "return type")
+            self._record_refined_bind_tier3(
+                decl, decl.body, "return type", guarded=True)
             return
-        result = smt.check_valid(goal, [])
+        result = smt.check_valid(goal, list(assumptions))
         if result.status == "verified":
             self.summary.tier1_verified += 1
             self._record_obligation(
@@ -2354,7 +2397,8 @@ class ContractVerifier:
                 result.counterexample,
             )
         else:  # pragma: no cover — solver timeout
-            self._record_refined_bind_tier3(decl, decl.body, "return type")
+            self._record_refined_bind_tier3(
+                decl, decl.body, "return type", guarded=True)
 
     def _check_refined_binding_obligation_term(
         self,
@@ -2375,14 +2419,15 @@ class ContractVerifier:
         The term is an uninterpreted accessor carrying no facts, so an
         undischarged obligation is a genuine E505 (Z3 witnesses a
         predicate-violating payload).  An untranslatable predicate / non-
-        primitive base yields an E506 Tier-3 warning (refined narrowings have
-        no codegen runtime guard yet, the #746 follow-up).  *node* gives the
+        primitive base yields an E506 Tier-3 warning; these projection sites
+        (ADT sub-pattern, non-literal destructure) are internal narrowings with
+        no codegen guard, hence ``guarded=False``.  *node* gives the
         diagnostic location.
         """
         self.summary.total += 1
         goal = self._translate_refined_predicate(smt, refined_ty, term)
         if goal is None:
-            self._record_refined_bind_tier3(decl, node, site)
+            self._record_refined_bind_tier3(decl, node, site, guarded=False)
             return
         result = smt.check_valid(goal, list(assumptions))
         if result.status == "verified":
@@ -2397,7 +2442,7 @@ class ContractVerifier:
             self._report_refined_binding(
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
-            self._record_refined_bind_tier3(decl, node, site)
+            self._record_refined_bind_tier3(decl, node, site, guarded=False)
 
     def _instantiated_field_types(
         self, ctor_name: str, scrut_ty: Type | None,
@@ -2489,6 +2534,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, lit_args[i], target, smt, slot_env,
                             assumptions, site="ADT sub-pattern bind",
+                            guarded=False,
                         )
                 elif sort is not None and idx is not None:
                     field_term = sort.accessor(idx, i)(scrutinee_z3)
@@ -2497,12 +2543,12 @@ class ContractVerifier:
                         site="ADT sub-pattern bind", node=scrutinee,
                     )
                 else:
-                    # Opaque, unprojectable scrutinee: refinements have no
-                    # codegen runtime guard yet, so this is an E506 Tier-3
+                    # Opaque, unprojectable scrutinee: an internal narrowing with
+                    # no codegen guard, so this is an unguarded E506 Tier-3
                     # (excluded from totals), not a silent pass (R7).
                     self.summary.total += 1
                     self._record_refined_bind_tier3(
-                        decl, scrutinee, "ADT sub-pattern bind")
+                        decl, scrutinee, "ADT sub-pattern bind", guarded=False)
                 continue
             if not (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
@@ -2607,7 +2653,7 @@ class ContractVerifier:
             for _ in refined_narrowing:
                 self.summary.total += 1
                 self._record_refined_bind_tier3(
-                    decl, stmt.value, "tuple destructure")
+                    decl, stmt.value, "tuple destructure", guarded=False)
             return
         # `i` is a valid field index (filtered against `source_args`, whose
         # length matches the tuple sort's fields), so each accessor is safe
@@ -2877,6 +2923,48 @@ class ContractVerifier:
                 "discharged statically.  Codegen emits a runtime predicate "
                 "guard at the function boundary, so the narrowing is checked "
                 "at run time (Tier 3) rather than silently accepted."
+            ),
+            spec_ref=(
+                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
+                'Section 6.8 "Summary of Verification Tiers"'
+            ),
+            error_code="E506",
+            tier=3,
+        )
+
+    def _report_refined_unguarded(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an E506 warning for a refinement narrowing the SMT layer could
+        not discharge and codegen does NOT runtime-guard (#746).
+
+        Codegen guards a refined value only at the function boundary (parameter
+        entry, return exit).  An *internal* narrowing — ``let`` / constructor
+        field / effect-op argument / match bind / tuple-destructure / ADT
+        sub-pattern — has no such guard, so when its predicate is also outside
+        Z3's decidable fragment it is neither statically proven nor
+        runtime-checked: surfaced (R7) rather than silently passed, and excluded
+        from the discharged totals."""
+        self._warning(
+            node,
+            (
+                f"Refinement predicate at a {site} in '{decl.name}' could not "
+                "be verified statically and is not runtime-guarded — add a "
+                "`requires(...)` implying the predicate, guard the binding with "
+                "an `if`, or pass the value through a refined parameter / "
+                "return (which is runtime-guarded)."
+            ),
+            rationale=(
+                "The refinement predicate is outside Z3's decidable fragment "
+                "(a non-primitive base such as Array, an undecidable "
+                "construct, or a solver timeout), so it could not be "
+                "discharged statically.  Codegen runtime-guards refinements "
+                "only at the function boundary (parameter entry / return "
+                "exit), not at this internal narrowing site, so it is neither "
+                "statically proven nor runtime-checked."
             ),
             spec_ref=(
                 'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '

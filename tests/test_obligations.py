@@ -285,6 +285,37 @@ class TestObligationKinds:
         assert result.summary.tier3_runtime >= 1
         _assert_summary_consistent("refine-bind-tier3", result)
 
+    def test_refine_bind_unguarded_internal_site(self) -> None:
+        """An *internal* Tier-3 refinement narrowing (a `let` over a
+        non-primitive base) has no codegen guard, so it is `tier3_unguarded`
+        and excluded from the totals — NOT overstated as a runtime-checked
+        `tier3_runtime` (the guarded/unguarded distinction mirrors `nat_bind`)."""
+        source = (
+            "type NonEmptyArray = "
+            "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
+            "\n"
+            "private fn mk(@Unit -> @Array<Int>)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ [1, 2] }\n"
+            "\n"
+            "private fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @NonEmptyArray = mk(@Unit.0); 0 }\n"
+        )
+        result = self._verify_source(source)
+        unguarded = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+        ]
+        assert len(unguarded) == 1
+        assert unguarded[0].error_code == "E506"
+        # Excluded from totals and NOT counted as a runtime check.
+        assert not any(
+            o.kind == "refine_bind" and o.status == "tier3"
+            for o in result.obligations
+        )
+        _assert_summary_consistent("refine-bind-unguarded", result)
+
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (
             "public fn bad(@Int -> @Int)\n"
