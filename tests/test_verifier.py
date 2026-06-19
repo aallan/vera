@@ -3669,8 +3669,11 @@ private fn caller(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { head([42, 1, 2]) }
 """)
+        # No verifier errors — the narrowing is a warning, not a failure (and
+        # this guards against an unexpected error masquerading as the E506).
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
         warns = [d for d in result.diagnostics if d.error_code == "E506"]
-        assert warns, "expected an E506 Tier-3 warning"
+        assert len(warns) == 1, "expected exactly one E506 Tier-3 warning"
         assert warns[0].severity == "warning"
         # Never counted as statically verified.
         assert self._refine_obligations(result, "verified") == []
@@ -3837,3 +3840,93 @@ private fn f(@Int -> @Int)
 """)
         errs = [d for d in bad.diagnostics if d.error_code == "E505"]
         assert errs, "expected E505 on the unconstrained tuple component"
+
+    # -- desugared / projection / generic-instantiation sites --------------
+
+    def test_pipe_argument_discharges_and_violates(self) -> None:
+        """A piped argument into a refined formal is obligated via the
+        side-table-recovered target (`left |> use()` desugars to `use(left)`):
+        a positive literal discharges, an unconstrained `@Int` is E505."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 5 |> use() }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> use() }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the piped refined narrowing"
+
+    def test_adt_subpattern_obligates_and_exempts(self) -> None:
+        """A refined ADT sub-pattern bind obligates the projected field: an
+        `Option<Int>` source is E505 (the `Int` payload may be <= 0), while an
+        `Option<PosInt>` source is R3-exempt (no obligation)."""
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use_opt(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Option<Int>.0 { Some(@PosInt) -> @PosInt.0, None -> 1 } }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the @Int->@PosInt sub-pattern bind"
+
+        exempt = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn use_opt(@Option<PosInt> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Option<PosInt>.0 { Some(@PosInt) -> @PosInt.0, None -> 1 } }
+""")
+        assert [d for d in exempt.diagnostics if d.severity == "error"] == []
+        assert self._refine_obligations(exempt) == []
+
+    def test_nonliteral_destructure_obligates_and_exempts(self) -> None:
+        """A refined component of a non-literal tuple destructure obligates the
+        projected source: a `Tuple<Int, Int>` source is E505, while a
+        `Tuple<PosInt, Int>` source is R3-exempt (no obligation)."""
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@Unit -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(0 - 5, 3) }
+
+private fn use_it(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = mk(@Unit.0); @PosInt.0 }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the non-literal destructure component"
+
+        exempt = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@PosInt -> @Tuple<PosInt, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@PosInt.0, 3) }
+
+private fn use_it(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = mk(@PosInt.0); @PosInt.0 }
+""")
+        assert [d for d in exempt.diagnostics if d.severity == "error"] == []
+        assert self._refine_obligations(exempt) == []
