@@ -3876,8 +3876,8 @@ public fn f(@Option<Option<Int>> -> @Int)
   }
 }
 """)
-        assert any(d.error_code == "E505"
-                   for d in result.diagnostics if d.severity == "error")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E505"], errors
 
     def test_nested_subpattern_no_false_positive(self) -> None:
         """The nested-recursion must not OVER-obligate: a nested bind that is
@@ -3896,6 +3896,74 @@ public fn f(@Option<Option<PosInt>> -> @Int)
     Some(None) -> 1,
     None -> 2
   }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_refined_adt_scrutinee_narrowing_obligated(self) -> None:
+        """A match on a REFINED ADT scrutinee (`{ @Option<Int> | P }`) unwraps
+        the refined base, so a sub-pattern narrowing is still obligated:
+        `Some(@PosInt)` on a refined `Option<Int>` is E505 (the payload isn't
+        provably `> 0`) rather than a missed false Tier-1 (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type ROpt = { @Option<Int> | true };
+public fn needs_pos(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+public fn f(@ROpt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @ROpt.0 {
+    Some(@PosInt) -> needs_pos(@PosInt.0),
+    None -> 0
+  }
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E505"], errors
+
+    def test_refined_adt_scrutinee_no_false_positive(self) -> None:
+        """Unwrapping the refined ADT scrutinee must not OVER-obligate: a
+        `{ @Option<PosInt> | P }` scrutinee (payload already `PosInt`) verifies
+        clean (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type ROpt = { @Option<PosInt> | true };
+public fn needs_pos(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+public fn f(@ROpt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @ROpt.0 {
+    Some(@PosInt) -> needs_pos(@PosInt.0),
+    None -> 0
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_refined_tuple_source_facts_seeded(self) -> None:
+        """A destructure of a REFINED tuple source (`{ @Tuple<PosInt, Int> | P
+        }`) unwraps the refined base so the component source facts are seeded —
+        re-narrowing a component (`@PosInt.0` into `@NonNeg`) discharges rather
+        than a false E505 (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+type NonNeg = { @Int | @Int.0 >= 0 };
+type RPair = { @Tuple<PosInt, Int> | true };
+public fn mk(@Int -> @RPair)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ Tuple(@Int.0, 3) }
+public fn needs_nn(@NonNeg -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @NonNeg.0 }
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  let Tuple<@PosInt, @Int> = mk(@Int.0);
+  needs_nn(@PosInt.0)
 }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
@@ -4001,8 +4069,8 @@ public fn pick(@Option<Int> -> @PosInt)
   }
 }
 """)
-        assert any(d.error_code == "E505"
-                   for d in result.diagnostics if d.severity == "error")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E505"], errors
 
     def test_generic_refined_return_from_match_arm(self) -> None:
         """The generic refined-return fast path also installs the sub-pattern
@@ -4038,8 +4106,8 @@ public forall<T> fn pick(@Option<Int> -> @PosInt)
   }
 }
 """)
-        assert any(d.error_code == "E505"
-                   for d in result.diagnostics if d.severity == "error")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [d.error_code for d in errors] == ["E505"], errors
 
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 

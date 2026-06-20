@@ -1953,6 +1953,14 @@ class ContractVerifier:
                     # sub-pattern type, so a component whose source genuinely
                     # lacks the fact still obligates and (correctly) errors.
                     src_tuple_ty = self._resolved_type_of(stmt.value)
+                    if isinstance(src_tuple_ty, RefinedType):
+                        # A refined tuple source (`{ @Tuple<PosInt, Int> | P }`)
+                        # hides the `Tuple` base; unwrap it so the component
+                        # source facts are seeded — else a later re-narrowing of
+                        # a component (`@PosInt.0` into `@NonNeg`) wrongly errors
+                        # E505 for want of the invariant the source carries (CR
+                        # PR-review).
+                        src_tuple_ty = src_tuple_ty.base
                     src_args = (
                         src_tuple_ty.type_args
                         if isinstance(src_tuple_ty, AdtType)
@@ -2676,6 +2684,13 @@ class ContractVerifier:
             # sub-pattern unchecked rather than obligate against an
             # unsubstituted TypeVar field — matching the docstring's "unknown
             # scrutinee" contract (CR #756).
+            if isinstance(scrut_ty, RefinedType):
+                # A refined ADT scrutinee (`{ @Option<Int> | P }`) hides the
+                # `Option<Int>` base, so unwrap it before reading the type args
+                # — else a generic constructor's fields are left uninstantiated
+                # and the sub-pattern narrowing is missed (a false Tier-1; CR
+                # PR-review).
+                scrut_ty = scrut_ty.base
             if not (isinstance(scrut_ty, AdtType) and scrut_ty.type_args):
                 return None
             mapping = dict(zip(ci.parent_type_params, scrut_ty.type_args))
@@ -2724,12 +2739,13 @@ class ContractVerifier:
         scrut_term: object,
         pattern: ast.ConstructorPattern,
         smt: SmtContext,
-        _depth: int = 0,
     ) -> list[object]:
         """Term-keyed core of :py:meth:`_subpattern_source_facts`, recursing
         into nested constructor patterns.  *scrut_ty* is the scrutinee's
-        resolved type; *scrut_term* its Z3 datatype term."""
-        if _depth > 16 or scrut_term is None:  # cycle / infinite-type backstop
+        resolved type; *scrut_term* its Z3 datatype term.  No depth cap: the
+        recursion descends the (finite) pattern AST — each step is a strict
+        sub-pattern — so it terminates without a backstop (CR PR-review)."""
+        if scrut_term is None:
             return []
         field_types = self._instantiated_field_types(pattern.name, scrut_ty)
         if field_types is None:
@@ -2747,7 +2763,7 @@ class ContractVerifier:
             field_term = sort.accessor(idx, i)(scrut_term)
             if isinstance(sub_pat, ast.ConstructorPattern):
                 facts.extend(self._subpattern_source_facts_term(
-                    field_ty, field_term, sub_pat, smt, _depth + 1))
+                    field_ty, field_term, sub_pat, smt))
             elif isinstance(sub_pat, ast.BindingPattern):
                 fact = self._term_source_fact(smt, field_ty, field_term)
                 if fact is not None:
@@ -2763,7 +2779,6 @@ class ContractVerifier:
         pattern: ast.ConstructorPattern,
         smt: SmtContext,
         assumptions: list[object],
-        _depth: int = 0,
     ) -> None:
         """Term-keyed recursive obligation for a NESTED constructor sub-pattern
         (``Some(Some(@PosInt))``): obligate each refined / ``@Nat`` narrowing
@@ -2775,8 +2790,10 @@ class ContractVerifier:
         location.  Opaque (accessor-term) path only — a nested field is always a
         projection.  The nested bind's RUNTIME guard stays a #758-class deferral
         (codegen binds only direct sub-patterns), so a verified program is sound
-        while an unverified compile is honestly unchecked at the nested site."""
-        if _depth > 16 or scrut_term is None:  # cycle / infinite-type backstop
+        while an unverified compile is honestly unchecked at the nested site.
+        No depth cap: the recursion descends the (finite) pattern AST — each step
+        is a strict sub-pattern — so it terminates without a backstop (CR)."""
+        if scrut_term is None:
             return
         field_types = self._instantiated_field_types(pattern.name, scrut_ty)
         if field_types is None:
@@ -2794,7 +2811,7 @@ class ContractVerifier:
             if isinstance(sub_pat, ast.ConstructorPattern):
                 self._obligate_subpattern_term(
                     decl, diag_node, field_ty, field_term, sub_pat, smt,
-                    assumptions, _depth + 1)
+                    assumptions)
                 continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
@@ -2883,7 +2900,10 @@ class ContractVerifier:
                 # `Option<Option<Int>>`): recurse so the inner narrowing is
                 # OBLIGATED — else it is an unguarded false Tier-1 (CR PR-
                 # review).  Opaque path only: a nested field is always an
-                # accessor term.  The nested bind's RUNTIME guard remains a
+                # accessor term.  (A *literal* nested scrutinee — `match
+                # Some(Some(-5)) {}` — isn't Z3-translated here, a degenerate
+                # case left to its own track.)  The nested
+                # bind's RUNTIME guard remains a
                 # #758-class deferral (codegen's `_extract_constructor_fields`
                 # binds only direct sub-patterns), so a verified program is
                 # sound (E505 on a bad nested narrowing) while an unverified
