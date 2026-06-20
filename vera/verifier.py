@@ -828,6 +828,18 @@ class ContractVerifier:
         self._mono = mono
         ctor_to_adt = ctx.ctor_to_adt
 
+        def collect_calls_in_fn(
+            fn: ast.FnDecl, into: dict[str, set[tuple[str, ...]]],
+        ) -> None:
+            # Walk the body AND any `where` helpers: a generic reachable only
+            # from a where-helper would otherwise be missed by discovery and
+            # take the uninstantiated fallback, skipping its body checks (#864).
+            mono.collect_calls_in_expr(
+                fn.body, generic_decls, ctor_to_adt, into,
+            )
+            for wfn in fn.where_fns or ():
+                collect_calls_in_fn(wfn, into)
+
         # Seed from non-generic bodies.
         seed: dict[str, set[tuple[str, ...]]] = {
             name: set() for name in generic_decls
@@ -835,9 +847,7 @@ class ContractVerifier:
         for tld in disc.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                mono.collect_calls_in_expr(
-                    decl.body, generic_decls, ctor_to_adt, seed,
-                )
+                collect_calls_in_fn(decl, seed)
 
         # Transitive closure: monomorphize each, rescan its body.  Mirrors the
         # codegen worklist exactly, minus the constraint filter.
@@ -859,9 +869,7 @@ class ContractVerifier:
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            mono.collect_calls_in_expr(
-                mono_fn.body, generic_decls, ctor_to_adt, transitive,
-            )
+            collect_calls_in_fn(mono_fn, transitive)
             for t_name, t_types in transitive.items():
                 for t_ct in t_types:
                     if (t_name, t_ct) not in discovered:
@@ -943,7 +951,16 @@ class ContractVerifier:
         for concrete, obls, errs in per_instance:
             errs_by_instance[concrete] = errs
             for ob in obls:
-                key = ob.content_key()
+                # Group by SOURCE SITE, not content_key(): content_key() folds
+                # in expr_text, which is monomorphised (`@Int...` vs `@Bool...`),
+                # so the same source obligation would split per instantiation and
+                # the meet would no longer be one result per site (#962).  Fall
+                # back to content_key() only for span-less obligations.
+                key = (
+                    f"{ob.fn_name}\x1f{ob.kind}\x1f{ob.line}\x1f{ob.column}"
+                    if ob.line or ob.column
+                    else ob.content_key()
+                )
                 if key not in groups:
                     groups[key] = []
                     order.append(key)
@@ -966,6 +983,13 @@ class ContractVerifier:
             elif met == "tier3":
                 self.summary.tier3_runtime += 1
                 self.summary.total += 1
+                # Re-emit the representative Tier-3 warning (E506 etc.) so an
+                # instantiated generic surfaces it like the non-generic path,
+                # not only bumping the counter (#972).  Informational, so no
+                # diagnostic is synthesized if the instance emitted none.
+                self._emit_aggregated_diagnostic(
+                    decl, members, rep_concrete, rep_ob, errs_by_instance,
+                )
             else:  # "violated" | "tier3_unguarded" — diagnostic, no count
                 self._emit_aggregated_diagnostic(
                     decl, members, rep_concrete, rep_ob, errs_by_instance,
@@ -1018,23 +1042,25 @@ class ContractVerifier:
                 replace(src, description=prefix + src.description),
             )
             return
-        # Defensive: no diagnostic matched (an obligation whose code/span the
-        # emitter records differently).  Surface the outcome anyway, straight
-        # from the obligation, so a real violation can never silently pass.
+        if rep_ob.status != "violated":
+            # tier3 / tier3_unguarded: the per-instance diagnostic is an
+            # informational, runtime-guarded warning.  If it didn't surface in
+            # this instance, don't synthesize a spurious one — the obligation is
+            # already counted/guarded, so there is no soundness loss.
+            return
+        # A violation MUST never be silently dropped (a false Tier-1).  No
+        # diagnostic matched, so surface it straight from the obligation.
         self.errors.append(Diagnostic(
             description=(
                 prefix
-                + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` "
-                + ("is violated" if severity == "error"
-                   else "is not statically verified")
-                + "."
+                + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` is violated."
             ),
             location=SourceLocation(
                 file=self.file, line=rep_ob.line, column=rep_ob.column,
             ),
-            severity=severity,
+            severity="error",
             error_code=rep_ob.error_code,
-            tier=3 if severity == "warning" else None,
+            tier=None,
         ))
 
     @staticmethod

@@ -1005,11 +1005,24 @@ class Monomorphizer:
                 )
             return node
 
-        # Special case: ResultRef — substitute type_name and type_args
+        # Special case: ResultRef — substitute type_name and type_args.  Parse a
+        # parameterised mapping (T -> "Array<Int>") into base name + type_args,
+        # mirroring the SlotRef/NamedType branches, so a generic postcondition's
+        # @T.result becomes a canonical @Array<Int>.result rather than a
+        # non-canonical type_name="Array<Int>" with no type_args (#1021).
         if isinstance(node, ast.ResultRef):
-            new_type_name = mapping.get(node.type_name, node.type_name)
-            new_res_args: tuple[ast.TypeExpr, ...] | None = node.type_args
-            if node.type_args:
+            mapped_name = mapping.get(node.type_name)
+            new_res_args: tuple[ast.TypeExpr, ...] | None
+            if mapped_name is not None and "<" in mapped_name:
+                parsed = self._parse_type_name(mapped_name)
+                new_type_name = parsed.name
+                new_res_args = parsed.type_args
+            else:
+                new_type_name = (
+                    mapped_name if mapped_name is not None else node.type_name
+                )
+                new_res_args = node.type_args
+            if node.type_args and new_res_args is node.type_args:
                 new_res_args = tuple(
                     self._substitute_type_expr(ta, mapping)
                     for ta in node.type_args

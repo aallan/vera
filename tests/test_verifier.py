@@ -4923,3 +4923,61 @@ private fn caller(@Int -> @Array<Int>)
         # never a clean Tier-1 that hides an unverified instantiation.
         assert any(d.error_code == "E520" for d in result.diagnostics)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_typevar_contract_aggregates_across_instantiations(self) -> None:
+        """A generic whose contract references @T renders different expr_text per
+        instantiation; the meet must group by SOURCE SITE so it stays ONE
+        obligation, not one per instantiation (else summaries over-count) — #962
+        review finding."""
+        result = _verify("""
+private forall<T>
+fn idc(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+
+private fn use2(@Int, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = idc(@Int.0);
+  let @Bool = idc(@Bool.0);
+  @Int.0
+}
+""")
+        ens = [o for o in result.obligations
+               if o.fn_name == "idc" and o.kind == "ensures"]
+        assert len(ens) == 1, "one obligation per source site, not per instance"
+        assert ens[0].status == "verified"
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_generic_reached_only_via_where_helper_is_verified(self) -> None:
+        """A generic reachable solely through a `where` helper is discovered and
+        verified — its body bug is caught — not missed into the uninstantiated
+        Tier-3 fallback (#864 review finding)."""
+        result = _verify("""
+private forall<T>
+fn inner(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ helper(@Nat.1, @Nat.0) }
+where {
+  fn helper(@Nat, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  { inner(@Nat.1, @Nat.0, true) }
+}
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at inner<Bool>" in errs[0].description
