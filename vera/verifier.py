@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import z3
 
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast
@@ -2466,6 +2466,12 @@ class ContractVerifier:
         )
         for adt_info in self.env.data_types.values():
             smt.register_adt(adt_info)
+        # CR PR-review: the generic refined-return fast path translates the body
+        # too, so it needs the same sub-pattern source-fact hook as the main
+        # path (line 742) — a generic fn returning a refined ADT payload from a
+        # `match` arm would otherwise false-E505/E501 (the arm accessor is
+        # translated without the field's source refinement fact).
+        smt._subpattern_fact_hook = self._subpattern_source_facts
         slot_env = SlotEnv()
         assumptions: list[object] = []
         for param_te in decl.params:
@@ -3883,30 +3889,12 @@ class ContractVerifier:
 
     @staticmethod
     def _predicate_binder_name(predicate: ast.Expr) -> str | None:
-        """The slot type-name the refinement predicate's binder ACTUALLY uses.
-
-        :py:meth:`_base_slot_name` returns the resolved *primitive* name, but
-        the predicate may reference its binder by a syntactic ALIAS — ``@Age.0``
-        for ``type Age = Nat; { @Age | @Age.0 >= 18 }`` — which differs from the
-        resolved ``Nat`` (``_resolve_type`` erases the alias).  A refinement
-        predicate is closed over its single binder, so the first ``SlotRef`` in
-        it names that binder; pushing the value under THIS name too lets
-        ``@Age.0`` resolve, instead of the predicate falsely falling to Tier 3
-        (CR e6f17b7).  ``None`` if the predicate holds no ``SlotRef``."""
-        stack: list[object] = [predicate]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, ast.SlotRef):
-                return node.type_name
-            if isinstance(node, ast.Node) and is_dataclass(node):
-                for fld in fields(node):
-                    val = getattr(node, fld.name)
-                    if isinstance(val, ast.Node):
-                        stack.append(val)
-                    elif isinstance(val, (list, tuple)):
-                        stack.extend(
-                            v for v in val if isinstance(v, ast.Node))
-        return None
+        """The slot type-name the refinement predicate's binder ACTUALLY uses —
+        a syntactic ALIAS binder (``@Age.0`` for ``type Age = Nat; { @Age |
+        @Age.0 >= 18 }``) differs from the resolved ``Nat`` (CR e6f17b7).
+        Delegates to the shared ``ast.predicate_binder_name`` so the verifier,
+        codegen, and SMT refined-return paths can't drift."""
+        return ast.predicate_binder_name(predicate)
 
     @staticmethod
     def _translate_refined_predicate(

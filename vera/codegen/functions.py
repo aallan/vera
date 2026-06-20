@@ -164,16 +164,14 @@ class FunctionCompilationMixin:
                 env = env.push(type_name, local_idx)
             if self._refinement_guard_parts(param_te) is not None:
                 refined_param_checks.append((local_idx, param_te))
-            else:
-                # A tuple param (heap pointer, wt == "i32") may have refined /
-                # @Nat components needing boundary guards; the helper returns no
-                # instructions for a non-tuple or component-free param, so this
-                # collection is harmless for ordinary ADT / closure params.
-                node = self._resolve_type_alias(param_te)
-                if (isinstance(node, ast.NamedType)
-                        and node.name == "Tuple"
-                        and node.type_args):
-                    component_param_checks.append((local_idx, param_te))
+            # Component guards for a tuple param (heap pointer, wt == "i32") OR a
+            # refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`) —
+            # `_resolve_tuple_type` unwraps both.  A refinement-over-tuple gets
+            # BOTH its top-level guard (above) and per-component guards; an
+            # ordinary ADT / closure param resolves to None and is skipped (CR
+            # PR-review).
+            if self._resolve_tuple_type(param_te) is not None:
+                component_param_checks.append((local_idx, param_te))
             # Track i32 pointer params (ADT/closure, not Bool/Byte,
             # not opaque host handles — Map/Set/Decimal are i32
             # indices into Python-side stores, not Vera-heap

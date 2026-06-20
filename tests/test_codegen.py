@@ -5581,6 +5581,42 @@ public fn f(@A -> @Int)
             f"diagnostics: {result.diagnostics}"
         )
 
+    def test_refinement_over_tuple_component_guard_traps(self) -> None:
+        """A refinement OVER a tuple (`type Pair = { @Tuple<PosInt, Int> | true
+        }`) carries no top-level Tuple shape, so its refined *components* would
+        cross the boundary unguarded behind the refinement.  `_resolve_tuple_
+        type` unwraps the refinement, so `use_pair(Tuple(-5, 3))` traps on the
+        `PosInt` component while `Tuple(7, 3)` flows through (CR PR-review)."""
+        src = self._PRE + """
+type Pair = { @Tuple<PosInt, Int> | true };
+public fn use_pair(@Pair -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry_bad(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_pair(Tuple(0 - 5, 3)) }
+public fn entry_ok(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_pair(Tuple(7, 3)) }
+"""
+        _run_refine_trap(src, fn="entry_bad")
+        assert _run(src, fn="entry_ok") == 0
+
+    def test_nested_refinement_over_tuple_guard_traps(self) -> None:
+        """Component decomposition recurses through a refinement-over-tuple
+        component too: a violating `PosInt` in `Tuple<Pair, Int>` (where `Pair =
+        { @Tuple<PosInt, Int> | true }`) traps at the boundary (CR PR-review)."""
+        src = self._PRE + """
+type Pair = { @Tuple<PosInt, Int> | true };
+public fn use_np(@Tuple<Pair, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_np(Tuple(Tuple(0 - 5, 3), 9)) }
+"""
+        _run_refine_trap(src, fn="entry")
+
     def test_param_guard_fires_before_precondition(self) -> None:
         """The refined-parameter guard runs *before* explicit preconditions:
         a `requires` that itself depends on the refined param must not trap

@@ -3901,6 +3901,83 @@ public fn g(@Option<Int> -> @Int)
         assert any(d.error_code == "E501"
                    for d in result.diagnostics if d.severity == "error")
 
+    def test_alias_base_refined_return_assumable_by_caller(self) -> None:
+        """A callee's ALIAS-base refined return (`{ @Age | @Age.0 >= 18 }`,
+        `type Age = Nat`) is assumed by the caller via the predicate's binder
+        name, not the resolved `Nat` — so `needs_adult(mk_adult(...))`
+        discharges instead of a false E501 (CR PR-review: the SMT `_translate_
+        call` analogue of the verifier/codegen binder fix)."""
+        result = _verify("""
+type Age = Nat;
+type Adult = { @Age | @Age.0 >= 18 };
+public fn mk_adult(@Nat -> @Adult)
+  requires(@Nat.0 >= 18) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn needs_adult(@Nat -> @Int)
+  requires(@Nat.0 >= 18) ensures(true) effects(pure)
+{ 0 }
+public fn caller(@Nat -> @Int)
+  requires(@Nat.0 >= 18) ensures(true) effects(pure)
+{ needs_adult(mk_adult(@Nat.0)) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_refined_return_from_match_arm_discharges(self) -> None:
+        """A refined return whose value is a refined sub-pattern payload from a
+        match arm (`Some(@PosInt) -> @PosInt.0` on `Option<PosInt>`, returned as
+        `@PosInt`) discharges: the SMT match translation adds a global
+        `arm-matched => source-fact` implication so the refined-return goal —
+        checked after the arm path conditions pop — can use it (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn pick(@Option<PosInt> -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 1
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_refined_return_from_match_arm_soundness(self) -> None:
+        """SOUNDNESS for the refined-return match implication: an `Option<Int>`
+        payload (no refinement) returned as `@PosInt` is NOT provably `> 0`, so
+        the refined return still raises E505 — the implication is gated on the
+        field's SOURCE type, never laundering an unproven value (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn pick(@Option<Int> -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 1
+  }
+}
+""")
+        assert any(d.error_code == "E505"
+                   for d in result.diagnostics if d.severity == "error")
+
+    def test_generic_refined_return_from_match_arm(self) -> None:
+        """The generic refined-return fast path also installs the sub-pattern
+        fact hook, so a generic fn returning a refined match-arm payload
+        discharges (without the hook the arm accessor translates without the
+        source fact, false-E505) — CR PR-review."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public forall<T> fn pick(@Option<PosInt> -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 1
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
     def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:

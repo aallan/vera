@@ -222,6 +222,22 @@ class ContractsMixin:
             node = body
         return node
 
+    def _resolve_tuple_type(self, te: ast.TypeExpr) -> ast.NamedType | None:
+        """Resolve aliases AND unwrap a refinement to the underlying
+        ``Tuple<...>`` NamedType, else None.  A refinement OVER a tuple base
+        (``type Pair = { @Tuple<PosInt, Int> | P }``) carries no top-level
+        Tuple shape, so without unwrapping its refined *components* would cross
+        a boundary unguarded even though the top-level predicate is checked (CR
+        PR-review)."""
+        node = self._resolve_type_alias(te)
+        if isinstance(node, ast.RefinementType):
+            node = self._resolve_type_alias(node.base_type)
+        if (isinstance(node, ast.NamedType)
+                and node.name == "Tuple"
+                and node.type_args):
+            return node
+        return None
+
     def _emit_component_refinement_guards(
         self,
         ctx: WasmContext,
@@ -285,17 +301,15 @@ class ContractsMixin:
                 error_code="E617",
             )
             return []
-        node = self._resolve_type_alias(te)
-        if not (isinstance(node, ast.NamedType)
-                and node.name == "Tuple"
-                and node.type_args):
+        node = self._resolve_tuple_type(te)
+        if node is None:
             return []
 
         _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
         _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after the tag (i32, 4 bytes) — as construction lays it out
         instrs: list[str] = []
-        for comp_te in node.type_args:
+        for comp_te in (node.type_args or ()):  # _resolve_tuple_type: non-empty
             wt = self._type_expr_to_wasm_type(comp_te)
             if wt is None or wt == "unsupported":
                 # @Unit component: zero-size, occupies no slot and is erased —
@@ -312,10 +326,14 @@ class ContractsMixin:
             is_nat = (parts is None
                       and isinstance(resolved, ast.NamedType)
                       and resolved.name == "Nat")
-            is_nested = (parts is None and not is_nat
-                         and isinstance(resolved, ast.NamedType)
-                         and resolved.name == "Tuple"
-                         and bool(resolved.type_args))
+            # A nested component may be a tuple OR a refinement over a tuple
+            # (`Tuple<Pair, Int>` where `Pair = { @Tuple<PosInt, Int> | P }`) —
+            # `_resolve_tuple_type` unwraps both, so its inner components are
+            # guarded recursively (CR PR-review).  When the component IS a
+            # refinement, `parts` is non-None (its top-level predicate is
+            # guarded below) yet we still recurse to reach the inner tuple.
+            is_nested = (not is_nat
+                         and self._resolve_tuple_type(comp_te) is not None)
             if parts is None and not is_nat and not is_nested:
                 continue
 
@@ -330,29 +348,34 @@ class ContractsMixin:
                           f"offset={field_offset}")
             instrs.append(f"local.set {comp_local}")
 
+            # Guard the component's OWN predicate (a refined component) or the
+            # bare-@Nat `>= 0`, THEN — if it also wraps a tuple — recurse into
+            # its inner components.  A refinement OVER a tuple does both: its
+            # top-level predicate here, its inner components via the recursion.
+            pred_parts: tuple[ast.Expr, str] | None = parts
+            if pred_parts is None and is_nat:
+                pred_parts = (
+                    ast.BinaryExpr(
+                        op=ast.BinOp.GE,
+                        left=ast.SlotRef(
+                            type_name="Nat", type_args=None, index=0),
+                        right=ast.IntLit(value=0)),
+                    "Nat",
+                )
+            if pred_parts is not None:
+                predicate, base_name = pred_parts
+                msg = (
+                    f"Refinement violation in {ast.format_fn_signature(decl)}\n"
+                    f"  {role} (tuple component): "
+                    f"{ast.format_expr(predicate)} failed"
+                )
+                guard = self._emit_refinement_check(
+                    ctx, predicate, base_name, comp_local, msg, env)
+                if guard is not None:
+                    instrs.extend(guard)
             if is_nested:
                 instrs.extend(self._emit_component_refinement_guards(
                     ctx, decl, comp_te, comp_local, env, role, _depth + 1))
-                continue
-
-            if parts is not None:
-                predicate, base_name = parts
-            else:  # bare @Nat component: synthesise the implicit `>= 0`
-                predicate = ast.BinaryExpr(
-                    op=ast.BinOp.GE,
-                    left=ast.SlotRef(type_name="Nat", type_args=None, index=0),
-                    right=ast.IntLit(value=0),
-                )
-                base_name = "Nat"
-            msg = (
-                f"Refinement violation in {ast.format_fn_signature(decl)}\n"
-                f"  {role} (tuple component): "
-                f"{ast.format_expr(predicate)} failed"
-            )
-            guard = self._emit_refinement_check(
-                ctx, predicate, base_name, comp_local, msg, env)
-            if guard is not None:
-                instrs.extend(guard)
         return instrs
 
     def _has_guardable_tuple_components(
@@ -375,22 +398,21 @@ class ContractsMixin:
             # the one emit-side error keeps the fail-closed behaviour single-
             # sourced (CR PR-review).
             return True
-        node = self._resolve_type_alias(te)
-        if not (isinstance(node, ast.NamedType)
-                and node.name == "Tuple"
-                and node.type_args):
+        node = self._resolve_tuple_type(te)
+        if node is None:
             return False
-        for comp_te in node.type_args:
+        for comp_te in (node.type_args or ()):  # _resolve_tuple_type: non-empty
             if self._refinement_guard_parts(comp_te) is not None:
                 return True
             resolved = self._resolve_type_alias(comp_te)
-            if isinstance(resolved, ast.NamedType):
-                if resolved.name == "Nat":
-                    return True
-                if (resolved.name == "Tuple" and resolved.type_args
-                        and self._has_guardable_tuple_components(
-                            comp_te, _depth + 1)):
-                    return True
+            if isinstance(resolved, ast.NamedType) and resolved.name == "Nat":
+                return True
+            # A nested tuple OR refinement-over-tuple component (unwrapped by
+            # `_resolve_tuple_type`) may carry guardable inner components.
+            if (self._resolve_tuple_type(comp_te) is not None
+                    and self._has_guardable_tuple_components(
+                        comp_te, _depth + 1)):
+                return True
         return False
 
     def _format_contract_message(

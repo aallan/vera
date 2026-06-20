@@ -1228,7 +1228,15 @@ class SmtContext:
             FLOAT64,
             STRING,
         ):
-            inner_env = SlotEnv().push(ret_type.base.name, ret_var)
+            # Push the value under the predicate's ACTUAL binder name (alias-
+            # aware: `@Age.0` for `type Age = Nat; { @Age | @Age.0 >= 18 }`),
+            # not the resolved base name — otherwise the predicate's `@Age.0`
+            # won't resolve against `Nat` and `z3_pred` is None, silently
+            # dropping the refined-return fact so a caller can't rely on it (CR
+            # PR-review — the SMT analogue of the verifier/codegen binder fix).
+            binder = (ast.predicate_binder_name(ret_type.predicate)
+                      or ret_type.base.name)
+            inner_env = SlotEnv().push(binder, ret_var)
             z3_pred = self.translate_expr(ret_type.predicate, inner_env)
             if z3_pred is not None:
                 self.solver.add(z3_pred)
@@ -1315,6 +1323,17 @@ class SmtContext:
             expr.scrutinee, scrutinee, arms[-1].pattern)
         for f in last_facts:
             self._path_conditions.append(f)
+            # Global implication: the fact holds whenever THIS (default) arm is
+            # taken — i.e. no preceding pattern matched — so the refined-RETURN
+            # goal (checked after this match translates, once path conditions
+            # have popped) can use `arm-taken => fact`, not only the in-arm
+            # precondition checks that read `_path_conditions` live (CR
+            # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
+            if preceding_conds:
+                self.solver.add(z3.Implies(
+                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
+            else:
+                self.solver.add(f)
         result = self.translate_expr(arms[-1].body, last_env)
         for _ in last_facts:
             self._path_conditions.pop()
@@ -1337,6 +1356,11 @@ class SmtContext:
             arm_facts = self._arm_source_facts(
                 expr.scrutinee, scrutinee, arm.pattern)
             for f in arm_facts:
+                # Global implication `arm-matched => fact` (see the default-arm
+                # note) so the refined-return goal sees it after the path
+                # conditions pop, while the live `_path_conditions` push covers
+                # in-arm precondition checks.
+                self.solver.add(z3.Implies(cond, f))
                 self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
             for _ in arm_facts:

@@ -7,7 +7,7 @@ The hierarchy is shallow: Node → category base → concrete node.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any
 
@@ -753,6 +753,32 @@ def format_type_expr(te: TypeExpr) -> str:
     if isinstance(te, RefinementType):
         return format_type_expr(te.base_type)
     return "@?"
+
+
+def predicate_binder_name(predicate: "Expr") -> str | None:
+    """The slot type-name a refinement predicate's binder ACTUALLY uses — the
+    first ``SlotRef``'s ``type_name`` (a refinement predicate is closed over its
+    single binder).  Recovers a syntactic ALIAS binder: ``@Age.0`` for
+    ``type Age = Nat; { @Age | @Age.0 >= 18 }``, which differs from the resolved
+    primitive ``Nat`` (alias resolution erases it).  Pushing the value under
+    THIS name lets ``@Age.0`` resolve instead of the predicate falsely failing
+    to translate.  ``None`` if the predicate holds no ``SlotRef``.
+
+    Shared by the verifier, codegen, and SMT refined-return paths so the binder
+    recovery can't drift between them (CR PR-review)."""
+    stack: list[object] = [predicate]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, SlotRef):
+            return node.type_name
+        if isinstance(node, Node) and is_dataclass(node):
+            for fld in fields(node):
+                val = getattr(node, fld.name)
+                if isinstance(val, Node):
+                    stack.append(val)
+                elif isinstance(val, (list, tuple)):
+                    stack.extend(v for v in val if isinstance(v, Node))
+    return None
 
 
 def format_expr(expr: Expr) -> str:
