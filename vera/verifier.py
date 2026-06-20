@@ -1734,9 +1734,16 @@ class ContractVerifier:
                         )
                     elif (self._is_nat_type(comp_ty)
                             and self._narrows_into_nat(arg)):
+                        # guarded=False, like the refined path above: codegen
+                        # does not component-guard a tuple *at construction*, so
+                        # an untranslatable @Nat component must record an honest
+                        # E504 / tier3_unguarded, NOT a tier3_runtime that
+                        # claims a runtime check the construction site never
+                        # emits (CR PR-review — the boundary guard is a separate
+                        # site, not this one).
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
-                            site="tuple component",
+                            site="tuple component", guarded=False,
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(

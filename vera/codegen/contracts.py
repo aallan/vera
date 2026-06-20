@@ -99,7 +99,7 @@ class ContractsMixin:
                         te,
                         f"Refinement base '{base.name}' resolves to another "
                         f"refinement ({{ {inner} | ... }}); a refinement base "
-                        "must be a primitive type or an alias to one.",
+                        "must not itself resolve to a refinement.",
                         rationale="Composing nested refinement membership "
                         "predicates is unsupported — the runtime guard would "
                         "silently drop the inner base predicate, so codegen "

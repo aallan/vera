@@ -99,7 +99,7 @@ def _run_trap(
 
 
 def _run_refine_trap(
-    source: str, fn: str | None = None, args: list[int] | None = None
+    source: str, fn: str | None = None, args: list[object] | None = None
 ) -> None:
     """Compile, execute, and assert a *refinement-guard* trap specifically — a
     `$vera.contract_fail` ``RuntimeError`` carrying 'Refinement violation', not

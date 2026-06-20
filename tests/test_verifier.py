@@ -3976,7 +3976,7 @@ type PosInt = { @Int | @Int.0 > 0 };
 
 private fn make_bad(@Int -> @Tuple<PosInt, PosInt>)
   requires(true) ensures(true) effects(pure)
-{ Tuple(@Int.0, @Int.0) }
+{ Tuple(7, @Int.0) }
 
 private fn consume(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -3985,8 +3985,11 @@ private fn consume(@Int -> @Int)
   @PosInt.0 + @PosInt.1
 }
 """)
+        # Component 0 is a valid literal (7) and only component 1 is
+        # unconstrained, so the E505 proves the SECOND component is obligated
+        # at construction — not just component 0 (CR PR-review: isolate it).
         errs = [d for d in result.diagnostics if d.error_code == "E505"]
-        assert errs, "unconstrained tuple components must obligate at construction"
+        assert errs, "the second tuple component must obligate at construction"
 
     def test_let_binding_discharges(self) -> None:
         """The let site's *discharge* direction (the violation is covered by
