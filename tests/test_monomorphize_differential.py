@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -152,15 +151,29 @@ def _assert_covers(
         f"  verifier = {sorted(verifier_set)}"
     )
 
-    cg_counts = Counter(n for (n, _) in codegen_set)
-    vf_counts = Counter(n for (n, _) in verifier_set)
-    for name, count in cg_counts.items():
-        assert vf_counts[name] >= count, (
-            f"[{label}] generic {name!r}: verifier discovered "
-            f"{vf_counts[name]} instantiation(s) < codegen's {count}\n"
-            f"  codegen  = {sorted(codegen_set)}\n"
-            f"  verifier = {sorted(verifier_set)}"
-        )
+    # Per-instantiation coverage (stronger than per-generic counts, which could
+    # pass with the right COUNT but the wrong concrete tuples): every (name,
+    # types) codegen emits must actually be discovered by the verifier.  The
+    # verifier may infer MORE precise scalar types than codegen's WAT collapse
+    # (Nat vs Int, Byte vs Bool — sound, it checks the type the value really
+    # has), so normalize the verifier's set through that collapse before the
+    # subset check.  (If a future corpus program diverges beyond scalars, this
+    # fails loudly rather than silently passing on a wrong tuple.)
+    collapse = {"Nat": "Int", "Byte": "Bool"}
+
+    def _norm(types: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(collapse.get(t, t) for t in types)
+
+    verifier_norm = {(n, _norm(ct)) for (n, ct) in verifier_set}
+    uncovered = {
+        (n, ct) for (n, ct) in codegen_set if (n, _norm(ct)) not in verifier_norm
+    }
+    assert not uncovered, (
+        f"[{label}] verifier did not cover instantiation(s) codegen emits: "
+        f"{sorted(uncovered)}\n"
+        f"  codegen  = {sorted(codegen_set)}\n"
+        f"  verifier = {sorted(verifier_set)}"
+    )
 
 
 @pytest.mark.parametrize("rel", _REPO_CORPUS)

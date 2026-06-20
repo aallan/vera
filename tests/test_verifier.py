@@ -2107,8 +2107,13 @@ private fn caller(@Int -> @Int)
         # instantiated generic is now discharged statically with no Tier-3
         # fallback — the core #732 behavior change.
         assert result.summary.tier3_runtime == 0
-        assert result.summary.tier1_verified >= 1
         assert not result.diagnostics
+        # Check id's OWN ensures is the verified obligation, not just the
+        # summary counter (which a non-generic obligation could also bump).
+        assert any(
+            o.fn_name == "id" and o.kind == "ensures" and o.status == "verified"
+            for o in result.obligations
+        )
 
     def test_multiple_preconditions_all_checked(self) -> None:
         """Two requires on callee, second one violated."""
