@@ -773,14 +773,18 @@ class ContractVerifier:
         fn_ret_types: dict[str, str] = {}
 
         def record_fn_ret_type(fn: ast.FnDecl) -> None:
-            # Include `where` helpers too: discovery scans their bodies, so a
-            # call inferring a type var from a where-helper's return must find
-            # that helper in fn_ret_types (PR #767 review).
+            # Top-level fns only — codegen registers where-helpers in neither
+            # `_fn_sigs` nor `fn_ret_types` (registration.py walks
+            # `program.declarations`, not `where_fns`).  Mirroring that keeps the
+            # verifier's `fn_ret_types` in exact parity with codegen: codegen
+            # likewise cannot infer a type var from a where-helper's return, so
+            # adding helpers here would only let the verifier over-discover (a
+            # sound superset, but a deviation from "verify exactly what codegen
+            # emits") and would collide same-named helpers from different parents
+            # in the flat name-keyed map (PR #767 review).
             ret_name = self._simple_type_name(fn.return_type)
             if ret_name is not None:
                 fn_ret_types[fn.name] = ret_name
-            for wfn in fn.where_fns or ():
-                record_fn_ret_type(wfn)
 
         for tld in disc_program.declarations:
             decl = tld.decl
