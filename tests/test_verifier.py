@@ -3856,6 +3856,50 @@ public fn g(@Option<Int> -> @Int)
         assert errors, "a genuine narrowing must stay obligated, not assumed"
         assert any(d.error_code == "E505" for d in errors)
 
+    def test_nested_subpattern_narrowing_obligated(self) -> None:
+        """A NESTED constructor sub-pattern narrowing — `Some(Some(@PosInt))` on
+        `Option<Option<Int>>` — is recursed and obligated, so a payload that
+        can't be proven `> 0` is an E505 rather than an unguarded false Tier-1
+        (CR PR-review: previously the inner narrowing was never recursed)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn needs_pos(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+public fn f(@Option<Option<Int>> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Option<Int>>.0 {
+    Some(Some(@PosInt)) -> needs_pos(@PosInt.0),
+    Some(None) -> 1,
+    None -> 2
+  }
+}
+""")
+        assert any(d.error_code == "E505"
+                   for d in result.diagnostics if d.severity == "error")
+
+    def test_nested_subpattern_no_false_positive(self) -> None:
+        """The nested-recursion must not OVER-obligate: a nested bind that is
+        NOT a narrowing — `Some(Some(@PosInt))` on `Option<Option<PosInt>>`
+        (the field is already `PosInt`) — verifies clean (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn needs_pos(@PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @PosInt.0 }
+public fn f(@Option<Option<PosInt>> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Option<PosInt>>.0 {
+    Some(Some(@PosInt)) -> needs_pos(@PosInt.0),
+    Some(None) -> 1,
+    None -> 2
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     def test_refined_subpattern_fact_reaches_call_precondition(self) -> None:
         """The arm-fact carry also reaches call PRECONDITIONS (checked in the
         SMT main pass, not the narrowing walk): `Some(@PosInt)` on

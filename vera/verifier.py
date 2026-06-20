@@ -2707,18 +2707,35 @@ class ContractVerifier:
         ``@PosInt``) yields no fact (source is ``Int``) and stays *obligated*,
         never assumed.  Only the projectable opaque-scrutinee path yields facts;
         a literal-constructor scrutinee binds concrete arguments the body
-        reasons about directly."""
+        reasons about directly.  Recurses into nested constructor patterns
+        (``Some(Some(@PosInt))``) so a nested bind's invariant is carried too
+        (CR PR-review)."""
         if scrutinee_z3 is None:
             return []
         if (isinstance(scrutinee, ast.ConstructorCall)
                 and scrutinee.name == pattern.name):
             return []  # literal scrutinee — concrete args, not accessors
-        field_types = self._instantiated_field_types(
-            pattern.name, self._resolved_type_of(scrutinee))
+        return self._subpattern_source_facts_term(
+            self._resolved_type_of(scrutinee), scrutinee_z3, pattern, smt)
+
+    def _subpattern_source_facts_term(
+        self,
+        scrut_ty: Type | None,
+        scrut_term: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        _depth: int = 0,
+    ) -> list[object]:
+        """Term-keyed core of :py:meth:`_subpattern_source_facts`, recursing
+        into nested constructor patterns.  *scrut_ty* is the scrutinee's
+        resolved type; *scrut_term* its Z3 datatype term."""
+        if _depth > 16 or scrut_term is None:  # cycle / infinite-type backstop
+            return []
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
         if field_types is None:
             return []
         try:
-            sort = scrutinee_z3.sort()  # type: ignore[attr-defined]
+            sort = scrut_term.sort()  # type: ignore[attr-defined]
             idx = smt._find_ctor_index(sort, pattern.name)
         except Exception:  # pragma: no cover — non-datatype scrutinee
             return []
@@ -2727,13 +2744,74 @@ class ContractVerifier:
         facts: list[object] = []
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
+            field_term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                facts.extend(self._subpattern_source_facts_term(
+                    field_ty, field_term, sub_pat, smt, _depth + 1))
+            elif isinstance(sub_pat, ast.BindingPattern):
+                fact = self._term_source_fact(smt, field_ty, field_term)
+                if fact is not None:
+                    facts.append(fact)
+        return facts
+
+    def _obligate_subpattern_term(
+        self,
+        decl: ast.FnDecl,
+        diag_node: ast.Expr,
+        scrut_ty: Type | None,
+        scrut_term: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        assumptions: list[object],
+        _depth: int = 0,
+    ) -> None:
+        """Term-keyed recursive obligation for a NESTED constructor sub-pattern
+        (``Some(Some(@PosInt))``): obligate each refined / ``@Nat`` narrowing
+        bind against its projected field accessor, recursing through further
+        nested constructor patterns (CR PR-review — closes the unguarded false
+        Tier-1 where the inner ``Int -> PosInt`` narrowing was never obligated).
+
+        *diag_node* is the outer scrutinee AST, used only for the diagnostic
+        location.  Opaque (accessor-term) path only — a nested field is always a
+        projection.  The nested bind's RUNTIME guard stays a #758-class deferral
+        (codegen binds only direct sub-patterns), so a verified program is sound
+        while an unverified compile is honestly unchecked at the nested site."""
+        if _depth > 16 or scrut_term is None:  # cycle / infinite-type backstop
+            return
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
+        if field_types is None:
+            return
+        try:
+            sort = scrut_term.sort()  # type: ignore[attr-defined]
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee
+            return
+        if idx is None:
+            return
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            field_term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                self._obligate_subpattern_term(
+                    decl, diag_node, field_ty, field_term, sub_pat, smt,
+                    assumptions, _depth + 1)
+                continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            fact = self._term_source_fact(
-                smt, field_ty, sort.accessor(idx, i)(scrutinee_z3))
-            if fact is not None:
-                facts.append(fact)
-        return facts
+            target = self._resolve_type(sub_pat.type_expr)
+            if (self._is_refined_type(target)
+                    and self._refined_field_narrows(target, field_ty)):
+                self._check_refined_binding_obligation_term(
+                    decl, field_term, target, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                    source_ty=field_ty,
+                )
+            elif (self._is_nat_type(target)
+                    and not self._is_nat_type(field_ty)):
+                self._check_nat_binding_obligation_term(
+                    decl, field_term, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                )
 
     def _obligate_subpattern_narrowings(
         self,
@@ -2765,12 +2843,14 @@ class ContractVerifier:
         obligated; an already-@Nat field would fail the proof spuriously
         (its accessor carries no ``>= 0`` fact).
 
-        Only *direct* ``BindingPattern`` sub-patterns are obligated; a
-        nested ``ConstructorPattern`` (``Some(Some(@Nat.0))`` on
-        ``Option<Option<Int>>``) is not recursed — matching codegen's
-        ``_extract_constructor_fields``, which likewise binds only direct
-        sub-patterns — so the inner narrowing is currently neither obligated
-        nor runtime-guarded (tracked as #754).
+        Nested ``ConstructorPattern`` sub-patterns (``Some(Some(@PosInt))`` on
+        ``Option<Option<Int>>``) ARE recursed via
+        :py:meth:`_obligate_subpattern_term`, so an inner narrowing is
+        statically obligated (CR PR-review — previously an unguarded false
+        Tier-1).  The inner bind's RUNTIME guard remains a #758-class deferral
+        (codegen's ``_extract_constructor_fields`` binds only direct
+        sub-patterns), so a verified program is sound (a bad nested narrowing is
+        an ``E505``) while an unverified compile is unchecked at the nested site.
         """
         field_types = self._instantiated_field_types(
             pattern.name, self._resolved_type_of(scrutinee))
@@ -2798,6 +2878,22 @@ class ContractVerifier:
                 sort = idx = None
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                # Nested constructor pattern (`Some(Some(@PosInt))` on
+                # `Option<Option<Int>>`): recurse so the inner narrowing is
+                # OBLIGATED — else it is an unguarded false Tier-1 (CR PR-
+                # review).  Opaque path only: a nested field is always an
+                # accessor term.  The nested bind's RUNTIME guard remains a
+                # #758-class deferral (codegen's `_extract_constructor_fields`
+                # binds only direct sub-patterns), so a verified program is
+                # sound (E505 on a bad nested narrowing) while an unverified
+                # compile is honestly Tier-3 there.
+                if sort is not None and idx is not None:
+                    self._obligate_subpattern_term(
+                        decl, scrutinee, field_ty,
+                        sort.accessor(idx, i)(scrutinee_z3), sub_pat, smt,
+                        assumptions)
+                continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
             target = self._resolve_type(sub_pat.type_expr)
