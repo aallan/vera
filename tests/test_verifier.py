@@ -2086,8 +2086,9 @@ where {
 }
 """)
 
-    def test_generic_call_falls_to_tier3(self) -> None:
-        """Calls to generic functions bail to Tier 3."""
+    def test_generic_call_verified_per_instantiation(self) -> None:
+        """#732: a generic instantiated by a caller is verified statically per
+        monomorphization — Tier 1, not the old Tier-3 bail."""
         result = _verify("""
 private forall<T>
 fn id(@T -> @T)
@@ -2102,10 +2103,12 @@ private fn caller(@Int -> @Int)
   effects(pure)
 { id(@Int.0) }
 """)
-        # id's contracts → Tier 3 (generic)
-        # caller's body has generic call → body_expr is None
-        # Since caller's ensures is trivial, it doesn't matter
-        assert result.summary.tier3_runtime >= 1
+        # id<Int>'s ensures(@T.result == @T.0) holds for the body @T.0, so the
+        # instantiated generic is now discharged statically with no Tier-3
+        # fallback — the core #732 behavior change.
+        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier1_verified >= 1
+        assert not result.diagnostics
 
     def test_multiple_preconditions_all_checked(self) -> None:
         """Two requires on callee, second one violated."""
@@ -3015,6 +3018,13 @@ private fn sum(@List<Int> -> @Int)
           runtime-checked Tier-3 (an informational E506; codegen emits the
           predicate guard at the function boundary).  Net: +2 T1, +1 T3,
           +3 total, +0 tier3_unguarded.
+        * 260/27/287/0 after #732 verified instantiated generics per
+          monomorphization.  `generics.vera`'s `identity` and `const` are
+          instantiated at concrete types (`identity<Int>`, `const<Int, Bool>`),
+          so their `ensures(@T.result == @T.0)` / `ensures(@A.result == @A.0)`
+          postconditions are now discharged statically instead of bailing to
+          Tier 3 (E520): +2 T1, -2 T3, +0 total (the two contracts change tier;
+          the total is unchanged).
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3027,8 +3037,8 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 258, f"Expected 258 T1, got {t1}"
-        assert t3 == 29, f"Expected 29 T3, got {t3}"
+        assert t1 == 260, f"Expected 260 T1, got {t1}"
+        assert t3 == 27, f"Expected 27 T3, got {t3}"
         assert total == 287, f"Expected 287 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 

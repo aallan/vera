@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import z3
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from vera import ast
@@ -190,6 +190,13 @@ class ContractVerifier:
         self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
             expr_target_types or {}
         )
+        # #732: per-monomorphization discovery results, populated by
+        # register_program (so both the cold verify_program path and the warm
+        # incremental session see the same instantiation set).  Maps a generic
+        # function name to the set of concrete type-name tuples it is
+        # instantiated at; empty when the program has no generics.
+        self._instances: dict[str, set[tuple[str, ...]]] = {}
+        self._mono: Monomorphizer | None = None
 
     # -----------------------------------------------------------------
     # #747: checker-provided expression types (span-keyed)
@@ -667,6 +674,11 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #732: discover every concrete instantiation of each generic NOW, off
+        # the registered env, so both verify_program (cold) and the warm
+        # incremental session — which both go through register_program — verify
+        # the same per-monomorphization set (keeps warm == cold).
+        self._instances = self._collect_instantiations(program)
 
     # -- #732: per-monomorphization instantiation discovery ----------------
 
@@ -811,6 +823,9 @@ class ContractVerifier:
 
         ctx = self._build_mono_context(disc, generic_decls)
         mono = Monomorphizer(ctx)
+        # Stash for verification-time monomorphization (_monomorphize_fn needs
+        # no context, so reusing the discovery instance is fine).
+        self._mono = mono
         ctor_to_adt = ctx.ctor_to_adt
 
         # Seed from non-generic bodies.
@@ -867,14 +882,161 @@ class ContractVerifier:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
 
+    # -- #732: per-monomorphization verification + aggregation -------------
+
+    def _verify_generic_instances(
+        self, decl: ast.FnDecl, instances: tuple[tuple[str, ...], ...],
+    ) -> None:
+        """Verify each concrete instantiation of a generic, then aggregate.
+
+        Each instantiation is monomorphized to a concrete clone — keeping the
+        generic's ORIGINAL name so recursion/decreases resolve by name and
+        diagnostics anchor at the generic's source — and run through the normal
+        non-generic path into a scratch buffer.  The per-instance obligations
+        are then aggregated one-per-source-site with meet semantics, so a
+        generic-body bug surfaces once (naming the failing instantiation)
+        rather than once per instantiation.
+        """
+        assert self._mono is not None  # set by register_program  # noqa: S101
+        per_instance: list[
+            tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
+        ] = []
+        for concrete in instances:
+            clone = self._mono._monomorphize_fn(decl, concrete)
+            clone = replace(clone, name=decl.name)  # keep the source name
+            saved = (self.summary, self.errors, self.obligations)
+            self.summary, self.errors, self.obligations = (
+                VerifySummary(), [], [],
+            )
+            try:
+                self._verify_fn(clone)  # forall_vars=None → normal path
+            finally:
+                inst_obl, inst_err = self.obligations, self.errors
+                self.summary, self.errors, self.obligations = saved
+            per_instance.append((concrete, inst_obl, inst_err))
+        self._aggregate_generic_instances(decl, per_instance)
+
+    def _aggregate_generic_instances(
+        self,
+        decl: ast.FnDecl,
+        per_instance: list[
+            tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
+        ],
+    ) -> None:
+        """Collapse per-instance obligations to one per source site (meet).
+
+        Each source obligation recurs once per instantiation at the same span.
+        Group by content key, take the worst status across instantiations (so
+        any reachable counterexample dominates — never a false Tier-1), and
+        re-derive the summary counters + diagnostics from the met set so the
+        obligations<->summary<->diagnostics mirror (test_obligations.py) holds.
+        """
+        source_statuses: dict[str, tuple[str, ...]] = {
+            "verified": ("verified",),
+            "tier3": ("tier3", "timeout"),
+            "tier3_unguarded": ("tier3_unguarded",),
+            "violated": ("violated",),
+        }
+        groups: dict[str, list[tuple[tuple[str, ...], ProofObligation]]] = {}
+        order: list[str] = []
+        errs_by_instance: dict[tuple[str, ...], list[Diagnostic]] = {}
+        for concrete, obls, errs in per_instance:
+            errs_by_instance[concrete] = errs
+            for ob in obls:
+                key = ob.content_key()
+                if key not in groups:
+                    groups[key] = []
+                    order.append(key)
+                groups[key].append((concrete, ob))
+
+        for key in order:
+            members = groups[key]
+            met = self._meet_status([ob.status for _, ob in members])
+            rep_concrete, rep_ob = next(
+                (
+                    (c, o) for c, o in members
+                    if o.status in source_statuses[met]
+                ),
+                members[0],
+            )
+            self.obligations.append(replace(rep_ob, status=met))
+            if met == "verified":
+                self.summary.tier1_verified += 1
+                self.summary.total += 1
+            elif met == "tier3":
+                self.summary.tier3_runtime += 1
+                self.summary.total += 1
+            else:  # "violated" | "tier3_unguarded" — diagnostic, no count
+                self._emit_aggregated_diagnostic(
+                    decl, members, rep_concrete, rep_ob, errs_by_instance,
+                )
+
+    def _emit_aggregated_diagnostic(
+        self,
+        decl: ast.FnDecl,
+        members: list[tuple[tuple[str, ...], ProofObligation]],
+        rep_concrete: tuple[str, ...],
+        rep_ob: ProofObligation,
+        errs_by_instance: dict[tuple[str, ...], list[Diagnostic]],
+    ) -> None:
+        """Re-emit the representative instance's diagnostic, prefixed with the
+        instantiation(s) that exhibit the failing/unguarded outcome."""
+        src = next(
+            (
+                d for d in errs_by_instance.get(rep_concrete, [])
+                if d.error_code == rep_ob.error_code
+                and d.location.line == rep_ob.line
+                and d.location.column == rep_ob.column
+            ),
+            None,
+        )
+        if src is None:
+            return  # defensive: a violation/unguarded site always emits a diag
+        labels = sorted(
+            f"{decl.name}<{', '.join(c)}>"
+            for c, o in members if o.status == rep_ob.status
+        )
+        shown = ", ".join(labels[:3])
+        more = "" if len(labels) <= 3 else f" (+{len(labels) - 3} more)"
+        prefix = (
+            f"In generic function '{decl.name}' instantiated at "
+            f"{shown}{more}: "
+        )
+        self.errors.append(replace(src, description=prefix + src.description))
+
+    @staticmethod
+    def _meet_status(statuses: list[ObligationStatus]) -> ObligationStatus:
+        """Worst-case status across instantiations, collapsed to the
+        mirror-friendly vocabulary (timeout folds into tier3)."""
+        s = set(statuses)
+        if "violated" in s:
+            return "violated"
+        if "tier3_unguarded" in s:
+            return "tier3_unguarded"
+        if "tier3" in s or "timeout" in s:
+            return "tier3"
+        return "verified"
+
     def _verify_fn(
         self,
         decl: ast.FnDecl,
         parent_where_group: ast.FnDecl | None = None,
     ) -> None:
         """Verify all contracts on a single function."""
-        # Skip generic functions (type variables can't be translated to Z3)
         if decl.forall_vars:
+            instances = tuple(sorted(self._instances.get(decl.name, set())))
+            if instances:
+                # #732: this generic IS instantiated — verify each concrete
+                # clone through the normal path and aggregate per source
+                # obligation (meet across instantiations).  Strictly stronger
+                # than the Tier-3 fallback below, and it subsumes the #746
+                # concrete-refined-return fast path for instantiated generics.
+                self._verify_generic_instances(decl, instances)
+                return
+            # Never instantiated in this program: the body's type variables
+            # can't be represented in Z3, so non-trivial contracts fall to
+            # Tier 3 (E520); only a concrete refined return is still discharged
+            # statically (#746).
             for contract in decl.contracts:
                 if not self._is_trivial(contract):
                     self.summary.tier3_runtime += 1
