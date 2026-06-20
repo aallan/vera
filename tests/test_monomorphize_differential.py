@@ -12,8 +12,10 @@ set covers codegen's:
 * name coverage — every generic codegen emits at least one instantiation of is
   also discovered by the verifier (catches a missed prelude generic, the #1
   parity risk);
-* per-generic count — the verifier discovers at least as many instantiations as
-  codegen per generic.
+* per-instantiation coverage — every concrete ``(name, types)`` codegen emits is
+  discovered by the verifier (after normalizing the verifier's more-precise
+  scalars through codegen's WAT collapse), so the right COUNT with the wrong
+  tuples can't false-pass.
 
 The verifier deliberately uses MORE precise type names than codegen (``Nat``
 where codegen WAT-collapses to ``Int``), so it may *split* a codegen
@@ -198,3 +200,71 @@ def test_verifier_covers_codegen_inline(label: str) -> None:
         _assert_covers(program, source, path, label)
     finally:
         os.unlink(path)
+
+
+def test_imported_generic_symmetric_between_codegen_and_verifier() -> None:
+    """A generic imported from another module and instantiated by the importer
+    is monomorphized by NEITHER codegen nor the verifier: both build their
+    instantiation set from the local ``program.declarations`` only (codegen's
+    mono pipeline carries no module attribution — pinned for #661 in
+    test_codegen_modules).  So they stay symmetric and the differential
+    invariant (verifier covers exactly codegen's emitted set) holds with
+    equality — there is no false Tier-1 from cross-module generics.  If codegen
+    ever gains cross-module monomorphization, this test flags that the verifier's
+    discovery must match it."""
+    from vera.resolver import ResolvedModule
+
+    a_src = (
+        "public forall<T> fn ext_id(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n"
+    )
+    b_src = (
+        "import a;\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ ext_id(42) }\n"
+    )
+
+    def _resolved(path: tuple[str, ...], src: str) -> "ResolvedModule":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(src)
+            f.flush()
+            fp = f.name
+        try:
+            return ResolvedModule(
+                path=path, file_path=Path(fp),
+                program=transform(parse_file(fp)), source=src,
+            )
+        finally:
+            os.unlink(fp)
+
+    mod_a = _resolved(("a",), a_src)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(b_src)
+        f.flush()
+        bp = f.name
+    try:
+        prog_b = transform(parse_file(bp))
+        gen = CodeGenerator(source=b_src, file=bp, resolved_modules=[mod_a])
+        gen.compile_program(prog_b)  # type: ignore[arg-type]
+        codegen_set = getattr(gen, "_emitted_instances", set())
+        verifier = ContractVerifier(
+            source=b_src, file=bp, resolved_modules=[mod_a],
+        )
+        verifier.register_program(prog_b)  # type: ignore[arg-type]
+        verifier_set = {
+            (n, ct)
+            for n, cts in verifier._collect_instantiations(prog_b).items()
+            for ct in cts
+        }
+    finally:
+        os.unlink(bp)
+
+    # Neither side monomorphizes the imported generic → symmetric (both empty).
+    assert not any(n == "ext_id" for n, _ in codegen_set)
+    assert verifier_set == codegen_set
