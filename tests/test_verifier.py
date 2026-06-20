@@ -3756,6 +3756,11 @@ public fn make(@Unit -> @Checked)
         # guard codegen does not emit.
         assert len(self._refine_obligations(result, "tier3_unguarded")) == 1
         assert self._refine_obligations(result, "tier3") == []
+        # And surfaced as exactly one user-facing E506 warning — assert the
+        # public diagnostic, not only the internal obligation state, so the
+        # warning can't disappear unnoticed (CR PR-review).
+        assert len([d for d in result.diagnostics
+                    if d.error_code == "E506" and d.severity == "warning"]) == 1
 
     def test_refinement_over_aliased_base_verifies(self) -> None:
         """A refinement whose base is an ALIAS — `type Age = Nat; { @Age |
@@ -3787,14 +3792,69 @@ private data Pair { Pair(Int, Int) }
 type RP = { @Pair | true };
 
 public fn f(@RP -> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(@Int.result == @Int.result) effects(pure)
 {
   match @RP.0 {
     Pair(@Int, @Int) -> @Int.1
   }
 }
 """)
+        # The postcondition references the result, forcing the verifier to model
+        # it THROUGH the match projection — so this exercises the ADT-sort
+        # declaration rather than passing vacuously on a trivial `ensures(true)`
+        # that never needs the body modelled.  No E522 (undecidable body)
+        # confirms the refined-ADT base translated rather than falling to a
+        # scalar-Int sort (CR PR-review).
         assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [d for d in result.diagnostics if d.error_code == "E522"] == []
+
+    def test_refined_subpattern_fact_carried_into_arm_body(self) -> None:
+        """An `Option<PosInt>` sub-pattern bind carries the field's refinement
+        (`> 0`) into the arm body, so a downstream `@Nat` narrowing of the bound
+        payload discharges at Tier-1 instead of a false E503 (CR PR-review).
+        Jointly exercises the refined-component Z3 sort fix — the bound field
+        accessor only exists once `Option<PosInt>` gets a proper datatype sort
+        (its `PosInt` field unwrapped to `Int`), so a regression in EITHER the
+        arm-fact carry OR the sort unwrap re-breaks this."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn takes_nat(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn f(@Option<PosInt> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> takes_nat(@PosInt.0),
+    None -> 0
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_refined_subpattern_genuine_narrowing_still_obligated(self) -> None:
+        """SOUNDNESS guard for the arm-fact carry: it uses the field's SOURCE
+        type, so a GENUINE narrowing (`Option<Int>` payload bound as `@PosInt`)
+        is still OBLIGATED, never silently assumed.  The unprovable `Int ->
+        PosInt` sub-pattern narrowing is an E505 — a false Tier-1 here would be
+        the exact silent failure the carry must not introduce (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn takes_nat(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn g(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@PosInt) -> takes_nat(@PosInt.0),
+    None -> 0
+  }
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, "a genuine narrowing must stay obligated, not assumed"
+        assert any(d.error_code == "E505" for d in errors)
 
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
@@ -3828,6 +3888,11 @@ private fn caller(@Unit -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert len(self._refine_obligations(result, "verified")) == 1
+        # And NOT also a nat_bind for the same site: the refined-first gate must
+        # keep the paths disjoint, so a double-emission regression (refine_bind
+        # AND nat_bind) is caught (CR PR-review).
+        assert not [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "verified"]
 
     def test_refinement_over_nat_predicate_violation_caught(self) -> None:
         """`{ @Nat | even }` narrowing an odd literal (`3`) is refuted on the

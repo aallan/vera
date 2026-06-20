@@ -9,6 +9,14 @@ from __future__ import annotations
 from vera import ast
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
+from vera.wasm.inference import substitute_type_vars
+
+# Recursion bound for tuple-component boundary guards (#746).  A *finite* tuple
+# type can nest only as deep as it is written, so any real program stays well
+# under this; the limit exists to halt infinite recursion through mutually-
+# recursive type aliases (which the checker currently accepts) and is failed
+# CLOSED, never silently skipped — see `_emit_component_refinement_guards`.
+_MAX_COMPONENT_GUARD_DEPTH = 16
 
 
 class ContractsMixin:
@@ -188,17 +196,30 @@ class ContractsMixin:
         ]
 
     def _resolve_type_alias(self, te: ast.TypeExpr) -> ast.TypeExpr:
-        """Walk a ``type Foo = Bar`` alias chain to the underlying TypeExpr
-        (cycle-guarded).  The codegen counterpart of the alias walks inside
-        ``_refinement_guard_parts``, hoisted so the component-guard helper can
-        classify a tuple component's resolved shape."""
+        """Walk a ``type Foo = Bar`` alias chain to the underlying TypeExpr,
+        applying each *generic* alias's type-argument substitution (cycle-
+        guarded).  ``type Box<T> = Tuple<T, Int>`` resolves ``Box<PosInt>`` to
+        ``Tuple<PosInt, Int>`` — NOT ``Tuple<T, Int>`` — so a refined argument
+        isn't silently dropped, leaving the component unclassified and its guard
+        unemitted (CR PR-review).  Mirrors the substituting alias walk in
+        ``registration._resolves_to_nat`` (``substitute_type_vars`` with the
+        alias's ``type_params`` → the use-site ``type_args``).  The codegen
+        counterpart of the alias walk inside ``_refinement_guard_parts``,
+        hoisted so the component-guard helper can classify a tuple component's
+        resolved shape."""
         node: ast.TypeExpr = te
         seen: set[str] = set()
         while (isinstance(node, ast.NamedType)
                and node.name in self._type_aliases
                and node.name not in seen):
             seen.add(node.name)
-            node = self._type_aliases[node.name]
+            body = self._type_aliases[node.name]
+            params = self._type_alias_params.get(node.name)
+            if (params and node.type_args
+                    and len(params) == len(node.type_args)):
+                body = substitute_type_vars(
+                    body, dict(zip(params, node.type_args)))
+            node = body
         return node
 
     def _emit_component_refinement_guards(
@@ -242,7 +263,27 @@ class ContractsMixin:
         the loaded components need no separate GC rooting.  Mirrors the offset
         algorithm in ``_translate_constructor_call`` exactly — the layout this
         decomposes is the one construction built."""
-        if _depth > 16:  # structural-depth backstop; a finite type can't exceed
+        if _depth > _MAX_COMPONENT_GUARD_DEPTH:
+            # Fail CLOSED, not silent: a tuple nested deeper than the limit is
+            # almost always an infinite type via mutually-recursive aliases
+            # (`type A = Tuple<B, Int>; type B = Tuple<A, Int>`, which the
+            # checker currently accepts) — that recursion would never terminate,
+            # and a bare `return []` would silently drop the guards for every
+            # component past the limit.  Emit a loud diagnostic so the compile
+            # fails rather than shipping partial boundary guards (CR PR-review).
+            self._error(
+                te,
+                "Tuple nesting in this boundary type exceeds the runtime-guard "
+                f"depth limit ({_MAX_COMPONENT_GUARD_DEPTH}); the type is most "
+                "likely infinitely recursive (mutually-recursive type aliases), "
+                "so its refined components cannot be fully guarded.",
+                rationale="A refined tuple component is guarded by decomposing "
+                "the type at the boundary.  A type nested past the depth limit "
+                "cannot be fully decomposed, so codegen fails closed rather than "
+                "emitting partial guards that would let a deep component cross "
+                "the boundary unchecked.",
+                error_code="E617",
+            )
             return []
         node = self._resolve_type_alias(te)
         if not (isinstance(node, ast.NamedType)
@@ -326,8 +367,14 @@ class ContractsMixin:
         guardable components — mirrors the per-component classification in the
         emit helper (kept a pure predicate so the early-return decision needs no
         ``ctx``)."""
-        if _depth > 16:
-            return False
+        if _depth > _MAX_COMPONENT_GUARD_DEPTH:
+            # Conservatively report "guardable" so a deep *return* is NOT
+            # short-circuited away by `_compile_postconditions` — it flows into
+            # `_emit_component_refinement_guards`, whose matching depth check
+            # fails closed with a loud diagnostic.  Routing the failure through
+            # the one emit-side error keeps the fail-closed behaviour single-
+            # sourced (CR PR-review).
+            return True
         node = self._resolve_type_alias(te)
         if not (isinstance(node, ast.NamedType)
                 and node.name == "Tuple"

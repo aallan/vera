@@ -5539,6 +5539,48 @@ public fn entry(@Unit -> @Int)
 """
         assert _run(src, fn="entry") == 0
 
+    def test_generic_tuple_alias_component_guard_traps(self) -> None:
+        """A GENERIC tuple alias (`type Box<T> = Tuple<T, Int>`) substitutes its
+        type argument when resolving the component types, so `Box<PosInt>`
+        guards its first component — `Box(Tuple(-5, 3))` traps at the boundary
+        instead of the `PosInt` substitution being silently dropped (which left
+        the component unguarded — CR PR-review)."""
+        src = self._PRE + """
+type Box<T> = Tuple<T, Int>;
+public fn f(@Box<PosInt> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn entry_bad(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ f(Tuple(0 - 5, 3)) }
+public fn entry_ok(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ f(Tuple(7, 3)) }
+"""
+        _run_refine_trap(src, fn="entry_bad")
+        assert _run(src, fn="entry_ok") == 0
+
+    def test_infinite_tuple_alias_fails_closed_with_e617(self) -> None:
+        """A mutually-recursive (infinite) tuple alias would recurse forever
+        through the component-guard decomposition; the depth limit FAILS CLOSED
+        with a loud E617 rather than silently emitting partial guards (or
+        hanging) — never a silent `return []` that drops deep components (CR
+        PR-review)."""
+        src = """
+type A = Tuple<B, Int>;
+type B = Tuple<A, Int>;
+public fn f(@A -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+"""
+        result = _compile(src)
+        errs = [d for d in result.diagnostics
+                if d.severity == "error" and d.error_code == "E617"]
+        assert errs, (
+            f"expected a fail-closed E617 for the infinite tuple alias; "
+            f"diagnostics: {result.diagnostics}"
+        )
+
     def test_param_guard_fires_before_precondition(self) -> None:
         """The refined-parameter guard runs *before* explicit preconditions:
         a `requires` that itself depends on the refined param must not trap

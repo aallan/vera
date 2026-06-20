@@ -340,6 +340,17 @@ class SmtContext:
         Returns None for unsupported types (Unit, TypeVar, function types).
         String maps to z3.StringSort(); Float64 maps to z3.RealSort().
         """
+        if isinstance(ty, RefinedType):
+            # A refinement's Z3 SORT is its base's sort — the predicate
+            # constrains values, not the carrier set, and is enforced
+            # separately (as an assumption / obligation).  Unwrap HERE, not only
+            # at the `declare_adt` call site, so a refined type nested as a
+            # tuple component or constructor field (`Tuple<PosInt, Int>`,
+            # `Box(PosInt)`) resolves to its base sort instead of None — which
+            # would otherwise fail the enclosing tuple / datatype sort creation
+            # and silently degrade the whole structure to a weaker model (CR
+            # PR-review).
+            ty = ty.base
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
                 return z3.IntSort()

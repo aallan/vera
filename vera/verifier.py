@@ -2051,6 +2051,7 @@ class ContractVerifier:
                     smt._path_conditions.append(pat_cond)
                 try:
                     # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
+                    arm_assumptions = assumptions
                     if isinstance(arm.pattern, ast.BindingPattern):
                         pat_ty = self._resolve_type(arm.pattern.type_expr)
                         # Refined-first (R9): a refinement-over-@Nat bind
@@ -2072,13 +2073,19 @@ class ContractVerifier:
                     elif isinstance(arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
                         # non-@Nat ADT field — the @Int payload of
-                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
-                        self._obligate_subpattern_narrowings(
-                            decl, expr.scrutinee, scrutinee_z3, arm.pattern,
-                            smt, slot_env, assumptions,
+                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.  The
+                        # returned facts (each bound field's source-type
+                        # guarantee) are assumed for THIS arm's body only, so a
+                        # downstream narrowing depending on a binding's
+                        # invariant discharges instead of a false E503 (CR).
+                        arm_assumptions = assumptions + (
+                            self._obligate_subpattern_narrowings(
+                                decl, expr.scrutinee, scrutinee_z3,
+                                arm.pattern, smt, slot_env, assumptions,
+                            )
                         )
                     self._walk_for_nat_binding_obligations(
-                        decl, arm.body, smt, arm_env, assumptions,
+                        decl, arm.body, smt, arm_env, arm_assumptions,
                     )
                 finally:
                     if arm_cond_pushed:
@@ -2659,10 +2666,21 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
-    ) -> None:
+    ) -> list[object]:
         """#747: obligate each @Nat sub-pattern binding that narrows a
         non-@Nat ADT field — ``match opt { Some(@Nat.0) -> }`` on
         ``Option<Int>``.
+
+        Returns a list of arm-local Z3 facts (CR PR-review): each bound field
+        carries its DECLARED type's guarantee — a refined field's predicate, a
+        bare ``@Nat``'s ``>= 0`` — so the caller can assume them while walking
+        the arm body.  Without this a downstream narrowing that depends on a
+        binding's invariant fails with a false ``E503`` (e.g.
+        ``Some(@PosInt) -> takes_nat(@PosInt.0)`` on ``Option<PosInt>`` — the
+        payload is ``> 0`` hence ``>= 0``, but the arm body never saw the fact).
+        The fact is the field's SOURCE type via ``_term_source_fact`` (sound by
+        its producer-discharge argument), NOT the sub-pattern's narrowed type —
+        so a genuine narrowing stays *obligated* below, never silently assumed.
 
         The field's Z3 term is an uninterpreted accessor, so only a
         *genuine* narrowing (the source field is not already @Nat) is
@@ -2679,7 +2697,8 @@ class ContractVerifier:
         field_types = self._instantiated_field_types(
             pattern.name, self._resolved_type_of(scrutinee))
         if field_types is None:
-            return
+            return []
+        facts: list[object] = []
         # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
         # binds the constructor's own arguments — translatable AST nodes,
         # obligated directly.  An opaque scrutinee binds uninterpreted
@@ -2700,6 +2719,15 @@ class ContractVerifier:
                 zip(pattern.sub_patterns, field_types)):
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
+            # Collect the field's SOURCE-type fact for the arm body (see the
+            # docstring).  Only the opaque-scrutinee path has a projectable Z3
+            # accessor term; a literal-constructor scrutinee binds concrete
+            # argument values whose facts the body already derives directly.
+            if lit_args is None and sort is not None and idx is not None:
+                src_fact = self._term_source_fact(
+                    smt, field_ty, sort.accessor(idx, i)(scrutinee_z3))
+                if src_fact is not None:
+                    facts.append(src_fact)
             target = self._resolve_type(sub_pat.type_expr)
             # Refined-first (#746, R9): a refined sub-pattern (incl. a
             # refinement over @Nat) discharges its full predicate against the
@@ -2756,6 +2784,7 @@ class ContractVerifier:
                 self._record_nat_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind", "tier3",
                     guarded=True)
+        return facts
 
     def _obligate_destructure_narrowings(
         self,
