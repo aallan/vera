@@ -217,14 +217,26 @@ class Monomorphizer:
     def __init__(self, ctx: MonoContext) -> None:
         self.ctx = ctx
 
-    def _collect_calls_in_expr(
+    def collect_calls_in_expr(
         self,
         expr: ast.Expr,
         generic_decls: dict[str, ast.FnDecl],
         ctor_to_adt: dict[str, str],
         instances: dict[str, set[tuple[str, ...]]],
     ) -> None:
-        """Walk an expression tree collecting generic call sites."""
+        """Walk an expression tree collecting generic call sites.
+
+        Public because it is the shared discovery contract: both codegen
+        (Pass 1.5) and the verifier (#732) drive it, and per-monomorphization
+        verification is sound only if the verifier discovers a superset of what
+        codegen emits.  For that the set of ``Expr`` forms this recurses into
+        must be a superset of every form codegen can emit a generic call from.
+        It currently mirrors codegen's historical arms exactly (so a call in an
+        un-walked form — e.g. inside an ``ArrayLit``/``IndexExpr`` — is missed by
+        BOTH, making the program a compile error rather than a runtime instance
+        the verifier missed; it degrades to Tier-3, never a false Tier-1).
+        Making it total over ``Expr`` is tracked as a follow-up.
+        """
         if isinstance(expr, ast.FnCall) and expr.name in generic_decls:
             decl = generic_decls[expr.name]
             type_args = self._infer_type_args_from_call(
@@ -237,64 +249,64 @@ class Monomorphizer:
         if isinstance(expr, ast.Block):
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    self._collect_calls_in_expr(
+                    self.collect_calls_in_expr(
                         stmt.value, generic_decls, ctor_to_adt, instances,
                     )
                 elif isinstance(stmt, ast.ExprStmt):
-                    self._collect_calls_in_expr(
+                    self.collect_calls_in_expr(
                         stmt.expr, generic_decls, ctor_to_adt, instances,
                     )
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.expr, generic_decls, ctor_to_adt, instances,
             )
         elif isinstance(expr, ast.BinaryExpr):
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.left, generic_decls, ctor_to_adt, instances,
             )
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.right, generic_decls, ctor_to_adt, instances,
             )
         elif isinstance(expr, ast.UnaryExpr):
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.operand, generic_decls, ctor_to_adt, instances,
             )
         elif isinstance(expr, ast.IfExpr):
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.condition, generic_decls, ctor_to_adt, instances,
             )
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.then_branch, generic_decls, ctor_to_adt, instances,
             )
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.else_branch, generic_decls, ctor_to_adt, instances,
             )
         elif isinstance(expr, ast.FnCall):
             for arg in expr.args:
-                self._collect_calls_in_expr(
+                self.collect_calls_in_expr(
                     arg, generic_decls, ctor_to_adt, instances,
                 )
         elif isinstance(expr, ast.ConstructorCall):
             for arg in expr.args:
-                self._collect_calls_in_expr(
+                self.collect_calls_in_expr(
                     arg, generic_decls, ctor_to_adt, instances,
                 )
         elif isinstance(expr, ast.MatchExpr):
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.scrutinee, generic_decls, ctor_to_adt, instances,
             )
             for arm in expr.arms:
-                self._collect_calls_in_expr(
+                self.collect_calls_in_expr(
                     arm.body, generic_decls, ctor_to_adt, instances,
                 )
         elif isinstance(expr, ast.AnonFn):
             # Recurse into closure bodies for generic call collection
-            self._collect_calls_in_expr(
+            self.collect_calls_in_expr(
                 expr.body, generic_decls, ctor_to_adt, instances,
             )
         elif isinstance(expr, ast.ModuleCall):
             # C7e: recurse into ModuleCall args for generic call collection
             for arg in expr.args:
-                self._collect_calls_in_expr(
+                self.collect_calls_in_expr(
                     arg, generic_decls, ctor_to_adt, instances,
                 )
 
@@ -791,12 +803,16 @@ class Monomorphizer:
             sanitized.append(s)
         return f"{name}${'_'.join(sanitized)}"
 
-    def _monomorphize_fn(
+    def monomorphize_fn(
         self,
         decl: ast.FnDecl,
         concrete_types: tuple[str, ...],
     ) -> ast.FnDecl:
         """Create a monomorphized copy of a generic function.
+
+        Public: the shared substitution contract called by both codegen and the
+        verifier (#732).  Needs no ``ctx`` beyond ``decl`` + ``concrete_types``,
+        so a discovery-time ``Monomorphizer`` can be reused at verify time.
 
         Replaces type variables with concrete types throughout the AST
         and mangles the function name.

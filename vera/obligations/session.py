@@ -209,6 +209,18 @@ class VerificationSession:
                 continue
             decl = tld.decl
             key = fn_cache_key(decl, fn_map, context_hash)
+            if decl.forall_vars:
+                # #732: a generic's verification depends on its concrete
+                # instantiation set, which is a property of its CALLERS — not of
+                # the generic's own subtree, callees, or the non-fn context that
+                # fn_cache_key digests.  Fold the instantiation set in so a
+                # caller-edit that adds/removes an instantiation invalidates the
+                # generic's cache; otherwise the warm session would replay a
+                # stale per-monomorphization result (e.g. a now-instantiated
+                # generic whose body violates would replay its old Tier-3 pass —
+                # a false Tier-1).
+                insts = tuple(sorted(verifier._instances.get(decl.name, set())))
+                key = f"{key}\x1f{insts!r}"
             cached = self._cache.get(key)
             if cached is not None:
                 out_diags.extend(cached.diagnostics)

@@ -122,7 +122,7 @@ class MonomorphizationMixin:
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                mono._collect_calls_in_expr(
+                mono.collect_calls_in_expr(
                     decl.body, generic_decls, ctor_to_adt, instances,
                 )
 
@@ -150,14 +150,14 @@ class MonomorphizationMixin:
             decl = generic_decls[fn_name]
             if not self._check_constraints(decl, concrete_types):
                 continue  # constraint violation — error emitted
-            mono_fn = mono._monomorphize_fn(decl, concrete_types)
+            mono_fn = mono.monomorphize_fn(decl, concrete_types)
             mono_decls.append(mono_fn)
             self._emitted_instances.add((fn_name, concrete_types))
             # Scan the monomorphized body for further generic calls
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            mono._collect_calls_in_expr(
+            mono.collect_calls_in_expr(
                 mono_fn.body, generic_decls, ctor_to_adt, transitive,
             )
             for t_name, t_types in transitive.items():

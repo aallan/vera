@@ -4835,3 +4835,91 @@ private fn use_int(@Nat, @Nat -> @Nat)
         violated = [o for o in result.obligations
                     if o.kind == "nat_sub" and o.status == "violated"]
         assert len(violated) == 1
+
+    def test_body_ensures_violation_caught_per_instantiation(self) -> None:
+        """A generic body that violates its own `ensures` is caught per
+        instantiation (E500), naming the instantiation.  A violated
+        postcondition records its obligation with no error_code while its
+        diagnostic carries E500, so the aggregation must correlate by
+        (severity, span) — not error code — or it silently drops the violation
+        (a false Tier-1).  Regression for the PR #767 review finding."""
+        result = _verify("""
+private forall<T>
+fn bad_id(@Int, @T -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 + 1 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ bad_id(@Int.0, true) }
+""")
+        errs = [d for d in result.diagnostics
+                if d.severity == "error" and d.error_code == "E500"]
+        assert len(errs) == 1
+        assert "instantiated at bad_id<Bool>" in errs[0].description
+        violated = [o for o in result.obligations
+                    if o.kind == "ensures" and o.status == "violated"]
+        assert len(violated) == 1
+        assert violated[0].fn_name == "bad_id"
+
+    def test_body_bug_in_transitively_reached_generic_caught(self) -> None:
+        """A body bug in a generic reached only transitively (through another
+        generic's body) is verified and caught — discovery AND verification
+        both follow the transitive worklist, not just discovery."""
+        result = _verify("""
+private forall<T>
+fn inner(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private forall<T>
+fn outer(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ inner(@Nat.1, @Nat.0, @T.0) }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ outer(@Nat.1, @Nat.0, true) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at inner<Bool>" in errs[0].description
+
+    def test_generic_in_unwalked_position_degrades_to_tier3(self) -> None:
+        """A generic reachable ONLY from a position the discovery walk does not
+        descend into (here, inside an `ArrayLit`) is not discovered, so it
+        degrades to the never-instantiated Tier-3 residual — NOT a false Tier-1.
+
+        This is sound because codegen's monomorphizer shares the identical walk:
+        it would equally fail to monomorphize the generic, making the program a
+        compile error (a dangling clone) rather than producing a runtime
+        instance the verifier missed.  Pins that safe degradation; tracked for a
+        total-walk follow-up so a future codegen change can't turn it unsound."""
+        result = _verify("""
+private forall<T>
+fn g(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+
+private fn caller(@Int -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [g(@Int.0)] }
+""")
+        # g is NOT discovered (only used inside the ArrayLit) -> Tier-3 E520,
+        # never a clean Tier-1 that hides an unverified instantiation.
+        assert any(d.error_code == "E520" for d in result.diagnostics)
+        assert [d for d in result.diagnostics if d.severity == "error"] == []

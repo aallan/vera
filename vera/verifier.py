@@ -823,7 +823,7 @@ class ContractVerifier:
 
         ctx = self._build_mono_context(disc, generic_decls)
         mono = Monomorphizer(ctx)
-        # Stash for verification-time monomorphization (_monomorphize_fn needs
+        # Stash for verification-time monomorphization (monomorphize_fn needs
         # no context, so reusing the discovery instance is fine).
         self._mono = mono
         ctor_to_adt = ctx.ctor_to_adt
@@ -835,7 +835,7 @@ class ContractVerifier:
         for tld in disc.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                mono._collect_calls_in_expr(
+                mono.collect_calls_in_expr(
                     decl.body, generic_decls, ctor_to_adt, seed,
                 )
 
@@ -853,13 +853,13 @@ class ContractVerifier:
             fn_name, concrete_types = key
             if fn_name not in generic_decls:
                 continue
-            mono_fn = mono._monomorphize_fn(
+            mono_fn = mono.monomorphize_fn(
                 generic_decls[fn_name], concrete_types,
             )
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            mono._collect_calls_in_expr(
+            mono.collect_calls_in_expr(
                 mono_fn.body, generic_decls, ctor_to_adt, transitive,
             )
             for t_name, t_types in transitive.items():
@@ -902,7 +902,7 @@ class ContractVerifier:
             tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
         ] = []
         for concrete in instances:
-            clone = self._mono._monomorphize_fn(decl, concrete)
+            clone = self._mono.monomorphize_fn(decl, concrete)
             clone = replace(clone, name=decl.name)  # keep the source name
             saved = (self.summary, self.errors, self.obligations)
             self.summary, self.errors, self.obligations = (
@@ -980,18 +980,18 @@ class ContractVerifier:
         errs_by_instance: dict[tuple[str, ...], list[Diagnostic]],
     ) -> None:
         """Re-emit the representative instance's diagnostic, prefixed with the
-        instantiation(s) that exhibit the failing/unguarded outcome."""
-        src = next(
-            (
-                d for d in errs_by_instance.get(rep_concrete, [])
-                if d.error_code == rep_ob.error_code
-                and d.location.line == rep_ob.line
-                and d.location.column == rep_ob.column
-            ),
-            None,
-        )
-        if src is None:
-            return  # defensive: a violation/unguarded site always emits a diag
+        instantiation(s) that exhibit the failing/unguarded outcome.
+
+        The match is by (severity, span) — NOT error code — because an
+        obligation's ``error_code`` does not always equal its diagnostic's: a
+        violated ``ensures`` records the obligation with no code but the
+        diagnostic carries ``E500``.  When the obligation *does* carry a code we
+        additionally require it, to disambiguate co-located diagnostics.  If no
+        diagnostic matches, the outcome is still surfaced (synthesized from the
+        obligation) — a violation must NEVER be silently dropped, which would be
+        a false Tier-1.
+        """
+        severity = "error" if rep_ob.status == "violated" else "warning"
         labels = sorted(
             f"{decl.name}<{', '.join(c)}>"
             for c, o in members if o.status == rep_ob.status
@@ -1002,7 +1002,40 @@ class ContractVerifier:
             f"In generic function '{decl.name}' instantiated at "
             f"{shown}{more}: "
         )
-        self.errors.append(replace(src, description=prefix + src.description))
+        src = next(
+            (
+                d for d in errs_by_instance.get(rep_concrete, [])
+                if d.severity == severity
+                and d.location.line == rep_ob.line
+                and d.location.column == rep_ob.column
+                and (not rep_ob.error_code
+                     or d.error_code == rep_ob.error_code)
+            ),
+            None,
+        )
+        if src is not None:
+            self.errors.append(
+                replace(src, description=prefix + src.description),
+            )
+            return
+        # Defensive: no diagnostic matched (an obligation whose code/span the
+        # emitter records differently).  Surface the outcome anyway, straight
+        # from the obligation, so a real violation can never silently pass.
+        self.errors.append(Diagnostic(
+            description=(
+                prefix
+                + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` "
+                + ("is violated" if severity == "error"
+                   else "is not statically verified")
+                + "."
+            ),
+            location=SourceLocation(
+                file=self.file, line=rep_ob.line, column=rep_ob.column,
+            ),
+            severity=severity,
+            error_code=rep_ob.error_code,
+            tier=3 if severity == "warning" else None,
+        ))
 
     @staticmethod
     def _meet_status(statuses: list[ObligationStatus]) -> ObligationStatus:

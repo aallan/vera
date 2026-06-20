@@ -723,6 +723,42 @@ class TestIncrementalInvalidation:
             warm.obligations,  # type: ignore[attr-defined]
         ) == _obligation_fingerprint(cold.obligations)
 
+    def test_generic_instantiation_change_invalidates_cache(self) -> None:
+        """#732: a generic's verification depends on its CALLERS' concrete
+        instantiations — not on its own subtree, callees, or non-fn context,
+        which is all `fn_cache_key` digests.  An edit that adds the first
+        instantiation (or removes the last) must invalidate the generic's
+        discharge cache, or the warm session replays a stale per-monomorphization
+        result — a false Tier-1 when a now-instantiated generic's body violates.
+        Regression for the PR #767 review finding."""
+        uninst = (
+            "private forall<T>\n"
+            "fn bad(@Int, @T -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result == @Int.0)\n"
+            "  effects(pure)\n"
+            "{ @Int.0 + 1 }\n"
+        )
+        inst = uninst + (
+            "\n"
+            "private fn caller(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{ bad(@Int.0, true) }\n"
+        )
+        # Uninstantiated `bad` is Tier-3 (E520); the edit instantiates it at
+        # Bool, where its body violates `ensures` (E500).  The warm result must
+        # match a cold verify of the edited program, not replay the stale pass.
+        session = VerificationSession()
+        session.verify_source(uninst, file="m.vera")
+        warm = session.verify_source(inst, file="m.vera")
+        self._assert_matches_cold(inst, warm)
+        # Reverse: removing the last instantiation flips `bad` back to Tier-3
+        # rather than replaying its cached Tier-1.
+        warm_back = session.verify_source(uninst, file="m.vera")
+        self._assert_matches_cold(uninst, warm_back)
+
     def test_identical_source_replays_everything(self) -> None:
         session = VerificationSession()
         session.verify_source(self.BASE)
