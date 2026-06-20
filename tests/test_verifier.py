@@ -3792,19 +3792,21 @@ private data Pair { Pair(Int, Int) }
 type RP = { @Pair | true };
 
 public fn f(@RP -> @Int)
-  requires(true) ensures(@Int.result == @Int.result) effects(pure)
+  requires(true) ensures(@Int.result == 0) effects(pure)
 {
   match @RP.0 {
-    Pair(@Int, @Int) -> @Int.1
+    Pair(@Int, @Int) -> @Int.1 - @Int.1
   }
 }
 """)
-        # The postcondition references the result, forcing the verifier to model
-        # it THROUGH the match projection — so this exercises the ADT-sort
-        # declaration rather than passing vacuously on a trivial `ensures(true)`
-        # that never needs the body modelled.  No E522 (undecidable body)
-        # confirms the refined-ADT base translated rather than falling to a
-        # scalar-Int sort (CR PR-review).
+        # The postcondition is NON-tautological (`result == 0`) and the body
+        # returns `@Int.1 - @Int.1`, so the verifier must model the result
+        # THROUGH the match projection of the second Pair component and prove it
+        # cancels to 0 — genuinely exercising the ADT-sort declaration rather
+        # than passing vacuously (a tautological `result == result`, or a
+        # trivial `ensures(true)`, would pass even if the projection path were
+        # unconstrained).  No E522 (undecidable body) confirms the refined-ADT
+        # base translated rather than falling to a scalar-Int sort (CR PR-review).
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert [d for d in result.diagnostics if d.error_code == "E522"] == []
 
