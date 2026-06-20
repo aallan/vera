@@ -771,6 +771,17 @@ class ContractVerifier:
         type_aliases: dict[str, ast.TypeExpr] = {}
         type_alias_params: dict[str, tuple[str, ...]] = {}
         fn_ret_types: dict[str, str] = {}
+
+        def record_fn_ret_type(fn: ast.FnDecl) -> None:
+            # Include `where` helpers too: discovery scans their bodies, so a
+            # call inferring a type var from a where-helper's return must find
+            # that helper in fn_ret_types (PR #767 review).
+            ret_name = self._simple_type_name(fn.return_type)
+            if ret_name is not None:
+                fn_ret_types[fn.name] = ret_name
+            for wfn in fn.where_fns or ():
+                record_fn_ret_type(wfn)
+
         for tld in disc_program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.TypeAliasDecl):
@@ -778,9 +789,7 @@ class ContractVerifier:
                 if decl.type_params:
                     type_alias_params[decl.name] = decl.type_params
             elif isinstance(decl, ast.FnDecl):
-                ret_name = self._simple_type_name(decl.return_type)
-                if ret_name is not None:
-                    fn_ret_types[decl.name] = ret_name
+                record_fn_ret_type(decl)
 
         return MonoContext(
             generic_decls=generic_decls,
@@ -958,17 +967,27 @@ class ContractVerifier:
         errs_by_instance: dict[tuple[str, ...], list[Diagnostic]] = {}
         for concrete, obls, errs in per_instance:
             errs_by_instance[concrete] = errs
+            # Per-instance ordinal among obligations sharing a source site:
+            # projection/destructure paths can record several distinct
+            # obligations of the same kind at the same node (e.g. each component
+            # of a tuple destructure), and an instantiation produces them in the
+            # same order, so the ordinal distinguishes them WITHIN an instance
+            # while still merging the k-th across instances (PR #767 review).
+            occurrences: dict[str, int] = {}
             for ob in obls:
                 # Group by SOURCE SITE, not content_key(): content_key() folds
                 # in expr_text, which is monomorphised (`@Int...` vs `@Bool...`),
                 # so the same source obligation would split per instantiation and
-                # the meet would no longer be one result per site (PR #767 review).  Fall
-                # back to content_key() only for span-less obligations.
-                key = (
+                # the meet would no longer be one result per site (PR #767
+                # review).  Fall back to content_key() only for span-less obls.
+                base_key = (
                     f"{ob.fn_name}\x1f{ob.kind}\x1f{ob.line}\x1f{ob.column}"
                     if ob.line or ob.column
                     else ob.content_key()
                 )
+                ordinal = occurrences.get(base_key, 0)
+                occurrences[base_key] = ordinal + 1
+                key = f"{base_key}\x1f{ordinal}"
                 if key not in groups:
                     groups[key] = []
                     order.append(key)
