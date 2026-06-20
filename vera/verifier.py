@@ -849,8 +849,16 @@ class ContractVerifier:
                 fn.body, generic_decls, ctor_to_adt, into,
             )
             for contract in fn.contracts:
-                pred = getattr(contract, "expr", None)
-                if pred is not None:
+                # Requires/Ensures/Invariant carry a single `.expr`; Decreases
+                # carries `.exprs` (a tuple of termination measures).  Walk all
+                # of them so a generic reachable only through a decreases clause
+                # is discovered, not silently degraded to the E520 Tier-3
+                # fallback (PR #767 review).
+                preds = list(getattr(contract, "exprs", ()) or ())
+                single = getattr(contract, "expr", None)
+                if single is not None:
+                    preds.append(single)
+                for pred in preds:
                     mono.collect_calls_in_expr(
                         pred, generic_decls, ctor_to_adt, into,
                     )

@@ -4945,6 +4945,33 @@ private fn checker(@Nat, @Nat -> @Bool)
         assert len(errs) == 1
         assert "instantiated at bad_dec<Bool>" in errs[0].description
 
+    def test_generic_reached_only_via_decreases_is_verified(self) -> None:
+        """A generic reachable only from a `decreases(...)` measure is discovered
+        and verified.  Decreases is the one Contract subclass that holds its
+        predicates in `.exprs` (a tuple) rather than `.expr`, so a contract walk
+        reading only `.expr` silently skipped it (PR #767 review) — degrading
+        such a generic to the E520 Tier-3 fallback and missing its body bug.  The
+        first lexicographic component (`@Nat.0`) carries termination; the second
+        only has to be discovered."""
+        result = _verify("""
+private forall<T>
+fn bad_measure(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, bad_measure(@Nat.0, 0, true))
+  effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { countdown(@Nat.0 - 1) } }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at bad_measure<Bool>" in errs[0].description
+
     def test_typevar_contract_aggregates_across_instantiations(self) -> None:
         """A generic whose contract references @T renders different expr_text per
         instantiation; the meet must group by SOURCE SITE so it stays ONE
