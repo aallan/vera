@@ -831,12 +831,20 @@ class ContractVerifier:
         def collect_calls_in_fn(
             fn: ast.FnDecl, into: dict[str, set[tuple[str, ...]]],
         ) -> None:
-            # Walk the body AND any `where` helpers: a generic reachable only
-            # from a where-helper would otherwise be missed by discovery and
-            # take the uninstantiated fallback, skipping its body checks (#864).
+            # Walk the body, the contract clauses, AND any `where` helpers: a
+            # generic reachable only from a where-helper or a contract predicate
+            # (e.g. `ensures(is_valid(@T.result))`) would otherwise be missed by
+            # discovery and take the uninstantiated fallback, skipping its body
+            # checks (PR #767 review).
             mono.collect_calls_in_expr(
                 fn.body, generic_decls, ctor_to_adt, into,
             )
+            for contract in fn.contracts:
+                pred = getattr(contract, "expr", None)
+                if pred is not None:
+                    mono.collect_calls_in_expr(
+                        pred, generic_decls, ctor_to_adt, into,
+                    )
             for wfn in fn.where_fns or ():
                 collect_calls_in_fn(wfn, into)
 
@@ -954,7 +962,7 @@ class ContractVerifier:
                 # Group by SOURCE SITE, not content_key(): content_key() folds
                 # in expr_text, which is monomorphised (`@Int...` vs `@Bool...`),
                 # so the same source obligation would split per instantiation and
-                # the meet would no longer be one result per site (#962).  Fall
+                # the meet would no longer be one result per site (PR #767 review).  Fall
                 # back to content_key() only for span-less obligations.
                 key = (
                     f"{ob.fn_name}\x1f{ob.kind}\x1f{ob.line}\x1f{ob.column}"
@@ -985,7 +993,7 @@ class ContractVerifier:
                 self.summary.total += 1
                 # Re-emit the representative Tier-3 warning (E506 etc.) so an
                 # instantiated generic surfaces it like the non-generic path,
-                # not only bumping the counter (#972).  Informational, so no
+                # not only bumping the counter (PR #767 review).  Informational, so no
                 # diagnostic is synthesized if the instance emitted none.
                 self._emit_aggregated_diagnostic(
                     decl, members, rep_concrete, rep_ob, errs_by_instance,
@@ -1052,7 +1060,7 @@ class ContractVerifier:
         # diagnostic matched, so surface it straight from the obligation.  A
         # violated `ensures` records no error_code (its canonical diagnostic
         # E500 comes from the emitter), so restore it here — synthesised
-        # diagnostics must stay error-code-stable (#1037).
+        # diagnostics must stay error-code-stable (PR #767 review).
         synth_error_code = rep_ob.error_code or (
             "E500" if rep_ob.kind == "ensures" else ""
         )

@@ -4842,7 +4842,7 @@ private fn use_int(@Nat, @Nat -> @Nat)
         postcondition records its obligation with no error_code while its
         diagnostic carries E500, so the aggregation must correlate by
         (severity, span) — not error code — or it silently drops the violation
-        (a false Tier-1).  Regression for the PR #767 review finding."""
+        (a false Tier-1).  Regression for the the PR #767 review."""
         result = _verify("""
 private forall<T>
 fn bad_id(@Int, @T -> @Int)
@@ -4895,40 +4895,56 @@ private fn caller(@Nat, @Nat -> @Nat)
         assert len(errs) == 1
         assert "instantiated at inner<Bool>" in errs[0].description
 
-    def test_generic_in_unwalked_position_degrades_to_tier3(self) -> None:
-        """A generic reachable ONLY from a position the discovery walk does not
-        descend into (here, inside an `ArrayLit`) is not discovered, so it
-        degrades to the never-instantiated Tier-3 residual — NOT a false Tier-1.
-
-        This is sound because codegen's monomorphizer shares the identical walk:
-        it would equally fail to monomorphize the generic, making the program a
-        compile error (a dangling clone) rather than producing a runtime
-        instance the verifier missed.  Pins that safe degradation; tracked for a
-        total-walk follow-up so a future codegen change can't turn it unsound."""
+    def test_generic_in_arraylit_is_discovered_and_verified(self) -> None:
+        """The discovery walk is TOTAL over Expr, so a generic reachable only
+        from inside an `ArrayLit` (a form the old explicit-arm walk skipped) is
+        discovered and verified — its body @Nat underflow is caught, not missed
+        into the Tier-3 fallback."""
         result = _verify("""
 private forall<T>
-fn g(@T -> @T)
-  requires(true)
-  ensures(@T.result == @T.0)
-  effects(pure)
-{ @T.0 }
-
-private fn caller(@Int -> @Array<Int>)
+fn dec(@Nat, @Nat, @T -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
-{ [g(@Int.0)] }
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Array<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [dec(@Nat.1, @Nat.0, true)] }
 """)
-        # g is NOT discovered (only used inside the ArrayLit) -> Tier-3 E520,
-        # never a clean Tier-1 that hides an unverified instantiation.
-        assert any(d.error_code == "E520" for d in result.diagnostics)
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at dec<Bool>" in errs[0].description
+
+    def test_generic_in_contract_clause_is_verified(self) -> None:
+        """A generic reachable only from a contract predicate (here an `ensures`)
+        is discovered and verified — discovery walks contract clauses, not just
+        the body and where-helpers — so its body bug is caught."""
+        result = _verify("""
+private forall<T>
+fn bad_dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn checker(@Nat, @Nat -> @Bool)
+  requires(true)
+  ensures(bad_dec(@Nat.1, @Nat.0, true) >= 0)
+  effects(pure)
+{ true }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at bad_dec<Bool>" in errs[0].description
 
     def test_typevar_contract_aggregates_across_instantiations(self) -> None:
         """A generic whose contract references @T renders different expr_text per
         instantiation; the meet must group by SOURCE SITE so it stays ONE
-        obligation, not one per instantiation (else summaries over-count) — #962
-        review finding."""
+        obligation, not one per instantiation (else summaries over-count) — from
+        the PR #767 review."""
         result = _verify("""
 private forall<T>
 fn idc(@T -> @T)
@@ -4956,7 +4972,7 @@ private fn use2(@Int, @Bool -> @Int)
     def test_generic_reached_only_via_where_helper_is_verified(self) -> None:
         """A generic reachable solely through a `where` helper is discovered and
         verified — its body bug is caught — not missed into the uninstantiated
-        Tier-3 fallback (#864 review finding)."""
+        Tier-3 fallback (the PR #767 review)."""
         result = _verify("""
 private forall<T>
 fn inner(@Nat, @Nat, @T -> @Nat)

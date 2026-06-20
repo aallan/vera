@@ -224,90 +224,50 @@ class Monomorphizer:
         ctor_to_adt: dict[str, str],
         instances: dict[str, set[tuple[str, ...]]],
     ) -> None:
-        """Walk an expression tree collecting generic call sites.
+        """Collect every generic call site reachable from ``expr``.
 
         Public because it is the shared discovery contract: both codegen
         (Pass 1.5) and the verifier (#732) drive it, and per-monomorphization
         verification is sound only if the verifier discovers a superset of what
-        codegen emits.  For that the set of ``Expr`` forms this recurses into
-        must be a superset of every form codegen can emit a generic call from.
-        It currently mirrors codegen's historical arms exactly (so a call in an
-        un-walked form — e.g. inside an ``ArrayLit``/``IndexExpr`` — is missed by
-        BOTH, making the program a compile error rather than a runtime instance
-        the verifier missed; it degrades to Tier-3, never a false Tier-1).
-        Making it total over ``Expr`` is tracked as a follow-up.
+        codegen emits.  The walk is TOTAL over the AST — it visits every child
+        via dataclass fields — so a generic call nested in ANY form
+        (``ArrayLit``, ``IndexExpr``, ``InterpolatedString``, a quantifier, …)
+        is discovered, not just the forms an explicit arm happened to list.
+
+        This is byte-identical for compiling programs: a generic call in a form
+        codegen can't lower would be a dangling reference, so any program that
+        DOES compile already has every generic call in a walked position; the
+        total walk only adds coverage for programs that wouldn't compile anyway.
         """
-        if isinstance(expr, ast.FnCall) and expr.name in generic_decls:
-            decl = generic_decls[expr.name]
+        self._collect_calls(expr, generic_decls, ctor_to_adt, instances)
+
+    def _collect_calls(
+        self,
+        node: object,
+        generic_decls: dict[str, ast.FnDecl],
+        ctor_to_adt: dict[str, str],
+        instances: dict[str, set[tuple[str, ...]]],
+    ) -> None:
+        """Total AST recursion underlying :meth:`collect_calls_in_expr`."""
+        if isinstance(node, ast.FnCall) and node.name in generic_decls:
+            decl = generic_decls[node.name]
             type_args = self._infer_type_args_from_call(
-                decl, expr, ctor_to_adt, generic_decls,
+                decl, node, ctor_to_adt, generic_decls,
             )
             if type_args is not None:
-                instances[expr.name].add(type_args)
-
-        # Recurse into sub-expressions
-        if isinstance(expr, ast.Block):
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    self.collect_calls_in_expr(
-                        stmt.value, generic_decls, ctor_to_adt, instances,
-                    )
-                elif isinstance(stmt, ast.ExprStmt):
-                    self.collect_calls_in_expr(
-                        stmt.expr, generic_decls, ctor_to_adt, instances,
-                    )
-            self.collect_calls_in_expr(
-                expr.expr, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.BinaryExpr):
-            self.collect_calls_in_expr(
-                expr.left, generic_decls, ctor_to_adt, instances,
-            )
-            self.collect_calls_in_expr(
-                expr.right, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.UnaryExpr):
-            self.collect_calls_in_expr(
-                expr.operand, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.IfExpr):
-            self.collect_calls_in_expr(
-                expr.condition, generic_decls, ctor_to_adt, instances,
-            )
-            self.collect_calls_in_expr(
-                expr.then_branch, generic_decls, ctor_to_adt, instances,
-            )
-            self.collect_calls_in_expr(
-                expr.else_branch, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.FnCall):
-            for arg in expr.args:
-                self.collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
+                instances[node.name].add(type_args)
+        if isinstance(node, ast.Node):
+            for f in fields(node):
+                if f.name == "span":
+                    continue
+                self._collect_calls(
+                    getattr(node, f.name), generic_decls, ctor_to_adt,
+                    instances,
                 )
-        elif isinstance(expr, ast.ConstructorCall):
-            for arg in expr.args:
-                self.collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
-                )
-        elif isinstance(expr, ast.MatchExpr):
-            self.collect_calls_in_expr(
-                expr.scrutinee, generic_decls, ctor_to_adt, instances,
-            )
-            for arm in expr.arms:
-                self.collect_calls_in_expr(
-                    arm.body, generic_decls, ctor_to_adt, instances,
-                )
-        elif isinstance(expr, ast.AnonFn):
-            # Recurse into closure bodies for generic call collection
-            self.collect_calls_in_expr(
-                expr.body, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.ModuleCall):
-            # C7e: recurse into ModuleCall args for generic call collection
-            for arg in expr.args:
-                self.collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
+        elif isinstance(node, (tuple, list)):
+            for item in node:
+                self._collect_calls(
+                    item, generic_decls, ctor_to_adt, instances,
                 )
 
     def _infer_type_args_from_call(
@@ -1009,7 +969,7 @@ class Monomorphizer:
         # parameterised mapping (T -> "Array<Int>") into base name + type_args,
         # mirroring the SlotRef/NamedType branches, so a generic postcondition's
         # @T.result becomes a canonical @Array<Int>.result rather than a
-        # non-canonical type_name="Array<Int>" with no type_args (#1021).
+        # non-canonical type_name="Array<Int>" with no type_args (PR #767 review).
         if isinstance(node, ast.ResultRef):
             mapped_name = mapping.get(node.type_name)
             new_res_args: tuple[ast.TypeExpr, ...] | None
