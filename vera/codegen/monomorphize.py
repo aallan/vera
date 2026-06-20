@@ -109,6 +109,12 @@ class MonomorphizationMixin:
             self._build_mono_context(generic_decls, ctor_to_adt),
         )
 
+        # Record of every (generic name, concrete types) actually emitted —
+        # i.e. that passed constraint checks.  Consumed by the #732 differential
+        # soundness test, which asserts the verifier discovers a superset of
+        # this set; harmless to WAT output (a plain bookkeeping set).
+        self._emitted_instances: set[tuple[str, tuple[str, ...]]] = set()
+
         # Collect concrete instantiations from non-generic function bodies
         instances: dict[str, set[tuple[str, ...]]] = {
             name: set() for name in generic_decls
@@ -146,6 +152,7 @@ class MonomorphizationMixin:
                 continue  # constraint violation — error emitted
             mono_fn = mono._monomorphize_fn(decl, concrete_types)
             mono_decls.append(mono_fn)
+            self._emitted_instances.add((fn_name, concrete_types))
             # Scan the monomorphized body for further generic calls
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls

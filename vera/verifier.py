@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
+from vera.monomorphize import MonoContext, Monomorphizer
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -666,6 +667,198 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+
+    # -- #732: per-monomorphization instantiation discovery ----------------
+
+    @staticmethod
+    def _simple_type_name(te: ast.TypeExpr) -> str | None:
+        """Return the base type name of a TypeExpr (refinement-unwrapped)."""
+        while isinstance(te, ast.RefinementType):
+            te = te.base_type
+        if isinstance(te, ast.NamedType):
+            return te.name
+        return None
+
+    def _build_mono_context(
+        self,
+        disc_program: ast.Program,
+        generic_decls: dict[str, ast.FnDecl],
+    ) -> MonoContext:
+        """Build a MonoContext for per-monomorphization discovery (#732).
+
+        Constructor/ADT metadata comes from the registered ``TypeEnv`` (which
+        already holds builtins + user types); type aliases and per-function
+        return-type names come from the prelude-injected program AST.  Aliases
+        must come from the AST because the env stores them as resolved semantic
+        ``Type``s, while the shared monomorphizer matches alias *TypeExpr*
+        shapes (e.g. ``isinstance(alias, ast.FnType)``).
+
+        ``fn_ret_types`` is built from declared AST return types — the *precise*
+        Vera type name (``Nat``, not the WAT-collapsed ``Int`` codegen uses).
+        That is sound: the verifier checks each generic body under the type the
+        checker proved actually flows, never a stricter one (a callee's own
+        verification guarantees its declared return type).
+        """
+        ctor_to_adt: dict[str, str] = {}
+        ctor_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        adt_tp_counts: dict[str, int] = {}
+
+        def _record_adt(
+            adt_name: str,
+            type_params: tuple[str, ...] | None,
+            ctors: list[tuple[str, tuple[str | None, ...] | None]],
+        ) -> None:
+            # ctors: (ctor_name, per-field bare-type-name|None) — a field's
+            # bare name resolves to its type-param index, mirroring codegen's
+            # _register_data exactly (`field_te.name in tp_index ? idx : None`).
+            tps = type_params or ()
+            adt_tp_counts[adt_name] = len(tps)
+            tp_index = {tp: i for i, tp in enumerate(tps)}
+            for cname, field_names in ctors:
+                ctor_to_adt[cname] = adt_name
+                ctor_tp_indices[cname] = (
+                    () if field_names is None
+                    else tuple(
+                        tp_index.get(fn) if fn is not None else None
+                        for fn in field_names
+                    )
+                )
+
+        # 1. Env data types: builtins (Option/Result/Json/Future/...) plus the
+        #    user ADTs the verifier registered (whose constructors live under
+        #    data_types[name].constructors, NOT the flat env.constructors).
+        for adt_name, adt in self.env.data_types.items():
+            _record_adt(adt_name, adt.type_params, [
+                (
+                    cname,
+                    None if cinfo.field_types is None else tuple(
+                        ft.name if isinstance(ft, TypeVar) else None
+                        for ft in cinfo.field_types
+                    ),
+                )
+                for cname, cinfo in adt.constructors.items()
+            ])
+
+        # 2. Prelude-injected DataDecls (e.g. Ordering) the env never registers,
+        #    read straight from the injected AST so codegen-only prelude ADTs are
+        #    covered too.  User ADTs reappear here and agree with step 1.
+        for tld in disc_program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.DataDecl):
+                _record_adt(decl.name, decl.type_params, [
+                    (
+                        ctor.name,
+                        None if ctor.fields is None else tuple(
+                            f.name if isinstance(f, ast.NamedType) else None
+                            for f in ctor.fields
+                        ),
+                    )
+                    for ctor in decl.constructors
+                ])
+
+        type_aliases: dict[str, ast.TypeExpr] = {}
+        type_alias_params: dict[str, tuple[str, ...]] = {}
+        fn_ret_types: dict[str, str] = {}
+        for tld in disc_program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.TypeAliasDecl):
+                type_aliases[decl.name] = decl.type_expr
+                if decl.type_params:
+                    type_alias_params[decl.name] = decl.type_params
+            elif isinstance(decl, ast.FnDecl):
+                ret_name = self._simple_type_name(decl.return_type)
+                if ret_name is not None:
+                    fn_ret_types[decl.name] = ret_name
+
+        return MonoContext(
+            generic_decls=generic_decls,
+            ctor_to_adt=ctor_to_adt,
+            ctor_tp_indices=ctor_tp_indices,
+            adt_tp_counts=adt_tp_counts,
+            type_aliases=type_aliases,
+            type_alias_params=type_alias_params,
+            fn_ret_types=fn_ret_types,
+        )
+
+    def _collect_instantiations(
+        self, program: ast.Program,
+    ) -> dict[str, set[tuple[str, ...]]]:
+        """Discover every concrete instantiation of each generic function (#732).
+
+        Runs the SAME discovery the codegen monomorphizer runs — via the shared
+        :class:`~vera.monomorphize.Monomorphizer` — over a *prelude-injected*
+        copy of the program, so the set covers prelude generics and user
+        generics reached transitively through prelude bodies.  Constraint-failing
+        instances are NOT filtered out (codegen prunes them, so this is a
+        superset — sound for verification, which only ever verifies user-authored
+        clones).  Sharing the discovery is what keeps this set in agreement with
+        what codegen emits; the #732 differential test pins that agreement.
+        """
+        from dataclasses import replace as _replace
+
+        from vera.prelude import inject_prelude
+
+        disc = _replace(program)
+        inject_prelude(disc)
+
+        generic_decls: dict[str, ast.FnDecl] = {}
+        for tld in disc.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+                generic_decls[decl.name] = decl
+        if not generic_decls:
+            return {}
+
+        ctx = self._build_mono_context(disc, generic_decls)
+        mono = Monomorphizer(ctx)
+        ctor_to_adt = ctx.ctor_to_adt
+
+        # Seed from non-generic bodies.
+        seed: dict[str, set[tuple[str, ...]]] = {
+            name: set() for name in generic_decls
+        }
+        for tld in disc.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
+                mono._collect_calls_in_expr(
+                    decl.body, generic_decls, ctor_to_adt, seed,
+                )
+
+        # Transitive closure: monomorphize each, rescan its body.  Mirrors the
+        # codegen worklist exactly, minus the constraint filter.
+        discovered: set[tuple[str, tuple[str, ...]]] = set()
+        worklist: list[tuple[str, tuple[str, ...]]] = [
+            (name, ct) for name, cts in seed.items() for ct in cts
+        ]
+        while worklist:
+            key = worklist.pop()
+            if key in discovered:
+                continue
+            discovered.add(key)
+            fn_name, concrete_types = key
+            if fn_name not in generic_decls:
+                continue
+            mono_fn = mono._monomorphize_fn(
+                generic_decls[fn_name], concrete_types,
+            )
+            transitive: dict[str, set[tuple[str, ...]]] = {
+                name: set() for name in generic_decls
+            }
+            mono._collect_calls_in_expr(
+                mono_fn.body, generic_decls, ctor_to_adt, transitive,
+            )
+            for t_name, t_types in transitive.items():
+                for t_ct in t_types:
+                    if (t_name, t_ct) not in discovered:
+                        worklist.append((t_name, t_ct))
+
+        result: dict[str, set[tuple[str, ...]]] = {
+            name: set() for name in generic_decls
+        }
+        for name, concrete_types in discovered:
+            if name in generic_decls:
+                result[name].add(concrete_types)
+        return result
 
     def verify_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then verify."""
