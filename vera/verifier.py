@@ -1048,9 +1048,16 @@ class ContractVerifier:
                     self._warning(
                         contract,
                         f"Cannot statically verify contract in generic function "
-                        f"'{decl.name}'. Contract will be checked at runtime.",
-                        rationale="Generic functions have type variables that "
-                                  "cannot be represented in the SMT solver.",
+                        f"'{decl.name}': it has no concrete instantiation in "
+                        f"this program, so there are no concrete types to check "
+                        f"it against. Each instantiation is verified "
+                        f"per-monomorphization (#732); an uninstantiated "
+                        f"generic's contract is enforced by the runtime guard "
+                        f"on any future monomorphization.",
+                        rationale="An uninstantiated generic has no concrete "
+                                  "types to monomorphize and verify, and type "
+                                  "variables cannot be represented directly in "
+                                  "the SMT solver.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E520",
                         tier=3,

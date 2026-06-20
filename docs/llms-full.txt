@@ -3132,7 +3132,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E504**: @Nat narrowing unverified and not runtime-guarded
 - **E505**: Refinement predicate may be violated at narrowing site
 - **E506**: Refinement narrowing not statically verified (Tier-3)
-- **E520**: Cannot verify contract (generic function)
+- **E520**: Cannot verify contract (generic function with no concrete instantiation)
 - **E521**: Cannot verify precondition (undecidable)
 - **E522**: Cannot verify postcondition (body undecidable)
 - **E523**: Cannot verify postcondition (expression undecidable)

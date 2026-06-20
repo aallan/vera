@@ -4702,3 +4702,136 @@ public forall<T> fn echo_f(@Float64, @T -> @NotHalf)
 { @Float64.0 }
 """, "may violate the refinement predicate")
         assert any(e.error_code == "E505" for e in errs)
+
+
+class TestPerMonomorphizationVerification:
+    """#732: instantiated generics are verified statically per monomorphization.
+
+    Before #732 a generic body skipped SMT entirely — every non-trivial
+    contract fell to Tier 3 (E520), a silent Tier-1 -> Tier-3 downgrade.  Now
+    each concrete instantiation is verified through the normal path, so body
+    obligations (a @Nat underflow, an `ensures`, a refined return) are actually
+    discharged — or caught.
+    """
+
+    def test_body_nat_underflow_caught_per_instantiation(self) -> None:
+        """An unguarded @Nat subtraction in a generic body — silently skipped
+        (Tier-3 E520) before #732 — is now caught, naming the instantiation."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1, "expected exactly one underflow diagnostic"
+        assert "instantiated at dec<Bool>" in errs[0].description
+        assert "underflow" in errs[0].description
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_sub" and o.status == "violated"]
+        assert len(violated) == 1
+        assert violated[0].fn_name == "dec"
+        assert violated[0].counterexample is not None
+
+    def test_body_nat_underflow_discharged_when_guarded(self) -> None:
+        """The same body verifies statically (Tier 1) when a precondition
+        guards it — the per-instance path PROVES, it does not merely reject."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert result.summary.tier3_runtime == 0
+        # the body's nat_sub obligation is discharged statically for dec<Bool>
+        assert any(o.kind == "nat_sub" and o.status == "verified"
+                   for o in result.obligations)
+
+    def test_never_instantiated_generic_stays_tier3(self) -> None:
+        """A generic with no call site cannot be monomorphized, so its
+        non-trivial contracts still fall to Tier 3 (E520) — the residual that
+        #732 deliberately leaves untouched."""
+        result = _verify("""
+private forall<T>
+fn unused(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+""")
+        assert result.summary.tier3_runtime == 1
+        e520 = [d for d in result.diagnostics if d.error_code == "E520"]
+        assert len(e520) == 1
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_collapsed_type_vars_verify_correctly(self) -> None:
+        """When two type vars collapse to the same concrete type (A=B=Int), the
+        De Bruijn reindex must keep slot references consistent — the contract
+        over the collapsed slots still discharges, with no false result."""
+        result = _verify("""
+private forall<A, B>
+fn pick_first(@A, @B -> @A)
+  requires(true)
+  ensures(@A.result == @A.0)
+  effects(pure)
+{ @A.0 }
+
+private fn use_same(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ pick_first(@Int.1, @Int.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        # pick_first<Int, Int>'s ensures discharges statically.
+        assert any(o.fn_name == "pick_first" and o.kind == "ensures"
+                   and o.status == "verified" for o in result.obligations)
+
+    def test_one_diagnostic_dedups_across_instantiations(self) -> None:
+        """A body bug reachable in several instantiations surfaces ONCE (deduped
+        to the source span), naming each offending instantiation — not N times."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn use_bool(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+
+private fn use_int(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, 7) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1, "one diagnostic per source site, not per instance"
+        assert "dec<Bool>" in errs[0].description
+        assert "dec<Int>" in errs[0].description
+        # exactly one violated nat_sub obligation, not one per instantiation
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_sub" and o.status == "violated"]
+        assert len(violated) == 1
