@@ -18,10 +18,12 @@ from vera import ast
 from vera.types import (
     AdtType,
     PrimitiveType,
+    RefinedType,
     Type,
     TypeVar,
     BOOL,
     FLOAT64,
+    INT,
     NAT,
     STRING,
 )
@@ -178,6 +180,12 @@ class SmtContext:
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
         self._path_conditions: list[z3.ExprRef] = []
+        # Optional hook (injected by the verifier) returning the source-type
+        # facts a constructor pattern's refined / @Nat sub-pattern bindings
+        # carry, so a match arm body's call PRECONDITIONS see them (CR
+        # PR-review).  Signature: (scrutinee_ast, scrutinee_z3, pattern, smt)
+        # -> list[z3 fact].  None when no verifier is driving (pure-SMT tests).
+        self._subpattern_fact_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -310,7 +318,15 @@ class SmtContext:
     def declare_adt(
         self, name: str, ty: Type,
     ) -> z3.ExprRef | None:
-        """Declare a Z3 constant of an ADT sort."""
+        """Declare a Z3 constant of an ADT sort.
+
+        Unwraps a refinement OVER an ADT base (`{ @Box | P }`) to its base
+        sort, so a refined-ADT param/return is declared with the ADT sort
+        rather than falling to ``declare_int`` (which would make a
+        pattern-match / projection see an Int term — a false Tier-3 or a Z3
+        sort failure; CR d338946).  Mirrors the array path's internal unwrap."""
+        if isinstance(ty, RefinedType):
+            ty = ty.base
         z3_sort = self._vera_type_to_z3_sort(ty)
         if z3_sort is None:
             return None
@@ -330,6 +346,17 @@ class SmtContext:
         Returns None for unsupported types (Unit, TypeVar, function types).
         String maps to z3.StringSort(); Float64 maps to z3.RealSort().
         """
+        if isinstance(ty, RefinedType):
+            # A refinement's Z3 SORT is its base's sort — the predicate
+            # constrains values, not the carrier set, and is enforced
+            # separately (as an assumption / obligation).  Unwrap HERE, not only
+            # at the `declare_adt` call site, so a refined type nested as a
+            # tuple component or constructor field (`Tuple<PosInt, Int>`,
+            # `Box(PosInt)`) resolves to its base sort instead of None — which
+            # would otherwise fail the enclosing tuple / datatype sort creation
+            # and silently degrade the whole structure to a weaker model (CR
+            # PR-review).
+            ty = ty.base
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
                 return z3.IntSort()
@@ -1182,6 +1209,38 @@ class SmtContext:
                 self.solver.add(z3_post)
         self._result_var = saved_result
 
+        # #746: a refined return type is an implicit postcondition — assume
+        # its predicate on the fresh call result so a caller can rely on a
+        # verified refined return (the producing function discharges the
+        # predicate at its return position).  Only the 5 statically-modelled
+        # primitive bases (Int/Nat/Bool/Float64/String) have a substitutable
+        # binder *and* a runtime-guarded producer; an unmodelled base such as
+        # `@Byte` or `@Unit` must NOT let the caller assume the predicate (for
+        # `@Unit` it isn't even runtime-guarded, so assuming e.g.
+        # `always_false(@Unit.0)` would add `false` → UNSAT → vacuously
+        # discharge the caller's own obligations).  The base-`@Nat` `>= 0` is
+        # already carried by the `declare_nat` above, so the predicate alone
+        # suffices here.
+        if isinstance(ret_type, RefinedType) and ret_type.base in (
+            INT,
+            NAT,
+            BOOL,
+            FLOAT64,
+            STRING,
+        ):
+            # Push the value under the predicate's ACTUAL binder name (alias-
+            # aware: `@Age.0` for `type Age = Nat; { @Age | @Age.0 >= 18 }`),
+            # not the resolved base name — otherwise the predicate's `@Age.0`
+            # won't resolve against `Nat` and `z3_pred` is None, silently
+            # dropping the refined-return fact so a caller can't rely on it (CR
+            # PR-review — the SMT analogue of the verifier/codegen binder fix).
+            binder = (ast.predicate_binder_name(ret_type.predicate)
+                      or ret_type.base.name)
+            inner_env = SlotEnv().push(binder, ret_var)
+            z3_pred = self.translate_expr(ret_type.predicate, inner_env)
+            if z3_pred is not None:
+                self.solver.add(z3_pred)
+
         return ret_var
 
     def _translate_block(
@@ -1210,6 +1269,22 @@ class SmtContext:
     # -----------------------------------------------------------------
     # Match and constructor translation
     # -----------------------------------------------------------------
+
+    def _arm_source_facts(
+        self, scrutinee_ast: ast.Expr, scrutinee_z3: z3.ExprRef,
+        pattern: ast.Pattern,
+    ) -> list[z3.ExprRef]:
+        """Source-type facts to assume while translating *pattern*'s arm body —
+        via the verifier-injected ``_subpattern_fact_hook`` — so a call
+        precondition inside the arm sees a refined sub-pattern binding's
+        invariant (CR PR-review).  Empty when no hook is set (pure-SMT tests)
+        or the pattern is not a constructor pattern."""
+        if (self._subpattern_fact_hook is None
+                or not isinstance(pattern, ast.ConstructorPattern)):
+            return []
+        facts = self._subpattern_fact_hook(
+            scrutinee_ast, scrutinee_z3, pattern, self)
+        return list(facts) if facts else []
 
     def _translate_match(
         self, expr: ast.MatchExpr, env: SlotEnv
@@ -1244,7 +1319,24 @@ class SmtContext:
         # Default arm: none of the preceding patterns matched
         for pc in preceding_conds:
             self._path_conditions.append(z3.Not(pc))
+        last_facts = self._arm_source_facts(
+            expr.scrutinee, scrutinee, arms[-1].pattern)
+        for f in last_facts:
+            self._path_conditions.append(f)
+            # Global implication: the fact holds whenever THIS (default) arm is
+            # taken — i.e. no preceding pattern matched — so the refined-RETURN
+            # goal (checked after this match translates, once path conditions
+            # have popped) can use `arm-taken => fact`, not only the in-arm
+            # precondition checks that read `_path_conditions` live (CR
+            # PR-review).  Empty preceding ⇒ irrefutable arm ⇒ unconditional.
+            if preceding_conds:
+                self.solver.add(z3.Implies(
+                    z3.And(*[z3.Not(pc) for pc in preceding_conds]), f))
+            else:
+                self.solver.add(f)
         result = self.translate_expr(arms[-1].body, last_env)
+        for _ in last_facts:
+            self._path_conditions.pop()
         for _ in preceding_conds:
             self._path_conditions.pop()
 
@@ -1261,7 +1353,18 @@ class SmtContext:
                 return None
 
             self._path_conditions.append(cond)
+            arm_facts = self._arm_source_facts(
+                expr.scrutinee, scrutinee, arm.pattern)
+            for f in arm_facts:
+                # Global implication `arm-matched => fact` (see the default-arm
+                # note) so the refined-return goal sees it after the path
+                # conditions pop, while the live `_path_conditions` push covers
+                # in-arm precondition checks.
+                self.solver.add(z3.Implies(cond, f))
+                self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
+            for _ in arm_facts:
+                self._path_conditions.pop()
             self._path_conditions.pop()
 
             if arm_body is None:  # pragma: no cover

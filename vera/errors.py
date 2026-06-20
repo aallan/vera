@@ -500,6 +500,8 @@ ERROR_CODES: dict[str, str] = {
     "E502": "@Nat subtraction underflow obligation not discharged",
     "E503": "@Nat binding-site narrowing may be negative",
     "E504": "@Nat narrowing unverified and not runtime-guarded",
+    "E505": "Refinement predicate may be violated at narrowing site",
+    "E506": "Refinement narrowing not statically verified (Tier-3)",
     "E520": "Cannot verify contract (generic function)",
     "E521": "Cannot verify precondition (undecidable)",
     "E522": "Cannot verify postcondition (body undecidable)",
@@ -524,6 +526,7 @@ ERROR_CODES: dict[str, str] = {
     "E614": "Program contains typed holes",
     "E615": "Cannot interpolate value of unknown type",
     "E616": "Cannot infer closure return type for call_indirect",
+    "E617": "Refinement predicate not compilable to runtime guard",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

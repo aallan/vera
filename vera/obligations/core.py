@@ -50,6 +50,10 @@ ObligationKind = Literal[
     "nat_bind",   # @Int value narrowing into a @Nat slot at a binding
                   # site — let / call-arg / effect-op-arg / ctor-field /
                   # match-bind / destructure (#552, generalising #520)
+    "refine_bind",  # a value narrowing into a user RefinedType slot at a
+                    # binding site or return position — the predicate must
+                    # hold (#746, generalising nat_bind from the baked-in
+                    # `>= 0` to an arbitrary translated predicate)
     "call_pre",   # callee precondition at a call site (#C7d); recorded
                   # only on violation in Phase A — successful call-site
                   # checks discharge silently inside the SMT layer and
@@ -61,9 +65,13 @@ ObligationStatus = Literal[
     "violated",  # Z3 produced a counterexample; an error was emitted
     "tier3",     # outside the decidable fragment; runtime check emitted
     "timeout",   # solver returned unknown; falls back to runtime check
-    "tier3_unguarded",  # untranslatable/timeout at a non-let narrowing
-                        # site with no runtime guard — surfaced as an E504
-                        # warning, excluded from totals (#552/#747)
+    "tier3_unguarded",  # untranslatable/timeout at a narrowing site with no
+                        # runtime guard, excluded from totals — surfaced as an
+                        # E504 warning for an unguarded @Nat narrowing
+                        # (nat_bind, #552/#747) or an E506 warning for an
+                        # *internal* refinement narrowing (refine_bind, #746:
+                        # let / field / match / destructure — boundary sites
+                        # ARE runtime-guarded and recorded `tier3` instead)
 ]
 
 

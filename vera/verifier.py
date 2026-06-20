@@ -41,12 +41,14 @@ from vera.types import (
     AdtType,
     EffectRowType,
     FunctionType,
+    PrimitiveType,
     PureEffectRow,
     RefinedType,
     Type,
     TypeVar,
     contains_typevar,
     substitute,
+    types_equal,
 )
 
 
@@ -238,6 +240,30 @@ class ContractVerifier:
             return False
         target = self._target_type_of(arg)
         return target is not None and self._is_nat_type(target)
+
+    def _refined_binding_target(
+        self, arg: ast.Expr, formal: Type | None
+    ) -> "Type | None":
+        """The user ``RefinedType`` *arg* narrows into, or None (#746).
+
+        The refinement analogue of :py:meth:`_nat_binding_target`, returning
+        the target *type* (the discharge needs its predicate) rather than a
+        bool.  A concretely-refined *formal* obligates without the side-table;
+        a generic (``TypeVar``) formal instantiated to a ``RefinedType`` at
+        this call site — or a desugared pipe argument, where ``formal`` is
+        ``None`` — is recovered from the checker's recorded *instantiated
+        target* for *arg* (#747).  A concretely-typed non-refined formal is
+        never second-guessed via the table, so concrete sites stay
+        table-independent.
+        """
+        if formal is not None and self._is_refined_type(formal):
+            return formal
+        if formal is not None and not contains_typevar(formal):
+            return None
+        target = self._target_type_of(arg)
+        if target is not None and self._is_refined_type(target):
+            return target
+        return None
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -681,6 +707,16 @@ class ContractVerifier:
                         decl.name, self._contract_kind(contract),
                         contract, "verified",
                     )
+            # #746/#555: a *concrete* refined return on a generic function is
+            # T-independent, so it can be discharged statically even though the
+            # generic body otherwise skips SMT — catching e.g.
+            # `forall<T> fn bad(@T -> @PosInt) { 0 }`.  The runtime guard covers
+            # it on the monomorphised instance regardless.
+            generic_ret = self._resolve_type(decl.return_type)
+            if (decl.body is not None
+                    and self._is_refined_type(generic_ret)
+                    and not contains_typevar(generic_ret)):
+                self._check_generic_refined_return(decl, generic_ret)
             return
 
         if self._shared_smt is not None:
@@ -699,6 +735,11 @@ class ContractVerifier:
                 fn_lookup=self.env.lookup_function,
                 module_fn_lookup=self._lookup_module_function,
             )
+        # CR PR-review: let the SMT match translation assume a constructor
+        # pattern's refined / @Nat sub-pattern SOURCE facts while checking the
+        # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
+        # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
+        smt._subpattern_fact_hook = self._subpattern_source_facts
         # Register all known ADTs with the SMT context.  Idempotent on
         # the warm path (same AdtInfo re-registered into the persistent
         # registry); kept per-function so cold and warm stay identical.
@@ -707,6 +748,12 @@ class ContractVerifier:
         slot_env = SlotEnv()
 
         # 1. Declare Z3 constants for parameters
+        # #746: a refined param is a value the caller proved satisfies the
+        # refinement (the matched half of the call-site discharge, R1), so its
+        # predicate is assumed into the body — parallel to declare_nat's
+        # implicit `>= 0`.  Collected here (where each param's Z3 var is in
+        # hand) and folded into `assumptions` below.
+        refined_param_assumptions: list[object] = []
         param_types = [self._resolve_type(p) for p in decl.params]
         for i, (param_te, param_ty) in enumerate(zip(decl.params, param_types)):
             type_name = self._type_expr_to_slot_name(param_te)
@@ -737,6 +784,17 @@ class ContractVerifier:
 
             slot_env = slot_env.push(type_name, var)
 
+            # #746: assume a refined param's predicate.  The base sort is
+            # already correct (the `_is_*_type` helpers above see through
+            # RefinedType to the base); here we additionally constrain the var
+            # to satisfy the predicate.  An untranslatable predicate / non-
+            # primitive base yields None and is simply not assumed (the param
+            # is unconstrained beyond its base — sound, never over-assumed).
+            if self._is_refined_type(param_ty):
+                pred = self._translate_refined_predicate(smt, param_ty, var)
+                if pred is not None:
+                    refined_param_assumptions.append(pred)
+
         # 2. Declare result variable
         ret_type = self._resolve_type(decl.return_type)
         if self._is_nat_type(ret_type):
@@ -759,7 +817,10 @@ class ContractVerifier:
         smt.set_result_var(result_var)
 
         # 3. Collect precondition assumptions
-        assumptions: list[object] = []  # Z3 BoolRef expressions
+        # Seed with the refined-param predicates (#746) so they are both
+        # asserted into the solver (step 4) and available to every binding-site
+        # and return-position discharge below.
+        assumptions: list[object] = list(refined_param_assumptions)
         for contract in decl.contracts:
             if isinstance(contract, ast.Requires):
                 self.summary.total += 1
@@ -949,6 +1010,52 @@ class ContractVerifier:
                         error_code="E524",
                         tier=3,
                     )
+
+        # 7b. Verify a refined return type's predicate (#746).
+        #     A declared return refinement `{ @Base | P }` is an obligation on
+        #     the body's result — structurally an ensures clause drawn from the
+        #     type.  The predicate is substituted with the *body* result term
+        #     (its self-contained `@<base>.0` binder, NOT `@result`), so this is
+        #     independent of the ensures `set_result_var` machinery (R5: a wrong
+        #     binder would leave the predicate unconstrained and silently
+        #     verify — covered by an explicit violating-return test).  Bare
+        #     @Nat returns stay on their own (unobligated) path — #758 — so
+        #     only true RefinedTypes are discharged here; a refinement *over*
+        #     @Nat is a RefinedType and IS checked (`>= 0 && P`).
+        if decl.body is not None and self._is_refined_type(ret_type):
+            ret_node: ast.Expr = decl.body
+            self.summary.total += 1
+            goal = (
+                self._translate_refined_predicate(smt, ret_type, body_expr)
+                if body_expr is not None else None
+            )
+            if goal is None:
+                # Untranslatable body / predicate / non-primitive base — Tier 3
+                # checked by the codegen return guard (guarded), never a silent
+                # pass (R7).
+                self._record_refined_bind_tier3(
+                    decl, ret_node, "return type",
+                    guarded=not self._is_unit_refinement(ret_type))
+            else:
+                ret_result = smt.check_valid(goal, list(assumptions))
+                if ret_result.status == "verified":
+                    self.summary.tier1_verified += 1
+                    self._record_obligation(
+                        decl.name, "refine_bind", ret_node, "verified")
+                elif ret_result.status == "violated":
+                    self.summary.total -= 1  # don't count — it's an error
+                    self._record_obligation(
+                        decl.name, "refine_bind", ret_node, "violated",
+                        error_code="E505",
+                        counterexample=ret_result.counterexample,
+                    )
+                    self._report_refined_binding(
+                        decl, ret_node, ret_type, "return type",
+                        ret_result.counterexample,
+                    )
+                else:  # pragma: no cover — solver timeout
+                    self._record_refined_bind_tier3(
+                        decl, ret_node, "return type", guarded=True)
 
         # 8. Handle decreases clauses — attempt verification
         # Build mutual recursion group for decreases checking
@@ -1497,7 +1604,20 @@ class ContractVerifier:
             right = expr.right
             if isinstance(right, (ast.FnCall, ast.ModuleCall)):
                 for arg in (expr.left, *right.args):
-                    if (self._nat_binding_target(arg, None)
+                    # #746: a piped argument into a refined formal is recovered
+                    # the same way — `_refined_binding_target(arg, None)` reads
+                    # the desugared call's instantiated target from the
+                    # side-table, so `(0 - 5) |> takesPosInt()` is obligated
+                    # rather than silently accepted.
+                    refined_target = self._refined_binding_target(arg, None)
+                    if (refined_target is not None
+                            and self._narrows_into_refined(arg, refined_target)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, refined_target, smt, slot_env,
+                            assumptions, site="call argument",
+                            guarded=True,
+                        )
+                    elif (self._nat_binding_target(arg, None)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
@@ -1528,7 +1648,22 @@ class ContractVerifier:
                 # formal — as for generic constructor fields and effect-op
                 # formals.
                 for arg, formal in zip(expr.args, param_types):
-                    if (self._nat_binding_target(arg, formal)
+                    # #746: a refined formal is the matched half of param-assume
+                    # (R1) — the caller proves the argument satisfies the
+                    # refinement here.  `_refined_binding_target` recovers a
+                    # concrete refined formal AND a generic formal instantiated
+                    # to a RefinedType at this call site (from the side-table).
+                    # Refined-first so a refinement-over-@Nat formal discharges
+                    # its full predicate rather than only `>= 0` (R9).
+                    refined_target = self._refined_binding_target(arg, formal)
+                    if (refined_target is not None
+                            and self._narrows_into_refined(arg, refined_target)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, refined_target, smt, slot_env,
+                            assumptions, site="call argument",
+                            guarded=True,
+                        )
+                    elif (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
@@ -1555,7 +1690,18 @@ class ContractVerifier:
             ci = self._lookup_constructor_info(expr.name)
             if ci is not None and ci.field_types is not None:
                 for arg, field_ty in zip(expr.args, ci.field_types):
-                    if (self._nat_binding_target(arg, field_ty)
+                    # #746: a refined field obligates the argument against its
+                    # predicate (refined-first); `_refined_binding_target` also
+                    # recovers a generic field instantiated to a RefinedType.
+                    refined_target = self._refined_binding_target(arg, field_ty)
+                    if (refined_target is not None
+                            and self._narrows_into_refined(arg, refined_target)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, refined_target, smt, slot_env,
+                            assumptions, site="constructor field",
+                            guarded=False,
+                        )
+                    elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
@@ -1564,6 +1710,52 @@ class ContractVerifier:
                             # field instantiated to @Nat here erases to i64, so
                             # an untranslatable arg is genuinely unguarded.
                             guarded=self._is_nat_type(field_ty),
+                        )
+            else:
+                # `Tuple` (and any other built-in carrier) is NOT user-
+                # registered, so `_lookup_constructor_info` is None and the
+                # field-obligation loop above is skipped — which left a refined
+                # component built in value / call-argument / return position
+                # UNobligated, a false Tier-1 / silent negative (the user-ADT
+                # case above already obligates its fields).  Recover the
+                # component *target* types from the construction site's expected
+                # type and obligate each refined / @Nat component, mirroring the
+                # field path (#746; PR-review-found gap, the #758 analogue for
+                # refinement components).  guarded=False — codegen does not
+                # component-guard a tuple value.
+                target = self._target_type_of(expr)
+                if isinstance(target, RefinedType):
+                    # A refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`)
+                    # hides the `Tuple` base, so unwrap it before reading the
+                    # component types — else the refined components are
+                    # statically UNobligated (a false Tier-1, though codegen
+                    # runtime-guards them) (CR PR-review).
+                    target = target.base
+                comp_types = (
+                    target.type_args
+                    if isinstance(target, AdtType)
+                    and len(target.type_args) == len(expr.args)
+                    else ()
+                )
+                for arg, comp_ty in zip(expr.args, comp_types):
+                    if (self._is_refined_type(comp_ty)
+                            and self._narrows_into_refined(arg, comp_ty)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, comp_ty, smt, slot_env, assumptions,
+                            site="tuple component", guarded=False,
+                        )
+                    elif (self._is_nat_type(comp_ty)
+                            and self._narrows_into_nat(arg)):
+                        # guarded=False, like the refined path above: codegen
+                        # does not component-guard a tuple *at construction*, so
+                        # an untranslatable @Nat component must record an honest
+                        # E504 / tier3_unguarded, NOT a tier3_runtime that
+                        # claims a runtime check the construction site never
+                        # emits (CR PR-review — the boundary guard is a separate
+                        # site, not this one).
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="tuple component", guarded=False,
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -1583,7 +1775,18 @@ class ContractVerifier:
                 # instantiated target (`_nat_binding_target`, #747), as for
                 # generic constructor fields.
                 for arg, formal in zip(expr.args, param_types):
-                    if (self._nat_binding_target(arg, formal)
+                    # #746: a refined effect-op formal obligates the argument
+                    # against its predicate (refined-first); the side-table also
+                    # recovers a generic formal instantiated to a RefinedType.
+                    refined_target = self._refined_binding_target(arg, formal)
+                    if (refined_target is not None
+                            and self._narrows_into_refined(arg, refined_target)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, refined_target, smt, slot_env,
+                            assumptions, site="effect-operation argument",
+                            guarded=False,
+                        )
+                    elif (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
@@ -1634,25 +1837,57 @@ class ContractVerifier:
 
         if isinstance(expr, ast.Block):
             cur_env = slot_env
+            # Block-local assumptions: a refined/@Nat slot bound by a let or
+            # destructure in this block seeds its *source* type's invariant
+            # here, so a later re-narrowing in the same block can discharge
+            # against it (#746).  We copy rather than mutate the shared
+            # `assumptions` list: a seeded fact is valid only within this
+            # block's scope — leaking it into a sibling scope (e.g. across
+            # match arms, which share the caller's `assumptions`) would be
+            # unsound (a fact established on one arm's binding does not hold on
+            # another's).
+            block_assumptions = list(assumptions)
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    # Site 1: `let @Nat = <Int>`.
+                    # Site 1: `let @Nat = <Int>` / `let @Refined = <value>`.
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
+                        decl, stmt.value, smt, cur_env, block_assumptions,
                     )
-                    if (self._is_nat_type(self._resolve_type(stmt.type_expr))
+                    let_ty = self._resolve_type(stmt.type_expr)
+                    # Refined-first: a refinement-over-@Nat let discharges its
+                    # full predicate (`>= 0 && P`) rather than only `>= 0` via
+                    # the nat path; a bare @Nat let stays on the nat path (R9).
+                    if (self._is_refined_type(let_ty)
+                            and self._narrows_into_refined(stmt.value, let_ty)):
+                        self._check_refined_binding_obligation(
+                            decl, stmt.value, let_ty, smt, cur_env,
+                            block_assumptions,
+                            site="let binding", guarded=False,
+                        )
+                    elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
                         self._check_nat_binding_obligation(
-                            decl, stmt.value, smt, cur_env, assumptions,
+                            decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
                         )
                     # Rebind the let slot in cur_env so a later obligation
                     # translates against this value, not a stale outer binding
-                    # of the same slot name.  An untranslatable RHS (e.g.
-                    # `let @Int = E.next(())`) falls back to a fresh slot var
-                    # carrying its type invariant only, so the stale outer
-                    # binding is never reused for a later obligation — mirrors
-                    # the destructure path (CodeRabbit, PR #748).
+                    # of the same slot name.  When the RHS translates, `val` is
+                    # its exact term — and `translate_expr` already asserts a
+                    # refined-return predicate / `declare_nat`'s `>= 0` on a
+                    # call result (#746), so a later re-narrowing of the bound
+                    # slot (`let @NonNeg = @PosInt.0` after `let @PosInt =
+                    # mk()`) discharges with no extra seeding here.  An
+                    # untranslatable RHS (e.g. `let @Int = E.next(())`) falls
+                    # back to a fresh slot var carrying its type invariant only,
+                    # so the stale outer binding is never reused for a later
+                    # obligation — mirrors the destructure path (PR #748).  We
+                    # deliberately do NOT seed the resolved source type over a
+                    # fresh fallback var: a fresh var is disconnected from the
+                    # value, so asserting its declared type would be an
+                    # unchecked assumption (and the checker types `0 - 5` as
+                    # `Nat`, so `>= 0` over the value `-5` would vacuously
+                    # discharge later obligations).
                     val = smt.translate_expr(stmt.value, cur_env)
                     if val is None:
                         val = self._fresh_slot_var(smt, stmt.type_expr)
@@ -1668,17 +1903,29 @@ class ContractVerifier:
                     # component-wise out of the translated RHS, now that the
                     # SMT layer models a tuple as a projectable datatype.
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.value, smt, cur_env, assumptions,
+                        decl, stmt.value, smt, cur_env, block_assumptions,
                     )
                     lit_args: tuple[ast.Expr, ...] = ()
                     if (isinstance(stmt.value, ast.ConstructorCall)
                             and stmt.value.name == stmt.constructor):
                         lit_args = stmt.value.args
                         for te, sub in zip(stmt.type_bindings, lit_args):
-                            if (self._is_nat_type(self._resolve_type(te))
+                            comp_ty = self._resolve_type(te)
+                            # #746: a refined tuple component obligates its
+                            # sub-expression against the predicate (refined-
+                            # first, mirroring the let site).
+                            if (self._is_refined_type(comp_ty)
+                                    and self._narrows_into_refined(sub, comp_ty)):
+                                self._check_refined_binding_obligation(
+                                    decl, sub, comp_ty, smt, cur_env,
+                                    block_assumptions,
+                                    site="tuple destructure",
+                                    guarded=False,
+                                )
+                            elif (self._is_nat_type(comp_ty)
                                     and self._narrows_into_nat(sub)):
                                 self._check_nat_binding_obligation(
-                                    decl, sub, smt, cur_env, assumptions,
+                                    decl, sub, smt, cur_env, block_assumptions,
                                     site="tuple destructure",
                                 )
                     else:
@@ -1686,36 +1933,95 @@ class ContractVerifier:
                         # components out of the translated RHS and obligate
                         # each @Nat narrowing.
                         self._obligate_destructure_narrowings(
-                            decl, stmt, smt, cur_env, assumptions)
+                            decl, stmt, smt, cur_env, block_assumptions)
                     # Rebind every destructured slot in cur_env so a later
-                    # obligation translates against the destructured value,
-                    # not a stale outer binding of the same slot name
-                    # (CodeRabbit, PR #748).  A literal component is
-                    # translated in the *outer* env first (avoiding same-type
-                    # self-shadowing); a non-literal source — or a component
-                    # the SMT layer can't translate — falls back to a fresh
-                    # slot var carrying only its type invariant, so the stale
-                    # outer binding is never reused for a later obligation.
+                    # obligation translates against the destructured value, not
+                    # a stale outer binding of the same slot name (PR #748).  A
+                    # literal component is translated in the *outer* env first
+                    # (avoiding same-type self-shadowing); a non-literal source —
+                    # or a component the SMT layer can't translate — falls back
+                    # to a fresh slot var carrying only its type invariant, so
+                    # the stale outer binding is never reused.
+                    #
+                    # #746: alongside the rebind, seed the bound slot's *source*
+                    # component type fact into the block assumptions so a later
+                    # re-narrowing of that slot can discharge.  The fact is read
+                    # from the RHS's resolved tuple type (`type_args[i]`) and is
+                    # only seeded when (a) the source value PROVABLY has that
+                    # type and (b) the component is non-literal — see the gate
+                    # below.  It is never the (possibly-unproven) target
+                    # sub-pattern type, so a component whose source genuinely
+                    # lacks the fact still obligates and (correctly) errors.
+                    src_tuple_ty = self._resolved_type_of(stmt.value)
+                    if isinstance(src_tuple_ty, RefinedType):
+                        # A refined tuple source (`{ @Tuple<PosInt, Int> | P }`)
+                        # hides the `Tuple` base; unwrap it so the component
+                        # source facts are seeded — else a later re-narrowing of
+                        # a component (`@PosInt.0` into `@NonNeg`) wrongly errors
+                        # E505 for want of the invariant the source carries (CR
+                        # PR-review).
+                        src_tuple_ty = src_tuple_ty.base
+                    src_args = (
+                        src_tuple_ty.type_args
+                        if isinstance(src_tuple_ty, AdtType)
+                        else ()
+                    )
+                    # A source whose declared type the value PROVABLY has — a
+                    # `SlotRef` (a param/let access, guaranteed by R1's param-
+                    # assume / the let's own checked binding) or a call (its
+                    # callee discharged the return type) — lets us seed the
+                    # source component type's fact (below).  A literal
+                    # `ConstructorCall`, an `if`/`match`, or an arithmetic
+                    # source is EXCLUDED: the checker types those optimistically
+                    # (e.g. `Tuple(0 - 5, ...)` and `if ... Tuple(0 - 1, ...)`
+                    # are both typed `Tuple<Nat, Nat>`), embedding a deferred,
+                    # still-unproven narrowing — seeding `Nat`'s `>= 0` over the
+                    # value `-5`/`-1` would assert a falsehood and vacuously
+                    # discharge every later obligation.
+                    source_guaranteed = isinstance(
+                        stmt.value,
+                        (ast.SlotRef, ast.FnCall, ast.ModuleCall),
+                    )
                     pushed: list[tuple[str, object]] = []
+                    seeds: list[object] = []
                     for i, te in enumerate(stmt.type_bindings):
                         type_name = smt._type_expr_to_slot_name(te)
                         if type_name is None:
                             continue
                         slot_val: object | None = None
                         if i < len(lit_args):
+                            # Literal component: exact value; no seed needed.
                             slot_val = smt.translate_expr(lit_args[i], cur_env)
                         if slot_val is None:
+                            # Non-literal / untranslatable component: a fresh var
+                            # invalidates the stale outer binding (PR #748).
                             slot_val = self._fresh_slot_var(smt, te)
                         if slot_val is not None:
                             pushed.append((type_name, slot_val))
+                            # #746: seed the source component type's fact over
+                            # the bound var, so a later re-narrowing of this slot
+                            # (`let @NonNeg = @PosInt.0`) discharges against it.
+                            # Only for a guaranteed source and a non-literal
+                            # component (a literal's slot var is its exact value,
+                            # which carries its own entailments) — never the
+                            # (possibly-unproven) target sub-pattern type, so a
+                            # component whose source genuinely lacks the fact
+                            # still obligates and (correctly) errors.
+                            if (source_guaranteed and i >= len(lit_args)
+                                    and i < len(src_args)):
+                                comp_fact = self._term_source_fact(
+                                    smt, src_args[i], slot_val)
+                                if comp_fact is not None:
+                                    seeds.append(comp_fact)
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
+                    block_assumptions.extend(seeds)
                 elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
                     self._walk_for_nat_binding_obligations(
-                        decl, stmt.expr, smt, cur_env, assumptions,
+                        decl, stmt.expr, smt, cur_env, block_assumptions,
                     )
             self._walk_for_nat_binding_obligations(
-                decl, expr.expr, smt, cur_env, assumptions,
+                decl, expr.expr, smt, cur_env, block_assumptions,
             )
             return
 
@@ -1771,25 +2077,42 @@ class ContractVerifier:
                 if arm_cond_pushed:
                     smt._path_conditions.append(pat_cond)
                 try:
-                    # Site 4: top-level `match <Int> { @Nat -> ... }`.
-                    if (isinstance(arm.pattern, ast.BindingPattern)
-                            and self._is_nat_type(
-                                self._resolve_type(arm.pattern.type_expr))
-                            and self._narrows_into_nat(expr.scrutinee)):
-                        self._check_nat_binding_obligation(
-                            decl, expr.scrutinee, smt, slot_env, assumptions,
-                            site="match binding",
-                        )
+                    # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
+                    arm_assumptions = assumptions
+                    if isinstance(arm.pattern, ast.BindingPattern):
+                        pat_ty = self._resolve_type(arm.pattern.type_expr)
+                        # Refined-first (R9): a refinement-over-@Nat bind
+                        # discharges its full predicate, not only `>= 0`.
+                        if (self._is_refined_type(pat_ty)
+                                and self._narrows_into_refined(
+                                    expr.scrutinee, pat_ty)):
+                            self._check_refined_binding_obligation(
+                                decl, expr.scrutinee, pat_ty, smt, slot_env,
+                                assumptions, site="match binding",
+                                guarded=False,
+                            )
+                        elif (self._is_nat_type(pat_ty)
+                                and self._narrows_into_nat(expr.scrutinee)):
+                            self._check_nat_binding_obligation(
+                                decl, expr.scrutinee, smt, slot_env,
+                                assumptions, site="match binding",
+                            )
                     elif isinstance(arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
                         # non-@Nat ADT field — the @Int payload of
-                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
-                        self._obligate_subpattern_narrowings(
-                            decl, expr.scrutinee, scrutinee_z3, arm.pattern,
-                            smt, slot_env, assumptions,
+                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.  The
+                        # returned facts (each bound field's source-type
+                        # guarantee) are assumed for THIS arm's body only, so a
+                        # downstream narrowing depending on a binding's
+                        # invariant discharges instead of a false E503 (CR).
+                        arm_assumptions = assumptions + (
+                            self._obligate_subpattern_narrowings(
+                                decl, expr.scrutinee, scrutinee_z3,
+                                arm.pattern, smt, slot_env, assumptions,
+                            )
                         )
                     self._walk_for_nat_binding_obligations(
-                        decl, arm.body, smt, arm_env, assumptions,
+                        decl, arm.body, smt, arm_env, arm_assumptions,
                     )
                 finally:
                     if arm_cond_pushed:
@@ -2035,6 +2358,310 @@ class ContractVerifier:
             self._record_nat_bind_tier3(
                 decl, node, site, "timeout", guarded=True)
 
+    def _check_refined_binding_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        refined_ty: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+        guarded: bool,
+    ) -> None:
+        """Discharge a refinement-predicate obligation at one binding site.
+
+        The #746 generalisation of :py:meth:`_check_nat_binding_obligation`
+        from the baked-in ``value >= 0`` to the refinement's arbitrary
+        translated predicate.  Translates *value_node*, substitutes it for the
+        refinement binder via :py:meth:`_translate_refined_predicate`, then
+        discharges with ``check_valid`` (folding in
+        ``smt._path_conditions``): on success ``tier1_verified``; on a Z3
+        counterexample an E505 error.
+
+        An untranslatable value, an untranslatable / non-primitive-base
+        predicate, or a solver timeout is surfaced as an E506 warning, never a
+        silent ``tier1_verified`` (R7).  *guarded* says whether codegen
+        runtime-guards this site (a call argument, caught by the callee's entry
+        guard, is ``True``; an internal narrowing is ``False``) — see
+        :py:meth:`_record_refined_bind_tier3`.
+        """
+        self.summary.total += 1
+        # A `@Unit` refinement is codegen-UNguarded (erased binder), so its
+        # Tier-3 fallback must not claim a runtime guard (CR db24433).
+        eff_guarded = guarded and not self._is_unit_refinement(refined_ty)
+        val = smt.translate_expr(value_node, slot_env)
+        if val is None:
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=eff_guarded)
+            return
+
+        goal = self._translate_refined_predicate(smt, refined_ty, val)
+        if goal is None:
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=eff_guarded)
+            return
+
+        result = smt.check_valid(goal, list(assumptions))
+
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "violated",
+                error_code="E505",
+                counterexample=result.counterexample,
+            )
+            self._report_refined_binding(
+                decl, value_node, refined_ty, site, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=eff_guarded)
+
+    def _record_refined_bind_tier3(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        site: str,
+        *,
+        guarded: bool,
+    ) -> None:
+        """Record a Tier-3 ``refine_bind`` outcome — the predicate could not be
+        discharged statically (a non-primitive base such as ``Array``, an
+        undecidable construct, or a solver timeout) — distinguishing
+        codegen-guarded boundary sites from unguarded internal ones (#746),
+        mirroring :py:meth:`_record_nat_bind_tier3`.
+
+        Codegen emits a runtime guard at the function boundary: a refined
+        parameter at entry and a refined return at exit, so a *return* narrowing
+        and a *call argument* (caught by the callee's entry guard) are
+        ``guarded=True`` — counted ``tier3_runtime`` with an informational E506,
+        like any other Tier-3 contract Vera checks at run time.  An *internal*
+        narrowing — ``let`` / constructor-field / effect-op-arg / match-bind /
+        tuple-destructure / ADT-sub-pattern — has no codegen guard, so it is
+        ``guarded=False`` — surfaced as an E506 warning and excluded from the
+        totals rather than overstating a runtime check it never gets (R7)."""
+        if guarded:
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "tier3",
+                error_code="E506",
+            )
+            self._report_refined_runtime(decl, value_node, site)
+        else:
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "tier3_unguarded",
+                error_code="E506",
+            )
+            self._report_refined_unguarded(decl, value_node, site)
+
+    def _check_generic_refined_return(
+        self, decl: ast.FnDecl, ret_type: Type,
+    ) -> None:
+        """Discharge a *concrete* refined return on a generic function (#746).
+
+        The generic path skips full SMT (TypeVar params/contracts can't be
+        represented), but a concrete refined return obligation is independent
+        of the type parameters, so a minimal context — TypeVar params falling
+        back to ``declare_int`` — suffices to translate the body and discharge
+        the predicate.  Verified at Tier 1; a counterexample is an E505; an
+        untranslatable body or predicate falls to the runtime guard (E506,
+        ``tier3``), exactly as on the non-generic path."""
+        if decl.body is None:  # pragma: no cover — caller guards this
+            return
+        smt = SmtContext(
+            timeout_ms=self.timeout_ms,
+            fn_lookup=self.env.lookup_function,
+            module_fn_lookup=self._lookup_module_function,
+        )
+        for adt_info in self.env.data_types.values():
+            smt.register_adt(adt_info)
+        # CR PR-review: the generic refined-return fast path translates the body
+        # too, so it needs the same sub-pattern source-fact hook as the main
+        # path (line 742) — a generic fn returning a refined ADT payload from a
+        # `match` arm would otherwise false-E505/E501 (the arm accessor is
+        # translated without the field's source refinement fact).
+        smt._subpattern_fact_hook = self._subpattern_source_facts
+        slot_env = SlotEnv()
+        assumptions: list[object] = []
+        for param_te in decl.params:
+            param_ty = self._resolve_type(param_te)
+            type_name = self._type_expr_to_slot_name(param_te)
+            z3_name = f"@{type_name}.{self._count_slots(slot_env, type_name)}"
+            if self._is_nat_type(param_ty):
+                var = smt.declare_nat(z3_name)
+            elif self._is_bool_type(param_ty):
+                var = smt.declare_bool(z3_name)
+            elif self._is_string_type(param_ty):
+                var = smt.declare_string(z3_name)
+            elif self._is_float64_type(param_ty):
+                var = smt.declare_float64(z3_name)  # Real sort, as non-generic
+            elif self._is_array_type(param_ty):
+                # Concrete Array param — declare a proper array sort (as the
+                # non-generic path does) so a refined return proven via
+                # `array_length(...)` / `arr[i]` keeps Tier 1 instead of
+                # falling to a false E506.  Falls back to declare_int when the
+                # element type isn't Z3-representable, exactly as non-generic.
+                array_var = self._declare_array_var(smt, z3_name, param_ty)
+                var = array_var if array_var is not None else smt.declare_int(
+                    z3_name)
+            elif self._is_adt_type(param_ty):
+                # Concrete ADT param — declare an ADT sort so projections used
+                # by the return predicate translate (mirrors non-generic).
+                adt_var = smt.declare_adt(z3_name, param_ty)
+                var = adt_var if adt_var is not None else smt.declare_int(
+                    z3_name)
+            else:
+                var = smt.declare_int(z3_name)  # TypeVar / Int / other → Int
+            slot_env = slot_env.push(type_name, var)
+            # Assume a refined param's predicate (parallel to the non-generic
+            # param-assume), so a return justified by `@PosInt` etc. proves.
+            if self._is_refined_type(param_ty):
+                pred = self._translate_refined_predicate(smt, param_ty, var)
+                if pred is not None:
+                    assumptions.append(pred)
+        # Assume translatable preconditions too — a `requires(...)` may imply
+        # the return predicate.
+        for contract in decl.contracts:
+            if isinstance(contract, ast.Requires) and not self._is_trivial(
+                contract
+            ):
+                z3_pre = smt.translate_expr(contract.expr, slot_env)
+                if z3_pre is not None:
+                    assumptions.append(z3_pre)
+        for a in assumptions:
+            smt.solver.add(a)
+
+        body_expr = smt.translate_expr(decl.body, slot_env)
+        self.summary.total += 1
+        goal = (
+            self._translate_refined_predicate(smt, ret_type, body_expr)
+            if body_expr is not None else None
+        )
+        if goal is None:
+            self._record_refined_bind_tier3(
+                decl, decl.body, "return type",
+                guarded=not self._is_unit_refinement(ret_type))
+            return
+        result = smt.check_valid(goal, list(assumptions))
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "refine_bind", decl.body, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "refine_bind", decl.body, "violated",
+                error_code="E505", counterexample=result.counterexample,
+            )
+            self._report_refined_binding(
+                decl, decl.body, ret_type, "return type",
+                result.counterexample,
+            )
+        else:  # pragma: no cover — solver timeout
+            self._record_refined_bind_tier3(
+                decl, decl.body, "return type",
+                guarded=not self._is_unit_refinement(ret_type))
+
+    def _check_refined_binding_obligation_term(
+        self,
+        decl: ast.FnDecl,
+        term: z3.ExprRef,
+        refined_ty: Type,
+        smt: SmtContext,
+        assumptions: list[object],
+        *,
+        site: str,
+        node: ast.Expr,
+        source_ty: Type | None = None,
+    ) -> None:
+        """Discharge a refinement predicate for a *projected* value — an ADT
+        sub-pattern field or a non-literal destructure component — whose Z3
+        *term* we already have (#746, the refinement analogue of
+        :py:meth:`_check_nat_binding_obligation_term`).
+
+        The accessor term carries no *intrinsic* facts, but *source_ty* — the
+        projected field/component's own declared type — does: a `@Nat` field is
+        ``>= 0``, a refined field satisfies its predicate.  Those invariants are
+        sound premises about *term* (the field already carries them, established
+        at construction), so they are assumed before the target check.  Without
+        them a projection from a `@Nat` field into `{ @Nat | true }` would be a
+        false E505 — Z3 inventing a negative payload the field type forbids (CR
+        a48cd2c).  An obligation still undischarged under those premises is a
+        genuine E505; an untranslatable predicate / non-primitive base yields an
+        E506 Tier-3 warning.  These projection sites are internal narrowings
+        with no codegen guard, hence ``guarded=False``.  *node* gives the
+        diagnostic location.
+        """
+        self.summary.total += 1
+        goal = self._translate_refined_predicate(smt, refined_ty, term)
+        if goal is None:
+            self._record_refined_bind_tier3(decl, node, site, guarded=False)
+            return
+        local_assumptions = list(assumptions)
+        if source_ty is not None:
+            src_fact = self._term_source_fact(smt, source_ty, term)
+            if src_fact is not None:
+                local_assumptions.append(src_fact)
+        result = smt.check_valid(goal, local_assumptions)
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "refine_bind", node, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "refine_bind", node, "violated",
+                error_code="E505", counterexample=result.counterexample,
+            )
+            self._report_refined_binding(
+                decl, node, refined_ty, site, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self._record_refined_bind_tier3(decl, node, site, guarded=False)
+
+    def _term_source_fact(
+        self, smt: SmtContext, source_ty: Type, term: z3.ExprRef,
+    ) -> object | None:
+        """A Z3 fact a projected *term*'s declared *source_ty* guarantees — a
+        refined source's full predicate (incl. its `>= 0` Nat conjoin), or
+        `>= 0` for a bare `@Nat` field — so a projection from a refined/Nat
+        source isn't rejected for lack of the invariant it carries (#746).
+        ``None`` for an unconstrained base (e.g. bare `@Int`).
+
+        Sound because every *producer* of a refined value is obligated to
+        discharge it: a refined ADT/tuple component at its construction site
+        (the ``ConstructorCall`` obligation — the tuple branch added by the
+        PR-review fix), a refined parameter by R1 param-assume (callers
+        discharge it), a refined return at the return position.  So a
+        ``SlotRef`` / ``FnCall`` source provably carries its component
+        refinements.  At an untrusted FFI boundary the R1 param-assume for a
+        tuple-component-refined parameter (and a tuple-component-refined return)
+        is additionally backed at run time by codegen's per-component boundary
+        guard (``_emit_component_refinement_guards``), so even an external
+        caller cannot launder a violating component past the assume.
+
+        Refined is checked first since a refinement-over-`@Nat` subsumes
+        `>= 0`.  But when that full predicate is Tier 3 (untranslatable), we
+        must NOT drop to ``None``: a refinement *over* `@Nat` still guarantees
+        the base `>= 0`, so we fall through to the bare-`@Nat` fact rather than
+        letting a projection into a weaker `{ @Nat | true }` falsely model a
+        negative payload the field forbids (CR d338946)."""
+        if self._is_refined_type(source_ty):
+            pred = self._translate_refined_predicate(smt, source_ty, term)
+            if pred is not None:
+                refined_fact: object = pred  # widen to silence z3 Any leak
+                return refined_fact
+            # Full predicate untranslatable — keep the base invariant if @Nat
+            # (falls through to the check below); else no fact.
+        if self._is_nat_type(source_ty):
+            nat_fact: object = term >= 0  # z3 BoolRef; widen to silence Any leak
+            return nat_fact
+        return None
+
     def _instantiated_field_types(
         self, ctor_name: str, scrut_ty: Type | None,
     ) -> tuple[Type, ...] | None:
@@ -2057,11 +2684,151 @@ class ContractVerifier:
             # sub-pattern unchecked rather than obligate against an
             # unsubstituted TypeVar field — matching the docstring's "unknown
             # scrutinee" contract (CR #756).
+            if isinstance(scrut_ty, RefinedType):
+                # A refined ADT scrutinee (`{ @Option<Int> | P }`) hides the
+                # `Option<Int>` base, so unwrap it before reading the type args
+                # — else a generic constructor's fields are left uninstantiated
+                # and the sub-pattern narrowing is missed (a false Tier-1; CR
+                # PR-review).
+                scrut_ty = scrut_ty.base
             if not (isinstance(scrut_ty, AdtType) and scrut_ty.type_args):
                 return None
             mapping = dict(zip(ci.parent_type_params, scrut_ty.type_args))
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
         return field_types
+
+    def _subpattern_source_facts(
+        self,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+    ) -> list[object]:
+        """The arm-local Z3 facts each *direct* refined / ``@Nat`` sub-pattern
+        binding carries from its field's DECLARED (source) type — PURE, with no
+        obligation side effects (CR PR-review).
+
+        Two consumers seed these into an arm's assumptions: the narrowing walk
+        (``_obligate_subpattern_narrowings`` → ``_walk_for_nat_binding_
+        obligations``) so a downstream ``@Nat`` narrowing of a bound payload
+        discharges, AND ``_walk_for_calls`` so a call **precondition** in the
+        arm body discharges — preconditions are collected in the earlier main
+        pass, not the narrowing walk, so without this a valid
+        ``Some(@PosInt) -> needs_positive(@PosInt.0)`` false-E501s.
+
+        Sound because it uses the field's SOURCE type: a non-narrowing refined
+        field (``Option<PosInt>``) carries its predicate (the scrutinee's type
+        establishes it), while a genuine narrowing (``Option<Int>`` bound as
+        ``@PosInt``) yields no fact (source is ``Int``) and stays *obligated*,
+        never assumed.  Only the projectable opaque-scrutinee path yields facts;
+        a literal-constructor scrutinee binds concrete arguments the body
+        reasons about directly.  Recurses into nested constructor patterns
+        (``Some(Some(@PosInt))``) so a nested bind's invariant is carried too
+        (CR PR-review)."""
+        if scrutinee_z3 is None:
+            return []
+        if (isinstance(scrutinee, ast.ConstructorCall)
+                and scrutinee.name == pattern.name):
+            return []  # literal scrutinee — concrete args, not accessors
+        return self._subpattern_source_facts_term(
+            self._resolved_type_of(scrutinee), scrutinee_z3, pattern, smt)
+
+    def _subpattern_source_facts_term(
+        self,
+        scrut_ty: Type | None,
+        scrut_term: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+    ) -> list[object]:
+        """Term-keyed core of :py:meth:`_subpattern_source_facts`, recursing
+        into nested constructor patterns.  *scrut_ty* is the scrutinee's
+        resolved type; *scrut_term* its Z3 datatype term.  No depth cap: the
+        recursion descends the (finite) pattern AST — each step is a strict
+        sub-pattern — so it terminates without a backstop (CR PR-review)."""
+        if scrut_term is None:
+            return []
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
+        if field_types is None:
+            return []
+        try:
+            sort = scrut_term.sort()  # type: ignore[attr-defined]
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee
+            return []
+        if idx is None:
+            return []
+        facts: list[object] = []
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            field_term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                facts.extend(self._subpattern_source_facts_term(
+                    field_ty, field_term, sub_pat, smt))
+            elif isinstance(sub_pat, ast.BindingPattern):
+                fact = self._term_source_fact(smt, field_ty, field_term)
+                if fact is not None:
+                    facts.append(fact)
+        return facts
+
+    def _obligate_subpattern_term(
+        self,
+        decl: ast.FnDecl,
+        diag_node: ast.Expr,
+        scrut_ty: Type | None,
+        scrut_term: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        assumptions: list[object],
+    ) -> None:
+        """Term-keyed recursive obligation for a NESTED constructor sub-pattern
+        (``Some(Some(@PosInt))``): obligate each refined / ``@Nat`` narrowing
+        bind against its projected field accessor, recursing through further
+        nested constructor patterns (CR PR-review — closes the unguarded false
+        Tier-1 where the inner ``Int -> PosInt`` narrowing was never obligated).
+
+        *diag_node* is the outer scrutinee AST, used only for the diagnostic
+        location.  Opaque (accessor-term) path only — a nested field is always a
+        projection.  The nested bind's RUNTIME guard stays a #758-class deferral
+        (codegen binds only direct sub-patterns), so a verified program is sound
+        while an unverified compile is honestly unchecked at the nested site.
+        No depth cap: the recursion descends the (finite) pattern AST — each step
+        is a strict sub-pattern — so it terminates without a backstop (CR)."""
+        if scrut_term is None:
+            return
+        field_types = self._instantiated_field_types(pattern.name, scrut_ty)
+        if field_types is None:
+            return
+        try:
+            sort = scrut_term.sort()  # type: ignore[attr-defined]
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee
+            return
+        if idx is None:
+            return
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            field_term = sort.accessor(idx, i)(scrut_term)
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                self._obligate_subpattern_term(
+                    decl, diag_node, field_ty, field_term, sub_pat, smt,
+                    assumptions)
+                continue
+            if not isinstance(sub_pat, ast.BindingPattern):
+                continue
+            target = self._resolve_type(sub_pat.type_expr)
+            if (self._is_refined_type(target)
+                    and self._refined_field_narrows(target, field_ty)):
+                self._check_refined_binding_obligation_term(
+                    decl, field_term, target, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                    source_ty=field_ty,
+                )
+            elif (self._is_nat_type(target)
+                    and not self._is_nat_type(field_ty)):
+                self._check_nat_binding_obligation_term(
+                    decl, field_term, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                )
 
     def _obligate_subpattern_narrowings(
         self,
@@ -2072,27 +2839,44 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
-    ) -> None:
+    ) -> list[object]:
         """#747: obligate each @Nat sub-pattern binding that narrows a
         non-@Nat ADT field — ``match opt { Some(@Nat.0) -> }`` on
         ``Option<Int>``.
+
+        Returns a list of arm-local Z3 facts (CR PR-review): each bound field
+        carries its DECLARED type's guarantee — a refined field's predicate, a
+        bare ``@Nat``'s ``>= 0`` — so the caller can assume them while walking
+        the arm body.  Without this a downstream narrowing that depends on a
+        binding's invariant fails with a false ``E503`` (e.g.
+        ``Some(@PosInt) -> takes_nat(@PosInt.0)`` on ``Option<PosInt>`` — the
+        payload is ``> 0`` hence ``>= 0``, but the arm body never saw the fact).
+        The fact is the field's SOURCE type via ``_term_source_fact`` (sound by
+        its producer-discharge argument), NOT the sub-pattern's narrowed type —
+        so a genuine narrowing stays *obligated* below, never silently assumed.
 
         The field's Z3 term is an uninterpreted accessor, so only a
         *genuine* narrowing (the source field is not already @Nat) is
         obligated; an already-@Nat field would fail the proof spuriously
         (its accessor carries no ``>= 0`` fact).
 
-        Only *direct* ``BindingPattern`` sub-patterns are obligated; a
-        nested ``ConstructorPattern`` (``Some(Some(@Nat.0))`` on
-        ``Option<Option<Int>>``) is not recursed — matching codegen's
-        ``_extract_constructor_fields``, which likewise binds only direct
-        sub-patterns — so the inner narrowing is currently neither obligated
-        nor runtime-guarded (tracked as #754).
+        Nested ``ConstructorPattern`` sub-patterns (``Some(Some(@PosInt))`` on
+        ``Option<Option<Int>>``) ARE recursed via
+        :py:meth:`_obligate_subpattern_term`, so an inner narrowing is
+        statically obligated (CR PR-review — previously an unguarded false
+        Tier-1).  The inner bind's RUNTIME guard remains a #758-class deferral
+        (codegen's ``_extract_constructor_fields`` binds only direct
+        sub-patterns), so a verified program is sound (a bad nested narrowing is
+        an ``E505``) while an unverified compile is unchecked at the nested site.
         """
         field_types = self._instantiated_field_types(
             pattern.name, self._resolved_type_of(scrutinee))
         if field_types is None:
-            return
+            return []
+        # The arm-local source-type facts (shared with `_walk_for_calls`, which
+        # seeds them into call-precondition assumptions — CR PR-review).
+        facts = self._subpattern_source_facts(
+            scrutinee, scrutinee_z3, pattern, smt)
         # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
         # binds the constructor's own arguments — translatable AST nodes,
         # obligated directly.  An opaque scrutinee binds uninterpreted
@@ -2111,9 +2895,56 @@ class ContractVerifier:
                 sort = idx = None
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
+            if isinstance(sub_pat, ast.ConstructorPattern):
+                # Nested constructor pattern (`Some(Some(@PosInt))` on
+                # `Option<Option<Int>>`): recurse so the inner narrowing is
+                # OBLIGATED — else it is an unguarded false Tier-1 (CR PR-
+                # review).  Opaque path only: a nested field is always an
+                # accessor term.  (A *literal* nested scrutinee — `match
+                # Some(Some(-5)) {}` — isn't Z3-translated here, a degenerate
+                # case left to its own track.)  The nested
+                # bind's RUNTIME guard remains a
+                # #758-class deferral (codegen's `_extract_constructor_fields`
+                # binds only direct sub-patterns), so a verified program is
+                # sound (E505 on a bad nested narrowing) while an unverified
+                # compile is honestly Tier-3 there.
+                if sort is not None and idx is not None:
+                    self._obligate_subpattern_term(
+                        decl, scrutinee, field_ty,
+                        sort.accessor(idx, i)(scrutinee_z3), sub_pat, smt,
+                        assumptions)
+                continue
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
             target = self._resolve_type(sub_pat.type_expr)
+            # Refined-first (#746, R9): a refined sub-pattern (incl. a
+            # refinement over @Nat) discharges its full predicate against the
+            # projected field, rather than only `>= 0` via the nat path.
+            if (self._is_refined_type(target)
+                    and self._refined_field_narrows(target, field_ty)):
+                if lit_args is not None:
+                    if (i < len(lit_args)
+                            and self._narrows_into_refined(lit_args[i], target)):
+                        self._check_refined_binding_obligation(
+                            decl, lit_args[i], target, smt, slot_env,
+                            assumptions, site="ADT sub-pattern bind",
+                            guarded=False,
+                        )
+                elif sort is not None and idx is not None:
+                    field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    self._check_refined_binding_obligation_term(
+                        decl, field_term, target, smt, assumptions,
+                        site="ADT sub-pattern bind", node=scrutinee,
+                        source_ty=field_ty,
+                    )
+                else:
+                    # Opaque, unprojectable scrutinee: an internal narrowing with
+                    # no codegen guard, so this is an unguarded E506 Tier-3
+                    # (excluded from totals), not a silent pass (R7).
+                    self.summary.total += 1
+                    self._record_refined_bind_tier3(
+                        decl, scrutinee, "ADT sub-pattern bind", guarded=False)
+                continue
             if not (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
                 continue
@@ -2141,6 +2972,7 @@ class ContractVerifier:
                 self._record_nat_bind_tier3(
                     decl, scrutinee, "ADT sub-pattern bind", "tier3",
                     guarded=True)
+        return facts
 
     def _obligate_destructure_narrowings(
         self,
@@ -2173,16 +3005,27 @@ class ContractVerifier:
         checker never recorded leaves the bindings unchecked.
         """
         rhs_ty = self._resolved_type_of(stmt.value)
+        if isinstance(rhs_ty, RefinedType):
+            rhs_ty = rhs_ty.base  # `{ @Tuple<...> | P }` → the tuple (CR)
         if not isinstance(rhs_ty, AdtType):
             return  # source tuple type unknown — leave bindings unchecked
         source_args = rhs_ty.type_args
-        narrowing = [
-            i for i, te in enumerate(stmt.type_bindings)
-            if i < len(source_args)
-            and self._is_nat_type(self._resolve_type(te))
-            and not self._is_nat_type(source_args[i])
-        ]
-        if not narrowing:
+        # Refined-first (#746, R9): a refined component (incl. a refinement
+        # over @Nat) discharges its predicate against the projected source;
+        # the rest fall to the @Nat `>= 0` path.  The two lists stay disjoint.
+        refined_narrowing: list[tuple[int, Type]] = []
+        nat_narrowing: list[int] = []
+        for i, te in enumerate(stmt.type_bindings):
+            if i >= len(source_args):
+                continue
+            target = self._resolve_type(te)
+            if (self._is_refined_type(target)
+                    and self._refined_field_narrows(target, source_args[i])):
+                refined_narrowing.append((i, target))
+            elif (self._is_nat_type(target)
+                    and not self._is_nat_type(source_args[i])):
+                nat_narrowing.append(i)
+        if not refined_narrowing and not nat_narrowing:
             return
         rhs_z3 = smt.translate_expr(stmt.value, slot_env)
         sort = None
@@ -2195,29 +3038,36 @@ class ContractVerifier:
                 sort = idx = None
         if sort is None or idx is None:
             # The SMT layer can't project this source (e.g. an if-expression
-            # over tuples), but codegen still guards the @Nat destructure
-            # component at run time, so record a guarded Tier-3 outcome — one
-            # per narrowing component, matching the projectable path (the
-            # literal/projectable paths record per component, so a multi-@Nat
-            # destructure must too).  `_record_nat_bind_tier3` counts a
-            # guarded site as tier3_runtime without touching total, so the +1
-            # per component counts the obligation (mirrors the let / term
-            # tier-3 callers).
-            for _ in narrowing:
+            # over tuples).  Codegen still guards the @Nat destructure
+            # component at run time, so those are guarded Tier-3 (one per
+            # component, matching the projectable path).  Refinements have no
+            # codegen runtime guard yet, so a refined component is an E506
+            # Tier-3 excluded from totals — never a silent pass (R7).
+            for _ in nat_narrowing:
                 self.summary.total += 1
                 self._record_nat_bind_tier3(
                     decl, stmt.value, "tuple destructure", "tier3",
                     guarded=True)
+            for _ in refined_narrowing:
+                self.summary.total += 1
+                self._record_refined_bind_tier3(
+                    decl, stmt.value, "tuple destructure", guarded=False)
             return
-        for i in narrowing:
-            # `i` is a valid field index (filtered into `narrowing` against
-            # `source_args`, whose length matches the tuple sort's fields),
-            # so the accessor is safe without a guard — mirroring the
-            # sub-pattern projection above.
+        # `i` is a valid field index (filtered against `source_args`, whose
+        # length matches the tuple sort's fields), so each accessor is safe
+        # without a guard — mirroring the sub-pattern projection above.
+        for i in nat_narrowing:
             comp_term = sort.accessor(idx, i)(rhs_z3)
             self._check_nat_binding_obligation_term(
                 decl, comp_term, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
+            )
+        for i, target in refined_narrowing:
+            comp_term = sort.accessor(idx, i)(rhs_z3)
+            self._check_refined_binding_obligation_term(
+                decl, comp_term, target, smt, assumptions,
+                site="tuple destructure", node=stmt.value,
+                source_ty=source_args[i],
             )
 
     def _record_nat_bind_tier3(
@@ -2383,6 +3233,155 @@ class ContractVerifier:
                 'Section 11.2.1 "Nat as i64"'
             ),
             error_code="E503",
+        )
+
+    def _report_refined_binding(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        refined_ty: Type,
+        site: str,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E505 diagnostic for an undischarged refinement narrowing.
+
+        Renders the refinement's actual predicate source (via
+        :py:func:`ast.format_expr`) plus the counterexample, mirroring
+        :py:meth:`_report_nat_binding` (#746)."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        parts = self._refined_parts(refined_ty)
+        if parts is not None:
+            pred_src = ast.format_expr(parts[1])
+            # A refinement over @Nat carries an implicit `>= 0` base invariant
+            # that IS part of the checked goal (`value >= 0 && P`).  Surface it
+            # so the message — and the suggested `requires(...)` — reflect the
+            # real obligation when the base invariant, not P, is what fails
+            # (e.g. `{ @Nat | true }`: rendering only `true` / suggesting
+            # `requires(true)` would be misleading; CR d338946).
+            if parts[0] == NAT:
+                pred_src = f"@Nat.0 >= 0 && {pred_src}"
+        else:
+            pred_src = "the predicate"
+
+        description = (
+            f"Value narrowing into a refined {site} in '{decl.name}' "
+            f"may violate the refinement predicate `{pred_src}`."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            node,
+            description,
+            rationale=(
+                "A refinement type `{ @Base | P }` carries the invariant "
+                "that every inhabitant satisfies its predicate P, but the "
+                "type checker permits the underlying base value to narrow "
+                "into the refined slot and defers the proof to verification. "
+                "The SMT solver found inputs where the narrowed value does "
+                "not satisfy the predicate."
+            ),
+            fix=(
+                "Add a precondition implying the predicate, e.g. "
+                f"`requires({pred_src})`.  Alternatively, guard the binding "
+                "with an `if` whose condition is the predicate — the path "
+                "condition discharges the obligation in the then-branch."
+            ),
+            spec_ref=(
+                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
+                'Section 6.8 "Summary of Verification Tiers"'
+            ),
+            error_code="E505",
+        )
+
+    def _report_refined_runtime(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an informational E506 warning for a refinement narrowing the
+        SMT layer could not discharge but codegen runtime-guards (#746).
+
+        The predicate is outside Z3's decidable fragment — a non-primitive base
+        such as ``Array`` (Z3 cannot decide ``array_length``), an undecidable
+        construct, or a solver timeout — so it could not be proved statically.
+        Codegen emits a runtime predicate guard at the function boundary (a
+        refined parameter at entry, a refined return at exit; call arguments
+        via the callee's entry guard), so the narrowing falls to that check —
+        like any other Tier-3 contract Vera verifies at run time, not a silent
+        gap."""
+        self._warning(
+            node,
+            (
+                f"Refinement predicate at a {site} in '{decl.name}' could not "
+                "be verified statically; it will be checked at run time. To "
+                "prove it statically, add a `requires(...)` implying the "
+                "predicate or guard the binding with an `if`."
+            ),
+            rationale=(
+                "The refinement predicate is outside Z3's decidable fragment "
+                "(a non-primitive base such as Array, an undecidable "
+                "construct, or a solver timeout), so it could not be "
+                "discharged statically.  Codegen emits a runtime predicate "
+                "guard at the function boundary, so the narrowing is checked "
+                "at run time (Tier 3) rather than silently accepted."
+            ),
+            spec_ref=(
+                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
+                'Section 6.8 "Summary of Verification Tiers"'
+            ),
+            error_code="E506",
+            tier=3,
+        )
+
+    def _report_refined_unguarded(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an E506 warning for a refinement narrowing the SMT layer could
+        not discharge and codegen does NOT runtime-guard (#746).
+
+        Codegen guards a refined value only at the function boundary (parameter
+        entry, return exit).  An *internal* narrowing — ``let`` / constructor
+        field / effect-op argument / match bind / tuple-destructure / ADT
+        sub-pattern — has no such guard, so when its predicate is also outside
+        Z3's decidable fragment it is neither statically proven nor
+        runtime-checked: surfaced (R7) rather than silently passed, and excluded
+        from the discharged totals."""
+        self._warning(
+            node,
+            (
+                f"Refinement predicate at a {site} in '{decl.name}' could not "
+                "be verified statically and is not runtime-guarded — add a "
+                "`requires(...)` implying the predicate, guard the binding with "
+                "an `if`, or pass the value through a refined parameter / "
+                "return (which is runtime-guarded)."
+            ),
+            rationale=(
+                "The refinement predicate is outside Z3's decidable fragment "
+                "(a non-primitive base such as Array, an undecidable "
+                "construct, or a solver timeout), so it could not be "
+                "discharged statically.  Codegen runtime-guards refinements "
+                "only at the function boundary (parameter entry / return "
+                "exit), not at this internal narrowing site, so it is neither "
+                "statically proven nor runtime-checked."
+            ),
+            spec_ref=(
+                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
+                'Section 6.8 "Summary of Verification Tiers"'
+            ),
+            error_code="E506",
+            tier=3,
         )
 
     def _is_nat_typed(self, expr: ast.Expr) -> bool:
@@ -2582,6 +3581,70 @@ class ContractVerifier:
             return any(self._has_underflow_leaf(arm.body)
                        for arm in value.arms)
         return False
+
+    def _narrows_into_refined(
+        self, value: ast.Expr, target_ty: Type,
+    ) -> bool:
+        """True iff binding *value* into the ``RefinedType`` *target_ty* needs
+        a predicate obligation (#746) — the refinement analogue of
+        :py:meth:`_narrows_into_nat`.
+
+        Fires for any value not *already* known to carry the target's exact
+        refinement.  The one exemption (R3) is an already-refined source whose
+        **base AND predicate** match the target's: ``let @PosInt = <some
+        @PosInt>`` adds no obligation, because the source's refinement was
+        itself discharged where it was produced (modular verification).
+        Predicate matching is by **AST equality** (``span`` is
+        ``compare=False`` on the nodes, so the same alias matches itself while
+        ``@Percentage`` vs ``@PosInt`` does not); base matching is by
+        :py:func:`types_equal`.  BOTH are required — a predicate-only match
+        would unsoundly exempt ``{ @Int | true }`` flowing into ``{ @Nat | true
+        }`` (equal predicates, but the ``@Nat`` base adds an implicit ``>= 0``
+        the ``@Int`` source never established), silently bypassing the ``>= 0``
+        obligation at an unguarded internal site (CR a48cd2c).  A non-exempt
+        case stays obligated and is discharged (or refuted) by Z3.
+
+        A source carrying a *stronger* refinement (``@Percentage`` into a
+        ``>= 0`` slot) is deliberately NOT exempted here: it stays obligated
+        and the discharge proves the implication from the source's assumed
+        predicate, so no soundness is lost and no false positive arises.
+        """
+        target_parts = self._refined_parts(target_ty)
+        if target_parts is None:  # pragma: no cover — caller gates on refined
+            return False
+        source_ty = self._resolved_type_of(value)
+        if source_ty is not None:
+            source_parts = self._refined_parts(source_ty)
+            if (source_parts is not None
+                    and source_parts[1] == target_parts[1]
+                    and types_equal(source_parts[0], target_parts[0])):
+                return False
+        return True
+
+    def _refined_field_narrows(self, target: Type, field_ty: Type) -> bool:
+        """True iff a *projected* field of type *field_ty* binding into a
+        refined *target* slot needs a predicate obligation (#746) — the
+        type-level R3 exemption for projection sites (ADT sub-pattern,
+        non-literal destructure component) where there is no AST value node to
+        feed :py:meth:`_narrows_into_refined`.
+
+        Fires when *target* is refined and the field is not already the SAME
+        refinement — matched on **base AND predicate** (``types_equal`` base +
+        predicate-AST equality, like :py:meth:`_narrows_into_refined`), so a
+        `match opt { Some(@PosInt) -> }` on an `Option<Int>` obligates while one
+        on an `Option<PosInt>` does not.  Both parts are required: a
+        predicate-only match would unsoundly exempt an `@Int` field flowing into
+        a `{ @Nat | true }` slot (equal predicates, differing base invariant).
+        """
+        target_parts = self._refined_parts(target)
+        if target_parts is None:
+            return False
+        field_parts = self._refined_parts(field_ty)
+        if (field_parts is not None
+                and field_parts[1] == target_parts[1]
+                and types_equal(field_parts[0], target_parts[0])):
+            return False
+        return True
 
     # -----------------------------------------------------------------
     # Counterexample reporting
@@ -2819,14 +3882,33 @@ class ContractVerifier:
         return ty == NAT or (isinstance(ty, RefinedType) and ty.base == NAT)
 
     @staticmethod
+    def _is_unit_refinement(ty: Type) -> bool:
+        """Whether *ty* is a refinement over the ``@Unit`` base, which codegen
+        CANNOT runtime-guard: ``@Unit`` is zero-size / erased, so there is no
+        value to load into the boundary predicate check (#746, CR db24433).
+
+        A Tier-3 ``@Unit`` refinement is therefore recorded ``guarded=False``
+        (an honest E506 ``tier3_unguarded`` warning) rather than claiming a
+        runtime guard codegen never emits — unlike ``@Byte`` (an `i32`) or
+        ``@Array`` (a pair), whose binders DO lower, so those stay guarded."""
+        return isinstance(ty, RefinedType) and ty.base == UNIT
+
+    @staticmethod
     def _is_bool_type(ty: Type) -> bool:
         """Check if a type is Bool (including refinements of Bool)."""
         return ty == BOOL or (isinstance(ty, RefinedType) and ty.base == BOOL)
 
     @staticmethod
     def _is_adt_type(ty: Type) -> bool:
-        """Check if a type is an algebraic data type."""
+        """Check if a type is an algebraic data type — including a refinement
+        OVER an ADT base (`{ @Box | P }`), whose base sort must still be
+        declared via ``declare_adt`` rather than falling through to
+        ``declare_int`` (which would make pattern-matches / projections see an
+        Int term, a false Tier-3 or a Z3 sort failure; CR d338946).  Mirrors
+        :py:meth:`_is_array_type`'s refinement unwrap."""
         from vera.types import AdtType
+        if isinstance(ty, RefinedType):
+            ty = ty.base
         return isinstance(ty, AdtType)
 
     @staticmethod
@@ -2877,6 +3959,112 @@ class ContractVerifier:
     def _is_float64_type(ty: Type) -> bool:
         """Check if a type is Float64 (including refinements of Float64)."""
         return ty == FLOAT64 or (isinstance(ty, RefinedType) and ty.base == FLOAT64)
+
+    @staticmethod
+    def _is_refined_type(ty: Type) -> bool:
+        """Check if a type is a user ``RefinedType`` (``{ @Base | P }``).
+
+        Note ``@Nat`` (the built-in non-negative ``PrimitiveType``) is *not* a
+        ``RefinedType`` and so returns False here, while a refinement *over*
+        ``@Nat`` (``{ @Nat | P }``) does return True.  Callers gate the #746
+        refinement-predicate path **refined-first**: for ``{ @Nat | P }`` —
+        where :py:meth:`_is_nat_type` is *also* True — the refined branch wins
+        and discharges ``>= 0 && P`` (see :py:meth:`_translate_refined_predicate`),
+        so the bare-``@Nat`` ``nat_bind`` path only fires for the built-in
+        primitive and the two never co-fire on one site (R9).
+        """
+        return isinstance(ty, RefinedType)
+
+    @staticmethod
+    def _refined_parts(ty: Type) -> "tuple[Type, ast.Expr] | None":
+        """The (base type, predicate AST) of a user refinement type, or None.
+
+        The built-in ``@Nat`` is a distinct ``PrimitiveType`` (its ``>= 0`` is
+        baked into ``declare_nat``), NOT a ``RefinedType`` — so it is
+        deliberately *not* matched here, keeping the #552/#747 ``nat_bind``
+        path and the #746 ``refine_bind`` path disjoint for bare ``@Nat``.  A
+        refinement *over* ``@Nat`` (``{ @Nat | P }``) is a ``RefinedType`` and
+        IS matched: its base intrinsic ``>= 0`` is re-introduced by
+        :py:meth:`_translate_refined_predicate` so the predicate ``P`` is never
+        silently dropped.
+        """
+        if isinstance(ty, RefinedType):
+            return (ty.base, ty.predicate)
+        return None
+
+    @staticmethod
+    def _base_slot_name(base: Type) -> str | None:
+        """The slot type-name a refinement predicate's binder uses.
+
+        For ``{ @Int | @Int.0 > 0 }`` the predicate's ``SlotRef`` is
+        ``("Int", 0)`` — the *base* primitive's name, not the alias.  So the
+        binder is substituted by pushing the refined value under this name.
+        Returns None for a non-primitive base, OR a primitive the verifier
+        does not model here: only ``Int`` / ``Nat`` / ``Bool`` / ``Float64`` /
+        ``String`` have an SMT sort and (for ``Nat``) a base invariant.  A
+        ``Byte`` / ``Unit`` base would otherwise translate WITHOUT its base
+        semantics (``Byte``'s ``0..255`` range is never asserted), yielding a
+        wrong Tier-1 / false E505 instead of the documented Tier-3 / E506
+        fallback (CR db24433) — so those return None and fall to Tier 3.
+        """
+        if isinstance(base, PrimitiveType) and base in (
+                INT, NAT, BOOL, FLOAT64, STRING):
+            return base.name
+        return None
+
+    @staticmethod
+    def _predicate_binder_name(predicate: ast.Expr) -> str | None:
+        """The slot type-name the refinement predicate's binder ACTUALLY uses —
+        a syntactic ALIAS binder (``@Age.0`` for ``type Age = Nat; { @Age |
+        @Age.0 >= 18 }``) differs from the resolved ``Nat`` (CR e6f17b7).
+        Delegates to the shared ``ast.predicate_binder_name`` so the verifier,
+        codegen, and SMT refined-return paths can't drift."""
+        return ast.predicate_binder_name(predicate)
+
+    @staticmethod
+    def _translate_refined_predicate(
+        smt: "SmtContext", refined_ty: Type, value_term: z3.ExprRef,
+    ) -> z3.ExprRef | None:
+        """Translate a refinement's membership obligation for *value_term*.
+
+        For ``{ @Base | P }`` membership is ``(value is a valid @Base) && P``.
+        The predicate is type-level — closed over the single binder
+        ``@<base>.0`` with no access to function parameters — so it translates
+        against a *fresh* ``SlotEnv`` holding only the refined value, pushed
+        under the base type-name (see :py:meth:`_base_slot_name`).
+
+        Every base except ``@Nat`` carries no intrinsic invariant ("is a valid
+        ``@Int``" is free), so the result is just the translated predicate.
+        ``{ @Nat | P }`` is the one case where the base contributes ``>= 0``;
+        because a binding-site value term does not otherwise carry it, the
+        result is ``value_term >= 0 && P`` so ``P`` is never silently dropped
+        when the refined-first gate routes a refinement-over-``@Nat`` here
+        rather than down the bare-``@Nat`` ``nat_bind`` path.
+
+        Returns None when the base isn't a primitive or the predicate falls
+        outside the decidable fragment (caller treats None as Tier 3, #746).
+        """
+        parts = ContractVerifier._refined_parts(refined_ty)
+        if parts is None:
+            return None
+        base, predicate = parts
+        base_name = ContractVerifier._base_slot_name(base)
+        if base_name is None:
+            return None
+        inner_env = SlotEnv().push(base_name, value_term)
+        # The predicate may reference its binder by a syntactic alias
+        # (`@Age.0` for `type Age = Nat`) that differs from the resolved
+        # primitive `base_name`; bind the value under that name too so the
+        # predicate resolves instead of falsely falling to Tier 3 (CR e6f17b7).
+        binder_name = ContractVerifier._predicate_binder_name(predicate)
+        if binder_name is not None and binder_name != base_name:
+            inner_env = inner_env.push(binder_name, value_term)
+        translated = smt.translate_expr(predicate, inner_env)
+        if translated is None:
+            return None
+        if base == NAT:
+            return z3.And(value_term >= 0, translated)
+        return translated
 
     @staticmethod
     def _count_slots(env: SlotEnv, type_name: str) -> int:

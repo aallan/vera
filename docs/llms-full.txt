@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.173. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.174. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -3130,6 +3130,8 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E502**: @Nat subtraction underflow obligation not discharged
 - **E503**: @Nat binding-site narrowing may be negative
 - **E504**: @Nat narrowing unverified and not runtime-guarded
+- **E505**: Refinement predicate may be violated at narrowing site
+- **E506**: Refinement narrowing not statically verified (Tier-3)
 - **E520**: Cannot verify contract (generic function)
 - **E521**: Cannot verify precondition (undecidable)
 - **E522**: Cannot verify postcondition (body undecidable)
@@ -3153,6 +3155,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E614**: Program contains typed holes
 - **E615**: Cannot interpolate value of unknown type
 - **E616**: Cannot infer closure return type for call_indirect
+- **E617**: Refinement predicate not compilable to runtime guard
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs

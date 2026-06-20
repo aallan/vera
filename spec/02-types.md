@@ -236,6 +236,30 @@ Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @I
 
 However, type aliases create distinct namespaces for slot references (see Chapter 3): `@PosInt.0` counts only `PosInt` bindings, not `Int` bindings.
 
+### 2.6.4 Predicate Verification
+
+The type checker treats a refined type as its base for assignability (it permits a base value to flow into a refined slot) and **defers the predicate proof to verification**. The verifier discharges the predicate as a Tier-1 proof obligation at every site where a value narrows into a refined slot:
+
+- `let @PosInt = ...` — let bindings
+- `f(...)` where a formal is refined — call arguments
+- `Ctor(...)` where a field is refined — constructor fields
+- effect-operation arguments
+- `match v { @PosInt -> ... }` — match bindings
+- tuple destructure components
+- the function's **return position** when the declared return type is refined
+
+A refined **parameter** is, conversely, *assumed* to satisfy its predicate inside the body — sound precisely because every call site discharges the obligation. If the solver finds inputs violating the predicate, verification fails with error `E505` and a counterexample. A discharge proved from the surrounding `requires` clauses, path conditions, or an already-refined source carries no runtime cost.
+
+An obligation drops to Tier 3 — reported as an `E506` warning rather than silently accepted — in two cases: (1) the predicate uses a construct outside the decidable fragment (§2.6.1); or (2) the refinement is over a non-primitive base, such as `{ @Array<Int> | array_length(...) > 0 }`, which the predicate translator does not lower — only primitive bases (`@Int`, `@Nat`, `@Bool`, `@Float64`, `@String`) have their binder substituted, so a non-primitive base is Tier 3 even when its predicate (here `array_length(...) > 0`) is itself in the fragment.
+
+### 2.6.5 Runtime Guards
+
+A refinement predicate is also guarded at **runtime**: the compiler emits a predicate check at every function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. This holds at a `public`/FFI entry point too, where an untrusted caller cannot bypass the callee's entry guard. A call argument is covered by that guard, so the boundary checks compose to cover every narrowing whose result is consumed across a boundary; a purely internal narrowing (a `let`, match bind, destructure, constructor field, ADT sub-pattern bind, or effect-operation argument that never crosses a boundary) is Tier-3-static-only — surfaced as an `E506` warning, not silently accepted.
+
+This covers refinements over a **non-primitive base** too (e.g. `{ @Array<Int> | array_length(@Array<Int>.0) > 0 }`): although the predicate translator does not lower the non-primitive `@Array` binder — so the predicate is Tier 3 *statically* (§2.6.4) even though `array_length(...) > 0` is itself in the decidable fragment — codegen compiles it directly to WebAssembly, so an empty array passed into a `@NonEmptyArray` parameter traps at run time.
+
+The guard is *defense in depth* for the unverified path: a `vera verify`-clean program proves the predicate statically, so the runtime guard is never reached.
+
 ## 2.7 Parametric Polymorphism
 
 Functions and data types may be parameterised by type variables:

@@ -205,6 +205,117 @@ class TestObligationKinds:
         assert ("count", "requires", "verified") in kinds
         assert ("count", "ensures", "verified") in kinds
 
+    def test_refine_bind_kind_enumerated(self) -> None:
+        """#746: a refinement narrowing records a `refine_bind` obligation —
+        discharged at the call argument and at the refined return position."""
+        source = (
+            "type PosInt = { @Int | @Int.0 > 0 };\n"
+            "\n"
+            "public fn use(@PosInt -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @PosInt.0 }\n"
+            "\n"
+            "public fn mk(@Int -> @PosInt)\n"
+            "  requires(@Int.0 > 0) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+            "\n"
+            "public fn caller(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ use(5) }\n"
+        )
+        result = self._verify_source(source)
+        kinds = [(o.fn_name, o.kind, o.status) for o in result.obligations]
+        # call argument `use(5)` discharges `5 > 0`
+        assert ("caller", "refine_bind", "verified") in kinds
+        # `mk`'s body discharges the `@PosInt` return predicate
+        assert ("mk", "refine_bind", "verified") in kinds
+        _assert_summary_consistent("refine-bind", result)
+
+    def test_refine_bind_violation_carries_e505(self) -> None:
+        """A refuted refinement narrowing records `refine_bind`/`violated`
+        with error code E505 and a counterexample."""
+        source = (
+            "type PosInt = { @Int | @Int.0 > 0 };\n"
+            "\n"
+            "public fn bad(@Int -> @PosInt)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+        )
+        result = self._verify_source(source)
+        violated = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "violated"
+        ]
+        assert len(violated) == 1
+        assert violated[0].error_code == "E505"
+        assert violated[0].counterexample is not None
+        _assert_summary_consistent("refine-bind-violation", result)
+
+    def test_refine_bind_tier3_runtime_checked(self) -> None:
+        """A Tier-3 refinement narrowing (non-primitive `Array` base) is
+        recorded as a runtime-checked `tier3` with an informational E506 — not
+        `tier1_verified` and not silently dropped — because codegen guards the
+        predicate at the function boundary.  Exercises the `tier3_runtime`
+        bookkeeping `_assert_summary_consistent` checks (status `tier3` ↔
+        `summary.tier3_runtime`)."""
+        source = (
+            "type NonEmptyArray = "
+            "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
+            "\n"
+            "public fn head(@NonEmptyArray -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @NonEmptyArray.0[0] }\n"
+            "\n"
+            "public fn caller(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ head([42, 1, 2]) }\n"
+        )
+        result = self._verify_source(source)
+        tier3 = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "tier3"
+        ]
+        assert len(tier3) == 1
+        assert tier3[0].error_code == "E506"
+        # Counted as a runtime check, never a silent pass or a Tier-1.
+        assert not any(
+            o.kind == "refine_bind" and o.status == "verified"
+            for o in result.obligations
+        )
+        assert result.summary.tier3_runtime >= 1
+        _assert_summary_consistent("refine-bind-tier3", result)
+
+    def test_refine_bind_unguarded_internal_site(self) -> None:
+        """An *internal* Tier-3 refinement narrowing (a `let` over a
+        non-primitive base) has no codegen guard, so it is `tier3_unguarded`
+        and excluded from the totals — NOT overstated as a runtime-checked
+        `tier3_runtime` (the guarded/unguarded distinction mirrors `nat_bind`)."""
+        source = (
+            "type NonEmptyArray = "
+            "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
+            "\n"
+            "private fn mk(@Unit -> @Array<Int>)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ [1, 2] }\n"
+            "\n"
+            "private fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @NonEmptyArray = mk(@Unit.0); 0 }\n"
+        )
+        result = self._verify_source(source)
+        unguarded = [
+            o for o in result.obligations
+            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+        ]
+        assert len(unguarded) == 1
+        assert unguarded[0].error_code == "E506"
+        # Excluded from totals and NOT counted as a runtime check.
+        assert not any(
+            o.kind == "refine_bind" and o.status == "tier3"
+            for o in result.obligations
+        )
+        _assert_summary_consistent("refine-bind-unguarded", result)
+
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (
             "public fn bad(@Int -> @Int)\n"

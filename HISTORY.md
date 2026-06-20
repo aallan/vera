@@ -384,6 +384,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.171 | 15 Jun | **Map and Set host storage moved to bucket-as-truth across the CLI and browser runtimes, deleting the Python/JS mirror so collection contents live in one place** ([#706](https://github.com/aallan/vera/issues/706)). |
 | v0.0.172 | 16 Jun | **The `@Nat >= 0` invariant is now obligation-checked at every binding site, not just `@Nat` subtractions** ([#552](https://github.com/aallan/vera/issues/552)). |
 | v0.0.173 | 17 Jun | **The `@Nat >= 0` narrowing obligation now covers every projection and instantiation binding site (ADT sub-patterns, non-literal tuple destructures, generic and imported constructors), with runtime guards at the concrete sites, generic function calls, and builtin `@Nat` parameters** ([#747](https://github.com/aallan/vera/issues/747)). |
+| v0.0.174 | 19 Jun | **General refinement-type predicates are now verified statically: a value narrowing into a `{ @T \| P }` slot or returned at a refined return position carries a Tier-1 obligation that the predicate holds (or a runtime guard at the function boundary where the predicate is untranslatable), generalising the `@Nat` machinery from the baked-in `>= 0` to an arbitrary predicate** ([#746](https://github.com/aallan/vera/issues/746)). |
 
 ---
 

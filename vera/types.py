@@ -47,10 +47,13 @@ class FunctionType(Type):
 @dataclass(frozen=True)
 class RefinedType(Type):
     """A refinement type.  Tracks the base type and preserves the predicate
-    AST node for later verification (C4).  In C3, treated as its base type
-    for subtyping purposes."""
+    AST node.  For subtyping the type behaves as its base (predicate-implies
+    checks are deferred to the verifier); the predicate is discharged at
+    verification time at every narrowing site and refined return position
+    (#746), generalising the @Nat ``>= 0`` machinery to an arbitrary
+    translated predicate."""
     base: Type
-    predicate: _ast.Expr  # kept opaque — not verified in C3
+    predicate: _ast.Expr  # discharged by the verifier (#746), not in subtyping
 
 
 @dataclass(frozen=True)

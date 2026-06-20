@@ -54,7 +54,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # =================================================================
 
     # Chapter 2 — type constraint syntax (post-v0.1)
-    ("02-types.md", 263): "FUTURE",          # forall<T where Ord<T>> fn sort
+    ("02-types.md", 287): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # Chapter 9 — numeric conversion/predicate signatures (no body)
     # 803, 833 — bare ``` fences (no language tag), heuristic skips them
@@ -238,7 +238,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 142): "INCOMPLETE",      # is_sorted in SortedList invariant
 
     # Chapter 2 — Tuple constructor (not a built-in ADT)
-    ("02-types.md", 243): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
+    ("02-types.md", 267): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
 
     # Chapter 3 — undefined stdlib function array_map
     ("03-slot-references.md", 346): "INCOMPLETE",  # array_map in apply_to_array

@@ -103,10 +103,36 @@ class FunctionCompilationMixin:
         # Allocate parameters and track pointer params for GC prologue
         param_parts: list[str] = []
         gc_pointer_params: list[int] = []
+        # #746: refined params get a runtime predicate guard at entry (the
+        # value's local + its type expr), emitted *before* the preconditions
+        # (a `requires(...)` may depend on the refined invariant — see the
+        # emission site below).
+        refined_param_checks: list[tuple[int, ast.TypeExpr]] = []
+        # #746 PR-review: a tuple param whose *components* are refined / @Nat
+        # carries no top-level refinement, so it needs per-component boundary
+        # guards (the FFI gap the projection-fact assumption opened — see
+        # `_emit_component_refinement_guards`).  Collected alongside the
+        # directly-refined params and emitted in the same pre-body block.
+        component_param_checks: list[tuple[int, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
-                # Unit parameter — skip in WASM signature
+                # Unit parameter — skipped in the WASM signature (zero-size).
+                # A `@Unit` refinement is codegen-UNguardable: its binder is
+                # erased, so there is no local to check a boundary predicate
+                # against.  `_refinement_guard_parts` returns None for a `@Unit`
+                # base and the verifier records such a narrowing
+                # `tier3_unguarded` (an honest E506, not a claimed guard), so
+                # there is nothing to emit here.  Fail loud rather than silently
+                # drop a declared boundary invariant should a future change ever
+                # make a `@Unit` param carry guard parts (CR 8afb51a/e6f17b7).
+                if self._refinement_guard_parts(param_te) is not None:
+                    raise ValueError(  # pragma: no cover — invariant guard
+                        f"refined @Unit parameter in '{decl.name}' carries "
+                        "runtime guard parts but has no WASM local to check "
+                        "them against; a @Unit refinement must be recorded "
+                        "tier3_unguarded, not guarded"
+                    )
                 continue
             if wt == "unsupported":
                 self._warning(
@@ -126,6 +152,8 @@ class FunctionCompilationMixin:
                 type_name = self._type_expr_to_slot_name(param_te)
                 if type_name:
                     env = env.push(type_name, ptr_idx)
+                if self._refinement_guard_parts(param_te) is not None:
+                    refined_param_checks.append((ptr_idx, param_te))
                 gc_pointer_params.append(ptr_idx)
                 continue
             local_idx = ctx.alloc_param()
@@ -134,6 +162,16 @@ class FunctionCompilationMixin:
             type_name = self._type_expr_to_slot_name(param_te)
             if type_name:
                 env = env.push(type_name, local_idx)
+            if self._refinement_guard_parts(param_te) is not None:
+                refined_param_checks.append((local_idx, param_te))
+            # Component guards for a tuple param (heap pointer, wt == "i32") OR a
+            # refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`) —
+            # `_resolve_tuple_type` unwraps both.  A refinement-over-tuple gets
+            # BOTH its top-level guard (above) and per-component guards; an
+            # ordinary ADT / closure param resolves to None and is skipped (CR
+            # PR-review).
+            if self._resolve_tuple_type(param_te) is not None:
+                component_param_checks.append((local_idx, param_te))
             # Track i32 pointer params (ADT/closure, not Bool/Byte,
             # not opaque host handles — Map/Set/Decimal are i32
             # indices into Python-side stores, not Vera-heap
@@ -188,8 +226,46 @@ class FunctionCompilationMixin:
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
-        # Compile precondition checks
-        pre_instrs = self._compile_preconditions(ctx, decl, env)
+        # Compile precondition checks.  A `requires(...)` may *assume* the
+        # refined parameters' invariants, so it runs after the refinement
+        # guards emitted below (the call stays here so its ctx side effects
+        # are unchanged; only the emitted-instruction order is reversed).
+        precond_instrs = self._compile_preconditions(ctx, decl, env)
+
+        # #746: refined parameters carry a runtime predicate guard at entry —
+        # a refinement is the parameter's *type* invariant, so an untrusted
+        # (incl. FFI/public) caller passing a violating value traps via
+        # $vera.contract_fail rather than the function relying on an invariant
+        # the value never established.  Emitted *before* the explicit
+        # preconditions: a `requires(...)` may itself depend on the invariant
+        # (e.g. `requires(10 / @NonZero.0 > 0)` would trap on the division
+        # before the guard could report the boundary violation), so the guard
+        # must establish the refinement first.
+        refine_guard_instrs: list[str] = []
+        # #746 PR-review: per-component boundary guards for tuple params — a
+        # `Tuple<PosInt, Int>` carries no top-level refinement, so an FFI caller
+        # passing a refinement-violating component would otherwise slip past the
+        # callee's entry checks (the verifier *assumes* the component holds).
+        # Emitted BEFORE the top-level refined guard below: a refinement OVER a
+        # tuple (`{ @Tuple<PosInt, Int> | P }`) has P potentially read the
+        # components, so the components must be established first (CR PR-review).
+        for value_local, param_te in component_param_checks:
+            refine_guard_instrs.extend(
+                self._emit_component_refinement_guards(
+                    ctx, decl, param_te, value_local, env, "parameter"))
+
+        for value_local, param_te in refined_param_checks:
+            parts = self._refinement_guard_parts(param_te)
+            if parts is None:  # pragma: no cover — collected only when not None
+                continue
+            predicate, base_name = parts
+            msg = self._format_refinement_message(decl, param_te, "parameter")
+            guard = self._emit_refinement_check(
+                ctx, predicate, base_name, value_local, msg, env)
+            if guard is not None:
+                refine_guard_instrs.extend(guard)
+
+        pre_instrs = refine_guard_instrs + precond_instrs
 
         # Snapshot old state for postcondition old() references
         snapshot_instrs = self._snapshot_old_state(ctx, decl)

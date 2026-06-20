@@ -1,5 +1,10 @@
 -- Conformance: refinement types (Chapter 2)
--- Tests: refinement type aliases, predicate enforcement
+-- Tests: refinement type aliases + STATIC predicate enforcement (#746).
+-- The `@PosInt` parameter of `safe_divide` is assumed positive in its body,
+-- the matching `safe_divide(10, 3)` call discharges `3 > 0` at Tier 1, and
+-- `clamp_percent`'s body discharges its `@Percentage` return predicate
+-- (`>= 0 && <= 100`) from the branch path conditions — all proved
+-- statically, no runtime check.
 type PosInt = { @Int | @Int.0 > 0 };
 
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
