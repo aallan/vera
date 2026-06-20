@@ -773,18 +773,32 @@ class ContractVerifier:
         fn_ret_types: dict[str, str] = {}
 
         def record_fn_ret_type(fn: ast.FnDecl) -> None:
-            # Top-level fns only — codegen registers where-helpers in neither
-            # `_fn_sigs` nor `fn_ret_types` (registration.py walks
-            # `program.declarations`, not `where_fns`).  Mirroring that keeps the
-            # verifier's `fn_ret_types` in exact parity with codegen: codegen
-            # likewise cannot infer a type var from a where-helper's return, so
-            # adding helpers here would only let the verifier over-discover (a
-            # sound superset, but a deviation from "verify exactly what codegen
-            # emits") and would collide same-named helpers from different parents
-            # in the flat name-keyed map (PR #767 review).
+            # Include `where` helpers, keyed by bare name exactly as codegen
+            # does.  Codegen registers each where-helper's WAT signature in
+            # `_fn_sigs` under its bare name, so codegen's `fn_ret_types` carries
+            # them — and this is load-bearing for soundness, NOT optional parity:
+            # a generic whose type arg is fixed only by a where-helper's return
+            # (`g(helper(x))`) is monomorphized by codegen at that concrete
+            # return type, so the verifier must infer the SAME type.  Drop the
+            # helper here and the unresolved var instead hits the `"Bool"`
+            # phantom-var default in `_infer_type_args_from_call`, so the
+            # verifier discovers `g<Bool>` while codegen emits `g<Float64>` — it
+            # misses codegen's clone, a false Tier-1 (pinned by
+            # test_generic_typearg_from_where_helper_return_is_discovered).
+            # The flat name keying CAN collide same-named helpers in different
+            # parents, but codegen collides identically (its `_fn_sigs` is
+            # bare-name-keyed too, populated in the same declaration order), so
+            # the verifier still discovers exactly codegen's set — the collision
+            # is a pre-existing codegen monomorphization imprecision, mirrored
+            # symmetrically, not a verification gap.  Scoping the key on only
+            # this side would not miss anything (it would be a sound superset)
+            # but would diverge the verifier from codegen for no soundness gain
+            # while leaving the codegen side unfixed (PR #767 review).
             ret_name = self._simple_type_name(fn.return_type)
             if ret_name is not None:
                 fn_ret_types[fn.name] = ret_name
+            for wfn in fn.where_fns or ():
+                record_fn_ret_type(wfn)
 
         for tld in disc_program.declarations:
             decl = tld.decl

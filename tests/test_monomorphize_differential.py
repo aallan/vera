@@ -268,3 +268,58 @@ def test_imported_generic_symmetric_between_codegen_and_verifier() -> None:
     # Neither side monomorphizes the imported generic → symmetric (both empty).
     assert not any(n == "ext_id" for n, _ in codegen_set)
     assert verifier_set == codegen_set
+
+
+def test_generic_typearg_from_where_helper_return_is_discovered() -> None:
+    """A generic whose type arg is fixed ONLY by a where-helper's return must be
+    discovered by the verifier at the same concrete type codegen emits.
+
+    Codegen registers every where-helper's WAT signature in ``_fn_sigs``
+    (bare-name keyed), so it resolves ``wrap(scale(@Int.0))`` to ``wrap<Float64>``
+    from ``scale``'s return.  If the verifier's discovery omits where-helper
+    return types, the unresolved type var falls to the ``"Bool"`` phantom-var
+    default in ``_infer_type_args_from_call`` and the verifier discovers
+    ``wrap<Bool>`` — MISSING codegen's ``wrap<Float64>`` clone, a false Tier-1.
+
+    The helper deliberately returns ``Float64`` (not ``Bool``) so the phantom
+    default cannot coincide with the real type and mask the bug — the exact gap
+    a ``Bool``-returning helper let slip through earlier (PR #767 review).
+    """
+    src = (
+        "private forall<T>\n"
+        "fn wrap(@T -> @Option<T>)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ Some(@T.0) }\n\n"
+        "private fn caller(@Int -> @Option<Float64>)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ wrap(scale(@Int.0)) }\n"
+        "where {\n"
+        "  fn scale(@Int -> @Float64)\n"
+        "    requires(true) ensures(true) effects(pure)\n"
+        "  { 1.5 }\n"
+        "}\n"
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(src)
+        f.flush()
+        path = f.name
+    try:
+        program = transform(parse_file(path))
+        codegen_set = _codegen_emitted(program, src, path)
+        verifier_set = _verifier_discovered(program, src, path)
+    finally:
+        os.unlink(path)
+
+    wrap_cg = {ct for (n, ct) in codegen_set if n == "wrap"}
+    wrap_ver = {ct for (n, ct) in verifier_set if n == "wrap"}
+    assert wrap_cg == {("Float64",)}, (
+        f"codegen should emit wrap<Float64> from scale's return, got {wrap_cg}"
+    )
+    # The verifier must cover codegen's wrap<Float64>; phantom-defaulting to
+    # wrap<Bool> would leave codegen's executing clone statically unverified.
+    assert ("Float64",) in wrap_ver, (
+        f"verifier missed wrap<Float64> (discovered {wrap_ver}) — where-helper "
+        f"return-type discovery regressed: false Tier-1"
+    )
