@@ -735,6 +735,11 @@ class ContractVerifier:
                 fn_lookup=self.env.lookup_function,
                 module_fn_lookup=self._lookup_module_function,
             )
+        # CR PR-review: let the SMT match translation assume a constructor
+        # pattern's refined / @Nat sub-pattern SOURCE facts while checking the
+        # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
+        # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
+        smt._subpattern_fact_hook = self._subpattern_source_facts
         # Register all known ADTs with the SMT context.  Idempotent on
         # the warm path (same AdtInfo re-registered into the persistent
         # registry); kept per-function so cold and warm stay identical.
@@ -2664,6 +2669,59 @@ class ContractVerifier:
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
         return field_types
 
+    def _subpattern_source_facts(
+        self,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+    ) -> list[object]:
+        """The arm-local Z3 facts each *direct* refined / ``@Nat`` sub-pattern
+        binding carries from its field's DECLARED (source) type — PURE, with no
+        obligation side effects (CR PR-review).
+
+        Two consumers seed these into an arm's assumptions: the narrowing walk
+        (``_obligate_subpattern_narrowings`` → ``_walk_for_nat_binding_
+        obligations``) so a downstream ``@Nat`` narrowing of a bound payload
+        discharges, AND ``_walk_for_calls`` so a call **precondition** in the
+        arm body discharges — preconditions are collected in the earlier main
+        pass, not the narrowing walk, so without this a valid
+        ``Some(@PosInt) -> needs_positive(@PosInt.0)`` false-E501s.
+
+        Sound because it uses the field's SOURCE type: a non-narrowing refined
+        field (``Option<PosInt>``) carries its predicate (the scrutinee's type
+        establishes it), while a genuine narrowing (``Option<Int>`` bound as
+        ``@PosInt``) yields no fact (source is ``Int``) and stays *obligated*,
+        never assumed.  Only the projectable opaque-scrutinee path yields facts;
+        a literal-constructor scrutinee binds concrete arguments the body
+        reasons about directly."""
+        if scrutinee_z3 is None:
+            return []
+        if (isinstance(scrutinee, ast.ConstructorCall)
+                and scrutinee.name == pattern.name):
+            return []  # literal scrutinee — concrete args, not accessors
+        field_types = self._instantiated_field_types(
+            pattern.name, self._resolved_type_of(scrutinee))
+        if field_types is None:
+            return []
+        try:
+            sort = scrutinee_z3.sort()  # type: ignore[attr-defined]
+            idx = smt._find_ctor_index(sort, pattern.name)
+        except Exception:  # pragma: no cover — non-datatype scrutinee
+            return []
+        if idx is None:
+            return []
+        facts: list[object] = []
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            if not isinstance(sub_pat, ast.BindingPattern):
+                continue
+            fact = self._term_source_fact(
+                smt, field_ty, sort.accessor(idx, i)(scrutinee_z3))
+            if fact is not None:
+                facts.append(fact)
+        return facts
+
     def _obligate_subpattern_narrowings(
         self,
         decl: ast.FnDecl,
@@ -2705,7 +2763,10 @@ class ContractVerifier:
             pattern.name, self._resolved_type_of(scrutinee))
         if field_types is None:
             return []
-        facts: list[object] = []
+        # The arm-local source-type facts (shared with `_walk_for_calls`, which
+        # seeds them into call-precondition assumptions — CR PR-review).
+        facts = self._subpattern_source_facts(
+            scrutinee, scrutinee_z3, pattern, smt)
         # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
         # binds the constructor's own arguments — translatable AST nodes,
         # obligated directly.  An opaque scrutinee binds uninterpreted
@@ -2726,15 +2787,6 @@ class ContractVerifier:
                 zip(pattern.sub_patterns, field_types)):
             if not isinstance(sub_pat, ast.BindingPattern):
                 continue
-            # Collect the field's SOURCE-type fact for the arm body (see the
-            # docstring).  Only the opaque-scrutinee path has a projectable Z3
-            # accessor term; a literal-constructor scrutinee binds concrete
-            # argument values whose facts the body already derives directly.
-            if lit_args is None and sort is not None and idx is not None:
-                src_fact = self._term_source_fact(
-                    smt, field_ty, sort.accessor(idx, i)(scrutinee_z3))
-                if src_fact is not None:
-                    facts.append(src_fact)
             target = self._resolve_type(sub_pat.type_expr)
             # Refined-first (#746, R9): a refined sub-pattern (incl. a
             # refinement over @Nat) discharges its full predicate against the

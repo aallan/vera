@@ -3856,6 +3856,51 @@ public fn g(@Option<Int> -> @Int)
         assert errors, "a genuine narrowing must stay obligated, not assumed"
         assert any(d.error_code == "E505" for d in errors)
 
+    def test_refined_subpattern_fact_reaches_call_precondition(self) -> None:
+        """The arm-fact carry also reaches call PRECONDITIONS (checked in the
+        SMT main pass, not the narrowing walk): `Some(@PosInt)` on
+        `Option<PosInt>` then `needs_positive(@PosInt.0)` — whose callee
+        `requires(@Int.0 > 0)` — verifies at Tier-1 instead of a false E501,
+        because the SMT match translation assumes the bound field's source
+        predicate under the arm condition (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public fn needs_positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+public fn f(@Option<PosInt> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> needs_positive(@PosInt.0),
+    None -> 0
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_call_precondition_soundness_no_false_discharge(self) -> None:
+        """SOUNDNESS for the call-precondition fact carry: an `Option<Int>`
+        payload (no refinement) bound as `@Int` does NOT satisfy a callee's
+        `requires(@Int.0 > 0)`, so the precondition still raises E501 — the
+        source-fact carry must not launder an unproven precondition into a false
+        Tier-1 (CR PR-review)."""
+        result = _verify("""
+public fn needs_positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+public fn g(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> needs_positive(@Int.0),
+    None -> 0
+  }
+}
+""")
+        assert any(d.error_code == "E501"
+                   for d in result.diagnostics if d.severity == "error")
+
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
     def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:

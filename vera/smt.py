@@ -180,6 +180,12 @@ class SmtContext:
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
         self._path_conditions: list[z3.ExprRef] = []
+        # Optional hook (injected by the verifier) returning the source-type
+        # facts a constructor pattern's refined / @Nat sub-pattern bindings
+        # carry, so a match arm body's call PRECONDITIONS see them (CR
+        # PR-review).  Signature: (scrutinee_ast, scrutinee_z3, pattern, smt)
+        # -> list[z3 fact].  None when no verifier is driving (pure-SMT tests).
+        self._subpattern_fact_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -1256,6 +1262,22 @@ class SmtContext:
     # Match and constructor translation
     # -----------------------------------------------------------------
 
+    def _arm_source_facts(
+        self, scrutinee_ast: ast.Expr, scrutinee_z3: z3.ExprRef,
+        pattern: ast.Pattern,
+    ) -> list[z3.ExprRef]:
+        """Source-type facts to assume while translating *pattern*'s arm body —
+        via the verifier-injected ``_subpattern_fact_hook`` — so a call
+        precondition inside the arm sees a refined sub-pattern binding's
+        invariant (CR PR-review).  Empty when no hook is set (pure-SMT tests)
+        or the pattern is not a constructor pattern."""
+        if (self._subpattern_fact_hook is None
+                or not isinstance(pattern, ast.ConstructorPattern)):
+            return []
+        facts = self._subpattern_fact_hook(
+            scrutinee_ast, scrutinee_z3, pattern, self)
+        return list(facts) if facts else []
+
     def _translate_match(
         self, expr: ast.MatchExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
@@ -1289,7 +1311,13 @@ class SmtContext:
         # Default arm: none of the preceding patterns matched
         for pc in preceding_conds:
             self._path_conditions.append(z3.Not(pc))
+        last_facts = self._arm_source_facts(
+            expr.scrutinee, scrutinee, arms[-1].pattern)
+        for f in last_facts:
+            self._path_conditions.append(f)
         result = self.translate_expr(arms[-1].body, last_env)
+        for _ in last_facts:
+            self._path_conditions.pop()
         for _ in preceding_conds:
             self._path_conditions.pop()
 
@@ -1306,7 +1334,13 @@ class SmtContext:
                 return None
 
             self._path_conditions.append(cond)
+            arm_facts = self._arm_source_facts(
+                expr.scrutinee, scrutinee, arm.pattern)
+            for f in arm_facts:
+                self._path_conditions.append(f)
             arm_body = self.translate_expr(arm.body, arm_env)
+            for _ in arm_facts:
+                self._path_conditions.pop()
             self._path_conditions.pop()
 
             if arm_body is None:  # pragma: no cover
