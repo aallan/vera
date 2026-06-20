@@ -1049,7 +1049,13 @@ class ContractVerifier:
             # already counted/guarded, so there is no soundness loss.
             return
         # A violation MUST never be silently dropped (a false Tier-1).  No
-        # diagnostic matched, so surface it straight from the obligation.
+        # diagnostic matched, so surface it straight from the obligation.  A
+        # violated `ensures` records no error_code (its canonical diagnostic
+        # E500 comes from the emitter), so restore it here — synthesised
+        # diagnostics must stay error-code-stable (#1037).
+        synth_error_code = rep_ob.error_code or (
+            "E500" if rep_ob.kind == "ensures" else ""
+        )
         self.errors.append(Diagnostic(
             description=(
                 prefix
@@ -1059,7 +1065,7 @@ class ContractVerifier:
                 file=self.file, line=rep_ob.line, column=rep_ob.column,
             ),
             severity="error",
-            error_code=rep_ob.error_code,
+            error_code=synth_error_code,
             tier=None,
         ))
 
