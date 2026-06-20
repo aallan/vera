@@ -242,6 +242,18 @@ class FunctionCompilationMixin:
         # before the guard could report the boundary violation), so the guard
         # must establish the refinement first.
         refine_guard_instrs: list[str] = []
+        # #746 PR-review: per-component boundary guards for tuple params — a
+        # `Tuple<PosInt, Int>` carries no top-level refinement, so an FFI caller
+        # passing a refinement-violating component would otherwise slip past the
+        # callee's entry checks (the verifier *assumes* the component holds).
+        # Emitted BEFORE the top-level refined guard below: a refinement OVER a
+        # tuple (`{ @Tuple<PosInt, Int> | P }`) has P potentially read the
+        # components, so the components must be established first (CR PR-review).
+        for value_local, param_te in component_param_checks:
+            refine_guard_instrs.extend(
+                self._emit_component_refinement_guards(
+                    ctx, decl, param_te, value_local, env, "parameter"))
+
         for value_local, param_te in refined_param_checks:
             parts = self._refinement_guard_parts(param_te)
             if parts is None:  # pragma: no cover — collected only when not None
@@ -252,15 +264,6 @@ class FunctionCompilationMixin:
                 ctx, predicate, base_name, value_local, msg, env)
             if guard is not None:
                 refine_guard_instrs.extend(guard)
-
-        # #746 PR-review: per-component boundary guards for tuple params — a
-        # `Tuple<PosInt, Int>` carries no top-level refinement, so an FFI caller
-        # passing a refinement-violating component would otherwise slip past the
-        # callee's entry checks (the verifier *assumes* the component holds).
-        for value_local, param_te in component_param_checks:
-            refine_guard_instrs.extend(
-                self._emit_component_refinement_guards(
-                    ctx, decl, param_te, value_local, env, "parameter"))
 
         pre_instrs = refine_guard_instrs + precond_instrs
 

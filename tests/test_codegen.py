@@ -5611,11 +5611,17 @@ type Pair = { @Tuple<PosInt, Int> | true };
 public fn use_np(@Tuple<Pair, Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 }
-public fn entry(@Unit -> @Int)
+public fn entry_bad(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { use_np(Tuple(Tuple(0 - 5, 3), 9)) }
+public fn entry_ok(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ use_np(Tuple(Tuple(7, 3), 9)) }
 """
-        _run_refine_trap(src, fn="entry")
+        _run_refine_trap(src, fn="entry_bad")
+        # Happy path: a valid nested value must flow through without the
+        # component recursion over-trapping (CR PR-review).
+        assert _run(src, fn="entry_ok") == 0
 
     def test_param_guard_fires_before_precondition(self) -> None:
         """The refined-parameter guard runs *before* explicit preconditions:

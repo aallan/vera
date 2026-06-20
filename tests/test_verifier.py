@@ -3978,6 +3978,25 @@ public forall<T> fn pick(@Option<PosInt> -> @PosInt)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_generic_refined_return_from_match_arm_soundness(self) -> None:
+        """SOUNDNESS for the generic fast path: an `Option<Int>` payload (no
+        refinement) returned as `@PosInt` must still E505 — the generic match
+        implication must not launder an unrefined payload that the non-generic
+        soundness test also rejects (CR PR-review)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+public forall<T> fn pick(@Option<Int> -> @PosInt)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 1
+  }
+}
+""")
+        assert any(d.error_code == "E505"
+                   for d in result.diagnostics if d.severity == "error")
+
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
     def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:

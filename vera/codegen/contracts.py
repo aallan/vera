@@ -594,6 +594,19 @@ class ContractsMixin:
             # $vera.contract_fail rather than letting the postcondition trap on
             # the bad value (symmetric with the param-guard ordering in
             # functions.py).
+            # #746 PR-review: per-component boundary guards for a tuple return —
+            # symmetric with the tuple param guards in functions.py.  A
+            # `fn -> Tuple<PosInt, Int>` whose body yields a refinement-
+            # violating component traps here rather than handing a Tier-1-
+            # violating tuple back across the boundary.  Returns no instructions
+            # for a non-tuple return, so this is a no-op for ordinary returns.
+            # Emitted BEFORE the top-level refined-return guard: a refinement
+            # OVER a tuple has its predicate potentially read the components, so
+            # establish those first (mirrors the param-guard order, CR).
+            instrs.extend(self._emit_component_refinement_guards(
+                ctx, decl, decl.return_type, result_local, env,
+                "return value"))
+
             if refined_ret is not None:
                 predicate, base_name = refined_ret
                 msg = self._format_refinement_message(
@@ -602,16 +615,6 @@ class ContractsMixin:
                     ctx, predicate, base_name, result_local, msg, env)
                 if guard is not None:
                     instrs.extend(guard)
-
-            # #746 PR-review: per-component boundary guards for a tuple return —
-            # symmetric with the tuple param guards in functions.py.  A
-            # `fn -> Tuple<PosInt, Int>` whose body yields a refinement-
-            # violating component traps here rather than handing a Tier-1-
-            # violating tuple back across the boundary.  Returns no instructions
-            # for a non-tuple return, so this is a no-op for ordinary returns.
-            instrs.extend(self._emit_component_refinement_guards(
-                ctx, decl, decl.return_type, result_local, env,
-                "return value"))
 
             for ensures in ensures_clauses:
                 cond_instrs = ctx.translate_expr(ensures.expr, env)

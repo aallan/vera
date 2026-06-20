@@ -1724,6 +1724,13 @@ class ContractVerifier:
                 # refinement components).  guarded=False — codegen does not
                 # component-guard a tuple value.
                 target = self._target_type_of(expr)
+                if isinstance(target, RefinedType):
+                    # A refinement OVER a tuple (`{ @Tuple<PosInt, Int> | P }`)
+                    # hides the `Tuple` base, so unwrap it before reading the
+                    # component types — else the refined components are
+                    # statically UNobligated (a false Tier-1, though codegen
+                    # runtime-guards them) (CR PR-review).
+                    target = target.base
                 comp_types = (
                     target.type_args
                     if isinstance(target, AdtType)
@@ -2882,6 +2889,8 @@ class ContractVerifier:
         checker never recorded leaves the bindings unchecked.
         """
         rhs_ty = self._resolved_type_of(stmt.value)
+        if isinstance(rhs_ty, RefinedType):
+            rhs_ty = rhs_ty.base  # `{ @Tuple<...> | P }` → the tuple (CR)
         if not isinstance(rhs_ty, AdtType):
             return  # source tuple type unknown — leave bindings unchecked
         source_args = rhs_ty.type_args
