@@ -238,6 +238,13 @@ class MonomorphizationMixin:
         supported — String/Array (i32_pair) require runtime comparison
         loops and are not auto-derivable.
         """
+        # The mono pipeline can hand us a *parameterized* name (`Box<Int>`, from
+        # a slot-ref-inferred type) but `_adt_layouts` is keyed by the bare ADT
+        # name (`Box`).  Strip the type args so an `Eq<T>` generic called with
+        # `@Box<Int>.0` resolves the same layout it would from `MkBox(...)`
+        # inferred as `Box` — otherwise a valid program gets a spurious E613
+        # (PR #767 review).
+        type_name = type_name.split("<", 1)[0]
         layouts = self._adt_layouts.get(type_name)
         if layouts is None:
             return False
