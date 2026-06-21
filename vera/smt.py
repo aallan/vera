@@ -1267,9 +1267,9 @@ class SmtContext:
                 # (an ExprStmt binds no slot).  An untranslatable statement
                 # (effect op, quantifier, anon fn) returns None, which we IGNORE
                 # — it must NOT abort the block's Tier-1 verification of the
-                # surrounding decidable obligations.  The #727 identity dedup
-                # (keyed on contract + call span) makes re-translation
-                # duplicate-free.
+                # surrounding decidable obligations.  The #727 dedup (keyed on
+                # the precondition's identity + the call's SPAN — not node
+                # identity) makes re-translation duplicate-free.
                 self.translate_expr(stmt.expr, current_env)
             else:
                 # LetDestruct or unknown statement type

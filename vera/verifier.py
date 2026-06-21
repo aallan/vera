@@ -1797,7 +1797,10 @@ class ContractVerifier:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
-                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                elif isinstance(stmt, ast.ExprStmt):
+                    # Walk a statement-position expression for recursive-group
+                    # calls so `decreases` sees a discarded recursive call
+                    # (test_decreases_resolves_via_stmt_position_recursive_call).
                     self._walk_for_calls(group_names, stmt.expr,
                                          z3_path_conds, results, smt, cur_env)
             self._walk_for_calls(group_names, expr.expr, z3_path_conds,

@@ -2125,10 +2125,12 @@ private fn caller(@Unit -> @Int)
 """, "precondition")
 
     def test_call_stmt_position_no_double_count(self) -> None:
-        """#730 + #727: a single statement-position violating call yields EXACTLY
-        ONE call_pre E501 obligation — the identity dedup prevents the
-        now-translated ExprStmt (and any walker re-translation) from
-        double-counting.  (Pre-fix: zero — the call is never checked.)"""
+        """#730: a single statement-position violating call yields EXACTLY ONE
+        call_pre E501 obligation — not zero (the bug pre-fix), not accidentally
+        more.  In statement position the call is translated once, so this is a
+        precise-count guard; the span-keyed #727 dedup's no-OVER-collapse
+        property is pinned separately by
+        test_two_distinct_stmt_position_violations_each_fire."""
         result = _verify("""
 private fn non_zero(@Int -> @Int)
   requires(@Int.0 != 0)
@@ -2159,6 +2161,94 @@ private fn logged(@Int -> @Int)
   effects(<IO>)
 { IO.print("hi"); @Int.0 }
 """)
+
+    def test_call_violated_precondition_after_untranslatable_stmt(self) -> None:
+        """#730 soundness: an untranslatable statement (an effect op) preceding a
+        decidable violating call must NOT abort the block — the later call is
+        still precondition-checked.  Guards the `_translate_block` invariant that
+        a None-returning ExprStmt is IGNORED, not propagated as a block bail: the
+        abort-on-None wrong-fix passes every other statement-position test yet
+        silently drops this E501 (PR #777 review)."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{ IO.print("side"); non_zero(0); @Int.0 }
+""", "precondition")
+
+    def test_two_distinct_stmt_position_violations_each_fire(self) -> None:
+        """Two distinct statement-position violating calls produce TWO E501
+        obligations — the span-keyed #727 dedup collapses a re-translated SAME
+        site to one, but must NOT over-collapse genuinely-different sites
+        (PR #777 review)."""
+        result = _verify("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0); non_zero(0); 1 }
+""")
+        e501 = [o for o in result.obligations
+                if o.kind == "call_pre" and o.error_code == "E501"]
+        assert len(e501) == 2, (
+            f"two distinct statement-position violations must each fire, got "
+            f"{len(e501)}: {[(o.line, o.column) for o in e501]}"
+        )
+
+    def test_call_violated_precondition_nested_in_stmt_expr(self) -> None:
+        """A violating call buried inside a larger statement-position expression
+        (`non_zero(0) + 5;`) is precondition-checked — the ExprStmt translation
+        recurses into sub-expressions, not just the outermost node (PR #777
+        review)."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0) + 5; 1 }
+""", "precondition")
+
+    def test_decreases_resolves_via_stmt_position_recursive_call(self) -> None:
+        """A recursive call in STATEMENT position (result discarded) is seen by
+        the termination walker, so `decreases` still resolves to Tier-1 — the
+        third statement-iterating walker (`_walk_for_calls`) recurses into
+        ExprStmt (the branch that was the last `# pragma: no cover`).  Without it
+        the recursive call is invisible and `decreases` silently degrades to
+        Tier-3 (PR #777 review)."""
+        result = _verify("""
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { countdown(@Nat.0 - 1); 0 } }
+""")
+        decr = [o for o in result.obligations
+                if o.fn_name == "countdown" and o.kind == "decreases"]
+        assert len(decr) == 1 and decr[0].status == "verified", (
+            "decreases must resolve to Tier-1 via the statement-position "
+            f"recursive call; got {[(o.kind, o.status) for o in decr]}"
+        )
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_call_postcondition_assumed(self) -> None:
         """Caller's ensures relies on callee's postcondition."""
