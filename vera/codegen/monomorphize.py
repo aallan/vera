@@ -122,8 +122,8 @@ class MonomorphizationMixin:
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                mono.collect_calls_in_expr(
-                    decl.body, generic_decls, ctor_to_adt, instances,
+                mono.collect_calls_in_node(
+                    decl, generic_decls, ctor_to_adt, instances,
                 )
 
         # Generate monomorphized FnDecls with transitive closure.
@@ -157,8 +157,8 @@ class MonomorphizationMixin:
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            mono.collect_calls_in_expr(
-                mono_fn.body, generic_decls, ctor_to_adt, transitive,
+            mono.collect_calls_in_node(
+                mono_fn, generic_decls, ctor_to_adt, transitive,
             )
             for t_name, t_types in transitive.items():
                 for t_ct in t_types:

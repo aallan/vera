@@ -124,10 +124,16 @@ def _codegen_emitted(
 def _verifier_discovered(
     program: object, source: str, path: str,
 ) -> set[tuple[str, tuple[str, ...]]]:
-    """The (generic name, concrete types) set the verifier discovers."""
+    """The (generic name, concrete types) set the verifier discovers.
+
+    Reads the registered ``_instances`` (which ``register_program`` populates via
+    ``_collect_instantiations`` and per-monomorphization verification actually
+    consumes) rather than recomputing — so a regression in the registration seam
+    surfaces here instead of being masked (PR #767 review).
+    """
     verifier = ContractVerifier(source=source, file=path)
     verifier.register_program(program)  # type: ignore[arg-type]
-    result = verifier._collect_instantiations(program)  # type: ignore[arg-type]
+    result = verifier._instances
     return {(name, ct) for name, cts in result.items() for ct in cts}
 
 
@@ -322,4 +328,133 @@ def test_generic_typearg_from_where_helper_return_is_discovered() -> None:
     assert ("Float64",) in wrap_ver, (
         f"verifier missed wrap<Float64> (discovered {wrap_ver}) — where-helper "
         f"return-type discovery regressed: false Tier-1"
+    )
+
+
+def test_generic_typearg_from_imported_constructor_is_discovered() -> None:
+    """A local generic whose type arg is inferred from an IMPORTED constructor
+    must be discovered at the same type codegen emits.
+
+    Codegen's monomorphizer context includes imported ADTs' constructors, so it
+    resolves ``id2(MkBox(7))`` to ``id2<Box>`` from ``MkBox``'s owning ADT.  The
+    verifier's ``_build_mono_context`` builds ``ctor_to_adt`` from
+    ``env.data_types`` + local/prelude ``DataDecl``s only — imported public
+    constructors live in ``_module_constructors`` instead.  If they are omitted,
+    the verifier cannot map ``MkBox`` → ``Box``, the type var falls to the
+    ``"Bool"`` phantom default, and it discovers ``id2<Bool>`` — MISSING
+    codegen's ``id2<Box>`` clone, a false Tier-1 (PR #767 review).
+    """
+    from vera.resolver import ResolvedModule
+
+    a_src = "public data Box<T> {\n  MkBox(T)\n}\n"
+    b_src = (
+        "import a;\n\n"
+        "private forall<T> fn id2(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n\n"
+        "public fn main(@Unit -> @Box<Int>)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ id2(MkBox(7)) }\n"
+    )
+
+    def _resolved(path: tuple[str, ...], src: str) -> "ResolvedModule":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(src)
+            f.flush()
+            fp = f.name
+        try:
+            return ResolvedModule(
+                path=path, file_path=Path(fp),
+                program=transform(parse_file(fp)), source=src,
+            )
+        finally:
+            os.unlink(fp)
+
+    mod_a = _resolved(("a",), a_src)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(b_src)
+        f.flush()
+        bp = f.name
+    try:
+        prog_b = transform(parse_file(bp))
+        gen = CodeGenerator(source=b_src, file=bp, resolved_modules=[mod_a])
+        gen.compile_program(prog_b)  # type: ignore[arg-type]
+        cg = {ct for n, ct in getattr(gen, "_emitted_instances", set())
+              if n == "id2"}
+        verifier = ContractVerifier(
+            source=b_src, file=bp, resolved_modules=[mod_a],
+        )
+        verifier.register_program(prog_b)  # type: ignore[arg-type]
+        ver = {
+            ct
+            for n, cts in verifier._instances.items()
+            for ct in cts
+            if n == "id2"
+        }
+    finally:
+        os.unlink(bp)
+
+    assert cg == {("Box",)}, f"codegen should emit id2<Box>, got {cg}"
+    assert ("Box",) in ver, (
+        f"verifier missed id2<Box> (discovered {ver}) — imported-constructor "
+        f"discovery gap, false Tier-1"
+    )
+
+
+def test_codegen_emits_generic_reached_only_via_contract_or_where_helper() -> None:
+    """A generic called ONLY from a contract clause or a ``where`` helper body
+    must be emitted by codegen.
+
+    Vera lowers ``requires``/``ensures`` to a runtime contract check, and
+    compiles ``where`` helper bodies, so such a generic is invoked at run time.
+    Codegen's Pass 1.5 seeds from the shared node-level walk
+    (``collect_calls_in_node`` = body + contracts + ``where_fns``), not just
+    ``decl.body`` — walking only the body left the clone unemitted and produced
+    a ``CodegenSkip`` (`call target 'is_ok$Int' not registered`) at run time,
+    while the verifier (which walks contracts/helpers) discovered it: a discovery
+    divergence (PR #767 review).
+    """
+    src = (
+        "private forall<T> fn is_ok(@T -> @Bool)\n"
+        "  requires(true) ensures(true) effects(pure) { true }\n\n"
+        "private forall<T> fn innerw(@T -> @T)\n"
+        "  requires(true) ensures(true) effects(pure) { @T.0 }\n\n"
+        "private fn checked(@Int -> @Int)\n"
+        "  requires(is_ok(@Int.0)) ensures(true) effects(pure) { hw(@Int.0) }\n"
+        "where {\n"
+        "  fn hw(@Int -> @Int) requires(true) ensures(true) effects(pure)\n"
+        "  { innerw(@Int.0) }\n"
+        "}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure) { checked(5) }\n"
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(src)
+        f.flush()
+        path = f.name
+    try:
+        program = transform(parse_file(path))
+        cg = _codegen_emitted(program, src, path)
+        ver = _verifier_discovered(program, src, path)
+    finally:
+        os.unlink(path)
+
+    cg_names = {n for n, _ in cg}
+    assert "is_ok" in cg_names, (
+        f"codegen must emit the contract-reachable generic is_ok "
+        f"(emitted {sorted(cg_names)}) — else CodegenSkip at run time"
+    )
+    assert "innerw" in cg_names, (
+        f"codegen must emit the where-helper-reachable generic innerw "
+        f"(emitted {sorted(cg_names)})"
+    )
+    # Discovery is shared, so the verifier covers exactly what codegen emits.
+    assert {("is_ok", ("Int",)), ("innerw", ("Int",))} <= ver, (
+        f"verifier discovery diverged from codegen: {sorted(ver)}"
     )

@@ -768,6 +768,30 @@ class ContractVerifier:
                     for ctor in decl.constructors
                 ])
 
+        # 3. Imported public constructors live in the verifier's module-fallback
+        #    registry (`_module_constructors`), NOT `env.data_types` — include
+        #    them so a local generic call whose type arg is inferred from an
+        #    imported ADT value (`id2(MkBox(7))`, MkBox from another module)
+        #    discovers the same instantiation codegen emits.  Codegen's
+        #    `ctor_to_adt` carries imported ADTs, so omitting them here lets the
+        #    type var fall to the `"Bool"` phantom default — the verifier
+        #    discovers `id2<Bool>` while codegen emits `id2<Box>`, a false
+        #    Tier-1 (PR #767 review).  `setdefault` keeps any local/env entry,
+        #    which correctly shadows an imported ctor of the same name.
+        for cinfo in self._module_constructors.values():
+            tps = cinfo.parent_type_params or ()
+            adt_tp_counts.setdefault(cinfo.parent_type, len(tps))
+            tp_index = {tp: i for i, tp in enumerate(tps)}
+            ctor_to_adt.setdefault(cinfo.name, cinfo.parent_type)
+            ctor_tp_indices.setdefault(
+                cinfo.name,
+                () if cinfo.field_types is None
+                else tuple(
+                    tp_index.get(ft.name) if isinstance(ft, TypeVar) else None
+                    for ft in cinfo.field_types
+                ),
+            )
+
         type_aliases: dict[str, ast.TypeExpr] = {}
         type_alias_params: dict[str, tuple[str, ...]] = {}
         fn_ret_types: dict[str, str] = {}
@@ -858,30 +882,14 @@ class ContractVerifier:
         def collect_calls_in_fn(
             fn: ast.FnDecl, into: dict[str, set[tuple[str, ...]]],
         ) -> None:
-            # Walk the body, the contract clauses, AND any `where` helpers: a
-            # generic reachable only from a where-helper or a contract predicate
-            # (e.g. `ensures(is_valid(@T.result))`) would otherwise be missed by
-            # discovery and take the uninstantiated fallback, skipping its body
-            # checks (PR #767 review).
-            mono.collect_calls_in_expr(
-                fn.body, generic_decls, ctor_to_adt, into,
-            )
-            for contract in fn.contracts:
-                # Requires/Ensures/Invariant carry a single `.expr`; Decreases
-                # carries `.exprs` (a tuple of termination measures).  Walk all
-                # of them so a generic reachable only through a decreases clause
-                # is discovered, not silently degraded to the E520 Tier-3
-                # fallback (PR #767 review).
-                preds = list(getattr(contract, "exprs", ()) or ())
-                single = getattr(contract, "expr", None)
-                if single is not None:
-                    preds.append(single)
-                for pred in preds:
-                    mono.collect_calls_in_expr(
-                        pred, generic_decls, ctor_to_adt, into,
-                    )
-            for wfn in fn.where_fns or ():
-                collect_calls_in_fn(wfn, into)
+            # Delegate to the SHARED node-level walk (body + contract clauses +
+            # `where` helpers).  Both this discovery and codegen's Pass 1.5 drive
+            # `Monomorphizer.collect_calls_in_node`, so the verifier discovers
+            # exactly the set codegen seeds from — a generic reachable only from
+            # a contract predicate (`ensures(is_valid(@T.result))`) or a
+            # where-helper body is found by both, or by neither, never just one
+            # (PR #767 review).
+            mono.collect_calls_in_node(fn, generic_decls, ctor_to_adt, into)
 
         # Seed from non-generic bodies.
         seed: dict[str, set[tuple[str, ...]]] = {

@@ -249,6 +249,44 @@ class Monomorphizer:
         """
         self._collect_calls(expr, generic_decls, ctor_to_adt, instances)
 
+    def collect_calls_in_node(
+        self,
+        fn: ast.FnDecl,
+        generic_decls: dict[str, ast.FnDecl],
+        ctor_to_adt: dict[str, str],
+        instances: dict[str, set[tuple[str, ...]]],
+    ) -> None:
+        """Collect generic calls reachable from a whole ``FnDecl`` — its body,
+        its contract predicates, AND its ``where`` helpers.
+
+        This is the function-level shared discovery contract.  A generic called
+        only from a ``requires`` / ``ensures`` / ``decreases`` clause (which Vera
+        lowers to a runtime contract check) or only from a ``where`` helper body
+        is still emitted by codegen and invoked at runtime, so codegen's Pass 1.5
+        and the verifier (#732) must BOTH seed from this node-level walk — not
+        just ``decl.body``.  Walking only the body makes codegen miss the clone
+        (a ``CodegenSkip`` at run time) and diverge from the verifier, which does
+        walk contracts and helpers (PR #767 review).
+        """
+        self.collect_calls_in_expr(
+            fn.body, generic_decls, ctor_to_adt, instances,
+        )
+        for contract in fn.contracts:
+            # Requires/Ensures/Invariant carry a single `.expr`; Decreases
+            # carries `.exprs` (a tuple of termination measures).
+            preds = list(getattr(contract, "exprs", ()) or ())
+            single = getattr(contract, "expr", None)
+            if single is not None:
+                preds.append(single)
+            for pred in preds:
+                self.collect_calls_in_expr(
+                    pred, generic_decls, ctor_to_adt, instances,
+                )
+        for wfn in fn.where_fns or ():
+            self.collect_calls_in_node(
+                wfn, generic_decls, ctor_to_adt, instances,
+            )
+
     def _collect_calls(
         self,
         node: object,
