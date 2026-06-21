@@ -1878,8 +1878,9 @@ class ContractVerifier:
 
         The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
         MatchExpr arm bodies, IndexExpr, ArrayLit elements, Assert / Assume
-        conditions, and the argument lists of FnCall / ModuleCall /
-        ConstructorCall / QualifiedCall.  Closure / quantifier bodies
+        conditions, InterpolatedString parts, and the argument lists of
+        FnCall / ModuleCall / ConstructorCall / QualifiedCall.  Closure /
+        quantifier bodies
         (AnonFn / ForallExpr / ExistsExpr) and handler clause / body
         expressions bind fresh slots and are deliberately not walked — an
         op there is left to the codegen runtime trap rather than statically
@@ -2099,6 +2100,17 @@ class ContractVerifier:
             self._walk_for_primitive_op_obligations(
                 decl, expr.expr, smt, slot_env, assumptions,
             )
+            return
+
+        if isinstance(expr, ast.InterpolatedString):
+            # An interpolated expression can host a trapping op
+            # (`"x: \(@Int.0 / @Int.1)"`) — recurse into each part, mirroring
+            # the @Nat-binding walker (#680 review).
+            for part in expr.parts:
+                if isinstance(part, ast.Expr):
+                    self._walk_for_primitive_op_obligations(
+                        decl, part, smt, slot_env, assumptions,
+                    )
             return
 
         # Remaining expression types terminate the walk.  Literals and slot

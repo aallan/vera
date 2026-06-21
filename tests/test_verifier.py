@@ -937,6 +937,20 @@ private fn assert_div(@Int, @Int -> @Int)
 { assert(@Int.0 / @Int.1 > 0); @Int.0 }
 """, "by zero")
 
+    def test_division_inside_interpolated_string_fires(self) -> None:
+        r"""An unguarded division in an interpolated-string expression
+        (`"x: \(@Int.0 / @Int.1)"`) is obligated (E526) — the walker recurses
+        into InterpolatedString parts, mirroring the @Nat-binding walker
+        (#680 review)."""
+        _verify_err(
+            'private fn interp_div(@Int, @Int -> @String)\n'
+            '  requires(true)\n'
+            '  ensures(true)\n'
+            '  effects(pure)\n'
+            '{ "x: \\(@Int.0 / @Int.1)" }\n',
+            "by zero",
+        )
+
 
 class TestPrimitiveIndexObligation680:
     """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).
