@@ -573,6 +573,19 @@
     ]
   },
   {
+    "id": "ch06_requires_stmt_position",
+    "file": "ch06_requires_stmt_position.vera",
+    "chapter": 6,
+    "title": "Preconditions checked for statement-position calls",
+    "level": "run",
+    "spec_ref": "Section 6.1",
+    "features": [
+      "requires",
+      "precondition",
+      "statement_position"
+    ]
+  },
+  {
     "id": "ch06_ensures",
     "file": "ch06_ensures.vera",
     "chapter": 6,

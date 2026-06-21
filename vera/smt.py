@@ -1259,8 +1259,18 @@ class SmtContext:
                     return None
                 current_env = current_env.push(type_name, val)
             elif isinstance(stmt, ast.ExprStmt):
-                # Side-effect statement — doesn't affect the result value
-                continue
+                # #730: translate a statement-position expression for its side
+                # effect of checking call preconditions (E501) — a call whose
+                # result is discarded must still be checked against its
+                # requires(...).  The value is dropped: a statement contributes
+                # nothing to the block result and `current_env` is unchanged
+                # (an ExprStmt binds no slot).  An untranslatable statement
+                # (effect op, quantifier, anon fn) returns None, which we IGNORE
+                # — it must NOT abort the block's Tier-1 verification of the
+                # surrounding decidable obligations.  The #727 dedup (keyed on
+                # the precondition's identity + the call's SPAN — not node
+                # identity) makes re-translation duplicate-free.
+                self.translate_expr(stmt.expr, current_env)
             else:
                 # LetDestruct or unknown statement type
                 return None  # pragma: no cover

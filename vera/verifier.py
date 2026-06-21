@@ -1797,7 +1797,10 @@ class ContractVerifier:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
-                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                elif isinstance(stmt, ast.ExprStmt):
+                    # Walk a statement-position expression for recursive-group
+                    # calls so `decreases` sees a discarded recursive call
+                    # (test_decreases_resolves_via_stmt_position_recursive_call).
                     self._walk_for_calls(group_names, stmt.expr,
                                          z3_path_conds, results, smt, cur_env)
             self._walk_for_calls(group_names, expr.expr, z3_path_conds,
@@ -1955,7 +1958,9 @@ class ContractVerifier:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
-                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                elif isinstance(stmt, ast.ExprStmt):
+                    # Walk a statement-position expression for @Nat subtraction
+                    # obligations (test_unsafe_sub_stmt_position_obligated).
                     self._walk_for_subtraction_obligations(
                         decl, stmt.expr, smt, cur_env, assumptions,
                     )
@@ -2531,7 +2536,9 @@ class ContractVerifier:
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
                     block_assumptions.extend(seeds)
-                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                elif isinstance(stmt, ast.ExprStmt):
+                    # Walk a statement-position expression for @Nat narrowing
+                    # obligations (test_narrow_stmt_position_obligated).
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.expr, smt, cur_env, block_assumptions,
                     )

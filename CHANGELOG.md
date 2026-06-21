@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.176] - 2026-06-21
+
+### Fixed
+
+- **Call-site precondition checking now covers calls in statement position** ([#730](https://github.com/aallan/vera/issues/730)). A call whose result is discarded — a bare `consume(need_pos(@Nat.0));` statement — was never checked against the callee's `requires(...)`: the SMT body translation skipped `ExprStmt` nodes, so `vera verify` reported clean while the precondition went unchecked (a Tier-0 silent failure, and a breach of DESIGN.md's "contracts are checked at every call site"). Statement-position expressions are now translated for their precondition-checking side effect; the value is discarded and an untranslatable statement (an effect op) is ignored rather than aborting the block's verification. The [#727](https://github.com/aallan/vera/issues/727) identity dedup keeps re-translation duplicate-free. Two boundaries stay out of scope: a call at or after a `let`-destructure in the same block ([#764](https://github.com/aallan/vera/issues/764), a distinct block-truncation root cause) and a call nested inside an effect-operation argument (a separate narrower gap, [#776](https://github.com/aallan/vera/issues/776)).
+
 ## [0.0.175] - 2026-06-21
 
 ### Added
@@ -2541,7 +2547,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.175...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.176...HEAD
+[0.0.176]: https://github.com/aallan/vera/compare/v0.0.175...v0.0.176
 [0.0.175]: https://github.com/aallan/vera/compare/v0.0.174...v0.0.175
 [0.0.174]: https://github.com/aallan/vera/compare/v0.0.173...v0.0.174
 [0.0.173]: https://github.com/aallan/vera/compare/v0.0.172...v0.0.173
