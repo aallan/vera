@@ -5041,6 +5041,43 @@ private fn use2(@Int, @Bool -> @Int)
             f"both the tier3 and the timeout instance must appear: {desc}"
         )
 
+    def test_recursive_generic_clone_keeps_source_name_for_decreases(self) -> None:
+        """A recursive generic's clone must keep the SOURCE name so the verifier
+        recognizes its recursive call and obligates `decreases`.
+
+        `monomorphize_fn` mangles the clone name (for codegen WAT symbols), but
+        `_verify_generic_instances` renames it back to `decl.name` ("keep the
+        source name").  Recursion/`decreases` resolution is purely by name
+        (`_collect_recursive_calls` matches `FnCall.name`), so without that
+        rename the clone `countdown$Int` whose body still calls `countdown`
+        would have NO recognized recursive call → no `decreases` obligation → a
+        terminating function's measure silently unchecked.  Pin that the
+        obligation is present and verified — identical to the non-generic twin
+        — which refutes the "mangled clone breaks recursion" claim (PR #767
+        review) and fails loudly if the source-name rename is ever removed."""
+        result = _verify("""
+private forall<T> fn countdown(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { countdown(@T.0, @Nat.0 - 1) } }
+
+private fn driver(@Int, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ countdown(@Int.0, @Nat.0) }
+""")
+        decr = [o for o in result.obligations
+                if o.fn_name == "countdown" and o.kind == "decreases"]
+        assert len(decr) == 1, (
+            "the recursive generic clone must obligate `decreases` (recursion "
+            f"recognized via the source-name clone); got {decr}"
+        )
+        assert decr[0].status == "verified"
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     def test_generic_reached_only_via_where_helper_is_verified(self) -> None:
         """A generic reachable solely through a `where` helper is discovered and
         verified — its body bug is caught — not missed into the uninstantiated
