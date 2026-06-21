@@ -2086,8 +2086,9 @@ where {
 }
 """)
 
-    def test_generic_call_falls_to_tier3(self) -> None:
-        """Calls to generic functions bail to Tier 3."""
+    def test_generic_call_verified_per_instantiation(self) -> None:
+        """#732: a generic instantiated by a caller is verified statically per
+        monomorphization — Tier 1, not the old Tier-3 bail."""
         result = _verify("""
 private forall<T>
 fn id(@T -> @T)
@@ -2102,10 +2103,17 @@ private fn caller(@Int -> @Int)
   effects(pure)
 { id(@Int.0) }
 """)
-        # id's contracts → Tier 3 (generic)
-        # caller's body has generic call → body_expr is None
-        # Since caller's ensures is trivial, it doesn't matter
-        assert result.summary.tier3_runtime >= 1
+        # id<Int>'s ensures(@T.result == @T.0) holds for the body @T.0, so the
+        # instantiated generic is now discharged statically with no Tier-3
+        # fallback — the core #732 behavior change.
+        assert result.summary.tier3_runtime == 0
+        assert not result.diagnostics
+        # Check id's OWN ensures is the verified obligation, not just the
+        # summary counter (which a non-generic obligation could also bump).
+        assert any(
+            o.fn_name == "id" and o.kind == "ensures" and o.status == "verified"
+            for o in result.obligations
+        )
 
     def test_multiple_preconditions_all_checked(self) -> None:
         """Two requires on callee, second one violated."""
@@ -2941,7 +2949,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 258 T1 / 29 T3 / 287 total (current).
+        """All examples together: 260 T1 / 27 T3 / 287 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -3015,6 +3023,13 @@ private fn sum(@List<Int> -> @Int)
           runtime-checked Tier-3 (an informational E506; codegen emits the
           predicate guard at the function boundary).  Net: +2 T1, +1 T3,
           +3 total, +0 tier3_unguarded.
+        * 260/27/287/0 after #732 verified instantiated generics per
+          monomorphization.  `generics.vera`'s `identity` and `const` are
+          instantiated at concrete types (`identity<Int>`, `const<Int, Bool>`),
+          so their `ensures(@T.result == @T.0)` / `ensures(@A.result == @A.0)`
+          postconditions are now discharged statically instead of bailing to
+          Tier 3 (E520): +2 T1, -2 T3, +0 total (the two contracts change tier;
+          the total is unchanged).
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3027,8 +3042,8 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 258, f"Expected 258 T1, got {t1}"
-        assert t3 == 29, f"Expected 29 T3, got {t3}"
+        assert t1 == 260, f"Expected 260 T1, got {t1}"
+        assert t3 == 27, f"Expected 27 T3, got {t3}"
         assert total == 287, f"Expected 287 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
@@ -4692,3 +4707,402 @@ public forall<T> fn echo_f(@Float64, @T -> @NotHalf)
 { @Float64.0 }
 """, "may violate the refinement predicate")
         assert any(e.error_code == "E505" for e in errs)
+
+
+class TestPerMonomorphizationVerification:
+    """#732: instantiated generics are verified statically per monomorphization.
+
+    Before #732 a generic body skipped SMT entirely — every non-trivial
+    contract fell to Tier 3 (E520), a silent Tier-1 -> Tier-3 downgrade.  Now
+    each concrete instantiation is verified through the normal path, so body
+    obligations (a @Nat underflow, an `ensures`, a refined return) are actually
+    discharged — or caught.
+    """
+
+    def test_body_nat_underflow_caught_per_instantiation(self) -> None:
+        """An unguarded @Nat subtraction in a generic body — silently skipped
+        (Tier-3 E520) before #732 — is now caught, naming the instantiation."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1, "expected exactly one underflow diagnostic"
+        assert "instantiated at dec<Bool>" in errs[0].description
+        assert "underflow" in errs[0].description
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_sub" and o.status == "violated"]
+        assert len(violated) == 1
+        assert violated[0].fn_name == "dec"
+        assert violated[0].counterexample is not None
+
+    def test_body_nat_underflow_discharged_when_guarded(self) -> None:
+        """The same body verifies statically (Tier 1) when a precondition
+        guards it — the per-instance path PROVES, it does not merely reject."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert result.summary.tier3_runtime == 0
+        # the body's nat_sub obligation is discharged statically for dec<Bool>
+        assert any(o.kind == "nat_sub" and o.status == "verified"
+                   for o in result.obligations)
+
+    def test_never_instantiated_generic_stays_tier3(self) -> None:
+        """A generic with no call site cannot be monomorphized, so its
+        non-trivial contracts still fall to Tier 3 (E520) — the residual that
+        #732 deliberately leaves untouched."""
+        result = _verify("""
+private forall<T>
+fn unused(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+""")
+        assert result.summary.tier3_runtime == 1
+        e520 = [d for d in result.diagnostics if d.error_code == "E520"]
+        assert len(e520) == 1
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_collapsed_type_vars_verify_correctly(self) -> None:
+        """When two type vars collapse to the same concrete type (A=B=Int), the
+        De Bruijn reindex must keep slot references consistent — the contract
+        over the collapsed slots still discharges, with no false result."""
+        result = _verify("""
+private forall<A, B>
+fn pick_first(@A, @B -> @A)
+  requires(true)
+  ensures(@A.result == @A.0)
+  effects(pure)
+{ @A.0 }
+
+private fn use_same(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.1)
+  effects(pure)
+{ pick_first(@Int.1, @Int.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        # pick_first<Int, Int>'s ensures discharges statically.
+        assert any(o.fn_name == "pick_first" and o.kind == "ensures"
+                   and o.status == "verified" for o in result.obligations)
+
+    def test_one_diagnostic_dedups_across_instantiations(self) -> None:
+        """A body bug reachable in several instantiations surfaces ONCE (deduped
+        to the source span), naming each offending instantiation — not N times."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn use_bool(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, true) }
+
+private fn use_int(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ dec(@Nat.1, @Nat.0, 7) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1, "one diagnostic per source site, not per instance"
+        assert "dec<Bool>" in errs[0].description
+        assert "dec<Int>" in errs[0].description
+        # exactly one violated nat_sub obligation, not one per instantiation
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_sub" and o.status == "violated"]
+        assert len(violated) == 1
+
+    def test_body_ensures_violation_caught_per_instantiation(self) -> None:
+        """A generic body that violates its own `ensures` is caught per
+        instantiation (E500), naming the instantiation.  A violated
+        postcondition records its obligation with no error_code while its
+        diagnostic carries E500, so the aggregation must correlate by
+        (severity, span) — not error code — or it silently drops the violation
+        (a false Tier-1).  Regression for the PR #767 review."""
+        result = _verify("""
+private forall<T>
+fn bad_id(@Int, @T -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 + 1 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ bad_id(@Int.0, true) }
+""")
+        errs = [d for d in result.diagnostics
+                if d.severity == "error" and d.error_code == "E500"]
+        assert len(errs) == 1
+        assert "instantiated at bad_id<Bool>" in errs[0].description
+        violated = [o for o in result.obligations
+                    if o.kind == "ensures" and o.status == "violated"]
+        assert len(violated) == 1
+        assert violated[0].fn_name == "bad_id"
+
+    def test_body_bug_in_transitively_reached_generic_caught(self) -> None:
+        """A body bug in a generic reached only transitively (through another
+        generic's body) is verified and caught — discovery AND verification
+        both follow the transitive worklist, not just discovery."""
+        result = _verify("""
+private forall<T>
+fn inner(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private forall<T>
+fn outer(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ inner(@Nat.1, @Nat.0, @T.0) }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ outer(@Nat.1, @Nat.0, true) }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at inner<Bool>" in errs[0].description
+
+    def test_generic_in_arraylit_is_discovered_and_verified(self) -> None:
+        """The discovery walk is TOTAL over Expr, so a generic reachable only
+        from inside an `ArrayLit` (a form the old explicit-arm walk skipped) is
+        discovered and verified — its body @Nat underflow is caught, not missed
+        into the Tier-3 fallback."""
+        result = _verify("""
+private forall<T>
+fn dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Array<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [dec(@Nat.1, @Nat.0, true)] }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at dec<Bool>" in errs[0].description
+
+    def test_generic_in_contract_clause_is_verified(self) -> None:
+        """A generic reachable only from a contract predicate (here an `ensures`)
+        is discovered and verified — discovery walks contract clauses, not just
+        the body and where-helpers — so its body bug is caught."""
+        result = _verify("""
+private forall<T>
+fn bad_dec(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn checker(@Nat, @Nat -> @Bool)
+  requires(true)
+  ensures(bad_dec(@Nat.1, @Nat.0, true) >= 0)
+  effects(pure)
+{ true }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at bad_dec<Bool>" in errs[0].description
+
+    def test_generic_reached_only_via_decreases_is_verified(self) -> None:
+        """A generic reachable only from a `decreases(...)` measure is discovered
+        and verified.  Decreases is the one Contract subclass that holds its
+        predicates in `.exprs` (a tuple) rather than `.expr`, so a contract walk
+        reading only `.expr` silently skipped it (PR #767 review) — degrading
+        such a generic to the E520 Tier-3 fallback and missing its body bug.  The
+        first lexicographic component (`@Nat.0`) carries termination; the second
+        only has to be discovered."""
+        result = _verify("""
+private forall<T>
+fn bad_measure(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, bad_measure(@Nat.0, 0, true))
+  effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { countdown(@Nat.0 - 1) } }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at bad_measure<Bool>" in errs[0].description
+
+    def test_typevar_contract_aggregates_across_instantiations(self) -> None:
+        """A generic whose contract references @T renders different expr_text per
+        instantiation; the meet must group by SOURCE SITE so it stays ONE
+        obligation, not one per instantiation (else summaries over-count) — from
+        the PR #767 review."""
+        result = _verify("""
+private forall<T>
+fn idc(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+
+private fn use2(@Int, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = idc(@Int.0);
+  let @Bool = idc(@Bool.0);
+  @Int.0
+}
+""")
+        ens = [o for o in result.obligations
+               if o.fn_name == "idc" and o.kind == "ensures"]
+        assert len(ens) == 1, "one obligation per source site, not per instance"
+        assert ens[0].status == "verified"
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_aggregated_tier3_label_includes_timeout_instances(self) -> None:
+        """A mixed tier3/timeout Tier-3 aggregate must list BOTH instantiations
+        in the diagnostic prefix.  ``_meet_status`` folds ``timeout`` into
+        ``tier3``, so the instantiation-label filter must group them together;
+        an exact status-match drops the ``timeout`` instance from the prefix
+        (PR #767 review).  Synthesised directly because a real Z3 timeout is
+        non-deterministic and cannot be pinned through the normal pipeline."""
+        from types import SimpleNamespace
+
+        from vera.errors import Diagnostic, SourceLocation
+        from vera.obligations.core import ProofObligation
+        from vera.verifier import ContractVerifier
+
+        v = ContractVerifier(source="", file="t.vera")
+        decl = SimpleNamespace(name="g")
+        ob_t3 = ProofObligation(
+            fn_name="g", kind="ensures", expr_text="p", status="tier3",
+            line=3, column=5, error_code="E506",
+        )
+        ob_to = ProofObligation(
+            fn_name="g", kind="ensures", expr_text="p", status="timeout",
+            line=3, column=5, error_code="E506",
+        )
+        members = [(("Int",), ob_t3), (("Float64",), ob_to)]
+        src = Diagnostic(
+            description="runtime check deferred",
+            location=SourceLocation(file="t.vera", line=3, column=5),
+            severity="warning", error_code="E506", tier=None,
+        )
+        errs = {("Int",): [src]}
+        v._emit_aggregated_diagnostic(
+            decl, members, ("Int",), ob_t3, errs,  # type: ignore[arg-type]
+        )
+
+        assert v.errors, "expected an aggregated Tier-3 diagnostic"
+        desc = v.errors[-1].description
+        assert "g<Int>" in desc and "g<Float64>" in desc, (
+            f"both the tier3 and the timeout instance must appear: {desc}"
+        )
+
+    def test_recursive_generic_clone_keeps_source_name_for_decreases(self) -> None:
+        """A recursive generic's clone must keep the SOURCE name so the verifier
+        recognizes its recursive call and obligates `decreases`.
+
+        `monomorphize_fn` mangles the clone name (for codegen WAT symbols), but
+        `_verify_generic_instances` renames it back to `decl.name` ("keep the
+        source name").  Recursion/`decreases` resolution is purely by name
+        (`_collect_recursive_calls` matches `FnCall.name`), so without that
+        rename the clone `countdown$Int` whose body still calls `countdown`
+        would have NO recognized recursive call → no `decreases` obligation → a
+        terminating function's measure silently unchecked.  Pin that the
+        obligation is present and verified — identical to the non-generic twin
+        — which refutes the "mangled clone breaks recursion" claim (PR #767
+        review) and fails loudly if the source-name rename is ever removed."""
+        result = _verify("""
+private forall<T> fn countdown(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { countdown(@T.0, @Nat.0 - 1) } }
+
+private fn driver(@Int, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ countdown(@Int.0, @Nat.0) }
+""")
+        decr = [o for o in result.obligations
+                if o.fn_name == "countdown" and o.kind == "decreases"]
+        assert len(decr) == 1, (
+            "the recursive generic clone must obligate `decreases` (recursion "
+            f"recognized via the source-name clone); got {decr}"
+        )
+        assert decr[0].status == "verified"
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_generic_reached_only_via_where_helper_is_verified(self) -> None:
+        """A generic reachable solely through a `where` helper is discovered and
+        verified — its body bug is caught — not missed into the uninstantiated
+        Tier-3 fallback (the PR #767 review)."""
+        result = _verify("""
+private forall<T>
+fn inner(@Nat, @Nat, @T -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+
+private fn caller(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ helper(@Nat.1, @Nat.0) }
+where {
+  fn helper(@Nat, @Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  { inner(@Nat.1, @Nat.0, true) }
+}
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1
+        assert "instantiated at inner<Bool>" in errs[0].description

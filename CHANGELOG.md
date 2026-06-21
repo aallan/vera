@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.175] - 2026-06-21
+
+### Added
+
+- **Per-monomorphization static verification of generic functions** ([#732](https://github.com/aallan/vera/issues/732), closing [#555](https://github.com/aallan/vera/issues/555)).  A generic (`forall<T>`) body previously skipped almost all static verification — nearly every non-trivial contract fell to Tier 3 (`E520`) (a concrete refined return was the lone exception, already discharged by the [#746](https://github.com/aallan/vera/issues/746) fast path), a silent Tier-1→Tier-3 downgrade in which an `@Nat - @Nat` underflow or a false `ensures` inside a `forall<T>` function was never checked at verify time.  The verifier now monomorphizes each generic at every concrete instantiation the program uses and runs the **normal** verification pipeline on each clone, so body obligations are discharged — or caught — against real types.  Instantiation discovery is *shared with codegen* (extracted into a codegen-free `vera/monomorphize.py`), so the verifier covers every instantiation codegen emits (a superset is sound — codegen additionally prunes constraint-failing instances via `_check_constraints`/`E613`, which the verifier need not re-check); a differential test pins this coverage, because a *missed* instantiation would be a false Tier-1.  The shared discovery walks function bodies, contract clauses, `where` helpers, and imported constructors, and seeds the monomorphizer context with imported functions' return types, so a generic reachable — or whose type argument is inferable — only through any of those is found by both sides — closing three false Tier-1s and a `CodegenSkip` crash (a generic used solely in a `requires` / `ensures` or a `where` helper now compiles and runs) found in review.  Per-instance results are aggregated one-per-source-site with **meet** semantics — Tier-1 only if every instantiation verifies, otherwise the worst outcome dominates so any reachable counterexample is reported — and a failing diagnostic names the offending instantiation (`In generic function 'dec' instantiated at dec<Bool>: @Nat subtraction may underflow`).  A generic with **no** concrete instantiation in the program still falls to Tier 3 (`E520`, reworded to say so) — there are no types to check it against, and such a generic never executes in-unit — and a concrete refined *return* on an uninstantiated generic is still discharged via the [#746](https://github.com/aallan/vera/issues/746) fast path.  For instantiated generics this supersedes that fast path with the real concrete types (strictly stronger: a `@Float64` instantiation uses the Real sort rather than an integer fallback).  In the warm incremental session, a generic's discharge cache is keyed on its concrete instantiation set — a property of its *callers* — so an edit that adds or removes an instantiation re-verifies the generic instead of replaying a stale per-monomorphization result.
+
+### Fixed
+
+- An `Eq`-constrained generic called with a **parameterized-ADT slot reference** (e.g. `@Box<Int>.0`) is no longer spuriously rejected with `E613`, and the `Eq` auto-derivation now **validates the concrete type arguments**: it splits the parameterized name into base + args, and a type-parameter field's Eq-ness is its type argument's (recursively), not the generic boxed `i64` rep the bare layout records.  So `Box<Int>` derives `Eq` while `Box<String>` (a non-Eq `i32_pair` String field) is correctly rejected — where a naive bare-name strip would have false-accepted it.  (A constructor-inferred type — `eq2(MkBox("a"), …)` — still resolves to the bare ADT name in the monomorphizer, so the validation reaches the slot-ref / parameterized-name path only; the bare-name path's pre-existing type-arg-blindness is unchanged.)  Pre-existing; surfaced in the [#732](https://github.com/aallan/vera/issues/732) review.
+- `vera compile --wat` is now **byte-stable across runs**.  The monomorphization worklist sorts each instantiation set, so the order monomorphized clones are emitted no longer varies with `PYTHONHASHSEED` (clone bodies were always identical; only their order differed) — reproducible builds matter for caching and WAT snapshots.  Pre-existing; surfaced in the [#732](https://github.com/aallan/vera/issues/732) review.
+
 ## [0.0.174] - 2026-06-19
 
 ### Added
@@ -2530,7 +2541,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.174...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.175...HEAD
+[0.0.175]: https://github.com/aallan/vera/compare/v0.0.174...v0.0.175
 [0.0.174]: https://github.com/aallan/vera/compare/v0.0.173...v0.0.174
 [0.0.173]: https://github.com/aallan/vera/compare/v0.0.172...v0.0.173
 [0.0.172]: https://github.com/aallan/vera/compare/v0.0.171...v0.0.172

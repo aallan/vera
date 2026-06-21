@@ -18072,6 +18072,88 @@ public fn main(@Unit -> @Int)
         )
 
 
+class TestEqConstraintParameterizedAdtName767:
+    """PR #767 review — an `Eq`-constrained generic called with a
+    parameterized-ADT slot ref (`@Box<Int>.0`) must not spuriously fail the
+    `Eq` ability check.
+
+    `_check_constraints` infers the constrained type var's concrete name from
+    the argument; a `SlotRef` with type args yields the *parameterized* name
+    `Box<Int>`, but `_adt_layouts` (and thus `_adt_satisfies_eq`) is keyed by the
+    bare ADT name `Box`.  Pre-fix the layout lookup missed and codegen emitted
+    `[E613] Type 'Box<Int>' does not satisfy ability 'Eq'`, rejecting a valid
+    program — even though the same ADT is accepted when inferred from a
+    constructor (`MkBox(...)`, which yields the bare `Box`).  `_adt_satisfies_eq`
+    now splits the parameterized name into base + type args, looks up the bare
+    layout, and validates each type-parameter field against its concrete type
+    argument — so `Box<Int>` derives `Eq` (Int is scalar) while `Box<Array<Int>>`
+    does not (`Array` is not `Eq`).  (`String` itself *is* `Eq`, just not as a
+    scalar ADT field — the scalar-only auto-derivation basis, and the choice of
+    `Array<Int>` over `String` for the unambiguous reject fixture, is tracked in
+    #773.)  (A constructor-inferred type still resolves to the bare `Box` in the
+    monomorphizer, so this type-arg validation only reaches the slot-ref /
+    parameterized-name path.)
+    """
+
+    _SRC = """
+public data Box<T> { MkBox(T) }
+
+private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @T.1 == @T.0 }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box<Int> = MkBox(1);
+  eq2(@Box<Int>.0, @Box<Int>.0)
+}
+"""
+
+    def test_eq_generic_over_parameterized_adt_slotref_compiles(self) -> None:
+        """Compiles without a spurious E613 (pre-fix the parameterized
+        `Box<Int>` name missed the bare-keyed layout and was rejected)."""
+        result = _compile(self._SRC)
+        e613 = [
+            d for d in result.diagnostics
+            if d.severity == "error" and d.error_code == "E613"
+        ]
+        assert not e613, f"spurious E613: {[d.description for d in e613]}"
+
+    def test_eq_generic_over_parameterized_adt_slotref_runs(self) -> None:
+        """The Eq derivation works at run time: `MkBox(1) == MkBox(1)` -> true."""
+        assert _run(self._SRC) == 1
+
+    _REJECT_SRC = """
+public data Box<T> { MkBox(T) }
+
+private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @T.1 == @T.0 }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box<Array<Int>> = MkBox([1, 2, 3]);
+  eq2(@Box<Array<Int>>.0, @Box<Array<Int>>.0)
+}
+"""
+
+    def test_eq_generic_over_non_eq_parameterized_adt_rejected(self) -> None:
+        """Type-arg validation is sound, not just a bare-name strip: `Box<Array<Int>>`
+        (a non-`Eq` `Array` type argument) is correctly REJECTED with E613, where a
+        naive strip-to-`Box` would have false-accepted it.  `Array` is used rather
+        than `String` for an UNAMBIGUOUS non-`Eq` arg: `String` itself *is* `Eq`,
+        just not as a scalar ADT field — the scalar-only auto-derivation basis (and
+        its String false-reject / nested-ADT false-accept) is tracked in #773."""
+        result = _compile(self._REJECT_SRC)
+        e613 = [
+            d for d in result.diagnostics
+            if d.severity == "error" and d.error_code == "E613"
+        ]
+        assert e613, "Box<Array<Int>> must fail Eq (Array is not Eq)"
+
+
 class TestHeadOverRefinement655ShapeB:
     """`#655` Shape B — array indexing through a refinement-of-Array
     alias now compiles and runs cleanly.

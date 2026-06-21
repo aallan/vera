@@ -103,6 +103,14 @@ The language server (`vera/lsp/`, served by `vera lsp`) and the obligation core 
 
 Each stage is a module with a public API function and is independently testable. See `CONTRIBUTING.md` for contribution guidelines.
 
+## Test-first: prove every change with a test
+
+Before changing code — **adding or removing** — write the test that proves your hypothesis and confirm it **fails for the reason you care about**, then make the change and watch it flip. A passing suite is necessary, not sufficient: green *without* your change does not prove removed code was dead (the distinguishing case may simply be untested), and green *with* it does not prove added code does anything (nothing may exercise it). A test that is green both before and after the change proves nothing about the change.
+
+- Removing code because "no test relies on it" is backwards — tests don't enumerate what the system needs. Write the test that *would* fail if the code is load-bearing; if you genuinely can't make it fail, that is itself the evidence.
+- Choose inputs that **cannot coincide with a fallback/default value**. A default that happens to equal the right answer makes a real bug invisible — a `forall<T>` instantiation-discovery miss once passed CI because the test's where-helper returned `Bool`, the same value as the inference's phantom-var default, so wrong and right looked identical.
+- For cross-component soundness invariants (e.g. the verifier must statically check exactly the set codegen emits), the proving check is a **differential** — run both sides and compare — not a unit test; a green unit suite can hide a desync between the two.
+
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit

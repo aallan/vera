@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import z3
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
+from vera.monomorphize import MonoContext, Monomorphizer
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -189,6 +190,13 @@ class ContractVerifier:
         self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
             expr_target_types or {}
         )
+        # #732: per-monomorphization discovery results, populated by
+        # register_program (so both the cold verify_program path and the warm
+        # incremental session see the same instantiation set).  Maps a generic
+        # function name to the set of concrete type-name tuples it is
+        # instantiated at; empty when the program has no generics.
+        self._instances: dict[str, set[tuple[str, ...]]] = {}
+        self._mono: Monomorphizer | None = None
 
     # -----------------------------------------------------------------
     # #747: checker-provided expression types (span-keyed)
@@ -666,6 +674,285 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #732: discover every concrete instantiation of each generic NOW, off
+        # the registered env, so both verify_program (cold) and the warm
+        # incremental session — which both go through register_program — verify
+        # the same per-monomorphization set (keeps warm == cold).
+        self._instances = self._collect_instantiations(program)
+
+    # -- #732: per-monomorphization instantiation discovery ----------------
+
+    @staticmethod
+    def _simple_type_name(te: ast.TypeExpr) -> str | None:
+        """Return the base type name of a TypeExpr (refinement-unwrapped)."""
+        while isinstance(te, ast.RefinementType):
+            te = te.base_type
+        if isinstance(te, ast.NamedType):
+            return te.name
+        return None
+
+    def _build_mono_context(
+        self,
+        disc_program: ast.Program,
+        generic_decls: dict[str, ast.FnDecl],
+    ) -> MonoContext:
+        """Build a MonoContext for per-monomorphization discovery (#732).
+
+        Constructor/ADT metadata comes from the registered ``TypeEnv`` (which
+        already holds builtins + user types); type aliases and per-function
+        return-type names come from the prelude-injected program AST.  Aliases
+        must come from the AST because the env stores them as resolved semantic
+        ``Type``s, while the shared monomorphizer matches alias *TypeExpr*
+        shapes (e.g. ``isinstance(alias, ast.FnType)``).
+
+        ``fn_ret_types`` is built from declared AST return types — the *precise*
+        Vera type name (``Nat``, not the WAT-collapsed ``Int`` codegen uses).
+        That is sound: the verifier checks each generic body under the type the
+        checker proved actually flows, never a stricter one (a callee's own
+        verification guarantees its declared return type).
+        """
+        ctor_to_adt: dict[str, str] = {}
+        ctor_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        adt_tp_counts: dict[str, int] = {}
+
+        def _record_adt(
+            adt_name: str,
+            type_params: tuple[str, ...] | None,
+            ctors: list[tuple[str, tuple[str | None, ...] | None]],
+        ) -> None:
+            # ctors: (ctor_name, per-field bare-type-name|None) — a field's
+            # bare name resolves to its type-param index, mirroring codegen's
+            # _register_data exactly (`field_te.name in tp_index ? idx : None`).
+            tps = type_params or ()
+            adt_tp_counts[adt_name] = len(tps)
+            tp_index = {tp: i for i, tp in enumerate(tps)}
+            for cname, field_names in ctors:
+                ctor_to_adt[cname] = adt_name
+                ctor_tp_indices[cname] = (
+                    () if field_names is None
+                    else tuple(
+                        tp_index.get(fn) if fn is not None else None
+                        for fn in field_names
+                    )
+                )
+
+        # 1. Env data types: builtins (Option/Result/Json/Future/...) plus the
+        #    user ADTs the verifier registered (whose constructors live under
+        #    data_types[name].constructors, NOT the flat env.constructors).
+        for adt_name, adt in self.env.data_types.items():
+            _record_adt(adt_name, adt.type_params, [
+                (
+                    cname,
+                    None if cinfo.field_types is None else tuple(
+                        ft.name if isinstance(ft, TypeVar) else None
+                        for ft in cinfo.field_types
+                    ),
+                )
+                for cname, cinfo in adt.constructors.items()
+            ])
+
+        # 2. Prelude-injected DataDecls (e.g. Ordering) the env never registers,
+        #    read straight from the injected AST so codegen-only prelude ADTs are
+        #    covered too.  User ADTs reappear here and agree with step 1.
+        for tld in disc_program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.DataDecl):
+                _record_adt(decl.name, decl.type_params, [
+                    (
+                        ctor.name,
+                        None if ctor.fields is None else tuple(
+                            f.name if isinstance(f, ast.NamedType) else None
+                            for f in ctor.fields
+                        ),
+                    )
+                    for ctor in decl.constructors
+                ])
+
+        # 3. Imported public constructors live in the verifier's module-fallback
+        #    registry (`_module_constructors`), NOT `env.data_types` — include
+        #    them so a local generic call whose type arg is inferred from an
+        #    imported ADT value (`id2(MkBox(7))`, MkBox from another module)
+        #    discovers the same instantiation codegen emits.  Codegen's
+        #    `ctor_to_adt` carries imported ADTs, so omitting them here lets the
+        #    type var fall to the `"Bool"` phantom default — the verifier
+        #    discovers `id2<Bool>` while codegen emits `id2<Box>`, a false
+        #    Tier-1 (PR #767 review).  `setdefault` keeps any local/env entry,
+        #    which correctly shadows an imported ctor of the same name.
+        for cinfo in self._module_constructors.values():
+            tps = cinfo.parent_type_params or ()
+            adt_tp_counts.setdefault(cinfo.parent_type, len(tps))
+            tp_index = {tp: i for i, tp in enumerate(tps)}
+            ctor_to_adt.setdefault(cinfo.name, cinfo.parent_type)
+            ctor_tp_indices.setdefault(
+                cinfo.name,
+                () if cinfo.field_types is None
+                else tuple(
+                    tp_index.get(ft.name) if isinstance(ft, TypeVar) else None
+                    for ft in cinfo.field_types
+                ),
+            )
+
+        type_aliases: dict[str, ast.TypeExpr] = {}
+        type_alias_params: dict[str, tuple[str, ...]] = {}
+        fn_ret_types: dict[str, str] = {}
+
+        def record_fn_ret_type(fn: ast.FnDecl) -> None:
+            # Include `where` helpers, keyed by bare name exactly as codegen
+            # does.  Codegen registers each where-helper's WAT signature in
+            # `_fn_sigs` under its bare name, so codegen's `fn_ret_types` carries
+            # them — and this is load-bearing for soundness, NOT optional parity:
+            # a generic whose type arg is fixed only by a where-helper's return
+            # (`g(helper(x))`) is monomorphized by codegen at that concrete
+            # return type, so the verifier must infer the SAME type.  Drop the
+            # helper here and the unresolved var instead hits the `"Bool"`
+            # phantom-var default in `_infer_type_args_from_call`, so the
+            # verifier discovers `g<Bool>` while codegen emits `g<Float64>` — it
+            # misses codegen's clone, a false Tier-1 (pinned by
+            # test_generic_typearg_from_where_helper_return_is_discovered).
+            # The flat name keying CAN collide same-named helpers in different
+            # parents, but codegen collides identically (its `_fn_sigs` is
+            # bare-name-keyed too, populated in the same declaration order), so
+            # the verifier resolves these helpers identically to codegen — the collision
+            # is a pre-existing codegen monomorphization imprecision, mirrored
+            # symmetrically, not a verification gap.  Scoping the key on only
+            # this side would not miss anything (it would be a sound superset)
+            # but would diverge the verifier from codegen for no soundness gain
+            # while leaving the codegen side unfixed (PR #767 review).
+            ret_name = self._simple_type_name(fn.return_type)
+            if ret_name is not None:
+                fn_ret_types[fn.name] = ret_name
+            for wfn in fn.where_fns or ():
+                record_fn_ret_type(wfn)
+
+        for tld in disc_program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.TypeAliasDecl):
+                type_aliases[decl.name] = decl.type_expr
+                if decl.type_params:
+                    type_alias_params[decl.name] = decl.type_params
+            elif isinstance(decl, ast.FnDecl):
+                record_fn_ret_type(decl)
+
+        # Seed return types from IMPORTED functions too, mirroring codegen
+        # (`vera/codegen/modules.py` setdefaults each imported module's
+        # `_fn_ret_type_exprs` into its own).  Local/prelude — recorded above —
+        # wins; imports only fill gaps via `setdefault`.  Without this, a local
+        # generic whose type arg is inferred SOLELY from an imported function's
+        # result (`id_g(make_int(...))`) phantom-defaults to `"Bool"` in
+        # verifier discovery while codegen emits the concrete clone — an
+        # ASYMMETRIC miss, a false Tier-1 (pinned by
+        # test_generic_typearg_from_imported_function_return_is_discovered).
+        # Only top-level imported fns matter: imported `where` helpers are
+        # private to their parent and never callable from the importer, so they
+        # can never drive importer-side inference.
+        for mod in self._resolved_modules:
+            for tld in mod.program.declarations:
+                idecl = tld.decl
+                if isinstance(idecl, ast.FnDecl):
+                    iret = self._simple_type_name(idecl.return_type)
+                    if iret is not None:
+                        fn_ret_types.setdefault(idecl.name, iret)
+
+        return MonoContext(
+            generic_decls=generic_decls,
+            ctor_to_adt=ctor_to_adt,
+            ctor_tp_indices=ctor_tp_indices,
+            adt_tp_counts=adt_tp_counts,
+            type_aliases=type_aliases,
+            type_alias_params=type_alias_params,
+            fn_ret_types=fn_ret_types,
+        )
+
+    def _collect_instantiations(
+        self, program: ast.Program,
+    ) -> dict[str, set[tuple[str, ...]]]:
+        """Discover every concrete instantiation of each generic function (#732).
+
+        Runs the SAME discovery the codegen monomorphizer runs — via the shared
+        :class:`~vera.monomorphize.Monomorphizer` — over a *prelude-injected*
+        copy of the program, so the set covers prelude generics and user
+        generics reached transitively through prelude bodies.  Constraint-failing
+        instances are NOT filtered out (codegen prunes them, so this is a
+        superset — sound for verification, which only ever verifies user-authored
+        clones).  Sharing the discovery is what keeps this set in agreement with
+        what codegen emits; the #732 differential test pins that agreement.
+        """
+        from dataclasses import replace as _replace
+
+        from vera.prelude import inject_prelude
+
+        disc = _replace(program)
+        inject_prelude(disc)
+
+        generic_decls: dict[str, ast.FnDecl] = {}
+        for tld in disc.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+                generic_decls[decl.name] = decl
+        if not generic_decls:
+            return {}
+
+        ctx = self._build_mono_context(disc, generic_decls)
+        mono = Monomorphizer(ctx)
+        # Stash for verification-time monomorphization (monomorphize_fn needs
+        # no context, so reusing the discovery instance is fine).
+        self._mono = mono
+        ctor_to_adt = ctx.ctor_to_adt
+
+        def collect_calls_in_fn(
+            fn: ast.FnDecl, into: dict[str, set[tuple[str, ...]]],
+        ) -> None:
+            # Delegate to the SHARED node-level walk (body + contract clauses +
+            # `where` helpers).  Both this discovery and codegen's Pass 1.5 drive
+            # `Monomorphizer.collect_calls_in_node`, so the verifier discovers
+            # exactly the set codegen seeds from — a generic reachable only from
+            # a contract predicate (`ensures(is_valid(@T.result))`) or a
+            # where-helper body is found by both, or by neither, never just one
+            # (PR #767 review).
+            mono.collect_calls_in_node(fn, generic_decls, ctor_to_adt, into)
+
+        # Seed from non-generic bodies.
+        seed: dict[str, set[tuple[str, ...]]] = {
+            name: set() for name in generic_decls
+        }
+        for tld in disc.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
+                collect_calls_in_fn(decl, seed)
+
+        # Transitive closure: monomorphize each, rescan its body.  Mirrors the
+        # codegen worklist exactly, minus the constraint filter.
+        discovered: set[tuple[str, tuple[str, ...]]] = set()
+        worklist: list[tuple[str, tuple[str, ...]]] = [
+            (name, ct) for name, cts in seed.items() for ct in cts
+        ]
+        while worklist:
+            key = worklist.pop()
+            if key in discovered:
+                continue
+            discovered.add(key)
+            fn_name, concrete_types = key
+            if fn_name not in generic_decls:
+                continue
+            mono_fn = mono.monomorphize_fn(
+                generic_decls[fn_name], concrete_types,
+            )
+            transitive: dict[str, set[tuple[str, ...]]] = {
+                name: set() for name in generic_decls
+            }
+            collect_calls_in_fn(mono_fn, transitive)
+            for t_name, t_types in transitive.items():
+                for t_ct in t_types:
+                    if (t_name, t_ct) not in discovered:
+                        worklist.append((t_name, t_ct))
+
+        result: dict[str, set[tuple[str, ...]]] = {
+            name: set() for name in generic_decls
+        }
+        for name, concrete_types in discovered:
+            if name in generic_decls:
+                result[name].add(concrete_types)
+        return result
 
     def verify_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then verify."""
@@ -674,14 +961,235 @@ class ContractVerifier:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
 
+    # -- #732: per-monomorphization verification + aggregation -------------
+
+    def _verify_generic_instances(
+        self, decl: ast.FnDecl, instances: tuple[tuple[str, ...], ...],
+    ) -> None:
+        """Verify each concrete instantiation of a generic, then aggregate.
+
+        Each instantiation is monomorphized to a concrete clone — keeping the
+        generic's ORIGINAL name so recursion/decreases resolve by name and
+        diagnostics anchor at the generic's source — and run through the normal
+        non-generic path into a scratch buffer.  The per-instance obligations
+        are then aggregated one-per-source-site with meet semantics, so a
+        generic-body bug surfaces once (naming the failing instantiation)
+        rather than once per instantiation.
+        """
+        assert self._mono is not None  # set by register_program  # noqa: S101
+        per_instance: list[
+            tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
+        ] = []
+        for concrete in instances:
+            clone = self._mono.monomorphize_fn(decl, concrete)
+            clone = replace(clone, name=decl.name)  # keep the source name
+            saved = (self.summary, self.errors, self.obligations)
+            self.summary, self.errors, self.obligations = (
+                VerifySummary(), [], [],
+            )
+            try:
+                self._verify_fn(clone)  # forall_vars=None → normal path
+            finally:
+                inst_obl, inst_err = self.obligations, self.errors
+                self.summary, self.errors, self.obligations = saved
+            per_instance.append((concrete, inst_obl, inst_err))
+        self._aggregate_generic_instances(decl, per_instance)
+
+    def _aggregate_generic_instances(
+        self,
+        decl: ast.FnDecl,
+        per_instance: list[
+            tuple[tuple[str, ...], list[ProofObligation], list[Diagnostic]]
+        ],
+    ) -> None:
+        """Collapse per-instance obligations to one per source site (meet).
+
+        Each source obligation recurs once per instantiation at the same span.
+        Group by content key, take the worst status across instantiations (so
+        any reachable counterexample dominates — never a false Tier-1), and
+        re-derive the summary counters + diagnostics from the met set so the
+        obligations<->summary<->diagnostics mirror (test_obligations.py) holds.
+        """
+        source_statuses: dict[str, tuple[str, ...]] = {
+            "verified": ("verified",),
+            "tier3": ("tier3", "timeout"),
+            "tier3_unguarded": ("tier3_unguarded",),
+            "violated": ("violated",),
+        }
+        groups: dict[str, list[tuple[tuple[str, ...], ProofObligation]]] = {}
+        order: list[str] = []
+        errs_by_instance: dict[tuple[str, ...], list[Diagnostic]] = {}
+        for concrete, obls, errs in per_instance:
+            errs_by_instance[concrete] = errs
+            # Per-instance ordinal among obligations sharing a source site:
+            # projection/destructure paths can record several distinct
+            # obligations of the same kind at the same node (e.g. each component
+            # of a tuple destructure), and an instantiation produces them in the
+            # same order, so the ordinal distinguishes them WITHIN an instance
+            # while still merging the k-th across instances (PR #767 review).
+            occurrences: dict[str, int] = {}
+            for ob in obls:
+                # Group by SOURCE SITE, not content_key(): content_key() folds
+                # in expr_text, which is monomorphised (`@Int...` vs `@Bool...`),
+                # so the same source obligation would split per instantiation and
+                # the meet would no longer be one result per site (PR #767
+                # review).  Fall back to content_key() only for span-less obls.
+                base_key = (
+                    f"{ob.fn_name}\x1f{ob.kind}\x1f{ob.line}\x1f{ob.column}"
+                    if ob.line or ob.column
+                    else ob.content_key()
+                )
+                ordinal = occurrences.get(base_key, 0)
+                occurrences[base_key] = ordinal + 1
+                key = f"{base_key}\x1f{ordinal}"
+                if key not in groups:
+                    groups[key] = []
+                    order.append(key)
+                groups[key].append((concrete, ob))
+
+        for key in order:
+            members = groups[key]
+            met = self._meet_status([ob.status for _, ob in members])
+            rep_concrete, rep_ob = next(
+                (
+                    (c, o) for c, o in members
+                    if o.status in source_statuses[met]
+                ),
+                members[0],
+            )
+            self.obligations.append(replace(rep_ob, status=met))
+            if met == "verified":
+                self.summary.tier1_verified += 1
+                self.summary.total += 1
+            elif met == "tier3":
+                self.summary.tier3_runtime += 1
+                self.summary.total += 1
+                # Re-emit the representative Tier-3 warning (E506 etc.) so an
+                # instantiated generic surfaces it like the non-generic path,
+                # not only bumping the counter (PR #767 review).  Informational, so no
+                # diagnostic is synthesized if the instance emitted none.
+                self._emit_aggregated_diagnostic(
+                    decl, members, rep_concrete, rep_ob, errs_by_instance,
+                )
+            else:  # "violated" | "tier3_unguarded" — diagnostic, no count
+                self._emit_aggregated_diagnostic(
+                    decl, members, rep_concrete, rep_ob, errs_by_instance,
+                )
+
+    def _emit_aggregated_diagnostic(
+        self,
+        decl: ast.FnDecl,
+        members: list[tuple[tuple[str, ...], ProofObligation]],
+        rep_concrete: tuple[str, ...],
+        rep_ob: ProofObligation,
+        errs_by_instance: dict[tuple[str, ...], list[Diagnostic]],
+    ) -> None:
+        """Re-emit the representative instance's diagnostic, prefixed with the
+        instantiation(s) that exhibit the failing/unguarded outcome.
+
+        The match is by (severity, span) — NOT error code — because an
+        obligation's ``error_code`` does not always equal its diagnostic's: a
+        violated ``ensures`` records the obligation with no code but the
+        diagnostic carries ``E500``.  When the obligation *does* carry a code we
+        additionally require it, to disambiguate co-located diagnostics.  If no
+        diagnostic matches, the outcome is still surfaced (synthesized from the
+        obligation) — a violation must NEVER be silently dropped, which would be
+        a false Tier-1.
+        """
+        severity = "error" if rep_ob.status == "violated" else "warning"
+        # Group instantiation labels by the same equivalence `_meet_status`
+        # uses: a Tier-3 aggregate folds `timeout` into `tier3`, so a mixed
+        # tier3/timeout aggregate must list BOTH in the prefix, not only the
+        # representative's exact status (PR #767 review).
+        _tier3_class = {"tier3", "timeout"}
+        labels = sorted(
+            f"{decl.name}<{', '.join(c)}>"
+            for c, o in members
+            if (o.status in _tier3_class and rep_ob.status in _tier3_class)
+            or o.status == rep_ob.status
+        )
+        shown = ", ".join(labels[:3])
+        more = "" if len(labels) <= 3 else f" (+{len(labels) - 3} more)"
+        prefix = (
+            f"In generic function '{decl.name}' instantiated at "
+            f"{shown}{more}: "
+        )
+        src = next(
+            (
+                d for d in errs_by_instance.get(rep_concrete, [])
+                if d.severity == severity
+                and d.location.line == rep_ob.line
+                and d.location.column == rep_ob.column
+                and (not rep_ob.error_code
+                     or d.error_code == rep_ob.error_code)
+            ),
+            None,
+        )
+        if src is not None:
+            self.errors.append(
+                replace(src, description=prefix + src.description),
+            )
+            return
+        if rep_ob.status != "violated":
+            # tier3 / tier3_unguarded: the per-instance diagnostic is an
+            # informational, runtime-guarded warning.  If it didn't surface in
+            # this instance, don't synthesize a spurious one — the obligation is
+            # already counted/guarded, so there is no soundness loss.
+            return
+        # A violation MUST never be silently dropped (a false Tier-1).  No
+        # diagnostic matched, so surface it straight from the obligation.  A
+        # violated `ensures` records no error_code (its canonical diagnostic
+        # E500 comes from the emitter), so restore it here — synthesised
+        # diagnostics must stay error-code-stable (PR #767 review).
+        synth_error_code = rep_ob.error_code or (
+            "E500" if rep_ob.kind == "ensures" else ""
+        )
+        self.errors.append(Diagnostic(
+            description=(
+                prefix
+                + f"{rep_ob.kind} obligation `{rep_ob.expr_text}` is violated."
+            ),
+            location=SourceLocation(
+                file=self.file, line=rep_ob.line, column=rep_ob.column,
+            ),
+            severity="error",
+            error_code=synth_error_code,
+            tier=None,
+        ))
+
+    @staticmethod
+    def _meet_status(statuses: list[ObligationStatus]) -> ObligationStatus:
+        """Worst-case status across instantiations, collapsed to the
+        mirror-friendly vocabulary (timeout folds into tier3)."""
+        s = set(statuses)
+        if "violated" in s:
+            return "violated"
+        if "tier3_unguarded" in s:
+            return "tier3_unguarded"
+        if "tier3" in s or "timeout" in s:
+            return "tier3"
+        return "verified"
+
     def _verify_fn(
         self,
         decl: ast.FnDecl,
         parent_where_group: ast.FnDecl | None = None,
     ) -> None:
         """Verify all contracts on a single function."""
-        # Skip generic functions (type variables can't be translated to Z3)
         if decl.forall_vars:
+            instances = tuple(sorted(self._instances.get(decl.name, set())))
+            if instances:
+                # #732: this generic IS instantiated — verify each concrete
+                # clone through the normal path and aggregate per source
+                # obligation (meet across instantiations).  Strictly stronger
+                # than the Tier-3 fallback below, and it subsumes the #746
+                # concrete-refined-return fast path for instantiated generics.
+                self._verify_generic_instances(decl, instances)
+                return
+            # Never instantiated in this program: the body's type variables
+            # can't be represented in Z3, so non-trivial contracts fall to
+            # Tier 3 (E520); only a concrete refined return is still discharged
+            # statically (#746).
             for contract in decl.contracts:
                 if not self._is_trivial(contract):
                     self.summary.tier3_runtime += 1
@@ -693,9 +1201,16 @@ class ContractVerifier:
                     self._warning(
                         contract,
                         f"Cannot statically verify contract in generic function "
-                        f"'{decl.name}'. Contract will be checked at runtime.",
-                        rationale="Generic functions have type variables that "
-                                  "cannot be represented in the SMT solver.",
+                        f"'{decl.name}': it has no concrete instantiation in "
+                        f"this program, so there are no concrete types to check "
+                        f"it against. Each instantiation is verified "
+                        f"per-monomorphization (#732); an uninstantiated "
+                        f"generic's contract is enforced by the runtime guard "
+                        f"on any future monomorphization.",
+                        rationale="An uninstantiated generic has no concrete "
+                                  "types to monomorphize and verify, and type "
+                                  "variables cannot be represented directly in "
+                                  "the SMT solver.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E520",
                         tier=3,

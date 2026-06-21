@@ -3,75 +3,16 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.monomorphize import substitute_type_vars
 from vera.wasm.helpers import _element_wasm_type
 
-
-def substitute_type_vars(
-    te: ast.TypeExpr,
-    subst: dict[str, ast.TypeExpr],
-) -> ast.TypeExpr:
-    """Substitute type variables inside a TypeExpr.
-
-    Module-level so it's accessible from `InferenceMixin`
-    (`vera/wasm/inference.py` — the canonicaliser, called from
-    interpolation/apply_fn inference), `CodeGenerator`
-    (`vera/codegen/core.py` — the compilability check
-    `_type_expr_to_wasm_type`), and the parameterised-FnType-alias
-    resolver in `MonomorphizationMixin._resolve_arg_fn_shape` /
-    `CallsMixin._resolve_arg_fn_shape_wasm` (#604 / #659 CR-4 +
-    CR-5).  All sites need the same substitution semantics when
-    following a parameterised alias (`type Box<T> = Array<T>`,
-    `type Mapper<T> = fn(T -> T)`) so the alias's own type-param
-    references in the body get bound to the concrete type arguments
-    from the call site (#635 closes the compilability-side gap that
-    PR #631's walker fix didn't reach).
-
-    A "type variable reference" is a bare `NamedType(name=X,
-    type_args=None|())` whose name is a key in `subst`; it gets
-    replaced wholesale by `subst[X]`.  `NamedType` with non-bare
-    type_args is recursed into (substituting in each arg).
-    `RefinementType` substitutes its `base_type`; the `predicate`
-    is left untouched (predicates are `Expr`, not `TypeExpr`, and
-    canonicalisation is type-level only).  `FnType` substitutes
-    through each param and the return type (added by #659 CR-4 +
-    CR-5 for parameterised FnType aliases).  Other shapes pass
-    through unchanged.
-    """
-    if isinstance(te, ast.NamedType):
-        if not te.type_args and te.name in subst:
-            return subst[te.name]
-        if te.type_args:
-            new_args = tuple(
-                substitute_type_vars(a, subst) for a in te.type_args
-            )
-            return ast.NamedType(name=te.name, type_args=new_args)
-        return te
-    if isinstance(te, ast.RefinementType):
-        new_base = substitute_type_vars(te.base_type, subst)
-        return ast.RefinementType(
-            base_type=new_base, predicate=te.predicate)
-    if isinstance(te, ast.FnType):
-        new_params = tuple(
-            substitute_type_vars(p, subst) for p in te.params
-        )
-        new_return = substitute_type_vars(te.return_type, subst)
-        # `effect` is passed through unchanged.  All current
-        # parameterised FnType aliases use `effects(pure)` or
-        # similarly-monomorphic effects.  If a future type
-        # introduces `effects(<State<T>>)` or similar where `T`
-        # is an alias parameter, the substitution would NOT
-        # propagate into the effect row — this is a deliberate
-        # gap noted in the #659 review (type-design analyzer
-        # finding 3).  The corresponding regression test in
-        # `tests/test_wasm.py::TestSubstituteTypeVarsFnType`
-        # pins this contract so a future refactor doesn't
-        # silently change behaviour.
-        return ast.FnType(
-            params=new_params,
-            return_type=new_return,
-            effect=te.effect,
-        )
-    return te
+# `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
+# shared monomorphizer, #732) so the verifier can reuse it without importing the
+# WASM backend.  Re-exported here so the existing
+# `from vera.wasm.inference import substitute_type_vars` call sites
+# (wasm/calls.py, codegen/core.py, codegen/registration.py, codegen/contracts.py)
+# keep working.
+__all__ = ["InferenceMixin", "substitute_type_vars"]
 
 
 class InferenceMixin:
@@ -601,8 +542,8 @@ class InferenceMixin:
     def _format_named_type(te: ast.NamedType) -> str:
         """Format a NamedType as a full type name including type args.
 
-        Note: duplicated in MonomorphizationMixin._format_type_name
-        (monomorphize.py). Both must remain in sync.
+        Note: duplicated in Monomorphizer._format_type_name
+        (vera/monomorphize.py). Both must remain in sync.
         """
         if not te.type_args:
             return te.name

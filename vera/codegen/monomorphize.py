@@ -1,22 +1,32 @@
 """Mixin for generic function monomorphization (Pass 1.5).
 
-Collects concrete instantiations of generic functions from call sites,
-infers type variable bindings, and produces monomorphized FnDecl copies
-with mangled names.  Also checks ability constraint satisfaction.
+Drives the shared :class:`~vera.monomorphize.Monomorphizer` (instantiation
+discovery + AST substitution) to produce monomorphized ``FnDecl`` copies for
+WASM emission, and additionally checks ability-constraint satisfaction (E613) —
+the one part of monomorphization that is layout-specific and so stays in
+codegen.
+
+The discovery + substitution logic itself lives in :mod:`vera.monomorphize` so
+the verifier (#732) can reuse the *exact* same code: the verifier must check
+precisely the instantiation set this pass emits, or a missed instantiation
+becomes a false Tier-1.  Codegen owns the *orchestration* here — the seed walk
+plus the transitive worklist, with constraint-failing instances filtered out
+(and their subtrees pruned) so the emitted set matches today's behaviour.
 """
 
 from __future__ import annotations
 
-from dataclasses import fields, replace
-from typing import Any
-
 from vera import ast
-from vera.wasm.inference import substitute_type_vars
+from vera.monomorphize import MonoContext, Monomorphizer
 
 # Types that satisfy the built-in abilities.
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
+# Eq primitives with a SCALAR WASM rep (i64/i32/f64), hence Eq-derivable as an
+# ADT *field*.  `String` is in `_EQ_TYPES` (a bare `@String` supports Eq) but is
+# `i32_pair`, so a String field breaks scalar auto-derivation — exclude it.
+_SCALAR_EQ_TYPES: frozenset[str] = _EQ_TYPES - frozenset({"String"})
 _ORD_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte",
 })
@@ -35,77 +45,45 @@ _ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
     "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
 }
 
-# Builtin function name → Vera return type name.
-# Used by _infer_fncall_vera_type_simple() to resolve opaque handle
-# types that all share the same WASM representation (i32) but are
-# distinct Vera types.
-_BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
-    # Decimal builtins
-    "decimal_from_int": "Decimal",
-    "decimal_from_float": "Decimal",
-    "decimal_add": "Decimal",
-    "decimal_sub": "Decimal",
-    "decimal_mul": "Decimal",
-    "decimal_neg": "Decimal",
-    "decimal_round": "Decimal",
-    "decimal_abs": "Decimal",
-    "decimal_from_string": "Option",
-    "decimal_div": "Option",
-    "decimal_compare": "Ordering",
-    "decimal_eq": "Bool",
-    "decimal_to_float": "Float64",
-    "decimal_to_string": "String",
-    # Map builtins
-    "map_new": "Map",
-    "map_insert": "Map",
-    "map_remove": "Map",
-    "map_get": "Option",
-    "map_contains": "Bool",
-    "map_size": "Int",
-    "map_keys": "Array",
-    "map_values": "Array",
-    # Set builtins
-    "set_new": "Set",
-    "set_add": "Set",
-    "set_remove": "Set",
-    "set_contains": "Bool",
-    "set_size": "Int",
-    "set_to_array": "Array",
-    # Json builtins
-    "json_parse": "Result",
-    "json_stringify": "String",
-    "json_get": "Option",
-    "json_array_get": "Option",
-    "json_array_length": "Int",
-    "json_keys": "Array",
-    "json_has_field": "Bool",
-    "json_type": "String",
-    # Html builtins
-    "html_parse": "Result",
-    "html_to_string": "String",
-    "html_query": "Array",
-    "html_text": "String",
-    "html_attr": "Option",
-}
-
-# Builtins returning parameterized types — maps function name to
-# (outer_type, (inner_type,)) for _get_arg_type_info().
-_BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "decimal_from_string": ("Option", ("Decimal",)),
-    "decimal_div": ("Option", ("Decimal",)),
-    "json_parse": ("Result", ("Json", "String")),
-    "json_get": ("Option", ("Json",)),
-    "json_array_get": ("Option", ("Json",)),
-    "json_keys": ("Array", ("String",)),
-    # Html builtins
-    "html_parse": ("Result", ("HtmlNode", "String")),
-    "html_query": ("Array", ("HtmlNode",)),
-    "html_attr": ("Option", ("String",)),
+# Maps a WAT scalar return type to the Vera type name the old
+# `_infer_fncall_vera_type_simple` returned for it.  Used to populate
+# `MonoContext.fn_ret_types` from `_fn_sigs`, reproducing that behaviour
+# exactly (other WAT types — i32_pair, None — yield no entry → `None`).
+_WT_TO_VERA: dict[str | None, str] = {
+    "i64": "Int",
+    "i32": "Bool",
+    "f64": "Float64",
 }
 
 
 class MonomorphizationMixin:
     """Methods for monomorphizing generic functions."""
+
+    def _build_mono_context(
+        self,
+        generic_decls: dict[str, ast.FnDecl],
+        ctor_to_adt: dict[str, str],
+    ) -> MonoContext:
+        """Pack codegen registration state into a shared MonoContext.
+
+        ``fn_ret_types`` is derived from the WAT signatures so the shared
+        ``_infer_fncall_vera_type_simple`` returns the same Vera type names the
+        old codegen-local version did (i64→Int, i32→Bool, f64→Float64).
+        """
+        fn_ret_types: dict[str, str] = {}
+        for name, sig in self._fn_sigs.items():
+            ret_vera = _WT_TO_VERA.get(sig[1])
+            if ret_vera is not None:
+                fn_ret_types[name] = ret_vera
+        return MonoContext(
+            generic_decls=generic_decls,
+            ctor_to_adt=ctor_to_adt,
+            ctor_tp_indices=getattr(self, "_ctor_adt_tp_indices", {}),
+            adt_tp_counts=getattr(self, "_adt_tp_counts", {}),
+            type_aliases=getattr(self, "_type_aliases", {}),
+            type_alias_params=getattr(self, "_type_alias_params", {}),
+            fn_ret_types=fn_ret_types,
+        )
 
     def _monomorphize(
         self, program: ast.Program,
@@ -131,6 +109,16 @@ class MonomorphizationMixin:
             for ctor_name in self._adt_layouts[adt_name]:
                 ctor_to_adt[ctor_name] = adt_name
 
+        mono = Monomorphizer(
+            self._build_mono_context(generic_decls, ctor_to_adt),
+        )
+
+        # Record of every (generic name, concrete types) actually emitted —
+        # i.e. that passed constraint checks.  Consumed by the #732 differential
+        # soundness test, which asserts the verifier discovers a superset of
+        # this set; harmless to WAT output (a plain bookkeeping set).
+        self._emitted_instances: set[tuple[str, tuple[str, ...]]] = set()
+
         # Collect concrete instantiations from non-generic function bodies
         instances: dict[str, set[tuple[str, ...]]] = {
             name: set() for name in generic_decls
@@ -138,20 +126,28 @@ class MonomorphizationMixin:
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                self._collect_calls_in_expr(
-                    decl.body, generic_decls, ctor_to_adt, instances,
+                mono.collect_calls_in_node(
+                    decl, generic_decls, ctor_to_adt, instances,
                 )
 
         # Generate monomorphized FnDecls with transitive closure.
         # After generating the first round, scan the monomorphized bodies
         # for further generic calls and generate those too.  This handles
         # cases like array_map calling array_map_go (both generic).
+        # Constraint-failing instances are skipped here (and their subtrees
+        # pruned), so the emitted set excludes anything that wouldn't compile.
         seen: set[tuple[str, tuple[str, ...]]] = set()
         mono_decls: list[ast.FnDecl] = []
+        # Sort each per-name instantiation set so the worklist seed — and hence
+        # the order clones are appended to `mono_decls` and emitted to WAT — is
+        # deterministic across runs.  Without this, `set` iteration order varies
+        # with PYTHONHASHSEED and `vera compile --wat` is not byte-stable (clone
+        # bodies are identical; only their order differs), breaking reproducible
+        # builds (PR #767 review).
         worklist: list[tuple[str, tuple[str, ...]]] = [
             (fn_name, ct)
             for fn_name, type_arg_set in instances.items()
-            for ct in type_arg_set
+            for ct in sorted(type_arg_set)
         ]
         while worklist:
             fn_name, concrete_types = worklist.pop()
@@ -164,17 +160,18 @@ class MonomorphizationMixin:
             decl = generic_decls[fn_name]
             if not self._check_constraints(decl, concrete_types):
                 continue  # constraint violation — error emitted
-            mono = self._monomorphize_fn(decl, concrete_types)
-            mono_decls.append(mono)
+            mono_fn = mono.monomorphize_fn(decl, concrete_types)
+            mono_decls.append(mono_fn)
+            self._emitted_instances.add((fn_name, concrete_types))
             # Scan the monomorphized body for further generic calls
             transitive: dict[str, set[tuple[str, ...]]] = {
                 name: set() for name in generic_decls
             }
-            self._collect_calls_in_expr(
-                mono.body, generic_decls, ctor_to_adt, transitive,
+            mono.collect_calls_in_node(
+                mono_fn, generic_decls, ctor_to_adt, transitive,
             )
             for t_name, t_types in transitive.items():
-                for t_ct in t_types:
+                for t_ct in sorted(t_types):  # deterministic order (see seed)
                     if (t_name, t_ct) not in seen:
                         worklist.append((t_name, t_ct))
 
@@ -187,847 +184,6 @@ class MonomorphizationMixin:
             self._generic_fn_info[name] = (decl.forall_vars, decl.params)
 
         return mono_decls
-
-    def _collect_calls_in_expr(
-        self,
-        expr: ast.Expr,
-        generic_decls: dict[str, ast.FnDecl],
-        ctor_to_adt: dict[str, str],
-        instances: dict[str, set[tuple[str, ...]]],
-    ) -> None:
-        """Walk an expression tree collecting generic call sites."""
-        if isinstance(expr, ast.FnCall) and expr.name in generic_decls:
-            decl = generic_decls[expr.name]
-            type_args = self._infer_type_args_from_call(
-                decl, expr, ctor_to_adt, generic_decls,
-            )
-            if type_args is not None:
-                instances[expr.name].add(type_args)
-
-        # Recurse into sub-expressions
-        if isinstance(expr, ast.Block):
-            for stmt in expr.statements:
-                if isinstance(stmt, ast.LetStmt):
-                    self._collect_calls_in_expr(
-                        stmt.value, generic_decls, ctor_to_adt, instances,
-                    )
-                elif isinstance(stmt, ast.ExprStmt):
-                    self._collect_calls_in_expr(
-                        stmt.expr, generic_decls, ctor_to_adt, instances,
-                    )
-            self._collect_calls_in_expr(
-                expr.expr, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.BinaryExpr):
-            self._collect_calls_in_expr(
-                expr.left, generic_decls, ctor_to_adt, instances,
-            )
-            self._collect_calls_in_expr(
-                expr.right, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.UnaryExpr):
-            self._collect_calls_in_expr(
-                expr.operand, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.IfExpr):
-            self._collect_calls_in_expr(
-                expr.condition, generic_decls, ctor_to_adt, instances,
-            )
-            self._collect_calls_in_expr(
-                expr.then_branch, generic_decls, ctor_to_adt, instances,
-            )
-            self._collect_calls_in_expr(
-                expr.else_branch, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.FnCall):
-            for arg in expr.args:
-                self._collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
-                )
-        elif isinstance(expr, ast.ConstructorCall):
-            for arg in expr.args:
-                self._collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
-                )
-        elif isinstance(expr, ast.MatchExpr):
-            self._collect_calls_in_expr(
-                expr.scrutinee, generic_decls, ctor_to_adt, instances,
-            )
-            for arm in expr.arms:
-                self._collect_calls_in_expr(
-                    arm.body, generic_decls, ctor_to_adt, instances,
-                )
-        elif isinstance(expr, ast.AnonFn):
-            # Recurse into closure bodies for generic call collection
-            self._collect_calls_in_expr(
-                expr.body, generic_decls, ctor_to_adt, instances,
-            )
-        elif isinstance(expr, ast.ModuleCall):
-            # C7e: recurse into ModuleCall args for generic call collection
-            for arg in expr.args:
-                self._collect_calls_in_expr(
-                    arg, generic_decls, ctor_to_adt, instances,
-                )
-
-    def _infer_type_args_from_call(
-        self,
-        decl: ast.FnDecl,
-        call: ast.FnCall,
-        ctor_to_adt: dict[str, str],
-        generic_decls: dict[str, ast.FnDecl] | None = None,
-    ) -> tuple[str, ...] | None:
-        """Infer concrete type variable bindings from a call's arguments.
-
-        Returns a tuple of concrete type names, one per forall_var, or
-        None if inference fails.
-        """
-        forall_vars = decl.forall_vars
-        if not forall_vars:
-            return None
-
-        mapping: dict[str, str] = {}
-        for param_te, arg in zip(decl.params, call.args):
-            self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
-                                  mapping, generic_decls)
-
-        # Check all type vars are resolved; default phantom vars to Unit
-        result = []
-        for tv in forall_vars:
-            if tv not in mapping:
-                # Phantom type variable (e.g. E in result_unwrap_or(Ok(x), d))
-                # — the generated WASM is identical regardless of this type.
-                # Use Bool (i32) rather than Unit (no WASM repr) so the
-                # monomorphized body can still compile unused branches.
-                mapping[tv] = "Bool"
-            result.append(mapping[tv])
-        return tuple(result)
-
-    def _unify_param_arg(
-        self,
-        param_te: ast.TypeExpr,
-        arg: ast.Expr,
-        forall_vars: tuple[str, ...],
-        ctor_to_adt: dict[str, str],
-        mapping: dict[str, str],
-        generic_decls: dict[str, ast.FnDecl] | None = None,
-    ) -> None:
-        """Unify a parameter TypeExpr against an argument to bind type vars."""
-        if isinstance(param_te, ast.RefinementType):
-            self._unify_param_arg(
-                param_te.base_type, arg, forall_vars, ctor_to_adt, mapping,
-                generic_decls,
-            )
-            return
-
-        if not isinstance(param_te, ast.NamedType):
-            return
-
-        if param_te.name in forall_vars:
-            # Direct type variable — infer from argument
-            vera_type = self._infer_vera_type_name(
-                arg, ctor_to_adt, generic_decls)
-            if vera_type and param_te.name not in mapping:
-                mapping[param_te.name] = vera_type
-            return
-
-        # Parameterized type like Option<T> — match type args
-        if param_te.type_args:
-            # Handle type alias for FnType matched against a callable
-            # arg — either an AnonFn literal or a SlotRef whose static
-            # type is itself an FnType alias.  #604: pre-fix, only the
-            # AnonFn branch fired; SlotRef-typed-as-FnType-alias args
-            # like ``@Doubler.0`` skipped this branch and left the
-            # ``B`` type var unbound, hitting the ``"Bool"`` phantom-
-            # var default at result-building time and producing wrong
-            # mono suffixes.  The helper now resolves either shape.
-            alias_concrete = self._infer_fn_alias_type_args(
-                param_te, arg,
-            )
-            if alias_concrete is not None:
-                for param_ta, concrete_name in zip(
-                    param_te.type_args, alias_concrete,
-                ):
-                    if (isinstance(param_ta, ast.NamedType)
-                            and param_ta.name in forall_vars
-                            and param_ta.name not in mapping):
-                        mapping[param_ta.name] = concrete_name
-                return
-
-            arg_info = self._get_arg_type_info(arg, ctor_to_adt)
-            if arg_info and arg_info[0] == param_te.name:
-                for param_ta, arg_ta_name in zip(
-                    param_te.type_args, arg_info[1]
-                ):
-                    # arg_ta_name is None for unknown type-param positions
-                    # (e.g. T in Err(e) where only E can be inferred from Err).
-                    if (arg_ta_name is not None
-                            and isinstance(param_ta, ast.NamedType)
-                            and param_ta.name in forall_vars
-                            and param_ta.name not in mapping):
-                        mapping[param_ta.name] = arg_ta_name
-
-    def _infer_vera_type_name(
-        self,
-        expr: ast.Expr,
-        ctor_to_adt: dict[str, str],
-        generic_decls: dict[str, ast.FnDecl] | None = None,
-    ) -> str | None:
-        """Infer the simple Vera type name of an expression."""
-        if isinstance(expr, ast.IntLit):
-            return "Int"
-        if isinstance(expr, ast.BoolLit):
-            return "Bool"
-        if isinstance(expr, ast.FloatLit):
-            return "Float64"
-        if isinstance(expr, ast.UnitLit):
-            return "Unit"
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_args:
-                # Include type args for parameterized types like Map<String, Int>
-                arg_names = []
-                for ta in expr.type_args:
-                    if isinstance(ta, ast.NamedType):
-                        arg_names.append(self._format_type_name(ta))
-                    else:
-                        return expr.type_name
-                return f"{expr.type_name}<{', '.join(arg_names)}>"
-            return expr.type_name
-        if isinstance(expr, ast.ConstructorCall):
-            return ctor_to_adt.get(expr.name)
-        if isinstance(expr, ast.NullaryConstructor):
-            return ctor_to_adt.get(expr.name)
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
-                           ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
-                           ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
-                return "Bool"
-            return self._infer_vera_type_name(
-                expr.left, ctor_to_adt, generic_decls)
-        if isinstance(expr, ast.UnaryExpr):
-            if expr.op == ast.UnaryOp.NOT:
-                return "Bool"
-            return self._infer_vera_type_name(
-                expr.operand, ctor_to_adt, generic_decls)
-        if isinstance(expr, ast.IfExpr):
-            return self._infer_vera_type_name(
-                expr.then_branch.expr, ctor_to_adt, generic_decls)
-        if isinstance(expr, ast.StringLit):
-            return "String"
-        if isinstance(expr, ast.InterpolatedString):
-            return "String"
-        if isinstance(expr, ast.ArrayLit):
-            return "Array"
-        if isinstance(expr, ast.FnCall) and generic_decls:
-            return self._infer_fncall_vera_type(
-                expr, ctor_to_adt, generic_decls)
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_vera_type_simple(expr)
-        return None
-
-    def _infer_fncall_vera_type(
-        self,
-        call: ast.FnCall,
-        ctor_to_adt: dict[str, str],
-        generic_decls: dict[str, ast.FnDecl],
-    ) -> str | None:
-        """Infer the Vera return type of a function call.
-
-        For generic calls, infers type variable bindings from arguments,
-        then substitutes into the return TypeExpr.
-        """
-        if call.name in generic_decls:
-            decl = generic_decls[call.name]
-            type_args = self._infer_type_args_from_call(
-                decl, call, ctor_to_adt, generic_decls,
-            )
-            if type_args and decl.forall_vars:
-                mapping = dict(zip(decl.forall_vars, type_args))
-                ret_te = decl.return_type
-                if isinstance(ret_te, ast.NamedType):
-                    return mapping.get(ret_te.name, ret_te.name)
-        return self._infer_fncall_vera_type_simple(call)
-
-    def _infer_fncall_vera_type_simple(self, call: ast.FnCall) -> str | None:
-        """Infer Vera return type from registered function signatures."""
-        # Check builtin return types first — resolves opaque handle
-        # types (Decimal, Map, Set) that all share i32 representation.
-        builtin_ret = _BUILTIN_VERA_RETURN_TYPES.get(call.name)
-        if builtin_ret is not None:
-            return builtin_ret
-        sig = self._fn_sigs.get(call.name)
-        if sig:
-            _, ret_wt = sig
-            if ret_wt == "i64":
-                return "Int"
-            if ret_wt == "i32":
-                return "Bool"
-            if ret_wt == "f64":
-                return "Float64"
-        return None
-
-    @staticmethod
-    def _parse_type_name(name: str) -> ast.NamedType:
-        """Parse a full type name string into a NamedType AST node.
-
-        E.g. "Map<String, Int>" → NamedType("Map", (NamedType("String"),
-        NamedType("Int"))).  Handles nested types like
-        "Map<String, Array<Int>>".
-        """
-        if "<" not in name:
-            return ast.NamedType(name=name, type_args=None)
-        base = name[:name.index("<")]
-        inner = name[name.index("<") + 1:-1]  # strip outer < >
-        # Split at top-level commas (respecting nesting)
-        args: list[str] = []
-        depth = 0
-        current: list[str] = []
-        for ch in inner:
-            if ch == "<":
-                depth += 1
-                current.append(ch)
-            elif ch == ">":
-                depth -= 1
-                current.append(ch)
-            elif ch == "," and depth == 0:
-                args.append("".join(current).strip())
-                current = []
-            else:
-                current.append(ch)
-        if current:
-            args.append("".join(current).strip())
-        type_args = tuple(
-            MonomorphizationMixin._parse_type_name(a) for a in args
-        )
-        return ast.NamedType(name=base, type_args=type_args)
-
-    @staticmethod
-    def _format_type_name(te: ast.NamedType) -> str:
-        """Format a NamedType as a full type name including type args.
-
-        E.g. NamedType("Map", (NamedType("String"), NamedType("Int")))
-        becomes "Map<String, Int>".
-
-        Note: duplicated in InferenceMixin._format_named_type (inference.py).
-        Both must remain in sync — the mixin architecture prevents sharing.
-        """
-        if not te.type_args:
-            return te.name
-        arg_names = []
-        for ta in te.type_args:
-            if isinstance(ta, ast.NamedType):
-                arg_names.append(MonomorphizationMixin._format_type_name(ta))
-            else:
-                return te.name
-        return f"{te.name}<{', '.join(arg_names)}>"
-
-    def _get_arg_type_info(
-        self, expr: ast.Expr, ctor_to_adt: dict[str, str],
-    ) -> tuple[str, tuple[str | None, ...]] | None:
-        """Get (type_name, type_arg_names) for an argument expression.
-
-        Used to match parameterized types like Option<T> against
-        concrete arguments like @Option<Int>.0.  Type arg entries may be
-        None for positions that cannot be inferred from the argument (e.g.
-        T in Err(e) where only E is resolved from Err's field).
-        """
-        if isinstance(expr, ast.SlotRef):
-            if expr.type_args:
-                arg_names = []
-                for ta in expr.type_args:
-                    if isinstance(ta, ast.NamedType):
-                        arg_names.append(self._format_type_name(ta))
-                    else:
-                        return None
-                return (expr.type_name, tuple(arg_names))
-            return (expr.type_name, ())
-        if isinstance(expr, ast.ConstructorCall):
-            adt_name = ctor_to_adt.get(expr.name)
-            if adt_name:
-                # Use the per-field ADT type-param index mapping when available.
-                # This correctly handles sparse constructors like Err(e) whose
-                # single field maps to Result's *second* type param (E, index 1),
-                # not the first (T, index 0) as naïve positional zipping implies.
-                field_tp_idx = getattr(
-                    self, "_ctor_adt_tp_indices", {}
-                ).get(expr.name)
-                adt_tp_count = getattr(
-                    self, "_adt_tp_counts", {}
-                ).get(adt_name, 0)
-                if field_tp_idx is not None and adt_tp_count > 0:
-                    result_tps: list[str | None] = [None] * adt_tp_count
-                    for field_i, tp_idx in enumerate(field_tp_idx):
-                        if tp_idx is not None and field_i < len(expr.args):
-                            t = self._infer_vera_type_name(
-                                expr.args[field_i], ctor_to_adt)
-                            if t is not None:
-                                result_tps[tp_idx] = t
-                            # If t is None, leave position as None (unknown)
-                    return (adt_name, tuple(result_tps))
-                # Fall back to positional inference for constructors without
-                # mapping info (e.g. user-defined ADTs not yet registered).
-                arg_types = []
-                for a in expr.args:
-                    t = self._infer_vera_type_name(a, ctor_to_adt)
-                    if t:
-                        arg_types.append(t)
-                    else:
-                        return None
-                return (adt_name, tuple(arg_types))
-        if isinstance(expr, ast.ArrayLit):
-            # Infer element type from first element
-            if expr.elements:
-                elem_type = self._infer_vera_type_name(
-                    expr.elements[0], ctor_to_adt,
-                )
-                if elem_type:
-                    return ("Array", (elem_type,))
-            return ("Array", ())
-        if isinstance(expr, ast.FnCall):
-            # Builtins returning parameterized types (e.g. decimal_div → Option<Decimal>)
-            param_ret = _BUILTIN_PARAMETERIZED_RETURNS.get(expr.name)
-            if param_ret is not None:
-                return param_ret
-            # Infer from known return types (e.g. array_range → Array<Int>)
-            if expr.name == "array_range":
-                return ("Array", ("Int",))
-            if expr.name in ("array_concat", "array_append",
-                             "array_slice", "array_filter"):
-                if expr.args:
-                    return self._get_arg_type_info(expr.args[0], ctor_to_adt)
-        return None
-
-    def _resolve_arg_fn_shape(
-        self,
-        arg: ast.Expr,
-    ) -> tuple[tuple[ast.TypeExpr, ...], ast.TypeExpr] | None:
-        """Return ``(param_types, return_type)`` for an arg that's callable.
-
-        Two arg shapes resolve:
-
-        * ``AnonFn`` literal — its declared params + return type.
-        * ``SlotRef`` whose static type is an FnType alias (e.g.
-          ``@Doubler.0`` where ``type Doubler = fn(Int -> Int)``) —
-          the alias's resolved params + return type.  For a
-          *parameterised* alias like
-          ``type Mapper<T> = fn(T -> T) effects(pure)``, the
-          ``SlotRef``'s type-args are substituted into the alias body
-          first so ``@Mapper<Int>.0`` returns
-          ``(NamedType("Int"),), NamedType("Int")`` rather than the
-          unsubstituted ``T``.  Without substitution, the downstream
-          ``_infer_fn_alias_type_args`` matcher would bind alias-local
-          names instead of concrete ones, producing mono suffixes
-          like ``option_map$T_T`` rather than ``option_map$Int_Int``
-          (CR-4 on PR #659).
-
-        Returns ``None`` for any other arg shape.  Used by
-        :meth:`_infer_fn_alias_type_args` to bind generic type variables
-        from a closure-shaped argument uniformly across both forms.
-
-        Fixes #604: pre-fix, only the AnonFn form was resolved.  When a
-        prelude generic like ``option_map<A, B>(@Option<A>, @OptionMapFn<A, B>)``
-        was called with a ``SlotRef`` typed as an FnType alias instead
-        of an inline ``AnonFn``, ``B`` failed to bind and defaulted to
-        ``Bool`` (the phantom-var fallback in :meth:`_infer_type_args_from_call`),
-        producing the wrong mono suffix (``option_map$Int_Bool``) and
-        an ``indirect call type mismatch`` trap at runtime.
-        """
-        if isinstance(arg, ast.AnonFn):
-            return (tuple(arg.params), arg.return_type)
-        if isinstance(arg, ast.SlotRef):
-            type_aliases: dict[str, ast.TypeExpr] = getattr(
-                self, "_type_aliases", {},
-            )
-            type_alias_params: dict[str, tuple[str, ...]] = getattr(
-                self, "_type_alias_params", {},
-            )
-            alias_te = type_aliases.get(arg.type_name)
-            if isinstance(alias_te, ast.FnType):
-                # Parameterised alias — substitute the SlotRef's
-                # type_args into the alias body before returning.
-                # Arity-mismatch on parameterised aliases (e.g.
-                # `@Pair<Int>.0` against a `Pair<A, B>` declaration)
-                # is rejected upstream by the type checker since
-                # v0.0.148 with `[E133]` (#660); reaching here with
-                # `len(arg.type_args) != len(alias_params)` would
-                # require bypassing the checker.
-                alias_params = type_alias_params.get(arg.type_name)
-                if (alias_params
-                        and arg.type_args
-                        and len(alias_params) == len(arg.type_args)):
-                    subst: dict[str, ast.TypeExpr] = dict(
-                        zip(alias_params, arg.type_args),
-                    )
-                    substituted_params = tuple(
-                        substitute_type_vars(p, subst)
-                        for p in alias_te.params
-                    )
-                    substituted_return = substitute_type_vars(
-                        alias_te.return_type, subst,
-                    )
-                    return (substituted_params, substituted_return)
-                return (tuple(alias_te.params), alias_te.return_type)
-        return None
-
-    def _infer_fn_alias_type_args(
-        self,
-        param_te: ast.NamedType,
-        arg: ast.Expr,
-    ) -> tuple[str, ...] | None:
-        """Infer concrete types for a type alias's params from a callable arg.
-
-        When ``param_te`` is e.g. ``NamedType("OptionMapFn", [A, B])``
-        which aliases ``fn(A -> B)``, and the argument is callable (an
-        ``AnonFn`` literal or a ``SlotRef`` typed as an FnType alias)
-        with concrete param/return types, infer one concrete type name
-        per alias type parameter.
-
-        Returns a tuple of concrete type names aligned to the alias's
-        type parameters, or ``None`` if inference fails.
-        """
-        arg_shape = self._resolve_arg_fn_shape(arg)
-        if arg_shape is None:
-            return None
-        arg_params, arg_return = arg_shape
-
-        type_aliases: dict[str, ast.TypeExpr] = getattr(
-            self, "_type_aliases", {},
-        )
-        type_alias_params: dict[str, tuple[str, ...]] = getattr(
-            self, "_type_alias_params", {},
-        )
-
-        alias_te = type_aliases.get(param_te.name)
-        if not isinstance(alias_te, ast.FnType):
-            return None
-
-        alias_params = type_alias_params.get(param_te.name)
-        if (
-            not alias_params
-            or not param_te.type_args
-            or len(alias_params) != len(param_te.type_args)
-        ):
-            return None
-
-        # Match the FnType body against the arg's shape to build an
-        # alias-local mapping:  alias_param_name -> concrete_type_name
-        alias_mapping: dict[str, str] = {}
-
-        # Match parameter types positionally
-        for fn_param_te, arg_param_te in zip(
-            alias_te.params, arg_params,
-        ):
-            if (
-                isinstance(fn_param_te, ast.NamedType)
-                and fn_param_te.name in alias_params
-                and isinstance(arg_param_te, ast.NamedType)
-            ):
-                alias_mapping[fn_param_te.name] = arg_param_te.name
-
-        # Match return type
-        ret = alias_te.return_type
-        if isinstance(ret, ast.NamedType) and ret.name in alias_params:
-            if isinstance(arg_return, ast.NamedType):
-                alias_mapping[ret.name] = arg_return.name
-            elif isinstance(arg_return, ast.FnType):
-                # Return type is itself a FnType — map to "Fn"
-                alias_mapping[ret.name] = "Fn"
-        # Handle ADT return types like Option<B> where B is an alias param
-        if isinstance(ret, ast.NamedType) and ret.type_args:
-            for ret_ta in ret.type_args:
-                if (
-                    isinstance(ret_ta, ast.NamedType)
-                    and ret_ta.name in alias_params
-                    and isinstance(arg_return, ast.NamedType)
-                ):
-                    # For Option<B> matched against Option<Int>, extract
-                    # B from the arg's return type args
-                    if arg_return.type_args:
-                        idx = [
-                            i for i, rta in enumerate(ret.type_args)
-                            if (isinstance(rta, ast.NamedType)
-                                and rta.name == ret_ta.name)
-                        ]
-                        if idx:
-                            pos = idx[0]
-                            if pos < len(arg_return.type_args):
-                                art = arg_return.type_args[pos]
-                                if isinstance(art, ast.NamedType):
-                                    alias_mapping[ret_ta.name] = art.name
-
-        # Produce result in alias param order
-        result: list[str] = []
-        for ap in alias_params:
-            if ap not in alias_mapping:
-                return None
-            result.append(alias_mapping[ap])
-        return tuple(result)
-
-    @staticmethod
-    def _mangle_fn_name(name: str, concrete_types: tuple[str, ...]) -> str:
-        """Produce a mangled name for a monomorphized function.
-
-        Example: identity + ("Int",) -> "identity$Int"
-        Example: option_unwrap_or + ("Map<String, Int>",)
-                 -> "option_unwrap_or$Map_String_Int"
-        """
-        sanitized = []
-        for ct in concrete_types:
-            # Replace angle brackets and commas for WAT identifier safety
-            s = ct.replace("<", "_").replace(">", "").replace(", ", "_")
-            sanitized.append(s)
-        return f"{name}${'_'.join(sanitized)}"
-
-    def _monomorphize_fn(
-        self,
-        decl: ast.FnDecl,
-        concrete_types: tuple[str, ...],
-    ) -> ast.FnDecl:
-        """Create a monomorphized copy of a generic function.
-
-        Replaces type variables with concrete types throughout the AST
-        and mangles the function name.
-
-        When distinct type variables map to the same concrete type
-        (e.g. A→Int, B→Int), De Bruijn indices in slot references
-        must be adjusted because formerly separate namespaces merge.
-        """
-        assert decl.forall_vars is not None  # noqa: S101
-        mapping = dict(zip(decl.forall_vars, concrete_types))
-        mangled = self._mangle_fn_name(decl.name, concrete_types)
-
-        # Build slot reindex map for De Bruijn index adjustment.
-        # Compute each parameter's slot name before and after substitution,
-        # then build a mapping from (old_slot_name, old_index) to new_index.
-        reindex = self._build_reindex_map(decl.params, mapping)
-
-        # Substitute type variables in the entire FnDecl
-        substituted = self._substitute_in_ast(decl, mapping, reindex)
-        assert isinstance(substituted, ast.FnDecl)  # noqa: S101
-
-        # Override name and clear forall_vars/constraints
-        return replace(
-            substituted, name=mangled,
-            forall_vars=None, forall_constraints=None,
-        )
-
-    @staticmethod
-    def _slot_name_for_param(param_te: ast.TypeExpr,
-                             mapping: dict[str, str] | None = None,
-                             ) -> str:
-        """Compute the slot name for a parameter TypeExpr.
-
-        Optionally substitutes type variables via mapping first.
-        """
-        if isinstance(param_te, ast.RefinementType):
-            param_te = param_te.base_type
-        if not isinstance(param_te, ast.NamedType):
-            return ""
-        name = param_te.name
-        if mapping:
-            name = mapping.get(name, name)
-        if not param_te.type_args:
-            return name
-        arg_names = []
-        for ta in param_te.type_args:
-            if isinstance(ta, ast.NamedType):
-                an = ta.name
-                if mapping:
-                    an = mapping.get(an, an)
-                arg_names.append(an)
-            else:
-                return name
-        return f"{name}<{', '.join(arg_names)}>"
-
-    def _build_reindex_map(
-        self,
-        params: tuple[ast.TypeExpr, ...],
-        mapping: dict[str, str],
-    ) -> dict[tuple[str, int], int]:
-        """Build De Bruijn reindex map for monomorphization.
-
-        When type variables A and B both map to Int, parameters with
-        slot name Array<A> and Array<B> both become Array<Int>.
-        Their De Bruijn indices must be adjusted accordingly.
-
-        Returns: {(old_slot_name, old_index): new_index}
-        """
-        # Compute old and new slot names for each parameter
-        old_names = [self._slot_name_for_param(p) for p in params]
-        new_names = [self._slot_name_for_param(p, mapping) for p in params]
-
-        # Check if any reindexing is needed
-        if old_names == new_names:
-            return {}
-
-        # For each old slot name, compute the De Bruijn index mapping.
-        # De Bruijn: index 0 = most recent (last parameter) with that name.
-        reindex: dict[tuple[str, int], int] = {}
-
-        # Group parameters by old slot name (in order)
-        old_groups: dict[str, list[int]] = {}
-        for i, name in enumerate(old_names):
-            if name:
-                old_groups.setdefault(name, []).append(i)
-
-        # Group parameters by new slot name (in order)
-        new_groups: dict[str, list[int]] = {}
-        for i, name in enumerate(new_names):
-            if name:
-                new_groups.setdefault(name, []).append(i)
-
-        for old_slot_name, param_indices in old_groups.items():
-            # New slot name for these parameters
-            new_slot_name = new_names[param_indices[0]]
-            if old_slot_name == new_slot_name:
-                # No name change, no reindexing needed
-                continue
-
-            # For each parameter in the old group, find its new De Bruijn index
-            new_group = new_groups.get(new_slot_name, [])
-            for old_db_index, param_idx in enumerate(reversed(param_indices)):
-                # old_db_index: De Bruijn index in the old namespace
-                # param_idx: position in the parameter list
-                # Find param_idx's position in the new group
-                if param_idx in new_group:
-                    new_pos_in_group = new_group.index(param_idx)
-                    # De Bruijn: reversed — last in group = index 0
-                    new_db_index = len(new_group) - 1 - new_pos_in_group
-                    if old_db_index != new_db_index:
-                        reindex[(old_slot_name, old_db_index)] = new_db_index
-
-        return reindex
-
-    def _substitute_in_ast(
-        self, node: ast.Node, mapping: dict[str, str],
-        reindex: dict[tuple[str, int], int] | None = None,
-    ) -> ast.Node:
-        """Recursively substitute type variable names in an AST subtree.
-
-        Handles NamedType (type expressions) and SlotRef (slot references)
-        as special cases; all other nodes are walked generically via
-        dataclass fields.
-
-        When reindex is provided, De Bruijn indices on SlotRef nodes are
-        adjusted to account for namespace collisions (e.g. A→Int, B→Int
-        causing Array<A> and Array<B> to merge into Array<Int>).
-        """
-        # Special case: NamedType — substitute type variable names
-        if isinstance(node, ast.NamedType):
-            mapped = mapping.get(node.name)
-            if mapped is not None and "<" in mapped:
-                # Parameterized type like "Map<String, Int>" — parse into
-                # NamedType with type_args
-                return self._parse_type_name(mapped)
-            new_name = mapped if mapped is not None else node.name
-            new_args: tuple[ast.TypeExpr, ...] | None = node.type_args
-            if node.type_args:
-                new_args = tuple(
-                    self._substitute_type_expr(ta, mapping)
-                    for ta in node.type_args
-                )
-            if new_name != node.name or new_args is not node.type_args:
-                return replace(node, name=new_name, type_args=new_args)
-            return node
-
-        # Special case: SlotRef — substitute type_name and type_args,
-        # and adjust De Bruijn index if namespace collision occurred.
-        if isinstance(node, ast.SlotRef):
-            # Compute old slot name for reindexing lookup
-            old_slot_name = node.type_name
-            if node.type_args:
-                ta_names = []
-                for ta in node.type_args:
-                    if isinstance(ta, ast.NamedType):
-                        ta_names.append(ta.name)
-                old_slot_name = (f"{node.type_name}"
-                                 f"<{', '.join(ta_names)}>"
-                                 if ta_names else node.type_name)
-
-            mapped_name = mapping.get(node.type_name)
-            if mapped_name is not None and "<" in mapped_name:
-                # Parameterized type — parse into base name + type_args
-                parsed = self._parse_type_name(mapped_name)
-                new_type_name = parsed.name
-                new_slot_args = parsed.type_args
-            else:
-                new_type_name = mapped_name if mapped_name is not None else node.type_name
-                new_slot_args = node.type_args
-            if node.type_args and new_slot_args is node.type_args:
-                new_slot_args = tuple(
-                    self._substitute_type_expr(ta, mapping)
-                    for ta in node.type_args
-                )
-
-            # Adjust De Bruijn index if needed
-            new_index = node.index
-            if reindex:
-                key = (old_slot_name, node.index)
-                if key in reindex:
-                    new_index = reindex[key]
-
-            if (new_type_name != node.type_name
-                    or new_slot_args is not node.type_args
-                    or new_index != node.index):
-                return replace(
-                    node, type_name=new_type_name,
-                    type_args=new_slot_args,
-                    index=new_index,
-                )
-            return node
-
-        # Special case: ResultRef — substitute type_name and type_args
-        if isinstance(node, ast.ResultRef):
-            new_type_name = mapping.get(node.type_name, node.type_name)
-            new_res_args: tuple[ast.TypeExpr, ...] | None = node.type_args
-            if node.type_args:
-                new_res_args = tuple(
-                    self._substitute_type_expr(ta, mapping)
-                    for ta in node.type_args
-                )
-            if (new_type_name != node.type_name
-                    or new_res_args is not node.type_args):
-                return replace(
-                    node, type_name=new_type_name, type_args=new_res_args,
-                )
-            return node
-
-        # Generic case: recurse into all dataclass fields
-        changes: dict[str, Any] = {}
-        for f in fields(node):
-            if f.name == "span":
-                continue
-            val = getattr(node, f.name)
-            new_val = self._substitute_value(val, mapping, reindex)
-            if new_val is not val:
-                changes[f.name] = new_val
-
-        if changes:
-            return replace(node, **changes)
-        return node
-
-    def _substitute_value(
-        self, val: Any, mapping: dict[str, str],
-        reindex: dict[tuple[str, int], int] | None = None,
-    ) -> Any:
-        """Recursively substitute type variables in a field value."""
-        if isinstance(val, ast.Node):
-            return self._substitute_in_ast(val, mapping, reindex)
-        if isinstance(val, tuple):
-            new_items = tuple(
-                self._substitute_value(v, mapping, reindex) for v in val
-            )
-            if any(n is not o for n, o in zip(new_items, val)):
-                return new_items
-            return val
-        return val
-
-    def _substitute_type_expr(
-        self, te: ast.TypeExpr, mapping: dict[str, str],
-    ) -> ast.TypeExpr:
-        """Substitute type variables in a TypeExpr, returning a TypeExpr."""
-        result = self._substitute_in_ast(te, mapping)
-        assert isinstance(result, ast.TypeExpr)  # noqa: S101
-        return result
 
     def _check_constraints(
         self,
@@ -1083,23 +239,68 @@ class MonomorphizationMixin:
                 ok = False
         return ok
 
-    def _adt_satisfies_eq(self, type_name: str) -> bool:
+    def _adt_satisfies_eq(
+        self, type_name: str, _seen: frozenset[str] = frozenset(),
+    ) -> bool:
         """Check if an ADT type satisfies Eq via auto-derivation.
 
-        An ADT satisfies Eq if all its constructor fields recursively
-        satisfy Eq.  Simple enums (all constructors have zero fields)
-        always satisfy Eq.  Only primitive numeric/boolean fields are
-        supported — String/Array (i32_pair) require runtime comparison
-        loops and are not auto-derivable.
+        An ADT satisfies Eq iff every constructor field does.  A CONCRETE field
+        is Eq iff its WASM rep is scalar (i64/i32/f64); a String/Array field
+        (i32_pair) needs a runtime comparison loop and is not auto-derivable.
+        Simple enums (all constructors zero-field) always satisfy Eq.
+
+        A TYPE-PARAMETER field's Eq-ness is its concrete type ARGUMENT's, NOT the
+        generic `i64` boxed rep the bare layout records.  `_adt_layouts` is keyed
+        by the bare ADT name (`Box`), so a parameterized name (`Box<Int>`, from a
+        slot-ref- or constructor-inferred type) is split into base + args: the
+        bare layout gives each field's slot, and `_ctor_adt_tp_indices` says
+        which fields are type parameters — those are validated against the
+        matching type arg.  So `Box<Int>` derives Eq while `Box<String>` does
+        not, and the spurious E613 on `@Box<Int>.0` is gone without the
+        type-arg-blind false-accept a bare-name strip would leave (PR #767
+        review).
         """
-        layouts = self._adt_layouts.get(type_name)
+        from vera.monomorphize import Monomorphizer
+
+        parsed = Monomorphizer._parse_type_name(type_name)
+        base = parsed.name
+        args = [
+            Monomorphizer._format_type_name(a)
+            for a in (parsed.type_args or ())
+            if isinstance(a, ast.NamedType)
+        ]
+        layouts = self._adt_layouts.get(base)
         if layouts is None:
             return False
-        for layout in layouts.values():
-            for _offset, wasm_type in layout.field_offsets:
-                # Primitive WASM types that have scalar equality
-                if wasm_type in ("i64", "i32", "f64"):
-                    continue
-                # i32_pair (String/Array) would need comparison loops
-                return False
+        if type_name in _seen:        # recursive ADT (e.g. List<T>) — break cycle
+            return True
+        seen = _seen | {type_name}
+        for ctor_name, layout in layouts.items():
+            tp_indices = self._ctor_adt_tp_indices.get(ctor_name)
+            for i, (_offset, wasm_type) in enumerate(layout.field_offsets):
+                tp_i = (
+                    tp_indices[i]
+                    if tp_indices is not None and i < len(tp_indices)
+                    else None
+                )
+                if tp_i is not None:
+                    # Type-parameter field — its Eq-ness is the concrete type
+                    # argument's, not the boxed `i64` the bare layout records.
+                    if tp_i < len(args) and not self._type_eq_derivable(
+                        args[tp_i], seen,
+                    ):
+                        return False
+                elif wasm_type not in ("i64", "i32", "f64"):
+                    # Concrete non-scalar field (String/Array i32_pair).
+                    return False
         return True
+
+    def _type_eq_derivable(self, name: str, seen: frozenset[str]) -> bool:
+        """Is ``name`` Eq-derivable as an ADT field — a scalar Eq primitive, or
+        a recursively-Eq ADT?  String/Array are `i32_pair`, so not."""
+        base = name.split("<", 1)[0]
+        if base in _SCALAR_EQ_TYPES:
+            return True
+        if base in self._adt_layouts:
+            return self._adt_satisfies_eq(name, seen)
+        return False
