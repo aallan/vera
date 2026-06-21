@@ -18084,7 +18084,12 @@ class TestEqConstraintParameterizedAdtName767:
     `[E613] Type 'Box<Int>' does not satisfy ability 'Eq'`, rejecting a valid
     program — even though the same ADT is accepted when inferred from a
     constructor (`MkBox(...)`, which yields the bare `Box`).  `_adt_satisfies_eq`
-    now strips the type args before the lookup.
+    now splits the parameterized name into base + type args, looks up the bare
+    layout, and validates each type-parameter field against its concrete type
+    argument — so `Box<Int>` derives `Eq` (Int is scalar) while `Box<String>`
+    does not (String is a non-Eq `i32_pair` field).  (A constructor-inferred
+    type still resolves to the bare `Box` in the monomorphizer, so this
+    type-arg validation only reaches the slot-ref / parameterized-name path.)
     """
 
     _SRC = """
@@ -18115,6 +18120,32 @@ public fn main(@Unit -> @Bool)
     def test_eq_generic_over_parameterized_adt_slotref_runs(self) -> None:
         """The Eq derivation works at run time: `MkBox(1) == MkBox(1)` -> true."""
         assert _run(self._SRC) == 1
+
+    _REJECT_SRC = """
+public data Box<T> { MkBox(T) }
+
+private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @T.1 == @T.0 }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box<String> = MkBox("a");
+  eq2(@Box<String>.0, @Box<String>.0)
+}
+"""
+
+    def test_eq_generic_over_non_eq_parameterized_adt_rejected(self) -> None:
+        """Type-arg validation is sound, not just a bare-name strip: `Box<String>`
+        (a non-Eq `i32_pair` String field) is correctly REJECTED with E613,
+        where a naive strip-to-`Box` would have false-accepted it."""
+        result = _compile(self._REJECT_SRC)
+        e613 = [
+            d for d in result.diagnostics
+            if d.severity == "error" and d.error_code == "E613"
+        ]
+        assert e613, "Box<String> must fail Eq (String is not Eq-derivable)"
 
 
 class TestHeadOverRefinement655ShapeB:

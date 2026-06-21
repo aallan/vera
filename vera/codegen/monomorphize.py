@@ -23,6 +23,10 @@ from vera.monomorphize import MonoContext, Monomorphizer
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
+# Eq primitives with a SCALAR WASM rep (i64/i32/f64), hence Eq-derivable as an
+# ADT *field*.  `String` is in `_EQ_TYPES` (a bare `@String` supports Eq) but is
+# `i32_pair`, so a String field breaks scalar auto-derivation — exclude it.
+_SCALAR_EQ_TYPES: frozenset[str] = _EQ_TYPES - frozenset({"String"})
 _ORD_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte",
 })
@@ -235,30 +239,68 @@ class MonomorphizationMixin:
                 ok = False
         return ok
 
-    def _adt_satisfies_eq(self, type_name: str) -> bool:
+    def _adt_satisfies_eq(
+        self, type_name: str, _seen: frozenset[str] = frozenset(),
+    ) -> bool:
         """Check if an ADT type satisfies Eq via auto-derivation.
 
-        An ADT satisfies Eq if all its constructor fields recursively
-        satisfy Eq.  Simple enums (all constructors have zero fields)
-        always satisfy Eq.  Only primitive numeric/boolean fields are
-        supported — String/Array (i32_pair) require runtime comparison
-        loops and are not auto-derivable.
+        An ADT satisfies Eq iff every constructor field does.  A CONCRETE field
+        is Eq iff its WASM rep is scalar (i64/i32/f64); a String/Array field
+        (i32_pair) needs a runtime comparison loop and is not auto-derivable.
+        Simple enums (all constructors zero-field) always satisfy Eq.
+
+        A TYPE-PARAMETER field's Eq-ness is its concrete type ARGUMENT's, NOT the
+        generic `i64` boxed rep the bare layout records.  `_adt_layouts` is keyed
+        by the bare ADT name (`Box`), so a parameterized name (`Box<Int>`, from a
+        slot-ref- or constructor-inferred type) is split into base + args: the
+        bare layout gives each field's slot, and `_ctor_adt_tp_indices` says
+        which fields are type parameters — those are validated against the
+        matching type arg.  So `Box<Int>` derives Eq while `Box<String>` does
+        not, and the spurious E613 on `@Box<Int>.0` is gone without the
+        type-arg-blind false-accept a bare-name strip would leave (PR #767
+        review).
         """
-        # The mono pipeline can hand us a *parameterized* name (`Box<Int>`, from
-        # a slot-ref-inferred type) but `_adt_layouts` is keyed by the bare ADT
-        # name (`Box`).  Strip the type args so an `Eq<T>` generic called with
-        # `@Box<Int>.0` resolves the same layout it would from `MkBox(...)`
-        # inferred as `Box` — otherwise a valid program gets a spurious E613
-        # (PR #767 review).
-        type_name = type_name.split("<", 1)[0]
-        layouts = self._adt_layouts.get(type_name)
+        from vera.monomorphize import Monomorphizer
+
+        parsed = Monomorphizer._parse_type_name(type_name)
+        base = parsed.name
+        args = [
+            Monomorphizer._format_type_name(a)
+            for a in (parsed.type_args or ())
+            if isinstance(a, ast.NamedType)
+        ]
+        layouts = self._adt_layouts.get(base)
         if layouts is None:
             return False
-        for layout in layouts.values():
-            for _offset, wasm_type in layout.field_offsets:
-                # Primitive WASM types that have scalar equality
-                if wasm_type in ("i64", "i32", "f64"):
-                    continue
-                # i32_pair (String/Array) would need comparison loops
-                return False
+        if type_name in _seen:        # recursive ADT (e.g. List<T>) — break cycle
+            return True
+        seen = _seen | {type_name}
+        for ctor_name, layout in layouts.items():
+            tp_indices = self._ctor_adt_tp_indices.get(ctor_name)
+            for i, (_offset, wasm_type) in enumerate(layout.field_offsets):
+                tp_i = (
+                    tp_indices[i]
+                    if tp_indices is not None and i < len(tp_indices)
+                    else None
+                )
+                if tp_i is not None:
+                    # Type-parameter field — its Eq-ness is the concrete type
+                    # argument's, not the boxed `i64` the bare layout records.
+                    if tp_i < len(args) and not self._type_eq_derivable(
+                        args[tp_i], seen,
+                    ):
+                        return False
+                elif wasm_type not in ("i64", "i32", "f64"):
+                    # Concrete non-scalar field (String/Array i32_pair).
+                    return False
         return True
+
+    def _type_eq_derivable(self, name: str, seen: frozenset[str]) -> bool:
+        """Is ``name`` Eq-derivable as an ADT field — a scalar Eq primitive, or
+        a recursively-Eq ADT?  String/Array are `i32_pair`, so not."""
+        base = name.split("<", 1)[0]
+        if base in _SCALAR_EQ_TYPES:
+            return True
+        if base in self._adt_layouts:
+            return self._adt_satisfies_eq(name, seen)
+        return False
