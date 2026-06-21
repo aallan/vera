@@ -27,6 +27,8 @@ the verifier checks each body under the type the checker proved actually flows.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -398,10 +400,10 @@ def test_generic_typearg_from_imported_constructor_is_discovered() -> None:
     finally:
         os.unlink(bp)
 
-    assert cg == {("Box",)}, f"codegen should emit id2<Box>, got {cg}"
-    assert ("Box",) in ver, (
-        f"verifier missed id2<Box> (discovered {ver}) — imported-constructor "
-        f"discovery gap, false Tier-1"
+    assert cg == {("Box",)}, f"codegen should emit exactly id2<Box>, got {cg}"
+    assert ver == {("Box",)}, (
+        f"verifier should discover exactly id2<Box> (discovered {ver}) — "
+        f"imported-constructor discovery gap, false Tier-1"
     )
 
 
@@ -445,16 +447,55 @@ def test_codegen_emits_generic_reached_only_via_contract_or_where_helper() -> No
     finally:
         os.unlink(path)
 
-    cg_names = {n for n, _ in cg}
-    assert "is_ok" in cg_names, (
-        f"codegen must emit the contract-reachable generic is_ok "
-        f"(emitted {sorted(cg_names)}) — else CodegenSkip at run time"
+    # Codegen must emit exactly the contract-reachable (`is_ok`) and
+    # where-helper-reachable (`innerw`) generics — nothing more, nothing less
+    # (else a missing one is a CodegenSkip at run time).
+    expected = {("is_ok", ("Int",)), ("innerw", ("Int",))}
+    assert cg == expected, (
+        f"codegen emitted {sorted(cg)}, expected {sorted(expected)}"
     )
-    assert "innerw" in cg_names, (
-        f"codegen must emit the where-helper-reachable generic innerw "
-        f"(emitted {sorted(cg_names)})"
-    )
-    # Discovery is shared, so the verifier covers exactly what codegen emits.
-    assert {("is_ok", ("Int",)), ("innerw", ("Int",))} <= ver, (
+    # Discovery is shared, so the verifier discovers exactly what codegen emits.
+    assert ver == expected, (
         f"verifier discovery diverged from codegen: {sorted(ver)}"
+    )
+
+
+def test_mono_emission_order_is_deterministic(tmp_path: Path) -> None:
+    """Monomorphized clone emission order must be stable across runs, so that
+    ``vera compile --wat`` is byte-reproducible.
+
+    The worklist that drives ``mono_decls.append`` (and hence WAT emission
+    order) is seeded from ``set[tuple[str, ...]]`` instantiation sets; sorting
+    them makes the order independent of ``PYTHONHASHSEED``.  Without the sort the
+    three ``idg`` clones below emit in a hash-seed-dependent order and the WAT
+    differs run-to-run (clone bodies identical, only their order) — bad for
+    reproducible builds (PR #767 review).
+    """
+    src = (
+        "private forall<T> fn idg(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n"
+        "  let @Int = idg(1);\n"
+        "  let @Bool = idg(true);\n"
+        "  let @Float64 = idg(1.5);\n"
+        "  @Int.0\n"
+        "}\n"
+    )
+    f = tmp_path / "det.vera"
+    f.write_text(src, encoding="utf-8")
+    outputs = set()
+    for seed in ("0", "1", "2", "3", "4"):
+        proc = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat", str(f)],
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        assert proc.returncode == 0, proc.stderr
+        outputs.add(proc.stdout)
+    assert len(outputs) == 1, (
+        f"`vera compile --wat` not byte-stable across PYTHONHASHSEED: "
+        f"{len(outputs)} distinct outputs"
     )

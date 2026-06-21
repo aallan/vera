@@ -134,10 +134,16 @@ class MonomorphizationMixin:
         # pruned), so the emitted set excludes anything that wouldn't compile.
         seen: set[tuple[str, tuple[str, ...]]] = set()
         mono_decls: list[ast.FnDecl] = []
+        # Sort each per-name instantiation set so the worklist seed — and hence
+        # the order clones are appended to `mono_decls` and emitted to WAT — is
+        # deterministic across runs.  Without this, `set` iteration order varies
+        # with PYTHONHASHSEED and `vera compile --wat` is not byte-stable (clone
+        # bodies are identical; only their order differs), breaking reproducible
+        # builds (PR #767 review).
         worklist: list[tuple[str, tuple[str, ...]]] = [
             (fn_name, ct)
             for fn_name, type_arg_set in instances.items()
-            for ct in type_arg_set
+            for ct in sorted(type_arg_set)
         ]
         while worklist:
             fn_name, concrete_types = worklist.pop()
@@ -161,7 +167,7 @@ class MonomorphizationMixin:
                 mono_fn, generic_decls, ctor_to_adt, transitive,
             )
             for t_name, t_types in transitive.items():
-                for t_ct in t_types:
+                for t_ct in sorted(t_types):  # deterministic order (see seed)
                     if (t_name, t_ct) not in seen:
                         worklist.append((t_name, t_ct))
 

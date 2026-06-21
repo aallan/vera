@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - An `Eq`-constrained generic called with a **parameterized-ADT slot reference** (e.g. `@Box<Int>.0`) is no longer spuriously rejected with `E613`.  The ability check now strips type arguments before the `_adt_layouts` lookup, so `Box<Int>` resolves the same bare-`Box` layout it already does when the type is inferred from a constructor (`MkBox(...)`).  Pre-existing; surfaced in the [#732](https://github.com/aallan/vera/issues/732) review.
+- `vera compile --wat` is now **byte-stable across runs**.  The monomorphization worklist sorts each instantiation set, so the order monomorphized clones are emitted no longer varies with `PYTHONHASHSEED` (clone bodies were always identical; only their order differed) — reproducible builds matter for caching and WAT snapshots.  Pre-existing; surfaced in the [#732](https://github.com/aallan/vera/issues/732) review.
 
 ## [0.0.174] - 2026-06-19
 
