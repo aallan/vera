@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,581 tests, 90 conformance programs, 35 examples, 13 spec chapters.
+4,597 tests, 91 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,6 @@ The cases where Vera accepts a program and quietly does something weaker than it
 
 | Issue | What | Why it's first |
 |---|---|---|
-| [#730](https://github.com/aallan/vera/issues/730) | Precondition-check calls in statement position | E501 fires only for calls in value position; a call whose result is discarded is never checked against its `requires(...)`. |
 | [#680](https://github.com/aallan/vera/issues/680) | Auto-inject obligations for primitive operations (division, modulo, array index) | Aligns the implementation with the README's "compiler proves primitive safety" claim, generalising the #520 obligation-discharge pattern. |
 
 ### Tier 1 — Safety net and runtime robustness

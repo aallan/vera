@@ -385,6 +385,8 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.172 | 16 Jun | **The `@Nat >= 0` invariant is now obligation-checked at every binding site, not just `@Nat` subtractions** ([#552](https://github.com/aallan/vera/issues/552)). |
 | v0.0.173 | 17 Jun | **The `@Nat >= 0` narrowing obligation now covers every projection and instantiation binding site (ADT sub-patterns, non-literal tuple destructures, generic and imported constructors), with runtime guards at the concrete sites, generic function calls, and builtin `@Nat` parameters** ([#747](https://github.com/aallan/vera/issues/747)). |
 | v0.0.174 | 19 Jun | **General refinement-type predicates are now verified statically: a value narrowing into a `{ @T \| P }` slot or returned at a refined return position carries a Tier-1 obligation that the predicate holds (or a runtime guard at the function boundary where the predicate is untranslatable), generalising the `@Nat` machinery from the baked-in `>= 0` to an arbitrary predicate** ([#746](https://github.com/aallan/vera/issues/746)). |
+| v0.0.175 | 21 Jun | **Generic function bodies are now statically verified at each concrete instantiation instead of being silently deferred to runtime** ([#732](https://github.com/aallan/vera/issues/732)). |
+| v0.0.176 | 21 Jun | **A call's precondition is now checked even when the call's result is discarded** ([#730](https://github.com/aallan/vera/issues/730)). |
 
 ---
 

@@ -685,6 +685,19 @@ private fn unsafe_sub(@Nat, @Nat -> @Nat)
 { @Nat.0 - @Nat.1 }
 """, "underflow")
 
+    def test_unsafe_sub_stmt_position_obligated(self) -> None:
+        """A `@Nat - @Nat` in STATEMENT position (result discarded) still carries
+        the underflow obligation — the subtraction walker recurses into the
+        block's `ExprStmt` statements.  Pins the statement-position path the
+        same way #730 closes it for call preconditions."""
+        _verify_err("""
+private fn stmt_sub(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1; 0 }
+""", "underflow")
+
     def test_int_subtract_not_obligated(self) -> None:
         """`@Int - @Int → @Int` carries no underflow obligation.
 
@@ -782,6 +795,26 @@ private fn f(@Int -> @Nat)
   let @Nat = @Int.0;
   @Nat.0
 }
+""", "may be negative")
+
+    def test_narrow_stmt_position_obligated(self) -> None:
+        """An `@Int -> @Nat` narrowing in STATEMENT position (a discarded call
+        whose `@Nat` formal receives an `@Int` arg) still carries the
+        `value >= 0` obligation — the narrowing walker recurses into the block's
+        `ExprStmt` statements.  Same statement-position blind spot #730 closes
+        for call preconditions."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Int.0); @Int.0 }
 """, "may be negative")
 
     def test_let_narrow_requires_discharges(self) -> None:
@@ -1994,6 +2027,137 @@ private fn safe_caller(@Int -> @Int)
   ensures(true)
   effects(pure)
 { non_zero(@Int.0) }
+""")
+
+    # ---- #730: preconditions for calls in STATEMENT position ----
+    # A call whose result is discarded (a bare `f(x);` statement) must still be
+    # checked against its requires(...) — DESIGN.md: contracts are checked "at
+    # every call site".  Before #730 the SMT body translation skipped ExprStmt.
+
+    def test_call_violated_precondition_stmt_position(self) -> None:
+        """#730 (headline): a statement-position call (result discarded) whose
+        precondition is violated must fire E501 — the gap this fix closes."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn bad_caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0); 1 }
+""", "precondition")
+
+    def test_call_satisfied_precondition_stmt_position(self) -> None:
+        """#730 guard: a satisfied precondition in statement position must NOT
+        fire a spurious E501 (the fix must not over-fire)."""
+        _verify_ok("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn ok_caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(1); 1 }
+""")
+
+    def test_call_violated_precondition_stmt_position_in_if_branch(self) -> None:
+        """#730: a statement-position call inside an if-branch block (routed via
+        _translate_if -> _translate_block) is precondition-checked."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Int.0 > 5 then { non_zero(0); @Int.0 } else { @Int.0 } }
+""", "precondition")
+
+    def test_call_violated_precondition_stmt_position_in_match_arm(self) -> None:
+        """#730: a statement-position call inside a match-arm block (routed via
+        _translate_match -> _translate_block) is precondition-checked."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+public data Flag {
+  On,
+  Off
+}
+
+private fn caller(@Flag -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ match @Flag.0 { On -> { non_zero(0); 1 }, Off -> 2 } }
+""", "precondition")
+
+    def test_call_stmt_position_sees_preceding_let(self) -> None:
+        """#730: a statement-position call sees preceding let bindings — the env
+        is threaded through ExprStmt translation (here @Int.0 == 0 violates)."""
+        _verify_err("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let @Int = 0; non_zero(@Int.0); 1 }
+""", "precondition")
+
+    def test_call_stmt_position_no_double_count(self) -> None:
+        """#730 + #727: a single statement-position violating call yields EXACTLY
+        ONE call_pre E501 obligation — the identity dedup prevents the
+        now-translated ExprStmt (and any walker re-translation) from
+        double-counting.  (Pre-fix: zero — the call is never checked.)"""
+        result = _verify("""
+private fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0); 1 }
+""")
+        e501 = [o for o in result.obligations
+                if o.kind == "call_pre" and o.error_code == "E501"]
+        assert len(e501) == 1, (
+            f"expected exactly one call_pre E501 obligation, got {len(e501)}: "
+            f"{[(o.line, o.column) for o in e501]}"
+        )
+
+    def test_call_stmt_position_effect_op_degrades(self) -> None:
+        """#730 guard: an untranslatable statement (an effect op) is ignored, not
+        crashed on, and does not abort verification of the rest of the block."""
+        _verify_ok("""
+private fn logged(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{ IO.print("hi"); @Int.0 }
 """)
 
     def test_call_postcondition_assumed(self) -> None:

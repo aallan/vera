@@ -1,0 +1,28 @@
+-- Conformance: a call's precondition is checked even when the call sits in
+-- statement position (its result discarded), not only in value position
+-- (Chapter 6, #730).
+-- Tests: requires clause, statement-position call, precondition forwarding
+private fn need_pos(@Nat -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0
+}
+
+private fn caller(@Nat -> @Nat)
+  requires(@Nat.0 >= 1)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  need_pos(@Nat.0);
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 7)
+  effects(pure)
+{
+  caller(7)
+}
