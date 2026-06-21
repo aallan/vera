@@ -265,9 +265,12 @@ def test_imported_generic_symmetric_between_codegen_and_verifier() -> None:
             source=b_src, file=bp, resolved_modules=[mod_a],
         )
         verifier.register_program(prog_b)  # type: ignore[arg-type]
+        # Read the registered ``_instances`` that per-monomorphization verification
+        # actually consumes, not a fresh recompute — so a regression in the
+        # registration seam surfaces here rather than being masked (PR #767 review).
         verifier_set = {
             (n, ct)
-            for n, cts in verifier._collect_instantiations(prog_b).items()
+            for n, cts in verifier._instances.items()
             for ct in cts
         }
     finally:

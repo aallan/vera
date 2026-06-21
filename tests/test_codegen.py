@@ -18131,21 +18131,24 @@ private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
 public fn main(@Unit -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
-  let @Box<String> = MkBox("a");
-  eq2(@Box<String>.0, @Box<String>.0)
+  let @Box<Array<Int>> = MkBox([1, 2, 3]);
+  eq2(@Box<Array<Int>>.0, @Box<Array<Int>>.0)
 }
 """
 
     def test_eq_generic_over_non_eq_parameterized_adt_rejected(self) -> None:
-        """Type-arg validation is sound, not just a bare-name strip: `Box<String>`
-        (a non-Eq `i32_pair` String field) is correctly REJECTED with E613,
-        where a naive strip-to-`Box` would have false-accepted it."""
+        """Type-arg validation is sound, not just a bare-name strip: `Box<Array<Int>>`
+        (a non-`Eq` `Array` type argument) is correctly REJECTED with E613, where a
+        naive strip-to-`Box` would have false-accepted it.  `Array` is used rather
+        than `String` for an UNAMBIGUOUS non-`Eq` arg: `String` itself *is* `Eq`,
+        just not as a scalar ADT field — the scalar-only auto-derivation basis (and
+        its String false-reject / nested-ADT false-accept) is tracked in #773."""
         result = _compile(self._REJECT_SRC)
         e613 = [
             d for d in result.diagnostics
             if d.severity == "error" and d.error_code == "E613"
         ]
-        assert e613, "Box<String> must fail Eq (String is not Eq-derivable)"
+        assert e613, "Box<Array<Int>> must fail Eq (Array is not Eq)"
 
 
 class TestHeadOverRefinement655ShapeB:
