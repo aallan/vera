@@ -490,6 +490,100 @@ def test_generic_typearg_from_imported_function_return_is_discovered() -> None:
     )
 
 
+def test_imported_private_shadow_fn_return_stays_symmetric() -> None:
+    """The imported-function `fn_ret_types` seeding must stay UNFILTERED — exactly
+    as codegen does — even when a resolved module has a private function whose
+    bare name shadows an imported public one.
+
+    Codegen harvests every resolved module's `_fn_ret_type_exprs` via `setdefault`
+    (`vera/codegen/modules.py`, "including private helpers", first-seen wins), so a
+    private `mk -> Bool` in module `a` (iterated first) wins the bare-name key over
+    the public `mk -> Int` in module `b`.  Both codegen AND the verifier then
+    discover the SAME `id_g` instantiation — the wrong one, but SYMMETRICALLY
+    wrong, so `vera verify` clean still implies the runtime matches (no false
+    Tier-1; the inference imprecision itself is the #769 family).
+
+    A reviewer suggested filtering the verifier's seeding to import-public only;
+    that would make the verifier discover `id_g<Int>` while codegen stays on the
+    shadowed instantiation — an ASYMMETRY = the false Tier-1 it was meant to
+    avoid.  This pins the symmetry so that "fix" cannot land silently, while
+    asserting only agreement (not the incidental concrete type) so a later #769
+    precision fix that moves BOTH sides together still passes (PR #767 review)."""
+    from vera.resolver import ResolvedModule
+
+    a_src = (
+        "private fn mk(@Unit -> @Bool)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ false }\n\n"
+        "public fn a_thing(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ 1 }\n"
+    )
+    b_src = (
+        "public fn mk(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ 7 }\n"
+    )
+    main_src = (
+        "import a;\n"
+        "import b;\n\n"
+        "private forall<T> fn id_g(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ id_g(mk(@Unit.0)) }\n"
+    )
+
+    def _resolved(path: tuple[str, ...], src: str) -> "ResolvedModule":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(src)
+            f.flush()
+            fp = f.name
+        try:
+            return ResolvedModule(
+                path=path, file_path=Path(fp),
+                program=transform(parse_file(fp)), source=src,
+            )
+        finally:
+            os.unlink(fp)
+
+    mods = [_resolved(("a",), a_src), _resolved(("b",), b_src)]
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(main_src)
+        f.flush()
+        mp = f.name
+    try:
+        prog = transform(parse_file(mp))
+        gen = CodeGenerator(source=main_src, file=mp, resolved_modules=mods)
+        gen.compile_program(prog)  # type: ignore[arg-type]
+        cg = {ct for n, ct in getattr(gen, "_emitted_instances", set())
+              if n == "id_g"}
+        verifier = ContractVerifier(
+            source=main_src, file=mp, resolved_modules=mods,
+        )
+        verifier.register_program(prog)  # type: ignore[arg-type]
+        ver = {
+            ct
+            for n, cts in verifier._instances.items()
+            for ct in cts
+            if n == "id_g"
+        }
+    finally:
+        os.unlink(mp)
+
+    assert len(cg) == 1 and cg == ver, (
+        f"codegen ({cg}) and verifier ({ver}) must discover the SAME single "
+        f"id_g instantiation — the verifier's imported-fn seeding mirrors "
+        f"codegen's unfiltered first-seen-wins harvest; a public/import filter "
+        f"on the verifier side would diverge into a false Tier-1 (PR #767 review)"
+    )
+
+
 def test_codegen_emits_generic_reached_only_via_contract_or_where_helper() -> None:
     """A generic called ONLY from a contract clause or a ``where`` helper body
     must be emitted by codegen.
