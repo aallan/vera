@@ -328,11 +328,14 @@ def test_generic_typearg_from_where_helper_return_is_discovered() -> None:
     assert wrap_cg == {("Float64",)}, (
         f"codegen should emit wrap<Float64> from scale's return, got {wrap_cg}"
     )
-    # The verifier must cover codegen's wrap<Float64>; phantom-defaulting to
-    # wrap<Bool> would leave codegen's executing clone statically unverified.
-    assert ("Float64",) in wrap_ver, (
-        f"verifier missed wrap<Float64> (discovered {wrap_ver}) — where-helper "
-        f"return-type discovery regressed: false Tier-1"
+    # The verifier must discover EXACTLY codegen's wrap<Float64> — no more, no
+    # less.  Membership alone would pass even if a stale wrap<Bool> phantom were
+    # ALSO discovered; exact-set equality fails on both a miss (false Tier-1) and
+    # a phantom extra (the `"Bool"` default leaking through).
+    assert wrap_ver == {("Float64",)}, (
+        f"verifier must discover exactly wrap<Float64> (discovered {wrap_ver}) — "
+        f"where-helper return-type discovery: a miss is a false Tier-1, a stale "
+        f"wrap<Bool> extra means the phantom default leaked"
     )
 
 
