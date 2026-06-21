@@ -18108,8 +18108,7 @@ public fn main(@Unit -> @Bool)
         result = _compile(self._SRC)
         e613 = [
             d for d in result.diagnostics
-            if d.severity == "error"
-            and "does not satisfy ability" in d.description
+            if d.severity == "error" and d.error_code == "E613"
         ]
         assert not e613, f"spurious E613: {[d.description for d in e613]}"
 
