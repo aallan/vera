@@ -833,6 +833,26 @@ class ContractVerifier:
             elif isinstance(decl, ast.FnDecl):
                 record_fn_ret_type(decl)
 
+        # Seed return types from IMPORTED functions too, mirroring codegen
+        # (`vera/codegen/modules.py` setdefaults each imported module's
+        # `_fn_ret_type_exprs` into its own).  Local/prelude — recorded above —
+        # wins; imports only fill gaps via `setdefault`.  Without this, a local
+        # generic whose type arg is inferred SOLELY from an imported function's
+        # result (`id_g(make_int(...))`) phantom-defaults to `"Bool"` in
+        # verifier discovery while codegen emits the concrete clone — an
+        # ASYMMETRIC miss, a false Tier-1 (pinned by
+        # test_generic_typearg_from_imported_function_return_is_discovered).
+        # Only top-level imported fns matter: imported `where` helpers are
+        # private to their parent and never callable from the importer, so they
+        # can never drive importer-side inference.
+        for mod in self._resolved_modules:
+            for tld in mod.program.declarations:
+                idecl = tld.decl
+                if isinstance(idecl, ast.FnDecl):
+                    iret = self._simple_type_name(idecl.return_type)
+                    if iret is not None:
+                        fn_ret_types.setdefault(idecl.name, iret)
+
         return MonoContext(
             generic_decls=generic_decls,
             ctor_to_adt=ctor_to_adt,
@@ -1077,9 +1097,16 @@ class ContractVerifier:
         a false Tier-1.
         """
         severity = "error" if rep_ob.status == "violated" else "warning"
+        # Group instantiation labels by the same equivalence `_meet_status`
+        # uses: a Tier-3 aggregate folds `timeout` into `tier3`, so a mixed
+        # tier3/timeout aggregate must list BOTH in the prefix, not only the
+        # representative's exact status (PR #767 review).
+        _tier3_class = {"tier3", "timeout"}
         labels = sorted(
             f"{decl.name}<{', '.join(c)}>"
-            for c, o in members if o.status == rep_ob.status
+            for c, o in members
+            if (o.status in _tier3_class and rep_ob.status in _tier3_class)
+            or o.status == rep_ob.status
         )
         shown = ", ".join(labels[:3])
         more = "" if len(labels) <= 3 else f" (+{len(labels) - 3} more)"

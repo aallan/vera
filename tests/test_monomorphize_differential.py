@@ -410,6 +410,86 @@ def test_generic_typearg_from_imported_constructor_is_discovered() -> None:
     )
 
 
+def test_generic_typearg_from_imported_function_return_is_discovered() -> None:
+    """A local generic whose type arg is inferred from an IMPORTED function's
+    RETURN must be discovered at the same type codegen emits.
+
+    Codegen's monomorphizer context seeds ``fn_ret_types`` from imported modules
+    (``vera/codegen/modules.py`` ``setdefault`` over ``temp._fn_ret_type_exprs``),
+    so it resolves ``id_g(make_int(...))`` to ``id_g<Int>`` from ``make_int``'s
+    return type.  The verifier's ``_build_mono_context`` recorded return types
+    from local/prelude declarations ONLY — imported public functions live in
+    ``env.functions`` (injected by ``_register_modules``) but were never seeded
+    into ``fn_ret_types``.  Without them the type var falls to the ``"Bool"``
+    phantom default and the verifier discovers ``id_g<Bool>`` while codegen emits
+    ``id_g<Int>``: an ASYMMETRIC miss = false Tier-1 (verified the wrong clone).
+    Differentially confirmed (PR #767 review, CodeRabbit).
+    """
+    from vera.resolver import ResolvedModule
+
+    a_src = (
+        "public fn make_int(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ 7 }\n"
+    )
+    b_src = (
+        "import a;\n\n"
+        "private forall<T> fn id_g(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ id_g(make_int(@Unit.0)) }\n"
+    )
+
+    def _resolved(path: tuple[str, ...], src: str) -> "ResolvedModule":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(src)
+            f.flush()
+            fp = f.name
+        try:
+            return ResolvedModule(
+                path=path, file_path=Path(fp),
+                program=transform(parse_file(fp)), source=src,
+            )
+        finally:
+            os.unlink(fp)
+
+    mod_a = _resolved(("a",), a_src)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(b_src)
+        f.flush()
+        bp = f.name
+    try:
+        prog_b = transform(parse_file(bp))
+        gen = CodeGenerator(source=b_src, file=bp, resolved_modules=[mod_a])
+        gen.compile_program(prog_b)  # type: ignore[arg-type]
+        cg = {ct for n, ct in getattr(gen, "_emitted_instances", set())
+              if n == "id_g"}
+        verifier = ContractVerifier(
+            source=b_src, file=bp, resolved_modules=[mod_a],
+        )
+        verifier.register_program(prog_b)  # type: ignore[arg-type]
+        ver = {
+            ct
+            for n, cts in verifier._instances.items()
+            for ct in cts
+            if n == "id_g"
+        }
+    finally:
+        os.unlink(bp)
+
+    assert cg == {("Int",)}, f"codegen should emit exactly id_g<Int>, got {cg}"
+    assert ver == {("Int",)}, (
+        f"verifier should discover exactly id_g<Int> (discovered {ver}) — "
+        f"imported-function-return discovery gap, false Tier-1"
+    )
+
+
 def test_codegen_emits_generic_reached_only_via_contract_or_where_helper() -> None:
     """A generic called ONLY from a contract clause or a ``where`` helper body
     must be emitted by codegen.

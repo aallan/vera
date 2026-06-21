@@ -5001,6 +5001,46 @@ private fn use2(@Int, @Bool -> @Int)
         assert ens[0].status == "verified"
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_aggregated_tier3_label_includes_timeout_instances(self) -> None:
+        """A mixed tier3/timeout Tier-3 aggregate must list BOTH instantiations
+        in the diagnostic prefix.  ``_meet_status`` folds ``timeout`` into
+        ``tier3``, so the instantiation-label filter must group them together;
+        an exact status-match drops the ``timeout`` instance from the prefix
+        (PR #767 review).  Synthesised directly because a real Z3 timeout is
+        non-deterministic and cannot be pinned through the normal pipeline."""
+        from types import SimpleNamespace
+
+        from vera.errors import Diagnostic, SourceLocation
+        from vera.obligations.core import ProofObligation
+        from vera.verifier import ContractVerifier
+
+        v = ContractVerifier(source="", file="t.vera")
+        decl = SimpleNamespace(name="g")
+        ob_t3 = ProofObligation(
+            fn_name="g", kind="ensures", expr_text="p", status="tier3",
+            line=3, column=5, error_code="E506",
+        )
+        ob_to = ProofObligation(
+            fn_name="g", kind="ensures", expr_text="p", status="timeout",
+            line=3, column=5, error_code="E506",
+        )
+        members = [(("Int",), ob_t3), (("Float64",), ob_to)]
+        src = Diagnostic(
+            description="runtime check deferred",
+            location=SourceLocation(file="t.vera", line=3, column=5),
+            severity="warning", error_code="E506", tier=None,
+        )
+        errs = {("Int",): [src]}
+        v._emit_aggregated_diagnostic(
+            decl, members, ("Int",), ob_t3, errs,  # type: ignore[arg-type]
+        )
+
+        assert v.errors, "expected an aggregated Tier-3 diagnostic"
+        desc = v.errors[-1].description
+        assert "g<Int>" in desc and "g<Float64>" in desc, (
+            f"both the tier3 and the timeout instance must appear: {desc}"
+        )
+
     def test_generic_reached_only_via_where_helper_is_verified(self) -> None:
         """A generic reachable solely through a `where` helper is discovered and
         verified — its body bug is caught — not missed into the uninstantiated
