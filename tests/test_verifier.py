@@ -768,6 +768,292 @@ private fn negative_sentinel(@Unit -> @Int)
 """)
 
 
+class TestPrimitiveDivisionObligation680:
+    """`a / b` and `a % b` (Int/Nat) carry a Tier-1 `b != 0` obligation (#680).
+
+    Integer division and modulo by zero trap at runtime (`i64.div_s` /
+    `i64.rem_s`).  The divisor lives in the Tier-1 decidable fragment
+    (concrete integer arithmetic), so the obligation mirrors `@Nat`
+    subtraction (#520): discharged from a precondition, path condition, or
+    refinement type at Tier 1; a counterexample (`b = 0`) is a loud E526.
+
+    Two exemptions: float division (`@Float64 / @Float64`) is Real-sorted
+    and produces inf/NaN rather than trapping, so it is not obligated; and
+    a non-zero integer literal divisor (`x / 5`) is trivially safe, mirroring
+    #520's pure-literal exemption.
+    """
+
+    def test_unguarded_int_division_fails(self) -> None:
+        """Bare `@Int.0 / @Int.1` without a guarding `requires` → E526.
+
+        Counterexample: @Int.1 = 0.  This is silent/clean pre-#680.
+        """
+        _verify_err("""
+private fn unsafe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""", "by zero")
+
+    def test_unguarded_int_modulo_fails(self) -> None:
+        """Bare `@Int.0 % @Int.1` carries the same `@Int.1 != 0` obligation."""
+        _verify_err("""
+private fn unsafe_mod(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""", "by zero")
+
+    def test_unguarded_nat_division_fails(self) -> None:
+        """`@Nat.0 / @Nat.1` — a @Nat divisor can still be 0 → E526."""
+        _verify_err("""
+private fn unsafe_nat_div(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 / @Nat.1 }
+""", "by zero")
+
+    def test_requires_nonzero_divisor_discharges(self) -> None:
+        """`requires(@Int.1 != 0)` discharges the obligation at Tier 1."""
+        _verify_ok("""
+private fn safe_div(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+
+    def test_requires_nonzero_divisor_discharges_modulo(self) -> None:
+        """`requires(@Int.1 != 0)` discharges a modulo obligation too."""
+        _verify_ok("""
+private fn safe_mod(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""")
+
+    def test_if_guard_divisor_discharges(self) -> None:
+        """Path condition `@Int.1 != 0` (else branch of `if @Int.1 == 0`)
+        discharges `@Int.0 / @Int.1`.  This is the `checked_div` shape used
+        in examples/effect_handler.vera."""
+        _verify_ok("""
+private fn guarded_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.1 == 0 then {
+    0
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+""")
+
+    def test_posint_refinement_divisor_discharges(self) -> None:
+        """A `@PosInt = {@Int | @Int.0 > 0}` divisor discharges `> 0 ⟹ != 0`."""
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn refined_div(@Int, @PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @PosInt.0 }
+""")
+
+    def test_nonzero_literal_divisor_not_flagged(self) -> None:
+        """`@Int.0 / 5` — a non-zero literal divisor is trivially safe and
+        exempt (mirrors #520's pure-literal exemption); no obligation, so a
+        bare `requires(true)` still verifies."""
+        _verify_ok("""
+private fn div_by_five(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / 5 }
+""")
+
+    def test_float_division_not_obligated(self) -> None:
+        """`@Float64.0 / @Float64.1` produces inf/NaN, not a trap — float
+        division (Real-sorted divisor) carries no by-zero obligation."""
+        _verify_ok("""
+private fn float_div(@Float64, @Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Float64.0 / @Float64.1 }
+""")
+
+    def test_partial_requires_does_not_discharge(self) -> None:
+        """`requires(@Int.0 != 0)` constrains the numerator, not the divisor
+        `@Int.1` — the obligation still fires."""
+        _verify_err("""
+private fn wrong_guard(@Int, @Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""", "by zero")
+
+    def test_division_obligation_recorded_div_zero_kind(self) -> None:
+        """A guarded division records exactly one `div_zero` obligation,
+        discharged (verified)."""
+        result = _verify("""
+private fn safe_div(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        div = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(div) == 1, f"expected one div_zero obligation, got {len(div)}"
+        assert div[0].status == "verified"
+
+
+class TestPrimitiveIndexObligation680:
+    """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).
+
+    Array indexing traps at runtime (codegen emits a bounds check +
+    `unreachable`).  Unlike division, the array length is an *uninterpreted*
+    SMT function — spec §6.4.3 documents array bounds as needing reasoning
+    beyond the Tier-1 decidable fragment (#427).  So the verifier uses a
+    two-check: provably in bounds (a literal/refinement/precondition pins
+    the length) → Tier 1; provably *out* of bounds (statically-known length
+    the index exceeds, e.g. `[1,2,3][5]`) → loud E527; otherwise (opaque /
+    dynamic length) → honest Tier 3, guarded by the runtime trap.  An
+    unguarded dynamic index is therefore NOT an error — it degrades
+    gracefully, never silently.
+
+    String indexing is a type error (E161 "Cannot index String"), so there
+    is no string-index obligation — `IndexExpr` is array-only.
+
+    Index sites inside closure / quantifier bodies are intentionally not
+    walked (the captured length is beyond Tier 1 without #427); they remain
+    runtime-guarded.  `test_index_inside_closure_not_obligated` pins that.
+    """
+
+    def test_literal_in_bounds_index_discharges(self) -> None:
+        """`[10, 20, 30][1]` — literal length 3, index 1 < 3 → Tier 1, no error."""
+        _verify_ok("""
+private fn second(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [10, 20, 30][1] }
+""")
+
+    def test_literal_out_of_bounds_index_fails(self) -> None:
+        """`[1, 2, 3][5]` — provably out of bounds (5 >= 3) → loud E527."""
+        _verify_err("""
+private fn oob(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][5] }
+""", "out of bounds")
+
+    def test_requires_guarded_index_discharges(self) -> None:
+        """`requires(@Nat.0 < array_length(@Array<Int>.0))` discharges the
+        bounds obligation at Tier 1."""
+        _verify_ok("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+
+    def test_if_guard_index_discharges(self) -> None:
+        """`if @Nat.0 < array_length(arr) then arr[@Nat.0] else 0` — the
+        then-branch path condition discharges the bounds obligation at Tier 1.
+        The complementary `>= ... then 0 else arr[...]` shape (used in
+        examples/life.vera) discharges via the negated else-branch condition."""
+        _verify_ok("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Nat.0 < array_length(@Array<Int>.0) then { @Array<Int>.0[@Nat.0] } else { 0 } }
+""")
+
+    def test_refinement_nonempty_array_index_is_tier3(self) -> None:
+        """A `@NonEmptyArray` refinement index is honest Tier 3, not an error.
+
+        The `array_length(@Array<Int>.0) > 0` predicate is over a non-primitive
+        (Array) base that Z3 cannot decide at Tier 1 (the same reason the
+        refinement narrowing itself is a Tier-3 E506; see
+        examples/refinement_types.vera and TestAdtDecreasesVerification's tier
+        ledger).  So the `[0]` access degrades to a runtime-guarded Tier 3 —
+        no error, never silent.  Lifting this to Tier 1 is #427 (Tier-2 array
+        reasoning)."""
+        result = _verify("""
+type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+private fn head(@NonEmptyArray -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @NonEmptyArray.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3"
+
+    def test_opaque_unguarded_index_is_tier3(self) -> None:
+        """An unguarded index into a dynamic-length array is NOT an error —
+        the length is opaque (beyond Tier 1), so it degrades to Tier 3,
+        guarded by the runtime trap.  This is the honest-tiering differential:
+        the obligation is RECORDED as tier3, not silently dropped.  (A wrong
+        fix that emitted nothing would pass the no-error check but fail the
+        obligation-recorded assertion.)"""
+        result = _verify("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error (Tier-3), got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1, f"expected one index_bounds obligation, got {len(idx)}"
+        assert idx[0].status == "tier3"
+
+    def test_index_inside_closure_not_obligated(self) -> None:
+        """An index inside an `array_map` closure body (a captured array) is
+        NOT obligated — the walker does not recurse into closure bodies, where
+        the captured length is beyond Tier 1 (#427).  Pins the deliberate
+        non-recursion so a future walker change cannot silently start failing
+        closure-heavy code.  (Mirrors conformance/ch05_capture_array_index.)"""
+        _verify_ok("""
+private fn step_flat(@Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Array<Int>.0[0] }) }
+""")
+
+    def test_index_obligation_recorded_index_bounds_kind(self) -> None:
+        """A guarded index records exactly one `index_bounds` obligation,
+        discharged (verified)."""
+        result = _verify("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1, f"expected one index_bounds obligation, got {len(idx)}"
+        assert idx[0].status == "verified"
+
+
 class TestNatBindingObligation552:
     """`@Int` narrowing into a `@Nat` slot carries a Tier-1 `value >= 0`
     obligation at every binding site (#552, generalising #520).
@@ -3284,6 +3570,17 @@ private fn sum(@List<Int> -> @Int)
           postconditions are now discharged statically instead of bailing to
           Tier 3 (E520): +2 T1, -2 T3, +0 total (the two contracts change tier;
           the total is unchanged).
+        * 263/32/295/0 after #680 auto-synthesised obligations for integer
+          division/modulo (`b != 0`, E526) and array indexing
+          (`0 <= i < array_length`, E527).  The corpus gains 3 T1 from guarded
+          divisions discharged at Tier 1 — effect_handler's path-guarded
+          `@Int.0 / @Int.1`, refinement_types' `@PosInt` divisor, and
+          safe_divide's `requires(@Int.1 != 0)` — and 5 T3: json's opaque
+          divisor (1) plus opaque / dynamic array indices in json (1),
+          life (2, deeply-nested match+if guards beyond Tier 1), and
+          refinement_types' `@NonEmptyArray` (1, an Array-base refinement Z3
+          cannot decide at Tier 1 — #427).  No example indexes provably out of
+          bounds, so none is a loud E527.  Net: +3 T1, +5 T3, +8 total, +0 t3u.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3296,9 +3593,9 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 260, f"Expected 260 T1, got {t1}"
-        assert t3 == 27, f"Expected 27 T3, got {t3}"
-        assert total == 287, f"Expected 287 total, got {total}"
+        assert t1 == 263, f"Expected 263 T1, got {t1}"
+        assert t3 == 32, f"Expected 32 T3, got {t3}"
+        assert total == 295, f"Expected 295 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

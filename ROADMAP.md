@@ -8,19 +8,15 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,601 tests, 91 conformance programs, 35 examples, 13 spec chapters.
+4,627 tests, 92 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
 Four tiers, worked roughly top to bottom.  Small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a Tier 0 item.
 
-### Tier 0 — Close the silent failures
+### Tier 0 — Close the silent failures — done
 
-The cases where Vera accepts a program and quietly does something weaker than it promised.  These contradict the language's core claim and go first.
-
-| Issue | What | Why it's first |
-|---|---|---|
-| [#680](https://github.com/aallan/vera/issues/680) | Auto-inject obligations for primitive operations (division, modulo, array index) | Aligns the implementation with the README's "compiler proves primitive safety" claim, generalising the #520 obligation-discharge pattern. |
+Every known case where Vera accepted a program and quietly did something weaker than it promised is now closed.  Verification downgrades fail loudly or tier honestly, and every trapping primitive operation — `@Nat` underflow and narrowing, integer division and modulo by zero, and array index bounds — carries an auto-synthesised obligation: proved at Tier 1 where decidable, rejected at compile time where provably unsafe, else honestly runtime-guarded at Tier 3.  See [HISTORY.md](HISTORY.md).
 
 ### Tier 1 — Safety net and runtime robustness
 

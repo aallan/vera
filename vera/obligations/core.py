@@ -58,6 +58,17 @@ ObligationKind = Literal[
                   # only on violation in Phase A — successful call-site
                   # checks discharge silently inside the SMT layer and
                   # are not yet enumerated (Phase B extends this)
+    "div_zero",   # division/modulo by-zero obligation `b != 0` at one
+                  # `/`/`%` site (#680).  Tier-1-decidable (concrete
+                  # integer arithmetic), so it mirrors nat_sub: verified
+                  # -> tier-1, violated -> loud E526, unknown -> tier3.
+    "index_bounds",  # array/string index obligation `0 <= i < length` at
+                     # one IndexExpr site (#680).  Tier-1 where the length
+                     # is statically known (literal / refinement /
+                     # precondition / path condition); loud E527 when the
+                     # index is provably out of bounds; else honest tier3
+                     # (length is uninterpreted — beyond Tier 1, see #427 —
+                     # and codegen's `out_of_bounds` trap is the guard).
 ]
 
 ObligationStatus = Literal[

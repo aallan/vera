@@ -1,0 +1,79 @@
+-- Conformance: primitive operation safety obligations (Chapter 6, §6.4.3)
+-- Tests: division/modulo by-zero (E526) + array index bounds (E527) obligations, all discharged at Tier 1 (#680)
+--
+-- Every function below carries an obligation auto-synthesised by the verifier
+-- (#680) and discharges it at Tier 1: the SMT solver proves the obligation
+-- cannot be violated given the precondition or path condition.
+--
+-- 1. GUARDED DIVISION — requires(@Int.1 != 0) discharges the divisor != 0
+--    obligation.  @Int.1 = first param (dividend), @Int.0 = second (divisor).
+public fn guarded_div(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / @Int.1
+}
+
+-- 2. GUARDED MODULO — same pattern as division; % carries the identical
+--    divisor != 0 obligation.
+public fn guarded_mod(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 % @Int.1
+}
+
+-- Refinement type: every value of PosInt is > 0, which implies != 0.
+type PosInt = { @Int | @Int.0 > 0 };
+
+-- 3. REFINEMENT-TYPED DIVISOR — the refinement invariant (@Int.0 > 0) carries
+--    into the SMT context as an assumption, so Z3 discharges divisor != 0
+--    without any explicit precondition.
+--    @Int.0 = first param (dividend), @PosInt.0 = second param (divisor).
+public fn posint_div(@Int, @PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / @PosInt.0
+}
+
+-- 4. PRECONDITION-GUARDED ARRAY INDEX — requires(@Nat.0 < array_length(...))
+--    feeds the bound directly into the SMT context as an assumption.
+--    Z3 discharges 0 <= @Nat.0 < length at Tier 1.
+public fn precond_index(@Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{
+  @Array<Int>.0[@Nat.0]
+}
+
+-- 5. IF-GUARDED ARRAY INDEX — the then-branch path condition
+--    @Nat.0 < array_length(@Array<Int>.0) is added to the SMT context
+--    before the index expression is checked; Z3 discharges the obligation
+--    at Tier 1.  The else-branch returns a default, so no index fires there.
+public fn if_guarded_index(@Array<Int>, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 < array_length(@Array<Int>.0) then {
+    @Array<Int>.0[@Nat.0]
+  } else {
+    0
+  }
+}
+
+-- main: exercise a concrete literal-index access (index 1 into a 3-element
+-- literal; length == 3 is an SMT axiom, so 0 <= 1 < 3 is Tier-1 trivial).
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 20)
+  effects(pure)
+{
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[1]
+}

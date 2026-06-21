@@ -1390,7 +1390,7 @@ class ContractVerifier:
         #      visits — and lets the walker be the sole recorder for
         #      sites the body pass never translates (#727).
         if decl.body is not None:
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
@@ -1846,7 +1846,7 @@ class ContractVerifier:
     # @Nat subtraction underflow obligations (#520)
     # -----------------------------------------------------------------
 
-    def _walk_for_subtraction_obligations(
+    def _walk_for_primitive_op_obligations(
         self,
         decl: ast.FnDecl,
         expr: ast.Expr,
@@ -1854,23 +1854,34 @@ class ContractVerifier:
         slot_env: SlotEnv,
         assumptions: list[object],
     ) -> None:
-        """Walk *expr* checking ``@Nat - @Nat`` sites for underflow.
+        """Walk *expr* emitting obligations at trapping primitive-op sites.
 
-        Mirrors :py:meth:`_walk_for_calls` structurally, but emits
-        proof obligations at subtraction sites rather than collecting
-        recursive call sites.  Path conditions are tracked via
-        ``smt._path_conditions`` (pushed/popped on if/match branches),
-        so :py:meth:`SmtContext.check_valid` picks them up
-        automatically when discharging each obligation.
+        The verifier-side half of spec §6.4.3 "Primitive Operation
+        Safety": an operation that traps for some operand values carries
+        a Tier-1 proof obligation discharged from preconditions and path
+        conditions.  This walker handles the operand-value-dependent ops
+        whose obligation is rooted *on the operation node* itself:
+
+        * ``@Nat - @Nat``     → ``lhs >= rhs``  (underflow, #520; E502)
+        * ``a / b``, ``a % b`` (Int/Nat) → ``b != 0``  (#680; E526)
+
+        (Binding-site `@Int`→`@Nat` narrowing is the *other* primitive
+        obligation, walked separately by
+        :py:meth:`_walk_for_nat_binding_obligations`.)
+
+        Mirrors :py:meth:`_walk_for_calls` structurally.  Path conditions
+        are tracked via ``smt._path_conditions`` (pushed/popped on
+        if/match branches), so :py:meth:`SmtContext.check_valid` picks
+        them up automatically when discharging each obligation.
 
         The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
         FnCall args, and MatchExpr arm bodies.  Other AST node types
-        contain no nested expressions that could host an arithmetic
-        subtraction, so they terminate the walk.
+        contain no nested expressions that could host one of these
+        operations, so they terminate the walk.
         """
         if isinstance(expr, ast.FnCall):
             for arg in expr.args:
-                self._walk_for_subtraction_obligations(
+                self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
             return
@@ -1879,7 +1890,7 @@ class ContractVerifier:
             # Module-qualified calls (e.g. `Math.abs(@Int.0)`) can host
             # `@Nat - @Nat` in their args just like FnCall does — recurse.
             for arg in expr.args:
-                self._walk_for_subtraction_obligations(
+                self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
             return
@@ -1891,7 +1902,7 @@ class ContractVerifier:
             # `_is_nat_typed`/`_has_nat_origin` don't need a branch
             # here — but the args themselves still need walking.
             for arg in expr.args:
-                self._walk_for_subtraction_obligations(
+                self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
             return
@@ -1905,7 +1916,7 @@ class ContractVerifier:
             # untranslatable-expression path; recursing here only
             # catches obligations rooted INSIDE its args.
             for arg in expr.args:
-                self._walk_for_subtraction_obligations(
+                self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
             return
@@ -1914,7 +1925,7 @@ class ContractVerifier:
             # Walk the condition first (before pushing path-cond) — any
             # @Nat-@Nat in the condition is unconditional from the
             # caller's perspective.
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.condition, smt, slot_env, assumptions,
             )
             z3_cond = smt.translate_expr(expr.condition, slot_env)
@@ -1922,7 +1933,7 @@ class ContractVerifier:
                 import z3 as z3mod
                 smt._path_conditions.append(z3_cond)
                 try:
-                    self._walk_for_subtraction_obligations(
+                    self._walk_for_primitive_op_obligations(
                         decl, expr.then_branch, smt, slot_env, assumptions,
                     )
                 finally:
@@ -1930,18 +1941,18 @@ class ContractVerifier:
                 if expr.else_branch is not None:
                     smt._path_conditions.append(z3mod.Not(z3_cond))
                     try:
-                        self._walk_for_subtraction_obligations(
+                        self._walk_for_primitive_op_obligations(
                             decl, expr.else_branch, smt, slot_env,
                             assumptions,
                         )
                     finally:
                         smt._path_conditions.pop()
             else:  # pragma: no cover — condition untranslatable
-                self._walk_for_subtraction_obligations(
+                self._walk_for_primitive_op_obligations(
                     decl, expr.then_branch, smt, slot_env, assumptions,
                 )
                 if expr.else_branch is not None:
-                    self._walk_for_subtraction_obligations(
+                    self._walk_for_primitive_op_obligations(
                         decl, expr.else_branch, smt, slot_env, assumptions,
                     )
             return
@@ -1950,7 +1961,7 @@ class ContractVerifier:
             cur_env = slot_env
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_subtraction_obligations(
+                    self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
                     val = smt.translate_expr(stmt.value, cur_env)
@@ -1961,10 +1972,10 @@ class ContractVerifier:
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for @Nat subtraction
                     # obligations (test_unsafe_sub_stmt_position_obligated).
-                    self._walk_for_subtraction_obligations(
+                    self._walk_for_primitive_op_obligations(
                         decl, stmt.expr, smt, cur_env, assumptions,
                     )
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.expr, smt, cur_env, assumptions,
             )
             return
@@ -1972,10 +1983,10 @@ class ContractVerifier:
         if isinstance(expr, ast.BinaryExpr):
             # Recurse first so nested subtractions are checked even
             # when the outer expression isn't @Nat-typed.
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.left, smt, slot_env, assumptions,
             )
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.right, smt, slot_env, assumptions,
             )
             if (expr.op == ast.BinOp.SUB
@@ -1994,16 +2005,29 @@ class ContractVerifier:
                 self._check_subtraction_obligation(
                     decl, expr, smt, slot_env, assumptions,
                 )
+            elif expr.op in (ast.BinOp.DIV, ast.BinOp.MOD):
+                # #680: integer division/modulo by zero traps at runtime
+                # (`i64.div_s` / `i64.rem_s`).  Emit a `divisor != 0`
+                # obligation unless the divisor is a non-zero integer
+                # literal (`x / 5` — trivially safe, exempt like #520's
+                # pure-literal subtractions).  `_check_div_zero_obligation`
+                # itself skips a Real-sorted (float) divisor, since
+                # `f64.div` by zero yields inf/NaN rather than trapping.
+                if not (isinstance(expr.right, ast.IntLit)
+                        and expr.right.value != 0):
+                    self._check_div_zero_obligation(
+                        decl, expr, smt, slot_env, assumptions,
+                    )
             return
 
         if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.operand, smt, slot_env, assumptions,
             )
             return
 
         if isinstance(expr, ast.MatchExpr):
-            self._walk_for_subtraction_obligations(
+            self._walk_for_primitive_op_obligations(
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
@@ -2022,19 +2046,39 @@ class ContractVerifier:
                 if pat_cond is not None:
                     smt._path_conditions.append(pat_cond)
                     try:
-                        self._walk_for_subtraction_obligations(
+                        self._walk_for_primitive_op_obligations(
                             decl, arm.body, smt, arm_env, assumptions,
                         )
                     finally:
                         smt._path_conditions.pop()
                 else:
-                    self._walk_for_subtraction_obligations(
+                    self._walk_for_primitive_op_obligations(
                         decl, arm.body, smt, arm_env, assumptions,
                     )
             return
 
+        if isinstance(expr, ast.IndexExpr):
+            # #680: `arr[i]` carries a `0 <= i < array_length(arr)` bounds
+            # obligation.  Recurse into the collection and index first (each
+            # may host a nested division / subtraction / index), then check
+            # this site.  Index sites inside closure / quantifier bodies are
+            # NOT reached — AnonFn / ForallExpr / ExistsExpr terminate the
+            # walk below — because the captured length is beyond the Tier-1
+            # fragment (#427); those stay runtime-guarded.
+            self._walk_for_primitive_op_obligations(
+                decl, expr.collection, smt, slot_env, assumptions,
+            )
+            self._walk_for_primitive_op_obligations(
+                decl, expr.index, smt, slot_env, assumptions,
+            )
+            self._check_index_bounds_obligation(
+                decl, expr, smt, slot_env, assumptions,
+            )
+            return
+
         # Other expression types (literals, slot refs, quantifiers,
-        # closures, indexing, etc.) — no nested arithmetic to walk.
+        # closures, etc.) — no nested expression that could host one of
+        # these primitive operations, so they terminate the walk.
         return
 
     def _lookup_constructor_info(self, name: str) -> ConstructorInfo | None:
@@ -2066,7 +2110,7 @@ class ContractVerifier:
         """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
 
         The binding-site generalisation of #520
-        (:py:meth:`_walk_for_subtraction_obligations`).  Fires wherever
+        (:py:meth:`_walk_for_primitive_op_obligations`).  Fires wherever
         an @Int-typed value flows into a freshly-declared @Nat slot:
 
         * ``let @Nat = <Int>``                  — let bindings;
@@ -2714,6 +2758,130 @@ class ContractVerifier:
             self._record_obligation(
                 decl.name, "nat_sub", expr, "timeout",
             )
+
+    def _check_div_zero_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the ``divisor != 0`` obligation at one ``/``/``%`` site (#680).
+
+        Integer division/modulo by zero is Tier-1-decidable (the divisor is
+        a concrete integer term), so this mirrors
+        :py:meth:`_check_subtraction_obligation`: ``verified`` →
+        ``tier1_verified``, ``violated`` → loud E526 with a counterexample,
+        solver ``unknown`` → Tier 3.  Two early exits keep it sound without
+        false positives: a Real-sorted (float) divisor is skipped — ``f64.div``
+        by zero yields inf/NaN, not a trap — and an untranslatable divisor
+        falls to Tier 3 (the codegen ``divide_by_zero`` trap is the guard).
+        Path conditions in ``smt._path_conditions`` are picked up
+        automatically by :py:meth:`SmtContext.check_valid`.
+        """
+        divisor = smt.translate_expr(expr.right, slot_env)
+        if divisor is None:
+            # Untranslatable divisor — no Tier-1 term to check; the runtime
+            # `divide_by_zero` trap is the guarantee.
+            self.summary.total += 1
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "div_zero", expr, "tier3")
+            return
+        if divisor.sort() != z3.IntSort():
+            # Float division (Real sort) does not trap on a zero divisor —
+            # `f64.div` produces inf/NaN.  Not a primitive-safety obligation.
+            return
+
+        self.summary.total += 1
+        obligation = divisor != z3.IntVal(0)
+        result = smt.check_valid(obligation, list(assumptions))
+
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "div_zero", expr, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "div_zero", expr, "violated",
+                error_code="E526",
+                counterexample=result.counterexample,
+            )
+            self._report_div_by_zero(decl, expr, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "div_zero", expr, "timeout",
+            )
+
+    def _check_index_bounds_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.IndexExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the ``0 <= i < array_length(arr)`` obligation at one
+        ``arr[i]`` site (#680).
+
+        Array length is an *uninterpreted* SMT function, so bounds reasoning
+        is beyond the Tier-1 decidable fragment in general (spec §6.4.3,
+        #427).  A two-check keeps ``vera verify`` honest without false
+        positives on safe-but-dynamic indices:
+
+        1. ``0 <= i && i < length`` valid → **Tier 1** (a literal, refinement,
+           precondition, or path condition pins the length);
+        2. else ``i < 0 || i >= length`` valid → provably out of bounds →
+           **loud E527** (a statically-known length the index exceeds);
+        3. else (opaque / dynamic length) → **honest Tier 3**, guarded by the
+           codegen ``out_of_bounds`` trap.
+
+        An untranslatable collection / index, or a collection whose Z3 sort
+        is not a recognised array sort, also falls to Tier 3.  The
+        accumulated array-literal ``length == N`` axiom and ``array_length``'s
+        ``>= 0`` live on ``smt.solver`` and so are visible to
+        :py:meth:`SmtContext.check_valid`.
+        """
+        coll = smt.translate_expr(expr.collection, slot_env)
+        idx = smt.translate_expr(expr.index, slot_env)
+        if (coll is None or idx is None
+                or not str(coll.sort()).startswith("Array_")):
+            # Untranslatable, or an unrecognised array representation — no
+            # Tier-1 length model.  The runtime `out_of_bounds` trap guards it.
+            self.summary.total += 1
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "index_bounds", expr, "tier3")
+            return
+
+        length = smt._get_length_fn(coll.sort())(coll)
+        self.summary.total += 1
+
+        in_bounds = z3.And(idx >= 0, idx < length)
+        result = smt.check_valid(in_bounds, list(assumptions))
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "index_bounds", expr, "verified",
+            )
+            return
+
+        # Not provably in bounds.  Distinguish a real, statically-decidable
+        # bug (provably OUT of bounds) from an opaque length we cannot decide.
+        out_of_bounds = z3.Or(idx < 0, idx >= length)
+        oob = smt.check_valid(out_of_bounds, list(assumptions))
+        if oob.status == "verified":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "index_bounds", expr, "violated",
+                error_code="E527",
+                counterexample=result.counterexample,
+            )
+            self._report_index_oob(decl, expr, result.counterexample)
+        else:
+            # Opaque / dynamic length — beyond Tier 1 (#427); runtime-guarded.
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "index_bounds", expr, "tier3")
 
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
@@ -3708,6 +3876,94 @@ class ContractVerifier:
                 'and Chapter 11, Section 11.2.1 "Nat as i64"'
             ),
             error_code="E502",
+        )
+
+    def _report_div_by_zero(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E526 diagnostic for an undischarged divide-by-zero obligation."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        op_word = "modulo" if expr.op == ast.BinOp.MOD else "division"
+        description = (
+            f"Integer {op_word} in '{decl.name}' may divide by zero."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            expr,
+            description,
+            rationale=(
+                "Integer division and modulo carry a Tier-1 proof "
+                "obligation that the divisor is non-zero.  The SMT solver "
+                "found inputs where the divisor can be 0; `i64.div_s` and "
+                "`i64.rem_s` trap at runtime on a zero divisor."
+            ),
+            fix=(
+                "Add a precondition ruling out a zero divisor, e.g. "
+                "`requires(@Int.1 != 0)`.  Alternatively, guard the "
+                "operation (`if @Int.1 == 0 then 0 else @Int.0 / @Int.1` — "
+                "the path condition discharges the obligation in the "
+                "else-branch) or give the divisor a refinement type such "
+                "as `{ @Int | @Int.0 != 0 }`."
+            ),
+            spec_ref=(
+                'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
+            ),
+            error_code="E526",
+        )
+
+    def _report_index_oob(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.IndexExpr,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E527 diagnostic for a provably out-of-bounds array index."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = f"Array index in '{decl.name}' is out of bounds."
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            expr,
+            description,
+            rationale=(
+                "Array indexing `arr[i]` carries a Tier-1 proof obligation "
+                "that `0 <= i < array_length(arr)`.  The solver proved the "
+                "index lies outside that range for a statically-known length; "
+                "the access traps at runtime."
+            ),
+            fix=(
+                "Index within bounds, or constrain the index with a "
+                "precondition or refinement, e.g. "
+                "`requires(@Nat.0 < array_length(@Array<Int>.0))`.  "
+                "Alternatively guard the access: "
+                "`if @Nat.0 < array_length(@Array<Int>.0) then "
+                "@Array<Int>.0[@Nat.0] else <default>` — the path condition "
+                "discharges the obligation in the then-branch."
+            ),
+            spec_ref=(
+                'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
+            ),
+            error_code="E527",
         )
 
     def _report_nat_binding(

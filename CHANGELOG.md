@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.177] - 2026-06-21
+
+### Added
+
+- **Auto-synthesised safety obligations for trapping primitive operations** ([#680](https://github.com/aallan/vera/issues/680)).  The verifier now emits a Tier-1 proof obligation at every integer division and modulo (`b != 0`, `E526`) and every array index (`0 <= i < array_length(arr)`, `E527`), discharged from preconditions and path conditions exactly like `@Nat` subtraction underflow (`E502`) and `@Int` → `@Nat` narrowing (`E503`) — closing the **last Tier-0 silent failure**, where `vera verify` reported a program clean and it then trapped at runtime.  Division and modulo are Tier-1-decidable: an unguarded divisor the solver can't prove non-zero is now a compile error (float division is exempt — `f64.div` by zero yields inf/NaN, not a trap).  Array bounds depend on the uninterpreted `array_length`, so the obligation is tiered honestly — proved at Tier 1 where a literal length, refinement, precondition, or path condition pins it; a compile error (`E527`) where the index provably exceeds a statically-known length (e.g. `[1, 2, 3][5]`); otherwise a runtime-guarded **Tier 3**, counted in `vera verify --json` rather than silently passed.  Lifting dynamic or closure-captured array bounds to a Tier-1 proof is part of the Tier 2 work ([#427](https://github.com/aallan/vera/issues/427)).  The `@Nat` subtraction walker generalises to a single `_walk_for_primitive_op_obligations` pass over all operand-trapping sites; codegen is unchanged — the `divide_by_zero` / `out_of_bounds` runtime traps already existed.
+
+### Changed
+
+- **spec §6.4.3 "Primitive Operation Safety"** rewritten to state that division, modulo, and array-index obligations are now auto-synthesised (previously documented as *not* synthesised and tracked in [#680](https://github.com/aallan/vera/issues/680)); README and FAQ updated to match.  With this, the ROADMAP **Tier 0 — Close the silent failures** section is done: every known case where `vera verify` accepted a program that then did something weaker than promised is closed.
+
 ## [0.0.176] - 2026-06-21
 
 ### Fixed
@@ -2547,7 +2557,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.176...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.177...HEAD
+[0.0.177]: https://github.com/aallan/vera/compare/v0.0.176...v0.0.177
 [0.0.176]: https://github.com/aallan/vera/compare/v0.0.175...v0.0.176
 [0.0.175]: https://github.com/aallan/vera/compare/v0.0.174...v0.0.175
 [0.0.174]: https://github.com/aallan/vera/compare/v0.0.173...v0.0.174

@@ -508,6 +508,8 @@ ERROR_CODES: dict[str, str] = {
     "E523": "Cannot verify postcondition (expression undecidable)",
     "E524": "Cannot verify postcondition (timeout)",
     "E525": "Cannot verify termination metric",
+    "E526": "Division or modulo by zero",
+    "E527": "Array or string index out of bounds",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",
