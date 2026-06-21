@@ -937,6 +937,21 @@ private fn assert_div(@Int, @Int -> @Int)
 { assert(@Int.0 / @Int.1 > 0); @Int.0 }
 """, "by zero")
 
+    def test_safe_destructured_divisor_not_flagged(self) -> None:
+        """A destructured non-zero divisor (`Tuple(10, 5)`) must NOT be a false
+        E526.  The destructured slots are not rebound to fresh unconstrained
+        vars — a fresh `@Int` has no `!= 0` invariant (unlike a `@Nat`'s
+        `>= 0`), so rebinding would make the safe `5` divisor look like a
+        possible zero.  (Regression guard for the #680 review's destructure
+        walk.)"""
+        _verify_ok("""
+private fn ld_safe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 5); @Int.0 / @Int.1 }
+""")
+
     def test_division_inside_letdestruct_value_fires(self) -> None:
         """An unguarded division in a `let`-destructure value
         (`let Tuple<...> = Tuple(@Int.0 / @Int.1, ...)`) is obligated (E526) —

@@ -1973,30 +1973,24 @@ class ContractVerifier:
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
                     val = smt.translate_expr(stmt.value, cur_env)
-                    if val is None:
-                        # Untranslatable RHS: rebind to a fresh slot var so a
-                        # later op doesn't resolve to a stale outer binding of
-                        # the same slot name (mirrors the @Nat-binding walker).
-                        val = self._fresh_slot_var(smt, stmt.type_expr)
                     if val is not None:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.LetDestruct):
                     # #680 review: a `let Ctor<...> = <value>` destructure can
-                    # host a trapping op in its value (`Tuple(@Int.0 / @Int.1,
-                    # ...)`).  Walk the value, then rebind every destructured
-                    # slot with a fresh var so a later op translates against a
-                    # fresh (Tier-3) binding rather than a stale outer one
-                    # (mirrors the @Nat-binding walker's destructure handling).
+                    # host a trapping op in its *value* (`Tuple(@Int.0 /
+                    # @Int.1, ...)`), so walk it.  The destructured slots are
+                    # deliberately NOT rebound: a fresh unconstrained var has
+                    # no `!= 0` invariant (unlike a @Nat's `>= 0`), so rebinding
+                    # a destructured divisor to one would make a safe value
+                    # (`Tuple(10, 5)`) a false E526.  Recovering the literal
+                    # component values is the @Nat-binding walker's projection
+                    # job; a later op on a destructured slot falls to Tier-3
+                    # (#779-family).
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
-                    for te in stmt.type_bindings:
-                        fresh = self._fresh_slot_var(smt, te)
-                        type_name = smt._type_expr_to_slot_name(te)
-                        if fresh is not None and type_name is not None:
-                            cur_env = cur_env.push(type_name, fresh)
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for @Nat subtraction
                     # obligations (test_unsafe_sub_stmt_position_obligated).

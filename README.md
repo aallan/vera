@@ -47,7 +47,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-The compiler synthesises the same obligations for primitive operations themselves.  Computing `@Int.1 / @Int.0` without proving the divisor non-zero is now a compile error (E526), not a runtime trap; an array index is proved in bounds where the length is statically known and otherwise bounds-checked at runtime; `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing are checked the same way.  So a division or array index that `vera verify` reports as proven is safe for all inputs; where it can't prove one — an opaque divisor, a dynamic array length, or an op inside a closure body — the runtime guard catches it rather than silently producing a wrong value.  (Float division is exempt: divide-by-zero yields inf/NaN, not a trap.)
+The compiler synthesises the same obligations for primitive operations themselves.  Computing `@Int.1 / @Int.0` without proving the divisor non-zero is now a compile error (E526), not a runtime trap; an array index is proved in bounds where the length is statically known, a compile error (E527) where provably out of bounds, and otherwise bounds-checked at runtime; `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing are checked the same way.  So a division or array index that `vera verify` reports as proven is safe for all inputs; where it can't prove one — an opaque divisor, a dynamic array length, or an op inside a closure body — the runtime guard catches it rather than silently producing a wrong value.  (Float division is exempt: divide-by-zero yields inf/NaN, not a trap.)
 
 ### Effects are explicit
 
@@ -210,7 +210,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.177 — 1,400+ commits, 177 releases, 4,635 tests, 91% code coverage, 92 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.177 — 1,400+ commits, 177 releases, 4,636 tests, 91% code coverage, 92 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
