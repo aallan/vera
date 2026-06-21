@@ -1973,24 +1973,49 @@ class ContractVerifier:
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
                     val = smt.translate_expr(stmt.value, cur_env)
-                    if val is not None:
-                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                        if type_name is not None:
-                            cur_env = cur_env.push(type_name, val)
+                    type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+                    if val is None and type_name is not None:
+                        # Untranslatable RHS that shadows a stale same-type outer
+                        # binding: replace that binding with a fresh const of its
+                        # sort so a later op resolves to the (opaque) new value,
+                        # not the stale one — e.g. `let @Array<Int> = [1, 2, 3];
+                        # let @Array<Int> = array_append(...); arr[3]` must be
+                        # Tier-3, not a false E527 against the stale length 3.
+                        # Restricted to non-Int sorts: a fresh Int/Nat has no
+                        # `!= 0` invariant, so shadowing a divisor slot with one
+                        # would be a false E526 (an Int let is left unbound — a
+                        # later use falls to Tier-3 or the outer value).
+                        stale = cur_env.resolve(type_name, 0)
+                        if stale is not None and stale.sort() != z3.IntSort():
+                            val = z3.FreshConst(stale.sort(), "shadow")
+                    if val is not None and type_name is not None:
+                        cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.LetDestruct):
                     # #680 review: a `let Ctor<...> = <value>` destructure can
                     # host a trapping op in its *value* (`Tuple(@Int.0 /
-                    # @Int.1, ...)`), so walk it.  The destructured slots are
-                    # deliberately NOT rebound: a fresh unconstrained var has
-                    # no `!= 0` invariant (unlike a @Nat's `>= 0`), so rebinding
-                    # a destructured divisor to one would make a safe value
-                    # (`Tuple(10, 5)`) a false E526.  Recovering the literal
-                    # component values is the @Nat-binding walker's projection
-                    # job; a later op on a destructured slot falls to Tier-3
-                    # (#779-family).
+                    # @Int.1, ...)`), so walk it.  Then, like the LetStmt case,
+                    # replace any stale same-type outer binding shadowed by a
+                    # destructured NON-Int slot with a fresh const, so a later
+                    # op doesn't resolve to the stale value (a destructured
+                    # array shadowing a known-length outer → false E527).  Int
+                    # slots are left unbound: a fresh Int has no `!= 0`
+                    # invariant, so shadowing a divisor slot would be a false
+                    # E526 (`Tuple(10, 5)`); recovering the literal component
+                    # values is the @Nat-binding walker's projection job
+                    # (#779-family), and an unbound Int slot's later use falls
+                    # to Tier-3.
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
+                    for te in stmt.type_bindings:
+                        type_name = smt._type_expr_to_slot_name(te)
+                        if type_name is None:
+                            continue
+                        stale = cur_env.resolve(type_name, 0)
+                        if stale is not None and stale.sort() != z3.IntSort():
+                            cur_env = cur_env.push(
+                                type_name, z3.FreshConst(stale.sort(), "shadow"),
+                            )
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for @Nat subtraction
                     # obligations (test_unsafe_sub_stmt_position_obligated).

@@ -1177,6 +1177,40 @@ private fn idx_div(@Array<Int>, @Int, @Int -> @Int)
 { @Array<Int>.0[@Int.0 / @Int.1] }
 """, "by zero")
 
+    def test_untranslatable_array_let_shadows_stale_outer(self) -> None:
+        """An untranslatable array `let` (`array_append`, unmodelled by the SMT
+        layer) must shadow a stale same-type outer array, so a later index does
+        not resolve to the stale length and false-E527.  `let a = [1,2,3]; let a
+        = array_append(a, 99); a[3]` is valid (the appended array has length 4),
+        so it must NOT be E527 — the stale outer is replaced by a fresh
+        (opaque) array, making the index honest Tier-3 (#680 review)."""
+        _verify_ok("""
+private fn append_index(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let @Array<Int> = array_append(@Array<Int>.0, 99); @Array<Int>.0[3] }
+""")
+
+    def test_untranslatable_destructure_array_shadows_stale_outer(self) -> None:
+        """A destructured array slot from an untranslatable destructure must
+        also shadow a stale same-type outer array (#680 review) — `let a =
+        [1,2,3]; let Tuple<@Array<Int>, @Int> = mk(...); a[5]` must be Tier-3,
+        not a false E527 against the stale length 3."""
+        _verify_ok("""
+private fn mk(@Array<Int> -> @Tuple<Array<Int>, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Array<Int>.0, 0) }
+
+private fn destructure_shadow(@Array<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let Tuple<@Array<Int>, @Int> = mk(@Array<Int>.0); @Array<Int>.0[5] }
+""")
+
 
 class TestNatBindingObligation552:
     """`@Int` narrowing into a `@Nat` slot carries a Tier-1 `value >= 0`
