@@ -9,8 +9,9 @@ from vera.wasm.helpers import _element_wasm_type
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
 # shared monomorphizer, #732) so the verifier can reuse it without importing the
 # WASM backend.  Re-exported here so the existing
-# `from vera.wasm.inference import substitute_type_vars` call sites (calls.py,
-# codegen/core.py, codegen/registration.py, codegen/contracts.py) keep working.
+# `from vera.wasm.inference import substitute_type_vars` call sites
+# (wasm/calls.py, codegen/core.py, codegen/registration.py, codegen/contracts.py)
+# keep working.
 __all__ = ["InferenceMixin", "substitute_type_vars"]
 
 

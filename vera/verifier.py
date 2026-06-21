@@ -788,7 +788,7 @@ class ContractVerifier:
             # The flat name keying CAN collide same-named helpers in different
             # parents, but codegen collides identically (its `_fn_sigs` is
             # bare-name-keyed too, populated in the same declaration order), so
-            # the verifier still discovers exactly codegen's set — the collision
+            # the verifier resolves these helpers identically to codegen — the collision
             # is a pre-existing codegen monomorphization imprecision, mirrored
             # symmetrically, not a verification gap.  Scoping the key on only
             # this side would not miss anything (it would be a sound superset)

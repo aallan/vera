@@ -4847,7 +4847,7 @@ private fn use_int(@Nat, @Nat -> @Nat)
         postcondition records its obligation with no error_code while its
         diagnostic carries E500, so the aggregation must correlate by
         (severity, span) — not error code — or it silently drops the violation
-        (a false Tier-1).  Regression for the the PR #767 review."""
+        (a false Tier-1).  Regression for the PR #767 review."""
         result = _verify("""
 private forall<T>
 fn bad_id(@Int, @T -> @Int)

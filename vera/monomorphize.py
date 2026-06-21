@@ -189,10 +189,18 @@ class MonoContext:
     * ``adt_tp_counts`` — ADT name → number of type parameters.
     * ``type_aliases`` / ``type_alias_params`` — alias name → body ``TypeExpr`` /
       declared alias parameter names (for FnType-alias argument resolution).
-    * ``fn_ret_types`` — function name → simple Vera return-type name.  Codegen
-      builds this from its WAT signatures (i64→Int, i32→Bool, f64→Float64) to
-      reproduce the prior ``_infer_fncall_vera_type_simple`` behaviour exactly;
-      the verifier builds it from declared AST return types.
+    * ``fn_ret_types`` — function name (top-level **and** ``where`` helpers,
+      keyed by bare name) → *simple* Vera return-type name, **type args dropped**
+      (``Map<String, Int>`` → ``"Map"``; contrast the full names
+      ``_get_arg_type_info`` / ``_infer_vera_type_name`` carry).  Codegen builds
+      it from its WAT signatures (i64→Int, i32→Bool, f64→Float64) to reproduce
+      the prior ``_infer_fncall_vera_type_simple`` behaviour exactly; the
+      verifier builds it from declared AST return types, keeping the *more
+      precise* name (``Nat``, ``Byte``).  The two value-spaces are deliberately
+      related by the fixed collapse ``{Nat→Int, Byte→Bool}`` — the verifier's
+      discovered set is a sound superset under that normalization, which the
+      #732 differential test maintains (its ``collapse`` table is the one place
+      that mapping lives) and pins.
     """
 
     generic_decls: dict[str, ast.FnDecl]
@@ -291,7 +299,8 @@ class Monomorphizer:
             self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
                                   mapping, generic_decls)
 
-        # Check all type vars are resolved; default phantom vars to Unit
+        # Check all type vars are resolved; default unresolved phantom vars to
+        # Bool (NOT Unit — see the rationale just below: Bool has an i32 repr)
         result = []
         for tv in forall_vars:
             if tv not in mapping:
