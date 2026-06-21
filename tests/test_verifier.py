@@ -937,6 +937,18 @@ private fn assert_div(@Int, @Int -> @Int)
 { assert(@Int.0 / @Int.1 > 0); @Int.0 }
 """, "by zero")
 
+    def test_division_inside_letdestruct_value_fires(self) -> None:
+        """An unguarded division in a `let`-destructure value
+        (`let Tuple<...> = Tuple(@Int.0 / @Int.1, ...)`) is obligated (E526) —
+        the block walker walks the destructured value (#680 review)."""
+        _verify_err("""
+private fn ld_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(@Int.0 / @Int.1, 5); @Int.0 }
+""", "by zero")
+
     def test_division_inside_interpolated_string_fires(self) -> None:
         r"""An unguarded division in an interpolated-string expression
         (`"x: \(@Int.0 / @Int.1)"`) is obligated (E526) — the walker recurses
