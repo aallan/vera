@@ -914,6 +914,29 @@ private fn safe_div(@Int, @Int -> @Int)
         assert len(div) == 1, f"expected one div_zero obligation, got {len(div)}"
         assert div[0].status == "verified"
 
+    def test_division_inside_array_literal_fires(self) -> None:
+        """An unguarded division in an array-literal element is obligated
+        (E526) — the walker recurses into `ArrayLit` elements, so the
+        compile-error promise holds outside direct position too (#680 review)."""
+        _verify_err("""
+private fn arr_div(@Int, @Int -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [@Int.0 / @Int.1, 99] }
+""", "by zero")
+
+    def test_division_inside_assert_fires(self) -> None:
+        """An unguarded division in an `assert` condition is obligated (E526)
+        — the walker recurses into Assert/Assume conditions (#680 review)."""
+        _verify_err("""
+private fn assert_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ assert(@Int.0 / @Int.1 > 0); @Int.0 }
+""", "by zero")
+
 
 class TestPrimitiveIndexObligation680:
     """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).
@@ -1028,16 +1051,22 @@ private fn at(@Array<Int>, @Nat -> @Int)
     def test_index_inside_closure_not_obligated(self) -> None:
         """An index inside an `array_map` closure body (a captured array) is
         NOT obligated — the walker does not recurse into closure bodies, where
-        the captured length is beyond Tier 1 (#427).  Pins the deliberate
-        non-recursion so a future walker change cannot silently start failing
-        closure-heavy code.  (Mirrors conformance/ch05_capture_array_index.)"""
-        _verify_ok("""
+        the captured length is beyond Tier 1 (#427).  Pinned via a differential:
+        the closure body records ZERO index_bounds obligations.  A `_verify_ok`
+        alone would NOT catch a walker that started recursing into AnonFn —
+        the captured index degrades to honest Tier 3 (no error) — so we assert
+        the obligation count directly.  (Mirrors ch05_capture_array_index.)"""
+        result = _verify("""
 private fn step_flat(@Array<Int> -> @Array<Int>)
   requires(true)
   ensures(true)
   effects(pure)
 { array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Array<Int>.0[0] }) }
 """)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert idx == [], f"closure-body index must not be obligated, got {len(idx)}"
 
     def test_index_obligation_recorded_index_bounds_kind(self) -> None:
         """A guarded index records exactly one `index_bounds` obligation,
@@ -1052,6 +1081,60 @@ private fn at(@Array<Int>, @Nat -> @Int)
         idx = [o for o in result.obligations if o.kind == "index_bounds"]
         assert len(idx) == 1, f"expected one index_bounds obligation, got {len(idx)}"
         assert idx[0].status == "verified"
+
+    def test_literal_index_equal_length_fails(self) -> None:
+        """`[1, 2, 3][3]` — index exactly equal to the length is out of bounds
+        → E527.  Pins the strict `<` in `i < length` (an off-by-one `<=` would
+        let `[1,2,3][3]` through)."""
+        _verify_err("""
+private fn at_len(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][3] }
+""", "out of bounds")
+
+    def test_provably_negative_index_fails(self) -> None:
+        """`[1, 2, 3][0 - 1]` — a provably-negative index is out of bounds
+        regardless of length → E527.  Pins the lower-bound (`i >= 0`)
+        conjunct."""
+        _verify_err("""
+private fn at_neg(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][0 - 1] }
+""", "out of bounds")
+
+    def test_int_index_upper_bound_only_guard_is_tier3(self) -> None:
+        """A signed `@Int` index guarded ONLY on the upper bound
+        (`requires(@Int.0 < array_length(...))`, no `>= 0`) is NOT proven —
+        the index could be negative, so it stays honest Tier 3, not a false
+        Tier-1.  If the obligation's `i >= 0` conjunct were dropped this would
+        wrongly verify; the differential pins it."""
+        result = _verify("""
+private fn at_int(@Array<Int>, @Int -> @Int)
+  requires(@Int.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Int.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error (Tier-3), got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3"
+
+    def test_op_inside_index_is_walked(self) -> None:
+        """An unguarded division in the index sub-expression is obligated
+        (E526) — the walker recurses into `expr.index` before checking the
+        bound, so a trap buried in the index isn't silently lost."""
+        _verify_err("""
+private fn idx_div(@Array<Int>, @Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Int.0 / @Int.1] }
+""", "by zero")
 
 
 class TestNatBindingObligation552:

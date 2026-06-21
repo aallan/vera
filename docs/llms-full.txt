@@ -3139,7 +3139,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E524**: Cannot verify postcondition (timeout)
 - **E525**: Cannot verify termination metric
 - **E526**: Division or modulo by zero
-- **E527**: Array or string index out of bounds
+- **E527**: Array index out of bounds
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type
 - **E602**: Unsupported body expression type

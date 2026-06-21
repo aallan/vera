@@ -62,8 +62,9 @@ ObligationKind = Literal[
                   # `/`/`%` site (#680).  Tier-1-decidable (concrete
                   # integer arithmetic), so it mirrors nat_sub: verified
                   # -> tier-1, violated -> loud E526, unknown -> tier3.
-    "index_bounds",  # array/string index obligation `0 <= i < length` at
-                     # one IndexExpr site (#680).  Tier-1 where the length
+    "index_bounds",  # array index obligation `0 <= i < length` at one
+                     # IndexExpr site (#680; String indexing is a type error,
+                     # so this is Array-only).  Tier-1 where the length
                      # is statically known (literal / refinement /
                      # precondition / path condition); loud E527 when the
                      # index is provably out of bounds; else honest tier3

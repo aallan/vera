@@ -1380,9 +1380,10 @@ class ContractVerifier:
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
 
-        # 5.5. Check @Nat subtraction underflow obligations (#520).
-        #      Walks the body looking for `@Nat - @Nat` sites and emits
-        #      an obligation `lhs >= rhs` at each, dischargeable from
+        # 5.5. Check primitive-operation safety obligations (spec §6.4.3):
+        #      @Nat - @Nat underflow (#520), and division/modulo by zero
+        #      plus array index bounds (#680).  Walks the body emitting an
+        #      obligation at each operand-trapping site, dischargeable from
         #      preconditions and path conditions.
         #      The walker re-translates let RHSes, conditions, and
         #      subtraction operands; the SMT layer's identity dedup
@@ -1843,7 +1844,8 @@ class ContractVerifier:
         return
 
     # -----------------------------------------------------------------
-    # @Nat subtraction underflow obligations (#520)
+    # Primitive-operation safety obligations: @Nat subtraction underflow
+    # (#520), division/modulo by zero + array index bounds (#680)
     # -----------------------------------------------------------------
 
     def _walk_for_primitive_op_obligations(
@@ -1875,9 +1877,14 @@ class ContractVerifier:
         them up automatically when discharging each obligation.
 
         The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
-        FnCall args, and MatchExpr arm bodies.  Other AST node types
-        contain no nested expressions that could host one of these
-        operations, so they terminate the walk.
+        MatchExpr arm bodies, IndexExpr, ArrayLit elements, Assert / Assume
+        conditions, and the argument lists of FnCall / ModuleCall /
+        ConstructorCall / QualifiedCall.  Closure / quantifier bodies
+        (AnonFn / ForallExpr / ExistsExpr) and handler clause / body
+        expressions bind fresh slots and are deliberately not walked — an
+        op there is left to the codegen runtime trap rather than statically
+        obligated (#779; closure-captured array bounds also need the Tier 2
+        work in #427).
         """
         if isinstance(expr, ast.FnCall):
             for arg in expr.args:
@@ -2076,9 +2083,31 @@ class ContractVerifier:
             )
             return
 
-        # Other expression types (literals, slot refs, quantifiers,
-        # closures, etc.) — no nested expression that could host one of
-        # these primitive operations, so they terminate the walk.
+        if isinstance(expr, ast.ArrayLit):
+            # An array-literal element can host a trapping op
+            # (`[@Int.0 / @Int.1, ...]`, `[arr[@Nat.0], ...]`).  Elements
+            # share the enclosing scope, so recurse into each (#680 review).
+            for element in expr.elements:
+                self._walk_for_primitive_op_obligations(
+                    decl, element, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            # The asserted / assumed condition can host a trapping op
+            # (`assert(@Int.0 / @Int.1 > 0)`) — same scope, recurse (#680 review).
+            self._walk_for_primitive_op_obligations(
+                decl, expr.expr, smt, slot_env, assumptions,
+            )
+            return
+
+        # Remaining expression types terminate the walk.  Literals and slot
+        # refs are genuine leaves.  Closure / quantifier bodies (AnonFn /
+        # ForallExpr / ExistsExpr) and handler clause/body expressions are
+        # *not* walked: their bodies bind fresh slots, so an op there is
+        # left to the codegen runtime trap rather than statically obligated
+        # (tracked as #779; closure-captured array bounds also need the
+        # Tier 2 work in #427).
         return
 
     def _lookup_constructor_info(self, name: str) -> ConstructorInfo | None:
@@ -2839,9 +2868,11 @@ class ContractVerifier:
 
         An untranslatable collection / index, or a collection whose Z3 sort
         is not a recognised array sort, also falls to Tier 3.  The
-        accumulated array-literal ``length == N`` axiom and ``array_length``'s
-        ``>= 0`` live on ``smt.solver`` and so are visible to
-        :py:meth:`SmtContext.check_valid`.
+        accumulated array-literal ``length == N`` axiom lives on
+        ``smt.solver`` and is visible to :py:meth:`SmtContext.check_valid`;
+        ``array_length``'s ``>= 0`` is asserted only when the contract
+        itself references ``array_length(...)`` (its absence can only push
+        toward Tier 3, never a false E527).
         """
         coll = smt.translate_expr(expr.collection, slot_env)
         idx = smt.translate_expr(expr.index, slot_env)
@@ -3948,8 +3979,8 @@ class ContractVerifier:
             rationale=(
                 "Array indexing `arr[i]` carries a Tier-1 proof obligation "
                 "that `0 <= i < array_length(arr)`.  The solver proved the "
-                "index lies outside that range for a statically-known length; "
-                "the access traps at runtime."
+                "index lies outside that range (provably negative, or beyond "
+                "a statically-known length); the access traps at runtime."
             ),
             fix=(
                 "Index within bounds, or constrain the index with a "

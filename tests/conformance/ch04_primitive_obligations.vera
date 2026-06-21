@@ -6,7 +6,7 @@
 -- cannot be violated given the precondition or path condition.
 --
 -- 1. GUARDED DIVISION — requires(@Int.1 != 0) discharges the divisor != 0
---    obligation.  @Int.1 = first param (dividend), @Int.0 = second (divisor).
+--    obligation.  @Int.1 = first param (divisor), @Int.0 = second param (dividend).
 public fn guarded_div(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(true)

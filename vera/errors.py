@@ -509,7 +509,7 @@ ERROR_CODES: dict[str, str] = {
     "E524": "Cannot verify postcondition (timeout)",
     "E525": "Cannot verify termination metric",
     "E526": "Division or modulo by zero",
-    "E527": "Array or string index out of bounds",
+    "E527": "Array index out of bounds",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",
