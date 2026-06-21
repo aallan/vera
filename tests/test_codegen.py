@@ -18086,10 +18086,13 @@ class TestEqConstraintParameterizedAdtName767:
     constructor (`MkBox(...)`, which yields the bare `Box`).  `_adt_satisfies_eq`
     now splits the parameterized name into base + type args, looks up the bare
     layout, and validates each type-parameter field against its concrete type
-    argument — so `Box<Int>` derives `Eq` (Int is scalar) while `Box<String>`
-    does not (String is a non-Eq `i32_pair` field).  (A constructor-inferred
-    type still resolves to the bare `Box` in the monomorphizer, so this
-    type-arg validation only reaches the slot-ref / parameterized-name path.)
+    argument — so `Box<Int>` derives `Eq` (Int is scalar) while `Box<Array<Int>>`
+    does not (`Array` is not `Eq`).  (`String` itself *is* `Eq`, just not as a
+    scalar ADT field — the scalar-only auto-derivation basis, and the choice of
+    `Array<Int>` over `String` for the unambiguous reject fixture, is tracked in
+    #773.)  (A constructor-inferred type still resolves to the bare `Box` in the
+    monomorphizer, so this type-arg validation only reaches the slot-ref /
+    parameterized-name path.)
     """
 
     _SRC = """

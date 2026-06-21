@@ -669,6 +669,7 @@ def test_mono_emission_order_is_deterministic(tmp_path: Path) -> None:
             [sys.executable, "-m", "vera.cli", "compile", "--wat", str(f)],
             capture_output=True, text=True,
             env={**os.environ, "PYTHONHASHSEED": seed},
+            timeout=120,  # bound each child: a mono hang fails fast here, not at the CI timeout
         )
         assert proc.returncode == 0, proc.stderr
         outputs.add(proc.stdout)
