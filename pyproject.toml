@@ -109,19 +109,56 @@ addopts = "-m 'not stress'"
 [tool.mutmut]
 # Mutation testing (#387).  See MUTATION.md for the full runbook.
 # Mutate the whole compiler by default; scope a single sweep to one
-# module by passing that module's mutant names to `mutmut run`.
+# module with `only_mutate`.
 source_paths = ["vera/"]
-# `mutmut run` copies the project to ./mutants/ and runs the suite
-# there, so the working tree is never mutated in place.  Coverage-
-# guided test selection runs only the tests covering each mutated
-# line.  Subprocess tests (test_conformance / test_cli / test_browser
-# spawn `python -m vera.cli`, which imports the UN-mutated package)
-# cannot kill mutants — the per-module oracle is its in-process unit
-# tests.  See MUTATION.md "Oracle".
+# mutmut copies tests/ + config but nothing else by default; the
+# in-process oracle also reads these repo files (test_codegen example
+# round-trips; test_errors' error-display-sync against README / docs /
+# spec), so the ./mutants/ copy needs them or pytest errors at collection.
+also_copy = ["examples/", "README.md", "docs/", "spec/"]
+# `mutmut run` copies the project to ./mutants/ and runs the suite there,
+# so the working tree is never mutated in place.
 use_setproctitle = false  # required on macOS (mutmut PR #450)
-# Z3 / wasmtime headroom: a generous per-test cap so a slow-but-
-# solvable mutant is not misread as an unkillable timeout survivor.
+# Z3 / wasmtime headroom: a generous per-test cap so a slow-but-solvable
+# mutant is not misread as an unkillable timeout survivor.
 pytest_add_cli_args = ["--timeout=300"]
+# In-process oracle (positive selection).  Only these suites build Vera
+# programs inline (or from examples/, copied above) and exercise the
+# compiler in-process, so they work inside the ./mutants/ copy and can
+# kill mutants.  Deliberately omitted: subprocess / Node suites
+# (test_conformance / test_cli / test_browser spawn a fresh `vera` that
+# imports the UN-mutated package) and tooling suites (test_check_* /
+# test_build_site exercise scripts/, not vera/, and read repo files the
+# copy lacks).  Code reached only through the omitted suites is reported
+# "not checked", not a weak test — see MUTATION.md "Oracle".
+pytest_add_cli_args_test_selection = [
+    "tests/test_verifier.py",
+    "tests/test_verifier_coverage.py",
+    "tests/test_obligations.py",
+    "tests/test_checker.py",
+    "tests/test_codegen.py",
+    "tests/test_codegen_contracts.py",
+    "tests/test_codegen_monomorphize.py",
+    "tests/test_codegen_closures.py",
+    "tests/test_codegen_modules.py",
+    "tests/test_codegen_coverage.py",
+    "tests/test_wasm.py",
+    "tests/test_wasm_coverage.py",
+    "tests/test_monomorphize_differential.py",
+    "tests/test_lsp.py",
+    "tests/test_parser.py",
+    "tests/test_ast.py",
+    "tests/test_formatter.py",
+    "tests/test_types.py",
+    "tests/test_errors.py",
+    "tests/test_tester.py",
+    "tests/test_tester_coverage.py",
+    "tests/test_markdown.py",
+    "tests/test_resolver.py",
+    "tests/test_prelude.py",
+    "tests/test_walker_defensive_branches_597.py",
+    "tests/test_execute_characterization.py",
+]
 
 [tool.mypy]
 python_version = "3.11"
