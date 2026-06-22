@@ -47,7 +47,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-The verifier checks the contracts the programmer wrote.  A function that performs `@Int.1 / @Int.0` without a guarding precondition will type-check, verify, and trap at runtime if called with a zero divisor — with a Vera-native diagnostic explaining how to add the missing precondition.  Automatically synthesising obligations for primitive operations is the principled long-term move and tracked in [#680](https://github.com/aallan/vera/issues/680).
+The compiler synthesises the same obligations for primitive operations themselves.  Computing `@Int.1 / @Int.0` where the verifier finds the divisor can be zero is now a compile error (E526), not a runtime trap (an opaque or untranslatable divisor it can neither prove non-zero nor witness a zero for stays Tier 3, guarded at runtime by the zero-divisor trap); an array index is proved in bounds where the length is statically known, a compile error (E527) where provably out of bounds, and otherwise bounds-checked at runtime; `@Nat` subtraction underflow and `@Int` → `@Nat` narrowing are checked the same way.  So a division or array index that `vera verify` reports as proven is safe for all inputs; where it can't prove one — an opaque divisor, a dynamic array length, or an op inside a closure body — the runtime guard catches it rather than silently producing a wrong value.  (Float division is exempt: divide-by-zero yields inf/NaN, not a trap.)
 
 ### Effects are explicit
 
@@ -210,7 +210,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.176 — 1,400+ commits, 176 releases, 4,601 tests, 91% code coverage, 91 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.177 — 1,400+ commits, 177 releases, 4,705 tests, 91% code coverage, 92 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 

@@ -74,6 +74,30 @@ def _verify_warn(source: str, match: str) -> list:
     return matched
 
 
+def _nat_sub_status(source: str) -> list[str]:
+    """Statuses of the `nat_sub` (#520/E502) obligations for *source*.
+
+    Helper for the shadow/projection audit battery
+    (:class:`TestShadowAuditSubtraction680`): returns one status string per
+    recorded `@Nat`-subtraction site so a test can assert the tier directly.
+    """
+    result = _verify(source)
+    return [o.status for o in result.obligations if o.kind == "nat_sub"]
+
+
+# A non-literal `@Tuple<Nat, Nat>` source (a call) for the subtraction audit
+# battery: destructuring it yields two OPAQUE `@Nat` shadows, so a downstream
+# subtraction over them exercises the tracked-shadow / `_contains_opaque_shadow`
+# path (see :class:`TestShadowAuditSubtraction680`).
+_MK = """
+private fn mk(@Nat -> @Tuple<Nat, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Nat.0, @Nat.0) }
+"""
+
+
 # =====================================================================
 # Example round-trip tests
 # =====================================================================
@@ -766,6 +790,680 @@ private fn negative_sentinel(@Unit -> @Int)
   effects(pure)
 { 0 - 1 }
 """)
+
+    def test_compound_shadow_subtraction_is_tier3_not_e502(self) -> None:
+        """A subtraction where BOTH operands are compound expressions embedding
+        opaque shadows must fall to Tier-3, not a false E502.  After a
+        non-literal destructure shadows both `@Nat` components, `(@Nat.0 + 1) -
+        (@Nat.1 + 1)` has neither operand a *direct* shadow, so the direct
+        guard misses it — `_contains_opaque_shadow` catches the embedded
+        shadows (PR #778 review, the subtraction analogue of the E526
+        compound-divisor fix)."""
+        result = _verify("""
+private fn mksub(@Nat -> @Tuple<Nat, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Nat.0, @Nat.0) }
+
+private fn sub_compound(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Nat, @Nat> = mksub(@Nat.0); (@Nat.0 + 1) - (@Nat.1 + 1) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(subs) == 1 and subs[0].status == "tier3", [
+            (o.kind, o.status) for o in subs
+        ]
+
+
+class TestPrimitiveDivisionObligation680:
+    """`a / b` and `a % b` (Int/Nat) carry a Tier-1 `b != 0` obligation (#680).
+
+    Integer division and modulo by zero trap at runtime (`i64.div_s` /
+    `i64.rem_s`).  The divisor lives in the Tier-1 decidable fragment
+    (concrete integer arithmetic), so the obligation mirrors `@Nat`
+    subtraction (#520): discharged from a precondition, path condition, or
+    refinement type at Tier 1; a counterexample (`b = 0`) is a loud E526.
+
+    Two exemptions: float division (`@Float64 / @Float64`) is Real-sorted
+    and produces inf/NaN rather than trapping, so it is not obligated; and
+    a non-zero integer literal divisor (`x / 5`) is trivially safe, mirroring
+    #520's pure-literal exemption.
+    """
+
+    def test_unguarded_int_division_fails(self) -> None:
+        """Bare `@Int.0 / @Int.1` without a guarding `requires` → E526.
+
+        Counterexample: @Int.1 = 0.  This is silent/clean pre-#680.
+        """
+        _verify_err("""
+private fn unsafe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""", "by zero")
+
+    def test_unguarded_int_modulo_fails(self) -> None:
+        """Bare `@Int.0 % @Int.1` carries the same `@Int.1 != 0` obligation."""
+        _verify_err("""
+private fn unsafe_mod(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""", "by zero")
+
+    def test_unguarded_nat_division_fails(self) -> None:
+        """`@Nat.0 / @Nat.1` — a @Nat divisor can still be 0 → E526."""
+        _verify_err("""
+private fn unsafe_nat_div(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 / @Nat.1 }
+""", "by zero")
+
+    def test_requires_nonzero_divisor_discharges(self) -> None:
+        """`requires(@Int.1 != 0)` discharges the obligation at Tier 1."""
+        _verify_ok("""
+private fn safe_div(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+
+    def test_requires_nonzero_divisor_discharges_modulo(self) -> None:
+        """`requires(@Int.1 != 0)` discharges a modulo obligation too."""
+        _verify_ok("""
+private fn safe_mod(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""")
+
+    def test_if_guard_divisor_discharges(self) -> None:
+        """Path condition `@Int.1 != 0` (else branch of `if @Int.1 == 0`)
+        discharges `@Int.0 / @Int.1`.  This is the `checked_div` shape used
+        in examples/effect_handler.vera."""
+        _verify_ok("""
+private fn guarded_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.1 == 0 then {
+    0
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+""")
+
+    def test_posint_refinement_divisor_discharges(self) -> None:
+        """A `@PosInt = {@Int | @Int.0 > 0}` divisor discharges `> 0 ⟹ != 0`."""
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn refined_div(@Int, @PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @PosInt.0 }
+""")
+
+    def test_nonzero_literal_divisor_not_flagged(self) -> None:
+        """`@Int.0 / 5` — a non-zero literal divisor is trivially safe and
+        exempt (mirrors #520's pure-literal exemption); no obligation, so a
+        bare `requires(true)` still verifies."""
+        _verify_ok("""
+private fn div_by_five(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / 5 }
+""")
+
+    def test_float_division_not_obligated(self) -> None:
+        """`@Float64.0 / @Float64.1` produces inf/NaN, not a trap — float
+        division (Real-sorted divisor) carries no by-zero obligation."""
+        _verify_ok("""
+private fn float_div(@Float64, @Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Float64.0 / @Float64.1 }
+""")
+
+    def test_float64_shadow_divisor_records_no_obligation(self) -> None:
+        """A `@Float64` divisor that is opaque (a non-literal destructure
+        shadow, so `translate_expr`/the shadow path fires before the Real-sort
+        check) must record NO `div_zero` obligation — float division is exempt
+        regardless of translatability (`f64.div` by zero is inf/NaN, not a
+        trap).  The float exemption keys on the divisor's resolved TYPE up
+        front, before the None/shadow recordings (PR #778 review)."""
+        result = _verify("""
+private fn mk(@Float64 -> @Tuple<Float64, Float64>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Float64.0, @Float64.0) }
+
+private fn fdiv(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Float64, @Float64> = mk(@Float64.0); @Float64.0 / @Float64.1 }
+""")
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert divs == [], [(o.kind, o.status) for o in divs]
+
+    def test_partial_requires_does_not_discharge(self) -> None:
+        """`requires(@Int.0 != 0)` constrains the numerator, not the divisor
+        `@Int.1` — the obligation still fires."""
+        _verify_err("""
+private fn wrong_guard(@Int, @Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""", "by zero")
+
+    def test_division_obligation_recorded_div_zero_kind(self) -> None:
+        """A guarded division records exactly one `div_zero` obligation,
+        discharged (verified)."""
+        result = _verify("""
+private fn safe_div(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        div = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(div) == 1, f"expected one div_zero obligation, got {len(div)}"
+        assert div[0].status == "verified"
+
+    def test_division_inside_array_literal_fires(self) -> None:
+        """An unguarded division in an array-literal element is obligated
+        (E526) — the walker recurses into `ArrayLit` elements, so the
+        compile-error promise holds outside direct position too (#680 review)."""
+        _verify_err("""
+private fn arr_div(@Int, @Int -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [@Int.0 / @Int.1, 99] }
+""", "by zero")
+
+    def test_division_inside_assert_fires(self) -> None:
+        """An unguarded division in an `assert` condition is obligated (E526)
+        — the walker recurses into Assert/Assume conditions (#680 review)."""
+        _verify_err("""
+private fn assert_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ assert(@Int.0 / @Int.1 > 0); @Int.0 }
+""", "by zero")
+
+    def test_safe_destructured_divisor_not_flagged(self) -> None:
+        """A destructured non-zero divisor (`Tuple(10, 5)`) must NOT be a false
+        E526.  The destructured slots are not rebound to fresh unconstrained
+        vars — a fresh `@Int` has no `!= 0` invariant (unlike a `@Nat`'s
+        `>= 0`), so rebinding would make the safe `5` divisor look like a
+        possible zero.  (Regression guard for the #680 review's destructure
+        walk.)"""
+        _verify_ok("""
+private fn ld_safe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 5); @Int.0 / @Int.1 }
+""")
+
+    def test_division_inside_letdestruct_value_fires(self) -> None:
+        """An unguarded division in a `let`-destructure value
+        (`let Tuple<...> = Tuple(@Int.0 / @Int.1, ...)`) is obligated (E526) —
+        the block walker walks the destructured value (#680 review)."""
+        _verify_err("""
+private fn ld_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(@Int.0 / @Int.1, 5); @Int.0 }
+""", "by zero")
+
+    def test_untranslatable_let_divisor_not_falsely_discharged(self) -> None:
+        """An untranslatable scalar `let` (a `random_int` effect result the SMT
+        layer doesn't model) that shadows a constrained outer must NOT let the
+        outer's `requires(@Int.0 != 0)` falsely discharge a division by it.
+        `requires(@Int.0 != 0); let @Int = random_int(0, 10); 1 / @Int.0` —
+        random_int can be 0, so the division is unsafe and must be honest Tier-3
+        (the shadowed value is unknown), not a false Tier-1 (#680 review).  This
+        is the silent-failure differential: before the shadow fix it verified
+        clean (Tier-1) yet trapped at runtime."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        div = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(div) == 1 and div[0].status == "tier3", (
+            "divisor must be honest Tier-3 (the shadowed let value is unknown), "
+            f"got {[(o.kind, o.status) for o in div]}"
+        )
+
+    def test_division_inside_interpolated_string_fires(self) -> None:
+        r"""An unguarded division in an interpolated-string expression
+        (`"x: \(@Int.0 / @Int.1)"`) is obligated (E526) — the walker recurses
+        into InterpolatedString parts, mirroring the @Nat-binding walker
+        (#680 review)."""
+        _verify_err(
+            'private fn interp_div(@Int, @Int -> @String)\n'
+            '  requires(true)\n'
+            '  ensures(true)\n'
+            '  effects(pure)\n'
+            '{ "x: \\(@Int.0 / @Int.1)" }\n',
+            "by zero",
+        )
+
+    def test_div_by_zero_fix_hint_renders_actual_divisor(self) -> None:
+        """The E526 fix hint names the *actual* divisor, not a fixed slot.
+
+        For `@Int.1 / @Int.0` the divisor is `@Int.0` (De Bruijn: most
+        recent binding).  The pre-review hint hard-coded `@Int.1 != 0`,
+        which points at the wrong parameter here; `format_expr(expr.right)`
+        renders the real operand (PR #778 review, `verifier.py` E526 hint).
+        """
+        matched = _verify_err("""
+private fn wrong_slot_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.1 / @Int.0 }
+""", "by zero")
+        fix = matched[0].fix
+        assert "@Int.0 != 0" in fix, fix
+        assert "@Int.1" not in fix, fix
+
+    def test_literal_destructure_divisor_discharges_at_tier1(self) -> None:
+        """A divisor projected from a literal-constructor destructure is
+        Tier-1, not Tier-3.  `let Tuple<@Int, @Int> = Tuple(10, 6);
+        @Int.0 / @Int.1` discharges `10 != 0` — the divisor `@Int.1` is the
+        literal first component — rather than shadowing it to an opaque
+        Tier-3 value (PR #778 review: rebind translatable components to
+        their projected terms, mirroring the @Nat-binding walker)."""
+        result = _verify("""
+private fn lit_destr_div(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 6); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_nonliteral_destructure_divisor_stays_tier3(self) -> None:
+        """A divisor from a NON-literal destructure source (a call) can't be
+        projected, so each component stays a tracked opaque shadow → Tier-3,
+        never a false E526.  Guards the 77d90fb regression: a bare fresh
+        `@Int` slot var carries no `!= 0` invariant and false-fired E526."""
+        result = _verify("""
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Int.0, @Int.0) }
+
+private fn nonlit_destr_div(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = mk(@Int.0); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_untranslatable_destructure_component_keeps_debruijn(self) -> None:
+        """An untranslatable destructured component with NO stale outer must
+        still push a tracked placeholder, so same-type De Bruijn positions
+        don't collapse.  `let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10));
+        1 / @Int.0` must be Tier-3: `@Int.0` is the *opaque second component*,
+        not the literal `10` it would shift onto if the component were skipped
+        (PR #778 review, `verifier.py` De Bruijn collapse).  A skip here is a
+        silent false-discharge — the worst #680 failure class."""
+        result = _verify("""
+private fn debruijn_keep(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_compound_shadow_divisor_is_tier3_not_e526(self) -> None:
+        """A divisor that *contains* an opaque shadow (`shadow + 1`), not just
+        one that IS a shadow, must fall to Tier-3 — Z3 must not pick
+        `shadow = -1` and emit a false E526.  `let @Int = random_int(0, 10);
+        1 / (@Int.0 + 1)` shadows the outer `@Int.0`, so the compound divisor
+        is opaque (PR #778 review, `verifier.py` `_contains_opaque_shadow`)."""
+        result = _verify("""
+private fn compound_shadow(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / (@Int.0 + 1) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_opaque_match_scrutinee_shadows_arm_bindings(self) -> None:
+        """A match arm binding over an UNTRANSLATABLE scrutinee (an effect op)
+        must shadow its pattern slots, so a primitive op in the arm falls to
+        Tier-3 — never discharged against a stale same-name outer slot.
+        Without it, `match Source.next(()) { Some(@Int) -> 1 / @Int.0 }` under
+        `requires(@Int.0 != 0)` silently verifies `1 / @Int.0` against the
+        *outer* param's `!= 0` while the matched field can be 0 — a silent
+        false-discharge (PR #778 review, outside-diff; the match-arm analogue
+        of the untranslatable-`let` shadow, mirroring `_fresh_pattern_env`)."""
+        result = _verify("""
+effect Source {
+  op next(Unit -> Option<Int>);
+}
+
+private fn opaque_match(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Source>)
+{
+  match Source.next(()) {
+    Some(@Int) -> 1 / @Int.0,
+    None -> 1
+  }
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+
+class TestPrimitiveIndexObligation680:
+    """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).
+
+    Array indexing traps at runtime (codegen emits a bounds check +
+    `unreachable`).  Unlike division, the array length is an *uninterpreted*
+    SMT function — spec §6.4.3 documents array bounds as needing reasoning
+    beyond the Tier-1 decidable fragment (#427).  So the verifier uses a
+    two-check: provably in bounds (a literal/refinement/precondition pins
+    the length) → Tier 1; provably *out* of bounds (statically-known length
+    the index exceeds, e.g. `[1,2,3][5]`) → loud E527; otherwise (opaque /
+    dynamic length) → honest Tier 3, guarded by the runtime trap.  An
+    unguarded dynamic index is therefore NOT an error — it degrades
+    gracefully, never silently.
+
+    String indexing is a type error (E161 "Cannot index String"), so there
+    is no string-index obligation — `IndexExpr` is array-only.
+
+    Index sites inside closure / quantifier bodies are intentionally not
+    walked (the captured length is beyond Tier 1 without #427); they remain
+    runtime-guarded.  `test_index_inside_closure_not_obligated` pins that.
+    """
+
+    def test_literal_in_bounds_index_discharges(self) -> None:
+        """`[10, 20, 30][1]` — literal length 3, index 1 < 3 → Tier 1, no error."""
+        _verify_ok("""
+private fn second(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [10, 20, 30][1] }
+""")
+
+    def test_literal_out_of_bounds_index_fails(self) -> None:
+        """`[1, 2, 3][5]` — provably out of bounds (5 >= 3) → loud E527."""
+        _verify_err("""
+private fn oob(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][5] }
+""", "out of bounds")
+
+    def test_requires_guarded_index_discharges(self) -> None:
+        """`requires(@Nat.0 < array_length(@Array<Int>.0))` discharges the
+        bounds obligation at Tier 1."""
+        _verify_ok("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+
+    def test_if_guard_index_discharges(self) -> None:
+        """`if @Nat.0 < array_length(arr) then arr[@Nat.0] else 0` — the
+        then-branch path condition discharges the bounds obligation at Tier 1.
+        The complementary `>= ... then 0 else arr[...]` shape (used in
+        examples/life.vera) discharges via the negated else-branch condition."""
+        _verify_ok("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Nat.0 < array_length(@Array<Int>.0) then { @Array<Int>.0[@Nat.0] } else { 0 } }
+""")
+
+    def test_refinement_nonempty_array_index_is_tier3(self) -> None:
+        """A `@NonEmptyArray` refinement index is honest Tier 3, not an error.
+
+        The `array_length(@Array<Int>.0) > 0` predicate is over a non-primitive
+        (Array) base that Z3 cannot decide at Tier 1 (the same reason the
+        refinement narrowing itself is a Tier-3 E506; see
+        examples/refinement_types.vera and TestAdtDecreasesVerification's tier
+        ledger).  So the `[0]` access degrades to a runtime-guarded Tier 3 —
+        no error, never silent.  Lifting this to Tier 1 is #427 (Tier-2 array
+        reasoning)."""
+        result = _verify("""
+type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
+
+private fn head(@NonEmptyArray -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @NonEmptyArray.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3"
+
+    def test_opaque_unguarded_index_is_tier3(self) -> None:
+        """An unguarded index into a dynamic-length array is NOT an error —
+        the length is opaque (beyond Tier 1), so it degrades to Tier 3,
+        guarded by the runtime trap.  This is the honest-tiering differential:
+        the obligation is RECORDED as tier3, not silently dropped.  (A wrong
+        fix that emitted nothing would pass the no-error check but fail the
+        obligation-recorded assertion.)"""
+        result = _verify("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error (Tier-3), got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1, f"expected one index_bounds obligation, got {len(idx)}"
+        assert idx[0].status == "tier3"
+
+    def test_index_inside_closure_not_obligated(self) -> None:
+        """An index inside an `array_map` closure body (a captured array) is
+        NOT obligated — the walker does not recurse into closure bodies, where
+        the captured length is beyond Tier 1 (#427).  Pinned via a differential:
+        the closure body records ZERO index_bounds obligations.  A `_verify_ok`
+        alone would NOT catch a walker that started recursing into AnonFn —
+        the captured index degrades to honest Tier 3 (no error) — so we assert
+        the obligation count directly.  (Mirrors ch05_capture_array_index.)"""
+        result = _verify("""
+private fn step_flat(@Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Array<Int>.0[0] }) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert idx == [], f"closure-body index must not be obligated, got {len(idx)}"
+
+    def test_index_obligation_recorded_index_bounds_kind(self) -> None:
+        """A guarded index records exactly one `index_bounds` obligation,
+        discharged (verified)."""
+        result = _verify("""
+private fn at(@Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1, f"expected one index_bounds obligation, got {len(idx)}"
+        assert idx[0].status == "verified"
+
+    def test_literal_index_equal_length_fails(self) -> None:
+        """`[1, 2, 3][3]` — index exactly equal to the length is out of bounds
+        → E527.  Pins the strict `<` in `i < length` (an off-by-one `<=` would
+        let `[1,2,3][3]` through)."""
+        _verify_err("""
+private fn at_len(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][3] }
+""", "out of bounds")
+
+    def test_provably_negative_index_fails(self) -> None:
+        """`[1, 2, 3][0 - 1]` — a provably-negative index is out of bounds
+        regardless of length → E527.  Pins the lower-bound (`i >= 0`)
+        conjunct."""
+        _verify_err("""
+private fn at_neg(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][0 - 1] }
+""", "out of bounds")
+
+    def test_int_index_upper_bound_only_guard_is_tier3(self) -> None:
+        """A signed `@Int` index guarded ONLY on the upper bound
+        (`requires(@Int.0 < array_length(...))`, no `>= 0`) is NOT proven —
+        the index could be negative, so it stays honest Tier 3, not a false
+        Tier-1.  If the obligation's `i >= 0` conjunct were dropped this would
+        wrongly verify; the differential pins it."""
+        result = _verify("""
+private fn at_int(@Array<Int>, @Int -> @Int)
+  requires(@Int.0 < array_length(@Array<Int>.0))
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Int.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error (Tier-3), got: {[e.description for e in errors]}"
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3"
+
+    def test_op_inside_index_is_walked(self) -> None:
+        """An unguarded division in the index sub-expression is obligated
+        (E526) — the walker recurses into `expr.index` before checking the
+        bound, so a trap buried in the index isn't silently lost."""
+        _verify_err("""
+private fn idx_div(@Array<Int>, @Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[@Int.0 / @Int.1] }
+""", "by zero")
+
+    def test_untranslatable_array_let_shadows_stale_outer(self) -> None:
+        """An untranslatable array `let` (`array_append`, unmodelled by the SMT
+        layer) must shadow a stale same-type outer array, so a later index does
+        not resolve to the stale length and false-E527.  `let a = [1,2,3]; let a
+        = array_append(a, 99); a[3]` is valid (the appended array has length 4),
+        so it must NOT be E527 — the stale outer is replaced by a fresh
+        (opaque) array, making the index honest Tier-3 (#680 review)."""
+        _verify_ok("""
+private fn append_index(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let @Array<Int> = array_append(@Array<Int>.0, 99); @Array<Int>.0[3] }
+""")
+
+    def test_untranslatable_destructure_array_shadows_stale_outer(self) -> None:
+        """A destructured array slot from an untranslatable destructure must
+        also shadow a stale same-type outer array (#680 review) — `let a =
+        [1,2,3]; let Tuple<@Array<Int>, @Int> = mk(...); a[5]` must be Tier-3,
+        not a false E527 against the stale length 3."""
+        _verify_ok("""
+private fn mk(@Array<Int> -> @Tuple<Array<Int>, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Array<Int>.0, 0) }
+
+private fn destructure_shadow(@Array<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let Tuple<@Array<Int>, @Int> = mk(@Array<Int>.0); @Array<Int>.0[5] }
+""")
+
+    def test_index_oob_fix_hint_renders_operands_and_both_bounds(self) -> None:
+        """The E527 fix hint names the actual collection and index, and
+        covers BOTH bounds (`0 <= i && i < array_length(...)`) — not a
+        fixed slot or an upper-bound-only guard (PR #778 review,
+        `verifier.py` E527 hint).  `[10, 20, 30][5]` exercises the
+        `ArrayLit` render path in `format_expr`."""
+        matched = _verify_err("""
+private fn oob_hint(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [10, 20, 30][5] }
+""", "out of bounds")
+        fix = matched[0].fix
+        assert "0 <= 5 && 5 < array_length([10, 20, 30])" in fix, fix
 
 
 class TestNatBindingObligation552:
@@ -3284,6 +3982,22 @@ private fn sum(@List<Int> -> @Int)
           postconditions are now discharged statically instead of bailing to
           Tier 3 (E520): +2 T1, -2 T3, +0 total (the two contracts change tier;
           the total is unchanged).
+        * 263/32/295/0 after #680 auto-synthesised obligations for integer
+          division/modulo (`b != 0`, E526) and array indexing
+          (`0 <= i < array_length`, E527).  The corpus gains 3 T1 from guarded
+          divisions discharged at Tier 1 — effect_handler's path-guarded
+          `@Int.0 / @Int.1`, refinement_types' `@PosInt` divisor, and
+          safe_divide's `requires(@Int.1 != 0)` — and 5 T3: json's opaque
+          divisor (1) plus opaque / dynamic array indices in json (1),
+          life (2, deeply-nested match+if guards beyond Tier 1), and
+          refinement_types' `@NonEmptyArray` (1, an Array-base refinement Z3
+          cannot decide at Tier 1 — #427).  No example indexes provably out of
+          bounds, so none is a loud E527.  Net: +3 T1, +5 T3, +8 total, +0 t3u.
+        * 263/31/294/0 after the #680-review Float64-divisor fix: json's `/`
+          divisor resolves to `@Float64`, so it is now exempt up front
+          (`f64.div` by zero is inf/NaN, not a trap) instead of recording a
+          bogus Tier-3 `div_zero` — it was the corpus's only tier3 div_zero.
+          -1 T3, -1 total.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3296,9 +4010,9 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 260, f"Expected 260 T1, got {t1}"
-        assert t3 == 27, f"Expected 27 T3, got {t3}"
-        assert total == 287, f"Expected 287 total, got {total}"
+        assert t1 == 263, f"Expected 263 T1, got {t1}"
+        assert t3 == 31, f"Expected 31 T3, got {t3}"
+        assert total == 294, f"Expected 294 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
@@ -5360,3 +6074,962 @@ where {
         errs = [d for d in result.diagnostics if d.error_code == "E502"]
         assert len(errs) == 1
         assert "instantiated at inner<Bool>" in errs[0].description
+
+
+class TestShadowAuditDivision680:
+    def test_compound_mult_shadow_divisor_is_tier3(self) -> None:
+        """`2 * shadow` divisor (opaque shadow inside a multiplication) stays
+        Tier-3 — never a false E526 AND never silently discharged.  The `let`
+        shadows a guarded `requires(@Int.0 != 0)` outer, so a lost shadow would
+        verify `2 * @Int.0 != 0` against the stale `!= 0`; the *tracked* shadow
+        forces `_contains_opaque_shadow` to route it to Tier-3.  (Breaking the
+        `*`-operand recursion flips this to a false E526 — mutation-checked.)"""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / (2 * @Int.0) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_product_of_two_shadow_terms_is_tier3(self) -> None:
+        """A divisor that is a product of two shadow-bearing subexpressions
+        `(shadow + 1) * (shadow + 2)` stays Tier-3: the opaque-shadow walk must
+        descend into BOTH operands of the `*`, not just the leftmost.  The `let`
+        shadows a guarded `requires(@Int.0 != 0)` outer — a lost shadow would
+        silently discharge against the stale `!= 0` (mutation-checked)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / ((@Int.0 + 1) * (@Int.0 + 2)) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_self_subtraction_of_shadow_is_provably_zero_e526(self) -> None:
+        """`shadow - shadow` as a divisor is a loud E526 — the compound-shadow
+        guard must NOT over-mask a *provably*-zero divisor just because it
+        embeds a shadow.  Even with a tracked shadow `s`, `s - s` simplifies to
+        0 for every value, so `divisor == 0` is valid and the guard correctly
+        falls through to E526 (the `let` shadows a guarded `requires(@Int.0 !=
+        0)` outer, so this is the genuine-zero half of the differential, not a
+        stale-outer leak).  A `tier3` here would be the guard wrongly masking a
+        decidable divide-by-zero — mutation-checked against an over-eager
+        guard."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / (@Int.0 - @Int.0) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [e.error_code for e in errors] == ["E526"], [
+            e.error_code for e in errors
+        ]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "violated", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_modulo_compound_shadow_divisor_is_tier3(self) -> None:
+        """Modulo mirrors division on the compound-shadow path: `1 % (shadow + 1)`
+        is Tier-3, never a false E526.  Pins `%` to the same
+        `_contains_opaque_shadow` treatment as `/`.  The `let` shadows a guarded
+        `requires(@Int.0 != 0)` outer — a lost shadow would silently discharge
+        the modulo against the stale `!= 0` (mutation-checked)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 % (@Int.0 + 1) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_modulo_opaque_let_divisor_is_tier3(self) -> None:
+        """A direct opaque-let modulo divisor `1 % shadow` is Tier-3 — the `%`
+        obligation is recorded under the same `div_zero` kind as `/` and is not
+        silently dropped.  The `let` shadows a guarded `requires(@Int.0 != 0)`
+        outer, so a lost (untracked) shadow would discharge `@Int.0 != 0`
+        against the stale `!= 0` — `_is_opaque_shadow` keeps it Tier-3
+        (mutation-checked: turning it off flips this to a false E526)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 % @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_mixed_destructure_divisor_by_literal_component_discharges(self) -> None:
+        """In `Tuple(10, random_int(...))` the FIRST component is a translatable
+        literal: dividing by it (`@Int.1`, the prior De Bruijn slot) discharges
+        `10 != 0` at Tier-1 even though the SECOND component is opaque.  The
+        literal projection must survive an opaque sibling in the same tuple."""
+        result = _verify("""
+private fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_mixed_destructure_divisor_by_opaque_component_stays_tier3(self) -> None:
+        """The De Bruijn-collapse trap: in `Tuple(10, random_int(...))` dividing
+        by `@Int.0` (most-recent slot = the OPAQUE second component) must stay
+        Tier-3.  If the opaque component were skipped instead of pushed, `@Int.0`
+        would collapse onto the literal `10` and falsely discharge — the worst
+        #680 failure class (silent false-discharge)."""
+        result = _verify("""
+private fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_outer_requires_does_not_discharge_shadowing_opaque_let(self) -> None:
+        """The canonical silent-failure differential: an opaque `let @Int =
+        random_int(...)` shadows an outer `@Int` param guarded by
+        `requires(@Int.0 != 0)`.  Dividing by `@Int.0` now refers to the
+        *shadow* (which can be 0), so it must be Tier-3, NOT verified against
+        the stale outer guard.  A `verified` here is a SILENT_FAILURE."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_divisor_is_outer_param_after_opaque_let_discharges(self) -> None:
+        """The complement of the shadow trap: after an opaque `let @Int` shadows
+        the param, the ORIGINAL guarded param is reachable as `@Int.1` (prior
+        slot).  Dividing by `@Int.1` discharges the outer `requires(@Int.0 != 0)`
+        at Tier-1 — the shadow must not poison the still-visible outer slot, and
+        De Bruijn must address the correct one."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_two_opaque_lets_divide_by_each_keep_debruijn(self) -> None:
+        """Two same-type opaque lets each occupy a distinct De Bruijn slot, and
+        both shadow the guarded `requires(@Int.0 != 0)` outer.  The divisor
+        `@Int.1` (the FIRST, prior let) is a tracked shadow → Tier-3; a lost
+        shadow would resolve `@Int.1` to the guarded param and silently
+        discharge.  Pins that the prior-slot divisor stays tracked (not
+        collapsed onto the most-recent let or leaked to the param)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(1, 10); let @Int = random_int(0, 10); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_two_ops_reuse_same_shadow_both_tier3(self) -> None:
+        """A shadow stays opaque across MULTIPLE ops in the same body.  Both
+        `1 / @Int.0` and `2 / @Int.0` over one opaque `let @Int` (shadowing a
+        guarded `requires(@Int.0 != 0)` outer) each record a Tier-3 `div_zero`
+        obligation — the first op must not "consume" the shadow and leave the
+        second silently discharged against the stale `!= 0`."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); (1 / @Int.0) + (2 / @Int.0) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 2 and all(d.status == "tier3" for d in divs), [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_opaque_match_arm_divisor_does_not_use_stale_outer_guard(self) -> None:
+        """Match-arm binding over an UNTRANSLATABLE scrutinee (effect op) shadows
+        its pattern slot, so `1 / @Int.0` in the arm is Tier-3 even though an
+        outer `@Int` param carries `requires(@Int.0 != 0)`.  The matched field
+        can be 0; discharging against the outer guard would be a silent
+        false-discharge."""
+        result = _verify("""
+effect Source {
+  op next(Unit -> Option<Int>);
+}
+
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Source>)
+{ match Source.next(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+
+class TestShadowAuditSubtraction680:
+    """Soundness battery for the `nat_sub` (#520, E502) underflow obligation
+    under the shadow/projection machinery.
+
+    Invariant trichotomy:
+      * provably non-underflowing  -> 'verified' (Tier-1)
+      * an opaque operand (direct OR embedded in a compound) for which the
+        obligation is genuinely undecidable -> 'tier3' (runtime guard);
+        MUST NOT be 'verified' (silent failure) NOR 'violated' (false E502)
+      * provably underflowing for *every* runtime value -> 'violated' (E502)
+    """
+
+    def test_opaque_direct_operand_is_tier3(self) -> None:
+        """A direct opaque shadow operand (`@Nat.0 - 1` after a non-literal
+        destructure) is undecidable -> Tier-3, never a false E502."""
+        st = _nat_sub_status(_MK + """
+private fn d(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); @Nat.0 - 1 }
+""")
+        assert st == ["tier3"], st
+
+    def test_opaque_both_compound_undecidable_is_tier3(self) -> None:
+        """Both operands compound over *different* opaque shadows
+        (`(@Nat.0 + 1) - (@Nat.1 + 1)`): neither a direct shadow, and
+        `lhs >= rhs` / `lhs < rhs` both undecidable, so the recursive
+        `_contains_opaque_shadow` guard routes to Tier-3, not E502."""
+        st = _nat_sub_status(_MK + """
+private fn c(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - (@Nat.1 + 1) }
+""")
+        assert st == ["tier3"], st
+
+    def test_opaque_compound_minus_direct_is_tier3(self) -> None:
+        """Asymmetric compound/direct over different opaque shadows
+        (`(@Nat.0 + 1) - @Nat.1`) is undecidable -> Tier-3."""
+        st = _nat_sub_status(_MK + """
+private fn c(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - @Nat.1 }
+""")
+        assert st == ["tier3"], st
+
+    def test_opaque_scaled_compound_undecidable_is_tier3(self) -> None:
+        """Scaled compound over different opaque shadows
+        (`(2 * @Nat.0) - (@Nat.1 + 5)`) is undecidable -> Tier-3."""
+        st = _nat_sub_status(_MK + """
+private fn c(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (2 * @Nat.0) - (@Nat.1 + 5) }
+""")
+        assert st == ["tier3"], st
+
+    def test_opaque_match_bound_operand_is_tier3(self) -> None:
+        """A @Nat bound by matching `Some(@Nat)` over an opaque effect-op
+        scrutinee (`Src.g(()) : Option<Nat>`) is opaque; `@Nat.0 - 1` in the
+        arm is undecidable -> Tier-3, never a false E502."""
+        st = _nat_sub_status("""
+effect Src { op g(Unit -> Option<Nat>); }
+
+private fn m(@Nat -> @Nat)
+  requires(true) ensures(true) effects(<Src>)
+{ match Src.g(()) { Some(@Nat) -> @Nat.0 - 1, None -> 0 } }
+""")
+        assert st == ["tier3"], st
+
+    def test_param_requires_does_not_leak_to_shadow(self) -> None:
+        """SILENT-FAILURE guard: a `requires(@Nat.0 >= 100)` constraining the
+        *parameter* must NOT discharge an obligation whose operands are the
+        independent destructured shadows -- the param is shadowed out of
+        scope at the subtraction site, so it stays Tier-3 (not falsely
+        'verified')."""
+        st = _nat_sub_status(_MK + """
+private fn leak(@Nat -> @Nat)
+  requires(@Nat.0 >= 100)
+  ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); @Nat.0 - @Nat.1 }
+""")
+        assert st == ["tier3"], st
+
+    def test_effect_op_nat_operands_are_tier3(self) -> None:
+        """Two @Nat values produced by an effect op (`Rng.rand()`), let-bound
+        and subtracted, are opaque -> Tier-3."""
+        st = _nat_sub_status("""
+effect Rng { op rand(Unit -> Nat); }
+
+private fn e(@Unit -> @Nat)
+  requires(true) ensures(true) effects(<Rng>)
+{ let @Nat = Rng.rand(()); let @Nat = Rng.rand(()); @Nat.0 - @Nat.1 }
+""")
+        assert st == ["tier3"], st
+
+    def test_compound_shadow_provably_safe_is_verified(self) -> None:
+        """When the opaque shadow CANCELS so the obligation is decidable and
+        true (`(@Nat.0 + 2) - (@Nat.0 + 1) == 1 >= 0` for all values), the
+        compound-shadow Tier-3 fallback is correctly suppressed (its guard
+        requires `lhs < rhs` to be non-valid) -> 'verified', not Tier-3.
+        Pins that the fallback does not over-fire into a silent under-check."""
+        st = _nat_sub_status(_MK + """
+private fn safe(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 2) - (@Nat.0 + 1) }
+""")
+        assert st == ["verified"], st
+
+    def test_compound_shadow_provably_underflow_is_violated(self) -> None:
+        """When the opaque shadow CANCELS so underflow holds for *every*
+        runtime value (`(@Nat.0 + 1) - (@Nat.0 + 2) == -1` for all values),
+        this is a genuine bug -> loud 'violated'/E502, NOT a Tier-3 mask.
+        Distinguishes 'undecidable-because-opaque' (Tier-3) from
+        'decidably-underflows-regardless-of-opaque' (E502)."""
+        r = _verify(_MK + """
+private fn bad(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk(@Nat.0); (@Nat.0 + 1) - (@Nat.0 + 2) }
+""")
+        subs = [o.status for o in r.obligations if o.kind == "nat_sub"]
+        assert subs == ["violated"], subs
+        codes = [d.error_code for d in r.diagnostics if d.severity == "error"]
+        assert "E502" in codes, codes
+
+    def test_requires_ge_discharges_to_verified(self) -> None:
+        """Baseline (no shadow): explicit `requires(@Nat.0 >= @Nat.1)` on the
+        actual subtraction operands -> 'verified'."""
+        st = _nat_sub_status("""
+private fn safe(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true) effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+        assert st == ["verified"], st
+
+
+class TestShadowAuditIndex680:
+    """Soundness battery for the `index_bounds` (#680/E527) obligation under the
+    shadow/projection machinery: in-bounds -> verified, provably-OOB ->
+    violated, opaque length/index -> honest Tier-3 (never silent, never a false
+    E527).  Array length is an uninterpreted SMT function (#427)."""
+
+    def test_index_lower_edge_literal_discharges(self) -> None:
+        """`[1, 2, 3][0]` — index 0 is the in-bounds lower edge -> Tier 1.
+        Pins the `0 <= i` conjunct's *inclusive* lower edge."""
+        result = _verify("""
+private fn first(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ [1, 2, 3][0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "verified", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_index_equals_opaque_length_is_violated(self) -> None:
+        """`arr[array_length(arr)]` is out of bounds for ANY length, even an
+        uninterpreted one: `i == length` makes `i >= length` tautologically
+        valid -> loud E527 (not a silent drop on a non-numeric length)."""
+        matched = _verify_err("""
+private fn at_len(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[array_length(@Array<Int>.0)] }
+""", "out of bounds")
+        assert matched[0].error_code == "E527", matched[0].error_code
+
+    def test_index_last_elem_opaque_length_is_tier3(self) -> None:
+        """`arr[array_length(arr) - 1]` is in bounds iff `length > 0`, unknown
+        for an opaque length -> honest Tier 3, never a false E527."""
+        result = _verify("""
+private fn last(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[array_length(@Array<Int>.0) - 1] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_unguarded_nat_index_into_literal_is_tier3_not_violated(self) -> None:
+        """`[1, 2, 3][@Nat.0]` with an unconstrained `@Nat` — could be in range
+        (0/1/2) so NOT provably OOB (no false E527), but could be >= 3 so not
+        provably in bounds -> honest Tier 3."""
+        result = _verify("""
+private fn at(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ [1, 2, 3][@Nat.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_precondition_guards_wrong_array_stays_tier3(self) -> None:
+        """A precondition bounding a DIFFERENT array than the one indexed must
+        not discharge.  `requires(@Nat.0 < array_length(@Array<Int>.1))` but
+        body indexes `@Array<Int>.0` -> Tier 3, never a silent 'verified'
+        against an unrelated array's length (De Bruijn discrimination)."""
+        result = _verify("""
+private fn at(@Array<Int>, @Array<Int>, @Nat -> @Int)
+  requires(@Nat.0 < array_length(@Array<Int>.1))
+  ensures(true) effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_precondition_guards_wrong_nat_index_stays_tier3(self) -> None:
+        """A precondition bounding a DIFFERENT index var than the one used must
+        not discharge.  Two `@Nat` params, `requires(@Nat.1 < array_length(arr))`
+        but body indexes `@Nat.0` -> Tier 3 (the indexed var carries no upper
+        bound)."""
+        result = _verify("""
+private fn at(@Array<Int>, @Nat, @Nat -> @Int)
+  requires(@Nat.1 < array_length(@Array<Int>.0))
+  ensures(true) effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_reassign_to_longer_literal_uses_current_length(self) -> None:
+        """Re-binding to a LONGER literal then indexing past the OLD length is
+        valid against the CURRENT one.  `let a = [1,2]; let a = [1,2,3,4,5];
+        a[4]` -> Tier 1 (4 < 5), reading the current binding's length."""
+        result = _verify("""
+private fn grow(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [1, 2]; let @Array<Int> = [1, 2, 3, 4, 5]; @Array<Int>.0[4] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "verified", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_reassign_to_shorter_literal_violates_current_length(self) -> None:
+        """Re-binding to a SHORTER literal then indexing past the NEW length is
+        provably OOB.  `let a = [1,2,3,4,5]; let a = [1,2]; a[4]` -> E527
+        (4 >= 2), checking the shadowing binding's shorter length."""
+        matched = _verify_err("""
+private fn shrink(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [1, 2, 3, 4, 5]; let @Array<Int> = [1, 2]; @Array<Int>.0[4] }
+""", "out of bounds")
+        assert matched[0].error_code == "E527", matched[0].error_code
+
+    def test_append_then_low_index_is_tier3_not_verified(self) -> None:
+        """`let a = [1,2,3]; let a = array_append(a, 9); a[0]` — a[0] IS valid,
+        but the appended length is OPAQUE, so the verifier cannot PROVE in
+        bounds -> Tier 3.  A 'verified' would claim a Tier-1 proof the opaque
+        length can't support (silent over-claim)."""
+        result = _verify("""
+private fn appended(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let @Array<Int> = array_append(@Array<Int>.0, 9); @Array<Int>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_opaque_shadow_index_does_not_leak_outer_bound(self) -> None:
+        """An index `let`-shadowing a guarded index param must be Tier-3, NOT
+        silently verified against the stale outer bound.  The param carries
+        `0 <= @Int.0 && @Int.0 < array_length(...)`; after `let @Int =
+        random_int(...)`, `@Int.0` is the (unbounded) shadow, so the bounds are
+        indeterminate → Tier 3.  A lost shadow would resolve `@Int.0` to the
+        guarded param and falsely *verify* (silent failure) — the differential:
+        the same body WITHOUT the `let` verifies at Tier 1, with it falls to
+        Tier 3 (mutation-checked against the scalar `let`-shadow push)."""
+        result = _verify("""
+private fn idx(@Array<Int>, @Int -> @Int)
+  requires(0 <= @Int.0 && @Int.0 < array_length(@Array<Int>.0))
+  ensures(true) effects(<Random>)
+{ let @Int = random_int(0, 5); @Array<Int>.0[@Int.0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_literal_constructor_tuple_destructure_projects_lengths(self) -> None:
+        """A LITERAL-constructor tuple destructure projects each component's
+        length; De Bruijn indexes the right array.  `let Tuple<@Array, @Array>
+        = Tuple([1,2,3], [9,9]); @Array<Int>.0[5]` -> `@Array<Int>.0` is the
+        2nd component [9,9] (length 2), so [5] is OOB -> E527."""
+        matched = _verify_err("""
+private fn pick(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Array<Int>, @Array<Int>> = Tuple([1, 2, 3], [9, 9]); @Array<Int>.0[5] }
+""", "out of bounds")
+        assert matched[0].error_code == "E527", matched[0].error_code
+
+    def test_call_sourced_tuple_destructure_array_is_tier3(self) -> None:
+        """A tuple destructure whose source is a CALL cannot project, so each
+        array slot shadows to an opaque array -> Tier 3, never a false E527
+        against a stale same-type outer's length (the alignment trap)."""
+        result = _verify("""
+private fn mk(@Array<Int> -> @Tuple<Array<Int>, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@Array<Int>.0, 0) }
+
+private fn destr(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [1, 2, 3]; let Tuple<@Array<Int>, @Int> = mk(@Array<Int>.0); @Array<Int>.0[5] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idx) == 1 and idx[0].status == "tier3", [
+            (o.kind, o.status) for o in idx
+        ]
+
+    def test_index_inside_quantifier_closure_not_obligated(self) -> None:
+        """An index inside a `forall` quantifier closure body is NOT walked
+        (captured length beyond Tier 1 without #427), so it records ZERO
+        index_bounds obligations — left to the runtime trap (#779)."""
+        result = _verify("""
+private fn allpos(@Array<Int> -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.1[5] == 0 }) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        idx = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert idx == [], f"quantifier-body index must not be obligated, got {len(idx)}"
+
+
+class TestDestructureDeBruijnAlignment680:
+    """Every destructure binding occupies exactly its De Bruijn slot, and a
+    trapping op reads the value actually at that slot — never a stale sibling,
+    never a collapsed/shifted index (#680 review's `collapse` failure class).
+    Values are chosen so reading the WRONG sibling flips the verdict."""
+
+    def test_literal_destructure_divisor_order_pins_first_component(self) -> None:
+        """`Tuple(10, 0)`: `@Int.1` = first (10), `@Int.0` = second (0).
+        Dividing by `@Int.1` discharges `10 != 0` — a swap onto the `0` sibling
+        would flip to a false E526."""
+        result = _verify("""
+private fn lit_order_first(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 0); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_literal_destructure_divisor_order_pins_second_component(self) -> None:
+        """`Tuple(10, 0)`: `@Int.0` = second (0) -> dividing by it is a provable
+        E526.  Reading the `10` sibling would silently discharge a real zero."""
+        _verify_err("""
+private fn lit_order_second(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 0); @Int.1 / @Int.0 }
+""", "by zero")
+
+    def test_mixed_literal_opaque_keeps_debruijn_no_collapse(self) -> None:
+        """`Tuple(10, <opaque>)`: `@Int.0` = OPAQUE second component -> Tier 3,
+        NOT shifted onto the literal `10`.  A skip would collapse `@Int.0` onto
+        `10` and silently discharge (the worst #680 failure)."""
+        result = _verify("""
+private fn mixed_opaque_first(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_mixed_literal_opaque_literal_component_still_tier1(self) -> None:
+        """`Tuple(10, <opaque>)`: the literal `@Int.1` (10) stays Tier 1 even
+        with an opaque sibling — projection precision survives a mixed source."""
+        result = _verify("""
+private fn mixed_opaque_lit(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_three_component_literal_each_index_reads_its_own(self) -> None:
+        """`Tuple(10, 0, 7)`: `@Int.1` = middle (0 -> violated), `@Int.2` = first
+        (7 -> safe).  Distinct values so any off-by-one flips a verdict."""
+        _verify_err("""
+private fn tri_middle(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int, @Int> = Tuple(10, 0, 7); 1 / @Int.1 }
+""", "by zero")
+        _verify_ok("""
+private fn tri_last(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int, @Int> = Tuple(10, 0, 7); 1 / @Int.2 }
+""")
+
+    def test_intervening_different_type_does_not_shift_same_type_index(self) -> None:
+        """`Tuple<@Int, @Nat, @Int> = Tuple(7, 99, 0)`: `@Int.0` skips the
+        intervening `@Nat` to read the 3rd component (0 -> violated); `@Int.1`
+        reads the first (7 -> safe).  Different types = different namespaces."""
+        _verify_err("""
+private fn interleaved_zero(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Nat, @Int> = Tuple(7, 99, 0); 1 / @Int.0 }
+""", "by zero")
+        _verify_ok("""
+private fn interleaved_safe(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Nat, @Int> = Tuple(7, 99, 0); 1 / @Int.1 }
+""")
+
+    def test_destructure_zero_shadows_guarded_outer_param(self) -> None:
+        """A destructure binding `0` that shadows a `requires(@Int.0 != 0)`
+        outer param makes `@Int.0` read the destructured `0` (violated), not
+        the stale guarded outer."""
+        _verify_err("""
+public fn destr_shadows_guard(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(5, 0); 1 / @Int.0 }
+""", "by zero")
+
+    def test_opaque_destructure_component_not_discharged_by_outer_guard(self) -> None:
+        """`requires(@Int.0 != 0)` then `let Tuple = Tuple(<opaque>, <opaque>)`:
+        `@Int.0` = opaque -> Tier 3.  The outer `!= 0` must NOT leak through the
+        shadow (silent-failure differential)."""
+        result = _verify("""
+public fn opaque_destr_guard(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(random_int(0, 10), random_int(0, 10)); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_stacked_destructures_deep_index_reaches_outer_first(self) -> None:
+        """Two stacked literal destructures: `@Int.3` reaches PAST the inner two
+        slots to the first component of the OUTER destructure.  Pins the 4-deep
+        De Bruijn stack and stacked literal projection."""
+        _verify_ok("""
+private fn stacked_outer_safe(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(3, 9); let Tuple<@Int, @Int> = Tuple(0, 5); 1 / @Int.3 }
+""")
+        _verify_err("""
+private fn stacked_outer_zero(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(0, 9); let Tuple<@Int, @Int> = Tuple(7, 5); 1 / @Int.3 }
+""", "by zero")
+
+    def test_nat_subtraction_destructure_projection_is_order_sensitive(self) -> None:
+        """Non-commutative `@Nat` subtraction through projection: `Tuple(3, 10)`.
+        `@Nat.1 - @Nat.0` = 3 - 10 underflows (E502); `@Nat.0 - @Nat.1` = 10 - 3
+        is safe.  Alignment is op-agnostic."""
+        _verify_err("""
+private fn sub_underflow(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = Tuple(3, 10); @Nat.1 - @Nat.0 }
+""", "underflow")
+        _verify_ok("""
+private fn sub_safe(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = Tuple(3, 10); @Nat.0 - @Nat.1 }
+""")
+
+    def test_index_bounds_destructure_projection_reads_right_index(self) -> None:
+        """`index_bounds` through projection: `Tuple(5, 1)` indexing `[10,20,30]`.
+        `[..][@Int.0]` = `[..][1]` in bounds; `[..][@Int.1]` = `[..][5]` OOB
+        (E527).  Alignment holds for the index op too."""
+        _verify_ok("""
+private fn idx_inbounds(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(5, 1); [10, 20, 30][@Int.0] }
+""")
+        _verify_err("""
+private fn idx_oob(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(5, 1); [10, 20, 30][@Int.1] }
+""", "bounds")
+
+    def test_refinement_typed_component_projects_value_and_invariant(self) -> None:
+        """A refinement-typed component keeps its own namespace AND invariant:
+        `Tuple<@PosInt, @Int> = Tuple(3, 0)`.  `@Int.0` = literal 0 (violated);
+        `@PosInt.0` = 3, discharges `3 > 0 => != 0` (verified)."""
+        _verify_err("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn refined_zero_sibling(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = Tuple(3, 0); 1 / @Int.0 }
+""", "by zero")
+        _verify_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn refined_posint_divisor(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@PosInt, @Int> = Tuple(3, 0); 1 / @PosInt.0 }
+""")
+
+
+class TestShadowAuditInteractions680:
+    """Cross-construct shadow interactions: a `1 / shadow` (or `%` / `@Nat -`)
+    embedded in array-literals, asserts, nested blocks, nested matches, and
+    alongside independent shadows must stay Tier-3 (never silent, never false),
+    and shadows must respect block scoping (#680 audit, interaction dimension)."""
+
+    def test_shadow_div_inside_array_literal_is_tier3(self) -> None:
+        """A `1 / shadow` inside an array-literal element is Tier-3 — the
+        array-lit walker arm recurses into elements and the opaque-shadow guard
+        applies one host-construct deep."""
+        result = _verify("""
+private fn f(@Int -> @Array<Int>)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{ let @Int = random_int(0, 10); [1 / @Int.0, 99] }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_shadow_div_inside_assert_is_tier3(self) -> None:
+        """`assert(1 / shadow > 0)` over an opaque `random_int` shadow is
+        Tier-3 — the Assert walker arm recurses into the condition."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{ let @Int = random_int(0, 10); assert(1 / @Int.0 > 0); 0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_let_value_is_opaque_match_then_divisor_is_tier3(self) -> None:
+        """A `let @Int = match <opaque-scrutinee> {...}` value is opaque (the
+        SMT layer returns None for a match over an effect op), so a later
+        `1 / @Int.0` is Tier-3 even when both arms are non-zero literals (the
+        arm taken is unknown)."""
+        result = _verify("""
+effect Src {
+  op g(Unit -> Option<Int>);
+}
+
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Src>)
+{ let @Int = match Src.g(()) { Some(@Int) -> 7, None -> 1 }; 1 / @Int.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_nested_opaque_match_divisor_is_tier3(self) -> None:
+        """A divisor in a `match` nested inside another `match`, both over an
+        opaque effect-op scrutinee, is Tier-3 — `_fresh_pattern_env` shadows the
+        inner pattern slot through two arm levels, never discharging against the
+        outer `requires(@Int.0 != 0)`."""
+        result = _verify("""
+effect Src {
+  op g(Unit -> Option<Int>);
+}
+
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Src>)
+{
+  match Src.g(()) {
+    Some(@Int) -> match Src.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 },
+    None -> 1
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_independent_shadows_do_not_cross_contaminate(self) -> None:
+        """Two independent opaque shadows — a `random_int` Int and a
+        `random_nat` Nat — keep separate obligations: the `1 / @Int.0` div and
+        the `@Nat.0 - @Nat.1` subtraction each fall to their own Tier-3,
+        neither masking nor leaking onto the other."""
+        result = _verify("""
+private fn f(@Int, @Nat -> @Array<Int>)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{
+  let @Int = random_int(0, 9);
+  let @Nat = random_nat(0, 9);
+  [1 / @Int.0, @Nat.0 - @Nat.1]
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+        assert len(subs) == 1 and subs[0].status == "tier3", [(o.kind, o.status) for o in subs]
+
+    def test_division_before_shadow_let_stays_tier1(self) -> None:
+        """A division by the constrained param *before* an opaque shadow let is
+        Tier-1; a division by the shadow *after* is Tier-3.  The shadow applies
+        only from its binding point onward (intra-block scoping)."""
+        result = _verify("""
+private fn f(@Int -> @Array<Int>)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{
+  let @Int = 1 / @Int.0;
+  let @Int = random_int(0, 9);
+  [@Int.1, 1 / @Int.0]
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        statuses = sorted(o.status for o in divs)
+        assert statuses == ["tier3", "verified"], [(o.kind, o.status) for o in divs]
+
+    def test_nested_block_shadow_does_not_leak_to_outer_divisor(self) -> None:
+        """An opaque shadow bound inside a nested block does not bleed onto an
+        outer divisor.  `let @Int = { let @Int = random_int(...); ... }; 1 /
+        @Int.1` divides by the outer constrained param (`@Int.1`), Tier-1."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{
+  let @Int = { let @Int = random_int(0, 9); @Int.0 + 0 };
+  1 / @Int.1
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [(o.kind, o.status) for o in divs]
+
+    def test_nested_block_opaque_return_bound_to_outer_let_is_tier3(self) -> None:
+        """When a nested block's RETURN value is opaque (a `random_int` in inner
+        scope) and is bound to an outer `let`, a division by that outer binding
+        is Tier-3 (the outer let value translates to None)."""
+        result = _verify("""
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Random>)
+{
+  let @Int = { let @Int = random_int(0, 9); @Int.0 };
+  1 / @Int.0
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_modulo_in_opaque_match_arm_is_tier3(self) -> None:
+        """The modulo analogue of the opaque-match-scrutinee case: `1 % @Int.0`
+        in an arm over an opaque effect op is Tier-3 (modulo carries the same
+        `!= 0` obligation)."""
+        result = _verify("""
+effect Src {
+  op g(Unit -> Option<Int>);
+}
+
+private fn f(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Src>)
+{ match Src.g(()) { Some(@Int) -> 1 % @Int.0, None -> 1 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [(o.kind, o.status) for o in divs]
+
+    def test_nat_sub_in_opaque_match_arm_is_tier3(self) -> None:
+        """The subtraction analogue: `@Nat.0 - @Nat.1` in an arm over an opaque
+        effect op (returning Option<Nat>) is Tier-3 — the matched field is an
+        opaque shadow, so the underflow obligation can't discharge against it."""
+        result = _verify("""
+effect SrcN {
+  op g(Unit -> Option<Nat>);
+}
+
+private fn f(@Nat -> @Nat)
+  requires(true) ensures(true) effects(<SrcN>)
+{ match SrcN.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(subs) == 1 and subs[0].status == "tier3", [(o.kind, o.status) for o in subs]
