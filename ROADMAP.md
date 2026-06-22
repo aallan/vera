@@ -12,11 +12,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## The roadmap
 
-Four tiers, worked roughly top to bottom.  Small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a Tier 0 item.
-
-### Tier 0 — Close the silent failures — done
-
-Every known case where Vera accepted a program and quietly did something weaker than it promised is now closed.  Verification downgrades fail loudly or tier honestly, and the trapping primitive operations the README promises to check — `@Nat` underflow and narrowing, integer division and modulo by zero, and array index bounds — now carry auto-synthesised obligations: proved at Tier 1 where decidable, a compile error where provably unsafe, else honestly runtime-guarded at Tier 3.  (Operations inside a closure / quantifier / handler body, and other trapping conversions such as float-to-int, remain runtime-guarded — loud at runtime, never a silent wrong value — [#779](https://github.com/aallan/vera/issues/779).)  See [HISTORY.md](HISTORY.md).
+Tier 0 — close every silent failure — is done: no known case remains where Vera accepts a program and quietly does something weaker than it promised (see [HISTORY.md](HISTORY.md)).  The three remaining tiers are worked roughly top to bottom; small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a higher one.
 
 ### Tier 1 — Safety net and runtime robustness
 
