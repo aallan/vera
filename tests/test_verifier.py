@@ -1021,6 +1021,52 @@ private fn wrong_slot_div(@Int, @Int -> @Int)
         assert "@Int.0 != 0" in fix, fix
         assert "@Int.1" not in fix, fix
 
+    def test_literal_destructure_divisor_discharges_at_tier1(self) -> None:
+        """A divisor projected from a literal-constructor destructure is
+        Tier-1, not Tier-3.  `let Tuple<@Int, @Int> = Tuple(10, 6);
+        @Int.0 / @Int.1` discharges `10 != 0` — the divisor `@Int.1` is the
+        literal first component — rather than shadowing it to an opaque
+        Tier-3 value (PR #778 review: rebind translatable components to
+        their projected terms, mirroring the @Nat-binding walker)."""
+        result = _verify("""
+private fn lit_destr_div(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(10, 6); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_nonliteral_destructure_divisor_stays_tier3(self) -> None:
+        """A divisor from a NON-literal destructure source (a call) can't be
+        projected, so each component stays a tracked opaque shadow → Tier-3,
+        never a false E526.  Guards the 77d90fb regression: a bare fresh
+        `@Int` slot var carries no `!= 0` invariant and false-fired E526."""
+        result = _verify("""
+private fn mk(@Int -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Int.0, @Int.0) }
+
+private fn nonlit_destr_div(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Int, @Int> = mk(@Int.0); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
 
 class TestPrimitiveIndexObligation680:
     """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).

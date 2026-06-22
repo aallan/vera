@@ -2007,26 +2007,50 @@ class ContractVerifier:
                 elif isinstance(stmt, ast.LetDestruct):
                     # #680 review: a `let Ctor<...> = <value>` destructure can
                     # host a trapping op in its *value* (`Tuple(@Int.0 /
-                    # @Int.1, ...)`), so walk it.  Then, like the LetStmt case,
-                    # replace any stale same-type outer binding shadowed by a
-                    # destructured slot with a tracked opaque shadow const, so a
-                    # later op resolves to the (unknown) destructured value, not
-                    # the stale one.  Recovering the literal component values for
-                    # Tier-1 precision is the @Nat-binding walker's projection
-                    # job (#779-family); here an op on a destructured slot falls
-                    # to Tier-3.
+                    # @Int.1, ...)`), so walk it first.  Then rebind each
+                    # destructured slot so a later op resolves to the
+                    # destructured value, not a stale same-type outer binding.
+                    #
+                    # A literal-constructor source (`Tuple(10, 6)`) pairs each
+                    # binding with a translatable sub-expression: project the
+                    # real term for Tier-1 precision (`_ / @Int.1` discharges
+                    # `10 != 0` instead of falling to Tier-3), mirroring the
+                    # @Nat-binding walker (PR #778 review).  A non-literal /
+                    # untranslatable component falls back to a *tracked opaque
+                    # shadow* (not a bare fresh var, which carries no `!= 0`
+                    # and false-fired E526 — the 77d90fb regression): a later
+                    # div/sub operand that IS the shadow routes to Tier-3.
+                    # Literal components are translated in the pre-destructure
+                    # env and applied after the loop, avoiding same-type
+                    # self-shadowing.
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
-                    for te in stmt.type_bindings:
+                    lit_args: tuple[ast.Expr, ...] = ()
+                    if (isinstance(stmt.value, ast.ConstructorCall)
+                            and stmt.value.name == stmt.constructor):
+                        lit_args = stmt.value.args
+                    pushed: list[tuple[str, z3.ExprRef]] = []
+                    for i, te in enumerate(stmt.type_bindings):
                         type_name = smt._type_expr_to_slot_name(te)
                         if type_name is None:
                             continue
-                        stale = cur_env.resolve(type_name, 0)
-                        if stale is not None:
-                            shadow = z3.FreshConst(stale.sort(), "shadow")
-                            self._opaque_shadows.append(shadow)
-                            cur_env = cur_env.push(type_name, shadow)
+                        slot_val: z3.ExprRef | None = None
+                        if i < len(lit_args):
+                            slot_val = smt.translate_expr(lit_args[i], cur_env)
+                        if slot_val is None:
+                            # Non-literal / untranslatable: a tracked shadow of
+                            # the stale outer's sort.  No stale outer ⇒ nothing
+                            # to mask and no sort to borrow; the slot resolves
+                            # to None downstream, which is itself Tier-3.
+                            stale = cur_env.resolve(type_name, 0)
+                            if stale is None:
+                                continue
+                            slot_val = z3.FreshConst(stale.sort(), "shadow")
+                            self._opaque_shadows.append(slot_val)
+                        pushed.append((type_name, slot_val))
+                    for tn, sv in pushed:
+                        cur_env = cur_env.push(tn, sv)
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for @Nat subtraction
                     # obligations (test_unsafe_sub_stmt_position_obligated).
