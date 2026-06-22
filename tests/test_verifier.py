@@ -1137,6 +1137,38 @@ private fn compound_shadow(@Int -> @Int)
             (o.kind, o.status) for o in divs
         ]
 
+    def test_opaque_match_scrutinee_shadows_arm_bindings(self) -> None:
+        """A match arm binding over an UNTRANSLATABLE scrutinee (an effect op)
+        must shadow its pattern slots, so a primitive op in the arm falls to
+        Tier-3 — never discharged against a stale same-name outer slot.
+        Without it, `match Source.next(()) { Some(@Int) -> 1 / @Int.0 }` under
+        `requires(@Int.0 != 0)` silently verifies `1 / @Int.0` against the
+        *outer* param's `!= 0` while the matched field can be 0 — a silent
+        false-discharge (PR #778 review, outside-diff; the match-arm analogue
+        of the untranslatable-`let` shadow, mirroring `_fresh_pattern_env`)."""
+        result = _verify("""
+effect Source {
+  op next(Unit -> Option<Int>);
+}
+
+private fn opaque_match(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Source>)
+{
+  match Source.next(()) {
+    Some(@Int) -> 1 / @Int.0,
+    None -> 1
+  }
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
 
 class TestPrimitiveIndexObligation680:
     """`arr[i]` carries a `0 <= i < array_length(arr)` obligation (#680).

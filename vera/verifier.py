@@ -2148,6 +2148,16 @@ class ContractVerifier:
                     pat_cond = smt._pattern_condition(
                         scrutinee_z3, arm.pattern,
                     )
+                else:
+                    # Untranslatable scrutinee (e.g. an effect op): the arm
+                    # still binds pattern slots, so shadow them as TRACKED
+                    # opaque consts.  Else `@Int.0` reads a stale same-name
+                    # outer — `requires(@Int.0 != 0)` would silently discharge
+                    # `1 / @Int.0` on the matched field, which can be 0 (#680
+                    # review, outside-diff; mirrors the nat-binding walker).
+                    arm_env = self._fresh_pattern_env(
+                        arm.pattern, slot_env, smt, track=True,
+                    )
                 if pat_cond is not None:
                     smt._path_conditions.append(pat_cond)
                     try:
@@ -3122,6 +3132,7 @@ class ContractVerifier:
 
     def _fresh_pattern_env(
         self, pattern: ast.Pattern, env: SlotEnv, smt: SmtContext,
+        track: bool = False,
     ) -> SlotEnv:
         """Bind *pattern*'s slots to fresh, unconstrained SMT vars.
 
@@ -3135,6 +3146,13 @@ class ContractVerifier:
         sort, but a *nested* obligation in the arm can still project a
         narrowing field out of it, so it is invalidated too — shadowed by a
         fresh const of its own sort when an outer binding exists.
+
+        ``track=True`` additionally records each fresh var in
+        ``self._opaque_shadows`` so a trapping-primitive obligation over it
+        (division / subtraction) falls to Tier-3 instead of a *false E526 /
+        E502* — the fresh var carries no ``!= 0`` invariant, so without the
+        shadow tag it would read as a real zero counterexample (#680 review,
+        the match-arm analogue of the untranslatable-`let` shadow).
         """
         if isinstance(pattern, ast.BindingPattern):
             slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
@@ -3152,11 +3170,13 @@ class ContractVerifier:
                 if stale is None:
                     return env
                 fresh = z3.FreshConst(stale.sort(), prefix="patbind")
+            if track:
+                self._opaque_shadows.append(fresh)
             return env.push(slot_name, fresh)
         if isinstance(pattern, ast.ConstructorPattern):
             cur = env
             for sub in pattern.sub_patterns:
-                cur = self._fresh_pattern_env(sub, cur, smt)
+                cur = self._fresh_pattern_env(sub, cur, smt, track=track)
             return cur
         return env
 
