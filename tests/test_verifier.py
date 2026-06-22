@@ -964,6 +964,30 @@ private fn ld_div(@Int, @Int -> @Int)
 { let Tuple<@Int, @Int> = Tuple(@Int.0 / @Int.1, 5); @Int.0 }
 """, "by zero")
 
+    def test_untranslatable_let_divisor_not_falsely_discharged(self) -> None:
+        """An untranslatable scalar `let` (a `random_int` effect result the SMT
+        layer doesn't model) that shadows a constrained outer must NOT let the
+        outer's `requires(@Int.0 != 0)` falsely discharge a division by it.
+        `requires(@Int.0 != 0); let @Int = random_int(0, 10); 1 / @Int.0` —
+        random_int can be 0, so the division is unsafe and must be honest Tier-3
+        (the shadowed value is unknown), not a false Tier-1 (#680 review).  This
+        is the silent-failure differential: before the shadow fix it verified
+        clean (Tier-1) yet trapped at runtime."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"expected no error, got: {[e.description for e in errors]}"
+        div = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(div) == 1 and div[0].status == "tier3", (
+            "divisor must be honest Tier-3 (the shadowed let value is unknown), "
+            f"got {[(o.kind, o.status) for o in div]}"
+        )
+
     def test_division_inside_interpolated_string_fires(self) -> None:
         r"""An unguarded division in an interpolated-string expression
         (`"x: \(@Int.0 / @Int.1)"`) is obligated (E526) — the walker recurses
@@ -977,6 +1001,25 @@ private fn ld_div(@Int, @Int -> @Int)
             '{ "x: \\(@Int.0 / @Int.1)" }\n',
             "by zero",
         )
+
+    def test_div_by_zero_fix_hint_renders_actual_divisor(self) -> None:
+        """The E526 fix hint names the *actual* divisor, not a fixed slot.
+
+        For `@Int.1 / @Int.0` the divisor is `@Int.0` (De Bruijn: most
+        recent binding).  The pre-review hint hard-coded `@Int.1 != 0`,
+        which points at the wrong parameter here; `format_expr(expr.right)`
+        renders the real operand (PR #778 review, `verifier.py` E526 hint).
+        """
+        matched = _verify_err("""
+private fn wrong_slot_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.1 / @Int.0 }
+""", "by zero")
+        fix = matched[0].fix
+        assert "@Int.0 != 0" in fix, fix
+        assert "@Int.1" not in fix, fix
 
 
 class TestPrimitiveIndexObligation680:
@@ -1210,6 +1253,22 @@ private fn destructure_shadow(@Array<Int> -> @Int)
   effects(pure)
 { let @Array<Int> = [1, 2, 3]; let Tuple<@Array<Int>, @Int> = mk(@Array<Int>.0); @Array<Int>.0[5] }
 """)
+
+    def test_index_oob_fix_hint_renders_operands_and_both_bounds(self) -> None:
+        """The E527 fix hint names the actual collection and index, and
+        covers BOTH bounds (`0 <= i && i < array_length(...)`) — not a
+        fixed slot or an upper-bound-only guard (PR #778 review,
+        `verifier.py` E527 hint).  `[10, 20, 30][5]` exercises the
+        `ArrayLit` render path in `format_expr`."""
+        matched = _verify_err("""
+private fn oob_hint(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [10, 20, 30][5] }
+""", "out of bounds")
+        fix = matched[0].fix
+        assert "0 <= 5 && 5 < array_length([10, 20, 30])" in fix, fix
 
 
 class TestNatBindingObligation552:

@@ -803,6 +803,9 @@ def format_expr(expr: Expr) -> str:
             else:
                 parts.append(f"\\({format_expr(p)})")
         return '"' + "".join(parts) + '"'
+    if isinstance(expr, ArrayLit):
+        elements = ", ".join(format_expr(e) for e in expr.elements)
+        return f"[{elements}]"
     if isinstance(expr, SlotRef):
         base = expr.type_name
         if expr.type_args:

@@ -150,6 +150,10 @@ class ContractVerifier:
         self.summary = VerifySummary()
         # #222 Phase A: reified obligations in discharge order.
         self.obligations: list[ProofObligation] = []
+        # #680 review: fresh consts pushed to shadow a stale outer slot when an
+        # untranslatable let/destructure rebinds it.  A div/sub operand that IS
+        # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
+        self._opaque_shadows: list[z3.ExprRef] = []
         # Warm-session hook: when provided (by
         # obligations.session.VerificationSession), _verify_fn calls
         # shared_smt.reset() per function instead of constructing a
@@ -1391,6 +1395,13 @@ class ContractVerifier:
         #      visits — and lets the walker be the sole recorder for
         #      sites the body pass never translates (#727).
         if decl.body is not None:
+            # Reset the per-function list of opaque shadow vars — fresh consts
+            # pushed to invalidate a stale outer slot when an untranslatable
+            # let/destructure shadows it (#680 review).  An obligation whose
+            # operand IS such a shadow falls to Tier-3: the shadowed value is
+            # unknown, so it can be neither proven safe nor a real
+            # counterexample (a stale outer's facts must NOT discharge it).
+            self._opaque_shadows = []
             self._walk_for_primitive_op_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
             )
@@ -1976,18 +1987,21 @@ class ContractVerifier:
                     type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                     if val is None and type_name is not None:
                         # Untranslatable RHS that shadows a stale same-type outer
-                        # binding: replace that binding with a fresh const of its
-                        # sort so a later op resolves to the (opaque) new value,
-                        # not the stale one — e.g. `let @Array<Int> = [1, 2, 3];
-                        # let @Array<Int> = array_append(...); arr[3]` must be
-                        # Tier-3, not a false E527 against the stale length 3.
-                        # Restricted to non-Int sorts: a fresh Int/Nat has no
-                        # `!= 0` invariant, so shadowing a divisor slot with one
-                        # would be a false E526 (an Int let is left unbound — a
-                        # later use falls to Tier-3 or the outer value).
+                        # binding: replace it with a fresh const of its sort so a
+                        # later op resolves to the (opaque) new value, not the
+                        # stale one.  A stale array's length false-E527s an
+                        # index (`let a = [1,2,3]; let a = array_append(...);
+                        # a[3]`); a stale Int's `requires(... != 0)` falsely
+                        # discharges a division (`let @Int = random_int(...);
+                        # 1 / @Int.0`).  The fresh const is tracked as an opaque
+                        # shadow so a div/sub operand that IS one falls to Tier-3
+                        # rather than a false E526/E502 on its unconstrained value
+                        # (it can't be proven safe, nor is its zero a real
+                        # reachable counterexample).
                         stale = cur_env.resolve(type_name, 0)
-                        if stale is not None and stale.sort() != z3.IntSort():
+                        if stale is not None:
                             val = z3.FreshConst(stale.sort(), "shadow")
+                            self._opaque_shadows.append(val)
                     if val is not None and type_name is not None:
                         cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.LetDestruct):
@@ -1995,14 +2009,11 @@ class ContractVerifier:
                     # host a trapping op in its *value* (`Tuple(@Int.0 /
                     # @Int.1, ...)`), so walk it.  Then, like the LetStmt case,
                     # replace any stale same-type outer binding shadowed by a
-                    # destructured NON-Int slot with a fresh const, so a later
-                    # op doesn't resolve to the stale value (a destructured
-                    # array shadowing a known-length outer → false E527).  Int
-                    # slots are left unbound: a fresh Int has no `!= 0`
-                    # invariant, so shadowing a divisor slot would be a false
-                    # E526 (`Tuple(10, 5)`); recovering the literal component
-                    # values is the @Nat-binding walker's projection job
-                    # (#779-family), and an unbound Int slot's later use falls
+                    # destructured slot with a tracked opaque shadow const, so a
+                    # later op resolves to the (unknown) destructured value, not
+                    # the stale one.  Recovering the literal component values for
+                    # Tier-1 precision is the @Nat-binding walker's projection
+                    # job (#779-family); here an op on a destructured slot falls
                     # to Tier-3.
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
@@ -2012,10 +2023,10 @@ class ContractVerifier:
                         if type_name is None:
                             continue
                         stale = cur_env.resolve(type_name, 0)
-                        if stale is not None and stale.sort() != z3.IntSort():
-                            cur_env = cur_env.push(
-                                type_name, z3.FreshConst(stale.sort(), "shadow"),
-                            )
+                        if stale is not None:
+                            shadow = z3.FreshConst(stale.sort(), "shadow")
+                            self._opaque_shadows.append(shadow)
+                            cur_env = cur_env.push(type_name, shadow)
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for @Nat subtraction
                     # obligations (test_unsafe_sub_stmt_position_obligated).
@@ -2796,6 +2807,14 @@ class ContractVerifier:
         # Other expression types — no nested binding site to walk.
         return
 
+    def _is_opaque_shadow(self, term: z3.ExprRef) -> bool:
+        """True iff *term* is a fresh const pushed to shadow a stale outer slot
+        for an untranslatable ``let`` / destructure (#680 review).  An
+        obligation over such an unknown value must fall to Tier-3 — it can be
+        neither proven safe nor treated as a real counterexample (a stale
+        outer's facts must not discharge it)."""
+        return any(term.eq(s) for s in self._opaque_shadows)
+
     def _check_subtraction_obligation(
         self,
         decl: ast.FnDecl,
@@ -2815,6 +2834,13 @@ class ContractVerifier:
         lhs = smt.translate_expr(expr.left, slot_env)
         rhs = smt.translate_expr(expr.right, slot_env)
         if lhs is None or rhs is None:  # pragma: no cover — both Nat
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "nat_sub", expr, "tier3")
+            return
+        if self._is_opaque_shadow(lhs) or self._is_opaque_shadow(rhs):
+            # An operand is an opaque shadow (an untranslatable let that
+            # rebound a stale outer slot): its value is unknown, so Tier-3
+            # rather than a false E502 on the unconstrained shadow.
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "nat_sub", expr, "tier3")
             return
@@ -2864,6 +2890,15 @@ class ContractVerifier:
         if divisor is None:
             # Untranslatable divisor — no Tier-1 term to check; the runtime
             # `divide_by_zero` trap is the guarantee.
+            self.summary.total += 1
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "div_zero", expr, "tier3")
+            return
+        if self._is_opaque_shadow(divisor):
+            # The divisor is an opaque shadow (an untranslatable let that
+            # rebound a stale outer slot): its value is unknown, so Tier-3 —
+            # a stale outer's `requires(... != 0)` must not falsely discharge
+            # it, and its unconstrained zero is not a real counterexample.
             self.summary.total += 1
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "div_zero", expr, "tier3")
@@ -3976,6 +4011,7 @@ class ContractVerifier:
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
         op_word = "modulo" if expr.op == ast.BinOp.MOD else "division"
+        divisor = ast.format_expr(expr.right)
         description = (
             f"Integer {op_word} in '{decl.name}' may divide by zero."
         )
@@ -3992,12 +4028,12 @@ class ContractVerifier:
                 "`i64.rem_s` trap at runtime on a zero divisor."
             ),
             fix=(
-                "Add a precondition ruling out a zero divisor, e.g. "
-                "`requires(@Int.1 != 0)`.  Alternatively, guard the "
-                "operation (`if @Int.1 == 0 then 0 else @Int.0 / @Int.1` — "
-                "the path condition discharges the obligation in the "
-                "else-branch) or give the divisor a refinement type such "
-                "as `{ @Int | @Int.0 != 0 }`."
+                f"Add a precondition ruling out a zero divisor, e.g. "
+                f"`requires({divisor} != 0)`.  Alternatively guard the "
+                f"operation with `if {divisor} == 0 then <default> else ...` "
+                f"(the path condition discharges the obligation in the "
+                f"else-branch), or give the divisor a refinement type that "
+                f"excludes zero."
             ),
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
@@ -4020,6 +4056,8 @@ class ContractVerifier:
                     ce_lines.append(f"    {name} = {value}")
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
+        coll = ast.format_expr(expr.collection)
+        idx = ast.format_expr(expr.index)
         description = f"Array index in '{decl.name}' is out of bounds."
         if ce_text:
             description += f"\n  {ce_text}"
@@ -4034,13 +4072,13 @@ class ContractVerifier:
                 "a statically-known length); the access traps at runtime."
             ),
             fix=(
-                "Index within bounds, or constrain the index with a "
-                "precondition or refinement, e.g. "
-                "`requires(@Nat.0 < array_length(@Array<Int>.0))`.  "
-                "Alternatively guard the access: "
-                "`if @Nat.0 < array_length(@Array<Int>.0) then "
-                "@Array<Int>.0[@Nat.0] else <default>` — the path condition "
-                "discharges the obligation in the then-branch."
+                f"Index within bounds, or constrain the index with a "
+                f"precondition covering both bounds, e.g. "
+                f"`requires(0 <= {idx} && {idx} < array_length({coll}))`.  "
+                f"Alternatively guard the access with "
+                f"`if 0 <= {idx} && {idx} < array_length({coll}) then "
+                f"{coll}[{idx}] else <default>` — the path condition discharges "
+                f"the obligation in the then-branch."
             ),
             spec_ref=(
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
