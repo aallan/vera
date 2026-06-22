@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Characterization harness for `execute()`** ([#734](https://github.com/aallan/vera/issues/734)).  A consolidated, mutation-validated test harness (`tests/test_execute_characterization.py`) pinning the observable contract of `execute()` (`vera/codegen/api.py`) — every `ExecuteResult` field (`value` int/float/str/heap-pointer/None, `stdout`, `state`, `exit_code`, `stderr`) crossed with the three completion modes (normal return; WASM trap, which *raises* `WasmTrapError` rather than returning a result; interrupt/exit), plus the positional-constructor compatibility shape and `capture_stderr` True-vs-default.  This is the green gate for the upcoming `vera/runtime/` decomposition ([#421](https://github.com/aallan/vera/issues/421)): every host-binding extraction must keep it passing.  Each cell was confirmed to flip RED when its target return path in `api.py` is deliberately broken (9 mutations), so none is green-for-the-wrong-reason.  Test-only; no behaviour change.
+
 ## [0.0.177] - 2026-06-21
 
 ### Added
