@@ -767,6 +767,34 @@ private fn negative_sentinel(@Unit -> @Int)
 { 0 - 1 }
 """)
 
+    def test_compound_shadow_subtraction_is_tier3_not_e502(self) -> None:
+        """A subtraction where BOTH operands are compound expressions embedding
+        opaque shadows must fall to Tier-3, not a false E502.  After a
+        non-literal destructure shadows both `@Nat` components, `(@Nat.0 + 1) -
+        (@Nat.1 + 1)` has neither operand a *direct* shadow, so the direct
+        guard misses it — `_contains_opaque_shadow` catches the embedded
+        shadows (PR #778 review, the subtraction analogue of the E526
+        compound-divisor fix)."""
+        result = _verify("""
+private fn mksub(@Nat -> @Tuple<Nat, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Nat.0, @Nat.0) }
+
+private fn sub_compound(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Nat, @Nat> = mksub(@Nat.0); (@Nat.0 + 1) - (@Nat.1 + 1) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(subs) == 1 and subs[0].status == "tier3", [
+            (o.kind, o.status) for o in subs
+        ]
+
 
 class TestPrimitiveDivisionObligation680:
     """`a / b` and `a % b` (Int/Nat) carry a Tier-1 `b != 0` obligation (#680).
@@ -1059,6 +1087,48 @@ private fn nonlit_destr_div(@Int -> @Int)
   ensures(true)
   effects(pure)
 { let Tuple<@Int, @Int> = mk(@Int.0); @Int.0 / @Int.1 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_untranslatable_destructure_component_keeps_debruijn(self) -> None:
+        """An untranslatable destructured component with NO stale outer must
+        still push a tracked placeholder, so same-type De Bruijn positions
+        don't collapse.  `let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10));
+        1 / @Int.0` must be Tier-3: `@Int.0` is the *opaque second component*,
+        not the literal `10` it would shift onto if the component were skipped
+        (PR #778 review, `verifier.py` De Bruijn collapse).  A skip here is a
+        silent false-discharge — the worst #680 failure class."""
+        result = _verify("""
+private fn debruijn_keep(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{ let Tuple<@Int, @Int> = Tuple(10, random_int(0, 10)); 1 / @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "tier3", [
+            (o.kind, o.status) for o in divs
+        ]
+
+    def test_compound_shadow_divisor_is_tier3_not_e526(self) -> None:
+        """A divisor that *contains* an opaque shadow (`shadow + 1`), not just
+        one that IS a shadow, must fall to Tier-3 — Z3 must not pick
+        `shadow = -1` and emit a false E526.  `let @Int = random_int(0, 10);
+        1 / (@Int.0 + 1)` shadows the outer `@Int.0`, so the compound divisor
+        is opaque (PR #778 review, `verifier.py` `_contains_opaque_shadow`)."""
+        result = _verify("""
+private fn compound_shadow(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(<Random>)
+{ let @Int = random_int(0, 10); 1 / (@Int.0 + 1) }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]

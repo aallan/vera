@@ -2039,14 +2039,37 @@ class ContractVerifier:
                         if i < len(lit_args):
                             slot_val = smt.translate_expr(lit_args[i], cur_env)
                         if slot_val is None:
-                            # Non-literal / untranslatable: a tracked shadow of
-                            # the stale outer's sort.  No stale outer ⇒ nothing
-                            # to mask and no sort to borrow; the slot resolves
-                            # to None downstream, which is itself Tier-3.
+                            # Non-literal / untranslatable component: push a
+                            # *tracked* opaque placeholder so a later op falls
+                            # to Tier-3, never a stale outer's value.  EVERY
+                            # component must push something so same-type De
+                            # Bruijn positions stay aligned — skipping one
+                            # shifts `@Int.0` onto a sibling (`Tuple(10,
+                            # <opaque>)` would resolve `@Int.0` to the literal
+                            # `10` and silently discharge: the worst #680
+                            # failure class, PR #778 review).  Borrow the stale
+                            # outer's sort when present; else derive a fresh
+                            # placeholder from the binding type (scalar via
+                            # `_fresh_slot_var`, array / ADT via explicit
+                            # declarations).
                             stale = cur_env.resolve(type_name, 0)
-                            if stale is None:
+                            if stale is not None:
+                                slot_val = z3.FreshConst(stale.sort(), "shadow")
+                            else:
+                                slot_val = self._fresh_slot_var(smt, te)
+                                if slot_val is None:
+                                    resolved = self._resolve_type(te)
+                                    if self._is_array_type(resolved):
+                                        slot_val = self._declare_array_var(
+                                            smt, smt._fresh_name("shadow"),
+                                            resolved,
+                                        )
+                                    elif self._is_adt_type(resolved):
+                                        slot_val = smt.declare_adt(
+                                            smt._fresh_name("shadow"), resolved,
+                                        )
+                            if slot_val is None:
                                 continue
-                            slot_val = z3.FreshConst(stale.sort(), "shadow")
                             self._opaque_shadows.append(slot_val)
                         pushed.append((type_name, slot_val))
                     for tn, sv in pushed:
@@ -2839,6 +2862,16 @@ class ContractVerifier:
         outer's facts must not discharge it)."""
         return any(term.eq(s) for s in self._opaque_shadows)
 
+    def _contains_opaque_shadow(self, term: z3.ExprRef) -> bool:
+        """True iff *term* IS, or structurally CONTAINS, an opaque shadow const
+        (#680 review).  :py:meth:`_is_opaque_shadow` matches only a direct
+        operand; a compound divisor like ``shadow + 1`` embeds the shadow, so
+        its value is equally unknown and must fall to Tier-3 rather than yield
+        a spurious Z3 counterexample (``shadow = -1`` ⇒ ``shadow + 1 = 0``)."""
+        if self._is_opaque_shadow(term):
+            return True
+        return any(self._contains_opaque_shadow(c) for c in term.children())
+
     def _check_subtraction_obligation(
         self,
         decl: ast.FnDecl,
@@ -2871,6 +2904,22 @@ class ContractVerifier:
 
         obligation = lhs >= rhs
         result = smt.check_valid(obligation, list(assumptions))
+
+        if (
+            result.status != "verified"
+            and (self._contains_opaque_shadow(lhs)
+                 or self._contains_opaque_shadow(rhs))
+            and smt.check_valid(lhs < rhs, list(assumptions)).status
+            != "verified"
+        ):
+            # A compound operand embeds an opaque shadow (`shadow + 1`): the
+            # `lhs >= rhs` counterexample depends on the unknown shadow, and
+            # `lhs < rhs` isn't valid either, so Tier-3 — not a false E502.
+            # The direct-shadow guard above catches only a bare operand (#680
+            # review, the subtraction analogue of the compound-divisor fix).
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "nat_sub", expr, "tier3")
+            return
 
         if result.status == "verified":
             self.summary.tier1_verified += 1
@@ -2935,6 +2984,21 @@ class ContractVerifier:
         self.summary.total += 1
         obligation = divisor != z3.IntVal(0)
         result = smt.check_valid(obligation, list(assumptions))
+
+        if (
+            result.status != "verified"
+            and self._contains_opaque_shadow(divisor)
+            and smt.check_valid(
+                divisor == z3.IntVal(0), list(assumptions),
+            ).status != "verified"
+        ):
+            # The divisor embeds an opaque shadow (`shadow + 1`): `!= 0` is not
+            # provable, but neither is `== 0` — the counterexample depends on
+            # the unknown shadow, so Tier-3, not a false E526.  `_is_opaque_
+            # shadow` above catches only a *direct* shadow operand (#680 review).
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "div_zero", expr, "tier3")
+            return
 
         if result.status == "verified":
             self.summary.tier1_verified += 1
