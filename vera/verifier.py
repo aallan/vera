@@ -2969,6 +2969,15 @@ class ContractVerifier:
         Path conditions in ``smt._path_conditions`` are picked up
         automatically by :py:meth:`SmtContext.check_valid`.
         """
+        # Float division (Real-sorted) does not trap on a zero divisor —
+        # `f64.div` yields inf/NaN.  Exempt it up front by the divisor's
+        # *resolved type*, BEFORE the None / opaque-shadow recordings below: an
+        # untranslatable or destructured `@Float64` divisor never reaches the
+        # later Real-sort check, so without this it would get a bogus `div_zero`
+        # obligation (#680 review, PR #778).
+        divisor_ty = self._resolved_type_of(expr.right)
+        if divisor_ty is not None and self._is_float64_type(divisor_ty):
+            return
         divisor = smt.translate_expr(expr.right, slot_env)
         if divisor is None:
             # Untranslatable divisor — no Tier-1 term to check; the runtime

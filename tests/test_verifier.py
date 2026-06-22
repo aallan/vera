@@ -941,6 +941,29 @@ private fn float_div(@Float64, @Float64 -> @Float64)
 { @Float64.0 / @Float64.1 }
 """)
 
+    def test_float64_shadow_divisor_records_no_obligation(self) -> None:
+        """A `@Float64` divisor that is opaque (a non-literal destructure
+        shadow, so `translate_expr`/the shadow path fires before the Real-sort
+        check) must record NO `div_zero` obligation — float division is exempt
+        regardless of translatability (`f64.div` by zero is inf/NaN, not a
+        trap).  The float exemption keys on the divisor's resolved TYPE up
+        front, before the None/shadow recordings (PR #778 review)."""
+        result = _verify("""
+private fn mk(@Float64 -> @Tuple<Float64, Float64>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(@Float64.0, @Float64.0) }
+
+private fn fdiv(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ let Tuple<@Float64, @Float64> = mk(@Float64.0); @Float64.0 / @Float64.1 }
+""")
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert divs == [], [(o.kind, o.status) for o in divs]
+
     def test_partial_requires_does_not_discharge(self) -> None:
         """`requires(@Int.0 != 0)` constrains the numerator, not the divisor
         `@Int.1` — the obligation still fires."""
@@ -3970,6 +3993,11 @@ private fn sum(@List<Int> -> @Int)
           refinement_types' `@NonEmptyArray` (1, an Array-base refinement Z3
           cannot decide at Tier 1 — #427).  No example indexes provably out of
           bounds, so none is a loud E527.  Net: +3 T1, +5 T3, +8 total, +0 t3u.
+        * 263/31/294/0 after the #680-review Float64-divisor fix: json's `/`
+          divisor resolves to `@Float64`, so it is now exempt up front
+          (`f64.div` by zero is inf/NaN, not a trap) instead of recording a
+          bogus Tier-3 `div_zero` — it was the corpus's only tier3 div_zero.
+          -1 T3, -1 total.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -3983,8 +4011,8 @@ private fn sum(@List<Int> -> @Int)
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
         assert t1 == 263, f"Expected 263 T1, got {t1}"
-        assert t3 == 32, f"Expected 32 T3, got {t3}"
-        assert total == 295, f"Expected 295 total, got {total}"
+        assert t3 == 31, f"Expected 31 T3, got {t3}"
+        assert total == 294, f"Expected 294 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
