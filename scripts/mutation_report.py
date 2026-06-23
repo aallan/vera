@@ -73,13 +73,11 @@ def _fail(msg: str) -> int:
     return 1
 
 
-def _module_path(mod: str, mutants_root: Path) -> Path | None:
-    """vera.smt -> mutants/vera/smt.py ; vera.obligations -> .../obligations/__init__.py"""
-    base = mutants_root / Path(mod.replace(".", "/"))
-    for cand in (base.with_suffix(".py"), base / "__init__.py"):
-        if cand.exists():
-            return cand
-    return None
+def _module_of(rel: Path) -> str:
+    """mutants-relative path -> dotted module (vera/smt.py -> vera.smt;
+    vera/obligations/__init__.py -> vera.obligations)."""
+    parts = rel.parent.parts if rel.name == "__init__.py" else rel.with_suffix("").parts
+    return ".".join(parts)
 
 
 def _count_total(path: Path) -> int:
@@ -210,15 +208,20 @@ def main() -> int:
     if not mutants_root.is_dir():
         return _fail(f"mutants dir {mutants_root} not found — run `mutmut run` first")
 
+    # Derive the module set from the TREE, not from the survived/timeout keys:
+    # `mutmut results` omits killed mutants, so a fully-killed module has no line
+    # there and would otherwise drop out of the denominator entirely.  Every
+    # module mutmut actually mutated has at least one `def x…__mutmut_N` in its
+    # copied file; a copied-but-unmutated file (outside only_mutate, or an
+    # also_copy path) has none and is skipped.
     rows: list[dict] = []
-    for mod in sorted(set(survived) | set(timeout)):
-        path = _module_path(mod, mutants_root)
-        if path is None:
-            return _fail(
-                f"module {mod!r} in results has no file under {mutants_root}/ — "
-                "the mutants/ tree is out of sync with the results cache"
-            )
+    seen: set[str] = set()
+    for path in sorted(mutants_root.rglob("*.py")):
         total = _count_total(path)
+        if total == 0:
+            continue
+        mod = _module_of(path.relative_to(mutants_root))
+        seen.add(mod)
         s, t = survived[mod], timeout[mod]
         if total < s + t:
             return _fail(
@@ -232,11 +235,20 @@ def main() -> int:
             "caught_pct": round((killed + t) / total * 100, 1),
         })
 
+    # A module with survivors/timeouts but no mutated file in the tree is a
+    # results/tree desync — don't silently drop its survivors.
+    missing = (set(survived) | set(timeout)) - seen
+    if missing:
+        return _fail(
+            f"modules {sorted(missing)} appear in `mutmut results` but have no "
+            f"mutated file under {mutants_root}/ — tree out of sync with the cache"
+        )
+
     T = sum(r["total"] for r in rows)
     if T == 0:
         return _fail(
-            "no mutants found (empty `mutmut results`, wrong CWD, or no mutants/ "
-            "cache) — refusing to write a 0% score"
+            f"no mutated modules found under {mutants_root}/ (wrong --mutants dir, "
+            "or `mutmut run` has not generated mutants) — refusing to write a score"
         )
     S = sum(r["survived"] for r in rows)
     TO = sum(r["timeout"] for r in rows)
