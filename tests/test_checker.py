@@ -909,8 +909,8 @@ private fn foo(@Unit -> @Int)
 """)
 
     def test_with_clause_type_mismatch(self) -> None:
-        """Handler with-clause value must match state type."""
-        _check_err("""
+        """Handler with-clause value must match state type (E335)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -921,11 +921,12 @@ private fn foo(@Unit -> @Int)
     get(())
   }
 }
-""", "expected Int")
+""", "State update expression")
+        assert errs[0].error_code == "E335"
 
     def test_with_clause_no_state(self) -> None:
-        """Handler with-clause without handler state is an error."""
-        _check_err("""
+        """Handler with-clause without handler state is an error (E333)."""
+        errs = _check_err("""
 effect Exn<E> {
   op throw(E -> Never);
 }
@@ -939,10 +940,11 @@ private fn bar(@Unit -> @Int)
   }
 }
 """, "no state declaration")
+        assert errs[0].error_code == "E333"
 
     def test_with_clause_wrong_slot_type(self) -> None:
-        """Handler with-clause type must match handler state type."""
-        _check_err("""
+        """Handler with-clause type must match handler state type (E334)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -954,6 +956,57 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "does not match handler state type")
+        assert errs[0].error_code == "E334"
+
+    def test_handle_unknown_effect_is_e330(self) -> None:
+        """Handling an undeclared effect reports E330, not just a message."""
+        errs = _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Bogus](@Int = 0) {
+    get(@Unit) -> { resume(0) }
+  } in {
+    0
+  }
+}
+""", "Unknown effect")
+        assert errs[0].error_code == "E330"
+
+    def test_handler_unknown_operation_is_e332(self) -> None:
+        """A handler clause for an operation the effect lacks reports E332."""
+        errs = _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) },
+    bogus(@Unit) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "has no operation")
+        assert errs[0].error_code == "E332"
+
+    def test_handle_expression_has_body_type(self) -> None:
+        """The handle expression's type is its body's type, so a mismatch with
+        the function return type surfaces (kills `return body_type`)."""
+        # Handler body yields Int (get's return type); foo declares @String.
+        errs = _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "body has type Int")
+        assert errs[0].error_code == "E121"
 
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""
@@ -5513,8 +5566,8 @@ private fn foo(@Unit -> @Unit)
 """)
 
     def test_handler_state_init_type_mismatch(self) -> None:
-        """Handler state initial value type doesn't match declared type (line 382)."""
-        _check_err("""
+        """Handler state initial value type doesn't match declared type (E331)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -5525,7 +5578,8 @@ private fn foo(@Unit -> @Int)
     get(())
   }
 }
-""", "expected Int")
+""", "Handler state initial value")
+        assert errs[0].error_code == "E331"
 
 
 # =====================================================================
