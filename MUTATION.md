@@ -39,7 +39,7 @@ Consequence for the baseline: code exercised *only* via subprocess (much of `cli
 
 ## Run a module sweep
 
-The default config mutates all of `vera/`. To sweep one module, narrow `source_paths` (or `only_mutate = ["vera/<mod>/*"]`) in a local edit, then:
+The committed config scopes the sweep to the **soundness core** via `only_mutate` (`verifier` / `smt` / `checker` / `obligations`), while `source_paths = ["vera/"]` keeps the whole compiler in range. To sweep a different module, point `only_mutate` at it (e.g. `only_mutate = ["vera/codegen/*"]`), then:
 
 ```bash
 caffeinate -dims mutmut run        # macOS: keep awake; copies to ./mutants/, runs, stores verdicts
@@ -64,13 +64,21 @@ mutmut show <mutant-name>          # see the exact diff for one mutant
 
 ## The measure-all baseline (Phase 2)
 
-Run the full `vera/` sweep **locally** (CI's 6 h job cap can't hold a multi-day run):
+Run the sweep **locally** (CI's 6 h job cap can't hold a multi-day run); the committed config scopes the first pass to the soundness core:
 
 ```bash
 caffeinate -dims mutmut run        # hours-to-days; resumable, leave it overnight
 ```
 
-Record overall + per-module kill rates and the survivor inventory in `mutation-baseline.md`. The soundness core (`verifier` / `smt` / `checker` / `obligations`, all in-process tested) is triaged first; remaining modules become tracked per-module follow-ups under #387.
+Turn the verdicts into the durable record with the reporting script:
+
+```bash
+python scripts/mutation_report.py --label core
+```
+
+It writes **`mutation-summary.csv`** (committed — per-module total / killed / survived / timeout / caught%, a diff-able score history across sweeps), **`mutation.json`** (the README shields.io badge), and **`mutation-survivors.csv`** (the survivor + timeout inventory — too bulky for the repo, gitignored). Post the headline score + per-module table as a comment on [#387](https://github.com/aallan/vera/issues/387), and drag-drop the inventory CSV and the per-module chart into that comment (`gh` can't upload binaries; GitHub CDN-hosts them). The soundness core (`verifier` / `smt` / `checker` / `obligations`, all in-process tested) is triaged first; remaining modules become tracked per-module follow-ups under the issue.
+
+The 2026-06 baseline: 10,620 core mutants, **80.8% caught** (6,816 killed + 1,766 timeout), 2,038 survivors — `verifier.py` dominates the survivors (1,132); `checker/control.py` is the weakest-covered (60.6%).
 
 ## CI (follow-up)
 
