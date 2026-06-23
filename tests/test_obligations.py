@@ -926,7 +926,7 @@ class TestVerificationSession:
             '  "not an int"\n'
             "}\n"
         )
-        assert not result.ok
+        assert result.ok is False  # is-False, not merely falsy — kills ok=None
         assert any(d.severity == "error" for d in result.check_diagnostics)
         assert result.verify_diagnostics == []
         assert result.obligations == []
@@ -996,6 +996,58 @@ class TestVerificationSession:
         r2 = session.verify_source(without_adt)
         assert r2.ok
         assert "Pair" not in smt._adt_registry
+
+    def test_verify_error_sets_ok_false(self) -> None:
+        # A violated ensures is a Tier-1 verify error; ok must be the bool
+        # False (kills ok=None / verify_errors=None / "error"-literal mutants
+        # in the ok computation).
+        session = VerificationSession()
+        result = session.verify_source(
+            "public fn f(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result > @Int.0 + 1)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+        )
+        assert result.ok is False
+        assert any(d.severity == "error" for d in result.verify_diagnostics)
+
+    def test_diagnostics_carry_the_source_file(self) -> None:
+        # `file` flows parse -> typecheck -> diagnostic locations; the
+        # file=None mutants drop it.
+        session = VerificationSession()
+        result = session.verify_source(
+            "public fn f(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            '  "not an int"\n'
+            "}\n",
+            file="m.vera",
+        )
+        assert result.ok is False
+        located = {
+            d.location.file for d in result.check_diagnostics if d.location
+        }
+        assert located == {"m.vera"}
+
+    def test_uninstantiated_generic_verifies_without_crash(self) -> None:
+        # An uninstantiated forall<T> takes the #732 instantiation-key
+        # branch; _instances.get(name, set()) keeps sorted() happy — the
+        # get(..., None) mutants make sorted(None) raise.
+        session = VerificationSession()
+        result = session.verify_source(
+            "private forall<T>\n"
+            "fn g(@T -> @T)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{ @T.0 }\n"
+        )
+        assert result.ok
 
 
 class TestLazyExports:
