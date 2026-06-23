@@ -2440,6 +2440,34 @@ private fn foo(@Unit -> @Nat)
 
 
 # =====================================================================
+# Match arm-type unification
+# =====================================================================
+
+class TestMatchArmTypes:
+    """Match arms must unify to a common type (E302)."""
+
+    def test_incompatible_arm_types_carry_e302(self) -> None:
+        # None -> Int and Some -> String: neither arm type is a subtype of
+        # the other, so the unification must report E302 (kills the
+        # is_subtype / types_equal / error_code mutants in _check_match).
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> "ok"
+  }
+}
+""", "incompatible")
+        e302 = [e for e in errs if e.error_code == "E302"]
+        assert len(e302) >= 1
+        assert e302[0].rationale and e302[0].spec_ref
+
+
+# =====================================================================
 # Exhaustiveness checking
 # =====================================================================
 
