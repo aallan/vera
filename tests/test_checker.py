@@ -1300,23 +1300,47 @@ class TestAbilities:
 
     def test_ability_op_wrong_arity(self) -> None:
         """Ability operation with wrong argument count → E240."""
-        _check_err("""
+        errs = _check_err("""
         private forall<T where Eq<T>> fn bad(@T -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
         { eq(@T.0) }
         """, "expects 2 argument(s), got 1")
+        assert any(e.error_code == "E240" for e in errs)
 
     def test_ability_op_type_mismatch(self) -> None:
         """Ability operation with mismatched argument types → E241."""
-        _check_err("""
+        errs = _check_err("""
         private fn bad(@Int, @String -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
         { eq(@Int.0, @String.0) }
         """, "Argument 1 of 'eq'")
+        assert any(e.error_code == "E241" for e in errs)
+
+    def test_effect_op_wrong_arity_is_e203(self) -> None:
+        """An effect operation called with the wrong argument count reports E203."""
+        errs = _check_err("""
+effect Counter { op tick(Int -> Int); }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.tick(1, 2) }
+""", "expects 1 argument")
+        assert any(e.error_code == "E203" for e in errs)
+
+    def test_effect_op_arg_type_mismatch_is_e204(self) -> None:
+        """An effect operation argument of the wrong type reports E204."""
+        errs = _check_err("""
+effect Counter { op tick(Int -> Int); }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.tick(true) }
+""", "Argument 0 of 'tick'")
+        assert any(e.error_code == "E204" for e in errs)
 
 
 # =====================================================================
