@@ -34,6 +34,16 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Mutation testing (#387) — mutmut copies the project here and stores
+# per-mutant verdicts; never committed (run artefacts, see MUTATION.md).
+mutants/
+.mutmut-cache
+mutmut-stats.json
+# survivor inventory + graph go to the #387 issue, not the repo (the
+# per-module mutation-summary.csv + mutation.json badge ARE committed).
+mutation-survivors.csv
+mutation-*.png
+
 # Node.js (c8 JS coverage)
 node_modules/
 .c8_output/
