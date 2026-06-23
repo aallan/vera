@@ -1050,7 +1050,7 @@ class TestVerificationSession:
             "  effects(pure)\n"
             "{ @T.0 }\n"
         )
-        assert result.ok
+        assert result.ok is True
 
 
 class TestLazyExports:
