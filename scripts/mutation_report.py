@@ -27,8 +27,11 @@ A mutation score is committed and rendered as a public badge, so this script
 fails LOUD rather than emit a number it cannot stand behind.  Each of these is
 a hard error (nonzero exit, nothing written), never a warning over a written
 score: an empty corpus (`T == 0`), an unparseable result line (mutmut format
-drift), a module whose file is missing from the mutants/ tree, and a per-module
-total below its survived+timeout count (a `_count_total` undercount).
+drift), a `mutmut results` status the parser does not model (it lists every
+non-killed mutant, so "not checked" / "suspicious" / "caught by type check" can
+appear and must not be folded into killed), a module whose file is missing from
+the mutants/ tree, and a per-module total below its survived+timeout count (a
+`_count_total` undercount).
 """
 from __future__ import annotations
 
@@ -56,6 +59,12 @@ _LINE = re.compile(
 # "__mutmut_[0-9]+" excludes the "__mutmut_orig" baseline copy.  Bytes regex
 # (the file is read as bytes); "\S" matches the non-ASCII "ǁ" separator bytes.
 _MUTANT_DEF = re.compile(rb"^\s*def x\S*__mutmut_[0-9]+")
+# Any mutmut result line, whatever the status: "<mutant>__mutmut_<N>: <status>".
+# `mutmut results` skips killed (derived from the tree total) but prints every
+# OTHER status, so besides survived/timeout it can emit "not checked",
+# "suspicious", and "caught by type check".  Used to fail loud on a status this
+# parser does not model rather than silently fold it into killed.
+_ANY_STATUS = re.compile(r"__mutmut_\d+\s*:\s*(.+)$")
 
 
 def _fail(msg: str) -> int:
@@ -161,22 +170,40 @@ def main() -> int:
     timeout: Counter[str] = Counter()
     inventory: list[tuple[str, str, str]] = []  # (module, mutant, status)
     unmatched = 0
+    unhandled: Counter[str] = Counter()
     for line in text.splitlines():
         m = _LINE.match(line)
-        if not m:
-            if line.strip().endswith((": survived", ": timeout")):
-                unmatched += 1
+        if m:
+            mod, status = m.group(1), m.group(2)
+            (survived if status == "survived" else timeout)[mod] += 1
+            inventory.append((mod, line.strip().rsplit(":", 1)[0].strip(), status))
             continue
-        mod, status = m.group(1), m.group(2)
-        (survived if status == "survived" else timeout)[mod] += 1
-        inventory.append((mod, line.strip().rsplit(":", 1)[0].strip(), status))
+        sm = _ANY_STATUS.search(line)
+        if sm:
+            other = sm.group(1).strip()
+            if other in ("survived", "timeout"):
+                unmatched += 1            # a survived/timeout line whose module part didn't parse
+            else:
+                unhandled[other] += 1     # not checked / suspicious / caught by type check / ...
 
-    # A drifted result line is silent score corruption: a survivor that no
-    # longer parses drops out of the count and inflates the caught%.  Refuse.
+    # Fail loud rather than emit a skewed score (#387 — a public badge).
+    # A drifted survived/timeout line drops a survivor and inflates the caught%.
     if unmatched:
         return _fail(
             f"{unmatched} survived/timeout line(s) did not parse — mutmut output "
             "format may have changed; refusing to write a skewed score"
+        )
+    # killed is derived as (total − survived − timeout), so any other status
+    # `mutmut results` lists (a partly-uncovered module's "not checked", a
+    # "suspicious", a "caught by type check") would be silently miscounted as
+    # killed.  The core sweep has none; a later per-module sweep may — refuse
+    # until the parser models them explicitly.
+    if unhandled:
+        return _fail(
+            f"`mutmut results` lists statuses this parser does not model: "
+            f"{dict(unhandled)} — killed is derived as (total − survived − "
+            "timeout), so these would be miscounted; add explicit per-status "
+            "handling before scoring such a run"
         )
 
     mutants_root = Path(args.mutants)
