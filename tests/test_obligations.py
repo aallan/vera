@@ -996,3 +996,33 @@ class TestVerificationSession:
         r2 = session.verify_source(without_adt)
         assert r2.ok
         assert "Pair" not in smt._adt_registry
+
+
+class TestLazyExports:
+    """The PEP-562 lazy-export shim in ``vera/obligations/__init__.py``.
+
+    Session symbols are exported lazily (via ``__getattr__``) to break
+    the import cycle — ``vera.verifier`` imports ``obligations.core``,
+    and ``session`` imports ``vera.verifier``.  These pin that the shim
+    resolves each lazy name to the real session object and raises a
+    named ``AttributeError`` for an unknown one.
+    """
+
+    def test_lazy_exports_resolve_to_session_objects(self) -> None:
+        # Accessed via the *package* attribute, so each lookup goes
+        # through __getattr__ (none is a direct module attribute) and
+        # must BE the object defined in the session module.
+        import vera.obligations as obl
+        from vera.obligations import session
+
+        assert obl.VerificationSession is session.VerificationSession
+        assert obl.SessionVerifyResult is session.SessionVerifyResult
+        assert obl.SessionRunStats is session.SessionRunStats
+
+    def test_unknown_attribute_raises_named_attributeerror(self) -> None:
+        import vera.obligations as obl
+
+        with pytest.raises(
+            AttributeError, match="has no attribute 'NoSuchThing'"
+        ):
+            _ = obl.NoSuchThing
