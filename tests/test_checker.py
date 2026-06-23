@@ -745,6 +745,59 @@ private fn first(@List<Option<Int>> -> @Int)
 }
 """)
 
+    def test_unknown_constructor_pattern_warns_e320(self) -> None:
+        """A constructor pattern naming an unknown constructor warns E320."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    Bogus(@Int) -> 0,
+    None -> 0
+  }
+}
+""")
+        e320 = [w for w in warns if w.error_code == "E320"]
+        assert len(e320) == 1
+        assert e320[0].severity == "warning"
+
+    def test_constructor_field_count_mismatch_is_e321(self) -> None:
+        """A constructor pattern with the wrong sub-pattern count reports E321."""
+        errs = _check_err("""
+private data Pair { Both(Int, Int) }
+
+private fn f(@Pair -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Pair.0 {
+    Both(@Int) -> 0
+  }
+}
+""", "field(s)")
+        assert any(e.error_code == "E321" for e in errs)
+
+    def test_unknown_nullary_constructor_warns_e322(self) -> None:
+        """A nullary pattern naming an unknown constructor warns E322."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    Bogus -> 0,
+    None -> 0
+  }
+}
+""")
+        e322 = [w for w in warns if w.error_code == "E322"]
+        assert len(e322) == 1
+        assert e322[0].severity == "warning"
+
 
 # =====================================================================
 # Control flow
