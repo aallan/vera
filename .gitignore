@@ -39,6 +39,10 @@ htmlcov/
 mutants/
 .mutmut-cache
 mutmut-stats.json
+# survivor inventory + graph go to the #387 issue, not the repo (the
+# per-module mutation-summary.csv + mutation.json badge ARE committed).
+mutation-survivors.csv
+mutation-*.png
 
 # Node.js (c8 JS coverage)
 node_modules/

@@ -111,6 +111,16 @@ addopts = "-m 'not stress'"
 # Mutate the whole compiler by default; scope a single sweep to one
 # module with `only_mutate`.
 source_paths = ["vera/"]
+# Soundness core (#387 first pass).  The whole-tree sweep is deferred:
+# codegen/api.py's 3,400-line execute() makes mutmut inline a 774 MB
+# mutant file it can't index — impractical until #421 decomposes it.
+# The big wasm/calls_*.py files (28-67 MB) are likewise out of this pass.
+only_mutate = [
+    "vera/verifier.py",
+    "vera/smt.py",
+    "vera/checker/*",
+    "vera/obligations/*",
+]
 # mutmut copies tests/ + config but nothing else by default; the
 # in-process oracle also reads these repo files (test_codegen example
 # round-trips; test_errors' error-display-sync against README / docs /
