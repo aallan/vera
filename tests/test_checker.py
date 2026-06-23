@@ -2492,6 +2492,96 @@ private fn get(@Result<Int, String> -> @Int)
         desc = " ".join(e.description for e in errs)
         assert "Err" in desc
 
+    def test_adt_missing_carries_e311(self) -> None:
+        """The ADT non-exhaustive diagnostic carries E311, not just the text."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")
+        assert errs[0].error_code == "E311"
+
+    def test_unreachable_arm_after_catch_all_warns_e310(self) -> None:
+        """An arm after a catch-all is the one (and only) E310 warning."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    _ -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""")
+        e310 = [w for w in warns if w.error_code == "E310"]
+        assert len(e310) == 1
+
+    def test_bool_missing_carries_e312(self) -> None:
+        """The Bool non-exhaustive diagnostic carries E312."""
+        errs = _check_err("""
+private fn f(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> 1
+  }
+}
+""", "Non-exhaustive")
+        assert errs[0].error_code == "E312"
+
+    def test_int_match_without_catch_all_is_e313(self) -> None:
+        """An infinite-domain (Int) match with no catch-all is E313."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 1
+  }
+}
+""", "infinite domain")
+        assert errs[0].error_code == "E313"
+
+    def test_exhaustiveness_diagnostics_are_well_formed(self) -> None:
+        """Each exhaustiveness diagnostic carries the right severity and a
+        populated rationale/fix/spec_ref (kills the =None / severity mutants)."""
+        e311 = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")[0]
+        assert e311.severity == "error"
+        assert e311.rationale and e311.fix and e311.spec_ref
+
+        e310 = [w for w in _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    _ -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""") if w.error_code == "E310"][0]
+        assert e310.severity == "warning"
+        assert e310.rationale and e310.fix
+
     def test_adt_with_wildcard(self) -> None:
         """Wildcard after Some covers None → exhaustive."""
         _check_ok("""
