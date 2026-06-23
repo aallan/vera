@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg)](https://github.com/aallan/vera/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
-[![Mutation score (core)](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/aallan/vera/main/mutation.json)](https://github.com/aallan/vera/issues/387)
+[![Mutation score](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/aallan/vera/main/mutation.json)](https://github.com/aallan/vera/issues/387)
 
 **Vera** (v-ERR-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line or in the browser.
 

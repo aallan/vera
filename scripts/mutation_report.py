@@ -262,10 +262,13 @@ def main() -> int:
             fh.write(f"{r['module']},{r['total']},{r['killed']},{r['survived']},{r['timeout']},{r['caught_pct']}\n")
         fh.write(f"TOTAL ({args.label}),{T},{K},{S},{TO},{score}\n")
 
-    # mutation.json (committed; shields.io endpoint badge)
+    # mutation.json (committed; shields.io endpoint badge).  The core sweep is
+    # the headline badge — keep its label short ("mutation", like "codecov");
+    # a scoped per-module sweep tags itself ("mutation (codegen)").
+    badge_label = "mutation" if args.label == "core" else f"mutation ({args.label})"
     (REPO_ROOT / "mutation.json").write_text(json.dumps({
         "schemaVersion": 1,
-        "label": f"mutation ({args.label})",
+        "label": badge_label,
         "message": f"{score}%",
         "color": _badge_color(score),
     }) + "\n", encoding="utf-8")
