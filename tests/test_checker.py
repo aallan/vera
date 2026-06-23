@@ -414,11 +414,65 @@ private fn foo(@Int -> @Int)
 """)
 
     def test_not_non_bool_error(self) -> None:
-        _check_err("""
+        errs = _check_err("""
 private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { !@Int.0 }
 """, "requires Bool operand")
+        assert any(e.error_code == "E146" for e in errs)
+
+
+# =====================================================================
+# Expression diagnostics (#387 fix-core)
+# =====================================================================
+
+class TestExpressionDiagnostics:
+    """Error-code assertions for expression-level checks."""
+
+    def test_array_index_non_int_is_e160(self) -> None:
+        """A non-integer array index reports E160."""
+        errs = _check_err("""
+private fn f(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[true] }
+""", "index must be Int")
+        assert any(e.error_code == "E160" for e in errs)
+
+    def test_index_non_array_is_e161(self) -> None:
+        """Indexing a non-Array value reports E161."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0[0] }
+""", "indexing requires Array")
+        assert any(e.error_code == "E161" for e in errs)
+
+    def test_assume_non_bool_is_e173(self) -> None:
+        """assume() with a non-Bool argument reports E173."""
+        errs = _check_err("""
+private fn f(@Int -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ assume(42); () }
+""", "assume() requires Bool")
+        assert any(e.error_code == "E173" for e in errs)
+
+    def test_old_outside_ensures_is_e174(self) -> None:
+        """old() used outside an ensures clause reports E174."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = old(State<Int>); @Int.0 }
+""", "old() is only valid")
+        assert any(e.error_code == "E174" for e in errs)
+
+    def test_new_outside_ensures_is_e175(self) -> None:
+        """new() used outside an ensures clause reports E175."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = new(State<Int>); @Int.0 }
+""", "new() is only valid")
+        assert any(e.error_code == "E175" for e in errs)
 
 
 # =====================================================================
@@ -762,6 +816,27 @@ private fn f(@Int -> @Int)
         e220 = [w for w in warns if w.error_code == "E220"]
         assert len(e220) == 1
         assert e220[0].severity == "warning"
+
+    def test_data_invariant_non_bool_is_e120(self) -> None:
+        """A data-type invariant whose body isn't Bool reports E120."""
+        errs = _check_err("""
+private data Pos invariant(42) { MkPos(Int) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "Invariant must be Bool")
+        assert any(e.error_code == "E120" for e in errs)
+
+    def test_data_invariant_bool_ok(self) -> None:
+        """A Bool data-type invariant type-checks cleanly (no E120)."""
+        _check_ok("""
+private data Pos invariant(true) { MkPos(Int) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
 
 
 # =====================================================================
