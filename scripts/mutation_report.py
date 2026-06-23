@@ -3,21 +3,32 @@
 
 Mutation testing (#387).  Reads `mutmut results` (the survivor + timeout
 list — mutmut does not list killed mutants) and the generated `mutants/`
-tree (to recover per-module totals), and writes:
+tree (to recover per-module totals), and writes, at the repo root:
 
-  * mutation-summary.csv  — per-module total/killed/survived/timeout/caught%
-                            (committed: a diff-able score history across sweeps)
-  * mutation.json         — shields.io endpoint badge for the README
+  * mutation-summary.csv   — per-module total/killed/survived/timeout/caught%
+                             (committed: a diff-able score history across sweeps)
+  * mutation.json          — shields.io endpoint badge for the README
   * mutation-survivors.csv — the survivor + timeout inventory (module, mutant,
-                            status) for the #387 issue attachment (not committed)
+                             status) for the #387 issue attachment (gitignored)
+  * mutation-<label>.png   — a per-module killed/survived/timeout chart for the
+                             issue attachment (gitignored; needs matplotlib,
+                             which ships in the `[mutation]` extra)
 
-Usage:  python scripts/mutation_report.py [--results FILE] [--label core]
-        (defaults: run `mutmut results`; label "core")
+Usage:  python scripts/mutation_report.py [--results FILE] [--mutants DIR]
+                                          [--label core]
+        (defaults: run `mutmut results`; mutants "<repo>/mutants"; label "core")
 
 Mutation score = caught / total = (killed + timeout) / total.  Timeouts are
 counted as caught by convention; the runbook's guardrail applies (a slow-Z3
 timeout can mask a gap), so the survivor inventory is the actionable artefact,
 not the headline percentage alone.
+
+A mutation score is committed and rendered as a public badge, so this script
+fails LOUD rather than emit a number it cannot stand behind.  Each of these is
+a hard error (nonzero exit, nothing written), never a warning over a written
+score: an empty corpus (`T == 0`), an unparseable result line (mutmut format
+drift), a module whose file is missing from the mutants/ tree, and a per-module
+total below its survived+timeout count (a `_count_total` undercount).
 """
 from __future__ import annotations
 
@@ -29,15 +40,28 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 # A mutmut mutant name is "<dotted.module>.x<sep><mangled>__mutmut_<N>"; the
-# separator after "x" is "_" (module function, e.g. x_verify / x__adt) or "ǁ"
-# (class method, xǁClassǁmethod).  Capture the module prefix (shortest, up to
-# the first ".x_"/".xǁ").
-_LINE = re.compile(r"^\s*(\S+?)\.x[_ǁ].*:\s*(survived|timeout)\s*$")
-# A generated mutant definition (excludes the "__mutmut_orig" baseline copy).
-# ".*" spans the "__"/"ǁClassǁ" prefix (the "ǁ" separator is non-ASCII, so it
-# can't appear in a bytes literal — but ".*" matches its bytes fine).
-_MUTANT_DEF = re.compile(rb"def x.*__mutmut_[0-9]+\(")
+# separator after "x" is "_" (module function, e.g. x_verify / x__adt_sort_key)
+# or "ǁ" (U+01C1, class method, xǁClassǁmethod).  Capture the module with a
+# *greedy* prefix anchored on the LAST ".x<sep>...__mutmut_<N>", so a module
+# path that itself contains ".x_" (e.g. a future vera/x*.py) is not mis-split.
+_LINE = re.compile(
+    r"^\s*(.+)\.x[_ǁ]\S*__mutmut_\d+\s*:\s*(survived|timeout)\s*$"
+)
+# A generated mutant definition, anchored at the start of the (possibly
+# indented) line so it cannot match a second "def" later on the line and does
+# not require the "(" (which black could in principle wrap to the next line).
+# "__mutmut_[0-9]+" excludes the "__mutmut_orig" baseline copy.  Bytes regex
+# (the file is read as bytes); "\S" matches the non-ASCII "ǁ" separator bytes.
+_MUTANT_DEF = re.compile(rb"^\s*def x\S*__mutmut_[0-9]+")
+
+
+def _fail(msg: str) -> int:
+    """Print a hard-error to stderr and return the nonzero exit code."""
+    print(f"error: {msg}", file=sys.stderr)
+    return 1
 
 
 def _module_path(mod: str, mutants_root: Path) -> Path | None:
@@ -50,7 +74,7 @@ def _module_path(mod: str, mutants_root: Path) -> Path | None:
 
 
 def _count_total(path: Path) -> int:
-    """Count generated mutants in a file (one ``def x…__mutmut_N(`` per mutant)."""
+    """Count generated mutants in a file (one ``def x…__mutmut_N`` per mutant)."""
     n = 0
     with path.open("rb") as fh:
         for line in fh:
@@ -68,13 +92,59 @@ def _badge_color(pct: float) -> str:
         return "yellowgreen"
     if pct >= 60:
         return "yellow"
-    return "orange"
+    if pct >= 50:
+        return "orange"
+    return "red"
+
+
+def _write_chart(rows: list[dict], label: str, score: float, out: Path) -> None:
+    """Per-module killed/survived/timeout stacked bar (the #387 issue chart).
+
+    Best-effort: skipped with a note if matplotlib is absent (it ships in the
+    `[mutation]` extra, but the CSV + badge must still be produced without it).
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(f"  note: matplotlib not installed — skipping the chart ({out.name}); "
+              'install it via `pip install -e ".[mutation]"`', file=sys.stderr)
+        return
+
+    ordered = sorted(rows, key=lambda r: r["survived"], reverse=True)
+    mods = [r["module"] for r in ordered]
+    killed = [r["killed"] for r in ordered]
+    survived = [r["survived"] for r in ordered]
+    timeout = [r["timeout"] for r in ordered]
+    base = [k + s for k, s in zip(killed, survived)]
+    y = range(len(mods))
+    xmax = max((r["total"] for r in ordered), default=1)
+
+    fig, ax = plt.subplots(figsize=(11, max(3.0, 0.5 * len(mods) + 1.5)))
+    ax.barh(y, killed, color="#2ca02c", label="killed")
+    ax.barh(y, survived, left=killed, color="#d62728", label="survived")
+    ax.barh(y, timeout, left=base, color="#e8a33d", label="timeout")
+    for i, r in enumerate(ordered):
+        ax.text(r["total"] + xmax * 0.01, i, f"{r['caught_pct']:.0f}%",
+                va="center", fontsize=8)
+    ax.set_yticks(list(y))
+    ax.set_yticklabels(mods, fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlabel("mutants")
+    surv = sum(r["survived"] for r in rows)
+    ax.set_title(f"Vera mutation testing ({label}) — {score}% caught, {surv:,} survivors")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out, dpi=100)
+    plt.close(fig)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", help="captured `mutmut results` output; else runs it")
-    ap.add_argument("--mutants", default="mutants", help="mutmut mutants/ dir")
+    ap.add_argument("--mutants", default=str(REPO_ROOT / "mutants"),
+                    help="mutmut mutants/ dir (default <repo>/mutants)")
     ap.add_argument("--label", default="core", help="badge scope label")
     args = ap.parse_args()
 
@@ -98,55 +168,82 @@ def main() -> int:
         mod, status = m.group(1), m.group(2)
         (survived if status == "survived" else timeout)[mod] += 1
         inventory.append((mod, line.strip().rsplit(":", 1)[0].strip(), status))
+
+    # A drifted result line is silent score corruption: a survivor that no
+    # longer parses drops out of the count and inflates the caught%.  Refuse.
     if unmatched:
-        print(f"  warning: {unmatched} survived/timeout lines did not parse", file=sys.stderr)
+        return _fail(
+            f"{unmatched} survived/timeout line(s) did not parse — mutmut output "
+            "format may have changed; refusing to write a skewed score"
+        )
 
     mutants_root = Path(args.mutants)
-    mods = sorted(set(survived) | set(timeout))
-    rows = []
-    for mod in mods:
+    if not mutants_root.is_dir():
+        return _fail(f"mutants dir {mutants_root} not found — run `mutmut run` first")
+
+    rows: list[dict] = []
+    for mod in sorted(set(survived) | set(timeout)):
         path = _module_path(mod, mutants_root)
-        total = _count_total(path) if path else (survived[mod] + timeout[mod])
-        label = str(path.relative_to(mutants_root)) if path else mod.replace(".", "/") + ".py"
+        if path is None:
+            return _fail(
+                f"module {mod!r} in results has no file under {mutants_root}/ — "
+                "the mutants/ tree is out of sync with the results cache"
+            )
+        total = _count_total(path)
         s, t = survived[mod], timeout[mod]
-        killed = max(total - s - t, 0)
-        caught = killed + t
+        if total < s + t:
+            return _fail(
+                f"module {mod!r}: counted {total} mutants < {s + t} survived+timeout "
+                "— _count_total undercount (mutant-def regex drift?)"
+            )
+        killed = total - s - t
         rows.append({
-            "module": label,
+            "module": str(path.relative_to(mutants_root)),
             "total": total, "killed": killed, "survived": s, "timeout": t,
-            "caught_pct": round(caught / total * 100, 1) if total else 0.0,
+            "caught_pct": round((killed + t) / total * 100, 1),
         })
 
     T = sum(r["total"] for r in rows)
+    if T == 0:
+        return _fail(
+            "no mutants found (empty `mutmut results`, wrong CWD, or no mutants/ "
+            "cache) — refusing to write a 0% score"
+        )
     S = sum(r["survived"] for r in rows)
     TO = sum(r["timeout"] for r in rows)
     K = T - S - TO
-    score = round((K + TO) / T * 100, 1) if T else 0.0
+    score = round((K + TO) / T * 100, 1)
 
     # mutation-summary.csv (committed)
-    with open("mutation-summary.csv", "w", encoding="utf-8") as fh:
+    with (REPO_ROOT / "mutation-summary.csv").open("w", encoding="utf-8") as fh:
         fh.write("module,total,killed,survived,timeout,caught_pct\n")
         for r in sorted(rows, key=lambda r: r["survived"], reverse=True):
             fh.write(f"{r['module']},{r['total']},{r['killed']},{r['survived']},{r['timeout']},{r['caught_pct']}\n")
         fh.write(f"TOTAL ({args.label}),{T},{K},{S},{TO},{score}\n")
 
     # mutation.json (committed; shields.io endpoint badge)
-    Path("mutation.json").write_text(json.dumps({
+    (REPO_ROOT / "mutation.json").write_text(json.dumps({
         "schemaVersion": 1,
         "label": f"mutation ({args.label})",
         "message": f"{score}%",
         "color": _badge_color(score),
     }) + "\n", encoding="utf-8")
 
-    # mutation-survivors.csv (issue attachment; not committed)
-    with open("mutation-survivors.csv", "w", encoding="utf-8") as fh:
+    # mutation-survivors.csv (issue attachment; gitignored).  The mutant column
+    # is the bare name — the module is already its own column.
+    with (REPO_ROOT / "mutation-survivors.csv").open("w", encoding="utf-8") as fh:
         fh.write("module,mutant,status\n")
         for mod, mutant, status in sorted(inventory):
-            fh.write(f"{mod.replace('.', '/')}.py,{mutant},{status}\n")
+            short = mutant[len(mod) + 1:] if mutant.startswith(mod + ".") else mutant
+            fh.write(f"{mod.replace('.', '/')}.py,{short},{status}\n")
+
+    # mutation-<label>.png (issue attachment; gitignored)
+    _write_chart(rows, args.label, score, REPO_ROOT / f"mutation-{args.label}.png")
 
     print(f"\nMutation score ({args.label}): {score}%  "
           f"[{K} killed + {TO} timeout caught / {T} total; {S} survived]")
-    print("  wrote mutation-summary.csv, mutation.json, mutation-survivors.csv")
+    print(f"  wrote mutation-summary.csv, mutation.json, mutation-survivors.csv, "
+          f"mutation-{args.label}.png")
     return 0
 
 

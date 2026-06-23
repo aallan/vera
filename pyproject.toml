@@ -77,6 +77,10 @@ mutation = [
     "vera[dev]",
     "mutmut>=3.6",
     "pytest-timeout>=2.4",
+    # scripts/mutation_report.py renders the per-module chart with matplotlib;
+    # optional at runtime (the script skips the PNG if it is absent), but
+    # pinned here so `pip install -e ".[mutation]"` produces the chart.
+    "matplotlib>=3.7",
 ]
 
 [project.scripts]
@@ -112,7 +116,7 @@ addopts = "-m 'not stress'"
 # module with `only_mutate`.
 source_paths = ["vera/"]
 # Soundness core (#387 first pass).  The whole-tree sweep is deferred:
-# codegen/api.py's 3,400-line execute() makes mutmut inline a 774 MB
+# codegen/api.py's ~3,500-line execute() makes mutmut inline a 774 MB
 # mutant file it can't index — impractical until #421 decomposes it.
 # The big wasm/calls_*.py files (28-67 MB) are likewise out of this pass.
 only_mutate = [
