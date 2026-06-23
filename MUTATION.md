@@ -4,6 +4,8 @@ Runbook for [#387](https://github.com/aallan/vera/issues/387) — deliberately b
 
 > A passing suite is necessary, not sufficient. The #680 audit found 8 green-for-the-wrong-reason tests in one 57-test battery; #734 had to mutation-validate its own harness. Mutation testing systematises that check.
 
+**Current baseline (soundness core):** 80.8% caught, 2,038 survivors. The committed score lives in `mutation-summary.csv` and the README badge; the **per-module chart and the full survivor inventory** are attached to the [baseline comment on #387](https://github.com/aallan/vera/issues/387#issuecomment-4779424892).
+
 ## Tool: mutmut (chosen over cosmic-ray)
 
 Evaluated both on `vera/obligations/` (Phase 0 spike, 2026-06-22):

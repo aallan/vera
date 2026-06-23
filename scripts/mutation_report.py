@@ -84,6 +84,7 @@ def _count_total(path: Path) -> int:
 
 
 def _badge_color(pct: float) -> str:
+    """Shields.io badge colour band for a caught-percentage."""
     if pct >= 90:
         return "brightgreen"
     if pct >= 80:
@@ -141,6 +142,7 @@ def _write_chart(rows: list[dict], label: str, score: float, out: Path) -> None:
 
 
 def main() -> int:
+    """Parse `mutmut results`, compute the score, and write the artefacts."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", help="captured `mutmut results` output; else runs it")
     ap.add_argument("--mutants", default=str(REPO_ROOT / "mutants"),
