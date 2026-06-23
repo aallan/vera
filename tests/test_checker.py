@@ -666,13 +666,14 @@ private fn foo(@Int, @String -> @Pair)
 """)
 
     def test_constructor_arity_mismatch(self) -> None:
-        _check_err("""
+        errs = _check_err("""
 private data Pair { MkPair(Int, String) }
 
 private fn foo(@Int -> @Pair)
   requires(true) ensures(true) effects(pure)
 { MkPair(@Int.0) }
 """, "expects 2 field")
+        assert any(e.error_code == "E212" for e in errs)
 
     def test_parameterised_adt(self) -> None:
         _check_ok("""
@@ -682,6 +683,85 @@ private fn foo(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
 { MkBox(@Int.0) }
 """)
+
+    def test_unknown_constructor_call_warns_e210(self) -> None:
+        """A call to an undeclared constructor warns E210, not just a message."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Bogus(42);
+  @Int.0
+}
+""")
+        e210 = [w for w in warns if w.error_code == "E210"]
+        assert len(e210) == 1
+        assert e210[0].severity == "warning"
+
+    def test_nullary_constructor_given_args_is_e211(self) -> None:
+        """Calling a nullary constructor with arguments reports E211."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None(42) }
+""", "nullary")
+        assert any(e.error_code == "E211" for e in errs)
+
+    def test_constructor_field_type_mismatch_is_e213(self) -> None:
+        """A constructor argument of the wrong type reports E213."""
+        errs = _check_err("""
+private data Box { Wrap(Int) }
+
+private fn f(@Int -> @Box)
+  requires(true) ensures(true) effects(pure)
+{ Wrap(true) }
+""", "field 0 has type")
+        assert any(e.error_code == "E213" for e in errs)
+
+    def test_unknown_nullary_constructor_call_warns_e214(self) -> None:
+        """A bare reference to an undeclared nullary constructor warns E214."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Bogus;
+  @Int.0
+}
+""")
+        e214 = [w for w in warns if w.error_code == "E214"]
+        assert len(e214) == 1
+        assert e214[0].severity == "warning"
+
+    def test_constructor_used_as_nullary_is_e215(self) -> None:
+        """Using a field-carrying constructor without arguments reports E215."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Some }
+""", "used as nullary")
+        assert any(e.error_code == "E215" for e in errs)
+
+    def test_unresolved_qualified_call_warns_e220(self) -> None:
+        """A qualified call resolving to neither effect-op nor module warns E220."""
+        warns = _warnings("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = Foo.bar(42);
+  @Int.0
+}
+""")
+        e220 = [w for w in warns if w.error_code == "E220"]
+        assert len(e220) == 1
+        assert e220[0].severity == "warning"
 
 
 # =====================================================================
