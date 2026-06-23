@@ -3069,6 +3069,7 @@ class TestModuleCallDiagnostics:
         diags = typecheck(prog, source="")
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found" in w.description for w in warns)
+        assert any(w.error_code == "E230" for w in warns)
 
     def test_module_resolved_fn_not_found(self) -> None:
         """ModuleCall with resolved empty module gives 'not found in module'."""
@@ -3086,6 +3087,7 @@ class TestModuleCallDiagnostics:
         diags = typecheck(prog, source="", resolved_modules=[fake_mod])
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found in module" in w.description for w in warns)
+        assert any(w.error_code == "E233" for w in warns)
 
 
 # =====================================================================
@@ -3329,6 +3331,7 @@ private fn main(@Int -> @List<Int>)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert any("not imported" in e.description for e in errors)
+        assert any(e.error_code == "E231" for e in errors)
 
     def test_fn_not_in_module(self) -> None:
         """Module call to nonexistent function -> warning with available list."""
@@ -3578,6 +3581,7 @@ private fn main(@Int -> @Int)
         assert any("private" in e.description for e in errors), (
             [e.description for e in errors]
         )
+        assert any(e.error_code == "E232" for e in errors)
 
     # -- Own file's declarations always accessible ----------------------
 
