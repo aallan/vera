@@ -1035,9 +1035,12 @@ class TestVerificationSession:
         assert located == {"m.vera"}
 
     def test_uninstantiated_generic_verifies_without_crash(self) -> None:
-        # An uninstantiated forall<T> takes the #732 instantiation-key
-        # branch; _instances.get(name, set()) keeps sorted() happy — the
-        # get(..., None) mutants make sorted(None) raise.
+        # Smoke test: an uninstantiated forall<T> takes the #732
+        # instantiation-key branch with an empty instance set and verifies
+        # without crashing.  (Not a targeted mutant kill — the
+        # _instances.get(name, set()) default is unreachable, because
+        # _collect_instantiations pre-seeds a set() for every generic, so
+        # that default is an equivalent mutant rather than a coverage gap.)
         session = VerificationSession()
         result = session.verify_source(
             "private forall<T>\n"

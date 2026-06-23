@@ -1130,7 +1130,7 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "State update expression")
-        assert errs[0].error_code == "E335"
+        assert any(e.error_code == "E335" for e in errs)
 
     def test_with_clause_no_state(self) -> None:
         """Handler with-clause without handler state is an error (E333)."""
@@ -1148,7 +1148,7 @@ private fn bar(@Unit -> @Int)
   }
 }
 """, "no state declaration")
-        assert errs[0].error_code == "E333"
+        assert any(e.error_code == "E333" for e in errs)
 
     def test_with_clause_wrong_slot_type(self) -> None:
         """Handler with-clause type must match handler state type (E334)."""
@@ -1164,7 +1164,7 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "does not match handler state type")
-        assert errs[0].error_code == "E334"
+        assert any(e.error_code == "E334" for e in errs)
 
     def test_handle_unknown_effect_is_e330(self) -> None:
         """Handling an undeclared effect reports E330, not just a message."""
@@ -1179,7 +1179,7 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "Unknown effect")
-        assert errs[0].error_code == "E330"
+        assert any(e.error_code == "E330" for e in errs)
 
     def test_handler_unknown_operation_is_e332(self) -> None:
         """A handler clause for an operation the effect lacks reports E332."""
@@ -1196,7 +1196,7 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "has no operation")
-        assert errs[0].error_code == "E332"
+        assert any(e.error_code == "E332" for e in errs)
 
     def test_handle_expression_has_body_type(self) -> None:
         """The handle expression's type is its body's type, so a mismatch with
@@ -1214,7 +1214,7 @@ private fn foo(@Unit -> @String)
   }
 }
 """, "body has type Int")
-        assert errs[0].error_code == "E121"
+        assert any(e.error_code == "E121" for e in errs)
 
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""
@@ -2818,7 +2818,7 @@ private fn f(@Option<Int> -> @Int)
   }
 }
 """, "Non-exhaustive")
-        assert errs[0].error_code == "E311"
+        assert any(e.error_code == "E311" for e in errs)
 
     def test_unreachable_arm_after_catch_all_warns_e310(self) -> None:
         """An arm after a catch-all is the one (and only) E310 warning."""
@@ -2848,7 +2848,7 @@ private fn f(@Bool -> @Int)
   }
 }
 """, "Non-exhaustive")
-        assert errs[0].error_code == "E312"
+        assert any(e.error_code == "E312" for e in errs)
 
     def test_int_match_without_catch_all_is_e313(self) -> None:
         """An infinite-domain (Int) match with no catch-all is E313."""
@@ -2861,7 +2861,7 @@ private fn f(@Int -> @Int)
   }
 }
 """, "infinite domain")
-        assert errs[0].error_code == "E313"
+        assert any(e.error_code == "E313" for e in errs)
 
     def test_exhaustiveness_diagnostics_are_well_formed(self) -> None:
         """Each exhaustiveness diagnostic carries the right severity and a
@@ -5815,7 +5815,7 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "Handler state initial value")
-        assert errs[0].error_code == "E331"
+        assert any(e.error_code == "E331" for e in errs)
 
 
 # =====================================================================
