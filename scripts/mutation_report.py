@@ -215,13 +215,14 @@ def main() -> int:
     # copied file; a copied-but-unmutated file (outside only_mutate, or an
     # also_copy path) has none and is skipped.
     rows: list[dict] = []
-    seen: set[str] = set()
+    mod_path: dict[str, str] = {}  # dotted module -> its actual tree-relative path
     for path in sorted(mutants_root.rglob("*.py")):
         total = _count_total(path)
         if total == 0:
             continue
-        mod = _module_of(path.relative_to(mutants_root))
-        seen.add(mod)
+        rel = path.relative_to(mutants_root)
+        mod = _module_of(rel)
+        mod_path[mod] = str(rel)
         s, t = survived[mod], timeout[mod]
         if total < s + t:
             return _fail(
@@ -230,14 +231,14 @@ def main() -> int:
             )
         killed = total - s - t
         rows.append({
-            "module": str(path.relative_to(mutants_root)),
+            "module": str(rel),
             "total": total, "killed": killed, "survived": s, "timeout": t,
             "caught_pct": round((killed + t) / total * 100, 1),
         })
 
     # A module with survivors/timeouts but no mutated file in the tree is a
     # results/tree desync — don't silently drop its survivors.
-    missing = (set(survived) | set(timeout)) - seen
+    missing = (set(survived) | set(timeout)) - set(mod_path)
     if missing:
         return _fail(
             f"modules {sorted(missing)} appear in `mutmut results` but have no "
@@ -274,12 +275,13 @@ def main() -> int:
     }) + "\n", encoding="utf-8")
 
     # mutation-survivors.csv (issue attachment; gitignored).  The mutant column
-    # is the bare name — the module is already its own column.
+    # is the bare name — the module is already its own column, taken from the
+    # actual tree path (a package's survivors live in __init__.py, not <pkg>.py).
     with (REPO_ROOT / "mutation-survivors.csv").open("w", encoding="utf-8") as fh:
         fh.write("module,mutant,status\n")
         for mod, mutant, status in sorted(inventory):
             short = mutant[len(mod) + 1:] if mutant.startswith(mod + ".") else mutant
-            fh.write(f"{mod.replace('.', '/')}.py,{short},{status}\n")
+            fh.write(f"{mod_path[mod]},{short},{status}\n")
 
     # mutation-<label>.png (issue attachment; gitignored)
     _write_chart(rows, args.label, score, REPO_ROOT / f"mutation-{args.label}.png")
