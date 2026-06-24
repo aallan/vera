@@ -12912,6 +12912,40 @@ public fn main(-> @Int)
             exec_result = execute(result)
             assert exec_result.value == 7
 
+    def test_http_url_scheme_predicate(self) -> None:
+        """#789: `_is_allowed_http_url` admits only http/https (case-
+        insensitive) and rejects file://, ftp://, data:, schemeless, etc.,
+        so the host callbacks never hand a non-HTTP(S) URL to urlopen."""
+        from vera.runtime.http import _is_allowed_http_url
+
+        assert _is_allowed_http_url("http://example.com/x")
+        assert _is_allowed_http_url("https://example.com/x")
+        assert _is_allowed_http_url("HTTPS://EXAMPLE.com")
+        assert not _is_allowed_http_url("file:///etc/passwd")
+        assert not _is_allowed_http_url("ftp://example.com/x")
+        assert not _is_allowed_http_url("data:text/plain,hi")
+        assert not _is_allowed_http_url("javascript:alert(1)")
+        assert not _is_allowed_http_url("/relative/path")
+        assert not _is_allowed_http_url("")
+
+    def test_http_get_rejects_file_scheme_end_to_end(self) -> None:
+        """A compiled `Http.get` on a file:// URL returns Err without ever
+        reaching urlopen — the scheme guard short-circuits (#789)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.get("file:///etc/passwd");
+  match @Result<String, String>.0 {
+    Ok(@String) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result)
+        assert exec_result.value == 0  # Err branch — scheme rejected
+
 
 class TestInferenceCollection:
     """Inference effect: host-import compilation and mocked execution."""

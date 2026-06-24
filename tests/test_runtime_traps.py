@@ -2055,7 +2055,7 @@ class TestNetworkResponseUtf8Hygiene591:
         Err-branch string.
         """
         body = self._file_body_after(
-            "vera/runtime/http.py", "def host_http_get(",
+            "vera/runtime/http.py", "def host_http_get(", span=2500,
         )
         assert 'resp.read().decode("utf-8", errors="replace")' in body, (
             "host_http_get must decode the response body with "
@@ -2076,7 +2076,7 @@ class TestNetworkResponseUtf8Hygiene591:
         CodeRabbit-flagged pre-fix vulnerability on PR #649.
         """
         body = self._file_body_after(
-            "vera/runtime/http.py", "def host_http_post(",
+            "vera/runtime/http.py", "def host_http_post(", span=2500,
         )
         # Use regex with DOTALL-like matching so the multi-line
         # form (decode call wrapped across two source lines) still

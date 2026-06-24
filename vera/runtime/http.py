@@ -17,6 +17,21 @@ from vera.runtime.heap import (
 _HTTP_TIMEOUT: int = 60  # seconds; prevents indefinite hangs on slow HTTP calls
 
 
+def _is_allowed_http_url(url: str) -> bool:
+    """True iff ``url`` uses the ``http`` or ``https`` scheme.
+
+    #789: the ``Http`` effect must not open ``file://``, ``ftp://``,
+    ``data:``, etc. — ``urllib.request.urlopen`` would otherwise read
+    local files or speak arbitrary protocols on behalf of a Vera
+    program.  Both host callbacks validate the scheme and return
+    ``Result.Err`` for anything that isn't HTTP(S).  Pure + module-level
+    so it is unit-testable without a wasmtime instance.
+    """
+    from urllib.parse import urlparse
+
+    return urlparse(url).scheme.lower() in ("http", "https")
+
+
 def register_http(linker: wasmtime.Linker, ops_used: set[str]) -> None:
     """Register the requested HTTP host functions on `linker`."""
     if "http_get" in ops_used:
@@ -24,8 +39,15 @@ def register_http(linker: wasmtime.Linker, ops_used: set[str]) -> None:
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> int:
             url = _read_wasm_string(caller, ptr, length)
+            if not _is_allowed_http_url(url):
+                return _alloc_result_err_string(
+                    caller,
+                    "Http.get: refusing non-HTTP(S) URL; only 'http' "
+                    "and 'https' schemes are permitted",
+                )
             try:
                 import urllib.request
+                # Scheme validated above, so the S310 audit is satisfied.
                 with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
                     # #591 — `errors="replace"` keeps the response
                     # data flowing to the user even when the
@@ -60,6 +82,12 @@ def register_http(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         ) -> int:
             url = _read_wasm_string(caller, url_ptr, url_len)
             body = _read_wasm_string(caller, body_ptr, body_len)
+            if not _is_allowed_http_url(url):
+                return _alloc_result_err_string(
+                    caller,
+                    "Http.post: refusing non-HTTP(S) URL; only 'http' "
+                    "and 'https' schemes are permitted",
+                )
             try:
                 import urllib.request
                 # Http.post is intentionally JSON-only: the Vera-level API
