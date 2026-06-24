@@ -12959,7 +12959,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Positive",
         ):
             exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
@@ -12971,7 +12971,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             side_effect=Exception("timeout"),
         ):
             exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
@@ -12989,7 +12989,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Positive",
         ) as mock_provider:
             exec_result = execute(result, env_vars={"VERA_OPENAI_API_KEY": "sk-openai-test"})
@@ -13002,7 +13002,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Neutral",
         ) as mock_provider:
             exec_result = execute(result, env_vars={"VERA_MOONSHOT_API_KEY": "sk-moonshot-test"})
@@ -13015,7 +13015,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result, env_vars={
@@ -13042,7 +13042,7 @@ class TestInferenceProviderDispatch:
         """Anthropic branch uses correct endpoint, headers, and request body shape."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "hello"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13065,7 +13065,7 @@ class TestInferenceProviderDispatch:
         """OpenAI branch uses correct endpoint, bearer auth, and OpenAI-compatible body."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider, _PROVIDERS
+        from vera.runtime.inference import _call_inference_provider, _PROVIDERS
 
         body = json.dumps({"choices": [{"message": {"content": "world"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13087,7 +13087,7 @@ class TestInferenceProviderDispatch:
         """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "moonshot"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13103,7 +13103,7 @@ class TestInferenceProviderDispatch:
         """Mistral branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "mistral"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13127,7 +13127,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
@@ -13142,7 +13142,7 @@ class TestInferenceProviderDispatch:
         VERA_MOONSHOT_API_KEY must resolve to 'anthropic'.
         """
         from unittest.mock import patch
-        from vera.codegen.api import _PROVIDERS
+        from vera.runtime.inference import _PROVIDERS
 
         first_provider = next(iter(_PROVIDERS))  # "anthropic" per current registry
         first_cfg = _PROVIDERS[first_provider]
@@ -13151,7 +13151,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result_src, env_vars={
@@ -13171,7 +13171,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             side_effect=AssertionError("should not be called"),
         ) as mock_provider:
             exec_result = execute(
@@ -13186,7 +13186,7 @@ class TestInferenceProviderDispatch:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "ok"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13198,7 +13198,7 @@ class TestInferenceProviderDispatch:
 
     def test_unknown_provider_raises(self) -> None:
         """Unknown provider string raises ValueError."""
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
         import pytest
         with pytest.raises(ValueError, match="Unknown inference provider"):
             _call_inference_provider("unknown", "p", "", "")

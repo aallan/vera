@@ -2038,12 +2038,12 @@ class TestNetworkResponseUtf8Hygiene591:
     coverage above, anchored on each function's definition.
     """
 
-    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+    def _file_body_after(
+        self, relpath: str, marker: str, *, span: int = 1500,
+    ) -> str:
         from pathlib import Path
         repo_root = Path(__file__).parent.parent
-        src = (repo_root / "vera/codegen/api.py").read_text(
-            encoding="utf-8",
-        )
+        src = (repo_root / relpath).read_text(encoding="utf-8")
         idx = src.index(marker)
         return src[idx:idx + span]
 
@@ -2054,7 +2054,9 @@ class TestNetworkResponseUtf8Hygiene591:
         than a ``UnicodeDecodeError`` message leaking into the
         Err-branch string.
         """
-        body = self._api_body_after("def host_http_get(")
+        body = self._file_body_after(
+            "vera/runtime/http.py", "def host_http_get(",
+        )
         assert 'resp.read().decode("utf-8", errors="replace")' in body, (
             "host_http_get must decode the response body with "
             "errors='replace' so non-UTF-8 bytes from a misconfigured "
@@ -2073,7 +2075,9 @@ class TestNetworkResponseUtf8Hygiene591:
         leaving the comment intact must fail this assertion.
         CodeRabbit-flagged pre-fix vulnerability on PR #649.
         """
-        body = self._api_body_after("def host_http_post(")
+        body = self._file_body_after(
+            "vera/runtime/http.py", "def host_http_post(",
+        )
         # Use regex with DOTALL-like matching so the multi-line
         # form (decode call wrapped across two source lines) still
         # matches.  The pattern requires `errors="replace"` to be
@@ -2112,7 +2116,8 @@ class TestNetworkResponseUtf8Hygiene591:
         coherent handler block.  CodeRabbit-flagged hardening on
         PR #649.
         """
-        body = self._api_body_after(
+        body = self._file_body_after(
+            "vera/runtime/inference.py",
             "def _call_inference_provider(", span=3000,
         )
         m = re.search(
