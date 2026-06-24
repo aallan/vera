@@ -41,6 +41,7 @@ from vera.runtime.md import register_md
 from vera.runtime.random import register_random
 from vera.runtime.regex import register_regex
 from vera.runtime.set import register_set
+from vera.runtime.state import register_state
 from vera.runtime.traps import (
     WasmTrapError as WasmTrapError,  # re-export: part of execute()'s contract
 )
@@ -726,76 +727,8 @@ def execute(
     )
 
     # State<T> host functions
-    _WASM_VAL_TYPE = {
-        "i64": wasmtime.ValType.i64(),
-        "i32": wasmtime.ValType.i32(),
-        "f64": wasmtime.ValType.f64(),
-    }
-    _DEFAULT_STATE: dict[str, int | float] = {
-        "i64": 0, "i32": 0, "f64": 0.0,
-    }
-
-    # Each key maps to a stack of values: push on handler entry, pop on exit.
-    # This allows nested handle[State<T>] of the same type to have independent
-    # state cells (#417).
     state_store: dict[str, list[int | float]] = {}
-
-    for type_name, wasm_t in result.state_types:
-        state_key = f"State_{type_name}"
-        state_store[state_key] = [_DEFAULT_STATE[wasm_t]]
-        val_type = _WASM_VAL_TYPE[wasm_t]
-
-        # Closure factories to capture correct state_key per type
-        def _make_host_get(key: str):  # type: ignore[no-untyped-def]
-            def host_get() -> int | float:
-                return state_store[key][-1]
-            return host_get
-
-        def _make_host_put(key: str):  # type: ignore[no-untyped-def]
-            def host_put(val: int | float) -> None:
-                state_store[key][-1] = val
-            return host_put
-
-        def _make_host_push(key: str, default: int | float):  # type: ignore[no-untyped-def]
-            def host_push() -> None:
-                state_store[key].append(default)
-            return host_push
-
-        def _make_host_pop(key: str):  # type: ignore[no-untyped-def]
-            def host_pop() -> None:
-                if len(state_store[key]) > 1:
-                    state_store[key].pop()
-            return host_pop
-
-        get_type = wasmtime.FuncType([], [val_type])
-        linker.define_func(
-            "vera", f"state_get_{type_name}", get_type,
-            _make_host_get(state_key),
-        )
-
-        put_type = wasmtime.FuncType([val_type], [])
-        linker.define_func(
-            "vera", f"state_put_{type_name}", put_type,
-            _make_host_put(state_key),
-        )
-
-        push_type = wasmtime.FuncType([], [])
-        linker.define_func(
-            "vera", f"state_push_{type_name}", push_type,
-            _make_host_push(state_key, _DEFAULT_STATE[wasm_t]),
-        )
-
-        pop_type = wasmtime.FuncType([], [])
-        linker.define_func(
-            "vera", f"state_pop_{type_name}", pop_type,
-            _make_host_pop(state_key),
-        )
-
-    # Apply initial state overrides (for testing)
-    if initial_state:
-        for key, val in initial_state.items():
-            if key in state_store:
-                state_store[key][-1] = val
+    register_state(linker, result.state_types, initial_state, state_store)
 
     # -----------------------------------------------------------------
     # Markdown host functions (§9.7.3)
