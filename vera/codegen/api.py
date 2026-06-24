@@ -282,9 +282,11 @@ def execute(
     # IO stays inline in execute() BY DESIGN (#421).  The twelve optional
     # effect families (Map/Set/Decimal/Json/Html/Markdown/Regex/Http/
     # Inference/Random/Math/State) were extracted to vera/runtime/ because
-    # each is a pluggable WASM<->library adapter: registered conditionally,
-    # owning its own state (or none), feeding nothing back into the result.
-    # IO is categorically different -- it is execute()'s OBSERVATION
+    # each is a pluggable WASM<->library adapter whose coupling to execute()
+    # is minimal: most are stateless and registered conditionally; the two
+    # stateful ones (Decimal, State) thread a single Python-side store,
+    # passed as one explicit parameter, that execute() reads back.  IO is
+    # different in DEGREE -- it is execute()'s OBSERVATION
     # CHANNEL.  Its callbacks write into state that *becomes the return
     # value*: output_buf/stderr_buf -> ExecuteResult.stdout/stderr,
     # last_violation -> _classify_trap's diagnostic, tee_stdout -> the

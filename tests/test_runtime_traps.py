@@ -2409,3 +2409,38 @@ public fn main(@Unit -> @Unit)
             "Pre-read IO.print output should be preserved in stdout "
             "even when the program exits via the SIGINT handler."
         )
+
+
+class TestRuntimePackageImportHygiene421:
+    """#421: every `vera.runtime` submodule must import standalone.
+
+    A cold `import vera.runtime.<x>` with no prior `vera.codegen` import must
+    not raise -- the decomposition's point is to make the runtime families
+    addressable as modules.  Regression for the
+    `heap.py -> codegen.memory -> codegen/__init__ -> api -> runtime.decimal
+    -> heap` cycle that surfaced when `_validate_wrap_handle` (a runtime heap
+    concern) was parked in the compile-time `codegen/memory.py`: cold import
+    re-entered a partially-initialised `heap` for `_WRAP_KIND_DECIMAL` and
+    raised ImportError.  Each module is imported in a FRESH interpreter so a
+    warm `sys.modules` cache cannot mask the cycle.
+    """
+
+    def test_all_runtime_submodules_cold_importable(self) -> None:
+        import subprocess
+        import sys
+
+        modules = [
+            "heap", "collections", "traps", "random", "math", "md", "json",
+            "regex", "html", "map", "set", "decimal", "http", "inference",
+            "state",
+        ]
+        for mod in modules:
+            result = subprocess.run(
+                [sys.executable, "-c", f"import vera.runtime.{mod}"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, (
+                f"cold `import vera.runtime.{mod}` failed (circular import "
+                f"via vera.codegen?):\n{result.stderr}"
+            )

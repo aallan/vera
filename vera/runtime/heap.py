@@ -14,7 +14,6 @@ from typing import Any
 
 import wasmtime
 
-from vera.codegen.memory import _validate_wrap_handle
 
 
 def _read_wasm_string(
@@ -274,6 +273,61 @@ def _call_register_wrapper(
         return
     assert isinstance(register_fn, wasmtime.Func)  # noqa: S101
     register_fn(caller, ptr, kind, handle)
+
+def _validate_wrap_handle(
+    raw_handle: object, kind: int, body_ptr: int,
+) -> None:
+    """#578 invariant: raw_handle must fit in 31 unsigned bits.
+
+    Wrapper ADTs store ``raw_handle | 0x80000000`` at body offset 4 so
+    the in-heap field is structurally outside the conservative-scan
+    heap-range check (`heap_ptr` is hard-capped at 0x80000000 by the
+    `$alloc` heap-ceiling guard).  The unwrap site recovers the raw
+    handle with ``& 0x7FFFFFFF``.  Both directions break silently
+    outside ``[0, 0x80000000)``:
+
+    - Negative ints have bit 31 set in two's complement.
+      ``raw_handle | 0x80000000`` is a no-op and the unwrap mask
+      returns the WRONG handle.
+    - Values ``>= 0x80000000`` alias into the top half and collide
+      with the tag-bit pattern.
+    - Values ``>= 0x100000000`` truncate on ``_write_i32`` and
+      silently lose information.
+    - Non-int values would ``TypeError`` deeper in the stack;
+      catching them here makes the diagnostic actionable.
+    - ``bool`` values: Python's ``bool`` subclasses ``int``, so
+      ``isinstance(True, int)`` is ``True`` and the value would
+      pass an ``isinstance``-only check, silently aliasing to
+      handles 1 and 0.  The strict ``type(raw_handle) is int``
+      check rejects bools without accepting any int subclass.
+
+    Practical alloc counters are bounded well below 2^31 — a 2B-handle
+    session is wall-clock infeasible — but a silent round-trip
+    failure is exactly the corruption class #578 sought to eliminate.
+    Fail fast.
+
+    Module-level helper so it can be unit-tested directly without
+    standing up a wasmtime instance (``_wrap_handle`` is nested
+    inside ``execute()`` and not importable on its own).
+    """
+    # ``type(x) is int`` rather than ``isinstance(x, int)`` so we
+    # reject ``bool`` (which would otherwise pass — bool subclasses
+    # int in Python and silently aliases to handles 0 / 1).
+    if not (
+        type(raw_handle) is int
+        and 0 <= raw_handle < 0x80000000
+    ):
+        raise RuntimeError(
+            f"#578: raw_handle={raw_handle!r} (kind={kind!r}, "
+            f"body_ptr={body_ptr!r}) is outside the valid "
+            f"range [0, 0x80000000); cannot tag for the "
+            f"conservative-scan disjointness invariant.  "
+            f"Host-store handle counters must be unsigned "
+            f"31-bit integers.  Either a counter overflowed, "
+            f"a negative sentinel flowed in, or a non-integer "
+            f"value flowed into _wrap_handle."
+        )
+
 
 def _wrap_handle(
     caller: wasmtime.Caller, kind: int, raw_handle: int,

@@ -1,8 +1,9 @@
 """State<T> effect host bindings (§9.4).
 
 Extracted from `execute()` in `vera/codegen/api.py` (#421).  Each State<T> type
-gets get/set/push/pop host functions over a per-type value stack; `state_store`
-is created here and is internal to this family.
+gets get/set/push/pop host functions over a per-type value stack.  `state_store`
+is created by `execute()` and passed in — execute() reads each cell's
+top-of-stack into `ExecuteResult.state` — and `register_state` populates it.
 """
 
 from __future__ import annotations
