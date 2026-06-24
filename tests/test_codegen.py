@@ -16326,14 +16326,14 @@ public fn main(@Unit -> @Unit)
 
     def test_validate_wrap_handle_accepts_valid_range(self) -> None:
         """[0, 0x80000000) is the accepted range — no raise."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         # Boundary lo, mid, boundary hi (last valid).
         for raw in (0, 1, 12345, 0x7FFFFFFE, 0x7FFFFFFF):
             _validate_wrap_handle(raw, kind=1, body_ptr=0x1000)
 
     def test_validate_wrap_handle_rejects_negative(self) -> None:
         """Negative ints have bit 31 set in two's complement."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578.*outside the valid"):
             _validate_wrap_handle(-1, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):
@@ -16341,7 +16341,7 @@ public fn main(@Unit -> @Unit)
 
     def test_validate_wrap_handle_rejects_at_2gb_boundary(self) -> None:
         """0x80000000 is the FIRST invalid value (range is half-open)."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="0x80000000"):
             _validate_wrap_handle(0x80000000, kind=1, body_ptr=0x1000)
 
@@ -16354,7 +16354,7 @@ public fn main(@Unit -> @Unit)
         and the unwrap mask would return that — a silent wrong
         handle.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578"):
             _validate_wrap_handle(0x100000000, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):
@@ -16367,7 +16367,7 @@ public fn main(@Unit -> @Unit)
         raise `TypeError` from the bitwise `&` operation in the
         old check, producing a less actionable error.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         for bad in (None, "5", 1.5, [1], {}):
             with pytest.raises(RuntimeError, match="#578"):
                 _validate_wrap_handle(bad, kind=1, body_ptr=0x1000)
@@ -16383,7 +16383,7 @@ public fn main(@Unit -> @Unit)
         uses `type(raw_handle) is int` rather than `isinstance`,
         which rejects bool while still accepting plain int.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.codegen.memory import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578"):
             _validate_wrap_handle(True, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):
