@@ -1876,7 +1876,8 @@ class TestHostPrintInvalidUtf8589:
         substring check would pass spuriously even if the actual call
         was reverted to strict-mode `.decode("utf-8")`.
         """
-        body = self._api_body_after(
+        body = self._file_body_after(
+            "vera/runtime/heap.py",
             '"""Read a UTF-8 string from WASM memory.',
         )
         assert '.decode("utf-8", errors="replace")' in body, (
