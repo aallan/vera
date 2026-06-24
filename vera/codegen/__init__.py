@@ -2,13 +2,15 @@
 
 from vera.codegen.api import (
     CompileResult,
-    ConstructorLayout,
     ExecuteResult,
+    compile,
+    execute,
+)
+from vera.codegen.memory import (
+    ConstructorLayout,
     _align_up,
     _wasm_type_align,
     _wasm_type_size,
-    compile,
-    execute,
 )
 from vera.codegen.core import CodeGenerator
 

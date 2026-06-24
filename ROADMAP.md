@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,759 tests, 92 conformance programs, 35 examples, 13 spec chapters.
+4,762 tests, 92 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,14 +20,15 @@ The infrastructure that catches the next regression before a user does, plus the
 
 | Issue | What |
 |---|---|
-| [#421](https://github.com/aallan/vera/issues/421) | Decompose `vera/codegen/api.py` into a `vera/runtime/` package, one host-binding family per PR.  The file has doubled since the issue was filed (now 4,358 lines); the characterization harness (#734) that pins `execute()`'s observable contract is in place as the regression gate for the split. |
+| [#387](https://github.com/aallan/vera/issues/387) | **Finish the mutation sweep.**  Deliberately break each line of `vera/` and confirm a test flips RED, to catch *green-for-the-wrong-reason* tests (the #680 audit found 8 in one 57-test battery).  Tooling chosen (`mutmut`) and the **soundness-core baseline** measured: `verifier`/`smt`/`checker`/`obligations`, 10,620 mutants, 80.8% caught, 2,038 survivors (runbook `MUTATION.md`; inventory on the issue).  Remaining: triage the soundness-core survivors and per-module follow-ups, then run the **whole-`vera/` sweep — now unblocked** by the #421 decomposition (api.py's `execute()` no longer inflates a mutant file mutmut can't index).  The in-process oracle means subprocess-only suites (conformance / CLI / browser) can't kill mutants, so coverage comes from the in-process unit suites — *not* the conformance suite. |
 | [#392](https://github.com/aallan/vera/issues/392) | Audit the `smt.py` Z3 translation layer for soundness — a bug here silently bypasses verification. |
-| [#387](https://github.com/aallan/vera/issues/387) | Mutation-test the compiler — deliberately break each line of `vera/` and confirm a test flips RED, to catch *green-for-the-wrong-reason* tests (the #680 audit found 8 in one 57-test battery).  Tooling chosen (`mutmut`, after a spike vs `cosmic-ray`) and the **soundness-core baseline** measured: `verifier`/`smt`/`checker`/`obligations`, 10,620 mutants, 80.8% caught, 2,038 survivors (runbook `MUTATION.md`; inventory on the issue).  Remaining: triage the soundness-core survivors, then per-module follow-ups; the whole-`vera/` sweep is deferred behind [#421](https://github.com/aallan/vera/issues/421) (`execute()` inflates a mutant file mutmut can't index).  The in-process oracle means subprocess-only suites (conformance / CLI / browser) can't kill mutants, so coverage comes from the in-process unit suites — *not* the conformance suite. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
 | [#679](https://github.com/aallan/vera/issues/679) | Chapter 8 (modules) conformance programs — the only spec chapter with no `chNN_*.vera` coverage. |
 | [#738](https://github.com/aallan/vera/issues/738) | Mark the `TestHostHandleReclamation573` trio as stress tests so the local inner loop stops paying ~12 minutes per run. |
+| [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
+| [#420](https://github.com/aallan/vera/issues/420) | Split `tests/test_checker.py` (6,347 lines) into phase-focused test files.  Promoted from "Not doing now". |
 
 ### Tier 2 — Single source of truth
 
@@ -55,7 +56,6 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#724](https://github.com/aallan/vera/issues/724) | LSP: buffer-aware module resolution (imports currently resolve from disk, not open buffers). |
 | [#725](https://github.com/aallan/vera/issues/725) | LSP: handler-aware `vera/addEffect` propagation bounding. |
 | [#181](https://github.com/aallan/vera/issues/181) | Slot go-to-definition and mechanical slot-index rewriting beyond parameters (`let`/`match` bindings). |
-| [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (19,570 lines) into feature-focused files. |
 | [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — sequenced after the #421 decomposition reshapes the mixin sets. |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
@@ -65,7 +65,6 @@ Real improvements that still rank below correctness and robustness.  The browser
 Deliberate trade-offs, recorded so they aren't re-litigated by accident.
 
 - **No typed IR for WAT emission.**  The audit floated one; the cost-benefit doesn't clear while string-based emission is held safe by the walker-completeness gate and the planned canonical WAT formatter ([#672](https://github.com/aallan/vera/issues/672)).
-- **No `tests/test_checker.py` split** ([#420](https://github.com/aallan/vera/issues/420)).  At 5,939 lines it is half the size of `test_codegen.py` and not where the pain is; a closure proposal is pending.
 - **No parser fuzzing yet** ([#402](https://github.com/aallan/vera/issues/402), bookmark).  Trigger: a parser crash from the wild, or spare CI budget after the Tier 1 gates land.
 - **No full Tier 2 verification before per-monomorphization** ([#427](https://github.com/aallan/vera/issues/427)).  Per-mono ships the agent-visible win now with far less machinery; #427 stays on the milestone horizon (see Milestone 4) and will use per-mono results as its differential oracle.
 
