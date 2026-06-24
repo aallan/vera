@@ -100,7 +100,7 @@ def try_parse(content: str) -> str | None:
 def try_check(content: str, root: Path) -> str | None:
     """Try to type-check content. Returns error message or None."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", dir=str(root), delete=True
+        mode="w", suffix=".vera", delete=True
     ) as f:
         f.write(content)
         f.flush()
@@ -121,7 +121,7 @@ def try_check(content: str, root: Path) -> str | None:
 def try_verify(content: str, root: Path) -> str | None:
     """Try to verify contracts. Returns error message or None."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", dir=str(root), delete=True
+        mode="w", suffix=".vera", delete=True
     ) as f:
         f.write(content)
         f.flush()

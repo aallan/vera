@@ -112,7 +112,6 @@ class TestHtmlCodeSamples:
             f = tempfile.NamedTemporaryFile(
                 mode="w",
                 suffix=".vera",
-                dir=str(ROOT),
                 delete=False,
                 encoding="utf-8",
             )
@@ -152,7 +151,6 @@ class TestHtmlCodeSamples:
             f = tempfile.NamedTemporaryFile(
                 mode="w",
                 suffix=".vera",
-                dir=str(ROOT),
                 delete=False,
                 encoding="utf-8",
             )
