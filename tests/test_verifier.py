@@ -7797,19 +7797,27 @@ private fn dest_asym_387(@Pos387, @Int -> @Nat)
         assert o.fn_name == "dest_asym_387", o.fn_name
 
     def test_destructure_unprojectable_guarded_tier3(self) -> None:
-        """``let Tuple<@Nat,@Nat> = mk()`` where ``mk`` returns ``Tuple<Int,Int>``
-        via a CALL (opaque return the SMT layer can't project as a datatype) →
-        the ``sort is None`` branch: 2 GUARDED Tier-3 nat_bind obligations
-        (codegen runtime-guards the destructure).  Pins ``tier3``/``tier3_runtime
-        += 1`` ×2 and that they are NOT errors."""
+        """``let Tuple<@Nat,@Nat> = TupSrc387.mk(())`` where the source is an
+        EFFECT OPERATION returning ``Tuple<Int,Int>`` (a genuinely opaque value
+        the SMT layer cannot project as a datatype) → the ``sort is None``
+        branch: 2 GUARDED Tier-3 nat_bind obligations (codegen runtime-guards
+        the destructure).  Pins ``tier3``/``tier3_runtime += 1`` ×2 and that they
+        are NOT errors.
+
+        The source MUST be opaque for a structural reason — an effect op's
+        return is uninterpreted.  A plain ``fn`` call whose return type is the
+        same ``Tuple<Int,Int>`` does NOT reach this branch when the call carries
+        a non-Unit argument: the projector builds a Tuple sort and the
+        components narrow to E503 (see
+        ``test_nonliteral_tuple_destructure_obligates_each_field``).  Using the
+        effect op keeps this test pinned to the unprojectable Tier-3 path
+        regardless of argument shape."""
         result = _verify("""
-private fn mk_387(@Unit -> @Tuple<Int, Int>)
-  requires(true) ensures(true) effects(pure)
-{ Tuple(1, 2) }
+effect TupSrc387 { op mk(Unit -> Tuple<Int, Int>); }
 private fn dest_t3_387(@Unit -> @Nat)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(true) effects(<TupSrc387>)
 {
-  let Tuple<@Nat, @Nat> = mk_387(());
+  let Tuple<@Nat, @Nat> = TupSrc387.mk(());
   @Nat.0 + @Nat.1
 }
 """)
@@ -8389,7 +8397,13 @@ public fn use_bool_bad_387(@Bool -> @Nat)
         ``_aggregate_generic_instances`` (1065-1067: ``tier1_verified += 1`` and
         ``total += 1`` ONCE, not per-instance).  The negative partner to the
         violated aggregation — together they pin the meet's two extreme
-        verdicts feeding the summary."""
+        verdicts feeding the summary.
+
+        De Bruijn: in ``gsub_ok_387(@Int.0, 1, 3)`` the args fill the two
+        ``@Nat`` params left-to-right, so the EARLIER param is ``1`` and the
+        LATER (rightmost) is ``3``; ``@Nat.0`` is the rightmost (``3``) and
+        ``@Nat.1`` the earlier (``1``), so ``requires(@Nat.0 >= @Nat.1)`` is
+        ``3 >= 1`` — genuinely satisfied at BOTH call sites."""
         result = _verify("""
 private forall<T>
 fn gsub_ok_387(@T, @Nat, @Nat -> @Nat)
@@ -8398,11 +8412,11 @@ fn gsub_ok_387(@T, @Nat, @Nat -> @Nat)
 
 public fn use_int_ok_387(@Int -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ gsub_ok_387(@Int.0, 3, 1) }
+{ gsub_ok_387(@Int.0, 1, 3) }
 
 public fn use_bool_ok_387(@Bool -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ gsub_ok_387(@Bool.0, 5, 2) }
+{ gsub_ok_387(@Bool.0, 2, 5) }
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
@@ -8542,8 +8556,17 @@ private fn add_arg_s387(@Nat, @Nat -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "add_arg_s387", "requires")
-        assert o.status == "verified", o.status
+        # The callee precondition is DISCHARGED: a successful call-site check
+        # records NO obligation, so assert the ABSENCE of a call_pre violation
+        # (and of E501).  Asserting the caller's own ``requires(true)`` here
+        # would be a tautology — verified regardless of the ADD translation.
+        # Paired negative: test_arith_sub_violates_precondition_with_ce.
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
 
     def test_arith_sub_violates_precondition_with_ce(self) -> None:
         """``@Nat.0 - @Nat.1`` (Nat subtraction) fed to ``requires(@Int.0 >= 0)``
@@ -8578,8 +8601,25 @@ private fn lt_guard_s387(@Int -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "lt_guard_s387", "requires")
-        assert o.status == "verified", o.status
+        # Discharged via the then-branch path condition: assert the ABSENCE of a
+        # call_pre violation (a successful check leaves no obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): flip the guard to ``>`` so the
+        # then-branch sees ``@Int.0 > 10`` fed to ``requires(@Int.0 <= 10)`` —
+        # the path condition no longer discharges the bound → E501 call_pre.
+        neg = _verify(self._NEEDS_LE10 + """
+private fn lt_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 > 10 then { needs_le10_s387(@Int.0) } else { 0 } }
+""")
+        o = self._by_fn_kind(neg, "lt_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     # =================================================================
     # _translate_call (built-ins): abs / min / max — `If(...)` shapes.
@@ -8599,8 +8639,25 @@ private fn abs_ok_s387(@Int -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "abs_ok_s387", "requires")
-        assert o.status == "verified", o.status
+        # ``abs`` makes the value nonneg, so the call is DISCHARGED: assert the
+        # ABSENCE of a call_pre violation (a success leaves no obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): drop ``abs`` and pass the raw
+        # ``@Int.0`` — without the nonneg-making built-in the bound can fail
+        # → E501 call_pre.  Confirms the success above hinges on ``abs``.
+        neg = _verify(self._NEEDS_GE0 + """
+private fn abs_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Int.0) }
+""")
+        o = self._by_fn_kind(neg, "abs_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     def test_builtin_min_upper_bound_satisfies_and_lower_violates(self) -> None:
         """``min(@Int.0, 10)`` is always ``<= 10`` (satisfies ``requires(@Int.0
@@ -8616,7 +8673,14 @@ private fn min_le_s387(@Int -> @Int)
 """)
         assert [d for d in ok.diagnostics if d.severity == "error"] == [], [
             d.description for d in ok.diagnostics if d.severity == "error"]
-        assert self._by_fn_kind(ok, "min_le_s387", "requires").status == "verified"
+        # ``min(x,10) <= 10`` discharges the upper bound: a successful call-site
+        # check records no obligation, so assert the ABSENCE of a call_pre
+        # violation (the ``min_ge`` block below is the paired E501 negative).
+        assert [o for o in ok.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in ok.obligations if o.kind == "call_pre"]
+        assert [d for d in ok.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in ok.diagnostics if d.error_code == "E501"]
 
         neg = _verify(self._NEEDS_GE0 + """
 private fn min_ge_s387(@Int -> @Int)
@@ -8640,7 +8704,14 @@ private fn max_ge_s387(@Int -> @Int)
 """)
         assert [d for d in ok.diagnostics if d.severity == "error"] == [], [
             d.description for d in ok.diagnostics if d.severity == "error"]
-        assert self._by_fn_kind(ok, "max_ge_s387", "requires").status == "verified"
+        # ``max(x,0) >= 0`` discharges the lower bound: assert the ABSENCE of a
+        # call_pre violation (the ``max_le`` block below is the paired E501
+        # negative).
+        assert [o for o in ok.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in ok.obligations if o.kind == "call_pre"]
+        assert [d for d in ok.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in ok.diagnostics if d.error_code == "E501"]
 
         neg = _verify(self._NEEDS_LE10 + """
 private fn max_le_s387(@Int -> @Int)
@@ -8670,8 +8741,25 @@ private fn arrlen_s387(@Array<Int> -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "arrlen_s387", "requires")
-        assert o.status == "verified", o.status
+        # The ``result >= 0`` axiom discharges the call: assert the ABSENCE of a
+        # call_pre violation (success records no obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): pass a raw ``@Int.0`` instead of
+        # the ``array_length`` result — without the nonneg axiom the bound can
+        # fail → E501 call_pre.  Confirms the success hinges on that axiom.
+        neg = _verify(self._NEEDS_GE0 + """
+private fn arrlen_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Int.0) }
+""")
+        o = self._by_fn_kind(neg, "arrlen_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     def test_builtin_string_length_nonneg_via_z3_length(self) -> None:
         """``string_length(@String.0)`` fed to ``requires(@Int.0 >= 0)``
@@ -8686,8 +8774,25 @@ private fn strlen_s387(@String -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "strlen_s387", "requires")
-        assert o.status == "verified", o.status
+        # ``z3.Length`` (+ the ``>= 0`` axiom) discharges the call: assert the
+        # ABSENCE of a call_pre violation (success records no obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): pass a raw ``@Int.0`` instead of
+        # the ``string_length`` result — without the nonneg guarantee the bound
+        # can fail → E501 call_pre.
+        neg = _verify(self._NEEDS_GE0 + """
+private fn strlen_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Int.0) }
+""")
+        o = self._by_fn_kind(neg, "strlen_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     def test_builtin_string_contains_self_is_true(self) -> None:
         """``string_contains(@String.0, @String.0)`` fed to ``requires(@Bool.0)``
@@ -8703,8 +8808,26 @@ private fn contains_s387(@String -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "contains_s387", "requires")
-        assert o.status == "verified", o.status
+        # ``Contains(s, s)`` is valid, so the ``requires(@Bool.0)`` call is
+        # discharged: assert the ABSENCE of a call_pre violation (success
+        # records no obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): two DISTINCT strings need not
+        # contain each other, so ``Contains(@String.1, @String.0)`` is not
+        # provably true → ``requires(@Bool.0)`` fails → E501 call_pre.
+        neg = _verify(self._NEEDS_TRUE + """
+private fn contains_neg_s387(@String, @String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_true_s387(string_contains(@String.1, @String.0)) }
+""")
+        o = self._by_fn_kind(neg, "contains_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     # =================================================================
     # check_valid — the sat/unsat → verified/violated mapping, and
@@ -8722,8 +8845,16 @@ private fn cv_ok_s387(@Nat -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "cv_ok_s387", "requires")
-        assert o.status == "verified", o.status
+        # A Nat satisfies ``>= 0``, so the call is DISCHARGED: assert the ABSENCE
+        # of a call_pre violation (success records no obligation; the caller's
+        # own ``requires(true)`` would verify regardless).  Paired E501 negative:
+        # test_check_valid_violated_branch_carries_counterexample (cv_neg).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
 
     def test_check_valid_violated_branch_carries_counterexample(self) -> None:
         """A refutable precondition (``@Int.0 >= 0`` passed an unconstrained
@@ -8809,8 +8940,15 @@ private fn bool_t_s387(@Bool -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "bool_t_s387", "requires")
-        assert o.status == "verified", o.status
+        # The true-arm path condition discharges ``requires(@Bool.0)``: assert
+        # the ABSENCE of a call_pre violation (success records no obligation).
+        # Paired E501 negative: test_bool_pattern_false_arm_violates_with_ce.
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
 
     def test_bool_pattern_false_arm_violates_with_ce(self) -> None:
         """The mirror: in the FALSE arm, ``needs_true(b)`` is unsatisfiable
@@ -8841,8 +8979,16 @@ private fn int5_s387(@Int -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "int5_s387", "requires")
-        assert o.status == "verified", o.status
+        # The ``5`` arm's path condition ``n == 5`` discharges
+        # ``requires(@Int.0 >= 3)``: assert the ABSENCE of a call_pre violation
+        # (success records no obligation).  Paired E501 negative:
+        # test_int_pattern_wrong_value_arm_violates_with_ce.
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
 
     def test_int_pattern_wrong_value_arm_violates_with_ce(self) -> None:
         """The mirror: the ``1`` arm's path condition ``n == 1`` does NOT satisfy
@@ -8887,8 +9033,34 @@ private fn col_s387(@Color_s387 -> @Int)
 """)
         assert [d for d in result.diagnostics if d.severity == "error"] == [], [
             d.description for d in result.diagnostics if d.severity == "error"]
-        o = self._by_fn_kind(result, "col_s387", "requires")
-        assert o.status == "verified", o.status
+        # ``array_length([7])`` is nonneg, so the Red-arm call is DISCHARGED:
+        # assert the ABSENCE of a call_pre violation (success records no
+        # obligation).
+        assert [o for o in result.obligations
+                if o.kind == "call_pre" and o.status == "violated"] == [], [
+            (o.fn_name, o.status) for o in result.obligations
+            if o.kind == "call_pre"]
+        assert [d for d in result.diagnostics if d.error_code == "E501"] == [], [
+            d.description for d in result.diagnostics if d.error_code == "E501"]
+        # Paired negative (real differential): same nullary-match dispatch, but
+        # the Red arm passes a raw possibly-negative ``@Int.0`` instead of the
+        # nonneg ``array_length`` result → ``requires(@Int.0 >= 0)`` fails →
+        # E501 call_pre.  Confirms the match arm actually reaches the check.
+        neg = _verify("""
+private data Color_neg_s387 { Red, Green, Blue }
+private fn needs_ge0coln_s387(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ 0 }
+private fn col_neg_s387(@Color_neg_s387, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Color_neg_s387.0 {
+    Red -> needs_ge0coln_s387(@Int.0),
+    Green -> 0,
+    Blue -> 0 } }
+""")
+        o = self._by_fn_kind(neg, "col_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
 
     # =================================================================
     # get_rank_fn — structural rank axioms for recursive-ADT decreases.
