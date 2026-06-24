@@ -8461,3 +8461,580 @@ public fn use_bool_ok_387(@Bool -> @Nat)
         m = ContractVerifier._meet_status
         assert m(["verified", "verified", "verified"]) == "verified"
         assert m(["verified"]) == "verified"
+
+
+class TestSmtTranslation387:
+    """#387: pin the Z3-translation layer (``vera/smt.py``) differentially.
+
+    ``smt.py`` is never called directly by a test — it is the Z3 layer the
+    verifier reaches *through* ``_verify(source)``.  So every test here is a
+    DIFFERENTIAL: a Vera program whose verification *outcome* (an obligation's
+    ``.status`` / ``.error_code``, the summary counters, or a counterexample's
+    content) depends on ``smt`` translating an operator / built-in, solving
+    sat↔unsat, or extracting a model correctly.  For each test the docstring
+    names the targeted ``smt`` function and the mutation it would catch: "if
+    ``smt``'s F mutated to M, THIS assertion flips" is what makes it a kill
+    rather than a mere pass.
+
+    Lever (the ``ensures``-over-body postcondition is Tier 3 in this verifier,
+    so it is NOT the lever): the **call-site precondition check** (``call_pre``
+    / E501) runs a callee ``requires`` predicate through
+    ``check_valid`` → ``_extract_counterexample``, with the actual-argument
+    expression translated by ``translate_expr`` / the built-in dispatch.  A
+    callee whose ``requires`` bound (``>= 0``, ``<= 10`` …) holds for the real
+    semantics of the argument expression but NOT for a mutated one therefore
+    flips ``verified`` ↔ ``violated`` exactly on the mutation.  The Tier-1
+    obligation walkers (``nat_sub`` E502, ``nat_bind`` E503, ``div_zero`` E526,
+    ``index_bounds`` E527) give the same lever without a callee.
+
+    Assertions use ``==`` on obligation fields/codes/statuses, ``==`` on the
+    exact summary tuple, and ``==`` on counterexample dict items — never
+    substring ``in`` on a message (mutmut wraps string literals as ``"XX"+s+
+    "XX"`` so substring assertions don't kill string mutations).  Distinct
+    ``_387`` names defeat a ``fn_name → None`` mutation.
+    """
+
+    # Reusable callee skeletons.  Each imposes a single primitive bound so the
+    # caller's argument-expression translation is the only thing under test.
+    _NEEDS_GE0 = """
+private fn needs_ge0_s387(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+    _NEEDS_LE10 = """
+private fn needs_le10_s387(@Int -> @Int)
+  requires(@Int.0 <= 10) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+    _NEEDS_TRUE = """
+private fn needs_true_s387(@Bool -> @Int)
+  requires(@Bool.0) ensures(true) effects(pure)
+{ 0 }
+"""
+
+    @staticmethod
+    def _viol(result: VerifyResult) -> list:
+        return [o for o in result.obligations if o.status == "violated"]
+
+    @staticmethod
+    def _by_fn_kind(result: VerifyResult, fn: str, kind: str):
+        ms = [o for o in result.obligations
+              if o.fn_name == fn and o.kind == kind]
+        assert len(ms) == 1, [(o.fn_name, o.kind, o.status) for o in result.obligations]
+        return ms[0]
+
+    # =================================================================
+    # translate_expr / _translate_binary — arithmetic + comparison ops.
+    # The call-precondition lever: a callee `requires(@Int.0 >= 100)` is
+    # discharged iff the actual argument translates with the right op.
+    # =================================================================
+
+    def test_arith_add_satisfies_precondition(self) -> None:
+        """``@Int.0 + @Int.1`` as an actual arg to ``requires(@Int.0 >= 0)``
+        with both params constrained ``>= 0`` VERIFIES (sum of two nonneg is
+        nonneg) — pins ``_translate_binary`` ADD.  A mutation of ``+`` to ``-``
+        would make ``@Int.0 - @Int.1`` possibly negative → E501.  Uses Nat
+        params so the premise is carried."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn add_arg_s387(@Nat, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Nat.0 + @Nat.1) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "add_arg_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_arith_sub_violates_precondition_with_ce(self) -> None:
+        """``@Nat.0 - @Nat.1`` (Nat subtraction) fed to ``requires(@Int.0 >= 0)``
+        is NOT provably nonneg (it can underflow into the integers) → E501
+        ``call_pre`` violated.  Pins ``_translate_binary`` SUB *and*
+        ``_extract_counterexample``: the CE names BOTH operands.  A mutation of
+        ``-`` to ``+`` would discharge the bound (nonneg) and lose the
+        error."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn sub_arg_s387(@Nat, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Nat.0 - @Nat.1) }
+""")
+        o = self._by_fn_kind(result, "sub_arg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.counterexample is not None, o.counterexample
+        assert "@Nat.0" in o.counterexample, o.counterexample
+        assert "@Nat.1" in o.counterexample, o.counterexample
+
+    def test_comparison_lt_path_condition_discharges(self) -> None:
+        """A branch guard ``if @Int.0 < 10 then needs_le10(@Int.0) else 0``
+        discharges the callee ``requires(@Int.0 <= 10)`` in the then-branch —
+        pins ``_translate_binary`` LT feeding ``_path_conditions``.  The else
+        branch passes a literal in range.  A mutation of ``<`` to ``>`` would
+        flip the guard so the then-branch sees ``@Int.0 > 10`` and the bound
+        ``<= 10`` would fail."""
+        result = _verify(self._NEEDS_LE10 + """
+private fn lt_guard_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 < 10 then { needs_le10_s387(@Int.0) } else { 0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "lt_guard_s387", "requires")
+        assert o.status == "verified", o.status
+
+    # =================================================================
+    # _translate_call (built-ins): abs / min / max — `If(...)` shapes.
+    # Each pairs a verify (real semantics satisfy the bound) with a
+    # violate (real semantics break it but the swapped op would pass).
+    # =================================================================
+
+    def test_builtin_abs_nonneg_satisfies_precondition(self) -> None:
+        """``abs(@Int.0)`` fed to ``requires(@Int.0 >= 0)`` VERIFIES — pins the
+        ``abs`` built-in ``If(arg >= 0, arg, -arg)``.  A mutation of the ``-arg``
+        branch (to ``arg``) makes ``abs`` the identity, so a negative argument
+        would violate the bound."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn abs_ok_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(abs(@Int.0)) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "abs_ok_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_builtin_min_upper_bound_satisfies_and_lower_violates(self) -> None:
+        """``min(@Int.0, 10)`` is always ``<= 10`` (satisfies ``requires(@Int.0
+        <= 10)``) but NOT always ``>= 0`` (violates ``requires(@Int.0 >= 0)``,
+        CE ``@Int.0 = -1``).  The pair pins ``min`` = ``If(a <= b, a, b)``: a
+        mutation of ``<=`` to ``>=`` turns ``min`` into ``max``, which would
+        flip BOTH verdicts (``max(x,10) >= 10`` discharges the lower bound and
+        can exceed the upper)."""
+        ok = _verify(self._NEEDS_LE10 + """
+private fn min_le_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_le10_s387(min(@Int.0, 10)) }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == [], [
+            d.description for d in ok.diagnostics if d.severity == "error"]
+        assert self._by_fn_kind(ok, "min_le_s387", "requires").status == "verified"
+
+        neg = _verify(self._NEEDS_GE0 + """
+private fn min_ge_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(min(@Int.0, 10)) }
+""")
+        o = self._by_fn_kind(neg, "min_ge_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.counterexample == {"@Int.0": "-1", "@result": "0"}, o.counterexample
+
+    def test_builtin_max_lower_bound_satisfies_and_upper_violates(self) -> None:
+        """Mirror of ``min``: ``max(@Int.0, 0)`` is always ``>= 0`` (satisfies
+        the lower bound) but NOT always ``<= 10`` (violates the upper, CE
+        ``@Int.0 = 11``).  Pins ``max`` = ``If(a >= b, a, b)``: the ``>=``→``<=``
+        mutation turns it into ``min`` and flips both verdicts."""
+        ok = _verify(self._NEEDS_GE0 + """
+private fn max_ge_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(max(@Int.0, 0)) }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == [], [
+            d.description for d in ok.diagnostics if d.severity == "error"]
+        assert self._by_fn_kind(ok, "max_ge_s387", "requires").status == "verified"
+
+        neg = _verify(self._NEEDS_LE10 + """
+private fn max_le_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_le10_s387(max(@Int.0, 0)) }
+""")
+        o = self._by_fn_kind(neg, "max_le_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.counterexample == {"@Int.0": "11", "@result": "0"}, o.counterexample
+
+    # =================================================================
+    # _translate_call (built-ins): array_length / string_length —
+    # uninterpreted fns with an asserted `result >= 0` axiom.
+    # =================================================================
+
+    def test_builtin_array_length_nonneg_axiom(self) -> None:
+        """``array_length(@Array<Int>.0)`` fed to ``requires(@Int.0 >= 0)``
+        VERIFIES SOLELY because the built-in asserts ``result >= 0`` to the
+        solver — pins that ``self.solver.add(result >= 0)`` in the
+        ``array_length`` branch (an uninterpreted length fn is otherwise
+        unconstrained, so dropping the axiom flips this to E501)."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn arrlen_s387(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(array_length(@Array<Int>.0)) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "arrlen_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_builtin_string_length_nonneg_via_z3_length(self) -> None:
+        """``string_length(@String.0)`` fed to ``requires(@Int.0 >= 0)``
+        VERIFIES — pins the ``string_length`` branch (``z3.Length`` for the Seq
+        sort, plus the ``result >= 0`` axiom).  Z3's ``Length`` is nonneg by
+        theory, so a String literal/var length is always ``>= 0``; a mutation
+        dropping the axiom or the Seq-sort guard would lose the discharge."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn strlen_s387(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(string_length(@String.0)) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "strlen_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_builtin_string_contains_self_is_true(self) -> None:
+        """``string_contains(@String.0, @String.0)`` fed to ``requires(@Bool.0)``
+        VERIFIES — a string contains itself (``z3.Contains(s, s)`` is valid).
+        Pins the ``string_contains`` → ``z3.Contains`` mapping: a mutation
+        swapping the argument order is masked here (self-contains), but a
+        mutation to ``PrefixOf``/``SuffixOf`` with swapped args, or returning an
+        unconstrained Bool, would drop the discharge."""
+        result = _verify(self._NEEDS_TRUE + """
+private fn contains_s387(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_true_s387(string_contains(@String.0, @String.0)) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "contains_s387", "requires")
+        assert o.status == "verified", o.status
+
+    # =================================================================
+    # check_valid — the sat/unsat → verified/violated mapping, and
+    # _extract_counterexample — model → dict[str,str].
+    # =================================================================
+
+    def test_check_valid_verified_branch(self) -> None:
+        """A provably-valid precondition (``@Nat.0 >= 0`` passed a Nat) maps to
+        ``verified`` — pins ``check_valid``'s ``unsat → SmtResult(verified)``
+        arm.  Carried by ``declare_nat``'s ``>= 0`` premise."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn cv_ok_s387(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Nat.0) }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "cv_ok_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_check_valid_violated_branch_carries_counterexample(self) -> None:
+        """A refutable precondition (``@Int.0 >= 0`` passed an unconstrained
+        Int) maps to ``violated`` WITH a counterexample — pins ``check_valid``'s
+        ``sat → SmtResult(violated, ce)`` arm AND the model-before-pop ordering
+        (a witness, not a base-context default).  CE is the forced witness
+        ``@Int.0 = -1``."""
+        result = _verify(self._NEEDS_GE0 + """
+private fn cv_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_ge0_s387(@Int.0) }
+""")
+        o = self._by_fn_kind(result, "cv_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.counterexample == {"@Int.0": "-1", "@result": "0"}, o.counterexample
+
+    def test_extract_counterexample_enumerates_all_vars(self) -> None:
+        """``needs_big(@Int.0 + @Int.1)`` against ``requires(@Int.0 >= 100)``
+        violates with a CE naming BOTH operands — pins
+        ``_extract_counterexample`` iterating EVERY entry of ``self._vars`` (a
+        mutation iterating a subset, or skipping the loop body, would drop one
+        slot key)."""
+        result = _verify("""
+private fn needs_big_s387(@Int -> @Int)
+  requires(@Int.0 >= 100) ensures(true) effects(pure)
+{ 0 }
+private fn ce_two_s387(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ needs_big_s387(@Int.0 + @Int.1) }
+""")
+        o = self._by_fn_kind(result, "ce_two_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.counterexample is not None, o.counterexample
+        assert "@Int.0" in o.counterexample, o.counterexample
+        assert "@Int.1" in o.counterexample, o.counterexample
+
+    # =================================================================
+    # _translate_call_with_info — precondition checking + arity.
+    # (The postcondition-assumption loop is not differentially reachable
+    # from the verifier surface: an assumed ensures does not propagate
+    # to discharge a *downstream* call precondition, so it has no test
+    # here — see the agent report's residual note.)
+    # =================================================================
+
+    def test_callee_precondition_propagates_to_caller(self) -> None:
+        """The caller passes a possibly-negative value to a helper that
+        ``requires(@Int.0 >= 0)`` → the precondition check fires as the caller's
+        ``call_pre`` E501 (not the callee's).  Pins ``_translate_call_with_info``
+        precondition-checking: the violation is attributed to the CALL SITE
+        (``fn_name == "fwd_neg_s387"``, ``callee_name`` recorded separately)."""
+        result = _verify("""
+private fn sink_ge0_s387(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ @Int.0 }
+private fn fwd_neg_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ sink_ge0_s387(@Int.0) }
+""")
+        o = self._by_fn_kind(result, "fwd_neg_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.fn_name == "fwd_neg_s387", o.fn_name
+        # The callee verifies its own (trivial) contracts independently.
+        sink = self._by_fn_kind(result, "sink_ge0_s387", "requires")
+        assert sink.status == "verified", sink.status
+
+    # =================================================================
+    # _pattern_condition / _translate_match — path-condition narrowing.
+    # The matched arm asserts `scrutinee == <pattern value>`; a call
+    # precondition inside the arm is discharged iff that holds.
+    # =================================================================
+
+    def test_bool_pattern_true_arm_discharges_precondition(self) -> None:
+        """In ``match b { true -> needs_true(b), false -> 0 }`` the true-arm
+        path condition ``b == true`` discharges ``requires(@Bool.0)`` — pins
+        ``_pattern_condition`` ``BoolPattern → scrutinee == BoolVal(True)`` and
+        ``_translate_match`` pushing it into ``_path_conditions``."""
+        result = _verify(self._NEEDS_TRUE + """
+private fn bool_t_s387(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Bool.0 { true -> needs_true_s387(@Bool.0), false -> 0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "bool_t_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_bool_pattern_false_arm_violates_with_ce(self) -> None:
+        """The mirror: in the FALSE arm, ``needs_true(b)`` is unsatisfiable
+        because the path condition is ``b == false`` → E501 with CE
+        ``@Bool.0 = False``.  If ``_pattern_condition`` mutated the BoolPattern
+        value (or used the wrong recognizer) the two arms would swap verdicts."""
+        result = _verify(self._NEEDS_TRUE + """
+private fn bool_f_s387(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Bool.0 { false -> needs_true_s387(@Bool.0), true -> 0 } }
+""")
+        o = self._by_fn_kind(result, "bool_f_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E501", o.error_code
+        assert o.counterexample == {"@Bool.0": "False", "@result": "0"}, o.counterexample
+
+    def test_int_pattern_arm_narrows_scrutinee(self) -> None:
+        """In ``match n { 5 -> needs_ge3(n), _ -> 0 }`` the literal arm's path
+        condition ``n == 5`` discharges ``requires(@Int.0 >= 3)`` — pins
+        ``_pattern_condition`` ``IntPattern → scrutinee == IntVal(5)``."""
+        result = _verify("""
+private fn needs_ge3_s387(@Int -> @Int)
+  requires(@Int.0 >= 3) ensures(true) effects(pure)
+{ 0 }
+private fn int5_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { 5 -> needs_ge3_s387(@Int.0), @Int -> 0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "int5_s387", "requires")
+        assert o.status == "verified", o.status
+
+    def test_int_pattern_wrong_value_arm_violates_with_ce(self) -> None:
+        """The mirror: the ``1`` arm's path condition ``n == 1`` does NOT satisfy
+        ``>= 3`` → E501 with CE ``@Int.0 = 1`` (the IntVal the pattern pinned).
+        A mutation of the pattern literal would change the CE value."""
+        result = _verify("""
+private fn needs_ge3b_s387(@Int -> @Int)
+  requires(@Int.0 >= 3) ensures(true) effects(pure)
+{ 0 }
+private fn int1_s387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { 1 -> needs_ge3b_s387(@Int.0), @Int -> 0 } }
+""")
+        o = self._by_fn_kind(result, "int1_s387", "call_pre")
+        assert o.status == "violated", o.status
+        assert o.counterexample == {"@Int.0": "1", "@result": "0"}, o.counterexample
+
+    # =================================================================
+    # _translate_nullary_ctor / _pattern_condition (recognizer) /
+    # _get_or_create_adt_sort — custom-ADT nullary match dispatch.
+    # =================================================================
+
+    def test_custom_adt_nullary_match_verifies(self) -> None:
+        """A custom 3-constructor ADT (``Red|Green|Blue``) matched with nullary
+        recognizers, where one arm discharges a nonneg bound via
+        ``array_length`` — pins ``_translate_nullary_ctor`` + the
+        ``_pattern_condition`` NullaryPattern recognizer + ADT-sort creation
+        (``_get_or_create_adt_sort``).  Reachability: a malformed sort or a
+        wrong recognizer would make the match untranslatable (whole obligation
+        drops to Tier 3)."""
+        result = _verify("""
+private data Color_s387 { Red, Green, Blue }
+private fn needs_ge0col_s387(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ 0 }
+private fn col_s387(@Color_s387 -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Color_s387.0 {
+    Red -> needs_ge0col_s387(array_length([7])),
+    Green -> 0,
+    Blue -> 0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "col_s387", "requires")
+        assert o.status == "verified", o.status
+
+    # =================================================================
+    # get_rank_fn — structural rank axioms for recursive-ADT decreases.
+    # =================================================================
+
+    def test_recursive_decreases_verified_via_rank_fn(self) -> None:
+        """A structurally-recursive ``len`` over ``Cons(T, L<T>)`` with
+        ``decreases(@L<Int>.0)`` VERIFIES — pins ``get_rank_fn``'s structural
+        axiom ``is_Cons(x) ⟹ rank(tail(x)) < rank(x)`` (without it the recursive
+        call on the tail can't be shown to decrease → not ``verified``)."""
+        result = _verify("""
+private data L_s387<T> { Nil, Cons(T, L_s387<T>) }
+private fn len_s387(@L_s387<Int> -> @Nat)
+  requires(true) ensures(true) decreases(@L_s387<Int>.0) effects(pure)
+{ match @L_s387<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @L_s387<Int>) -> 1 + len_s387(@L_s387<Int>.0) } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "len_s387", "decreases")
+        assert o.status == "verified", o.status
+
+    def test_nondecreasing_recursion_is_not_verified(self) -> None:
+        """The mirror: recursing on the SAME metric ``bad(@Nat.0)`` does NOT
+        decrease, so the ``decreases`` obligation is NOT ``verified`` (Tier 3,
+        E525).  Distinguishes ``get_rank_fn``/numeric-decrease from a mutation
+        that always reports the metric as decreasing."""
+        result = _verify("""
+private fn bad_s387(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
+{ if @Nat.0 == 0 then { 0 } else { bad_s387(@Nat.0) } }
+""")
+        o = self._by_fn_kind(result, "bad_s387", "decreases")
+        assert o.status != "verified", o.status
+        assert o.status == "tier3", o.status
+
+    # =================================================================
+    # _get_or_create_tuple_sort — non-literal tuple destructure makes
+    # the components projectable so each narrows independently.
+    # =================================================================
+
+    def test_nonliteral_tuple_destructure_obligates_each_field(self) -> None:
+        """``let Tuple<@Nat,@Nat> = mk(@Int.0)`` where ``mk`` returns
+        ``@Tuple<Int,Int>`` produces TWO ``nat_bind`` (E503) obligations — one
+        per projected component.  Pins ``_get_or_create_tuple_sort``: it builds
+        a Tuple datatype with a field+accessor per component so each projection
+        narrows.  If Tuple fell back to a scalar ``Int``, the per-field
+        projections would not exist and the obligation count would change."""
+        result = _verify("""
+private fn mk_s387(@Int -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@Int.0, @Int.0) }
+private fn use_tup_s387(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = mk_s387(@Int.0); @Nat.0 }
+""")
+        binds = [o for o in result.obligations
+                 if o.fn_name == "use_tup_s387" and o.kind == "nat_bind"]
+        assert len(binds) == 2, [(o.kind, o.status) for o in result.obligations]
+        for o in binds:
+            assert o.status == "violated", o.status
+            assert o.error_code == "E503", o.error_code
+
+    # =================================================================
+    # _get_index_fn / _get_element_sort_for_array / _get_length_fn —
+    # array index-bounds machinery.
+    # =================================================================
+
+    def test_index_bounds_guarded_verifies(self) -> None:
+        """``arr[i]`` guarded by ``requires(i >= 0 && i < array_length(arr))``
+        makes the ``index_bounds`` (E527) obligation VERIFIED — pins the array
+        machinery (``_get_length_fn`` for ``array_length``, ``_get_index_fn`` /
+        ``_get_element_sort_for_array`` for the index translation) AND the
+        ``&&``/``<`` translation in the guard.  Without the length fn correctly
+        modelling the bound, the index check would not discharge."""
+        result = _verify("""
+private fn idx_ok_s387(@Array<Int>, @Int -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 < array_length(@Array<Int>.0))
+  ensures(true) effects(pure)
+{ @Array<Int>.0[@Int.0] }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "idx_ok_s387", "index_bounds")
+        assert o.status == "verified", o.status
+
+    def test_index_bounds_unguarded_is_tier3(self) -> None:
+        """The mirror: an unguarded ``arr[i]`` cannot prove ``0 <= i <
+        length(arr)`` → ``index_bounds`` is Tier 3 (runtime check), not
+        verified.  Distinguishes the real bound check from a mutation that
+        vacuously discharges it."""
+        result = _verify("""
+private fn idx_raw_s387(@Array<Int>, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[@Int.0] }
+""")
+        o = self._by_fn_kind(result, "idx_raw_s387", "index_bounds")
+        assert o.status == "tier3", o.status
+
+    # =================================================================
+    # div_zero (E526) / nat_sub (E502) — Tier-1 walker obligations that
+    # exercise translate_expr's DIV and SUB plus counterexample content.
+    # =================================================================
+
+    def test_div_zero_unguarded_violates(self) -> None:
+        """``@Int.1 / @Int.0`` with no guard on the divisor → ``div_zero`` (E526)
+        violated.  Pins translate_expr DIV reaching the verifier's divisor
+        walker; guarding the divisor (next test) flips it to verified."""
+        result = _verify("""
+private fn div_raw_s387(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.1 / @Int.0 }
+""")
+        o = self._by_fn_kind(result, "div_raw_s387", "div_zero")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E526", o.error_code
+
+    def test_div_zero_guarded_verifies(self) -> None:
+        """``@Int.1 / @Int.0`` with ``requires(@Int.0 != 0)`` → ``div_zero``
+        verified.  Pins the ``!=`` (NEQ) translation feeding the divisor guard:
+        a mutation of NEQ to EQ would make the guard ``@Int.0 == 0`` and the
+        divisor obligation would no longer discharge."""
+        result = _verify("""
+private fn div_ok_s387(@Int, @Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(pure)
+{ @Int.1 / @Int.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == [], [
+            d.description for d in result.diagnostics if d.severity == "error"]
+        o = self._by_fn_kind(result, "div_ok_s387", "div_zero")
+        assert o.status == "verified", o.status
+
+    def test_nat_sub_underflow_violates_with_both_slots_in_ce(self) -> None:
+        """``@Nat.1 - @Nat.0`` can underflow → ``nat_sub`` (E502) violated, with a
+        counterexample naming BOTH Nat operands.  Pins translate_expr SUB on the
+        Nat-subtraction walker AND ``_extract_counterexample`` enumerating each
+        ``_vars`` entry."""
+        result = _verify("""
+private fn natsub_s387(@Nat, @Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.1 - @Nat.0 }
+""")
+        o = self._by_fn_kind(result, "natsub_s387", "nat_sub")
+        assert o.status == "violated", o.status
+        assert o.error_code == "E502", o.error_code
+        assert o.counterexample is not None, o.counterexample
+        assert "@Nat.0" in o.counterexample, o.counterexample
+        assert "@Nat.1" in o.counterexample, o.counterexample
