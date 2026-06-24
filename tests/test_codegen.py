@@ -12912,6 +12912,49 @@ public fn main(-> @Int)
             exec_result = execute(result)
             assert exec_result.value == 7
 
+    def test_http_url_scheme_predicate(self) -> None:
+        """#789: `_is_allowed_http_url` admits only http/https (case-
+        insensitive) and rejects file://, ftp://, data:, schemeless, etc.,
+        so the host callbacks never hand a non-HTTP(S) URL to urlopen."""
+        from vera.runtime.http import _is_allowed_http_url
+
+        assert _is_allowed_http_url("http://example.com/x")
+        assert _is_allowed_http_url("https://example.com/x")
+        assert _is_allowed_http_url("HTTPS://EXAMPLE.com")
+        assert not _is_allowed_http_url("file:///etc/passwd")
+        assert not _is_allowed_http_url("ftp://example.com/x")
+        assert not _is_allowed_http_url("data:text/plain,hi")
+        assert not _is_allowed_http_url("javascript:alert(1)")
+        assert not _is_allowed_http_url("/relative/path")
+        assert not _is_allowed_http_url("")
+
+    def test_http_get_rejects_file_scheme_end_to_end(self) -> None:
+        """A compiled `Http.get` on a file:// URL returns Err AND never reaches
+        urlopen — the scheme guard short-circuits before any I/O (#789).
+
+        Mocking urlopen and asserting it is never called proves the guard runs
+        first, independent of whether `file:///etc/passwd` exists on the host
+        (it doesn't on Windows, where a failing urlopen would mask a removed
+        guard by also producing an Err)."""
+        from unittest.mock import patch
+
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.get("file:///etc/passwd");
+  match @Result<String, String>.0 {
+    Ok(@String) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        result = _compile_ok(source)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            exec_result = execute(result)
+        assert exec_result.value == 0  # Err branch — scheme rejected
+        mock_urlopen.assert_not_called()  # guard short-circuited before urlopen
+
 
 class TestInferenceCollection:
     """Inference effect: host-import compilation and mocked execution."""
@@ -12959,7 +13002,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Positive",
         ):
             exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
@@ -12971,7 +13014,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             side_effect=Exception("timeout"),
         ):
             exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
@@ -12989,7 +13032,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Positive",
         ) as mock_provider:
             exec_result = execute(result, env_vars={"VERA_OPENAI_API_KEY": "sk-openai-test"})
@@ -13002,7 +13045,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="Neutral",
         ) as mock_provider:
             exec_result = execute(result, env_vars={"VERA_MOONSHOT_API_KEY": "sk-moonshot-test"})
@@ -13015,7 +13058,7 @@ public fn main(-> @Int)
 
         result = _compile_ok(self._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result, env_vars={
@@ -13042,7 +13085,7 @@ class TestInferenceProviderDispatch:
         """Anthropic branch uses correct endpoint, headers, and request body shape."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "hello"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13065,7 +13108,7 @@ class TestInferenceProviderDispatch:
         """OpenAI branch uses correct endpoint, bearer auth, and OpenAI-compatible body."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider, _PROVIDERS
+        from vera.runtime.inference import _call_inference_provider, _PROVIDERS
 
         body = json.dumps({"choices": [{"message": {"content": "world"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13087,7 +13130,7 @@ class TestInferenceProviderDispatch:
         """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "moonshot"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13103,7 +13146,7 @@ class TestInferenceProviderDispatch:
         """Mistral branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"choices": [{"message": {"content": "mistral"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13127,7 +13170,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
@@ -13142,7 +13185,7 @@ class TestInferenceProviderDispatch:
         VERA_MOONSHOT_API_KEY must resolve to 'anthropic'.
         """
         from unittest.mock import patch
-        from vera.codegen.api import _PROVIDERS
+        from vera.runtime.inference import _PROVIDERS
 
         first_provider = next(iter(_PROVIDERS))  # "anthropic" per current registry
         first_cfg = _PROVIDERS[first_provider]
@@ -13151,7 +13194,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
             execute(result_src, env_vars={
@@ -13171,7 +13214,7 @@ class TestInferenceProviderDispatch:
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
-            "vera.codegen.api._call_inference_provider",
+            "vera.runtime.inference._call_inference_provider",
             side_effect=AssertionError("should not be called"),
         ) as mock_provider:
             exec_result = execute(
@@ -13186,7 +13229,7 @@ class TestInferenceProviderDispatch:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
         import json
         from unittest.mock import patch, MagicMock
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "ok"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
@@ -13198,7 +13241,7 @@ class TestInferenceProviderDispatch:
 
     def test_unknown_provider_raises(self) -> None:
         """Unknown provider string raises ValueError."""
-        from vera.codegen.api import _call_inference_provider
+        from vera.runtime.inference import _call_inference_provider
         import pytest
         with pytest.raises(ValueError, match="Unknown inference provider"):
             _call_inference_provider("unknown", "p", "", "")
@@ -16326,14 +16369,14 @@ public fn main(@Unit -> @Unit)
 
     def test_validate_wrap_handle_accepts_valid_range(self) -> None:
         """[0, 0x80000000) is the accepted range — no raise."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         # Boundary lo, mid, boundary hi (last valid).
         for raw in (0, 1, 12345, 0x7FFFFFFE, 0x7FFFFFFF):
             _validate_wrap_handle(raw, kind=1, body_ptr=0x1000)
 
     def test_validate_wrap_handle_rejects_negative(self) -> None:
         """Negative ints have bit 31 set in two's complement."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578.*outside the valid"):
             _validate_wrap_handle(-1, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):
@@ -16341,7 +16384,7 @@ public fn main(@Unit -> @Unit)
 
     def test_validate_wrap_handle_rejects_at_2gb_boundary(self) -> None:
         """0x80000000 is the FIRST invalid value (range is half-open)."""
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="0x80000000"):
             _validate_wrap_handle(0x80000000, kind=1, body_ptr=0x1000)
 
@@ -16354,7 +16397,7 @@ public fn main(@Unit -> @Unit)
         and the unwrap mask would return that — a silent wrong
         handle.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578"):
             _validate_wrap_handle(0x100000000, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):
@@ -16367,7 +16410,7 @@ public fn main(@Unit -> @Unit)
         raise `TypeError` from the bitwise `&` operation in the
         old check, producing a less actionable error.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         for bad in (None, "5", 1.5, [1], {}):
             with pytest.raises(RuntimeError, match="#578"):
                 _validate_wrap_handle(bad, kind=1, body_ptr=0x1000)
@@ -16383,7 +16426,7 @@ public fn main(@Unit -> @Unit)
         uses `type(raw_handle) is int` rather than `isinstance`,
         which rejects bool while still accepting plain int.
         """
-        from vera.codegen.api import _validate_wrap_handle
+        from vera.runtime.heap import _validate_wrap_handle
         with pytest.raises(RuntimeError, match="#578"):
             _validate_wrap_handle(True, kind=1, body_ptr=0x1000)
         with pytest.raises(RuntimeError, match="#578"):

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 
 from vera import ast
-from vera.codegen.api import ConstructorLayout, _align_up
+from vera.codegen.memory import ConstructorLayout, _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push

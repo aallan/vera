@@ -414,11 +414,65 @@ private fn foo(@Int -> @Int)
 """)
 
     def test_not_non_bool_error(self) -> None:
-        _check_err("""
+        errs = _check_err("""
 private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { !@Int.0 }
 """, "requires Bool operand")
+        assert any(e.error_code == "E146" for e in errs)
+
+
+# =====================================================================
+# Expression diagnostics (#387 fix-core)
+# =====================================================================
+
+class TestExpressionDiagnostics:
+    """Error-code assertions for expression-level checks."""
+
+    def test_array_index_non_int_is_e160(self) -> None:
+        """A non-integer array index reports E160."""
+        errs = _check_err("""
+private fn f(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[true] }
+""", "index must be Int")
+        assert any(e.error_code == "E160" for e in errs)
+
+    def test_index_non_array_is_e161(self) -> None:
+        """Indexing a non-Array value reports E161."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0[0] }
+""", "indexing requires Array")
+        assert any(e.error_code == "E161" for e in errs)
+
+    def test_assume_non_bool_is_e173(self) -> None:
+        """assume() with a non-Bool argument reports E173."""
+        errs = _check_err("""
+private fn f(@Int -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ assume(42); () }
+""", "assume() requires Bool")
+        assert any(e.error_code == "E173" for e in errs)
+
+    def test_old_outside_ensures_is_e174(self) -> None:
+        """old() used outside an ensures clause reports E174."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = old(State<Int>); @Int.0 }
+""", "old() is only valid")
+        assert any(e.error_code == "E174" for e in errs)
+
+    def test_new_outside_ensures_is_e175(self) -> None:
+        """new() used outside an ensures clause reports E175."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = new(State<Int>); @Int.0 }
+""", "new() is only valid")
+        assert any(e.error_code == "E175" for e in errs)
 
 
 # =====================================================================
@@ -666,13 +720,14 @@ private fn foo(@Int, @String -> @Pair)
 """)
 
     def test_constructor_arity_mismatch(self) -> None:
-        _check_err("""
+        errs = _check_err("""
 private data Pair { MkPair(Int, String) }
 
 private fn foo(@Int -> @Pair)
   requires(true) ensures(true) effects(pure)
 { MkPair(@Int.0) }
 """, "expects 2 field")
+        assert any(e.error_code == "E212" for e in errs)
 
     def test_parameterised_adt(self) -> None:
         _check_ok("""
@@ -681,6 +736,106 @@ private data Box<T> { MkBox(T) }
 private fn foo(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
 { MkBox(@Int.0) }
+""")
+
+    def test_unknown_constructor_call_warns_e210(self) -> None:
+        """A call to an undeclared constructor warns E210, not just a message."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Bogus(42);
+  @Int.0
+}
+""")
+        e210 = [w for w in warns if w.error_code == "E210"]
+        assert len(e210) == 1
+        assert e210[0].severity == "warning"
+
+    def test_nullary_constructor_given_args_is_e211(self) -> None:
+        """Calling a nullary constructor with arguments reports E211."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None(42) }
+""", "nullary")
+        assert any(e.error_code == "E211" for e in errs)
+
+    def test_constructor_field_type_mismatch_is_e213(self) -> None:
+        """A constructor argument of the wrong type reports E213."""
+        errs = _check_err("""
+private data Box { Wrap(Int) }
+
+private fn f(@Int -> @Box)
+  requires(true) ensures(true) effects(pure)
+{ Wrap(true) }
+""", "field 0 has type")
+        assert any(e.error_code == "E213" for e in errs)
+
+    def test_unknown_nullary_constructor_call_warns_e214(self) -> None:
+        """A bare reference to an undeclared nullary constructor warns E214."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Bogus;
+  @Int.0
+}
+""")
+        e214 = [w for w in warns if w.error_code == "E214"]
+        assert len(e214) == 1
+        assert e214[0].severity == "warning"
+
+    def test_constructor_used_as_nullary_is_e215(self) -> None:
+        """Using a field-carrying constructor without arguments reports E215."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Some }
+""", "used as nullary")
+        assert any(e.error_code == "E215" for e in errs)
+
+    def test_unresolved_qualified_call_warns_e220(self) -> None:
+        """A qualified call resolving to neither effect-op nor module warns E220."""
+        warns = _warnings("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = Foo.bar(42);
+  @Int.0
+}
+""")
+        e220 = [w for w in warns if w.error_code == "E220"]
+        assert len(e220) == 1
+        assert e220[0].severity == "warning"
+
+    def test_data_invariant_non_bool_is_e120(self) -> None:
+        """A data-type invariant whose body isn't Bool reports E120."""
+        errs = _check_err("""
+private data Pos invariant(42) { MkPos(Int) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "Invariant must be Bool")
+        assert any(e.error_code == "E120" for e in errs)
+
+    def test_data_invariant_bool_ok(self) -> None:
+        """A Bool data-type invariant type-checks cleanly (no E120)."""
+        _check_ok("""
+private data Pos invariant(true) { MkPos(Int) }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
 """)
 
 
@@ -744,6 +899,59 @@ private fn first(@List<Option<Int>> -> @Int)
   }
 }
 """)
+
+    def test_unknown_constructor_pattern_warns_e320(self) -> None:
+        """A constructor pattern naming an unknown constructor warns E320."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    Bogus(@Int) -> 0,
+    None -> 0
+  }
+}
+""")
+        e320 = [w for w in warns if w.error_code == "E320"]
+        assert len(e320) == 1
+        assert e320[0].severity == "warning"
+
+    def test_constructor_field_count_mismatch_is_e321(self) -> None:
+        """A constructor pattern with the wrong sub-pattern count reports E321."""
+        errs = _check_err("""
+private data Pair { Both(Int, Int) }
+
+private fn f(@Pair -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Pair.0 {
+    Both(@Int) -> 0
+  }
+}
+""", "field(s)")
+        assert any(e.error_code == "E321" for e in errs)
+
+    def test_unknown_nullary_constructor_warns_e322(self) -> None:
+        """A nullary pattern naming an unknown constructor warns E322."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    Bogus -> 0,
+    None -> 0
+  }
+}
+""")
+        e322 = [w for w in warns if w.error_code == "E322"]
+        assert len(e322) == 1
+        assert e322[0].severity == "warning"
 
 
 # =====================================================================
@@ -909,8 +1117,8 @@ private fn foo(@Unit -> @Int)
 """)
 
     def test_with_clause_type_mismatch(self) -> None:
-        """Handler with-clause value must match state type."""
-        _check_err("""
+        """Handler with-clause value must match state type (E335)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -921,11 +1129,12 @@ private fn foo(@Unit -> @Int)
     get(())
   }
 }
-""", "expected Int")
+""", "State update expression")
+        assert any(e.error_code == "E335" for e in errs)
 
     def test_with_clause_no_state(self) -> None:
-        """Handler with-clause without handler state is an error."""
-        _check_err("""
+        """Handler with-clause without handler state is an error (E333)."""
+        errs = _check_err("""
 effect Exn<E> {
   op throw(E -> Never);
 }
@@ -939,10 +1148,11 @@ private fn bar(@Unit -> @Int)
   }
 }
 """, "no state declaration")
+        assert any(e.error_code == "E333" for e in errs)
 
     def test_with_clause_wrong_slot_type(self) -> None:
-        """Handler with-clause type must match handler state type."""
-        _check_err("""
+        """Handler with-clause type must match handler state type (E334)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -954,6 +1164,57 @@ private fn foo(@Unit -> @Int)
   }
 }
 """, "does not match handler state type")
+        assert any(e.error_code == "E334" for e in errs)
+
+    def test_handle_unknown_effect_is_e330(self) -> None:
+        """Handling an undeclared effect reports E330, not just a message."""
+        errs = _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Bogus](@Int = 0) {
+    get(@Unit) -> { resume(0) }
+  } in {
+    0
+  }
+}
+""", "Unknown effect")
+        assert any(e.error_code == "E330" for e in errs)
+
+    def test_handler_unknown_operation_is_e332(self) -> None:
+        """A handler clause for an operation the effect lacks reports E332."""
+        errs = _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) },
+    bogus(@Unit) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "has no operation")
+        assert any(e.error_code == "E332" for e in errs)
+
+    def test_handle_expression_has_body_type(self) -> None:
+        """The handle expression's type is its body's type, so a mismatch with
+        the function return type surfaces (kills `return body_type`)."""
+        # Handler body yields Int (get's return type); foo declares @String.
+        errs = _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "body has type Int")
+        assert any(e.error_code == "E121" for e in errs)
 
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""
@@ -1114,23 +1375,47 @@ class TestAbilities:
 
     def test_ability_op_wrong_arity(self) -> None:
         """Ability operation with wrong argument count → E240."""
-        _check_err("""
+        errs = _check_err("""
         private forall<T where Eq<T>> fn bad(@T -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
         { eq(@T.0) }
         """, "expects 2 argument(s), got 1")
+        assert any(e.error_code == "E240" for e in errs)
 
     def test_ability_op_type_mismatch(self) -> None:
         """Ability operation with mismatched argument types → E241."""
-        _check_err("""
+        errs = _check_err("""
         private fn bad(@Int, @String -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
         { eq(@Int.0, @String.0) }
         """, "Argument 1 of 'eq'")
+        assert any(e.error_code == "E241" for e in errs)
+
+    def test_effect_op_wrong_arity_is_e203(self) -> None:
+        """An effect operation called with the wrong argument count reports E203."""
+        errs = _check_err("""
+effect Counter { op tick(Int -> Int); }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.tick(1, 2) }
+""", "expects 1 argument")
+        assert any(e.error_code == "E203" for e in errs)
+
+    def test_effect_op_arg_type_mismatch_is_e204(self) -> None:
+        """An effect operation argument of the wrong type reports E204."""
+        errs = _check_err("""
+effect Counter { op tick(Int -> Int); }
+
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<Counter>)
+{ Counter.tick(true) }
+""", "Argument 0 of 'tick'")
+        assert any(e.error_code == "E204" for e in errs)
 
 
 # =====================================================================
@@ -2440,6 +2725,34 @@ private fn foo(@Unit -> @Nat)
 
 
 # =====================================================================
+# Match arm-type unification
+# =====================================================================
+
+class TestMatchArmTypes:
+    """Match arms must unify to a common type (E302)."""
+
+    def test_incompatible_arm_types_carry_e302(self) -> None:
+        # None -> Int and Some -> String: neither arm type is a subtype of
+        # the other, so the unification must report E302 (kills the
+        # is_subtype / types_equal / error_code mutants in _check_match).
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> "ok"
+  }
+}
+""", "incompatible")
+        e302 = [e for e in errs if e.error_code == "E302"]
+        assert len(e302) >= 1
+        assert e302[0].rationale and e302[0].spec_ref
+
+
+# =====================================================================
 # Exhaustiveness checking
 # =====================================================================
 
@@ -2491,6 +2804,96 @@ private fn get(@Result<Int, String> -> @Int)
 """, "Non-exhaustive")
         desc = " ".join(e.description for e in errs)
         assert "Err" in desc
+
+    def test_adt_missing_carries_e311(self) -> None:
+        """The ADT non-exhaustive diagnostic carries E311, not just the text."""
+        errs = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")
+        assert any(e.error_code == "E311" for e in errs)
+
+    def test_unreachable_arm_after_catch_all_warns_e310(self) -> None:
+        """An arm after a catch-all is the one (and only) E310 warning."""
+        warns = _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    _ -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""")
+        e310 = [w for w in warns if w.error_code == "E310"]
+        assert len(e310) == 1
+
+    def test_bool_missing_carries_e312(self) -> None:
+        """The Bool non-exhaustive diagnostic carries E312."""
+        errs = _check_err("""
+private fn f(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> 1
+  }
+}
+""", "Non-exhaustive")
+        assert any(e.error_code == "E312" for e in errs)
+
+    def test_int_match_without_catch_all_is_e313(self) -> None:
+        """An infinite-domain (Int) match with no catch-all is E313."""
+        errs = _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 1
+  }
+}
+""", "infinite domain")
+        assert any(e.error_code == "E313" for e in errs)
+
+    def test_exhaustiveness_diagnostics_are_well_formed(self) -> None:
+        """Each exhaustiveness diagnostic carries the right severity and a
+        populated rationale/fix/spec_ref (kills the =None / severity mutants)."""
+        e311 = _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")[0]
+        assert e311.severity == "error"
+        assert e311.rationale and e311.fix and e311.spec_ref
+
+        e310 = [w for w in _warnings("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    _ -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""") if w.error_code == "E310"][0]
+        assert e310.severity == "warning"
+        assert e310.rationale and e310.fix
 
     def test_adt_with_wildcard(self) -> None:
         """Wildcard after Some covers None → exhaustive."""
@@ -2741,6 +3144,7 @@ class TestModuleCallDiagnostics:
         diags = typecheck(prog, source="")
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found" in w.description for w in warns)
+        assert any(w.error_code == "E230" for w in warns)
 
     def test_module_resolved_fn_not_found(self) -> None:
         """ModuleCall with resolved empty module gives 'not found in module'."""
@@ -2758,6 +3162,7 @@ class TestModuleCallDiagnostics:
         diags = typecheck(prog, source="", resolved_modules=[fake_mod])
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found in module" in w.description for w in warns)
+        assert any(w.error_code == "E233" for w in warns)
 
 
 # =====================================================================
@@ -3001,6 +3406,7 @@ private fn main(@Int -> @List<Int>)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert any("not imported" in e.description for e in errors)
+        assert any(e.error_code == "E231" for e in errors)
 
     def test_fn_not_in_module(self) -> None:
         """Module call to nonexistent function -> warning with available list."""
@@ -3250,6 +3656,7 @@ private fn main(@Int -> @Int)
         assert any("private" in e.description for e in errors), (
             [e.description for e in errors]
         )
+        assert any(e.error_code == "E232" for e in errors)
 
     # -- Own file's declarations always accessible ----------------------
 
@@ -5395,8 +5802,8 @@ private fn foo(@Unit -> @Unit)
 """)
 
     def test_handler_state_init_type_mismatch(self) -> None:
-        """Handler state initial value type doesn't match declared type (line 382)."""
-        _check_err("""
+        """Handler state initial value type doesn't match declared type (E331)."""
+        errs = _check_err("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -5407,7 +5814,8 @@ private fn foo(@Unit -> @Int)
     get(())
   }
 }
-""", "expected Int")
+""", "Handler state initial value")
+        assert any(e.error_code == "E331" for e in errs)
 
 
 # =====================================================================

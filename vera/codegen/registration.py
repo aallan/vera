@@ -7,7 +7,7 @@ aliases so forward references resolve during compilation.
 from __future__ import annotations
 
 from vera import ast
-from vera.codegen.api import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
+from vera.codegen.memory import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
 from vera.wasm.inference import substitute_type_vars
 
 
