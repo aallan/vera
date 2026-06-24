@@ -27,6 +27,8 @@ from vera.runtime.traps import (
     _classify_trap,
     _resolve_trap_frames,
 )
+from vera.runtime.math import register_math
+from vera.runtime.random import register_random
 from vera.runtime.heap import (
     _ShadowGuard,
     _WRAP_KIND_DECIMAL,
@@ -2580,55 +2582,7 @@ def execute(
     # stdlib so the import is cheap, but only pull it in when needed.
     # ---------------------------------------------------------------
     if result.random_ops_used:
-        import random as _random_mod
-
-        if "random_int" in result.random_ops_used:
-            # vera.random_int(low: i64, high: i64) -> i64
-            # Inclusive range [low, high].  Caller is required by
-            # contract to ensure low <= high; we don't double-check.
-            def host_random_int(
-                _caller: wasmtime.Caller, low: int, high: int,
-            ) -> int:
-                # S311 — Random effect is for games / simulations /
-                # Monte Carlo, not crypto.  #465 explicitly scopes
-                # the effect that way; secure randomness would
-                # warrant a separate `Crypto` effect with
-                # `secrets.randbelow`.
-                return _random_mod.randint(low, high)  # noqa: S311
-
-            linker.define_func(
-                "vera", "random_int",
-                wasmtime.FuncType(
-                    [wasmtime.ValType.i64(), wasmtime.ValType.i64()],
-                    [wasmtime.ValType.i64()],
-                ),
-                host_random_int, access_caller=True,
-            )
-
-        if "random_float" in result.random_ops_used:
-            # vera.random_float() -> f64 in [0.0, 1.0)
-            def host_random_float(_caller: wasmtime.Caller) -> float:
-                # S311 — see host_random_int; non-crypto by design.
-                return _random_mod.random()  # noqa: S311
-
-            linker.define_func(
-                "vera", "random_float",
-                wasmtime.FuncType([], [wasmtime.ValType.f64()]),
-                host_random_float, access_caller=True,
-            )
-
-        if "random_bool" in result.random_ops_used:
-            # vera.random_bool() -> i32 (0 or 1)
-            def host_random_bool(_caller: wasmtime.Caller) -> int:
-                # S311 — see host_random_int; non-crypto by design.
-                return 1 if _random_mod.random() < 0.5 else 0  # noqa: S311
-
-            linker.define_func(
-                "vera", "random_bool",
-                wasmtime.FuncType([], [wasmtime.ValType.i32()]),
-                host_random_bool, access_caller=True,
-            )
-
+        register_random(linker, result.random_ops_used)
     # ---------------------------------------------------------------
     # Math host functions (#467).  Ten functions share one shape
     # (Float64 → Float64) except `atan2` which takes two.  All are
@@ -2637,76 +2591,7 @@ def execute(
     # are preserved across the WASM boundary.
     # ---------------------------------------------------------------
     if result.math_ops_used:
-        import math as _math_mod
-
-        _f64_unary = wasmtime.FuncType(
-            [wasmtime.ValType.f64()], [wasmtime.ValType.f64()]
-        )
-        from typing import Callable
-
-        def _math_unary_host(
-            py_fn: Callable[[float], float],
-        ) -> Callable[[wasmtime.Caller, float], float]:
-            """Wrap a `math.*` function as a wasmtime host callback.
-
-            Factored into its own function so the captured `py_fn`
-            is bound at call time rather than at loop-variable time —
-            the classic Python late-binding closure trap.
-
-            Python's `math` module raises `ValueError` on
-            out-of-domain inputs (e.g., `math.log(-1)`).  IEEE 754
-            and the JavaScript host runtime both return NaN in those
-            cases, so we translate the exception into NaN to keep
-            the two WASM runtimes observationally equivalent and
-            let Vera programs detect the condition via
-            `float_is_nan(...)` instead of trapping.
-            """
-            def host(_caller: wasmtime.Caller, x: float) -> float:
-                try:
-                    return py_fn(x)
-                except ValueError:
-                    return float("nan")
-            return host
-
-        _math_unary_specs: tuple[tuple[str, Callable[[float], float]], ...] = (
-            ("log",   _math_mod.log),
-            ("log2",  _math_mod.log2),
-            ("log10", _math_mod.log10),
-            ("sin",   _math_mod.sin),
-            ("cos",   _math_mod.cos),
-            ("tan",   _math_mod.tan),
-            ("asin",  _math_mod.asin),
-            ("acos",  _math_mod.acos),
-            ("atan",  _math_mod.atan),
-        )
-        for op_name, py_fn in _math_unary_specs:
-            if op_name in result.math_ops_used:
-                linker.define_func(
-                    "vera", op_name, _f64_unary,
-                    _math_unary_host(py_fn), access_caller=True,
-                )
-
-        if "atan2" in result.math_ops_used:
-            def host_atan2(
-                _caller: wasmtime.Caller, y: float, x: float,
-            ) -> float:
-                # `math.atan2` doesn't raise for any Float64 input
-                # (it's total over the real numbers), but we mirror
-                # the unary wrapper's pattern so future changes stay
-                # uniform.
-                try:
-                    return _math_mod.atan2(y, x)
-                except ValueError:
-                    return float("nan")
-            linker.define_func(
-                "vera", "atan2",
-                wasmtime.FuncType(
-                    [wasmtime.ValType.f64(), wasmtime.ValType.f64()],
-                    [wasmtime.ValType.f64()],
-                ),
-                host_atan2, access_caller=True,
-            )
-
+        register_math(linker, result.math_ops_used)
     instance = linker.instantiate(store, module)
 
     def _peak_heap_bytes() -> int:
