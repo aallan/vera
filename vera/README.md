@@ -122,7 +122,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  extensions.py` | 146 | | vera/speculativeEdit proof-delta | |
 | `  server.py` | 169 | | pygls wiring, single-session serialisation | |
 | `codegen/` | 6,618 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 2,288 | | Public API, dataclasses, host bindings, `execute()` | |
+| `  api.py` | 1,165 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
+| `  memory.py` | 124 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
 | `  core.py` | 711 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
 | `  modules.py` | 392 | | Cross-module registration + call detection (C7e) | |
 | `  registration.py` | 258 | | Pass 1 forward declarations, ADT layout | |
@@ -132,6 +133,11 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
 | `  assembly.py` | 856 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 310 | | Compilability checks, state handler scanning | |
+| `runtime/` | 3,470 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
+| `  traps.py` | 475 | | `WasmTrapError`, `_classify_trap`, source-backtrace resolution | |
+| `  heap.py` | 967 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
+| `  collections.py` | 16 | | `_VAL_WASM_TYPES` value-type dispatch table (shared by Map/Set) | |
+| `  <effect>.py` ×12 | 2,006 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, inference, state | |
 | `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
@@ -520,7 +526,15 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 ### IO host bindings
 
-`IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen/api.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing).
+`IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen/api.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing). The IO host functions stay inline in `execute()` — unlike the other effects, which are factored into `vera/runtime/`. See **Host-binding families** below for the rationale.
+
+### Host-binding families (`vera/runtime/`)
+
+Before #421, `execute()` and every effect's host bindings lived in one ~4,358-line `codegen/api.py`. The wasmtime host layer is now factored into `vera/runtime/`: trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence instead of inlining ~3,000 lines of branches. The compiled `.wasm` import interface is unchanged — this is an internal refactor, not a contract change.
+
+**What counts as a "family" module.** Each of the twelve (`random`, `math`, `md`, `json`, `regex`, `html`, `map`, `set`, `decimal`, `http`, `inference`, `state`) is a *pluggable adapter*: registered conditionally (`if result.<effect>_ops_used`), owning its own state or none, and feeding nothing back into `execute()`'s return value. Map/Set/Decimal marshal opaque handles; Json/Html/Markdown/Regex bridge Python parsers; Http/Inference wrap network calls; Random/Math/State are thin shims. Any shared state a family needs is passed explicitly as a parameter (e.g. `register_decimal(linker, ops, decimal_store, host_store_refs)`); `heap.py` holds the marshalling primitives they all call.
+
+**Why IO is *not* a family module.** IO stays inline in `execute()` by design. Unlike the twelve adapters, IO is execute()'s **observation channel**: its host callbacks write into state that *becomes the return value* — `output_buf`/`stderr_buf` → `ExecuteResult.stdout`/`stderr`, `last_violation` → the trap diagnostic via `_classify_trap`, `tee_stdout` → the live-streaming decision — and it shares the `_VeraExit` Ctrl-C exception with execute()'s exit handling. Extracting the twelve adapters *reduced* coupling (each became self-contained); extracting IO would not — it would relocate a naturally cohesive unit across a file boundary behind a 7-field context object that both the host callbacks and the result-building code would thread through. Cohesion of a genuinely-coupled unit outweighs uniform "every effect lives in `runtime/`" placement. (By Vera's *surface* model IO is an effect like any other; by the *compiler's* internal structure it is execute()'s I/O substrate. The decomposition follows the compiler's structure — the principle that each module be a cohesive, independently-testable unit.)
 
 ### Markdown host bindings
 

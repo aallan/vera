@@ -278,6 +278,23 @@ def execute(
     # -----------------------------------------------------------------
     # IO host functions
     # -----------------------------------------------------------------
+    #
+    # IO stays inline in execute() BY DESIGN (#421).  The twelve optional
+    # effect families (Map/Set/Decimal/Json/Html/Markdown/Regex/Http/
+    # Inference/Random/Math/State) were extracted to vera/runtime/ because
+    # each is a pluggable WASM<->library adapter: registered conditionally,
+    # owning its own state (or none), feeding nothing back into the result.
+    # IO is categorically different -- it is execute()'s OBSERVATION
+    # CHANNEL.  Its callbacks write into state that *becomes the return
+    # value*: output_buf/stderr_buf -> ExecuteResult.stdout/stderr,
+    # last_violation -> _classify_trap's diagnostic, tee_stdout -> the
+    # live-streaming decision; it also shares the _VeraExit Ctrl-C
+    # exception with execute()'s exit handling.  Extracting IO would not
+    # REDUCE coupling the way the twelve adapters did -- it would only
+    # relocate a naturally-cohesive unit across a file boundary behind a
+    # 7-field context object.  Cohesion wins over uniform "every effect in
+    # runtime/" placement.  Full rationale: vera/README.md, "Host-binding
+    # families (vera/runtime/)".
 
     # Host function: vera.print(ptr: i32, len: i32) -> ()
     def host_print(caller: wasmtime.Caller, ptr: int, length: int) -> None:
