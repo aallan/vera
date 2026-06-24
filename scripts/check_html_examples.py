@@ -99,11 +99,15 @@ def try_parse(content: str) -> str | None:
 
 def try_check(content: str, root: Path) -> str | None:
     """Try to type-check content. Returns error message or None."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", dir=str(root), delete=True
-    ) as f:
+    # `delete=False` + manual close/unlink: on Windows a held-open temp
+    # file can't be reopened by the subprocess (see TESTING.md's Test
+    # Fixture Conventions and the matching pattern in tests/test_html.py).
+    f = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
+    )
+    try:
         f.write(content)
-        f.flush()
+        f.close()
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", f.name],
             capture_output=True,
@@ -116,15 +120,19 @@ def try_check(content: str, root: Path) -> str | None:
         # Return first line of stderr or stdout for diagnostics
         err = result.stderr.strip() or result.stdout.strip()
         return err.split("\n")[0][:200]
+    finally:
+        Path(f.name).unlink(missing_ok=True)
 
 
 def try_verify(content: str, root: Path) -> str | None:
     """Try to verify contracts. Returns error message or None."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", dir=str(root), delete=True
-    ) as f:
+    # See try_check above for the delete=False rationale (Windows-portable).
+    f = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
+    )
+    try:
         f.write(content)
-        f.flush()
+        f.close()
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "verify", f.name],
             capture_output=True,
@@ -136,6 +144,8 @@ def try_verify(content: str, root: Path) -> str | None:
             return None
         err = result.stderr.strip() or result.stdout.strip()
         return err.split("\n")[0][:200]
+    finally:
+        Path(f.name).unlink(missing_ok=True)
 
 
 def main() -> int:
