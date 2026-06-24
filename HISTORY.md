@@ -387,6 +387,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.174 | 19 Jun | **General refinement-type predicates are now verified statically: a value narrowing into a `{ @T \| P }` slot or returned at a refined return position carries a Tier-1 obligation that the predicate holds (or a runtime guard at the function boundary where the predicate is untranslatable), generalising the `@Nat` machinery from the baked-in `>= 0` to an arbitrary predicate** ([#746](https://github.com/aallan/vera/issues/746)). |
 | v0.0.175 | 21 Jun | **Generic function bodies are now statically verified at each concrete instantiation instead of being silently deferred to runtime** ([#732](https://github.com/aallan/vera/issues/732)). |
 | v0.0.176 | 21 Jun | **A call's precondition is now checked even when the call's result is discarded** ([#730](https://github.com/aallan/vera/issues/730)). |
+| v0.0.177 | 21 Jun | **Integer division/modulo by zero and array index bounds now carry auto-synthesised obligations (E526/E527), closing the last item in the Tier-0 silent-failures roadmap section; an op inside a closure/quantifier/handler body stays runtime-guarded rather than statically obligated** ([#680](https://github.com/aallan/vera/issues/680)). |
 
 ---
 

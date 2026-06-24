@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from vera.cli import cmd_run
-from vera.codegen.api import WasmTrapError, _classify_trap
+from vera.runtime.traps import WasmTrapError, _classify_trap
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture
@@ -713,7 +713,7 @@ class TestResolveTrapFrames516:
         return _FakeFrame(name)
 
     def test_user_function_resolves_to_file_lines(self) -> None:
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         src_map = {"divide": ("/tmp/a.vera", 5, 9)}
         exc = self._make_exc(self._frame("divide"))
 
@@ -734,7 +734,7 @@ class TestResolveTrapFrames516:
         infrastructure and tag it accordingly rather than reporting
         a misleading file:line lookup miss as ``<unknown>``.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         src_map: dict[str, tuple[str, int, int]] = {}
 
         for name in ("alloc", "gc_collect", "contract_fail"):
@@ -748,7 +748,7 @@ class TestResolveTrapFrames516:
 
     def test_builtin_prefix_matches(self) -> None:
         """exn_* / vera.* / closure_sig_* are also runtime infrastructure."""
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
 
         for name in ("exn_String", "vera.print", "closure_sig_3"):
             exc = self._make_exc(self._frame(name))
@@ -763,7 +763,7 @@ class TestResolveTrapFrames516:
         original generic.  The resolver strips at the rightmost ``$``
         and retries.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         src_map = {"identity": ("/tmp/m.vera", 3, 6)}
         exc = self._make_exc(self._frame("identity$Int"))
 
@@ -783,7 +783,7 @@ class TestResolveTrapFrames516:
         which function trapped, and any future source-map gap can be
         diagnosed from the unknown markers.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         exc = self._make_exc(self._frame("mystery_helper"))
 
         frames = _resolve_trap_frames(exc, {})
@@ -795,7 +795,7 @@ class TestResolveTrapFrames516:
 
     def test_no_frames_attribute_returns_empty_list(self) -> None:
         """Defensive: a trap-shaped exception with no `frames` returns []."""
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         # Exception with no frames attribute at all.
         exc = RuntimeError("not a real trap")
         assert _resolve_trap_frames(exc, {}) == []
@@ -826,7 +826,7 @@ class TestResolveTrapFrames516:
         ones).  The resolver consults ``prelude_fn_names``
         alongside the runtime-helper allowlist.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         prelude_names = {"array_map", "option_unwrap_or"}
         exc = self._make_exc(self._frame("array_map"))
 
@@ -845,7 +845,7 @@ class TestResolveTrapFrames516:
         this, every monomorphized prelude call (which is most of
         them in practice) would still mis-classify as user code.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         prelude_names = {"array_map"}
         exc = self._make_exc(self._frame("array_map$Int"))
 
@@ -864,7 +864,7 @@ class TestResolveTrapFrames516:
         Pins the optional shape so an accidental signature tightening
         breaks loudly.
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         exc = self._make_exc(self._frame("user_function"))
         # No prelude set passed; user_function is not a known builtin.
         frames = _resolve_trap_frames(exc, {})
@@ -884,7 +884,7 @@ class TestResolveTrapFrames516:
         name said "outermost-first" which was the literal opposite
         of what this asserts (CodeRabbit round 6).
         """
-        from vera.codegen.api import _resolve_trap_frames
+        from vera.runtime.traps import _resolve_trap_frames
         src_map = {
             "outer": ("/tmp/x.vera", 10, 15),
             "inner": ("/tmp/x.vera", 1, 5),
@@ -1106,7 +1106,7 @@ public fn main(@Unit -> @Int)
         """
         from vera.codegen import compile as compile_program
         from vera.codegen import execute as _execute
-        from vera.codegen.api import WasmTrapError
+        from vera.runtime.traps import WasmTrapError
         from vera.parser import parse_to_ast
 
         program = parse_to_ast(_DIVIDE_BY_ZERO_USER_FN)
@@ -1157,7 +1157,7 @@ public fn main(@Unit -> @Int)
         # then alloc) at the leaf, then the user code that called
         # into them.  Matches the wasmtime backtrace shape that #515
         # produced before the fix landed.
-        from vera.codegen.api import TrapFrame, WasmTrapError
+        from vera.runtime.traps import TrapFrame, WasmTrapError
         synthetic_frames: list[TrapFrame] = [
             TrapFrame(
                 func="gc_collect", file="<builtin>",
@@ -1238,7 +1238,7 @@ public fn main(@Unit -> @Int)
 { 42 }
 """)
 
-        from vera.codegen.api import TrapFrame, WasmTrapError
+        from vera.runtime.traps import TrapFrame, WasmTrapError
         synthetic_frames: list[TrapFrame] = [
             TrapFrame(
                 func="gc_collect", file="<builtin>",
@@ -1300,7 +1300,7 @@ public fn main(@Unit -> @Int)
         # single mock surface exercises both paths.  The wire output
         # of cmd_run text vs cmd_run --json must diverge cleanly:
         # text collapses, JSON preserves.
-        from vera.codegen.api import TrapFrame, WasmTrapError
+        from vera.runtime.traps import TrapFrame, WasmTrapError
         synthetic_frames: list[TrapFrame] = [
             TrapFrame(
                 func="gc_collect", file="<builtin>",
@@ -1545,7 +1545,7 @@ public fn main(@Unit -> @Int)
         docstring; if a future kind is added there, the table must
         gain a row to keep this test passing.
         """
-        from vera.codegen.api import _TRAP_FIX_PARAGRAPHS
+        from vera.runtime.traps import _TRAP_FIX_PARAGRAPHS
         expected_kinds = {
             "contract_violation",
             "divide_by_zero",
@@ -1876,7 +1876,8 @@ class TestHostPrintInvalidUtf8589:
         substring check would pass spuriously even if the actual call
         was reverted to strict-mode `.decode("utf-8")`.
         """
-        body = self._api_body_after(
+        body = self._file_body_after(
+            "vera/runtime/heap.py",
             '"""Read a UTF-8 string from WASM memory.',
         )
         assert '.decode("utf-8", errors="replace")' in body, (
@@ -2037,12 +2038,12 @@ class TestNetworkResponseUtf8Hygiene591:
     coverage above, anchored on each function's definition.
     """
 
-    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+    def _file_body_after(
+        self, relpath: str, marker: str, *, span: int = 1500,
+    ) -> str:
         from pathlib import Path
         repo_root = Path(__file__).parent.parent
-        src = (repo_root / "vera/codegen/api.py").read_text(
-            encoding="utf-8",
-        )
+        src = (repo_root / relpath).read_text(encoding="utf-8")
         idx = src.index(marker)
         return src[idx:idx + span]
 
@@ -2053,7 +2054,9 @@ class TestNetworkResponseUtf8Hygiene591:
         than a ``UnicodeDecodeError`` message leaking into the
         Err-branch string.
         """
-        body = self._api_body_after("def host_http_get(")
+        body = self._file_body_after(
+            "vera/runtime/http.py", "def host_http_get(", span=2500,
+        )
         assert 'resp.read().decode("utf-8", errors="replace")' in body, (
             "host_http_get must decode the response body with "
             "errors='replace' so non-UTF-8 bytes from a misconfigured "
@@ -2072,7 +2075,9 @@ class TestNetworkResponseUtf8Hygiene591:
         leaving the comment intact must fail this assertion.
         CodeRabbit-flagged pre-fix vulnerability on PR #649.
         """
-        body = self._api_body_after("def host_http_post(")
+        body = self._file_body_after(
+            "vera/runtime/http.py", "def host_http_post(", span=2500,
+        )
         # Use regex with DOTALL-like matching so the multi-line
         # form (decode call wrapped across two source lines) still
         # matches.  The pattern requires `errors="replace"` to be
@@ -2111,7 +2116,8 @@ class TestNetworkResponseUtf8Hygiene591:
         coherent handler block.  CodeRabbit-flagged hardening on
         PR #649.
         """
-        body = self._api_body_after(
+        body = self._file_body_after(
+            "vera/runtime/inference.py",
             "def _call_inference_provider(", span=3000,
         )
         m = re.search(
@@ -2403,3 +2409,38 @@ public fn main(@Unit -> @Unit)
             "Pre-read IO.print output should be preserved in stdout "
             "even when the program exits via the SIGINT handler."
         )
+
+
+class TestRuntimePackageImportHygiene421:
+    """#421: every `vera.runtime` submodule must import standalone.
+
+    A cold `import vera.runtime.<x>` with no prior `vera.codegen` import must
+    not raise -- the decomposition's point is to make the runtime families
+    addressable as modules.  Regression for the
+    `heap.py -> codegen.memory -> codegen/__init__ -> api -> runtime.decimal
+    -> heap` cycle that surfaced when `_validate_wrap_handle` (a runtime heap
+    concern) was parked in the compile-time `codegen/memory.py`: cold import
+    re-entered a partially-initialised `heap` for `_WRAP_KIND_DECIMAL` and
+    raised ImportError.  Each module is imported in a FRESH interpreter so a
+    warm `sys.modules` cache cannot mask the cycle.
+    """
+
+    def test_all_runtime_submodules_cold_importable(self) -> None:
+        import subprocess
+        import sys
+
+        modules = [
+            "heap", "collections", "traps", "random", "math", "md", "json",
+            "regex", "html", "map", "set", "decimal", "http", "inference",
+            "state",
+        ]
+        for mod in modules:
+            result = subprocess.run(
+                [sys.executable, "-c", f"import vera.runtime.{mod}"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, (
+                f"cold `import vera.runtime.{mod}` failed (circular import "
+                f"via vera.codegen?):\n{result.stderr}"
+            )

@@ -34,6 +34,16 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Mutation testing (#387) — mutmut copies the project here and stores
+# per-mutant verdicts; never committed (run artefacts, see MUTATION.md).
+mutants/
+.mutmut-cache
+mutmut-stats.json
+# survivor inventory + graph go to the #387 issue, not the repo (the
+# per-module mutation-summary.csv + mutation.json badge ARE committed).
+mutation-survivors.csv
+mutation-*.png
+
 # Node.js (c8 JS coverage)
 node_modules/
 .c8_output/
@@ -44,3 +54,9 @@ node_modules/
 # WASM build artifacts
 *.wasm
 *.wat
+
+# Leaked temp .vera files — the HTML-doc checkers (scripts/check_html_examples.py,
+# tests/test_html.py) write a doc snippet to a temp file to validate it; an
+# interrupted run can strand one in the repo root.  Backstop only — the checkers
+# now write to the system tempdir, not here.
+/tmp*.vera

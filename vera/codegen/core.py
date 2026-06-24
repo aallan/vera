@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 import wasmtime
 
 from vera import ast
-from vera.codegen.api import CompileResult, ConstructorLayout
+from vera.codegen.api import CompileResult
+from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.wasm import StringPool
 from vera.wasm.inference import substitute_type_vars
