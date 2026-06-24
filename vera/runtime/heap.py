@@ -840,3 +840,128 @@ def _alloc_result_ok_i32(
         _write_i32(caller, adt_ptr, 0)       # tag = Ok
         _write_i32(caller, adt_ptr + 4, value)
     return adt_ptr
+
+
+# ---------------------------------------------------------------------------
+# Shared collection marshalling helpers (#421)
+#
+# i64/f64 read+write plus the Option/Array allocation wrappers shared by the
+# Map / Set / Decimal / JSON / HTML host families.  Relocated from a
+# conditional block inside execute(); all are caller-parameterised, so they
+# move to module scope unchanged.
+# ---------------------------------------------------------------------------
+
+def _write_i64(
+    caller: wasmtime.Caller, offset: int, value: int,
+) -> None:
+    _write_bytes(
+        caller, offset,
+        struct.pack("<q", value),
+    )
+
+def _write_f64(
+    caller: wasmtime.Caller, offset: int, value: float,
+) -> None:
+    _write_bytes(
+        caller, offset,
+        struct.pack("<d", value),
+    )
+
+def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
+    """Read a little-endian i32 from WASM memory."""
+    memory = caller["memory"]
+    assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    buf = memory.data_ptr(caller)
+    val: int = struct.unpack_from(
+        "<I", bytes(buf[offset:offset + 4]),
+    )[0]
+    return val
+
+def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
+    """Read a little-endian f64 from WASM memory."""
+    memory = caller["memory"]
+    assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    buf = memory.data_ptr(caller)
+    val: float = struct.unpack_from(
+        "<d", bytes(buf[offset:offset + 8]),
+    )[0]
+    return val
+
+def _alloc_option_some_i64(
+    caller: wasmtime.Caller, value: int,
+) -> int:
+    """Option.Some wrapping an i64 value.
+
+    Layout: tag(i32) at +0, padding at +4, payload(i64) at +8.
+    Total 16 bytes (i64 aligned to 8-byte boundary).
+    """
+    adt_ptr = _call_alloc(caller, 16)
+    _write_i32(caller, adt_ptr, 1)  # tag = Some
+    _write_i64(caller, adt_ptr + 8, value)
+    return adt_ptr
+
+def _alloc_option_some_i32(
+    caller: wasmtime.Caller, value: int,
+) -> int:
+    """Option.Some wrapping an i32 value."""
+    # GC-rooting (folded into #706): root a heap-pointer payload
+    # (e.g. a Decimal wrapper from decimal_from_string /
+    # decimal_div) across the struct alloc.  Harmless for
+    # non-pointer i32 values — 0 no-ops, small ints are out of
+    # heap range.  Mirrors _alloc_result_ok_i32.
+    with _ShadowGuard(caller) as guard:
+        if value != 0:
+            guard.push(value)
+        adt_ptr = _call_alloc(caller, 8)
+        _write_i32(caller, adt_ptr, 1)  # tag = Some
+        _write_i32(caller, adt_ptr + 4, value)
+    return adt_ptr
+
+def _alloc_option_some_f64(
+    caller: wasmtime.Caller, value: float,
+) -> int:
+    """Option.Some wrapping an f64 value.
+
+    Layout: tag(i32) at +0, padding at +4, payload(f64) at +8.
+    Total 16 bytes (f64 aligned to 8-byte boundary).
+    """
+    adt_ptr = _call_alloc(caller, 16)
+    _write_i32(caller, adt_ptr, 1)  # tag = Some
+    _write_f64(caller, adt_ptr + 8, value)
+    return adt_ptr
+
+def _alloc_array_of_i64(
+    caller: wasmtime.Caller, values: list[int],
+) -> tuple[int, int]:
+    """Allocate Array<Int/Nat> — each element is 8 bytes."""
+    count = len(values)
+    if count == 0:
+        return (0, 0)
+    ptr = _call_alloc(caller, count * 8)
+    for i, v in enumerate(values):
+        _write_i64(caller, ptr + i * 8, v)
+    return (ptr, count)
+
+def _alloc_array_of_i32(
+    caller: wasmtime.Caller, values: list[int],
+) -> tuple[int, int]:
+    """Allocate Array<Bool/Byte/ADT> — each element is 4 bytes."""
+    count = len(values)
+    if count == 0:
+        return (0, 0)
+    ptr = _call_alloc(caller, count * 4)
+    for i, v in enumerate(values):
+        _write_i32(caller, ptr + i * 4, v)
+    return (ptr, count)
+
+def _alloc_array_of_f64(
+    caller: wasmtime.Caller, values: list[float],
+) -> tuple[int, int]:
+    """Allocate Array<Float64> — each element is 8 bytes."""
+    count = len(values)
+    if count == 0:
+        return (0, 0)
+    ptr = _call_alloc(caller, count * 8)
+    for i, v in enumerate(values):
+        _write_f64(caller, ptr + i * 8, v)
+    return (ptr, count)

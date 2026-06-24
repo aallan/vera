@@ -10,7 +10,6 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 import os
-import struct
 import sys
 import time
 from dataclasses import dataclass, field
@@ -27,6 +26,8 @@ from vera.runtime.traps import (
     _classify_trap,
     _resolve_trap_frames,
 )
+from vera.runtime.json import register_json
+from vera.runtime.md import register_md
 from vera.runtime.math import register_math
 from vera.runtime.random import register_random
 from vera.runtime.heap import (
@@ -34,9 +35,15 @@ from vera.runtime.heap import (
     _WRAP_KIND_DECIMAL,
     _WRAP_KIND_MAP,
     _WRAP_KIND_SET,
+    _alloc_array_of_f64,
+    _alloc_array_of_i32,
+    _alloc_array_of_i64,
     _alloc_array_of_strings,
     _alloc_map_wrapper,
     _alloc_option_none,
+    _alloc_option_some_f64,
+    _alloc_option_some_i32,
+    _alloc_option_some_i64,
     _alloc_option_some_string,
     _alloc_ordering,
     _alloc_result_err_string,
@@ -51,7 +58,6 @@ from vera.runtime.heap import (
     _decode_attrs,
     _decode_column,
     _decode_field,
-    _decode_jobject,
     _decode_map,
     _decode_set,
     _encode_map,
@@ -59,11 +65,11 @@ from vera.runtime.heap import (
     _encode_set,
     _map_lookup,
     _map_put,
+    _read_i32,
     _read_wasm_string,
     _same_value_zero,
     _set_add_svz,
     _wrap_handle,
-    _write_bytes,
     _write_i32,
 )
 
@@ -938,133 +944,7 @@ def execute(
     # -----------------------------------------------------------------
 
     if result.md_ops_used:
-        from vera.markdown import (
-            extract_code_blocks as _md_extract_code_blocks,
-            has_code_block as _md_has_code_block,
-            has_heading as _md_has_heading,
-            parse_markdown as _md_parse,
-            render_markdown as _md_render,
-        )
-        from vera.wasm.markdown import (
-            read_md_block,
-            write_md_block,
-        )
-
-        # md_parse(ptr, len) → i32 (Result<MdBlock, String>)
-        def host_md_parse(
-            caller: wasmtime.Caller, ptr: int, length: int,
-        ) -> int:
-            text = _read_wasm_string(caller, ptr, length)
-            # Parse errors are user-domain — convert to Result.Err.
-            # The shadow-stack work + write_md_block + Result.Ok
-            # alloc are deliberately OUTSIDE this except so host-
-            # side invariant violations (shadow-stack overflow
-            # from _ShadowGuard, unknown-tag ValueError from
-            # write_md_block's exhaustive match, AssertionErrors
-            # from internal bugs) propagate as wasmtime traps
-            # rather than being swallowed as parse errors.
-            # Matches the parse-only-in-try structure of
-            # host_html_parse and host_json_parse (both narrow
-            # their catch around only the parse call, with
-            # _ShadowGuard usage outside).
-            try:
-                doc = _md_parse(text)
-            except Exception as exc:
-                return _alloc_result_err_string(caller, str(exc))
-            # #692: same shadow-stack-rooting concern as
-            # ``host_html_parse`` / ``host_json_parse``.
-            # write_md_block holds intermediate pointers (string
-            # bodies, child-array backings) in Python locals
-            # across many sub-allocs; ``guard`` keeps them
-            # visible to the conservative GC scan.
-            with _ShadowGuard(caller) as guard:
-                block_ptr = write_md_block(
-                    caller, _call_alloc, _write_i32,
-                    _write_bytes, _alloc_string, guard, doc,
-                )
-                guard.push(block_ptr)
-                return _alloc_result_ok_i32(caller, block_ptr)
-
-        md_parse_type = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32()],
-        )
-        linker.define_func(
-            "vera", "md_parse", md_parse_type,
-            host_md_parse, access_caller=True,
-        )
-
-        # md_render(ptr) → (i32, i32) (String pair)
-        def host_md_render(
-            caller: wasmtime.Caller, ptr: int,
-        ) -> tuple[int, int]:
-            block = read_md_block(caller, ptr)
-            text = _md_render(block)
-            return _alloc_string(caller, text)
-
-        md_render_type = wasmtime.FuncType(
-            [wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-        )
-        linker.define_func(
-            "vera", "md_render", md_render_type,
-            host_md_render, access_caller=True,
-        )
-
-        # md_has_heading(ptr, level_i64) → i32 (Bool)
-        def host_md_has_heading(
-            caller: wasmtime.Caller, ptr: int, level: int,
-        ) -> int:
-            block = read_md_block(caller, ptr)
-            return 1 if _md_has_heading(block, level) else 0
-
-        md_has_heading_type = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i64()],
-            [wasmtime.ValType.i32()],
-        )
-        linker.define_func(
-            "vera", "md_has_heading", md_has_heading_type,
-            host_md_has_heading, access_caller=True,
-        )
-
-        # md_has_code_block(ptr, lang_ptr, lang_len) → i32 (Bool)
-        def host_md_has_code_block(
-            caller: wasmtime.Caller,
-            ptr: int, lang_ptr: int, lang_len: int,
-        ) -> int:
-            block = read_md_block(caller, ptr)
-            lang = _read_wasm_string(caller, lang_ptr, lang_len)
-            return 1 if _md_has_code_block(block, lang) else 0
-
-        md_has_code_block_type = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
-             wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32()],
-        )
-        linker.define_func(
-            "vera", "md_has_code_block", md_has_code_block_type,
-            host_md_has_code_block, access_caller=True,
-        )
-
-        # md_extract_code_blocks(ptr, lang_ptr, lang_len) → (i32, i32)
-        def host_md_extract_code_blocks(
-            caller: wasmtime.Caller,
-            ptr: int, lang_ptr: int, lang_len: int,
-        ) -> tuple[int, int]:
-            block = read_md_block(caller, ptr)
-            lang = _read_wasm_string(caller, lang_ptr, lang_len)
-            codes = _md_extract_code_blocks(block, lang)
-            return _alloc_array_of_strings(caller, codes)
-
-        md_extract_type = wasmtime.FuncType(
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
-             wasmtime.ValType.i32()],
-            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-        )
-        linker.define_func(
-            "vera", "md_extract_code_blocks", md_extract_type,
-            host_md_extract_code_blocks, access_caller=True,
-        )
+        register_md(linker)
 
     # -----------------------------------------------------------------
     # Regex host functions (§9.6.15)
@@ -1203,121 +1083,6 @@ def execute(
     if (result.map_ops_used or result.set_ops_used
             or result.decimal_ops_used or result.json_ops_used
             or result.html_ops_used):
-        def _write_i64(
-            caller: wasmtime.Caller, offset: int, value: int,
-        ) -> None:
-            _write_bytes(
-                caller, offset,
-                struct.pack("<q", value),
-            )
-
-        def _write_f64(
-            caller: wasmtime.Caller, offset: int, value: float,
-        ) -> None:
-            _write_bytes(
-                caller, offset,
-                struct.pack("<d", value),
-            )
-
-        def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
-            """Read a little-endian i32 from WASM memory."""
-            memory = caller["memory"]
-            assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-            buf = memory.data_ptr(caller)
-            val: int = struct.unpack_from(
-                "<I", bytes(buf[offset:offset + 4]),
-            )[0]
-            return val
-
-        def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
-            """Read a little-endian f64 from WASM memory."""
-            memory = caller["memory"]
-            assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-            buf = memory.data_ptr(caller)
-            val: float = struct.unpack_from(
-                "<d", bytes(buf[offset:offset + 8]),
-            )[0]
-            return val
-
-        def _alloc_option_some_i64(
-            caller: wasmtime.Caller, value: int,
-        ) -> int:
-            """Option.Some wrapping an i64 value.
-
-            Layout: tag(i32) at +0, padding at +4, payload(i64) at +8.
-            Total 16 bytes (i64 aligned to 8-byte boundary).
-            """
-            adt_ptr = _call_alloc(caller, 16)
-            _write_i32(caller, adt_ptr, 1)  # tag = Some
-            _write_i64(caller, adt_ptr + 8, value)
-            return adt_ptr
-
-        def _alloc_option_some_i32(
-            caller: wasmtime.Caller, value: int,
-        ) -> int:
-            """Option.Some wrapping an i32 value."""
-            # GC-rooting (folded into #706): root a heap-pointer payload
-            # (e.g. a Decimal wrapper from decimal_from_string /
-            # decimal_div) across the struct alloc.  Harmless for
-            # non-pointer i32 values — 0 no-ops, small ints are out of
-            # heap range.  Mirrors _alloc_result_ok_i32.
-            with _ShadowGuard(caller) as guard:
-                if value != 0:
-                    guard.push(value)
-                adt_ptr = _call_alloc(caller, 8)
-                _write_i32(caller, adt_ptr, 1)  # tag = Some
-                _write_i32(caller, adt_ptr + 4, value)
-            return adt_ptr
-
-        def _alloc_option_some_f64(
-            caller: wasmtime.Caller, value: float,
-        ) -> int:
-            """Option.Some wrapping an f64 value.
-
-            Layout: tag(i32) at +0, padding at +4, payload(f64) at +8.
-            Total 16 bytes (f64 aligned to 8-byte boundary).
-            """
-            adt_ptr = _call_alloc(caller, 16)
-            _write_i32(caller, adt_ptr, 1)  # tag = Some
-            _write_f64(caller, adt_ptr + 8, value)
-            return adt_ptr
-
-        def _alloc_array_of_i64(
-            caller: wasmtime.Caller, values: list[int],
-        ) -> tuple[int, int]:
-            """Allocate Array<Int/Nat> — each element is 8 bytes."""
-            count = len(values)
-            if count == 0:
-                return (0, 0)
-            ptr = _call_alloc(caller, count * 8)
-            for i, v in enumerate(values):
-                _write_i64(caller, ptr + i * 8, v)
-            return (ptr, count)
-
-        def _alloc_array_of_i32(
-            caller: wasmtime.Caller, values: list[int],
-        ) -> tuple[int, int]:
-            """Allocate Array<Bool/Byte/ADT> — each element is 4 bytes."""
-            count = len(values)
-            if count == 0:
-                return (0, 0)
-            ptr = _call_alloc(caller, count * 4)
-            for i, v in enumerate(values):
-                _write_i32(caller, ptr + i * 4, v)
-            return (ptr, count)
-
-        def _alloc_array_of_f64(
-            caller: wasmtime.Caller, values: list[float],
-        ) -> tuple[int, int]:
-            """Allocate Array<Float64> — each element is 8 bytes."""
-            count = len(values)
-            if count == 0:
-                return (0, 0)
-            ptr = _call_alloc(caller, count * 8)
-            for i, v in enumerate(values):
-                _write_f64(caller, ptr + i * 8, v)
-            return (ptr, count)
-
         _VAL_WASM_TYPES = {
             "i": [wasmtime.ValType.i64()],
             "f": [wasmtime.ValType.f64()],
@@ -2071,72 +1836,7 @@ def execute(
     # Json host functions
     # -----------------------------------------------------------------
     if result.json_ops_used:
-        import json as _json
-
-        from vera.wasm.json_serde import read_json, write_json
-
-        if "json_parse" in result.json_ops_used:
-            def host_json_parse(
-                caller: wasmtime.Caller, ptr: int, length: int,
-            ) -> int:
-                text = _read_wasm_string(caller, ptr, length)
-                try:
-                    parsed = _json.loads(text)
-                except (ValueError, TypeError) as exc:
-                    return _alloc_result_err_string(caller, str(exc))
-                # #692: hold the shadow-stack window open across the
-                # full tree marshalling AND the final Result.Ok
-                # wrapper alloc.  ``guard.__exit__`` restores
-                # ``$gc_sp`` on the way out — pops everything we
-                # pushed.
-                with _ShadowGuard(caller) as guard:
-                    json_ptr = write_json(
-                        caller, _call_alloc, _write_i32, _write_f64,
-                        _alloc_string, _alloc_map_wrapper, guard, parsed,
-                    )
-                    # Push the tree root before the Result.Ok alloc —
-                    # that alloc could trigger GC and free the
-                    # otherwise-unrooted tree.
-                    guard.push(json_ptr)
-                    return _alloc_result_ok_i32(caller, json_ptr)
-
-            linker.define_func(
-                "vera", "json_parse",
-                wasmtime.FuncType(
-                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-                    [wasmtime.ValType.i32()],
-                ),
-                host_json_parse, access_caller=True,
-            )
-
-        if "json_stringify" in result.json_ops_used:
-            def host_json_stringify(
-                caller: wasmtime.Caller, ptr: int,
-            ) -> tuple[int, int]:
-                value = read_json(
-                    caller, ptr, _read_i32, _read_f64,
-                    _read_wasm_string, _decode_jobject,
-                )
-                # Note: json.dumps rejects NaN/Infinity by default
-                # (raises ValueError).  This matches the JSON spec
-                # (RFC 8259) which forbids these values.  The JS
-                # runtime's JSON.stringify outputs "null" for them
-                # instead.  Both behaviours are acceptable: Vera's
-                # JNumber wraps Float64, so users should guard against
-                # NaN/Infinity before serialising.
-                text = _json.dumps(
-                    value, ensure_ascii=False, allow_nan=False,
-                )
-                return _alloc_string(caller, text)
-
-            linker.define_func(
-                "vera", "json_stringify",
-                wasmtime.FuncType(
-                    [wasmtime.ValType.i32()],
-                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
-                ),
-                host_json_stringify, access_caller=True,
-            )
+        register_json(linker, result.json_ops_used)
 
     # -----------------------------------------------------------------
     # Html host functions (§9.7.4)
