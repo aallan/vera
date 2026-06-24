@@ -7033,3 +7033,439 @@ private fn f(@Nat -> @Nat)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         subs = [o for o in result.obligations if o.kind == "nat_sub"]
         assert len(subs) == 1 and subs[0].status == "tier3", [(o.kind, o.status) for o in subs]
+
+
+# =====================================================================
+# Obligation-record completeness (#387 mutation sweep — V0)
+#
+# The #680/#552/#520 batteries pin each obligation's `kind` + `status`.
+# These pin the REMAINING `ProofObligation` fields — `fn_name`,
+# `error_code`, `counterexample`, `expr_text` — across the
+# `_check_*_obligation` discharge layer and its `_report_*` siblings.
+# The coarse `_verify_err` / `_verify_ok` helpers only assert "an error
+# exists", so a mutation that drops `fn_name` (→ `None`), nulls the
+# counterexample, or flips an `error_code` string survives them.  A
+# distinct `_387` function name per test ensures the `None`-substitution
+# mutant (`_record_obligation(None, ...)`) cannot coincide with a default.
+# =====================================================================
+
+class TestObligationRecordCompleteness387:
+    """Pin every `ProofObligation` field at the primitive-safety discharge
+    sites so the discharge / report bookkeeping cannot silently mutate."""
+
+    def test_div_zero_violation_pins_full_record(self) -> None:
+        result = _verify("""
+private fn unsafe_div_387(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1, [(o.kind, o.status) for o in divs]
+        o = divs[0]
+        assert o.status == "violated", o.status
+        assert o.error_code == "E526", o.error_code
+        assert o.fn_name == "unsafe_div_387", o.fn_name
+        assert o.counterexample, o.counterexample
+        assert o.expr_text == "@Int.0 / @Int.1", o.expr_text
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [e.error_code for e in errors] == ["E526"], [
+            (e.error_code, e.description) for e in errors]
+
+    def test_div_zero_verified_pins_record(self) -> None:
+        result = _verify("""
+private fn safe_div_387(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1, [(o.kind, o.status) for o in divs]
+        o = divs[0]
+        assert o.status == "verified", o.status
+        assert o.fn_name == "safe_div_387", o.fn_name
+        assert o.error_code == "", o.error_code
+        assert o.counterexample is None, o.counterexample
+
+    def test_nat_sub_violation_pins_full_record(self) -> None:
+        result = _verify("""
+private fn unsafe_sub_387(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(subs) == 1, [(o.kind, o.status) for o in subs]
+        o = subs[0]
+        assert o.status == "violated", o.status
+        assert o.error_code == "E502", o.error_code
+        assert o.fn_name == "unsafe_sub_387", o.fn_name
+        assert o.counterexample, o.counterexample
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [e.error_code for e in errors] == ["E502"], [
+            (e.error_code, e.description) for e in errors]
+
+    def test_nat_sub_verified_pins_record(self) -> None:
+        result = _verify("""
+private fn safe_sub_387(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert len(subs) == 1, [(o.kind, o.status) for o in subs]
+        o = subs[0]
+        assert o.status == "verified", o.status
+        assert o.fn_name == "safe_sub_387", o.fn_name
+        assert o.error_code == "", o.error_code
+
+    def test_index_oob_violation_pins_full_record(self) -> None:
+        result = _verify("""
+private fn oob_387(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][5] }
+""")
+        idxs = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idxs) == 1, [(o.kind, o.status) for o in idxs]
+        o = idxs[0]
+        assert o.status == "violated", o.status
+        assert o.error_code == "E527", o.error_code
+        assert o.fn_name == "oob_387", o.fn_name
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert [e.error_code for e in errors] == ["E527"], [
+            (e.error_code, e.description) for e in errors]
+
+    def test_index_in_bounds_verified_pins_record(self) -> None:
+        result = _verify("""
+private fn inbounds_387(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [10, 20, 30][1] }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        idxs = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert len(idxs) == 1, [(o.kind, o.status) for o in idxs]
+        o = idxs[0]
+        assert o.status == "verified", o.status
+        assert o.fn_name == "inbounds_387", o.fn_name
+        assert o.error_code == "", o.error_code
+
+    # --- _report_* diagnostic content (deterministic; runs after the solver) ---
+
+    def test_div_by_zero_diagnostic_content(self) -> None:
+        """Pin the E526 diagnostic's description / rationale / fix / spec_ref /
+        counterexample (`_report_div_by_zero`), not just its code."""
+        result = _verify("""
+private fn unsafe_div_387(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E526"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "unsafe_div_387" in d.description, d.description
+        assert "may divide by zero" in d.description, d.description
+        assert "division" in d.description, d.description
+        assert "Counterexample" in d.description, d.description
+        assert "divisor is non-zero" in d.rationale, d.rationale
+        assert "i64.div_s" in d.rationale, d.rationale
+        assert "requires(@Int.1 != 0)" in d.fix, d.fix
+        assert "6.4.3" in d.spec_ref, d.spec_ref
+
+    def test_modulo_diagnostic_says_modulo(self) -> None:
+        """`a % b` must report "modulo", not "division" — pins the
+        `op_word = "modulo" if MOD else "division"` branch (`_report_div_by_zero`)."""
+        result = _verify("""
+private fn unsafe_mod_387(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E526"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        assert "modulo" in errs[0].description, errs[0].description
+        assert "division" not in errs[0].description, errs[0].description
+
+    def test_float_divisor_is_exempt_no_obligation(self) -> None:
+        """A `@Float64` divisor traps to inf/NaN, not a runtime trap, so it
+        carries NO `div_zero` obligation — pins the float64 early-exit guard
+        in `_check_div_zero_obligation` (a mutation here would emit a bogus
+        E526 on float division)."""
+        result = _verify("""
+private fn fdiv_387(@Float64, @Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ @Float64.0 / @Float64.1 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o for o in result.obligations if o.kind == "div_zero"] == [], [
+            (o.kind, o.status) for o in result.obligations]
+
+    def test_underflow_diagnostic_content(self) -> None:
+        """Pin the E502 diagnostic's description / rationale / fix / spec_ref
+        (`_report_underflow`)."""
+        result = _verify("""
+private fn unsafe_sub_387(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E502"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "unsafe_sub_387" in d.description, d.description
+        assert "may underflow" in d.description, d.description
+        assert "@Nat subtraction" in d.description, d.description
+        assert "Counterexample" in d.description, d.description
+        assert "non-negativity" in d.rationale, d.rationale
+        assert "requires(@Nat.0 >= @Nat.1)" in d.fix, d.fix
+        assert "4.4" in d.spec_ref, d.spec_ref
+
+    def test_index_oob_diagnostic_content(self) -> None:
+        """Pin the E527 diagnostic's description / rationale / fix / spec_ref
+        (`_report_index_oob`)."""
+        result = _verify("""
+private fn oob_387(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ [1, 2, 3][5] }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E527"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "oob_387" in d.description, d.description
+        assert "out of bounds" in d.description, d.description
+        assert "array_length" in d.rationale, d.rationale
+        assert "array_length" in d.fix, d.fix
+        assert "6.4.3" in d.spec_ref, d.spec_ref
+
+    def test_nat_binding_violation_pins_record_and_content(self) -> None:
+        """`let @Nat = @Int.0` (unguarded) → E503 nat_bind violation;
+        pins the record fields + `_report_nat_binding` content."""
+        result = _verify("""
+private fn narrow_neg_387(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+        binds = [o for o in result.obligations if o.kind == "nat_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in binds]
+        o = binds[0]
+        assert o.status == "violated", o.status
+        assert o.error_code == "E503", o.error_code
+        assert o.fn_name == "narrow_neg_387", o.fn_name
+        assert o.counterexample, o.counterexample
+        errs = [d for d in result.diagnostics if d.error_code == "E503"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "narrow_neg_387" in d.description, d.description
+        assert "narrowing into a @Nat" in d.description, d.description
+        assert "may be negative" in d.description, d.description
+        assert "non-negativity invariant" in d.rationale, d.rationale
+        assert "requires(@Int.0 >= 0)" in d.fix, d.fix
+        assert "4.7" in d.spec_ref, d.spec_ref
+
+    def test_nat_binding_verified_pins_record(self) -> None:
+        result = _verify("""
+private fn narrow_ok_387(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        binds = [o for o in result.obligations if o.kind == "nat_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in binds]
+        o = binds[0]
+        assert o.status == "verified", o.status
+        assert o.fn_name == "narrow_ok_387", o.fn_name
+        assert o.error_code == "", o.error_code
+
+    def test_postcondition_violation_diagnostic_content(self) -> None:
+        """A false `ensures` → E500; pins `_report_violation`'s description /
+        rationale / fix (all three repair classes, #675) / spec_ref + the
+        recorded `ensures` obligation."""
+        result = _verify("""
+private fn bad_post_387(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > @Int.0)
+  effects(pure)
+{ @Int.0 }
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E500"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "Postcondition does not hold" in d.description, d.description
+        assert "bad_post_387" in d.description, d.description
+        assert "Counterexample" in d.description, d.description
+        assert "concrete input values" in d.rationale, d.rationale
+        assert "implementation" in d.fix, d.fix
+        assert "strengthen" in d.fix and "requires(" in d.fix, d.fix
+        assert "ensures(" in d.fix, d.fix
+        assert "6.4.1" in d.spec_ref, d.spec_ref
+        # The E500 code lives on the diagnostic (asserted above); the
+        # `ensures` obligation records kind + status + fn_name (no error_code).
+        viol = [o for o in result.obligations
+                if o.kind == "ensures" and o.status == "violated"]
+        assert len(viol) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert viol[0].fn_name == "bad_post_387", viol[0].fn_name
+
+    # --- summary-counter bookkeeping ------------------------------------
+    # Pin `tier1_verified` / `tier3_runtime` / `total` so a `summary.X += 1`
+    # cannot silently mutate to `= 1` or `+= 2`.  A guarded obligation already
+    # sits at counter >= 1 (requires + ensures discharged first), so ONE
+    # obligation pins the verified + total counters.  The tier3 counter starts
+    # at 0 (contracts verify, they don't go tier3), so TWO tier3 sites are
+    # needed to make `tier3_runtime += 1 → = 1` observable.
+
+    def test_div_verified_summary_counts(self) -> None:
+        result = _verify("""
+private fn sdiv_387(@Int, @Int -> @Int)
+  requires(@Int.1 != 0) ensures(true) effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+        s = result.summary
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 0, 3), (
+            s.tier1_verified, s.tier3_runtime, s.total)
+
+    def test_div_two_tier3_summary_counts(self) -> None:
+        result = _verify("""
+effect Src387 { op g(Unit -> Option<Int>); }
+private fn d1_387(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Src387>)
+{ match Src387.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+private fn d2_387(@Int -> @Int)
+  requires(@Int.0 != 0) ensures(true) effects(<Src387>)
+{ match Src387.g(()) { Some(@Int) -> 1 / @Int.0, None -> 1 } }
+""")
+        s = result.summary
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert [o.status for o in divs] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations]
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (4, 2, 6), (
+            s.tier1_verified, s.tier3_runtime, s.total)
+
+    def test_sub_verified_summary_counts(self) -> None:
+        result = _verify("""
+private fn ssub_387(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1) ensures(true) effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+        s = result.summary
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 0, 3), (
+            s.tier1_verified, s.tier3_runtime, s.total)
+
+    def test_sub_two_tier3_summary_counts(self) -> None:
+        result = _verify("""
+effect SrcN387 { op g(Unit -> Option<Nat>); }
+private fn s1_387(@Nat -> @Nat)
+  requires(true) ensures(true) effects(<SrcN387>)
+{ match SrcN387.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+private fn s2_387(@Nat -> @Nat)
+  requires(true) ensures(true) effects(<SrcN387>)
+{ match SrcN387.g(()) { Some(@Nat) -> @Nat.0 - @Nat.1, None -> 0 } }
+""")
+        s = result.summary
+        subs = [o for o in result.obligations if o.kind == "nat_sub"]
+        assert [o.status for o in subs] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations]
+        assert s.tier3_runtime == 2, s.tier3_runtime
+
+    def test_index_verified_summary_counts(self) -> None:
+        result = _verify("""
+private fn sidx_387(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30][1] }
+""")
+        s = result.summary
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 0, 3), (
+            s.tier1_verified, s.tier3_runtime, s.total)
+
+    def test_index_two_tier3_summary_counts(self) -> None:
+        result = _verify("""
+private fn i1_387(@Array<Int>, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+private fn i2_387(@Array<Int>, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0[@Nat.0] }
+""")
+        s = result.summary
+        idxs = [o for o in result.obligations if o.kind == "index_bounds"]
+        assert [o.status for o in idxs] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations]
+        assert s.tier3_runtime == 2, s.tier3_runtime
+
+    def test_nat_binding_verified_summary_counts(self) -> None:
+        result = _verify("""
+private fn nbind_ok_387(@Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ let @Nat = @Int.0; @Nat.0 }
+""")
+        s = result.summary
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (3, 0, 3), (
+            s.tier1_verified, s.tier3_runtime, s.total)
+
+    # --- refinement-predicate binding (refine_bind, E505) ----------------
+
+    def test_refined_binding_violation_pins_record_and_content(self) -> None:
+        """`let @Pos387 = @Int.0 - 100` cannot prove `> 0` → E505 refine_bind
+        violation; pins the record fields + `_report_refined_binding` content."""
+        result = _verify("""
+type Pos387 = { @Int | @Int.0 > 0 };
+
+private fn rbind_neg_387(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Pos387 = @Int.0 - 100; @Pos387.0 }
+""")
+        binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in binds]
+        o = binds[0]
+        assert o.status == "violated", o.status
+        assert o.error_code == "E505", o.error_code
+        assert o.fn_name == "rbind_neg_387", o.fn_name
+        assert o.counterexample, o.counterexample
+        errs = [d for d in result.diagnostics if d.error_code == "E505"]
+        assert len(errs) == 1, [d.description for d in result.diagnostics]
+        d = errs[0]
+        assert "rbind_neg_387" in d.description, d.description
+        assert "may violate the refinement predicate" in d.description, d.description
+        assert "refinement type" in d.rationale, d.rationale
+        assert "requires(" in d.fix, d.fix
+        assert "2.6" in d.spec_ref, d.spec_ref
+
+    def test_refined_binding_verified_pins_record(self) -> None:
+        result = _verify("""
+type Pos387 = { @Int | @Int.0 > 0 };
+
+private fn rbind_ok_387(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ let @Pos387 = @Int.0; @Pos387.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        assert len(binds) == 1, [(o.kind, o.status) for o in binds]
+        o = binds[0]
+        assert o.status == "verified", o.status
+        assert o.fn_name == "rbind_ok_387", o.fn_name
+        assert o.error_code == "", o.error_code
