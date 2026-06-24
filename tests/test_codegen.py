@@ -12929,8 +12929,15 @@ public fn main(-> @Int)
         assert not _is_allowed_http_url("")
 
     def test_http_get_rejects_file_scheme_end_to_end(self) -> None:
-        """A compiled `Http.get` on a file:// URL returns Err without ever
-        reaching urlopen — the scheme guard short-circuits (#789)."""
+        """A compiled `Http.get` on a file:// URL returns Err AND never reaches
+        urlopen — the scheme guard short-circuits before any I/O (#789).
+
+        Mocking urlopen and asserting it is never called proves the guard runs
+        first, independent of whether `file:///etc/passwd` exists on the host
+        (it doesn't on Windows, where a failing urlopen would mask a removed
+        guard by also producing an Err)."""
+        from unittest.mock import patch
+
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(<Http>)
@@ -12943,8 +12950,10 @@ public fn main(-> @Int)
 }
 """
         result = _compile_ok(source)
-        exec_result = execute(result)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            exec_result = execute(result)
         assert exec_result.value == 0  # Err branch — scheme rejected
+        mock_urlopen.assert_not_called()  # guard short-circuited before urlopen
 
 
 class TestInferenceCollection:

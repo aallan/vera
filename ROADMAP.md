@@ -27,7 +27,7 @@ The infrastructure that catches the next regression before a user does, plus the
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
 | [#679](https://github.com/aallan/vera/issues/679) | Chapter 8 (modules) conformance programs — the only spec chapter with no `chNN_*.vera` coverage. |
 | [#738](https://github.com/aallan/vera/issues/738) | Mark the `TestHostHandleReclamation573` trio as stress tests so the local inner loop stops paying ~12 minutes per run. |
-| [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,084 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
+| [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
 | [#420](https://github.com/aallan/vera/issues/420) | Split `tests/test_checker.py` (6,347 lines) into phase-focused test files.  Promoted from "Not doing now". |
 
 ### Tier 2 — Single source of truth
