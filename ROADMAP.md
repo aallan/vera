@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,762 tests, 92 conformance programs, 35 examples, 13 spec chapters.
+4,852 tests, 92 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,7 @@ The infrastructure that catches the next regression before a user does, plus the
 
 | Issue | What |
 |---|---|
-| [#387](https://github.com/aallan/vera/issues/387) | **Finish the mutation sweep.**  Deliberately break each line of `vera/` and confirm a test flips RED, to catch *green-for-the-wrong-reason* tests (the #680 audit found 8 in one 57-test battery).  Tooling chosen (`mutmut`) and the **soundness-core baseline** measured: `verifier`/`smt`/`checker`/`obligations`, 10,620 mutants, 80.8% caught, 2,038 survivors (runbook `MUTATION.md`; inventory on the issue).  Remaining: triage the soundness-core survivors and per-module follow-ups, then run the **whole-`vera/` sweep — now unblocked** by the #421 decomposition (api.py's `execute()` no longer inflates a mutant file mutmut can't index).  The in-process oracle means subprocess-only suites (conformance / CLI / browser) can't kill mutants, so coverage comes from the in-process unit suites — *not* the conformance suite. |
+| [#387](https://github.com/aallan/vera/issues/387) | **Finish the mutation sweep.**  Deliberately break each line of `vera/` and confirm a test flips RED, to catch *green-for-the-wrong-reason* tests (the #680 audit found 8 in one 57-test battery).  Tooling chosen (`mutmut`) and the **soundness-core baseline** measured: `verifier`/`smt`/`checker`/`obligations`, 10,620 mutants, 80.8% caught, 2,038 survivors (runbook `MUTATION.md`; inventory on the issue).  Remaining: triage the soundness-core survivors and per-module follow-ups (the deep verifier / `smt.py` translate-layer hardening that needs the mutmut feedback loop is tracked in [#792](https://github.com/aallan/vera/issues/792)), then run the **whole-`vera/` sweep — now unblocked** by the #421 decomposition (api.py's `execute()` no longer inflates a mutant file mutmut can't index).  The in-process oracle means subprocess-only suites (conformance / CLI / browser) can't kill mutants, so coverage comes from the in-process unit suites — *not* the conformance suite. |
 | [#392](https://github.com/aallan/vera/issues/392) | Audit the `smt.py` Z3 translation layer for soundness — a bug here silently bypasses verification. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
