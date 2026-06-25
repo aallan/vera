@@ -79,6 +79,44 @@ public fn m(@Int -> @Int)
 { @Int.0 % 2 }
 """, "postcondition")
 
+    def test_positive_operands_unchanged(self) -> None:
+        # Regression guard: the common positive path verifies unchanged
+        # (truncated == Euclidean for non-negative operands).
+        _verify_ok("""
+public fn h(@Int -> @Int)
+  requires(@Int.0 == 7) ensures(@Int.result == 3) effects(pure)
+{ @Int.0 / 2 }
+""")
+        _verify_ok("""
+public fn m(@Int -> @Int)
+  requires(@Int.0 == 7) ensures(@Int.result == 1) effects(pure)
+{ @Int.0 % 2 }
+""")
+
+    def test_positive_dividend_negative_divisor(self) -> None:
+        # 7 / -2 == -3 (truncated); 7 % -2 == 1 (remainder takes the dividend
+        # sign).  Pins the Xor sign branch and the `If(a < 0, ...)` mod branch
+        # in the *other* direction from the negative-dividend cases above.
+        _verify_ok("""
+public fn h(@Int -> @Int)
+  requires(@Int.0 + 2 == 0) ensures(@Int.result + 3 == 0) effects(pure)
+{ 7 / @Int.0 }
+""")
+        _verify_ok("""
+public fn m(@Int -> @Int)
+  requires(@Int.0 + 2 == 0) ensures(@Int.result == 1) effects(pure)
+{ 7 % @Int.0 }
+""")
+
+    def test_both_operands_negative(self) -> None:
+        # -7 / -2 == 3 — same-sign quotient, the Xor-false-via-two-negatives
+        # path (Euclidean would give 4).
+        _verify_ok("""
+public fn h(@Int -> @Int)
+  requires(@Int.0 + 2 == 0) ensures(@Int.result == 3) effects(pure)
+{ (0 - 7) / @Int.0 }
+""")
+
 
 # =====================================================================
 # #800 — body assert(P) generates a Tier-1 obligation (two-check:
@@ -120,6 +158,35 @@ public fn af(@Int -> @Int)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors, "provably-false assert should report an error"
 
+    def test_branch_guarded_assert_verifies(self) -> None:
+        # An assert provable from the enclosing if-condition (a path condition)
+        # discharges at Tier 1 — check_valid picks up smt._path_conditions.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 > 10 then { assert(@Int.0 > 5); @Int.0 } else { 0 } }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert len(asserts) == 1 and asserts[0].status == "verified", [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_asserts_do_not_yet_accumulate_as_facts(self) -> None:
+        # Current behavior: #800 implements only the *prove* half of the WP
+        # rule, so a prior assert does NOT strengthen the context for a later
+        # one — both fall to tier3 (sound, conservative).  The *assume* half
+        # (spec §2.8 "prior asserts discharge") is tracked as #804; that fix
+        # will flip these to verified.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 10); assert(@Int.0 > 5); @Int.0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert len(asserts) == 2 and all(a.status == "tier3" for a in asserts), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
 
 # =====================================================================
 # #801 — divisions in contract predicates get a div_zero obligation
@@ -153,3 +220,25 @@ public fn f(@Int -> @Int)
         assert len(divs) >= 1 and all(o.status == "verified" for o in divs), [
             (o.kind, o.status) for o in result.obligations
         ]
+
+    def test_unguarded_division_in_requires_reports_e526(self) -> None:
+        # The contract walk covers `requires` predicates too (not just ensures).
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(10 / @Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        assert any(d.error_code == "E526" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_result_divisor_in_ensures_is_obligated(self) -> None:
+        # The `@result`-binding path: a divisor that IS `@result` resolves to
+        # the body result for the contract walk and is obligated (#801).
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(100 / @Int.result == 100 / @Int.result) effects(pure)
+{ @Int.0 }
+""")
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) >= 1, [(o.kind, o.status) for o in result.obligations]

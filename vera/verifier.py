@@ -1431,7 +1431,10 @@ class ContractVerifier:
         #      above cover only `decl.body`; extend them to each requires /
         #      ensures predicate.  An ensures predicate's `@result` is bound to
         #      the body result for the walk; a requires predicate has no
-        #      `@result` binder, so it is cleared.
+        #      `@result` binder, so it is cleared.  Reset opaque shadows first
+        #      — contract predicates introduce no let/destructure binders, so
+        #      the body walk's shadows must not carry into them.
+        self._opaque_shadows = []
         for contract in decl.contracts:
             if not isinstance(contract, (ast.Requires, ast.Ensures)):
                 continue
@@ -3086,7 +3089,8 @@ class ContractVerifier:
         from enclosing ``if`` / ``match`` branches live in
         ``smt._path_conditions`` and are picked up by ``check_valid``, so a
         branch-guarded assert discharges from its guard.  An untranslatable
-        predicate falls to Tier 3.
+        predicate falls to Tier 3, as does solver `unknown` on either check —
+        so this kind never records `timeout` (both fold into `tier3_runtime`).
         """
         pred = smt.translate_expr(expr.expr, slot_env)
         if pred is None or pred.sort() != z3.BoolSort():
