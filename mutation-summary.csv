@@ -1,9 +1,9 @@
 module,total,killed,survived,timeout,caught_pct
-vera/verifier.py,5677,3631,1132,914,80.1
+vera/verifier.py,5677,3888,875,914,84.6
 vera/checker/control.py,713,362,281,70,60.6
 vera/checker/calls.py,761,471,204,86,73.2
 vera/checker/expressions.py,799,434,155,210,80.6
-vera/smt.py,1389,1092,152,145,89.1
+vera/smt.py,1389,1100,144,145,89.6
 vera/checker/core.py,382,178,35,169,90.8
 vera/obligations/session.py,183,157,26,0,85.8
 vera/checker/registration.py,224,153,17,54,92.4
@@ -12,4 +12,4 @@ vera/obligations/cache.py,76,64,12,0,84.2
 vera/obligations/__init__.py,6,0,6,0,0.0
 vera/checker/modules.py,119,72,1,46,99.2
 vera/obligations/core.py,6,3,0,3,100.0
-TOTAL (core),10620,6816,2038,1766,80.8
+TOTAL (core),10620,7081,1773,1766,83.3
