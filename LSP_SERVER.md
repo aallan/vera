@@ -17,6 +17,11 @@ keystrokes, so contract proofs re-check at editor latency rather than
 batch-compile latency, and it exposes that capability to agents through
 four custom methods that no generic language server has.
 
+This guide covers the editor/agent surface — the long-running server.
+For the command-line surface (`vera check`/`verify`/`test`/`run` and
+the introspection commands), see the CLI cookbook,
+[TOOLCHAIN.md](TOOLCHAIN.md).
+
 ## Install and run
 
 The server lives behind the optional `[lsp]` extra (pure-Python

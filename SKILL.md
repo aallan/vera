@@ -38,6 +38,8 @@ pip install -e ".[dev]"
 
 ## Toolchain
 
+See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
+
 ```bash
 vera check file.vera              # Parse and type-check (or "OK")
 vera check --json file.vera       # Type-check with JSON diagnostics
@@ -69,6 +71,9 @@ vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
 vera lsp                          # Serve LSP over stdio: live diagnostics, hover, slot goto,
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
+vera builtins [--json]            # List the built-in function registry (no file needed)
+vera effects [--json]             # List the effect and ability registry (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001 (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 

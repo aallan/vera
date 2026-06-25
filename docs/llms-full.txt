@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.177. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.178. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -44,6 +44,8 @@ pip install -e ".[dev]"
 
 ## Toolchain
 
+See [TOOLCHAIN.md](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
+
 ```bash
 vera check file.vera              # Parse and type-check (or "OK")
 vera check --json file.vera       # Type-check with JSON diagnostics
@@ -75,6 +77,9 @@ vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
 vera lsp                          # Serve LSP over stdio: live diagnostics, hover, slot goto,
                                   #   hole completion + agent proof-delta methods (LSP_SERVER.md)
+vera builtins [--json]            # List the built-in function registry (no file needed)
+vera effects [--json]             # List the effect and ability registry (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001 (no file needed)
 pytest tests/ -v                  # Run the test suite
 ```
 
@@ -2392,7 +2397,12 @@ vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
+vera builtins [--json]            # List the built-in function registry (no file needed)
+vera effects [--json]             # List the effect and ability registry (no file needed)
+vera errors [--json]              # List the diagnostic error-code registry E001–E702 (no file needed)
 ```
+
+See [TOOLCHAIN.md](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
 
 ### The language server: proof deltas without re-running the CLI
 
@@ -2563,6 +2573,11 @@ keeps a warm, incremental Z3 verification session alive between
 keystrokes, so contract proofs re-check at editor latency rather than
 batch-compile latency, and it exposes that capability to agents through
 four custom methods that no generic language server has.
+
+This guide covers the editor/agent surface — the long-running server.
+For the command-line surface (`vera check`/`verify`/`test`/`run` and
+the introspection commands), see the CLI cookbook,
+[TOOLCHAIN.md](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md).
 
 ## Install and run
 
@@ -3019,7 +3034,7 @@ pip install -e .
 vera run examples/hello_world.vera
 ```
 
-For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md). It's the complete language reference, designed to be dropped into a context window.
+For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md). It's the complete language reference, designed to be dropped into a context window. For driving the command-line toolchain itself — checking, verifying, testing, running, and debugging Vera, plus the `builtins`/`effects`/`errors` introspection commands — see the CLI cookbook, [TOOLCHAIN.md](https://github.com/aallan/vera/blob/main/TOOLCHAIN.md).
 
 
 ## References

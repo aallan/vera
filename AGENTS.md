@@ -49,7 +49,12 @@ vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
+vera builtins [--json]            # List the built-in function registry (no file needed)
+vera effects [--json]             # List the effect and ability registry (no file needed)
+vera errors [--json]              # List the diagnostic error-code registry E001–E702 (no file needed)
 ```
+
+See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
 
 ### The language server: proof deltas without re-running the CLI
 

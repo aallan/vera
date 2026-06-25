@@ -172,6 +172,9 @@ vera verify --json file.vera              # JSON diagnostics for agent feedback 
 vera check --explain-slots file.vera     # show slot resolution table (which @T.n maps to which param)
 vera lsp                                 # serve the Language Server Protocol over stdio (see LSP_SERVER.md)
 vera version                             # print the installed version
+vera builtins --json                     # list the built-in function registry (no file needed)
+vera effects --json                      # list the effect and ability registry (no file needed)
+vera errors --json                       # list the diagnostic error-code registry E001–E702 (no file needed)
 ```
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes for the pure-language surface (arithmetic, ADTs, pattern matching, closures, contracts, effects-as-host-imports, etc.).  The IO surface is the documented exception: terminal Vera programs that rely on `IO.sleep` for animation pacing or ANSI escape codes for cursor control compile cleanly to `--target browser` but render the escapes as literal text and freeze the tab while sleeping — the browser target expects Vera to be the pure simulation core and JavaScript to drive timing and rendering ([SKILL.md §Browser compilation](SKILL.md#browser-compilation) has the recommended pattern).
@@ -191,6 +194,7 @@ Vera ships with these files for LLM agents:
 - [`AGENTS.md`](AGENTS.md) — Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.
 - [`CLAUDE.md`](CLAUDE.md) — Project orientation for Claude Code. Key commands, layout, workflows, and invariants.
 - [`DE_BRUIJN.md`](DE_BRUIJN.md) — Deep dive into Vera's typed slot references: the academic background, worked examples, the commutative-operations trap, and connections to proof assistants and LLM code-generation research.
+- [`TOOLCHAIN.md`](TOOLCHAIN.md) — The CLI cookbook: driving the toolchain to write, verify, test, run, and debug Vera, plus the `builtins`/`effects`/`errors` introspection commands.
 
 **Claude Code** discovers `SKILL.md` and `CLAUDE.md` automatically in this repo. For other projects, install the skill manually:
 
@@ -211,7 +215,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.177 — 1,400+ commits, 177 releases, 4,727 tests, 91% code coverage, 92 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.178 — 1,400+ commits, 178 releases, 4,897 tests, 91% code coverage, 92 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
