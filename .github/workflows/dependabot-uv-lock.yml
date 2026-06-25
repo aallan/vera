@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - name: Check out PR branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The `ref` input is parsed by actions/checkout itself, not
           # interpreted as shell, so it's safe to pass directly here.
