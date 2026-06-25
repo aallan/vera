@@ -178,7 +178,7 @@ call rather than a hand-maintained number that drifts.
 
 ```bash
 vera builtins --json     # every built-in function   {schema, items[...]}
-vera effects  --json     # every effect *and* ability (kind-tagged)
+vera effects  --json     # every effect (incl. parameterised Exn<T>) and ability, kind-tagged
 vera errors   --json     # every diagnostic + warning code, with its phase
 ```
 
@@ -209,9 +209,10 @@ vera errors --json | jq '.items[] | select(.code == "E527")'
 vera errors --json | jq '.items[] | select(.phase == "verify") | .code'
 ```
 
-Because these read the live registries, a test that asserts
-`len(builtins --json) == <doc number>` will catch doc drift the moment it
-happens — which is the whole point.
+Because these are sourced from the live registries (`effects` additionally
+surfaces the parameterised `Exn<T>`, recognised specially by the compiler), a
+test that asserts `len(builtins --json) == <doc number>` will catch doc drift
+the moment it happens — which is the whole point.
 
 ---
 
