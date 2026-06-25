@@ -3998,6 +3998,12 @@ private fn sum(@List<Int> -> @Int)
           (`f64.div` by zero is inf/NaN, not a trap) instead of recording a
           bogus Tier-3 `div_zero` — it was the corpus's only tier3 div_zero.
           -1 T3, -1 total.
+
+        #801 + #800: contract-position divisions now carry the same div_zero
+        obligation as body divisions, and body `assert(P)` predicates now carry
+        a Tier-1 proof obligation.  One safe (guarded) contract division and
+        one provable body assert in the corpus each discharge to Tier 1
+        (+2 T1, +2 total over the pre-fix baseline of 263 / 294).
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -4010,9 +4016,9 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 263, f"Expected 263 T1, got {t1}"
+        assert t1 == 265, f"Expected 265 T1, got {t1}"
         assert t3 == 31, f"Expected 31 T3, got {t3}"
-        assert total == 294, f"Expected 294 total, got {total}"
+        assert total == 296, f"Expected 296 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
