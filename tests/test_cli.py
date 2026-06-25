@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
+from vera.cli import cmd_ast, cmd_builtins, cmd_check, cmd_compile, cmd_effects, cmd_errors, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
+from vera.environment import TypeEnv
+from vera.errors import ERROR_CODES
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
@@ -52,6 +54,107 @@ private fn bad(@Int -> @Bool)
 def _syntax_error_source() -> str:
     """A .vera program that fails to parse."""
     return "fn broken(@@@ -> ???) {{"
+
+
+# =====================================================================
+# cmd_errors / cmd_builtins / cmd_effects — introspection (#539)
+# =====================================================================
+
+
+class TestCmdErrors:
+    def test_json_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_errors(as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema"] == "vera-errors/1"
+        assert len(data["items"]) == len(ERROR_CODES)
+
+    def test_text_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_errors()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "E001" in out
+        assert "Missing contract block" in out
+
+
+class TestMainErrors:
+    def test_dispatch_errors_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "errors", "--json"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["schema"] == "vera-errors/1"
+        assert len(data["items"]) == len(ERROR_CODES)
+
+    def test_dispatch_errors_text(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "errors"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "E526" in result.stdout
+
+
+class TestCmdBuiltins:
+    def test_json_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_builtins(as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema"] == "vera-builtins/1"
+        assert len(data["items"]) == len(TypeEnv().functions)
+
+    def test_text_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_builtins()
+        assert rc == 0
+        assert "string_length" in capsys.readouterr().out
+
+
+class TestMainBuiltins:
+    def test_dispatch_builtins_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "builtins", "--json"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["schema"] == "vera-builtins/1"
+        assert len(data["items"]) == len(TypeEnv().functions)
+
+
+class TestCmdEffects:
+    def test_json_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_effects(as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema"] == "vera-effects/1"
+        env = TypeEnv()
+        assert len(data["items"]) == len(env.effects) + len(env.abilities)
+
+    def test_text_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_effects()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "IO" in out
+        assert "print" in out  # ops are rendered, not just names
+
+
+class TestMainEffects:
+    def test_dispatch_effects_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "effects", "--json"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["schema"] == "vera-effects/1"
+        assert any(i["name"] == "IO" and i["kind"] == "effect" for i in data["items"])
+        assert any(i["name"] == "Eq" and i["kind"] == "ability" for i in data["items"])
 
 
 # =====================================================================

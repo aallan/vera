@@ -24,6 +24,10 @@ Usage:
     vera fmt       <file.vera>              Format to canonical form (stdout)
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
+    vera builtins  [--json]                 List the built-in function registry
+    vera effects   [--json]                 List the effect and ability registry
+    vera errors    [--json]                 List the diagnostic error-code registry
+    vera lsp                                Serve the LSP over stdio (needs [lsp] extra)
     vera version                            Print the installed version
     vera --version                          Same as vera version
     vera -V                                 Same as vera version
@@ -34,10 +38,12 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 from lark import Tree
 from vera.codegen.api import WasmTrapError
 from vera.errors import VeraError
+from vera.introspect import builtins_payload, effects_payload, errors_payload
 from vera.parser import parse
 from vera.transform import transform
 
@@ -1132,6 +1138,9 @@ Commands:
     fmt [--write|--check] Format a .vera file to canonical form
     lsp                  Serve the Language Server Protocol over stdio
                          (needs the [lsp] extra: pip install -e ".[lsp]")
+    builtins [--json]    List the built-in function registry
+    effects [--json]     List the effect and ability registry
+    errors [--json]      List the diagnostic error-code registry (E001–E702)
 
 Options:
     --json               Output machine-readable JSON diagnostics
@@ -1182,6 +1191,55 @@ def cmd_lsp() -> int:
     return 0
 
 
+def _render_cell(value: object) -> str:
+    """Render one introspection field for the text table.
+
+    List-valued fields (``ops``, ``type_params``) become comma-joined;
+    everything else is ``str()``.
+    """
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value)
+    return str(value)
+
+
+def _emit_introspection(
+    payload: dict[str, object], as_json: bool, columns: tuple[str, ...]
+) -> int:
+    """Print a registry introspection payload (#539).
+
+    With ``--json`` the full ``{schema, items}`` envelope is emitted as pretty
+    JSON — the machine surface, parallel to ``check``/``verify --json``.
+    Otherwise the items are rendered as an aligned text table over *columns*,
+    the human default.
+    """
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+    items = cast("list[dict[str, object]]", payload["items"])
+    widths = [max((len(_render_cell(it.get(c, ""))) for it in items), default=0) for c in columns]
+    for it in items:
+        row = "  ".join(
+            f"{_render_cell(it.get(c, '')):<{widths[idx]}}" for idx, c in enumerate(columns)
+        )
+        print(row.rstrip())
+    return 0
+
+
+def cmd_builtins(as_json: bool = False) -> int:
+    """List the built-in function registry — ``vera builtins`` (#539)."""
+    return _emit_introspection(builtins_payload(), as_json, ("name", "module", "kind"))
+
+
+def cmd_effects(as_json: bool = False) -> int:
+    """List the effect and ability registry — ``vera effects`` (#539)."""
+    return _emit_introspection(effects_payload(), as_json, ("name", "kind", "ops"))
+
+
+def cmd_errors(as_json: bool = False) -> int:
+    """List the diagnostic error-code registry — ``vera errors`` (#539)."""
+    return _emit_introspection(errors_payload(), as_json, ("code", "phase", "title"))
+
+
 def main() -> None:
     args = sys.argv[1:]
 
@@ -1196,6 +1254,16 @@ def main() -> None:
     # until the client disconnects (#222 Phase C).
     if args[0] == "lsp":
         sys.exit(cmd_lsp())
+
+    # `builtins`/`effects`/`errors` take no file argument — they enumerate the
+    # compiler's own registries as JSON or a text table (#539).
+    if args[0] in ("builtins", "effects", "errors"):
+        as_json = "--json" in args
+        if args[0] == "builtins":
+            sys.exit(cmd_builtins(as_json=as_json))
+        if args[0] == "effects":
+            sys.exit(cmd_effects(as_json=as_json))
+        sys.exit(cmd_errors(as_json=as_json))
 
     if len(args) < 2:
         print(USAGE, file=sys.stderr)
