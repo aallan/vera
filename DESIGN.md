@@ -22,14 +22,14 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | References | [`@T.n` typed De Bruijn indices](DE_BRUIJN.md) | Eliminates naming coherence errors; indices are locally determinable from types alone |
 | Contracts | Mandatory `requires`/`ensures`/`effects` on all functions | Programs must be checkable; contracts are the machine-verifiable specification |
 | Verification | Z3 static (Tier 1) → runtime fallback (Tier 3); Tier 2 (Z3-guided) is specified but not yet implemented | Maximises static guarantees; degrades gracefully where SMT is undecidable |
-| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `State`, `Exn`, `Async`, `Inference`) | All state and side effects explicit; effects are typed, trackable, and handleable |
+| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `State`, `Async`, `Inference`, `Random`, `Diverge` — the registry, per `vera effects --json`; plus the parameterised exception effect `Exn<T>`) | All state and side effects explicit; effects are typed, trackable, and handleable |
 | Error handling | `Result<T,E>` ADTs for expected errors; `Exn<T>` algebraic effect for exceptions | Errors are values; `match` enforces handling every case; `Exn<T>` is handleable like any other effect |
 | Inference | `Inference.complete` as an algebraic effect | LLM calls are typed, contract-verifiable, mockable via `handle[Inference]`, and explicit in signatures |
 | Data types | Algebraic data types + exhaustive `match` | No classes, no inheritance; compiler enforces every case is handled |
 | Polymorphism | Monomorphized generics (`forall<T where Eq<T>>`) | No runtime dispatch; four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`); types fully specialised at compile time |
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
-| Standard library | 137 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
+| Standard library | 164 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
 | Modules | `module`/`import` with explicit re-exports | Programs split across files; `vera check` resolves the module graph |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |

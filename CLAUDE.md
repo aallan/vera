@@ -44,6 +44,9 @@ vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera version                      # Print the installed version (also --version, -V)
+vera builtins [--json]            # List the built-in function registry (no file needed)
+vera effects [--json]             # List the effect and ability registry (no file needed)
+vera errors [--json]              # List the diagnostic error-code registry E001–E702 (no file needed)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
@@ -70,6 +73,8 @@ python scripts/check_limitations_sync.py --check-states # Also verify issues are
 python scripts/fix_allowlists.py      # Preview stale allowlist line numbers
 python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 ```
+
+See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
 
 ## Project layout
 

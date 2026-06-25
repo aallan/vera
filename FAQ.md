@@ -243,7 +243,7 @@ pip install -e .
 vera run examples/hello_world.vera
 ```
 
-For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md). It's the complete language reference, designed to be dropped into a context window.
+For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md). It's the complete language reference, designed to be dropped into a context window. For driving the command-line toolchain itself — checking, verifying, testing, running, and debugging Vera, plus the `builtins`/`effects`/`errors` introspection commands — see the CLI cookbook, [TOOLCHAIN.md](TOOLCHAIN.md).
 
 
 ## References
