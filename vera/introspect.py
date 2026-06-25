@@ -74,6 +74,21 @@ def builtins_payload() -> dict[str, object]:
     return {"schema": "vera-builtins/1", "items": items}
 
 
+# Exn<T> is a parameterised effect recognised specially by the compiler
+# (handle[Exn<E>] in codegen — see vera/wasm/calls_handlers.py), not a fixed
+# entry in TypeEnv().effects. It is listed here so `vera effects --json` surfaces
+# it for discoverability — the one effect not read from the live registry.
+_PARAMETERISED_EFFECTS: list[dict[str, object]] = [
+    {
+        "name": "Exn",
+        "kind": "effect",
+        "type_params": ["T"],
+        "ops": ["throw"],
+        "since": SINCE.get("Exn"),
+    },
+]
+
+
 def effects_payload() -> dict[str, object]:
     """Enumerate the algebraic effect *and* ability registries as ``{schema, items}``.
 
@@ -97,6 +112,7 @@ def effects_payload() -> dict[str, object]:
                 "since": SINCE.get(name),
             }
         )
+    items.extend(_PARAMETERISED_EFFECTS)
     for name in sorted(env.abilities):
         ability = env.abilities[name]
         items.append(

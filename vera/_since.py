@@ -23,6 +23,7 @@ SINCE: dict[str, str] = {
     # --- Effects ---
     "Async": "0.0.82",
     "Diverge": "0.0.49",
+    "Exn": "0.0.62",
     "Http": "0.0.99",
     "IO": "0.0.5",
     "Inference": "0.0.101",

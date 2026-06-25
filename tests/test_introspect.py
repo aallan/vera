@@ -117,10 +117,23 @@ class TestEffectsPayload:
         assert p["schema"] == "vera-effects/1"
         assert isinstance(p["items"], list)
 
-    def test_count_is_effects_plus_abilities(self) -> None:
-        """Both the 7 effects and the 4 abilities are enumerated (#539)."""
+    def test_count_registry_plus_parameterised(self) -> None:
+        """The registry effects + abilities, plus the parameterised Exn<T> (#539)."""
+        from vera.introspect import _PARAMETERISED_EFFECTS
+
         env = TypeEnv()
-        assert len(effects_payload()["items"]) == len(env.effects) + len(env.abilities)
+        expected = len(env.effects) + len(_PARAMETERISED_EFFECTS) + len(env.abilities)
+        assert len(effects_payload()["items"]) == expected
+
+    def test_parameterised_exn_effect(self) -> None:
+        """Exn<T> is special-cased (codegen-recognised via handle[Exn<E>], not in
+        env.effects) but surfaced for discoverability."""
+        by_name = {i["name"]: i for i in effects_payload()["items"]}
+        exn = by_name["Exn"]
+        assert exn["kind"] == "effect"
+        assert exn["type_params"] == ["T"]
+        assert exn["ops"] == ["throw"]
+        assert exn["since"] == "0.0.62"
 
     def test_io_effect_ops(self) -> None:
         by_name = {i["name"]: i for i in effects_payload()["items"]}

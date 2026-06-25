@@ -132,8 +132,9 @@ class TestCmdEffects:
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["schema"] == "vera-effects/1"
+        from vera.introspect import _PARAMETERISED_EFFECTS
         env = TypeEnv()
-        assert len(data["items"]) == len(env.effects) + len(env.abilities)
+        assert len(data["items"]) == len(env.effects) + len(_PARAMETERISED_EFFECTS) + len(env.abilities)
 
     def test_text_default(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = cmd_effects()
