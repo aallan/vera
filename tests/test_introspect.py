@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import pytest
 
+from vera._since import SINCE
 from vera.environment import TypeEnv
 from vera.errors import ERROR_CODES
-from vera.introspect import builtins_payload, effects_payload, errors_payload
+from vera.introspect import _error_phase, builtins_payload, effects_payload, errors_payload
 
 
 class TestErrorsPayload:
@@ -69,6 +70,12 @@ class TestErrorsPayload:
         by_code = {i["code"]: i for i in errors_payload()["items"]}
         assert by_code["E001"]["since"] is None
 
+    def test_error_phase_fallback(self) -> None:
+        # No E4xx/E8xx codes exist today, so the registry never hits the fallback;
+        # pin it directly so a refactor that drops the default is caught.
+        assert _error_phase("E999") == "unknown"
+        assert _error_phase("E702") == "test"
+
 
 class TestBuiltinsPayload:
     def test_envelope(self) -> None:
@@ -109,6 +116,14 @@ class TestBuiltinsPayload:
         without a `since` entry fails here — the maintenance forcing-function."""
         missing = sorted(i["name"] for i in builtins_payload()["items"] if i["since"] is None)
         assert missing == [], f"built-ins missing a `since` in vera/_since.py: {missing}"
+
+    def test_since_no_orphan_keys(self) -> None:
+        """Every SINCE key is a live registry name (error codes excepted — SINCE
+        omits them) — catches an entry orphaned by a rename or removal."""
+        env = TypeEnv()
+        live = set(env.functions) | set(env.effects) | set(env.abilities) | {"Exn"}
+        orphans = sorted(k for k in SINCE if k not in live)
+        assert orphans == [], orphans
 
 
 class TestEffectsPayload:
@@ -169,3 +184,9 @@ class TestEffectsPayload:
     def test_since_covers_every_effect_and_ability(self) -> None:
         missing = sorted(i["name"] for i in effects_payload()["items"] if i["since"] is None)
         assert missing == [], f"effects/abilities missing a `since`: {missing}"
+
+    def test_names_unique(self) -> None:
+        """No effect/ability is listed twice — guards the parameterised-effect
+        merge against a double-listing if Exn ever enters env.effects."""
+        names = [i["name"] for i in effects_payload()["items"]]
+        assert len(names) == len(set(names)), names

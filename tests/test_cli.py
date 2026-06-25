@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_builtins, cmd_check, cmd_compile, cmd_effects, cmd_errors, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
+from vera.cli import _render_cell, cmd_ast, cmd_builtins, cmd_check, cmd_compile, cmd_effects, cmd_errors, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
 from vera.environment import TypeEnv
 from vera.errors import ERROR_CODES
 
@@ -75,6 +75,9 @@ class TestCmdErrors:
         out = capsys.readouterr().out
         assert "E001" in out
         assert "Missing contract block" in out
+        # Structural: code, phase and title co-locate on the one E001 row.
+        e001_line = next(line for line in out.splitlines() if line.startswith("E001"))
+        assert "parse" in e001_line and "Missing contract block" in e001_line
 
 
 class TestMainErrors:
@@ -142,6 +145,9 @@ class TestCmdEffects:
         out = capsys.readouterr().out
         assert "IO" in out
         assert "print" in out  # ops are rendered, not just names
+        # Structural: the IO row co-locates its kind and (comma-joined) ops.
+        io_line = next(line for line in out.splitlines() if line.startswith("IO"))
+        assert "effect" in io_line and "print" in io_line and ", " in io_line
 
 
 class TestMainEffects:
@@ -156,6 +162,18 @@ class TestMainEffects:
         assert data["schema"] == "vera-effects/1"
         assert any(i["name"] == "IO" and i["kind"] == "effect" for i in data["items"])
         assert any(i["name"] == "Eq" and i["kind"] == "ability" for i in data["items"])
+
+
+class TestRenderCell:
+    def test_list_comma_joined(self) -> None:
+        assert _render_cell(["get", "post"]) == "get, post"
+
+    def test_empty_list(self) -> None:
+        assert _render_cell([]) == ""
+
+    def test_scalar_str(self) -> None:
+        assert _render_cell("x") == "x"
+        assert _render_cell(42) == "42"
 
 
 # =====================================================================

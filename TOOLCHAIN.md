@@ -179,7 +179,7 @@ call rather than a hand-maintained number that drifts.
 ```bash
 vera builtins --json     # every built-in function   {schema, items[...]}
 vera effects  --json     # every effect *and* ability (kind-tagged)
-vera errors   --json     # every diagnostic code E001–E702, with its phase
+vera errors   --json     # every diagnostic + warning code, with its phase
 ```
 
 Each emits a uniform `{"schema": "...", "items": [...]}` envelope (the `schema`

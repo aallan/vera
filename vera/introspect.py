@@ -112,7 +112,9 @@ def effects_payload() -> dict[str, object]:
                 "since": SINCE.get(name),
             }
         )
-    items.extend(_PARAMETERISED_EFFECTS)
+    # Skip any parameterised effect that has since become a real registry entry,
+    # so it can never be listed twice (none collide today — Exn is codegen-only).
+    items.extend(e for e in _PARAMETERISED_EFFECTS if e["name"] not in env.effects)
     for name in sorted(env.abilities):
         ability = env.abilities[name]
         items.append(
