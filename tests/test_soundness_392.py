@@ -423,3 +423,65 @@ public fn f(@Int -> @Pos)
         assert refine_binds and all(
             o.status == "verified" for o in refine_binds
         ), [(o.kind, o.status) for o in result.obligations]
+
+    def test_div_zero_discharged_by_prior_assert(self) -> None:
+        # A prior `assert(@Int.0 != 0)` discharges a later division's div_zero
+        # obligation (#680/#801) — the most user-facing forward discharge: it
+        # removes a false E526 on the guard-then-divide idiom.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 != 0); 100 / @Int.0 }
+""")
+        divs = [o for o in result.obligations if o.kind == "div_zero"]
+        assert len(divs) == 1 and divs[0].status == "verified", [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+
+    def test_within_match_arm_assert_discharges_later_assert(self) -> None:
+        # Match arms reach the #804 logic through a route distinct from if/else
+        # (the nat-binding walk shares the parent `assumptions` to each arm; the
+        # primitive-op walk scopes via the per-block `del`).  Within an arm, the
+        # first assert still discharges the second.
+        result = _verify("""
+private data C { Red, Green }
+public fn f(@C, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @C.0 { Red -> { assert(@Int.0 > 50); assert(@Int.0 > 10); @Int.0 }, Green -> @Int.0 } }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "verified"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_match_arm_assert_does_not_leak_across_arms(self) -> None:
+        # Soundness guard (green pre- AND post-fix): a fact asserted in one match
+        # arm must NOT discharge a sibling arm's identical assert — match-arm
+        # facts are arm-local, mirroring the if/else cross-branch guard.
+        result = _verify("""
+private data C { Red, Green }
+public fn f(@C, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @C.0 { Red -> { assert(@Int.0 > 50); @Int.0 }, Green -> { assert(@Int.0 > 50); @Int.0 } } }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_untranslatable_assert_between_does_not_break_discharge(self) -> None:
+        # The `_assumed_block_fact` None-return path: an untranslatable assert
+        # (Map membership, uninterpreted in Z3) between a guarding assert and a
+        # dependent one adds no fact but does not corrupt the path conditions —
+        # the dependent assert still discharges from the earlier translatable one.
+        result = _verify("""
+public fn f(@Map<Int, Int>, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 10); assert(map_contains(@Map<Int, Int>.0, 5)); assert(@Int.0 > 5); @Int.0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "tier3", "verified"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
