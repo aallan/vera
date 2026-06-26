@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Verifier soundness: signed division/modulo, body asserts, and contract-position divisions** (batch 1 of the [#392](https://github.com/aallan/vera/issues/392) `smt.py` soundness audit).  Three cases where `vera verify` proved a contract the runtime then rejected — each an implementation-vs-spec divergence the audit surfaced:
+  - The verifier translated signed `/` and `%` to Z3's **Euclidean** `div`/`mod`, proving `(-7) / 2 == -4` and `(-7) % 2 == 1`, while the runtime (`i64.div_s` / `i64.rem_s`, truncating toward zero) computes `-3` and `-1`.  `smt.py` now uses a sign-aware truncated encoding for integer operands ([#799](https://github.com/aallan/vera/issues/799)).
+  - A body `assert(P)` was ignored by the verifier — a provably-false assertion passed `vera verify` — contradicting spec §6.2.5 ("the compiler verifies this holds").  It now carries a Tier-1 obligation discharged by a two-check: prove `P` → verified; else prove `¬P` (always false) → the new loud `E507`; else Tier 3, guarded at runtime by the §11.14.1 `unreachable` trap ([#800](https://github.com/aallan/vera/issues/800)).
+  - The divide-by-zero obligation ([#680](https://github.com/aallan/vera/issues/680)) covered only body divisions; a division in a `requires`/`ensures` predicate — evaluated eagerly, with no short-circuit — was silently proved.  The primitive-op walk now runs over contract predicates too, so an unguarded contract divisor that can be zero is a loud `E526` instead of a runtime trap on a "verified" program ([#801](https://github.com/aallan/vera/issues/801)).
+  - Adds the `E507` diagnostic ("Assertion verified false") and the `assert` obligation kind.  The audit's three larger findings — Float64-as-Real ([#797](https://github.com/aallan/vera/issues/797)), integer overflow ([#798](https://github.com/aallan/vera/issues/798)), and `string_length` byte-vs-codepoint ([#802](https://github.com/aallan/vera/issues/802)) — remain open.
+
 ## [0.0.178] - 2026-06-25
 
 ### Added

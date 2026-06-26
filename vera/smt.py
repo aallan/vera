@@ -286,7 +286,7 @@ class SmtContext:
         self._vars[name] = v
         return v
 
-    def set_result_var(self, var: z3.ExprRef) -> None:
+    def set_result_var(self, var: z3.ExprRef | None) -> None:
         """Set the variable used for @T.result references."""
         self._result_var = var
 
@@ -683,8 +683,18 @@ class SmtContext:
         if op == ast.BinOp.MUL:
             return left * right
         if op == ast.BinOp.DIV:
+            # #799: Vera `/` is `i64.div_s` (truncates toward zero); Z3's
+            # integer `/` is Euclidean (floors), so they disagree on a negative
+            # dividend.  Use a sign-aware truncated encoding for integer
+            # operands; Real (Float64) division is unaffected.
+            if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
+                return self._trunc_div(left, right)
             return left / right
         if op == ast.BinOp.MOD:
+            # #799: Vera `%` is `i64.rem_s` (remainder takes the dividend's
+            # sign); Z3's integer `%` is Euclidean (non-negative remainder).
+            if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
+                return self._trunc_mod(left, right)
             return left % right
 
         # Comparison
@@ -709,6 +719,33 @@ class SmtContext:
             return z3.Implies(left, right)
 
         return None  # pragma: no cover
+
+    @staticmethod
+    def _trunc_div(a: z3.ExprRef, b: z3.ExprRef) -> z3.ExprRef:
+        """Truncated (round-toward-zero) integer division — Vera's ``i64.div_s``.
+
+        Z3's ``a / b`` on ``IntSort`` is Euclidean (floors for ``b > 0``); Vera's
+        ``/`` truncates toward zero, so they diverge on a negative dividend
+        (``-7 / 2`` is ``-3``, not ``-4``).  Compute the magnitude with Euclidean
+        division on absolute values — where the two agree — and reapply the
+        sign: the quotient is negative iff exactly one operand is negative
+        (#799).  ``b == 0`` stays uninterpreted, exactly as before, so the
+        ``div_zero`` obligation (#680) remains the trap guard.
+        """
+        abs_a = z3.If(a >= 0, a, -a)
+        abs_b = z3.If(b >= 0, b, -b)
+        mag = abs_a / abs_b
+        return z3.If(z3.Xor(a < 0, b < 0), -mag, mag)
+
+    @staticmethod
+    def _trunc_mod(a: z3.ExprRef, b: z3.ExprRef) -> z3.ExprRef:
+        """Truncated remainder — Vera's ``i64.rem_s``, where the remainder takes
+        the dividend's sign (``-7 % 2`` is ``-1``, not Z3's Euclidean ``1``)
+        (#799)."""
+        abs_a = z3.If(a >= 0, a, -a)
+        abs_b = z3.If(b >= 0, b, -b)
+        r = abs_a % abs_b
+        return z3.If(a < 0, -r, r)
 
     def _translate_index_expr(
         self, expr: ast.IndexExpr, env: SlotEnv,

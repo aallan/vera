@@ -1340,6 +1340,10 @@ class ContractVerifier:
         # asserted into the solver (step 4) and available to every binding-site
         # and return-position discharge below.
         assumptions: list[object] = list(refined_param_assumptions)
+        # CR review (#803): the requires-division walk below is the first
+        # obligation walk, so reset the opaque-shadow set here (the body walk
+        # resets it again at its own start).
+        self._opaque_shadows = []
         for contract in decl.contracts:
             if isinstance(contract, ast.Requires):
                 self.summary.total += 1
@@ -1349,6 +1353,21 @@ class ContractVerifier:
                         decl.name, "requires", contract, "verified",
                     )
                     continue
+                # CR review (#803, outside-diff): walk for nested primitive-op
+                # obligations FIRST — a division / index nested inside an
+                # UNTRANSLATABLE predicate (`requires(map_contains(m, 10 /
+                # @Int.0))`) must still be obligated, mirroring the body walk,
+                # which descends regardless of translatability.  A requires
+                # predicate can rely only on the PREFIX of earlier requires (the
+                # runtime precondition guard evaluates them left-to-right, so a
+                # later requires is not yet established when an earlier one is
+                # checked — `requires(10 / @Int.0 > 0)` before `requires(@Int.0
+                # != 0)` must NOT discharge the division).  `assumptions` here is
+                # exactly that prefix (refined params + requires[0..i-1]); the
+                # requires are not yet asserted into the solver (step 4 below).
+                self._walk_for_primitive_op_obligations(
+                    decl, contract.expr, smt, slot_env, assumptions,
+                )
                 z3_pre = smt.translate_expr(contract.expr, slot_env)
                 if z3_pre is None:
                     self.summary.tier3_runtime += 1
@@ -1423,6 +1442,29 @@ class ContractVerifier:
             self._walk_for_nat_binding_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
             )
+
+        # 5.8. #801: divisions / moduli / array indexes inside an ENSURES
+        #      predicate trap at runtime too (contracts evaluate eagerly, no
+        #      short-circuit), so they carry the same primitive-op safety
+        #      obligations as the body (#680).  An ensures runs after the body,
+        #      where every requires holds, so it uses the full assumption set
+        #      and binds `@result` to the body result.  (Requires predicates are
+        #      walked earlier, in the precondition-collection loop, with prefix
+        #      semantics — CR #803.)  Reset opaque shadows: an ensures predicate
+        #      introduces no let/destructure binders, so the body walk's shadows
+        #      must not carry into it.
+        self._opaque_shadows = []
+        for contract in decl.contracts:
+            if not isinstance(contract, ast.Ensures):
+                continue
+            if body_expr is not None:
+                smt.set_result_var(body_expr)
+            else:
+                smt.set_result_var(None)
+            self._walk_for_primitive_op_obligations(
+                decl, contract.expr, smt, slot_env, assumptions,
+            )
+        smt.set_result_var(None)
 
         # 6. Report any call-site precondition violations
         for v in smt.drain_call_violations():
@@ -1887,16 +1929,48 @@ class ContractVerifier:
         if/match branches), so :py:meth:`SmtContext.check_valid` picks
         them up automatically when discharging each obligation.
 
-        The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
-        MatchExpr arm bodies, IndexExpr, ArrayLit elements, Assert / Assume
-        conditions, InterpolatedString parts, and the argument lists of
-        FnCall / ModuleCall / ConstructorCall / QualifiedCall.  Closure /
-        quantifier bodies
-        (AnonFn / ForallExpr / ExistsExpr) and handler clause / body
-        expressions bind fresh slots and are deliberately not walked — an
-        op there is left to the codegen runtime trap rather than statically
-        obligated (#779; closure-captured array bounds also need the Tier 2
-        work in #427).
+        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
+        # check_walker_coverage.py enforces completeness.  This walker descends
+        # the function body — and, since #801, each contract predicate — to
+        # every nested trapping primitive op.)
+        #
+        # Handled (explicit isinstance branch — check and/or recurse):
+        #   BinaryExpr         → div/mod by-zero check (E526); recurse operands
+        #   UnaryExpr          → recurse operand
+        #   IndexExpr          → array-index bounds check (E527); recurse
+        #   ArrayLit           → recurse elements
+        #   AssertExpr         → assert obligation (#800) + recurse condition
+        #   AssumeExpr         → recurse condition
+        #   IfExpr             → recurse cond / then / else
+        #   Block              → recurse let RHSes, statements, trailing expr
+        #   MatchExpr          → recurse scrutinee + arm bodies
+        #   FnCall             → recurse args
+        #   ModuleCall         → recurse args
+        #   ConstructorCall    → recurse args
+        #   QualifiedCall      → recurse args (effect operation)
+        #   InterpolatedString → recurse interpolated parts
+        #
+        # Leaf — no nested operation, walk terminates:
+        #   IntLit             → literal
+        #   BoolLit            → literal
+        #   StringLit          → literal
+        #   FloatLit           → literal
+        #   UnitLit            → literal
+        #   SlotRef            → bound slot, no sub-expression
+        #   ResultRef          → @result reference, no sub-expression
+        #   NullaryConstructor → nullary ADT tag, no sub-expression
+        #
+        # Intentionally not walked — binds fresh slots / out of fragment, so a
+        # primitive op there is left to the codegen runtime trap (#779, #427):
+        #   AnonFn             → closure body
+        #   ForallExpr         → quantifier body
+        #   ExistsExpr         → quantifier body
+        #   HandleExpr         → handler clause / body
+        #   OldExpr            → contract state operator
+        #   NewExpr            → contract state operator
+        #
+        # Cannot occur — rejected before this walk:
+        #   HoleExpr           → check time rejects
         """
         if isinstance(expr, ast.FnCall):
             for arg in expr.args:
@@ -2201,9 +2275,21 @@ class ContractVerifier:
                 )
             return
 
-        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
-            # The asserted / assumed condition can host a trapping op
-            # (`assert(@Int.0 / @Int.1 > 0)`) — same scope, recurse (#680 review).
+        if isinstance(expr, ast.AssertExpr):
+            # #800: the asserted predicate is itself a Tier-1 proof obligation
+            # (spec §6.2.5) — prove it here.  Also recurse into it for any
+            # trapping op it hosts (`assert(@Int.0 / @Int.1 > 0)`).
+            self._check_assert_obligation(
+                decl, expr, smt, slot_env, assumptions,
+            )
+            self._walk_for_primitive_op_obligations(
+                decl, expr.expr, smt, slot_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.AssumeExpr):
+            # An assumed condition is taken on trust (no proof obligation);
+            # still recurse for any trapping op inside it (#680 review).
             self._walk_for_primitive_op_obligations(
                 decl, expr.expr, smt, slot_env, assumptions,
             )
@@ -3035,6 +3121,57 @@ class ContractVerifier:
             self._record_obligation(
                 decl.name, "div_zero", expr, "timeout",
             )
+
+    def _check_assert_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.AssertExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the obligation that a body ``assert(P)`` holds (#800, spec
+        §6.2.5).
+
+        Two-check, mirroring the index-bounds discharge (#680): prove ``P`` →
+        ``verified``; else prove ``¬P`` (``P`` is false in every reachable
+        state, so the assert always traps) → loud E507; else Tier 3 (the
+        §11.14.1 ``unreachable`` trap is the runtime guard).  Path conditions
+        from enclosing ``if`` / ``match`` branches live in
+        ``smt._path_conditions`` and are picked up by ``check_valid``, so a
+        branch-guarded assert discharges from its guard.  An untranslatable
+        predicate falls to Tier 3, as does solver `unknown` on either check —
+        so this kind never records `timeout` (both fold into `tier3_runtime`).
+        """
+        pred = smt.translate_expr(expr.expr, slot_env)
+        if pred is None or pred.sort() != z3.BoolSort():
+            # Untranslatable / non-Bool predicate — the runtime trap is the
+            # only guarantee.
+            self.summary.total += 1
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "assert", expr, "tier3")
+            return
+        self.summary.total += 1
+        result = smt.check_valid(pred, list(assumptions))
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "assert", expr, "verified")
+            return
+        # Not provable.  Is it provably FALSE (the assert can never hold)?
+        if smt.check_valid(
+            z3.Not(pred), list(assumptions),
+        ).status == "verified":
+            self.summary.total -= 1  # an error, not a counted obligation
+            self._record_obligation(
+                decl.name, "assert", expr, "violated",
+                error_code="E507",
+                counterexample=result.counterexample,
+            )
+            self._report_assert_violation(decl, expr, result.counterexample)
+            return
+        # Sometimes true, sometimes false (or solver unknown) → Tier 3.
+        self.summary.tier3_runtime += 1
+        self._record_obligation(decl.name, "assert", expr, "tier3")
 
     def _check_index_bounds_obligation(
         self,
@@ -4156,6 +4293,45 @@ class ContractVerifier:
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
             ),
             error_code="E526",
+        )
+
+    def _report_assert_violation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.AssertExpr,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit E507 for a body assert the solver proved can never hold (#800)."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        pred = ast.format_expr(expr.expr)
+        description = (
+            f"Assertion `assert({pred})` in '{decl.name}' is always false."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            expr,
+            description,
+            rationale=(
+                "A body `assert(P)` carries a Tier-1 proof obligation that `P` "
+                "holds (spec §6.2.5).  The SMT solver proved `P` is false for "
+                "every reachable state, so the assert always traps "
+                "(`unreachable`) at runtime."
+            ),
+            fix=(
+                "Correct or weaken the assertion, or establish the missing "
+                "precondition / prior `assert` that makes `P` provable."
+            ),
+            spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
+            error_code="E507",
         )
 
     def _report_index_oob(
