@@ -187,6 +187,20 @@ public fn f(@Int -> @Int)
             (o.kind, o.status) for o in result.obligations
         ]
 
+    def test_untranslatable_assert_predicate_falls_to_tier3(self) -> None:
+        # An assert whose predicate the SMT layer cannot translate (here a Map
+        # membership, uninterpreted in Z3) hits the early `pred is None` branch
+        # of _check_assert_obligation and falls to tier3 (#800).
+        result = _verify("""
+public fn f(@Map<Int, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(map_contains(@Map<Int, Int>.0, 5)); 0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert len(asserts) == 1 and asserts[0].status == "tier3", [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
 
 # =====================================================================
 # #801 — divisions in contract predicates get a div_zero obligation
@@ -242,3 +256,31 @@ public fn f(@Int -> @Int)
 """)
         divs = [o for o in result.obligations if o.kind == "div_zero"]
         assert len(divs) >= 1, [(o.kind, o.status) for o in result.obligations]
+
+    def test_later_requires_does_not_discharge_earlier_division(self) -> None:
+        # CR #803: a requires division relies only on EARLIER requires.  A
+        # *later* `@Int.0 != 0` must NOT discharge an earlier `10 / @Int.0` —
+        # the runtime precondition guard evaluates requires in order, so the
+        # earlier division traps (confirmed via `vera run`) before the later
+        # guard is checked.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(10 / @Int.0 > 0)
+  requires(@Int.0 != 0)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert any(d.error_code == "E526" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_earlier_requires_guards_later_division(self) -> None:
+        # The guard-first ordering verifies: requires[1]'s division sees
+        # requires[0] (`@Int.0 != 0`) in its prefix.
+        _verify_ok("""
+public fn f(@Int -> @Int)
+  requires(@Int.0 != 0)
+  requires(10 / @Int.0 > 0)
+  effects(pure)
+{ @Int.0 }
+""")

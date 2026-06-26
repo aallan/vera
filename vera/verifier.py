@@ -1340,6 +1340,10 @@ class ContractVerifier:
         # asserted into the solver (step 4) and available to every binding-site
         # and return-position discharge below.
         assumptions: list[object] = list(refined_param_assumptions)
+        # CR review (#803): the requires-division walk below is the first
+        # obligation walk, so reset the opaque-shadow set here (the body walk
+        # resets it again at its own start).
+        self._opaque_shadows = []
         for contract in decl.contracts:
             if isinstance(contract, ast.Requires):
                 self.summary.total += 1
@@ -1370,6 +1374,19 @@ class ContractVerifier:
                         tier=3,
                     )
                     continue
+                # CR review (#803): walk this requires' divisions / indexes for
+                # primitive-op safety obligations BEFORE adding it to the
+                # assumptions.  A requires predicate can rely only on the PREFIX
+                # of earlier requires — the runtime precondition guard evaluates
+                # them left-to-right, so a later requires is not yet established
+                # when an earlier one is checked (`requires(10 / @Int.0 > 0)`
+                # before `requires(@Int.0 != 0)` must NOT discharge the
+                # division).  `assumptions` here is exactly that prefix (refined
+                # params + requires[0..i-1]); the requires are not yet asserted
+                # into the solver (that happens at step 4 below).
+                self._walk_for_primitive_op_obligations(
+                    decl, contract.expr, smt, slot_env, assumptions,
+                )
                 assumptions.append(z3_pre)
                 self.summary.tier1_verified += 1
                 self._record_obligation(
@@ -1424,21 +1441,21 @@ class ContractVerifier:
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
-        # 5.8. #801: divisions / moduli / array indexes inside CONTRACT
-        #      predicates trap at runtime too — contract predicates evaluate
-        #      eagerly with no short-circuit — so they carry the same
-        #      primitive-op safety obligations as the body (#680).  The walks
-        #      above cover only `decl.body`; extend them to each requires /
-        #      ensures predicate.  An ensures predicate's `@result` is bound to
-        #      the body result for the walk; a requires predicate has no
-        #      `@result` binder, so it is cleared.  Reset opaque shadows first
-        #      — contract predicates introduce no let/destructure binders, so
-        #      the body walk's shadows must not carry into them.
+        # 5.8. #801: divisions / moduli / array indexes inside an ENSURES
+        #      predicate trap at runtime too (contracts evaluate eagerly, no
+        #      short-circuit), so they carry the same primitive-op safety
+        #      obligations as the body (#680).  An ensures runs after the body,
+        #      where every requires holds, so it uses the full assumption set
+        #      and binds `@result` to the body result.  (Requires predicates are
+        #      walked earlier, in the precondition-collection loop, with prefix
+        #      semantics — CR #803.)  Reset opaque shadows: an ensures predicate
+        #      introduces no let/destructure binders, so the body walk's shadows
+        #      must not carry into it.
         self._opaque_shadows = []
         for contract in decl.contracts:
-            if not isinstance(contract, (ast.Requires, ast.Ensures)):
+            if not isinstance(contract, ast.Ensures):
                 continue
-            if isinstance(contract, ast.Ensures) and body_expr is not None:
+            if body_expr is not None:
                 smt.set_result_var(body_expr)
             else:
                 smt.set_result_var(None)
