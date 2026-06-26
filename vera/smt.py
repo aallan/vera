@@ -32,6 +32,15 @@ if TYPE_CHECKING:
     from vera.environment import AdtInfo
 
 
+# IEEE-754 binary64 (double): 11 exponent bits, 53 significand bits (#797).
+# `@Float64` maps to this FloatingPoint sort so Tier-1 verification respects the
+# real machine semantics — NaN, +/-Inf, signed zero, and round-nearest-ties-to-
+# even rounding — instead of Z3's exact, unbounded `Real` (which proved
+# contracts the runtime then rejected).  Z3's overloaded operators on FP terms
+# default to RNE, so `_translate_binary` needs no rounding-mode change.
+_FLOAT64_SORT = z3.FPSort(11, 53)
+
+
 # =====================================================================
 # Slot environment — De Bruijn → Z3 variable mapping
 # =====================================================================
@@ -220,9 +229,9 @@ class SmtContext:
         self._vars[name] = v
         return v
 
-    def declare_float64(self, name: str) -> z3.ArithRef:
-        """Declare a Z3 real variable (mathematical reals, approximates Float64)."""
-        v = z3.Real(name)
+    def declare_float64(self, name: str) -> z3.FPRef:
+        """Declare a Z3 FloatingPoint variable (IEEE-754 binary64, #797)."""
+        v = z3.FP(name, _FLOAT64_SORT)
         self._vars[name] = v
         return v
 
@@ -344,7 +353,7 @@ class SmtContext:
         """Map a Vera Type to a Z3 sort.
 
         Returns None for unsupported types (Unit, TypeVar, function types).
-        String maps to z3.StringSort(); Float64 maps to z3.RealSort().
+        String maps to z3.StringSort(); Float64 maps to z3.FPSort(11, 53) (#797).
         """
         if isinstance(ty, RefinedType):
             # A refinement's Z3 SORT is its base's sort — the predicate
@@ -365,7 +374,7 @@ class SmtContext:
             if ty.name == "String":
                 return z3.StringSort()
             if ty.name == "Float64":
-                return z3.RealSort()
+                return _FLOAT64_SORT
             return None
         if isinstance(ty, AdtType):
             key = _adt_sort_key(ty.name, ty.type_args)
@@ -521,7 +530,7 @@ class SmtContext:
         #   IntLit            → z3.IntVal
         #   BoolLit           → z3.BoolVal
         #   StringLit         → z3.StringVal
-        #   FloatLit          → z3.RealVal (Float64 → Real sort, #667)
+        #   FloatLit          → z3.FPVal (Float64 → FloatingPoint sort, #797)
         #   SlotRef           → bound Z3 variable
         #   ResultRef         → @Result substitution variable
         #   BinaryExpr        → translated by op family
@@ -566,11 +575,10 @@ class SmtContext:
             return z3.StringVal(expr.value)
 
         if isinstance(expr, ast.FloatLit):
-            # #667: Float64 maps to Z3 Real sort; literal value
-            # translates directly.  Sound for proving relational
-            # properties; not a full IEEE-754 model (intentional
-            # — real arithmetic is decidable in Z3, FP isn't).
-            return z3.RealVal(expr.value)
+            # #797: Float64 maps to Z3's IEEE-754 binary64 FloatingPoint sort, so
+            # a literal is an FPVal at that sort (the source decimal is rounded to
+            # the nearest double on construction, exactly as the runtime does).
+            return z3.FPVal(expr.value, _FLOAT64_SORT)
 
         if isinstance(expr, ast.IndexExpr):
             # #667: `arr[i]` translates to `index_<sort>(arr, i)`
@@ -672,6 +680,14 @@ class SmtContext:
         right = self.translate_expr(expr.right, env)
         if left is None or right is None:
             return None
+        # #797 defense-in-depth: a binary op mixing an FP operand with a non-FP
+        # one would raise a Z3 sort mismatch (there is no Int<->FP coercion).
+        # The checker rejects mixed Float64/Int arithmetic (E141), equality
+        # (E142), and ordering (E142), so this is unreachable on well-typed
+        # input — but degrade to Tier 3 rather than crash if a checker gap ever
+        # lets one through.
+        if isinstance(left, z3.FPRef) != isinstance(right, z3.FPRef):
+            return None
 
         op = expr.op
 
@@ -686,7 +702,7 @@ class SmtContext:
             # #799: Vera `/` is `i64.div_s` (truncates toward zero); Z3's
             # integer `/` is Euclidean (floors), so they disagree on a negative
             # dividend.  Use a sign-aware truncated encoding for integer
-            # operands; Real (Float64) division is unaffected.
+            # operands; Float64 (FP) division is unaffected.
             if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
                 return self._trunc_div(left, right)
             return left / right
@@ -695,12 +711,37 @@ class SmtContext:
             # sign); Z3's integer `%` is Euclidean (non-negative remainder).
             if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
                 return self._trunc_mod(left, right)
+            if isinstance(left, z3.FPRef):
+                # #797: Float64 `%` is the WASM codegen's truncated remainder
+                # (`a - trunc(a/b)*b`; see vera/wasm/operators.py
+                # `_translate_f64_mod`) — the *naive* form, which is NOT bit-exact
+                # C fmod for large `a/b`, but matching codegen (not ideal fmod) is
+                # what keeps Tier 1 in lockstep with the runtime — NOT Z3's `fp.rem`
+                # (the IEEE round-to-nearest remainder that Python `%` emits).
+                # They diverge whenever frac(a/b) >= 0.5 (`5.0 % 3.0` is fmod
+                # `2.0` but fp.rem `-1.0`).  Model the exact codegen formula so
+                # Tier 1 matches the runtime instead of proving a false value.
+                rne = z3.RoundNearestTiesToEven()
+                quotient = z3.fpRoundToIntegral(
+                    z3.RoundTowardZero(), z3.fpDiv(rne, left, right))
+                return z3.fpSub(rne, left, z3.fpMul(rne, quotient, right))
             return left % right
 
         # Comparison
         if op == ast.BinOp.EQ:
+            # #797: Float64 `==` is IEEE equality (WASM `f64.eq`): `NaN != NaN`
+            # and `+0.0 == -0.0`.  That is Z3's `fpEQ`, NOT the structural SMT
+            # `=` that Python `==` emits on FP terms (under which `NaN = NaN` is
+            # true — which would re-introduce the #797 unsoundness).  Ordering
+            # ops (`<`/`>`/`<=`/`>=`) already lower to the IEEE `fp.*` predicates
+            # via Z3's operator overloads; only `==`/`!=` need this.  Non-FP
+            # equality stays structural.
+            if isinstance(left, z3.FPRef):
+                return z3.fpEQ(left, right)
             return left == right
         if op == ast.BinOp.NEQ:
+            if isinstance(left, z3.FPRef):
+                return z3.fpNEQ(left, right)
             return left != right
         if op == ast.BinOp.LT:
             return left < right
@@ -793,7 +834,7 @@ class SmtContext:
            reverse-engineered from the sort name string.
 
         2. **Primitive pattern match**: covers `Array_Int`,
-           `Array_Real`, `Array_Bool`, `Array_String` for callers
+           `Array_FPSort(11, 53)` (Float64), `Array_Bool`, `Array_String` for callers
            that obtain an array sort via a path that hasn't
            populated `_array_element_sorts` (defensive — every
            code path today populates it, but the fallback shields
@@ -817,8 +858,8 @@ class SmtContext:
         # 2. Primitive pattern match.
         if sort_name == "Array_Int":
             return z3.IntSort()
-        if sort_name == "Array_Real":
-            return z3.RealSort()
+        if sort_name == f"Array_{_FLOAT64_SORT}":  # Array<Float64> (#797)
+            return _FLOAT64_SORT
         if sort_name == "Array_Bool":
             return z3.BoolSort()
         if sort_name == "Array_String":
@@ -1055,13 +1096,30 @@ class SmtContext:
                 return z3.SuffixOf(suffix, s)
             return None  # pragma: no cover
 
-        # Built-ins: float_is_nan / float_is_infinite
-        # Float64 maps to z3.Real (mathematical reals), which have no NaN or
-        # infinity.  Returning BoolVal(False) here would be UNSOUND: the
-        # compiler would skip the runtime check for requires(!float_is_nan(x)),
-        # silently dropping a safety guard.  Tier 3 (runtime check) is correct.
-        if call.name in ("float_is_nan", "float_is_infinite"):
-            return None
+        # Built-ins: float_is_nan / float_is_infinite — soundly modelled now that
+        # Float64 is a FloatingPoint sort (#797), via fpIsNaN / fpIsInf.  (Pre-
+        # #797, Float64 was Z3 Real, which has no NaN/Inf, so returning a Boolean
+        # would have been unsound and these were deferred to Tier 3.)
+        if call.name == "float_is_nan" and len(call.args) == 1:
+            x = self.translate_expr(call.args[0], env)
+            # Guard on FPRef, not just non-None: z3.fpIsNaN raises on a non-FP
+            # term, which would bypass the Tier-3 fallback.  The checker types
+            # the arg as @Float64 (so a non-FP term is currently unreachable),
+            # but this mirrors the FP-vs-non-FP guard in _translate_binary so
+            # any non-FP term degrades to Tier 3 rather than crashing.
+            return z3.fpIsNaN(x) if isinstance(x, z3.FPRef) else None
+        if call.name == "float_is_infinite" and len(call.args) == 1:
+            x = self.translate_expr(call.args[0], env)
+            return z3.fpIsInf(x) if isinstance(x, z3.FPRef) else None
+
+        # Built-ins: nan() / infinity() — Float64 special-value constants, now
+        # representable as FP literals (#797).  Uninterpreted under the old Real
+        # model, so any contract reasoning over them dropped to Tier 3; with the
+        # FP sort `float_is_nan(nan())` etc. discharge at Tier 1.
+        if call.name == "nan" and len(call.args) == 0:
+            return z3.fpNaN(_FLOAT64_SORT)
+        if call.name == "infinity" and len(call.args) == 0:
+            return z3.fpPlusInfinity(_FLOAT64_SORT)
 
         # Built-in: byte_to_int() — identity (both IntSort in Z3)
         if call.name == "byte_to_int" and len(call.args) == 1:

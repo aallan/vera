@@ -4213,31 +4213,52 @@ private fn require_json(@String -> @Bool)
 """)
         assert result.summary.tier3_runtime == 0
 
-    def test_float_is_nan_stays_tier3(self) -> None:
-        """float_is_nan stays Tier 3: Float64 maps to reals; BoolVal(False) would be unsound."""
+    def test_float_is_nan_translates_at_tier1(self) -> None:
+        """#797: float_is_nan now translates to fpIsNaN (Float64 is an FP sort),
+        so a contract guarded by it verifies at Tier 1 instead of dropping to
+        Tier 3 — excluding NaN restores reflexivity, so `result == input` holds."""
         result = _verify("""
-private fn safe_sqrt(@Float64 -> @Float64)
+private fn idf(@Float64 -> @Float64)
   requires(!float_is_nan(@Float64.0))
-  ensures(true)
+  ensures(@Float64.result == @Float64.0)
   effects(pure)
 {
   @Float64.0
 }
 """)
-        assert result.summary.tier3_runtime >= 1
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        # The guarded postcondition itself must stay Tier 1 — tier1_verified >= 1
+        # alone is satisfied by the requires(!nan) obligation even if the
+        # ensures(result == input) regressed to Tier 3.
+        ens = [o for o in result.obligations if o.kind == "ensures"]
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert result.summary.tier3_runtime == 0
 
-    def test_float_is_infinite_stays_tier3(self) -> None:
-        """float_is_infinite stays Tier 3 for the same soundness reason as float_is_nan."""
+    def test_float_is_infinite_translates_at_tier1(self) -> None:
+        """#797: float_is_infinite now translates to fpIsInf, so a contract over
+        it verifies at Tier 1 (was Tier 3 under the Real model, where Inf was
+        unrepresentable)."""
         result = _verify("""
-private fn finite_only(@Float64 -> @Float64)
-  requires(!float_is_infinite(@Float64.0))
-  ensures(true)
+private fn finite_only(@Float64 -> @Bool)
+  requires(true)
+  ensures(@Bool.result == float_is_infinite(@Float64.0))
   effects(pure)
 {
-  @Float64.0
+  float_is_infinite(@Float64.0)
 }
 """)
-        assert result.summary.tier3_runtime >= 1
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        # Pin the postcondition's tier: tier1_verified >= 1 alone could be met
+        # by the requires(true) obligation even if the ensures dropped to Tier 3.
+        ens = [o for o in result.obligations if o.kind == "ensures"]
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert result.summary.tier3_runtime == 0
 
 
 class TestRefinedTypeParamSorts:
@@ -4265,10 +4286,10 @@ private fn pass_through(@NonEmptyString -> @Bool)
         assert result.summary.tier3_runtime == 0
 
     def test_refined_float64_param_verifies_cleanly(self) -> None:
-        """RefinedType(FLOAT64) param uses RealSort — function verifies without sort errors.
+        """RefinedType(FLOAT64) param uses the FP sort — function verifies without sort errors.
 
         Without the RefinedType branch in _is_float64_type, the parameter falls through to
-        declare_int (IntSort). With the fix, declare_float64 (RealSort) is used, matching the
+        declare_int (IntSort). With the fix, declare_float64 (FP sort, #797) is used, matching the
         behaviour of a plain @Float64 parameter.
         """
         result = _verify("""

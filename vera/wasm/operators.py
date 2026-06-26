@@ -345,8 +345,10 @@ class OperatorsMixin:
         """Translate f64 modulo: a % b = a - trunc(a / b) * b.
 
         WASM has no f64.rem instruction, so we decompose using
-        f64.trunc (truncation toward zero), matching C fmod semantics
-        and consistent with i64.rem_s for integer modulo.
+        f64.trunc (truncation toward zero).  This is the naive truncated
+        remainder (not bit-exact C fmod for large a / b), consistent with
+        i64.rem_s for integer modulo.  The verifier models the same formula
+        (#797), so Tier 1 matches this output exactly.
         """
         tmp_a = self.alloc_local("f64")
         tmp_b = self.alloc_local("f64")

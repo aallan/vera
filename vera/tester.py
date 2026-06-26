@@ -10,6 +10,7 @@ See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers".
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -120,10 +121,15 @@ _BOUNDARY_NAT = [0, 1, 2, 10, 100]
 _BOUNDARY_BYTE = [0, 1, 127, 128, 255]
 _BOUNDARY_BOOL = [True, False]
 _BOUNDARY_STRING: list[str] = ["", "a", "abc", "hello world", "abc123", "\n", "\t", "   "]
-# Note: NaN and ±inf are not representable in Z3 RealSort; -0.0 == 0.0 in Z3.
+# Float64 boundaries (finite).  NaN / +/-Inf are representable under the FP sort
+# (#797) and the verifier reasons about them, but are exercised via contracts
+# rather than seeded as test inputs here.
 _BOUNDARY_FLOAT64: list[float] = [
     0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 10.0, -10.0,
     1e10, -1e10, 1e-10, -1e-10,
+    # 2^53: the precision boundary where ULP reaches 2, so `x + 1.0 == x` — the
+    # exact edge that made the old Real-sort model unsound (#797).
+    float(2**53), -float(2**53),
 ]
 
 # i64 safe range (stays within WASM i64 and JS number precision)
@@ -742,7 +748,10 @@ def _seed_boundaries(
         if bt == FLOAT64:
             for fval in _BOUNDARY_FLOAT64:
                 smt.solver.push()
-                smt.solver.add(var == z3.RealVal(fval))
+                # #797: Float64 is a FloatingPoint sort now, so constrain with an
+                # FP literal at the var's sort (a Real literal is a sort
+                # mismatch).  Structural `==` pins the exact value.
+                smt.solver.add(var == z3.FPVal(fval, var.sort()))
                 if smt.solver.check() == z3.sat:
                     model = smt.solver.model()
                     values = _extract_values(model, z3_vars, var_types)
@@ -780,6 +789,21 @@ def _seed_boundaries(
             smt.solver.pop()
 
 
+def _fp_value_to_float(val: z3.FPRef) -> float:
+    """Convert a Z3 FloatingPoint model value to a Python float (#797).
+
+    The model value is an ``FPNumRef``: NaN / +/-Inf map to their Python
+    counterparts, and a finite value goes through ``fpToReal`` (exact), with the
+    sign of zero preserved.
+    """
+    if val.isNaN():
+        return math.nan
+    if val.isInf():
+        return -math.inf if val.isNegative() else math.inf
+    f = float(z3.simplify(z3.fpToReal(val)).as_fraction())
+    return -0.0 if (f == 0.0 and val.isNegative()) else f
+
+
 def _extract_values(
     model: z3.ModelRef,
     z3_vars: list[z3.ExprRef],
@@ -795,11 +819,7 @@ def _extract_values(
         elif bt == STRING:
             values.append(z3.simplify(val).as_string())
         elif bt == FLOAT64:
-            # Z3 returns a rational; convert to Python float
-            try:
-                values.append(float(val.as_fraction()))
-            except Exception:
-                values.append(float(str(val)))
+            values.append(_fp_value_to_float(val))
         else:
             values.append(int(str(val)))
     return values
