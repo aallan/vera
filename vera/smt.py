@@ -1285,33 +1285,52 @@ class SmtContext:
     ) -> z3.ExprRef | None:
         """Translate a block expression: process statements then final expr."""
         current_env = env
-        for stmt in block.statements:
-            if isinstance(stmt, ast.LetStmt):
-                val = self.translate_expr(stmt.value, current_env)
-                if val is None:
-                    return None
-                # Extract slot type name from the let binding
-                type_name = self._type_expr_to_slot_name(stmt.type_expr)
-                if type_name is None:  # pragma: no cover
-                    return None
-                current_env = current_env.push(type_name, val)
-            elif isinstance(stmt, ast.ExprStmt):
-                # #730: translate a statement-position expression for its side
-                # effect of checking call preconditions (E501) — a call whose
-                # result is discarded must still be checked against its
-                # requires(...).  The value is dropped: a statement contributes
-                # nothing to the block result and `current_env` is unchanged
-                # (an ExprStmt binds no slot).  An untranslatable statement
-                # (effect op, quantifier, anon fn) returns None, which we IGNORE
-                # — it must NOT abort the block's Tier-1 verification of the
-                # surrounding decidable obligations.  The #727 dedup (keyed on
-                # the precondition's identity + the call's SPAN — not node
-                # identity) makes re-translation duplicate-free.
-                self.translate_expr(stmt.expr, current_env)
-            else:
-                # LetDestruct or unknown statement type
-                return None  # pragma: no cover
-        return self.translate_expr(block.expr, current_env)
+        # #804: a bare assert/assume makes its predicate hold for LATER
+        # statements, so a subsequent call's precondition — checked here during
+        # translation (#730), one phase before the obligation walks — sees it.
+        # Facts are pushed onto `_path_conditions` AFTER the statement
+        # (forward-only) and dropped at block exit by the finally (branch-local);
+        # `check_valid` folds `_path_conditions` into each call-precondition
+        # check.  The finally also covers the early `return None` paths, so an
+        # untranslatable statement after an assert never leaks the fact into the
+        # post-translation walks.
+        pc_depth = len(self._path_conditions)
+        try:
+            for stmt in block.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    val = self.translate_expr(stmt.value, current_env)
+                    if val is None:
+                        return None
+                    # Extract slot type name from the let binding
+                    type_name = self._type_expr_to_slot_name(stmt.type_expr)
+                    if type_name is None:  # pragma: no cover
+                        return None
+                    current_env = current_env.push(type_name, val)
+                elif isinstance(stmt, ast.ExprStmt):
+                    # #730: translate a statement-position expression for its side
+                    # effect of checking call preconditions (E501) — a call whose
+                    # result is discarded must still be checked against its
+                    # requires(...).  The value is dropped: a statement
+                    # contributes nothing to the block result and `current_env`
+                    # is unchanged (an ExprStmt binds no slot).  An untranslatable
+                    # statement (effect op, quantifier, anon fn) returns None,
+                    # which we IGNORE — it must NOT abort the block's Tier-1
+                    # verification of the surrounding decidable obligations.  The
+                    # #727 dedup (keyed on the precondition's identity + the
+                    # call's SPAN — not node identity) makes re-translation
+                    # duplicate-free.
+                    self.translate_expr(stmt.expr, current_env)
+                    # #804: thread the assert/assume fact forward (see above).
+                    if isinstance(stmt.expr, (ast.AssertExpr, ast.AssumeExpr)):
+                        fact = self.translate_expr(stmt.expr.expr, current_env)
+                        if fact is not None:
+                            self._path_conditions.append(fact)
+                else:
+                    # LetDestruct or unknown statement type
+                    return None  # pragma: no cover
+            return self.translate_expr(block.expr, current_env)
+        finally:
+            del self._path_conditions[pc_depth:]
 
     # -----------------------------------------------------------------
     # Match and constructor translation

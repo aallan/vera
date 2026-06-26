@@ -485,3 +485,71 @@ public fn f(@Map<Int, Int>, @Int -> @Int)
         assert [a.status for a in asserts] == ["tier3", "tier3", "verified"], [
             (o.kind, o.status) for o in result.obligations
         ]
+
+    def test_prior_assert_discharges_call_precondition(self) -> None:
+        # CR #805 (Major): a prior `assert(P)` discharges a LATER call's
+        # precondition.  Call-pre is checked during body translation (#730), one
+        # phase before the obligation walks, so the fact is threaded in
+        # `SmtContext._translate_block`.  Pre-fix the call records a false E501;
+        # a discharged call_pre is recorded silently (no obligation, no error).
+        result = _verify("""
+public fn needs_positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 0); needs_positive(@Int.0) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
+        assert call_pres == [], [(o.kind, o.status) for o in result.obligations]
+
+    def test_weaker_assert_does_not_discharge_call_precondition(self) -> None:
+        # Soundness guard: a prior assert that does NOT entail the callee's
+        # precondition must still record E501 — the fact discharges only what it
+        # implies (`@Int.0 > -5` does not give `@Int.0 > 0`).
+        result = _verify("""
+public fn needs_positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 0 - 5); needs_positive(@Int.0) }
+""")
+        assert any(d.error_code == "E501" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_top_level_assume_discharges_postcondition(self) -> None:
+        # CR #805: the assume-half analog of the assert postcondition case — a
+        # top-level `assume(P)` also threads into the ensures check.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(@Int.result > 5) effects(pure)
+{ assume(@Int.0 > 5); @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        ensures_obs = [o for o in result.obligations if o.kind == "ensures"]
+        assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_top_level_assume_discharges_refined_return(self) -> None:
+        # CR #805: the assume-half analog of the assert refined-return case.
+        result = _verify("""
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Pos)
+  requires(true) effects(pure)
+{ assume(@Int.0 > 0); @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        refine_binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        assert refine_binds and all(
+            o.status == "verified" for o in refine_binds
+        ), [(o.kind, o.status) for o in result.obligations]

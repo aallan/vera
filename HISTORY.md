@@ -405,4 +405,4 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
 
-Total: **1,400+ commits, 174 tagged releases, 77 active development days.**
+Total: **1,400+ commits, 179 tagged releases, 77 active development days.**
