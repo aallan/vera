@@ -232,6 +232,9 @@ class ClosureLiftingMixin:
         # not just the WAT type — same propagation as the per-function
         # ctx in `functions.py`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #798: resolved-type side-table for the integer-overflow guard's
+        # Int/Nat operand classifier, inside closure bodies too.
+        ctx.set_expr_semantic_types(self._expr_semantic_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard inside closure bodies too.
         ctx.set_fn_nat_params(self._fn_nat_params)

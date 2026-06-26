@@ -53,6 +53,14 @@ from vera.types import (
 )
 
 
+# i64 / u64 range bounds for the #798 integer-overflow obligation.  @Int is a
+# signed 64-bit machine integer, @Nat an unsigned one; `+`/`-`/`*` wrap at these
+# boundaries at runtime (and, per #798, now trap).
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+_U64_MAX = 2**64 - 1
+
+
 # =====================================================================
 # Public API
 # =====================================================================
@@ -2291,6 +2299,21 @@ class ContractVerifier:
                     self._check_div_zero_obligation(
                         decl, expr, smt, slot_env, assumptions,
                     )
+            elif expr.op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL):
+                # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary and
+                # now trap, so each carries an `int_overflow` range obligation.
+                # @Nat subtraction is underflow (nat_sub, handled above), not
+                # high-overflow, so it is excluded here.  `_overflow_arith_type`
+                # classifies on the operands' COMMON (coerced) type — the width
+                # the i64/u64 op runs at — so a literal-left @Int add and an
+                # @Int add narrowed into a @Nat slot are both i64 (#798).
+                ovf_type = self._overflow_arith_type(expr)
+                if ovf_type is not None and not (
+                    expr.op == ast.BinOp.SUB and ovf_type == "Nat"
+                ):
+                    self._check_overflow_obligation(
+                        decl, expr, smt, slot_env, assumptions,
+                    )
             return
 
         if isinstance(expr, ast.UnaryExpr):
@@ -3346,6 +3369,112 @@ class ContractVerifier:
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "index_bounds", expr, "tier3")
 
+    def _overflow_int_type(self, expr: ast.Expr) -> str | None:
+        """Return ``"Int"`` / ``"Nat"`` if *expr* resolves to a wrapping machine
+        integer (i64 / u64), else ``None``.
+
+        A single-expression classifier over the checker's resolved type;
+        :py:meth:`_overflow_arith_type` combines the two operands of an
+        arithmetic site into the operation's actual signed/unsigned width.
+        """
+        ty = self._resolved_type_of(expr)
+        if ty is None:
+            return None
+        if self._is_nat_type(ty):
+            return "Nat"
+        if self._is_int_type(ty):
+            return "Int"
+        return None
+
+    def _overflow_arith_type(self, expr: ast.BinaryExpr) -> str | None:
+        """The signed/unsigned width of the ``+``/``-``/``*`` in *expr* — the
+        type the i64 / u64 machine op is performed at, i.e. the operands' common
+        (coerced) type, NOT the possibly-narrowed result type.
+
+        ``@Nat <: @Int``, so the width is ``Int`` if EITHER operand is ``@Int``
+        (the other coerces up), else ``Nat`` if both are ``@Nat``.  Classifying
+        on one operand's self-type is wrong for a literal (a non-negative
+        literal is ``@Nat``, but ``5 + @Int.0`` is an @Int add); classifying on
+        the *result* is wrong when it is narrowed (``@Int.0 + 1`` stored into a
+        ``@Nat`` slot is still an i64 add).  Either mistake silently mis-ranges
+        the site and drops a real overflow (#798).
+        """
+        lt = self._overflow_int_type(expr.left)
+        rt = self._overflow_int_type(expr.right)
+        if lt is None or rt is None:
+            return None
+        return "Int" if "Int" in (lt, rt) else "Nat"
+
+    def _check_overflow_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the i64 / u64 range obligation at one ``+``/``-``/``*``
+        site (#798).
+
+        ``@Int`` / ``@Nat`` arithmetic wraps at the machine boundary, and per
+        #798 a wrapping op now traps at runtime, so each site carries a "result
+        stays in range" obligation.  A two-check mirrors
+        :py:meth:`_check_index_bounds_obligation`, keeping ``vera verify``
+        honest without false positives on dynamic operands:
+
+        1. ``lo <= result <= hi`` valid → **Tier 1** (bounds pin the result);
+        2. else ``result < lo || result > hi`` valid → provably overflows →
+           **loud E528** (e.g. a literal ``MAX_i64 + 1``);
+        3. else (dynamic operands) → **honest Tier 3**, guarded by the codegen
+           overflow trap.
+
+        The range is i64 for ``@Int``, u64 for ``@Nat``.  An untranslatable /
+        non-integer result, or one embedding an opaque shadow (an untranslatable
+        ``let`` that rebound a stale outer slot), also falls to Tier 3 — its
+        value is unknown, so neither a Tier-1 discharge nor a false E528.
+        """
+        ovf_type = self._overflow_arith_type(expr)
+        if ovf_type is None:  # pragma: no cover — guarded by the caller
+            return
+        result = smt.translate_expr(expr, slot_env)
+        if (result is None
+                or result.sort() != z3.IntSort()
+                or self._contains_opaque_shadow(result)):
+            self.summary.total += 1
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "int_overflow", expr, "tier3")
+            return
+
+        if ovf_type == "Nat":
+            lo, hi = z3.IntVal(0), z3.IntVal(_U64_MAX)
+        else:
+            lo, hi = z3.IntVal(_I64_MIN), z3.IntVal(_I64_MAX)
+
+        self.summary.total += 1
+        in_range = z3.And(result >= lo, result <= hi)
+        safe = smt.check_valid(in_range, list(assumptions))
+        if safe.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "int_overflow", expr, "verified")
+            return
+
+        # Not provably in range.  Distinguish a real, statically-decidable bug
+        # (provably OUT of range) from dynamic operands we cannot decide.
+        out_of_range = z3.Or(result < lo, result > hi)
+        bad = smt.check_valid(out_of_range, list(assumptions))
+        if bad.status == "verified":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "int_overflow", expr, "violated",
+                error_code="E528",
+                counterexample=safe.counterexample,
+            )
+            self._report_overflow(decl, expr, safe.counterexample)
+        else:
+            # Dynamic operands — beyond Tier 1; the codegen overflow trap guards.
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "int_overflow", expr, "tier3")
+
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
     ) -> object | None:
@@ -4397,6 +4526,54 @@ class ContractVerifier:
             error_code="E526",
         )
 
+    def _report_overflow(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E528 diagnostic for a provably-overflowing arithmetic op."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        op_word = {
+            ast.BinOp.ADD: "addition",
+            ast.BinOp.SUB: "subtraction",
+            ast.BinOp.MUL: "multiplication",
+        }.get(expr.op, "operation")
+        operands = ast.format_expr(expr)
+        description = (
+            f"Integer {op_word} in '{decl.name}' provably overflows."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            expr,
+            description,
+            rationale=(
+                "@Int / @Nat arithmetic carries a Tier-1 proof obligation that "
+                "the result stays within the i64 / u64 range.  The SMT solver "
+                "proved the result is always out of range; `+`/`-`/`*` trap at "
+                "runtime on overflow (#798)."
+            ),
+            fix=(
+                f"Constrain the operands so `{operands}` cannot overflow — add a "
+                f"precondition bounding them, give an operand a refinement type "
+                f"that bounds its range, or guard the operation with a path "
+                f"condition the obligation can discharge."
+            ),
+            spec_ref=(
+                'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
+            ),
+            error_code="E528",
+        )
+
     def _report_assert_violation(
         self,
         decl: ast.FnDecl,
@@ -5173,6 +5350,14 @@ class ContractVerifier:
     def _is_nat_type(ty: Type) -> bool:
         """Check if a type is Nat (non-negative integer)."""
         return ty == NAT or (isinstance(ty, RefinedType) and ty.base == NAT)
+
+    @staticmethod
+    def _is_int_type(ty: Type) -> bool:
+        """Check if a type is Int (signed integer), including a refinement over
+        Int.  Disjoint from :py:meth:`_is_nat_type`: ``@Nat`` is a distinct
+        unsigned machine type (despite ``Nat <: Int`` subtyping), and its
+        overflow range (u64) differs from ``@Int``'s (i64) (#798)."""
+        return ty == INT or (isinstance(ty, RefinedType) and ty.base == INT)
 
     @staticmethod
     def _is_unit_refinement(ty: Type) -> bool:

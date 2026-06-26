@@ -334,7 +334,7 @@ def cmd_compile(
     target: str = "wasm",
 ) -> int:
     """Parse, type-check, and compile a .vera file to WebAssembly."""
-    from vera.checker import typecheck
+    from vera.checker import typecheck_with_artifacts
     from vera.codegen import compile as codegen_compile
     from vera.resolver import ModuleResolver
 
@@ -347,10 +347,13 @@ def cmd_compile(
         resolver = ModuleResolver(_root=p.parent)
         resolved = resolver.resolve_imports(ast, p)
 
-        # Type-check first
-        type_diags = resolver.errors + typecheck(
+        # Type-check first, retaining the resolved-type artifacts so the
+        # codegen integer-overflow guard (#798) classifies operands in
+        # lockstep with the verifier.
+        check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
         )
+        type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
         type_warnings = [d for d in type_diags if d.severity == "warning"]
 
@@ -371,6 +374,7 @@ def cmd_compile(
         # Compile (C7e: pass resolved modules for cross-module codegen)
         result = codegen_compile(
             ast, source=source, file=str(p), resolved_modules=resolved,
+            expr_semantic_types=artifacts.expr_semantic_types,
         )
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -461,7 +465,7 @@ def cmd_run(
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.ast import FnDecl
-    from vera.checker import typecheck
+    from vera.checker import typecheck_with_artifacts
     from vera.codegen import compile as codegen_compile, execute
     from vera.resolver import ModuleResolver
 
@@ -474,10 +478,13 @@ def cmd_run(
         resolver = ModuleResolver(_root=p.parent)
         resolved = resolver.resolve_imports(ast, p)
 
-        # Type-check
-        type_diags = resolver.errors + typecheck(
+        # Type-check, retaining the resolved-type artifacts so the codegen
+        # integer-overflow guard (#798) classifies operands in lockstep with
+        # the verifier.
+        check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
         )
+        type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
 
         if type_errors:
@@ -496,6 +503,7 @@ def cmd_run(
         # Compile (C7e: pass resolved modules for cross-module codegen)
         result = codegen_compile(
             ast, source=source, file=str(p), resolved_modules=resolved,
+            expr_semantic_types=artifacts.expr_semantic_types,
         )
 
         if not result.ok:  # pragma: no cover — codegen errors after typecheck pass

@@ -70,6 +70,12 @@ ObligationKind = Literal[
                      # index is provably out of bounds; else honest tier3
                      # (length is uninterpreted — beyond Tier 1, see #427 —
                      # and codegen's `out_of_bounds` trap is the guard).
+    "int_overflow",  # @Int/@Nat `+`/`-`/`*` range obligation at one site
+                     # (#798).  Two-check like index_bounds: result provably in
+                     # i64 (@Int) / u64 (@Nat) range -> tier-1; provably out of
+                     # range -> loud E528; else honest tier3 (the codegen
+                     # overflow trap is the guard).  @Nat `-` is underflow
+                     # (nat_sub), not high-overflow, so it is excluded here.
     "assert",     # a body `assert(P)` predicate (#800, spec §6.2.5).  Two-
                   # check like index_bounds: prove P -> tier-1, prove ¬P ->
                   # loud E507 (always traps at runtime), else tier3 (the

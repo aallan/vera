@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,950 tests, 92 conformance programs, 35 examples, 13 spec chapters.
+5,145 tests, 93 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -22,6 +22,7 @@ The infrastructure that catches the next regression before a user does, plus the
 |---|---|
 | [#392](https://github.com/aallan/vera/issues/392) | Audit the `smt.py` Z3 translation layer for soundness — a bug here silently bypasses verification. |
 | [#807](https://github.com/aallan/vera/issues/807) | Tier-1 model the deferred-but-modelable `@Float64` builtins from #797.  **Blocked by #798**: `int_to_float`/`float_to_int` cross the Int↔Float boundary that the unbounded-`Int` idealisation (#798) makes unsound, so they wait on that fix; `float_clamp` is unblocked but needs a verify-vs-run codegen differential first.  The four format/parse builtins (`float_to_string`, `parse_float64`, `decimal_from_float`/`_to_float`) are Tier-3 by necessity, not deferred. |
+| [#808](https://github.com/aallan/vera/issues/808) | Give the `@Int` / `@Nat` arithmetic-overflow runtime trap (#798) a precise `overflow` trap kind, so a dynamic overflow surfaces as a dedicated trap message rather than the generic `unreachable` kind it currently shares. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |

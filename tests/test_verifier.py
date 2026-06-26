@@ -484,7 +484,10 @@ private fn f(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """)
         assert result.summary.tier1_verified == 2
-        assert result.summary.tier3_runtime == 0
+        # #798: `@Int.0 + @Int.1` (in the body AND the ensures) each carry an
+        # int_overflow obligation; unbounded @Int operands → tier3 (may overflow
+        # i64, runtime-guarded).
+        assert result.summary.tier3_runtime == 2
 
     def test_generic_function_is_tier3(self) -> None:
         result = _verify("""
@@ -533,8 +536,10 @@ private fn factorial(@Nat -> @Nat)
         # ensures(@Nat.result >= 1) — Tier 1 via modular verification
         # decreases(@Nat.0) — Tier 1 via termination verification
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
+        # #798: @Nat.0 * factorial(...) multiply emits an int_overflow
+        # obligation; operands are unbounded so it falls to Tier 3.
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier3_runtime == 1
 
 
 # =====================================================================
@@ -2569,9 +2574,11 @@ private fn f(@Nat -> @Nat)
         # ensures — Tier 1 via modular verification
         # decreases — Tier 1 via termination verification
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
-        assert result.summary.total == 4
+        # #798: @Nat.0 + f(...) add emits an int_overflow obligation; operands
+        # are unbounded so it falls to Tier 3.
+        assert result.summary.total == 5
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier3_runtime == 1
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""
@@ -2589,8 +2596,12 @@ private fn g(@Int -> @Int)
 """)
         # f: requires(true) trivial + ensures verified = 2 Tier 1
         # g: requires(true) trivial + ensures verified = 2 Tier 1
+        # #798: g's `@Int.0 + 1` appears twice — once in the body and once in
+        # ensures(@Int.result == @Int.0 + 1) — each emitting an int_overflow
+        # obligation; operands are unbounded so both fall to Tier 3.
         assert result.summary.tier1_verified == 4
-        assert result.summary.total == 4
+        assert result.summary.total == 6
+        assert result.summary.tier3_runtime == 2
 
 
 # =====================================================================
@@ -3817,7 +3828,7 @@ private fn sum_to(@Nat -> @Nat)
         assert result.summary.tier3_runtime == 0
 
     def test_factorial_example_all_t1(self) -> None:
-        """factorial.vera should have zero Tier 3 contracts."""
+        """factorial.vera: one Tier-3 contract (the #798 overflow guard)."""
         source = EXAMPLES_DIR / "factorial.vera"
         if not source.exists():
             pytest.skip("factorial.vera not found")
@@ -3825,8 +3836,11 @@ private fn sum_to(@Nat -> @Nat)
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
-        assert result.summary.tier3_runtime == 0, (
-            f"factorial.vera should have 0 T3, got {result.summary.tier3_runtime}"
+        # #798: the `@Nat.0 * factorial(@Nat.0 - 1)` multiply emits an
+        # int_overflow obligation; operands are unbounded so it falls to
+        # Tier 3 (runtime overflow trap).  All other contracts stay Tier 1.
+        assert result.summary.tier3_runtime == 1, (
+            f"factorial.vera should have 1 T3, got {result.summary.tier3_runtime}"
         )
 
 
@@ -3860,7 +3874,9 @@ private fn length(@List<Int> -> @Nat)
         result = _verify(source)
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
         assert e525 == [], "ADT decreases should be verified (no E525)"
-        assert result.summary.tier3_runtime == 0
+        # #798: the `1 + length(...)` add emits an int_overflow obligation;
+        # operands are unbounded so it falls to Tier 3 (runtime overflow trap).
+        assert result.summary.tier3_runtime == 1
 
     def test_list_sum_decreases(self) -> None:
         """List sum with structural decreases is Tier 1."""
@@ -3887,7 +3903,7 @@ private fn sum(@List<Int> -> @Int)
         assert e525 == [], "ADT decreases should be verified (no E525)"
 
     def test_list_ops_all_tier1(self) -> None:
-        """list_ops.vera should have zero Tier 3 contracts."""
+        """list_ops.vera: two Tier-3 contracts (the #798 overflow guards)."""
         source = EXAMPLES_DIR / "list_ops.vera"
         if not source.exists():
             pytest.skip("list_ops.vera not found")
@@ -3895,8 +3911,11 @@ private fn sum(@List<Int> -> @Int)
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
-        assert result.summary.tier3_runtime == 0, (
-            f"list_ops.vera should have 0 T3, got {result.summary.tier3_runtime}"
+        # #798: the `1 + length(...)` and `@Int.0 + sum(...)` adds each emit an
+        # int_overflow obligation; operands are unbounded so both fall to Tier 3
+        # (runtime overflow trap).  The Tier-1 count is unchanged.
+        assert result.summary.tier3_runtime == 2, (
+            f"list_ops.vera should have 2 T3, got {result.summary.tier3_runtime}"
         )
         assert result.summary.tier1_verified == 8
 
@@ -4004,6 +4023,16 @@ private fn sum(@List<Int> -> @Int)
         a Tier-1 proof obligation.  One safe (guarded) contract division and
         one provable body assert in the corpus each discharge to Tier 1
         (+2 T1, +2 total over the pre-fix baseline of 263 / 294).
+
+        #798: every @Int/@Nat `+`/`-`/`*` (in bodies AND contract clauses;
+        @Nat subtraction is excluded — that's the existing nat_sub underflow
+        obligation) now carries an int_overflow obligation.  The corpus gains
+        55 such obligations: 8 discharge at Tier 1 (all in life.vera, where
+        the cell-coordinate operands are provably bounded into i64 range) and
+        47 fall to Tier 3 (unbounded operands → runtime overflow trap).  Net:
+        +8 T1, +47 T3, +55 total, +0 tier3_unguarded — verified by
+        reconstructing the prior 265/31/296/0 baseline with int_overflow
+        obligations excluded.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -4016,9 +4045,9 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 265, f"Expected 265 T1, got {t1}"
-        assert t3 == 31, f"Expected 31 T3, got {t3}"
-        assert total == 296, f"Expected 296 total, got {total}"
+        assert t1 == 273, f"Expected 273 T1, got {t1}"
+        assert t3 == 78, f"Expected 78 T3, got {t3}"
+        assert total == 351, f"Expected 351 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
@@ -7855,8 +7884,10 @@ private fn dest_t3_387(@Unit -> @Nat)
         assert len(binds) == 2, [(o.kind, o.status) for o in result.obligations]
         assert all(o.status == "tier3" for o in binds), [
             o.status for o in binds]
-        # tier3_runtime starts at 0, so 2 guarded sites pin `+= 1` (vs `= 1`).
-        assert result.summary.tier3_runtime == 2, result.summary.tier3_runtime
+        # tier3_runtime starts at 0, so 2 guarded sites pin `+= 1` (vs `= 1`),
+        # plus #798: the body `@Nat.0 + @Nat.1` add emits a third Tier-3
+        # int_overflow obligation (opaque operands → runtime overflow trap).
+        assert result.summary.tier3_runtime == 3, result.summary.tier3_runtime
 
     def test_destructure_no_narrowing_no_obligation(self) -> None:
         """``let Tuple<@Int,@Int> = Tuple(...)`` — neither component narrows

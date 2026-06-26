@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
     from vera.errors import Diagnostic
     from vera.resolver import ResolvedModule
+    from vera.types import Type
 
 
 # =====================================================================
@@ -180,17 +181,32 @@ def compile(
     source: str = "",
     file: str | None = None,
     resolved_modules: list[ResolvedModule] | None = None,
+    expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
 ) -> CompileResult:
     """Compile a type-checked Vera Program AST to WebAssembly.
 
     Returns a CompileResult with WAT text, WASM binary, exports,
     and any diagnostics.  The program should already have passed
     type checking and (optionally) verification.
+
+    ``expr_semantic_types`` is the checker's resolved-type side-table
+    (``CheckerArtifacts.expr_semantic_types``), keyed by ``ast.span_key``.
+    The #798 integer-overflow guard consults it to classify an arithmetic
+    operand as ``@Int`` (i64) vs ``@Nat`` (u64) using the *same* resolved
+    type the verifier's ``int_overflow`` obligation uses, so the runtime
+    guard fires at exactly the sites — and with the exact signed/unsigned
+    range — the verifier obligates (keeping codegen in lockstep with
+    ``vera/verifier.py``).  When omitted (a ``transform -> compile`` caller
+    that skipped typecheck), the guard falls back to the AST-only classifier,
+    which is sound for slot-/call-typed operands but cannot disambiguate a
+    bare-literal operand's Int-vs-Nat context — such callers should thread
+    the table to stay precise.
     """
     from vera.codegen.core import CodeGenerator
 
     gen = CodeGenerator(
         source=source, file=file, resolved_modules=resolved_modules,
+        expr_semantic_types=expr_semantic_types,
     )
     return gen.compile_program(program)
 

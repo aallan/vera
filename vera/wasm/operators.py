@@ -95,6 +95,26 @@ class OperatorsMixin:
             # skipped verification.
             if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
                 return self._emit_nat_sub_guard(left, right)
+            # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary; emit a
+            # runtime overflow guard mirroring the verifier's `int_overflow`
+            # obligation (vera/verifier.py:_check_overflow_obligation).  The
+            # classifier consults the checker's resolved-type table so it
+            # guards exactly the sites — at the exact signed/unsigned range —
+            # the verifier obligates.  @Nat subtraction is `nat_sub` underflow
+            # (handled above), not high-overflow, so it is excluded here, in
+            # lockstep with the verifier's `expr.op == SUB and ovf == "Nat"`
+            # exclusion.  Programs that ran `vera verify` first caught any
+            # provable overflow statically (loud E528); this guard is the
+            # safety net for the `vera compile` / `vera run` paths.
+            # `_overflow_arith_codegen_type` classifies on the operands' COMMON
+            # (coerced) type — the width the i64/u64 op runs at — so a
+            # literal-left @Int add and an @Int add narrowed into a @Nat slot
+            # are both i64, in lockstep with the verifier (#798).
+            ovf = self._overflow_arith_codegen_type(expr)
+            if (op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)
+                    and ovf is not None
+                    and not (op == ast.BinOp.SUB and ovf == "Nat")):
+                return self._emit_overflow_guard(left, right, op, ovf)
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -1008,3 +1028,363 @@ class OperatorsMixin:
             return any(self._has_underflow_leaf(arm.body)
                        for arm in value.arms)
         return False
+
+    # -----------------------------------------------------------------
+    # @Int / @Nat integer-overflow runtime guard (#798)
+    # -----------------------------------------------------------------
+
+    # WASM literal forms for the two's-complement i64 bounds.  ``i64.const``
+    # accepts the value ``-9223372036854775808`` directly (the lexer reads a
+    # negative literal, not ``-(9223372036854775808)`` whose magnitude is out
+    # of the signed range), so emitting ``str(_I64_MIN_CODEGEN)`` is correct.
+    _I64_MIN_CODEGEN = -(2**63)
+
+    def _overflow_codegen_type(self, expr: ast.Expr) -> str | None:
+        """Return ``"Int"`` / ``"Nat"`` if *expr* (the whole arithmetic
+        expression) is a machine integer subject to the #798 overflow guard,
+        else ``None``.
+
+        This is the codegen mirror of
+        :py:meth:`ContractVerifier._overflow_int_type`, classifying on the
+        binary expression's resolved type.  Classifying on the expression (not
+        the left operand) handles a literal correctly: a non-negative literal
+        carries its own narrow ``@Nat`` type, so ``5 + @Int.0`` is an ``@Int``
+        (i64) add even though ``5`` is ``@Nat`` — reading the operand's type
+        would mis-range it to u64.
+
+        The verifier classifies on the *checker's resolved type*
+        (``_resolved_type_of``).  Codegen does the same FIRST — consulting the
+        threaded ``_expr_semantic_types`` side-table — so a bare-literal
+        operand whose resolved type is context-dependent (``5 + @Int.0`` is
+        Int, ``5 + @Nat.0`` is Nat) is classified identically to the verifier.
+        Without this, the AST-only fallback would call any non-negative
+        ``IntLit`` ``@Nat`` (the ``_is_static_nat_typed`` rule), mis-ranging a
+        literal-left @Int site to u64 and silently dropping an @Int overflow at
+        ``[I64_MAX+1, U64_MAX]`` — a verifier/codegen desync (#798 RISK 6).
+
+        The AST-only fallback (``_is_static_nat_typed`` / ``_is_static_int_typed``)
+        runs only when the side-table is absent or has no entry for this span
+        — e.g. a ``transform -> compile`` caller that skipped typecheck.  It is
+        sound for slot-/call-typed operands; the literal ambiguity it cannot
+        resolve is the documented precision gap such callers accept.
+        """
+        resolved = self._resolved_codegen_type(expr)
+        if resolved is not None:
+            return resolved
+        if self._is_static_nat_typed(expr):
+            return "Nat"
+        if self._is_static_int_typed(expr):
+            return "Int"
+        return None
+
+    def _overflow_arith_codegen_type(self, expr: ast.BinaryExpr) -> str | None:
+        """The codegen mirror of
+        :py:meth:`ContractVerifier._overflow_arith_type` — the operation's
+        signed/unsigned width = the operands' common (coerced) type (``Int`` if
+        either operand is ``@Int``, else ``@Nat``), NOT the narrowed result
+        type.  Keeps the runtime guard in lockstep with the verifier's
+        obligation at every ``+``/``-``/``*`` site (#798)."""
+        lt = self._overflow_codegen_type(expr.left)
+        rt = self._overflow_codegen_type(expr.right)
+        if lt is None or rt is None:
+            return None
+        return "Int" if "Int" in (lt, rt) else "Nat"
+
+    def _resolved_codegen_type(self, expr: ast.Expr) -> str | None:
+        """Look up *expr*'s checker-resolved type as ``"Int"`` / ``"Nat"``,
+        else ``None`` (no table, no entry, or a non-Int/Nat type).
+
+        Mirrors :py:meth:`ContractVerifier._overflow_int_type` over
+        ``_resolved_type_of``: it dispatches on the resolved type's base so a
+        ``@Nat`` reached through a refinement/alias still classifies as Nat.
+        """
+        table = self._expr_semantic_types
+        if table is None:
+            return None
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        ty = table.get(key)
+        if ty is None:
+            return None
+        # Avoid importing the type module at call time on every arithmetic
+        # site: dispatch on the resolved type's *base name*.  ``PrimitiveType``
+        # has a ``name``; ``RefinedType`` has a ``base`` carrying it.
+        base = getattr(ty, "base", ty)
+        name = getattr(base, "name", None)
+        if name == "Nat":
+            return "Nat"
+        if name == "Int":
+            return "Int"
+        return None
+
+    def _is_static_int_typed(self, expr: ast.Expr) -> bool:
+        """Return True iff *expr* has static type @Int by AST shape alone.
+
+        AST-only fallback companion to :py:meth:`_is_static_nat_typed`, used
+        only when the resolved-type table is unavailable.  Called *after* the
+        @Nat check in :py:meth:`_overflow_codegen_type`, so a non-negative
+        ``IntLit`` (which ``_is_static_nat_typed`` already claims as @Nat) does
+        not reach here — only a negative ``IntLit``, an @Int slot, an @Int
+        function return, or an arithmetic tree of @Int operands.  Conservative
+        False elsewhere (a @Byte / @Float / @Bool / String operand is not @Int
+        and must not be guarded).
+        """
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Int"
+        if isinstance(expr, ast.IntLit):
+            return True
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                return (self._operand_is_int_or_nat(expr.left)
+                        and self._operand_is_int_or_nat(expr.right))
+            return False
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (self._is_static_int_typed(expr.then_branch)
+                    and self._is_static_int_typed(expr.else_branch))
+        if isinstance(expr, ast.Block):
+            return self._is_static_int_typed(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if not expr.arms:
+                return False
+            return all(
+                self._is_static_int_typed(arm.body) for arm in expr.arms
+            )
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type(expr) == "Int"
+        if isinstance(expr, ast.ModuleCall):
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
+            ) == "Int"
+        return False
+
+    def _operand_is_int_or_nat(self, expr: ast.Expr) -> bool:
+        """True iff *expr* is statically @Int or @Nat (AST-only).
+
+        An arithmetic node is @Int when both operands are integral (Int or
+        Nat) but at least one is @Int — the Nat<:Int subtyping rule.  Used by
+        :py:meth:`_is_static_int_typed` so ``@Int.0 + 3`` (an @Int slot plus a
+        non-negative @Nat-by-shape literal) still classifies @Int.
+        """
+        return (self._is_static_nat_typed(expr)
+                or self._is_static_int_typed(expr))
+
+    def _emit_overflow_guard(
+        self,
+        left: list[str],
+        right: list[str],
+        op: ast.BinOp,
+        ovf: str,
+    ) -> list[str]:
+        """Dispatch to the per-(op, type) guarded arithmetic sequence (#798).
+
+        Each sequence computes the wrapping result, checks whether the true
+        (unbounded) result left the i64 (@Int) / u64 (@Nat) range, traps via a
+        bare ``unreachable`` if so (classified ``kind="unreachable"`` by the
+        trap taxonomy — a precise ``"overflow"`` kind via host import is a
+        follow-up, mirroring the #520 / #552 guards), and leaves the wrapping
+        result on the stack otherwise.  @Nat SUB never reaches here (excluded
+        by the caller; it is ``nat_sub`` underflow).
+        """
+        if ovf == "Nat":
+            if op == ast.BinOp.ADD:
+                return self._emit_nat_add_guard(left, right)
+            # MUL (SUB is excluded by the caller).
+            return self._emit_nat_mul_guard(left, right)
+        # @Int.
+        if op == ast.BinOp.ADD:
+            return self._emit_int_add_guard(left, right)
+        if op == ast.BinOp.SUB:
+            return self._emit_int_sub_guard(left, right)
+        return self._emit_int_mul_guard(left, right)
+
+    def _emit_int_add_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """@Int ADD, signed i64.  Overflow iff ``((a^r) & (b^r)) < 0`` —
+        the Hacker's-Delight 2-12 test: ``a+b`` overflows iff ``a`` and ``b``
+        share a sign but the wrapped result ``r`` has the opposite sign.
+        Leaves ``r`` on the stack."""
+        a_tmp = self.alloc_local("i64")
+        b_tmp = self.alloc_local("i64")
+        r_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            f"local.set {a_tmp}",
+            *right,
+            f"local.set {b_tmp}",
+            f"local.get {a_tmp}",
+            f"local.get {b_tmp}",
+            "i64.add",
+            f"local.tee {r_tmp}",          # stack: [r]
+            # (a ^ r):
+            f"local.get {a_tmp}",
+            f"local.get {r_tmp}",
+            "i64.xor",                       # stack: [r, (a^r)]
+            # (b ^ r):
+            f"local.get {b_tmp}",
+            f"local.get {r_tmp}",
+            "i64.xor",                       # stack: [r, (a^r), (b^r)]
+            "i64.and",                       # stack: [r, (a^r)&(b^r)]
+            "i64.const 0",
+            "i64.lt_s",                      # stack: [r, cond]
+            "if",
+            "  unreachable",
+            "end",                           # stack: [r]
+        ]
+
+    def _emit_int_sub_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """@Int SUB, signed i64, ``a - b`` (left=minuend).  Overflow iff
+        ``((a^b) & (a^r)) < 0``: ``a-b`` overflows iff ``a`` and ``b`` differ
+        in sign and the result ``r`` differs in sign from ``a``.  Operand
+        order is load-bearing (asymmetric test).  Leaves ``r`` on the stack."""
+        a_tmp = self.alloc_local("i64")
+        b_tmp = self.alloc_local("i64")
+        r_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            f"local.set {a_tmp}",
+            *right,
+            f"local.set {b_tmp}",
+            f"local.get {a_tmp}",
+            f"local.get {b_tmp}",
+            "i64.sub",
+            f"local.tee {r_tmp}",          # stack: [r]
+            # (a ^ b):
+            f"local.get {a_tmp}",
+            f"local.get {b_tmp}",
+            "i64.xor",                       # stack: [r, (a^b)]
+            # (a ^ r):
+            f"local.get {a_tmp}",
+            f"local.get {r_tmp}",
+            "i64.xor",                       # stack: [r, (a^b), (a^r)]
+            "i64.and",                       # stack: [r, (a^b)&(a^r)]
+            "i64.const 0",
+            "i64.lt_s",                      # stack: [r, cond]
+            "if",
+            "  unreachable",
+            "end",                           # stack: [r]
+        ]
+
+    def _emit_int_mul_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """@Int MUL, signed i64 — the dangerous one.  Division round-trip with
+        the ``INT_MIN * -1`` special case.
+
+        ``overflow ⟺ a != 0 && ((a == -1 && b == INT_MIN) || (a != -1 && r/a != b))``
+
+        The ``a == 0`` branch avoids ``r/0``; the ``a == -1`` pre-check avoids
+        the native ``i64.div_s`` trap on ``INT_MIN / -1`` (testing ``b ==
+        INT_MIN`` instead).  Uses ``local.set r_tmp`` to clear the operand
+        stack before the nested ``if`` blocks (a value left under an ``if``
+        whose arms don't symmetrically consume it is a WASM validation error),
+        then pushes ``r`` at the end.  Leaves ``r`` on the stack."""
+        a_tmp = self.alloc_local("i64")
+        b_tmp = self.alloc_local("i64")
+        r_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            f"local.set {a_tmp}",
+            *right,
+            f"local.set {b_tmp}",
+            f"local.get {a_tmp}",
+            f"local.get {b_tmp}",
+            "i64.mul",
+            f"local.set {r_tmp}",          # stack empty
+            f"local.get {a_tmp}",
+            "i64.eqz",
+            "if",                            # a == 0 → safe, no checks
+            "else",
+            f"  local.get {a_tmp}",
+            "  i64.const -1",
+            "  i64.eq",
+            "  if",                          # a == -1
+            f"    local.get {b_tmp}",
+            f"    i64.const {self._I64_MIN_CODEGEN}",
+            "    i64.eq",
+            "    if",                        # b == INT_MIN → overflow
+            "      unreachable",
+            "    end",
+            "  else",                        # a != 0 && a != -1 → safe to divide
+            f"    local.get {r_tmp}",
+            f"    local.get {a_tmp}",
+            "    i64.div_s",
+            f"    local.get {b_tmp}",
+            "    i64.ne",
+            "    if",                        # r/a != b → overflow
+            "      unreachable",
+            "    end",
+            "  end",
+            "end",
+            f"local.get {r_tmp}",          # stack: [r]
+        ]
+
+    def _emit_nat_add_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """@Nat ADD, unsigned u64.  Overflow iff ``r <u a`` — an unsigned sum
+        wraps iff the carry-out makes the result smaller than an addend.
+        Leaves ``r`` on the stack.
+
+        The condition is built ON TOP of the stashed ``r`` (via fresh
+        ``local.get``s), not by consuming it: ``local.tee`` leaves exactly one
+        copy on the stack, so the comparison must re-fetch its operands from
+        the locals to keep ``r`` live at the bottom as the function result."""
+        a_tmp = self.alloc_local("i64")
+        r_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            f"local.set {a_tmp}",
+            f"local.get {a_tmp}",
+            *right,
+            "i64.add",
+            f"local.tee {r_tmp}",          # stack: [r]
+            f"local.get {r_tmp}",
+            f"local.get {a_tmp}",
+            "i64.lt_u",                      # r <u a ?  stack: [r, cond]
+            "if",
+            "  unreachable",
+            "end",                           # stack: [r]
+        ]
+
+    def _emit_nat_mul_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """@Nat MUL, unsigned u64.  Overflow iff ``a != 0 && r/u a != b``.
+        No ``-1`` / INT_MIN hazard (unsigned div only traps on divide-by-zero,
+        excluded by the ``a == 0`` branch).  Leaves ``r`` on the stack."""
+        a_tmp = self.alloc_local("i64")
+        b_tmp = self.alloc_local("i64")
+        r_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            f"local.set {a_tmp}",
+            *right,
+            f"local.set {b_tmp}",
+            f"local.get {a_tmp}",
+            f"local.get {b_tmp}",
+            "i64.mul",
+            f"local.set {r_tmp}",          # stack empty
+            f"local.get {a_tmp}",
+            "i64.eqz",
+            "if",                            # a == 0 → safe
+            "else",
+            f"  local.get {r_tmp}",
+            f"  local.get {a_tmp}",
+            "  i64.div_u",
+            f"  local.get {b_tmp}",
+            "  i64.ne",
+            "  if",                          # r/u a != b → overflow
+            "    unreachable",
+            "  end",
+            "end",
+            f"local.get {r_tmp}",          # stack: [r]
+        ]
