@@ -490,19 +490,48 @@ public fn f(@Map<Int, Int>, @Int -> @Int)
         # CR #805 (Major): a prior `assert(P)` discharges a LATER call's
         # precondition.  Call-pre is checked during body translation (#730), one
         # phase before the obligation walks, so the fact is threaded in
-        # `SmtContext._translate_block`.  Pre-fix the call records a false E501;
-        # a discharged call_pre is recorded silently (no obligation, no error).
+        # `SmtContext._translate_block`.  Pre-fix the call records a false E501.
+        # Tie the result to the callee's postcondition (CR round-2 review): `f`'s
+        # ensures can only verify if the call is actually translated AND
+        # discharged, so the test fails (ensures -> tier3) if the call silently
+        # drops out of Tier 1 — not merely "no E501".
         result = _verify("""
 public fn needs_positive(@Int -> @Int)
-  requires(@Int.0 > 0) ensures(true) effects(pure)
+  requires(@Int.0 > 0) ensures(@Int.result > 0) effects(pure)
 { @Int.0 }
 
 public fn f(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(@Int.result > 0) effects(pure)
 { assert(@Int.0 > 0); needs_positive(@Int.0) }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]
+        ensures_obs = [o for o in result.obligations if o.kind == "ensures"]
+        assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
+        assert call_pres == [], [(o.kind, o.status) for o in result.obligations]
+
+    def test_prior_assume_discharges_call_precondition(self) -> None:
+        # CR #805 round-2: the assume-half analog — a prior `assume(P)` discharges
+        # a later call's precondition too (both ride `_assumed_block_fact` in
+        # `_translate_block`).  Same observable-tied shape as the assert case.
+        result = _verify("""
+public fn needs_positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(@Int.result > 0) effects(pure)
+{ @Int.0 }
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(@Int.result > 0) effects(pure)
+{ assume(@Int.0 > 0); needs_positive(@Int.0) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        ensures_obs = [o for o in result.obligations if o.kind == "ensures"]
+        assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
+            (o.kind, o.status) for o in result.obligations
+        ]
         call_pres = [o for o in result.obligations if o.kind == "call_pre"]
         assert call_pres == [], [(o.kind, o.status) for o in result.obligations]
 
