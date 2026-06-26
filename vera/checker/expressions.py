@@ -373,6 +373,22 @@ class ExpressionsMixin:
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
                     error_code="E143",
                 )
+            elif not (is_subtype(left_base, right_base)
+                      or is_subtype(right_base, left_base)):
+                # #797: both operands orderable but mutually incompatible (e.g.
+                # `@Float64 < @Int`).  Vera has no implicit numeric coercion — the
+                # arithmetic (E141) and equality (E142) arms already reject mixed
+                # Float64/Int, so ordering must too.  Without this the pair
+                # reached the SMT layer and raised an uncaught Z3 sort mismatch
+                # once @Float64 became an FP sort (no Int<->FP coercion).
+                self._error(
+                    expr,
+                    f"Cannot compare {pretty_type(left_ty)} with "
+                    f"{pretty_type(right_ty)}.",
+                    rationale="Ordering comparison requires compatible types.",
+                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E142",
+                )
             return BOOL
 
         # Logical: &&, ||, ==>

@@ -47,7 +47,7 @@ public fn inc(@Float64 -> @Float64)
 { @Float64.0 + 1.0 }
 """)
         ens = [o for o in result.obligations if o.kind == "ensures"]
-        assert ens and all(o.status != "verified" for o in ens), [
+        assert ens and all(o.status == "violated" for o in ens), [
             (o.kind, o.status) for o in result.obligations
         ]
 
@@ -60,7 +60,7 @@ public fn idf(@Float64 -> @Float64)
 { @Float64.0 }
 """)
         ens = [o for o in result.obligations if o.kind == "ensures"]
-        assert ens and all(o.status != "verified" for o in ens), [
+        assert ens and all(o.status == "violated" for o in ens), [
             (o.kind, o.status) for o in result.obligations
         ]
 
@@ -142,4 +142,63 @@ public fn m(@Unit -> @Float64)
         bad_ens = [o for o in bad.obligations if o.kind == "ensures"]
         assert bad_ens and all(o.status != "verified" for o in bad_ens), [
             (o.kind, o.status) for o in bad.obligations
+        ]
+
+    def test_mixed_float64_int_comparison_rejected_at_check(self) -> None:
+        # #797 regression guard (PR #806 review): `@Float64 < @Int` is a clean
+        # E142 type error at CHECK time (Vera has no implicit numeric coercion —
+        # the arithmetic (E141) and equality (E142) arms already reject mixed
+        # Float64/Int).  Before the fix it type-checked, then raised an uncaught
+        # Z3 sort mismatch in the verifier once Float64 became an FP sort (no
+        # Int<->FP coercion masked it).
+        src = """
+private fn cmp(@Float64, @Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Float64.0 < @Int.0 }
+"""
+        diags, _arts = typecheck_with_artifacts(parse_to_ast(src), src)
+        errors = [d for d in diags if d.severity == "error"]
+        assert any(e.error_code == "E142" for e in errors), [
+            e.error_code for e in errors
+        ]
+
+    def test_signed_zero_equality_is_ieee_fpeq(self) -> None:
+        # #797 (PR #806 review): `==` is IEEE fpEQ, so `+0.0 == -0.0` is TRUE.
+        # `(0.0 - 1.0) * 0.0` is `-0.0`; `-0.0 == 0.0` proves at Tier 1.  This is
+        # the discriminator a structural `=` regression would break (under `=`,
+        # `+0.0` and `-0.0` have distinct bit patterns and compare unequal) and
+        # that the NaN reflexivity test does not cover.
+        result = _verify("""
+public fn f(@Unit -> @Bool)
+  requires(true) ensures(@Bool.result) effects(pure)
+{ ((0.0 - 1.0) * 0.0) == 0.0 }
+""")
+        ens = [o for o in result.obligations if o.kind == "ensures"]
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_modulo_edge_cases_match_runtime(self) -> None:
+        # #797 (PR #806 review): `%`-by-zero is NaN (codegen `a - trunc(a/0)*0` =
+        # `a - Inf*0` = NaN), and a large-magnitude case pins the NAIVE truncated
+        # remainder the codegen emits — `5.0 % 0.1` is `0.0` (`trunc(5.0/0.1)` =
+        # 50, `5.0 - 50*0.1` = 0.0), NOT bit-exact C fmod (~0.0999).  The earlier
+        # `5.0 % 3.0` case can't catch this (there naive and C fmod coincide).
+        by_zero = _verify("""
+public fn f(@Unit -> @Bool)
+  requires(true) ensures(@Bool.result) effects(pure)
+{ float_is_nan(5.0 % 0.0) }
+""")
+        bz = [o for o in by_zero.obligations if o.kind == "ensures"]
+        assert bz and all(o.status == "verified" for o in bz), [
+            (o.kind, o.status) for o in by_zero.obligations
+        ]
+        large = _verify("""
+public fn f(@Unit -> @Float64)
+  requires(true) ensures(@Float64.result == 0.0) effects(pure)
+{ 5.0 % 0.1 }
+""")
+        lg = [o for o in large.obligations if o.kind == "ensures"]
+        assert lg and all(o.status == "verified" for o in lg), [
+            (o.kind, o.status) for o in large.obligations
         ]

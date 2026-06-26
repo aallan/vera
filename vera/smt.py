@@ -680,6 +680,14 @@ class SmtContext:
         right = self.translate_expr(expr.right, env)
         if left is None or right is None:
             return None
+        # #797 defense-in-depth: a binary op mixing an FP operand with a non-FP
+        # one would raise a Z3 sort mismatch (there is no Int<->FP coercion).
+        # The checker rejects mixed Float64/Int arithmetic (E141), equality
+        # (E142), and ordering (E142), so this is unreachable on well-typed
+        # input — but degrade to Tier 3 rather than crash if a checker gap ever
+        # lets one through.
+        if isinstance(left, z3.FPRef) != isinstance(right, z3.FPRef):
+            return None
 
         op = expr.op
 
@@ -694,7 +702,7 @@ class SmtContext:
             # #799: Vera `/` is `i64.div_s` (truncates toward zero); Z3's
             # integer `/` is Euclidean (floors), so they disagree on a negative
             # dividend.  Use a sign-aware truncated encoding for integer
-            # operands; Real (Float64) division is unaffected.
+            # operands; Float64 (FP) division is unaffected.
             if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
                 return self._trunc_div(left, right)
             return left / right
@@ -704,9 +712,11 @@ class SmtContext:
             if left.sort() == z3.IntSort() and right.sort() == z3.IntSort():
                 return self._trunc_mod(left, right)
             if isinstance(left, z3.FPRef):
-                # #797: Float64 `%` is codegen's truncated remainder
-                # (`a - trunc(a/b)*b`, matching C fmod — see
-                # vera/wasm/operators.py `_translate_f64_mod`), NOT Z3's `fp.rem`
+                # #797: Float64 `%` is the WASM codegen's truncated remainder
+                # (`a - trunc(a/b)*b`; see vera/wasm/operators.py
+                # `_translate_f64_mod`) — the *naive* form, which is NOT bit-exact
+                # C fmod for large `a/b`, but matching codegen (not ideal fmod) is
+                # what keeps Tier 1 in lockstep with the runtime — NOT Z3's `fp.rem`
                 # (the IEEE round-to-nearest remainder that Python `%` emits).
                 # They diverge whenever frac(a/b) >= 0.5 (`5.0 % 3.0` is fmod
                 # `2.0` but fp.rem `-1.0`).  Model the exact codegen formula so
@@ -824,7 +834,7 @@ class SmtContext:
            reverse-engineered from the sort name string.
 
         2. **Primitive pattern match**: covers `Array_Int`,
-           `Array_Real`, `Array_Bool`, `Array_String` for callers
+           `Array_FPSort(11, 53)` (Float64), `Array_Bool`, `Array_String` for callers
            that obtain an array sort via a path that hasn't
            populated `_array_element_sorts` (defensive — every
            code path today populates it, but the fallback shields
@@ -1092,10 +1102,15 @@ class SmtContext:
         # would have been unsound and these were deferred to Tier 3.)
         if call.name == "float_is_nan" and len(call.args) == 1:
             x = self.translate_expr(call.args[0], env)
-            return z3.fpIsNaN(x) if x is not None else None
+            # Guard on FPRef, not just non-None: z3.fpIsNaN raises on a non-FP
+            # term, which would bypass the Tier-3 fallback.  The checker types
+            # the arg as @Float64 (so a non-FP term is currently unreachable),
+            # but this mirrors the FP-vs-non-FP guard in _translate_binary so
+            # any non-FP term degrades to Tier 3 rather than crashing.
+            return z3.fpIsNaN(x) if isinstance(x, z3.FPRef) else None
         if call.name == "float_is_infinite" and len(call.args) == 1:
             x = self.translate_expr(call.args[0], env)
-            return z3.fpIsInf(x) if x is not None else None
+            return z3.fpIsInf(x) if isinstance(x, z3.FPRef) else None
 
         # Built-ins: nan() / infinity() — Float64 special-value constants, now
         # representable as FP literals (#797).  Uninterpreted under the old Real

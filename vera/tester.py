@@ -127,6 +127,9 @@ _BOUNDARY_STRING: list[str] = ["", "a", "abc", "hello world", "abc123", "\n", "\
 _BOUNDARY_FLOAT64: list[float] = [
     0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 10.0, -10.0,
     1e10, -1e10, 1e-10, -1e-10,
+    # 2^53: the precision boundary where ULP reaches 2, so `x + 1.0 == x` — the
+    # exact edge that made the old Real-sort model unsound (#797).
+    float(2**53), -float(2**53),
 ]
 
 # i64 safe range (stays within WASM i64 and JS number precision)

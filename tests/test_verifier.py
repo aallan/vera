@@ -4228,7 +4228,14 @@ private fn idf(@Float64 -> @Float64)
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]
-        assert result.summary.tier1_verified >= 1
+        # The guarded postcondition itself must stay Tier 1 — tier1_verified >= 1
+        # alone is satisfied by the requires(!nan) obligation even if the
+        # ensures(result == input) regressed to Tier 3.
+        ens = [o for o in result.obligations if o.kind == "ensures"]
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert result.summary.tier3_runtime == 0
 
     def test_float_is_infinite_translates_at_tier1(self) -> None:
         """#797: float_is_infinite now translates to fpIsInf, so a contract over
@@ -4245,7 +4252,13 @@ private fn finite_only(@Float64 -> @Bool)
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.error_code for e in errors]
-        assert result.summary.tier1_verified >= 1
+        # Pin the postcondition's tier: tier1_verified >= 1 alone could be met
+        # by the requires(true) obligation even if the ensures dropped to Tier 3.
+        ens = [o for o in result.obligations if o.kind == "ensures"]
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert result.summary.tier3_runtime == 0
 
 
 class TestRefinedTypeParamSorts:
@@ -4273,10 +4286,10 @@ private fn pass_through(@NonEmptyString -> @Bool)
         assert result.summary.tier3_runtime == 0
 
     def test_refined_float64_param_verifies_cleanly(self) -> None:
-        """RefinedType(FLOAT64) param uses RealSort — function verifies without sort errors.
+        """RefinedType(FLOAT64) param uses the FP sort — function verifies without sort errors.
 
         Without the RefinedType branch in _is_float64_type, the parameter falls through to
-        declare_int (IntSort). With the fix, declare_float64 (RealSort) is used, matching the
+        declare_int (IntSort). With the fix, declare_float64 (FP sort, #797) is used, matching the
         behaviour of a plain @Float64 parameter.
         """
         result = _verify("""

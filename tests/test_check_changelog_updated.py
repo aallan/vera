@@ -429,6 +429,23 @@ class TestHasSkipTrailer:
 # ---------------------------------------------------------------------------
 
 
+def _hermetic_env(**overrides: str) -> dict[str, str]:
+    """A child environment with every ``GIT_*`` variable stripped.
+
+    When this suite runs inside the project's pre-commit hook, ``git`` exports
+    ``GIT_DIR`` / ``GIT_INDEX_FILE`` (and friends) pointing at the *outer* repo
+    — whose index is locked mid-commit.  A ``git`` subprocess in a temp repo
+    that inherited them would resolve to the wrong repo (``git`` honours those
+    vars over ``cwd`` discovery) and fail with "invalid object" / a locked
+    index.  Strip them so temp-repo git resolves purely from ``cwd``.  (The
+    older ``SKIP_CHANGELOG_LABEL`` pop in ``_run_script`` was the same class of
+    pre-commit-inherited leak, handled one var at a time; this generalises it.)
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(overrides)
+    return env
+
+
 def _git(cwd: Path, *args: str) -> None:
     """Run ``git <args>`` in ``cwd``; raise if it fails."""
     subprocess.run(
@@ -436,6 +453,7 @@ def _git(cwd: Path, *args: str) -> None:
         cwd=cwd,
         check=True,
         capture_output=True,
+        env=_hermetic_env(),
     )
 
 
@@ -471,10 +489,12 @@ def _setup_repo(tmp_path: Path) -> Path:
 
 def _run_script(repo: Path, **env_overrides: str) -> subprocess.CompletedProcess[str]:
     """Run the check script inside ``repo``, diffing against local ``main``."""
-    env = os.environ.copy()
+    # _hermetic_env strips GIT_* so the script's own git resolves to ``repo``
+    # (not the outer repo) when this suite runs inside the pre-commit hook.
+    env = _hermetic_env()
     # Use local ``main`` instead of ``origin/main`` (no remote in the temp repo).
     env["CHANGELOG_CHECK_BASE"] = "main"
-    # Strip out the repo-level env vars inherited from pre-commit, if any.
+    # Strip the (non-GIT_) pre-commit label var too, if inherited.
     for key in ("SKIP_CHANGELOG_LABEL",):
         env.pop(key, None)
     env.update(env_overrides)
@@ -492,6 +512,31 @@ class TestEndToEnd:
 
     def test_passes_when_no_changes(self, tmp_path: Path) -> None:
         """No diff vs base → pass."""
+        repo = _setup_repo(tmp_path)
+        result = _run_script(repo)
+        assert result.returncode == 0, result.stderr
+
+    def test_fixtures_hermetic_under_leaked_git_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Temp-repo git helpers must ignore inherited ``GIT_*`` vars.
+
+        Regression: when this suite runs inside the project's pre-commit hook,
+        ``git`` exports ``GIT_DIR`` / ``GIT_INDEX_FILE`` / ``GIT_WORK_TREE``
+        pointing at the outer repo (whose index is locked mid-commit).  Before
+        the ``_hermetic_env`` scrub, the unguarded ``git`` subprocesses in a
+        temp repo inherited those and ``git commit`` failed with exit 1 — which
+        broke the *real* pre-commit run of this very suite.  Inject bogus values
+        and assert ``_setup_repo`` (init+add+commit) and ``_run_script`` still
+        operate on the temp repo.
+        """
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        _git(outer, "init", "-b", "main")
+        monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(outer / ".git" / "index"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(outer))
+        # Without the scrub these would target ``outer`` and raise / misreport.
         repo = _setup_repo(tmp_path)
         result = _run_script(repo)
         assert result.returncode == 0, result.stderr

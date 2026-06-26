@@ -46,7 +46,7 @@ class TestTesterUnsupportedParamTypes:
     def test_float_param_tested(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A function with Float64 param is now tested (Z3 Real sort)."""
+        """A function with Float64 param is now tested (FP sort)."""
         source = """\
 public fn square(@Float64 -> @Float64)
   requires(true)
@@ -605,6 +605,23 @@ public fn abs_float(@Float64 -> @Float64)
         assert rc == 0
         out = capsys.readouterr().out
         assert "TESTED" in out or "VERIFIED" in out
+
+    def test_fp_value_to_float_special_values(self) -> None:
+        # #797 (PR #806 review): the FP model-value -> Python float extraction
+        # must handle NaN / +-Inf / signed zero.  The boundary loop only seeds
+        # finite values, so these branches are otherwise dead under test.
+        import math
+
+        import z3
+
+        from vera.tester import _fp_value_to_float
+        sort = z3.FPSort(11, 53)
+        assert math.isnan(_fp_value_to_float(z3.fpNaN(sort)))
+        assert _fp_value_to_float(z3.fpPlusInfinity(sort)) == math.inf
+        assert _fp_value_to_float(z3.fpMinusInfinity(sort)) == -math.inf
+        neg_zero = _fp_value_to_float(z3.fpMinusZero(sort))
+        assert neg_zero == 0.0 and math.copysign(1.0, neg_zero) == -1.0
+        assert _fp_value_to_float(z3.FPVal(1.5, sort)) == 1.5
 
     def test_float64_param_json(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
