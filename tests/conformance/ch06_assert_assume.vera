@@ -1,5 +1,7 @@
 -- Conformance: assert and assume expressions (Chapter 6)
--- Tests: assert for runtime checks, assume for proof hints
+-- Tests: assert for runtime checks, assume for proof hints, and the #804
+-- assume-half of the WP rule — a prior assert/assume discharges a later
+-- obligation at Tier 1 (spec §6.4.1).
 public fn process(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(@Int.result > 0)
@@ -11,10 +13,23 @@ public fn process(@Int -> @Int)
   @Int.0
 }
 
+-- #804: the first assert is only runtime-checked (Tier 3 — `requires(true)`
+-- cannot prove it), yet it strengthens the context so the second assert AND
+-- the postcondition `@Int.result > 5` both discharge at Tier 1.
+public fn guarded(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 5)
+  effects(pure)
+{
+  assert(@Int.0 > 10);
+  assert(@Int.0 > 5);
+  @Int.0
+}
+
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  process(5)
+  process(5) + guarded(20)
 }

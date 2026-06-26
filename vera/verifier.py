@@ -1443,6 +1443,20 @@ class ContractVerifier:
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
+        # 5.75. #804: a top-level (unconditional) assert/assume holds whenever
+        #       the body returns, so its predicate discharges the postcondition
+        #       and a refined return (both evaluated after the body).  Push those
+        #       facts as path conditions spanning steps 5.8–7b — check_valid
+        #       folds _path_conditions into each obligation.  (The body walks
+        #       above already saw them positionally via the per-block threading;
+        #       this carries the top-level ones forward to the post-body checks.)
+        tlf_depth = len(smt._path_conditions)
+        if decl.body is not None:
+            for fact in self._collect_top_level_assert_facts(
+                decl.body, smt, slot_env,
+            ):
+                smt._path_conditions.append(fact)
+
         # 5.8. #801: divisions / moduli / array indexes inside an ENSURES
         #      predicate trap at runtime too (contracts evaluate eagerly, no
         #      short-circuit), so they carry the same primitive-op safety
@@ -1625,6 +1639,11 @@ class ContractVerifier:
                 else:  # pragma: no cover — solver timeout
                     self._record_refined_bind_tier3(
                         decl, ret_node, "return type", guarded=True)
+
+        # #804: drop the top-level assert/assume facts pushed before step 5.8 —
+        # they are scoped to the post-body checks (5.8–7b) and must not bleed
+        # into the decreases checking below.
+        del smt._path_conditions[tlf_depth:]
 
         # 8. Handle decreases clauses — attempt verification
         # Build mutual recursion group for decreases checking
@@ -1901,6 +1920,65 @@ class ContractVerifier:
     # (#520), division/modulo by zero + array index bounds (#680)
     # -----------------------------------------------------------------
 
+    def _assumed_block_fact(
+        self, stmt: ast.Stmt, smt: SmtContext, slot_env: SlotEnv,
+    ) -> object | None:
+        """#804 (assume-half of the WP rule): the SMT fact a bare statement
+        contributes to SUBSEQUENT obligations in its block.
+
+        A ``assert(P);`` (spec §6.4.1 ``assert(P) | P && WP(rest)``) or
+        ``assume(P);`` (``assume(P) | P ==> WP(rest)``) makes ``P`` hold for
+        everything after it: the §11.14.1 runtime trap (assert) / the
+        programmer's warranty (assume) guarantees execution only proceeds past
+        the statement when ``P`` holds, so ``P`` is sound to assume downstream
+        *regardless of the assert's own tier* (a tier-3 assert still guards its
+        successors via the runtime check).  Returns the translated ``P``, or
+        ``None`` when the statement is not a bare assert/assume or its predicate
+        is untranslatable — in which case no fact is added (sound; the later
+        obligation simply keeps its own tier).
+        """
+        if isinstance(stmt, ast.ExprStmt) and isinstance(
+            stmt.expr, (ast.AssertExpr, ast.AssumeExpr)
+        ):
+            return smt.translate_expr(stmt.expr.expr, slot_env)
+        return None
+
+    def _collect_top_level_assert_facts(
+        self, body: ast.Expr, smt: SmtContext, slot_env: SlotEnv,
+    ) -> list[object]:
+        """#804: predicates of UNCONDITIONAL top-level assert/assume statements.
+
+        A top-level (not under any ``if`` / ``match``) ``assert(P)`` /
+        ``assume(P)`` holds whenever the body returns — the §11.14.1 runtime
+        trap / the assume warranty guarantees it — so ``P`` is sound to assume
+        for the postcondition and a refined return, both evaluated after the
+        body.  Walks only the body's outermost block, threading top-level
+        ``let``\\ s through the env so an assert that mentions a let-bound slot
+        still translates.  Conservatively stops at the first untranslatable
+        ``let`` / any destructure (the env is then uncertain — a later assert
+        could read a stale shadow) and never descends into ``if`` / ``match``
+        (those asserts are conditional, not guaranteed at return).
+        """
+        facts: list[object] = []
+        if not isinstance(body, ast.Block):
+            return facts
+        cur_env = slot_env
+        for stmt in body.statements:
+            if isinstance(stmt, ast.LetStmt):
+                val = smt.translate_expr(stmt.value, cur_env)
+                if val is None:
+                    break  # env now uncertain — stop (soundness)
+                type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+                if type_name is not None:
+                    cur_env = cur_env.push(type_name, val)
+            elif isinstance(stmt, ast.LetDestruct):
+                break  # don't track destructure env here — conservative
+            else:
+                fact = self._assumed_block_fact(stmt, smt, cur_env)
+                if fact is not None:
+                    facts.append(fact)
+        return facts
+
     def _walk_for_primitive_op_obligations(
         self,
         decl: ast.FnDecl,
@@ -2052,6 +2130,7 @@ class ContractVerifier:
 
         if isinstance(expr, ast.Block):
             cur_env = slot_env
+            pc_depth = len(smt._path_conditions)  # #804 restore point (see below)
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
                     self._walk_for_primitive_op_obligations(
@@ -2154,9 +2233,24 @@ class ContractVerifier:
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.expr, smt, cur_env, assumptions,
                     )
+                # #804: after walking the statement, assume a bare assert/assume's
+                # predicate for LATER siblings in this block (the assume-half of
+                # the WP rule).  Pushed AFTER the walk so the assert never
+                # discharges itself; check_valid folds _path_conditions into each
+                # subsequent obligation automatically.
+                fact = self._assumed_block_fact(stmt, smt, cur_env)
+                if fact is not None:
+                    smt._path_conditions.append(fact)
             self._walk_for_primitive_op_obligations(
                 decl, expr.expr, smt, cur_env, assumptions,
             )
+            # #804: drop this block's assert/assume facts — keeps them positional
+            # (later siblings only) and block-scoped (no leak to a sibling
+            # branch).  Recursive if/match walks balance their own pushes, so
+            # only these facts sit above pc_depth; an exception here aborts the
+            # function before later walks run and every function starts from a
+            # reset _path_conditions, so no try/finally is needed.
+            del smt._path_conditions[pc_depth:]
             return
 
         if isinstance(expr, ast.BinaryExpr):
@@ -2820,6 +2914,14 @@ class ContractVerifier:
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.expr, smt, cur_env, block_assumptions,
                     )
+                # #804: a bare assert/assume contributes its predicate as a fact
+                # for LATER siblings (the assume-half of the WP rule).  Appended
+                # to the block-local `block_assumptions` copy — positional (later
+                # statements + trailing expr only) and block-scoped (the copy is
+                # discarded at block exit, so a branch fact never leaks).
+                fact = self._assumed_block_fact(stmt, smt, cur_env)
+                if fact is not None:
+                    block_assumptions.append(fact)
             self._walk_for_nat_binding_obligations(
                 decl, expr.expr, smt, cur_env, block_assumptions,
             )
