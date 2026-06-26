@@ -635,10 +635,12 @@
     "chapter": 6,
     "title": "Assert and assume",
     "level": "run",
-    "spec_ref": "Section 6.4",
+    "spec_ref": "Section 6.4 / 6.4.1",
     "features": [
       "assert",
-      "assume"
+      "assume",
+      "assert_discharge",
+      "tier1_discharge"
     ]
   },
   {

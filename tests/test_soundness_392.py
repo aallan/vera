@@ -1,12 +1,18 @@
-"""Regression tests for the #392 smt.py / verifier soundness audit — batch 1.
+"""Regression tests for the #392 smt.py / verifier soundness audit.
 
-Three confirmed Tier-1/Tier-3 disagreements, fixed together:
+Batch 1 — three confirmed Tier-1/Tier-3 disagreements, fixed together:
   #799 — signed division/modulo must truncate toward zero (Vera `i64.div_s` /
          `i64.rem_s`), not follow Z3's Euclidean `div`/`mod`.
   #800 — a body `assert(P)` must generate a Tier-1 obligation (prove `P`), not
          be silently ignored (spec §6.2.5).
   #801 — divisions appearing in contract predicates must get a `div_zero`
          obligation, mirroring body divisions (#680).
+
+Batch 2 — the assume-half follow-up to #800:
+  #804 — a body `assert(P)` / `assume(P)` adds `P` to the assumption context for
+         SUBSEQUENT obligations (spec §6.4.1 WP rules `assert(P) | P && WP(rest)`
+         and `assume(P) | P ==> WP(rest)`).  Moves obligations tier3 -> verified
+         and removes false E503/E500 where a prior assert guards the site.
 
 Written test-first: each FAILS on the pre-fix verifier (demonstrating the bug)
 and passes once the fix lands. Parent audit issue: #392.
@@ -171,22 +177,6 @@ public fn f(@Int -> @Int)
             (o.kind, o.status) for o in result.obligations
         ]
 
-    def test_asserts_do_not_yet_accumulate_as_facts(self) -> None:
-        # Current behavior: #800 implements only the *prove* half of the WP
-        # rule, so a prior assert does NOT strengthen the context for a later
-        # one — both fall to tier3 (sound, conservative).  The *assume* half
-        # (spec §2.8 "prior asserts discharge") is tracked as #804; that fix
-        # will flip these to verified.
-        result = _verify("""
-public fn f(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ assert(@Int.0 > 10); assert(@Int.0 > 5); @Int.0 }
-""")
-        asserts = [o for o in result.obligations if o.kind == "assert"]
-        assert len(asserts) == 2 and all(a.status == "tier3" for a in asserts), [
-            (o.kind, o.status) for o in result.obligations
-        ]
-
     def test_untranslatable_assert_predicate_falls_to_tier3(self) -> None:
         # An assert whose predicate the SMT layer cannot translate (here a Map
         # membership, uninterpreted in Z3) hits the early `pred is None` branch
@@ -300,3 +290,136 @@ public fn f(@Map<Int, Int>, @Int -> @Int)
         assert any(d.error_code == "E526" for d in result.diagnostics), [
             d.error_code for d in result.diagnostics
         ]
+
+
+# =====================================================================
+# #804 — assert/assume facts (the *assume* half of the WP rule).  #800
+# added the *prove* half (a body `assert(P)` carries a Tier-1 obligation);
+# this adds the *assume* half: after the obligation, `P` joins the context
+# for SUBSEQUENT obligations (spec §6.4.1 `assert(P) | P && WP(rest)`,
+# `assume(P) | P ==> WP(rest)`).  Sound because the §11.14.1 runtime trap
+# guarantees execution only proceeds past the assert/assume in worlds where
+# `P` holds — so `P` is assumable downstream even when the assert itself
+# only reached tier3.  Two invariants are pinned by guard tests: facts flow
+# FORWARD only, and a branch fact stays branch-LOCAL.
+# =====================================================================
+class TestAssertAssumeFacts804:
+    def test_chained_asserts_second_discharged_by_first(self) -> None:
+        # The flip of the old #800 pinning test: the first assert (unprovable
+        # from requires(true)) stays tier3, yet it discharges the second at
+        # Tier 1 (@Int.0 > 10 ==> @Int.0 > 5).
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 10); assert(@Int.0 > 5); @Int.0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "verified"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_assume_predicate_discharges_later_assert(self) -> None:
+        # assume(P) carries the same downstream fact as assert(P) (spec §6.4.1
+        # `assume(P) | P ==> WP(rest)`) but with no obligation of its own — so
+        # there is a single assert obligation, discharged by the assumption.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assume(@Int.0 > 10); assert(@Int.0 > 5); @Int.0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert len(asserts) == 1 and asserts[0].status == "verified", [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_assert_discharges_nat_narrowing(self) -> None:
+        # The issue's first example: a prior `assert(@Int.0 >= 0)` discharges a
+        # later `let @Nat = @Int.0` narrowing.  Pre-fix this is a FALSE E503 —
+        # Z3 witnesses @Int.0 = -1, unreachable because the assert traps first.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 >= 0); let @Nat = @Int.0; @Int.0 }
+""")
+        nat_binds = [o for o in result.obligations if o.kind == "nat_bind"]
+        assert len(nat_binds) == 1 and nat_binds[0].status == "verified", [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+
+    def test_within_branch_assert_discharges_later_assert(self) -> None:
+        # Forward discharge composes with path conditions: inside a branch whose
+        # condition (@Bool.0) is unrelated to @Int, the first assert still
+        # discharges the second.
+        result = _verify("""
+public fn f(@Bool, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Bool.0 then { assert(@Int.0 > 50); assert(@Int.0 > 10); @Int.0 } else { @Int.0 } }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "verified"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_branch_assert_does_not_leak_across_branches(self) -> None:
+        # Soundness guard (green pre- AND post-fix; a global push would redden
+        # it): a then-branch assert(@Int.0 > 50) must NOT discharge the
+        # else-branch's identical assert — the fact is branch-local.
+        result = _verify("""
+public fn f(@Bool, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Bool.0 then { assert(@Int.0 > 50); @Int.0 } else { assert(@Int.0 > 50); @Int.0 } }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_later_assert_does_not_discharge_earlier(self) -> None:
+        # Soundness guard: facts flow FORWARD only.  The first assert(@Int.0 > 5)
+        # must stay tier3 — a backward leak from the later (stronger) @Int.0 > 10
+        # would wrongly mark it verified (>10 ==> >5) and drop its runtime guard.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ assert(@Int.0 > 5); assert(@Int.0 > 10); @Int.0 }
+""")
+        asserts = [o for o in result.obligations if o.kind == "assert"]
+        assert [a.status for a in asserts] == ["tier3", "tier3"], [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_top_level_assert_discharges_postcondition(self) -> None:
+        # A top-level assert holds when the body returns, so it discharges the
+        # postcondition.  Pre-fix this is a FALSE E500 — Z3 witnesses @Int.0 = 0
+        # (unreachable; the assert traps first).
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(@Int.result > 5) effects(pure)
+{ assert(@Int.0 > 5); @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        ensures_obs = [o for o in result.obligations if o.kind == "ensures"]
+        assert ensures_obs and all(o.status == "verified" for o in ensures_obs), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_top_level_assert_discharges_refined_return(self) -> None:
+        # A refined return type is structurally a postcondition (verifier step
+        # 7b), so a top-level assert discharges it too.  Pre-fix this is a FALSE
+        # E505 — Z3 witnesses @Int.0 = 0 (unreachable; the assert traps first).
+        result = _verify("""
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Pos)
+  requires(true) effects(pure)
+{ assert(@Int.0 > 0); @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        refine_binds = [o for o in result.obligations if o.kind == "refine_bind"]
+        assert refine_binds and all(
+            o.status == "verified" for o in refine_binds
+        ), [(o.kind, o.status) for o in result.obligations]

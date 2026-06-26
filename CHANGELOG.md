@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.179] - 2026-06-26
+
 ### Fixed
 
 - **Verifier soundness: signed division/modulo, body asserts, and contract-position divisions** (batch 1 of the [#392](https://github.com/aallan/vera/issues/392) `smt.py` soundness audit).  Three cases where `vera verify` proved a contract the runtime then rejected — each an implementation-vs-spec divergence the audit surfaced:
@@ -13,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - A body `assert(P)` was ignored by the verifier — a provably-false assertion passed `vera verify` — contradicting spec §6.2.5 ("the compiler verifies this holds").  It now carries a Tier-1 obligation discharged by a two-check: prove `P` → verified; else prove `¬P` (always false) → the new loud `E507`; else Tier 3, guarded at runtime by the §11.14.1 `unreachable` trap ([#800](https://github.com/aallan/vera/issues/800)).
   - The divide-by-zero obligation ([#680](https://github.com/aallan/vera/issues/680)) covered only body divisions; a division in a `requires`/`ensures` predicate — evaluated eagerly, with no short-circuit — was silently proved.  The primitive-op walk now runs over contract predicates too, so an unguarded contract divisor that can be zero is a loud `E526` instead of a runtime trap on a "verified" program ([#801](https://github.com/aallan/vera/issues/801)).
   - Adds the `E507` diagnostic ("Assertion verified false") and the `assert` obligation kind.  The audit's three larger findings — Float64-as-Real ([#797](https://github.com/aallan/vera/issues/797)), integer overflow ([#798](https://github.com/aallan/vera/issues/798)), and `string_length` byte-vs-codepoint ([#802](https://github.com/aallan/vera/issues/802)) — remain open.
+- **Verifier completeness: body `assert`/`assume` facts discharge later obligations** (batch 2 of the [#392](https://github.com/aallan/vera/issues/392) audit — the assume-half of [#800](https://github.com/aallan/vera/issues/800)).  [#800](https://github.com/aallan/vera/issues/800) made a body `assert(P)` carry a Tier-1 *proof* obligation; this adds the *assume* half of the weakest-precondition rule (spec §6.4.1: `assert(P) | P && WP(rest)`, `assume(P) | P ==> WP(rest)`).  After the statement, `P` joins the assumption context for every subsequent obligation in its block — and, for a top-level `assert`/`assume`, for the postcondition and a refined return.  This moves obligations from Tier 3 to Tier 1 and removes spurious `E503` / `E500` / `E505` errors where a prior assert provably guards the site: `{ assert(@Int.0 >= 0); let @Nat = @Int.0; ... }` no longer false-errors, since the §11.14.1 runtime trap makes the negative witness unreachable.  Sound by construction — the fact is assumed only *forward* (never discharging an earlier obligation) and only *within its branch* (never leaking to a sibling), both pinned by regression guards ([#804](https://github.com/aallan/vera/issues/804)).
 
 ## [0.0.178] - 2026-06-25
 
@@ -2589,7 +2592,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.178...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.179...HEAD
+[0.0.179]: https://github.com/aallan/vera/compare/v0.0.178...v0.0.179
 [0.0.178]: https://github.com/aallan/vera/compare/v0.0.177...v0.0.178
 [0.0.177]: https://github.com/aallan/vera/compare/v0.0.176...v0.0.177
 [0.0.176]: https://github.com/aallan/vera/compare/v0.0.175...v0.0.176
