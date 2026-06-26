@@ -284,3 +284,19 @@ public fn f(@Int -> @Int)
   effects(pure)
 { @Int.0 }
 """)
+
+    def test_nested_division_in_untranslatable_requires_obligated(self) -> None:
+        # CR #803 (outside-diff): a division nested inside an UNTRANSLATABLE
+        # requires predicate (Map membership, uninterpreted in Z3) is still
+        # obligated — the primitive-op walk runs before the `z3_pre is None`
+        # early-continue, mirroring the body walk.
+        result = _verify("""
+public fn f(@Map<Int, Int>, @Int -> @Int)
+  requires(map_contains(@Map<Int, Int>.0, 10 / @Int.0))
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert any(d.error_code == "E526" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]

@@ -1353,6 +1353,21 @@ class ContractVerifier:
                         decl.name, "requires", contract, "verified",
                     )
                     continue
+                # CR review (#803, outside-diff): walk for nested primitive-op
+                # obligations FIRST — a division / index nested inside an
+                # UNTRANSLATABLE predicate (`requires(map_contains(m, 10 /
+                # @Int.0))`) must still be obligated, mirroring the body walk,
+                # which descends regardless of translatability.  A requires
+                # predicate can rely only on the PREFIX of earlier requires (the
+                # runtime precondition guard evaluates them left-to-right, so a
+                # later requires is not yet established when an earlier one is
+                # checked — `requires(10 / @Int.0 > 0)` before `requires(@Int.0
+                # != 0)` must NOT discharge the division).  `assumptions` here is
+                # exactly that prefix (refined params + requires[0..i-1]); the
+                # requires are not yet asserted into the solver (step 4 below).
+                self._walk_for_primitive_op_obligations(
+                    decl, contract.expr, smt, slot_env, assumptions,
+                )
                 z3_pre = smt.translate_expr(contract.expr, slot_env)
                 if z3_pre is None:
                     self.summary.tier3_runtime += 1
@@ -1374,19 +1389,6 @@ class ContractVerifier:
                         tier=3,
                     )
                     continue
-                # CR review (#803): walk this requires' divisions / indexes for
-                # primitive-op safety obligations BEFORE adding it to the
-                # assumptions.  A requires predicate can rely only on the PREFIX
-                # of earlier requires — the runtime precondition guard evaluates
-                # them left-to-right, so a later requires is not yet established
-                # when an earlier one is checked (`requires(10 / @Int.0 > 0)`
-                # before `requires(@Int.0 != 0)` must NOT discharge the
-                # division).  `assumptions` here is exactly that prefix (refined
-                # params + requires[0..i-1]); the requires are not yet asserted
-                # into the solver (that happens at step 4 below).
-                self._walk_for_primitive_op_obligations(
-                    decl, contract.expr, smt, slot_env, assumptions,
-                )
                 assumptions.append(z3_pre)
                 self.summary.tier1_verified += 1
                 self._record_obligation(
@@ -1927,16 +1929,48 @@ class ContractVerifier:
         if/match branches), so :py:meth:`SmtContext.check_valid` picks
         them up automatically when discharging each obligation.
 
-        The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
-        MatchExpr arm bodies, IndexExpr, ArrayLit elements, Assert / Assume
-        conditions, InterpolatedString parts, and the argument lists of
-        FnCall / ModuleCall / ConstructorCall / QualifiedCall.  Closure /
-        quantifier bodies
-        (AnonFn / ForallExpr / ExistsExpr) and handler clause / body
-        expressions bind fresh slots and are deliberately not walked — an
-        op there is left to the codegen runtime trap rather than statically
-        obligated (#779; closure-captured array bounds also need the Tier 2
-        work in #427).
+        # WALKER_COVERAGE: (#597 — every Expr subclass has a disposition;
+        # check_walker_coverage.py enforces completeness.  This walker descends
+        # the function body — and, since #801, each contract predicate — to
+        # every nested trapping primitive op.)
+        #
+        # Handled (explicit isinstance branch — check and/or recurse):
+        #   BinaryExpr         → div/mod by-zero check (E526); recurse operands
+        #   UnaryExpr          → recurse operand
+        #   IndexExpr          → array-index bounds check (E527); recurse
+        #   ArrayLit           → recurse elements
+        #   AssertExpr         → assert obligation (#800) + recurse condition
+        #   AssumeExpr         → recurse condition
+        #   IfExpr             → recurse cond / then / else
+        #   Block              → recurse let RHSes, statements, trailing expr
+        #   MatchExpr          → recurse scrutinee + arm bodies
+        #   FnCall             → recurse args
+        #   ModuleCall         → recurse args
+        #   ConstructorCall    → recurse args
+        #   QualifiedCall      → recurse args (effect operation)
+        #   InterpolatedString → recurse interpolated parts
+        #
+        # Leaf — no nested operation, walk terminates:
+        #   IntLit             → literal
+        #   BoolLit            → literal
+        #   StringLit          → literal
+        #   FloatLit           → literal
+        #   UnitLit            → literal
+        #   SlotRef            → bound slot, no sub-expression
+        #   ResultRef          → @result reference, no sub-expression
+        #   NullaryConstructor → nullary ADT tag, no sub-expression
+        #
+        # Intentionally not walked — binds fresh slots / out of fragment, so a
+        # primitive op there is left to the codegen runtime trap (#779, #427):
+        #   AnonFn             → closure body
+        #   ForallExpr         → quantifier body
+        #   ExistsExpr         → quantifier body
+        #   HandleExpr         → handler clause / body
+        #   OldExpr            → contract state operator
+        #   NewExpr            → contract state operator
+        #
+        # Cannot occur — rejected before this walk:
+        #   HoleExpr           → check time rejects
         """
         if isinstance(expr, ast.FnCall):
             for arg in expr.args:
