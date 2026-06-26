@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.180] - 2026-06-26
+
+### Fixed
+
+- **Verifier soundness: `@Float64` contracts use Z3's IEEE-754 FloatingPoint sort** (batch 3 of the [#392](https://github.com/aallan/vera/issues/392) `smt.py` soundness audit).  The verifier modelled `@Float64` as Z3 `Real` — exact, unbounded, no `NaN`/`Inf` — so it proved postconditions the runtime then rejected: `ensures(@Float64.result > @Float64.0)` for `{ @Float64.0 + 1.0 }` verified at Tier 1, yet `inc(2^53)` traps (the ULP is 2, so `x + 1.0` rounds back to `x`), as do `+Inf` and `NaN`.  `@Float64` now maps to `z3.FPSort(11, 53)` (double) with round-nearest-ties-to-even, and `==`/`!=` lower to IEEE `fpEQ`/`fpNEQ` (`NaN != NaN`, `+0.0 == -0.0`) rather than structural equality.  Float64 `%` is modelled as the runtime's truncated remainder (`a - trunc(a/b)*b`, C `fmod`) rather than Z3's `fp.rem`, which had proved e.g. `5.0 % 3.0 == -1.0` where the runtime gives `2.0`.  The unsound relational / reflexive contracts above are no longer proved — Z3 finds the IEEE counterexample — while genuinely-sound contracts (e.g. guarded by `requires(!float_is_nan(...))`) still verify at Tier 1.  As a bonus, `float_is_nan` / `float_is_infinite` and the `nan()` / `infinity()` constants — uninterpreted (Tier 3) under the Real model — now translate to `fpIsNaN` / `fpIsInf` / FP literals and discharge statically.  FP solving returns `unknown` more often than linear real arithmetic, so some `@Float64` predicates fall (honestly) to Tier 3 ([#797](https://github.com/aallan/vera/issues/797)).
+
 ## [0.0.179] - 2026-06-26
 
 ### Fixed
@@ -2592,7 +2598,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.179...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.180...HEAD
+[0.0.180]: https://github.com/aallan/vera/compare/v0.0.179...v0.0.180
 [0.0.179]: https://github.com/aallan/vera/compare/v0.0.178...v0.0.179
 [0.0.178]: https://github.com/aallan/vera/compare/v0.0.177...v0.0.178
 [0.0.177]: https://github.com/aallan/vera/compare/v0.0.176...v0.0.177

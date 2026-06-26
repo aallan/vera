@@ -134,7 +134,7 @@ Contract predicates use the same expression syntax as Vera programs, with the fo
 
 Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Integer literals and slot references
-- Float64 literals (`1.5`, `-0.5`) — Z3 Real sort, sound for relational properties (added [#667](https://github.com/aallan/vera/issues/667))
+- Float64 literals and values (`1.5`, `-0.5`) — Z3's IEEE-754 binary64 FloatingPoint sort (`FPSort(11, 53)`, round-nearest-ties-to-even), so Tier-1 proofs respect `NaN` / `±Inf` / signed zero / rounding and match the runtime; `==`/`!=` are IEEE `fpEQ`/`fpNEQ` and `%` is the truncated remainder (C `fmod`) (added [#667](https://github.com/aallan/vera/issues/667), made IEEE-sound in [#797](https://github.com/aallan/vera/issues/797))
 - String literals
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)

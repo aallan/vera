@@ -50,7 +50,7 @@ class TestTesterUnsupportedParamTypes:
         source = """\
 public fn square(@Float64 -> @Float64)
   requires(true)
-  ensures(@Float64.result >= 0.0)
+  ensures(@Float64.result >= 0.0 || float_is_nan(@Float64.0))
   decreases(0)
   effects(pure)
 {
@@ -589,7 +589,7 @@ class TestTesterFloat64Input:
         source = """\
 public fn abs_float(@Float64 -> @Float64)
   requires(true)
-  ensures(@Float64.result >= 0.0)
+  ensures(@Float64.result >= 0.0 || float_is_nan(@Float64.0))
   decreases(0)
   effects(pure)
 {

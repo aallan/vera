@@ -4213,31 +4213,39 @@ private fn require_json(@String -> @Bool)
 """)
         assert result.summary.tier3_runtime == 0
 
-    def test_float_is_nan_stays_tier3(self) -> None:
-        """float_is_nan stays Tier 3: Float64 maps to reals; BoolVal(False) would be unsound."""
+    def test_float_is_nan_translates_at_tier1(self) -> None:
+        """#797: float_is_nan now translates to fpIsNaN (Float64 is an FP sort),
+        so a contract guarded by it verifies at Tier 1 instead of dropping to
+        Tier 3 — excluding NaN restores reflexivity, so `result == input` holds."""
         result = _verify("""
-private fn safe_sqrt(@Float64 -> @Float64)
+private fn idf(@Float64 -> @Float64)
   requires(!float_is_nan(@Float64.0))
-  ensures(true)
+  ensures(@Float64.result == @Float64.0)
   effects(pure)
 {
   @Float64.0
 }
 """)
-        assert result.summary.tier3_runtime >= 1
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        assert result.summary.tier1_verified >= 1
 
-    def test_float_is_infinite_stays_tier3(self) -> None:
-        """float_is_infinite stays Tier 3 for the same soundness reason as float_is_nan."""
+    def test_float_is_infinite_translates_at_tier1(self) -> None:
+        """#797: float_is_infinite now translates to fpIsInf, so a contract over
+        it verifies at Tier 1 (was Tier 3 under the Real model, where Inf was
+        unrepresentable)."""
         result = _verify("""
-private fn finite_only(@Float64 -> @Float64)
-  requires(!float_is_infinite(@Float64.0))
-  ensures(true)
+private fn finite_only(@Float64 -> @Bool)
+  requires(true)
+  ensures(@Bool.result == float_is_infinite(@Float64.0))
   effects(pure)
 {
-  @Float64.0
+  float_is_infinite(@Float64.0)
 }
 """)
-        assert result.summary.tier3_runtime >= 1
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.error_code for e in errors]
+        assert result.summary.tier1_verified >= 1
 
 
 class TestRefinedTypeParamSorts:

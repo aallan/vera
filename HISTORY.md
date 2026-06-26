@@ -390,6 +390,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.177 | 21 Jun | **Integer division/modulo by zero and array index bounds now carry auto-synthesised obligations (E526/E527), closing the last item in the Tier-0 silent-failures roadmap section; an op inside a closure/quantifier/handler body stays runtime-guarded rather than statically obligated** ([#680](https://github.com/aallan/vera/issues/680)). |
 | v0.0.178 | 25 Jun | **`vera builtins/effects/errors --json` compiler introspection subcommands make the compiler the source of truth for its own built-ins, effects, and error codes, each with a best-effort `since` version** ([#539](https://github.com/aallan/vera/issues/539)). |
 | v0.0.179 | 26 Jun | **The `smt.py` soundness-audit batch lands: signed `/` and `%` truncate toward zero, a body `assert(P)` carries a Tier-1 obligation (loud `E507`), contract-position divisions get a `div_zero` obligation, and a prior `assert`/`assume` now discharges later obligations plus the postcondition at Tier 1** ([#392](https://github.com/aallan/vera/issues/392)). |
+| v0.0.180 | 26 Jun | **`@Float64` contracts are verified against Z3's IEEE-754 FloatingPoint sort instead of mathematical reals, so Tier-1 proofs respect `NaN`/`Inf`/signed-zero/rounding and `%` (C `fmod`) and match the runtime, so unsound relational / reflexive Float64 contracts are now correctly rejected** ([#797](https://github.com/aallan/vera/issues/797)). |
 
 ---
 
