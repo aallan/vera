@@ -447,6 +447,7 @@ ERROR_CODES: dict[str, str] = {
     "E146": "Unary not requires Bool",
     "E147": "Unary negate requires numeric",
     "E148": "Non-convertible type in string interpolation",
+    "E149": "Integer literal out of range for its target type",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
     "E170": "Let binding type mismatch",

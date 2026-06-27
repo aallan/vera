@@ -6345,3 +6345,98 @@ public fn byte_diff(@Byte, @Byte -> @Int)
 { byte_to_int(@Byte.1) - byte_to_int(@Byte.0) }
 """
         _check_ok(src)
+
+
+class TestIntegerLiteralRange812:
+    """#812 — integer literals must fit their target machine type (`@Int` = i64,
+    `@Nat` = u64), checked at type-check time.
+
+    Before this check the gap had two faces, both rooted in the verifier
+    modeling a literal at its unbounded mathematical value while codegen emits a
+    fixed-width `i64.const`:
+
+      - LOUD: a literal >= 2^64 was accepted by `vera check`, then failed at
+        codegen with an opaque `i64.const ... out of range` WAT error.
+      - SILENT + UNSOUND: a literal in (i64.MAX, u64.MAX] used as `@Int` made
+        `vera verify` prove `ensures(@Int.result == 18446744073709551615)` while
+        the runtime returned `-1` (the i64 reinterpretation of the all-ones bit
+        pattern) — the verifier proving a postcondition the runtime violates.
+
+    Both are now a clean compile-time E149.
+    """
+
+    def _e149(self, source: str) -> None:
+        errs = _errors(source)
+        assert any(e.error_code == "E149" for e in errs), \
+            f"expected E149, got {[(e.error_code, e.description) for e in errs]}"
+
+    def test_literal_in_int_context_exceeding_i64_is_error(self) -> None:
+        # The SILENT soundness bug: u64.MAX as @Int verified `== u64.MAX` but ran
+        # to -1.  Now rejected at check time before it can reach that false proof.
+        self._e149("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 18446744073709551615 }
+""")
+
+    def test_int_context_i64_max_plus_one_is_error(self) -> None:
+        self._e149("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 9223372036854775808 }
+""")
+
+    def test_literal_exceeding_u64_is_error(self) -> None:
+        # The LOUD case (#812 as filed): >= 2^64 previously reached codegen.
+        self._e149("""
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ 18446744073709551616 }
+""")
+
+    def test_int_literal_at_i64_max_ok(self) -> None:
+        _check_ok("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 9223372036854775807 }
+""")
+
+    def test_nat_literal_at_u64_max_ok(self) -> None:
+        # u64.MAX is valid as @Nat — only the @Int context (and > u64.MAX) errors.
+        _check_ok("""
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ 18446744073709551615 }
+""")
+
+    def test_call_arg_int_context_exceeding_i64_is_error(self) -> None:
+        # The target type flows through a call argument too (bidirectional).
+        self._e149("""
+public fn g(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ g(18446744073709551615) }
+""")
+
+    def test_negated_i64_min_literal_ok(self) -> None:
+        # i64.MIN = -(2^63): the magnitude 2^63 exceeds i64.MAX but is valid as
+        # the operand of negation — the asymmetric i64 range [-2^63, 2^63-1].
+        # `-N` parses as unary-minus over the magnitude literal, which is checked
+        # against the u64 bound (2^63 <= u64.MAX), so i64.MIN is NOT falsely
+        # rejected.  (Guards the asymmetric boundary against a future tightening.)
+        _check_ok("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ -9223372036854775808 }
+""")
+
+    def test_negated_literal_exceeding_u64_magnitude_is_error(self) -> None:
+        # -(2^64): the magnitude itself exceeds u64.MAX, caught at the inner
+        # literal regardless of the negation.
+        self._e149("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ -18446744073709551616 }
+""")

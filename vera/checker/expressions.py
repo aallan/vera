@@ -32,6 +32,14 @@ from vera.types import (
     types_equal,
 )
 
+# Machine bounds for the integer types (#812): `@Int` is i64, `@Nat` is u64.  An
+# integer literal must fit its target type's range — otherwise codegen's
+# fixed-width `i64.const` either hard-fails (> u64.MAX) or silently reinterprets
+# the bit pattern (an `@Int` literal in (i64.MAX, u64.MAX] runs as a negative)
+# while the verifier reasons over the unbounded mathematical value.
+_I64_MAX = 2**63 - 1
+_U64_MAX = 2**64 - 1
+
 
 class ExpressionsMixin:
     """Mixin providing expression type synthesis and related methods."""
@@ -124,6 +132,40 @@ class ExpressionsMixin:
                     and expected.name == "Byte"
                     and 0 <= expr.value <= 255):
                 return BYTE
+            # #812: range-check the literal against its target machine type
+            # before typing it.  The target's base type (refinements stripped)
+            # decides the bound: an `@Int` context is i64 (max 2^63-1), anything
+            # else — `@Nat`, or no expected type, where a non-negative literal
+            # defaults to `@Nat` below — is u64 (max 2^64-1).  A literal past its
+            # bound is a clean error here instead of (loud) an opaque
+            # `i64.const … out of range` codegen failure or (silent, unsound) a
+            # Tier-1 proof over a value the i64 runtime reinterprets.
+            base = base_type(expected) if expected is not None else None
+            targets_int = (isinstance(base, PrimitiveType)
+                           and base.name == "Int")
+            bound = _I64_MAX if targets_int else _U64_MAX
+            if expr.value > bound:
+                type_name = "@Int (i64)" if targets_int else "@Nat (u64)"
+                self._error(
+                    expr,
+                    f"Integer literal {expr.value} is out of range for "
+                    f"{type_name}; the maximum is {bound}.",
+                    rationale=(
+                        "Integer literals are fixed-width at runtime — `@Int` "
+                        "is a signed 64-bit integer, `@Nat` an unsigned one.  A "
+                        "literal beyond the type's range cannot be represented: "
+                        "codegen would either reject it or silently reinterpret "
+                        "its bit pattern, diverging from what the verifier "
+                        "proved (#812)."
+                    ),
+                    fix=(
+                        "Use a literal within the type's range, or choose a "
+                        "wider target type (`@Nat` reaches "
+                        f"{_U64_MAX} where `@Int` stops at {_I64_MAX})."
+                    ),
+                    spec_ref='Chapter 4, Section 4.2 "Literals"',
+                    error_code="E149",
+                )
             # Non-negative integer literals are Nat (which is a subtype of
             # Int).  This lets literals like 0, 1, 42 satisfy Nat parameters
             # without refinement verification.
