@@ -6432,6 +6432,19 @@ public fn f(@Unit -> @Int)
 { -9223372036854775808 }
 """)
 
+    def test_negated_i64_min_minus_one_is_error(self) -> None:
+        # SOUNDNESS: -(2^63 + 1) = -9223372036854775809 is one below i64.MIN, so
+        # it is out of @Int range.  It parses as unary-minus over the magnitude
+        # literal 9223372036854775809, which is <= u64.MAX — so without an
+        # explicit unary-neg bound it slipped through and ran to a wrong POSITIVE
+        # value (9223372036854775807), the same silent reinterpretation the
+        # positive check closes.  Must be E149.
+        self._e149("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ -9223372036854775809 }
+""")
+
     def test_negated_literal_exceeding_u64_magnitude_is_error(self) -> None:
         # -(2^64): the magnitude itself exceeds u64.MAX, caught at the inner
         # literal regardless of the negation.

@@ -38,6 +38,7 @@ from vera.types import (
 # the bit pattern (an `@Int` literal in (i64.MAX, u64.MAX] runs as a negative)
 # while the verifier reasons over the unbounded mathematical value.
 _I64_MAX = 2**63 - 1
+_I64_MIN = -(2**63)
 _U64_MAX = 2**64 - 1
 
 
@@ -516,6 +517,34 @@ class ExpressionsMixin:
                     error_code="E147",
                 )
                 return UnknownType()
+            # #812: a negated integer literal `-m` is an `@Int` (i64), whose
+            # magnitude may reach 2^63 (forming i64.MIN = -2^63) but no further.
+            # The operand literal `m` is checked above against the u64 bound (it
+            # has no `@Int` context under the negation), so the band
+            # (2^63, u64.MAX] slips past — and would reinterpret to a wrong value
+            # at runtime (e.g. `-9223372036854775809` runs to 9223372036854775807).
+            # Reject it here.  (`m > u64.MAX` is already E149 at the operand, so
+            # cap at u64.MAX to avoid a double diagnostic.)
+            if (isinstance(expr.operand, ast.IntLit)
+                    and 2**63 < expr.operand.value <= _U64_MAX):
+                self._error(
+                    expr,
+                    f"Integer literal -{expr.operand.value} is out of range "
+                    f"for @Int (i64); the minimum is {_I64_MIN}.",
+                    rationale=(
+                        "A negated integer literal is a signed 64-bit `@Int`; "
+                        "its magnitude must fit the i64 range, which is "
+                        "asymmetric (the minimum -2^63 has magnitude 2^63, but "
+                        "no negative value goes below it).  A larger magnitude "
+                        "would reinterpret its bit pattern at runtime (#812)."
+                    ),
+                    fix=(
+                        "Use a value within the signed 64-bit range "
+                        f"({_I64_MIN} .. {_I64_MAX})."
+                    ),
+                    spec_ref='Chapter 4, Section 4.2 "Literals"',
+                    error_code="E149",
+                )
             # Negating Nat produces Int (may go negative)
             if types_equal(operand_base, NAT):
                 return INT
