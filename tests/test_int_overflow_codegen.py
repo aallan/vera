@@ -34,6 +34,7 @@ from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.parser import parse_to_ast
+from vera.resolver import ModuleResolver
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
@@ -55,11 +56,21 @@ def _compile_with_types(source: str):
         path = f.name
     try:
         ast = parse_to_ast(source)
-        diags, arts = typecheck_with_artifacts(ast, source, file=path)
+        # Mirror cmd_run / cmd_compile exactly: resolve imports, then thread the
+        # resolved modules through BOTH typecheck and codegen so the overflow
+        # classifier sees the same cross-module context production does (CR #809).
+        # Single-file fixtures resolve to an empty list (a no-op), but a fixture
+        # that adds an import is then exercised through the real import path.
+        resolver = ModuleResolver(_root=Path(path).parent)
+        resolved = resolver.resolve_imports(ast, Path(path))
+        diags, arts = typecheck_with_artifacts(
+            ast, source, file=path, resolved_modules=resolved,
+        )
         errors = [d for d in diags if d.severity == "error"]
         assert not errors, f"typecheck errors: {[d.description for d in errors]}"
         result = codegen_compile(
             ast, source=source, file=path,
+            resolved_modules=resolved,
             expr_semantic_types=arts.expr_semantic_types,
         )
         errs = [d for d in result.diagnostics if d.severity == "error"]
@@ -67,6 +78,44 @@ def _compile_with_types(source: str):
         return result
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+def _compile_multifile(files: dict[str, str], main: str):
+    """Compile a multi-file program (entry + imported modules) the way ``cmd_run``
+    does, so the overflow guard is exercised inside an *imported* body (CR #809).
+
+    ``files`` maps filename -> source; ``main`` is the entry filename.  The files
+    are written to one temp dir so ``ModuleResolver`` resolves the imports by
+    module name, then ``resolved_modules`` is threaded through both typecheck and
+    codegen — without it the import would not resolve and the imported function
+    would never be compiled (let alone guarded).
+    """
+    import shutil
+
+    d = tempfile.mkdtemp()
+    try:
+        for name, src in files.items():
+            (Path(d) / name).write_text(src, encoding="utf-8")
+        main_path = str(Path(d) / main)
+        source = files[main]
+        ast = parse_to_ast(source)
+        resolver = ModuleResolver(_root=Path(main_path).parent)
+        resolved = resolver.resolve_imports(ast, Path(main_path))
+        diags, arts = typecheck_with_artifacts(
+            ast, source, file=main_path, resolved_modules=resolved,
+        )
+        errors = [x for x in diags if x.severity == "error"]
+        assert not errors, f"typecheck errors: {[x.description for x in errors]}"
+        result = codegen_compile(
+            ast, source=source, file=main_path,
+            resolved_modules=resolved,
+            expr_semantic_types=arts.expr_semantic_types,
+        )
+        errs = [x for x in result.diagnostics if x.severity == "error"]
+        assert not errs, f"codegen errors: {[x.description for x in errs]}"
+        return result
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 _MASK64 = (1 << 64) - 1
@@ -430,3 +479,55 @@ class TestMulRoundTripDifferential798:
             if trapped != overflows:
                 mismatches.append((a, b, trapped, overflows))
         assert not mismatches, mismatches[:10]
+
+
+class TestCrossModuleOverflow798:
+    """The overflow guard must fire inside an *imported* function body, not just
+    the entry file (CR #809).
+
+    The single-file fixtures above never cross an import boundary, so they cannot
+    catch a regression in the cross-module compile path (``resolved_modules`` not
+    threaded → the imported body is never compiled/guarded).  Here an imported
+    ``lib_inc`` overflows i64; calling it must trap, proving the guard is emitted
+    in the imported body the same way ``cmd_run`` / ``cmd_compile`` produce it.
+    """
+
+    _LIB = """
+module ovf_lib;
+
+public fn lib_inc(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+"""
+    _MAIN = """
+import ovf_lib;
+
+public fn run_it(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ lib_inc(9223372036854775807) }
+"""
+
+    def test_imported_int_add_overflow_traps(self) -> None:
+        result = _compile_multifile(
+            {"ovf_lib.vera": self._LIB, "main.vera": self._MAIN}, "main.vera",
+        )
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="run_it", args=[])
+
+    def test_imported_bounded_add_does_not_trap(self) -> None:
+        # Companion no-trap case: a safe argument returns cleanly, so the trap
+        # above is the overflow guard firing — not the import path being broken.
+        main = """
+import ovf_lib;
+
+public fn run_it(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ lib_inc(41) }
+"""
+        result = _compile_multifile(
+            {"ovf_lib.vera": self._LIB, "main.vera": main}, "main.vera",
+        )
+        exec_result = execute(result, fn_name="run_it", args=[])
+        assert exec_result.value == 42

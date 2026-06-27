@@ -52,8 +52,11 @@ public fn inc(@Int -> @Int)
 { @Int.0 + 1 }
 """)
         ovf = [o for o in result.obligations if o.kind == "int_overflow"]
-        assert ovf, [(o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3" for o in ovf), [(o.kind, o.status) for o in ovf]
+        # Exactly one arithmetic site → exactly one int_overflow obligation; a
+        # walker that double-recorded the site would slip past an "at least one"
+        # check, so pin the exact count (CR #809).
+        assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert ovf[0].status == "tier3", [(o.kind, o.status) for o in ovf]
 
     def test_nat_add_unbounded_emits_undischarged_overflow_obligation(self) -> None:
         # Same shape at the u64 ceiling for @Nat.
@@ -63,8 +66,8 @@ public fn inc(@Nat -> @Nat)
 { @Nat.0 + 1 }
 """)
         ovf = [o for o in result.obligations if o.kind == "int_overflow"]
-        assert ovf, [(o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3" for o in ovf), [(o.kind, o.status) for o in ovf]
+        assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert ovf[0].status == "tier3", [(o.kind, o.status) for o in ovf]
 
     def test_overflow_obligation_discharged_when_operands_bounded(self) -> None:
         # Bounded operands → result provably in i64 range → the overflow
@@ -78,6 +81,57 @@ public fn add_small(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """)
         ovf = [o for o in result.obligations if o.kind == "int_overflow"]
-        assert ovf and all(o.status == "verified" for o in ovf), [
+        assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert ovf[0].status == "verified", [(o.kind, o.status) for o in ovf]
+
+    def test_overflow_obligation_violated_when_provably_out_of_range(self) -> None:
+        # The loud-error third arm of the two-check, untested until now: when the
+        # operands provably force the result out of range, the int_overflow
+        # obligation is 'violated' and a compile error (E528) is raised *before*
+        # codegen — the analog of index_bounds' E527 and nat_sub's E502.  A
+        # regression that silently downgraded this arm to Tier 3 would re-open the
+        # #798-class soundness hole AND pass the discharge/tier3 tests above, so
+        # it is pinned explicitly here.  @Int at the i64 ceiling.
+        result = _verify("""
+public fn over(@Int -> @Int)
+  requires(@Int.0 >= 9223372036854775807) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+""")
+        ovf = [o for o in result.obligations if o.kind == "int_overflow"]
+        assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert ovf[0].status == "violated", ovf[0].status
+        assert ovf[0].error_code == "E528", ovf[0].error_code
+        assert any(d.error_code == "E528" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_nat_overflow_obligation_violated_at_u64_ceiling(self) -> None:
+        # The @Nat (u64) ceiling variant of the E528 path.
+        result = _verify("""
+public fn over(@Nat -> @Nat)
+  requires(@Nat.0 >= 18446744073709551615) ensures(true) effects(pure)
+{ @Nat.0 + 1 }
+""")
+        ovf = [o for o in result.obligations if o.kind == "int_overflow"]
+        assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert ovf[0].status == "violated", ovf[0].status
+        assert ovf[0].error_code == "E528", ovf[0].error_code
+
+    def test_nat_subtraction_excluded_from_overflow_obligation(self) -> None:
+        # The SUB+Nat exclusion checked at the REAL verifier gate (not the
+        # differential's re-derived helper, which can't catch an exclusion
+        # desync): a @Nat - @Nat site is the nat_sub underflow obligation (E502),
+        # never an int_overflow.  Pins the exclusion against a regression that
+        # started high-overflow-guarding @Nat subtraction.
+        result = _verify("""
+public fn sub(@Nat, @Nat -> @Nat)
+  requires(@Nat.1 >= @Nat.0) ensures(true) effects(pure)
+{ @Nat.1 - @Nat.0 }
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert "int_overflow" not in kinds, [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert "nat_sub" in kinds, [
             (o.kind, o.status) for o in result.obligations
         ]

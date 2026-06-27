@@ -195,6 +195,17 @@ public fn f(@Nat, @Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
 { @Nat.1 * @Nat.0 + 3 }
 """,
+    # RISK 7: an @Int add narrowed into a @Nat return slot.  The result resolves
+    # to @Nat, but the addition runs at i64 — both sides must classify the
+    # operands' common type (@Int), not the narrowed result type.  This drives
+    # the narrowed shape through the parametrised codegen<->verifier lockstep,
+    # complementing test_narrowed_result_classified_* which pins only the
+    # verifier side (CR #809).
+    "int_narrowed_into_nat": """
+public fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+""",
     # Float arithmetic must be classified None on both sides (not guarded).
     "float_not_guarded": """
 public fn f(@Float64, @Float64 -> @Float64)
