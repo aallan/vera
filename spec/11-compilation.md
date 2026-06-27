@@ -106,7 +106,7 @@ Binary operators compile to their WASM equivalents:
 
 Float64 modulo uses the decomposition `a % b = a - trunc(a / b) * b`, where `trunc` is `f64.trunc` (truncation toward zero). This matches C's `fmod` semantics and is consistent with integer `%` (which uses `i64.rem_s`, also truncated toward zero). WASM has no native `f64.rem` instruction, so the compiler emits a multi-instruction sequence using temporary locals.
 
-`-` on `@Nat` operands is the bare `i64.sub` shown above only when the verifier discharges the underflow obligation `lhs >= rhs`. When it cannot, the codegen emits a guarded sequence that traps on underflow — see §11.2.1.
+`-` on `@Nat` operands compiles to the bare `i64.sub` shown above only at sites exempt from the underflow guard (e.g. pure-literal subtractions). Where the guard applies (a statically-`@Nat` result with `@Nat` operand provenance, §11.2.1), it is emitted regardless of the verifier's tier — the codegen is type-driven, not tier-driven, so a Tier-1 discharge of `lhs >= rhs` means the guard provably never fires, not that the bare `i64.sub` is emitted instead.
 
 Float64 comparisons return `i32` (0 or 1), matching WASM's native comparison semantics.
 
