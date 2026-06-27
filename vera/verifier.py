@@ -4670,8 +4670,8 @@ class ContractVerifier:
             rationale=(
                 "float_to_int compiles to `i64.trunc_f64_s`, which traps at "
                 "runtime on NaN, +/-infinity, or a value whose truncation falls "
-                "outside the i64 range.  The SMT solver proved the argument is "
-                "always one of these (#807)."
+                "outside the i64 range.  The argument is a constant the verifier "
+                "determined is always one of these (#807)."
             ),
             fix=(
                 "Guard the conversion so the argument is finite and in range — "

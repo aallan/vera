@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,250 tests, 93 conformance programs, 35 examples, 13 spec chapters.
+5,253 tests, 93 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -21,6 +21,7 @@ The infrastructure that catches the next regression before a user does, plus the
 | Issue | What |
 |---|---|
 | [#808](https://github.com/aallan/vera/issues/808) | Give the `@Int` / `@Nat` arithmetic-overflow runtime trap (#798) a precise `overflow` trap kind, so a dynamic overflow surfaces as a dedicated trap message rather than the generic `unreachable` kind it currently shares. |
+| [#812](https://github.com/aallan/vera/issues/812) | Range-check integer literals in the checker (`@Int` within i64, `@Nat` within u64) with a clean E1xx diagnostic, instead of an out-of-range literal flowing through to an opaque `i64.const … out of range` codegen failure.  Found during the #807 review. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |

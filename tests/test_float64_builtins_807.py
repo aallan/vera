@@ -40,6 +40,7 @@ from vera.transform import transform
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as compile_vera, execute
 from vera.codegen.api import WasmTrapError
+from vera.errors import Diagnostic
 from vera.smt import _FLOAT64_SORT, _wasm_fp_max, _wasm_fp_min
 from vera.verifier import VerifyResult, verify
 
@@ -262,8 +263,11 @@ public fn f(@Int -> @Float64)
         ]
 
 
+_I64_MIN = -(2**63)
+
+
 def _i2f_triples() -> list[int]:
-    # i64 boundary + the 2^53 rounding boundary (where i64→f64 loses precision
+    # i64 boundaries + the 2^53 rounding boundary (where i64→f64 loses precision
     # and convert_i64_s rounds nearest-ties-to-even) + small values.
     return [
         0, 1, -1, 42, -7, 1000000,
@@ -271,17 +275,27 @@ def _i2f_triples() -> list[int]:
         9007199254740993,      # 2^53 + 1 (rounds to even → 2^53)
         9007199254740995,      # 2^53 + 3 (rounds to even → 2^53 + 4)
         9223372036854775807,   # i64.MAX
+        _I64_MIN,              # i64.MIN — the asymmetric two's-complement edge
     ]
+
+
+def _int_to_float_body(n: int) -> str:
+    # The literal -2^63 (i64.MIN) cannot be written directly: |i64.MIN| = 2^63
+    # is out of the positive i64 literal range, so build it as
+    # `0 - i64.MAX - 1` (each step stays in range).
+    if n == _I64_MIN:
+        return "int_to_float(0 - 9223372036854775807 - 1)"
+    return f"int_to_float({n})" if n >= 0 else f"int_to_float(0 - {-n})"
 
 
 class TestIntToFloatDifferential807:
     """Verify-vs-run: int_to_float's Z3 model fpToFP(RNE, ToReal(n)) must agree
     with wasmtime f64.convert_i64_s(n) bit-for-bit, including the 2^53 rounding
-    boundary and the i64 max."""
+    boundary and the i64 min/max."""
 
     @pytest.mark.parametrize("n", _i2f_triples())
     def test_model_agrees_with_runtime(self, n: int) -> None:
-        body = f"int_to_float({n})" if n >= 0 else f"int_to_float(0 - {-n})"
+        body = _int_to_float_body(n)
         runtime = _run_float_expr(body)
         model = z3.simplify(
             z3.fpToFP(z3.RNE(), z3.ToReal(z3.IntVal(n)), _FLOAT64_SORT)
@@ -312,7 +326,7 @@ def _run_int_expr(body: str, sig: str = "@Unit -> @Int") -> int:
     return value
 
 
-def _errs(result: VerifyResult, code: str) -> list[object]:
+def _errs(result: VerifyResult, code: str) -> list[Diagnostic]:
     return [d for d in result.diagnostics
             if d.severity == "error" and d.error_code == code]
 
@@ -346,15 +360,18 @@ public fn f(@Unit -> @Int)
 
     def test_nan_arg_is_E529(self) -> None:
         # float_to_int(nan()) traps at runtime (i64.trunc_f64_s) → a concrete
-        # NaN arg is a provable domain violation → loud E529 compile error.
+        # NaN arg is a provable domain violation → loud E529 compile error.  The
+        # reason string must name NaN specifically (the report distinguishes
+        # NaN / infinite / out-of-range — pin it so a swapped/collapsed label
+        # can't pass silently).
         result = _verify("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { float_to_int(nan()) }
 """)
-        assert _errs(result, "E529"), [
-            (d.error_code, d.severity) for d in result.diagnostics
-        ]
+        errs = _errs(result, "E529")
+        assert errs, [(d.error_code, d.severity) for d in result.diagnostics]
+        assert "argument is NaN" in errs[0].description, errs[0].description
 
     def test_infinity_arg_is_E529(self) -> None:
         result = _verify("""
@@ -362,9 +379,19 @@ public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { float_to_int(infinity()) }
 """)
-        assert _errs(result, "E529"), [
-            (d.error_code, d.severity) for d in result.diagnostics
-        ]
+        errs = _errs(result, "E529")
+        assert errs, [(d.error_code, d.severity) for d in result.diagnostics]
+        assert "argument is infinite" in errs[0].description, errs[0].description
+
+    def test_negative_infinity_arg_is_E529(self) -> None:
+        result = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ float_to_int(0.0 - infinity()) }
+""")
+        errs = _errs(result, "E529")
+        assert errs, [(d.error_code, d.severity) for d in result.diagnostics]
+        assert "argument is infinite" in errs[0].description, errs[0].description
 
     def test_out_of_range_is_E529(self) -> None:
         # ~1.8e19 > i64.MAX (9.22e18): finite but trunc out of i64 range → traps
@@ -374,9 +401,20 @@ public fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { float_to_int(9000000000000000000.0 * 2.0) }
 """)
-        assert _errs(result, "E529"), [
-            (d.error_code, d.severity) for d in result.diagnostics
-        ]
+        errs = _errs(result, "E529")
+        assert errs, [(d.error_code, d.severity) for d in result.diagnostics]
+        assert "out of i64 range" in errs[0].description, errs[0].description
+
+    def test_negative_out_of_range_is_E529(self) -> None:
+        # ~-1.8e19 < i64.MIN: the low-side (two's-complement) out-of-range edge.
+        result = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ float_to_int(0.0 - 9000000000000000000.0 * 2.0) }
+""")
+        errs = _errs(result, "E529")
+        assert errs, [(d.error_code, d.severity) for d in result.diagnostics]
+        assert "out of i64 range" in errs[0].description, errs[0].description
 
     def test_symbolic_defers_to_tier3(self) -> None:
         # SOUNDNESS GUARD for concrete-gating: a symbolic float_to_int argument
