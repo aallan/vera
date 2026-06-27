@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 import tempfile
+from pathlib import Path
 
 import pytest
 import z3
@@ -97,12 +98,17 @@ def _run_float_expr(body: str) -> float:
         fh.write(src)
         fh.flush()
         path = fh.name
-    result = compile_vera(transform(parse_file(path)), source=src, file=path)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"compile errors: {[d.description for d in errors]}"
-    value = execute(result, fn_name="f").value
-    assert isinstance(value, float), f"expected float, got {value!r}"
-    return value
+    try:
+        result = compile_vera(transform(parse_file(path)), source=src, file=path)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, f"compile errors: {[d.description for d in errors]}"
+        value = execute(result, fn_name="f").value
+        assert isinstance(value, float), f"expected float, got {value!r}"
+        return value
+    finally:
+        # delete=False (Windows can't reopen a held temp file via parse_file);
+        # unlink manually so parametrized runs don't leak .vera files.
+        Path(path).unlink(missing_ok=True)
 
 
 def _py_to_z3fp(x: float) -> z3.FPRef:
@@ -318,12 +324,17 @@ def _run_int_expr(body: str, sig: str = "@Unit -> @Int") -> int:
         fh.write(src)
         fh.flush()
         path = fh.name
-    result = compile_vera(transform(parse_file(path)), source=src, file=path)
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"compile errors: {[d.description for d in errors]}"
-    value = execute(result, fn_name="f").value
-    assert isinstance(value, int), f"expected int, got {value!r}"
-    return value
+    try:
+        result = compile_vera(transform(parse_file(path)), source=src, file=path)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, f"compile errors: {[d.description for d in errors]}"
+        value = execute(result, fn_name="f").value
+        assert isinstance(value, int), f"expected int, got {value!r}"
+        return value
+    finally:
+        # delete=False (Windows can't reopen a held temp file via parse_file);
+        # unlink manually so parametrized runs don't leak .vera files.
+        Path(path).unlink(missing_ok=True)
 
 
 def _errs(result: VerifyResult, code: str) -> list[Diagnostic]:
@@ -470,7 +481,8 @@ public fn f(@Unit -> @Int)
         "float_to_int(nan())",
         "float_to_int(infinity())",
         "float_to_int(0.0 - infinity())",
-        "float_to_int(9000000000000000000.0 * 2.0)",
+        "float_to_int(9000000000000000000.0 * 2.0)",        # > i64.MAX
+        "float_to_int(0.0 - 9000000000000000000.0 * 2.0)",  # < i64.MIN
     ])
     def test_domain_violations_trap_at_runtime(self, body: str) -> None:
         # The runtime MUST trap exactly where the verifier raises E529 — this is
