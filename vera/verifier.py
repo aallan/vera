@@ -2063,6 +2063,13 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
+            # #807: float_to_int(x) compiles to `i64.trunc_f64_s`, which traps on
+            # NaN / ±Inf / out-of-i64-range — a partial op, so it carries a
+            # domain obligation just like div-by-zero (#801) and overflow (#798).
+            if expr.name == "float_to_int" and len(expr.args) == 1:
+                self._check_float_to_int_domain_obligation(
+                    decl, expr, smt, slot_env, assumptions,
+                )
             return
 
         if isinstance(expr, ast.ModuleCall):
@@ -3475,6 +3482,76 @@ class ContractVerifier:
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "int_overflow", expr, "tier3")
 
+    def _check_float_to_int_domain_obligation(
+        self,
+        decl: ast.FnDecl,
+        call: ast.FnCall,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the ``float_to_int`` domain obligation at one site (#807).
+
+        ``float_to_int(x)`` compiles to ``i64.trunc_f64_s``, which TRAPS when
+        ``x`` is ``NaN``, ``±Inf``, or when ``trunc(x)`` falls outside
+        ``[i64.MIN, i64.MAX]``.  So each site carries a "``x`` is finite and in
+        range" obligation, mirroring div-by-zero (#801) and overflow (#798):
+
+        - a CONCRETE finite in-range argument → **Tier 1** (verified);
+        - a concrete ``NaN`` / ``Inf`` / out-of-range argument → provable trap →
+          **loud E529**;
+        - a symbolic argument → **honest Tier 3**, guarded by the codegen trunc
+          trap.
+
+        Concrete-gated: Z3's symbolic ``FP``↔``Real`` reasoning is unreliable
+        (it returns spurious counterexamples — see :mod:`vera.smt`'s
+        ``int_to_float`` note), so a symbolic argument defers straight to Tier 3
+        rather than risk a spurious discharge or a false E529.  A concrete FP
+        literal is classified directly (exact, no solver call), so no
+        ``assumptions`` are consulted — nothing a precondition could assert can
+        change the value of a literal.
+        """
+        x = smt.translate_expr(call.args[0], slot_env)
+        self.summary.total += 1
+        if not isinstance(x, z3.FPRef):
+            # Untranslatable argument → Tier 3.
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "float_to_int_domain", call, "tier3",
+            )
+            return
+        xs = z3.simplify(x)
+        if not z3.is_fp_value(xs):
+            # Symbolic argument → Tier 3 (codegen trunc trap guards).
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "float_to_int_domain", call, "tier3",
+            )
+            return
+
+        # Concrete FP literal — classify the domain directly.
+        is_nan = z3.is_true(z3.simplify(z3.fpIsNaN(xs)))
+        is_inf = z3.is_true(z3.simplify(z3.fpIsInf(xs)))
+        in_range = False
+        if not is_nan and not is_inf:
+            real = z3.simplify(z3.fpToReal(xs))
+            if z3.is_rational_value(real):
+                truncated = int(real.as_fraction())  # toward zero
+                in_range = _I64_MIN <= truncated <= _I64_MAX
+
+        if not is_nan and not is_inf and in_range:
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "float_to_int_domain", call, "verified",
+            )
+        else:
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "float_to_int_domain", call, "violated",
+                error_code="E529",
+            )
+            self._report_float_to_int_domain(decl, call, is_nan, is_inf)
+
     def _fresh_slot_var(
         self, smt: SmtContext, te: ast.TypeExpr,
     ) -> object | None:
@@ -4572,6 +4649,40 @@ class ContractVerifier:
                 'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
             ),
             error_code="E528",
+        )
+
+    def _report_float_to_int_domain(
+        self,
+        decl: ast.FnDecl,
+        call: ast.FnCall,
+        is_nan: bool,
+        is_inf: bool,
+    ) -> None:
+        """Emit an E529 diagnostic for a provably out-of-domain float_to_int."""
+        reason = (
+            "NaN" if is_nan else "infinite" if is_inf else "out of i64 range"
+        )
+        operand = ast.format_expr(call)
+        self._error(
+            call,
+            f"`{operand}` in '{decl.name}' provably traps: the argument is "
+            f"{reason}.",
+            rationale=(
+                "float_to_int compiles to `i64.trunc_f64_s`, which traps at "
+                "runtime on NaN, +/-infinity, or a value whose truncation falls "
+                "outside the i64 range.  The SMT solver proved the argument is "
+                "always one of these (#807)."
+            ),
+            fix=(
+                "Guard the conversion so the argument is finite and in range — "
+                "check `!float_is_nan(x)` and `!float_is_infinite(x)` and bound "
+                "its magnitude before calling float_to_int, or handle the "
+                "out-of-domain case explicitly."
+            ),
+            spec_ref=(
+                'Chapter 6, Section 6.4.3 "Primitive Operation Safety"'
+            ),
+            error_code="E529",
         )
 
     def _report_assert_violation(

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.183] - 2026-06-27
+
+### Added
+
+- **Tier-1 verification modeling for the modelable `@Float64` builtins `float_clamp`, `int_to_float`, and `float_to_int`** (follow-up to [#797](https://github.com/aallan/vera/issues/797), the [#392](https://github.com/aallan/vera/issues/392) `smt.py` soundness audit's `@Float64` → FloatingPoint-sort fix; the three were left as Tier-3 deferrals there).  `float_clamp(v, lo, hi)` is modeled unconditionally as the faithful WASM `f64.min(f64.max(v, lo), hi)`: Z3's own `fp.min` / `fp.max` *diverge* from WASM on `NaN` (SMT-LIB returns the non-`NaN` operand; WASM propagates `NaN`) and on signed zero, so the model builds those semantics explicitly — a naive `fpMin` / `fpMax` would unsoundly prove `!float_is_nan(float_clamp(NaN, …))`.  `int_to_float` and `float_to_int` cross the Int↔Float boundary, where Z3's *symbolic* Int↔Real↔FP reasoning is unreliable (it returns spurious counterexamples that do not satisfy their own constraints), so they are modeled at Tier 1 **only for a concrete (constant-foldable) argument** and a symbolic one defers to a sound **Tier 3** — matching the audit principle of deferring what Z3 cannot soundly model.  `float_to_int` compiles to `i64.trunc_f64_s`, which traps on `NaN` / `±Inf` / out-of-`i64`-range, so a concrete out-of-domain argument is now a loud compile error (**E529**) and a symbolic one a runtime-guarded Tier-3 trap.  Each model is confirmed by a verify-vs-run differential.  The four format/parse `@Float64` builtins (`float_to_string`, `parse_float64`, `decimal_from_float`, `decimal_to_float`) remain Tier-3 by necessity.  ([#807](https://github.com/aallan/vera/issues/807))
+
 ## [0.0.182] - 2026-06-27
 
 ### Fixed
@@ -2610,7 +2616,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.182...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.183...HEAD
+[0.0.183]: https://github.com/aallan/vera/compare/v0.0.182...v0.0.183
 [0.0.182]: https://github.com/aallan/vera/compare/v0.0.181...v0.0.182
 [0.0.181]: https://github.com/aallan/vera/compare/v0.0.180...v0.0.181
 [0.0.180]: https://github.com/aallan/vera/compare/v0.0.179...v0.0.180

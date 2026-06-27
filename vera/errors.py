@@ -512,6 +512,7 @@ ERROR_CODES: dict[str, str] = {
     "E526": "Division or modulo by zero",
     "E527": "Array index out of bounds",
     "E528": "Arithmetic overflow",
+    "E529": "float_to_int domain (NaN, infinity, or out of i64 range)",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",
