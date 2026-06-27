@@ -574,16 +574,19 @@ class SmtContext:
         if isinstance(expr, ast.StringLit):
             # #802: Z3's string sort cannot faithfully model two kinds of code
             # point, so a literal containing either defers to Tier 3 (return
-            # None) rather than be reasoned over as a corrupted term:
-            #   - above its alphabet (> U+2FFFF): the Python binding silently
-            #     stores the *escape string* (literal "\U000xxxxx" ASCII chars)
-            #     instead of the character, so Contains/PrefixOf/SuffixOf match
-            #     phantom bytes the runtime never sees, proving false contracts;
-            #   - a lone surrogate (U+D800..U+DFFF): not UTF-8-encodable, so
-            #     z3.StringVal raises on it.
-            # (string_length models a literal via its UTF-8 byte count, not
-            # z3.StringVal, so it is unaffected by the alphabet limit — but it
-            # too must guard the surrogate case, below.)
+            # None) rather than be reasoned over as a corrupted term.  For both,
+            # the Python binding silently stores the code point's *escape text*
+            # instead of the character (e.g. z3.StringVal("\U00030000") holds
+            # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
+            # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
+            # never sees, proving false contracts.  The two cases:
+            #   - above the alphabet (> U+2FFFF); and
+            #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
+            #     UTF-8 encoding at all (see string_length below).
+            # We must return None *before* z3.StringVal sees either.  (string_length
+            # models a literal via its UTF-8 byte count, not z3.StringVal, so it
+            # is unaffected by the alphabet limit — but it too must guard the
+            # surrogate case, below, where the byte encoding genuinely fails.)
             if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
                    for ch in expr.value):
                 return None

@@ -236,10 +236,11 @@ public fn f(@String -> @Bool)
         )
 
     def test_surrogate_literal_does_not_crash(self) -> None:
-        # A lone surrogate (U+D800) is not UTF-8-encodable; before the guard,
-        # string_length's `value.encode("utf-8")` and the predicate's
-        # `z3.StringVal` both raised UnicodeEncodeError and crashed `vera verify`.
-        # Both must now defer to Tier 3 without crashing.
+        # A lone surrogate (U+D800) is not UTF-8-encodable, so string_length's
+        # `value.encode("utf-8")` raised UnicodeEncodeError and crashed
+        # `vera verify` before the guard.  (The predicate's `z3.StringVal` does
+        # not raise — it stores phantom escape text like the astral case — but is
+        # guarded the same way.)  Both must now defer to Tier 3 without crashing.
         length = _verify("""
 public fn f(@Unit -> @Int)
   requires(true) ensures(@Int.result == 1) effects(pure)

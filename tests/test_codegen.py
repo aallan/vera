@@ -1223,6 +1223,25 @@ public fn len(@Unit -> @Nat)
 '''
         assert _run(four, fn="len") == 4
 
+    def test_string_length_deferred_contract_enforced_at_runtime(self) -> None:
+        """#802 soundness loop: a slot-arg string_length contract that `vera
+        verify` DEFERS to Tier 3 is still enforced at runtime — the false
+        `ensures(@Int.result == 1)` over "é" (2 bytes) raises a postcondition
+        violation.  This proves the deferral is *sound* (the runtime catches the
+        false contract verify could not prove), not merely imprecise — it closes
+        the loop the verifier-side deferral tests in
+        tests/test_string_length_soundness.py leave open."""
+        source = r'''
+public fn f(@String -> @Int)
+  requires(true) ensures(@Int.result == 1) effects(pure)
+{ string_length(@String.0) }
+'''
+        result = _compile_ok(source)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="f", raw_args=["é"])
+
 
 # =====================================================================
 # Bool comparison codegen (i32 path)
