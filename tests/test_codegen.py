@@ -25,6 +25,7 @@ from vera.codegen import (
     compile,
     execute,
 )
+from vera.codegen.api import WasmTrapError
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -1237,10 +1238,15 @@ public fn f(@String -> @Int)
 { string_length(@String.0) }
 '''
         result = _compile_ok(source)
-        with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
-        ):
+        # Pin the *exact* observable: execute() normalises every wasmtime trap
+        # into a WasmTrapError, so a broad raises((WasmtimeError, Trap,
+        # RuntimeError)) would green-pass on any failure — a compile/setup
+        # error or a regression that traps for a different reason.  Assert the
+        # contract-violation kind so the test fails iff this specific deferral
+        # stops being caught.
+        with pytest.raises(WasmTrapError) as excinfo:
             execute(result, fn_name="f", raw_args=["é"])
+        assert excinfo.value.kind == "contract_violation"
 
 
 # =====================================================================

@@ -214,23 +214,32 @@ public fn f(@Unit -> @Bool)
         # Tier 1 (tier3 == 0); U+30000, one above, defers (tier3 >= 1).  Uses a
         # predicate, not string_length, because string_length byte-counts via
         # Python and so does not exercise the z3.StringVal alphabet cutoff.
+        #
+        # Literal-on-literal with requires(true) so the *single* ensures
+        # obligation is driven solely by the body predicate's astral literal.
+        # A slot-arg requires(@String.0 == "\u{30000}") form adds a second
+        # tier3 obligation (the astral requires literal also defers), so
+        # `tier3 >= 1` there would still pass if only the requires deferred and
+        # the body predicate regressed to Tier 1 — masking the soundness-
+        # critical path.  Pinning one obligation removes that ambiguity.
         modeled = _verify("""
-public fn f(@String -> @Bool)
-  requires(@String.0 == "\\u{2FFFF}")
+public fn f(@Unit -> @Bool)
+  requires(true)
   ensures(@Bool.result == true)
   effects(pure)
-{ string_starts_with(@String.0, "\\u{2FFFF}") }
+{ string_starts_with("\\u{2FFFF}", "\\u{2FFFF}") }
 """)
         assert _ok(modeled) and modeled.summary.tier3_runtime == 0, (
             modeled.summary.tier1_verified, modeled.summary.tier3_runtime,
         )
         deferred = _verify("""
-public fn f(@String -> @Bool)
-  requires(@String.0 == "\\u{30000}")
+public fn f(@Unit -> @Bool)
+  requires(true)
   ensures(@Bool.result == true)
   effects(pure)
-{ string_starts_with(@String.0, "\\u{30000}") }
+{ string_starts_with("\\u{30000}", "\\u{30000}") }
 """)
+        assert _ok(deferred), [d.description for d in deferred.diagnostics]
         assert deferred.summary.tier3_runtime >= 1, (
             deferred.summary.tier1_verified, deferred.summary.tier3_runtime,
         )
