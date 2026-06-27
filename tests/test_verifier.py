@@ -4033,6 +4033,12 @@ private fn sum(@List<Int> -> @Int)
         +8 T1, +47 T3, +55 total, +0 tier3_unguarded — verified by
         reconstructing the prior 265/31/296/0 baseline with int_overflow
         obligations excluded.
+
+        #802: string_length on a non-literal argument now defers to Tier 3
+        (Z3's Length counts code points, Vera counts UTF-8 bytes), so two
+        example contracts over a slot-arg string_length move T1 -> T3.  Net:
+        -2 T1, +2 T3, +0 total (the obligations persist, only their tier
+        changes): 273/78/351 -> 271/80/351.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -4045,8 +4051,8 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 273, f"Expected 273 T1, got {t1}"
-        assert t3 == 78, f"Expected 78 T3, got {t3}"
+        assert t1 == 271, f"Expected 271 T1, got {t1}"
+        assert t3 == 80, f"Expected 80 T3, got {t3}"
         assert total == 351, f"Expected 351 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
@@ -4151,28 +4157,20 @@ public fn outer(@Nat -> @Nat)
 
 
 class TestStringLengthVerification:
-    """string_length() on @String arguments uses z3.Length() — native Z3 string theory (Tier 1).
+    """string_length defers to Tier 3 for non-literal arguments (#802).
 
-    The uninterpreted function path is only a fallback for non-SeqSort arguments and is
-    never reached in practice now that String params are correctly declared as SeqSort.
+    Z3's ``Length`` over ``z3.String`` counts Unicode code points, but Vera's
+    runtime ``string_length`` counts UTF-8 bytes — so modeling a non-literal
+    ``string_length`` with ``z3.Length`` proved false contracts for non-ASCII
+    input.  The only sound Tier-1 model is the exact byte length of a string
+    *literal*; everything else defers to a runtime-guarded Tier-3 obligation.
+    (Comprehensive coverage: tests/test_string_length_soundness.py.)
     """
 
-    def test_string_length_gt_zero_requires_tier1(self) -> None:
-        """requires(string_length(@String.0) > 0) is verified Tier 1."""
-        result = _verify("""
-private fn non_empty(@String -> @Int)
-  requires(string_length(@String.0) > 0)
-  ensures(true)
-  effects(pure)
-{
-  string_length(@String.0)
-}
-""")
-        assert result.summary.tier1_verified >= 1
-        assert result.summary.tier3_runtime == 0
-
-    def test_string_length_ensures_tier1(self) -> None:
-        """ensures(@Int.result >= 0) on string_length return is verified Tier 1."""
+    def test_string_length_slot_in_ensures_defers_to_tier3(self) -> None:
+        """ensures over a slot-arg string_length can't be Tier-1 proved (the
+        byte count is unknown to Z3); it defers to a runtime-guarded Tier-3
+        obligation rather than the old unsound z3.Length proof."""
         result = _verify("""
 private fn get_length(@String -> @Int)
   requires(true)
@@ -4182,11 +4180,26 @@ private fn get_length(@String -> @Int)
   string_length(@String.0)
 }
 """)
+        assert result.summary.tier3_runtime >= 1
+
+    def test_string_length_literal_byte_length_tier1(self) -> None:
+        """string_length of a literal is modeled at its exact UTF-8 byte length
+        and verifies at Tier 1 (ASCII: 2 bytes for "hi")."""
+        result = _verify("""
+private fn two(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  string_length("hi")
+}
+""")
         assert result.summary.tier1_verified >= 1
         assert result.summary.tier3_runtime == 0
 
-    def test_string_length_comparison_tier1(self) -> None:
-        """string_length in both requires and ensures resolves to Tier 1."""
+    def test_string_length_slot_comparison_defers(self) -> None:
+        """A slot-arg string_length in an ensures comparison defers to Tier 3
+        (was an unsound Tier-1 z3.Length proof)."""
         result = _verify("""
 private fn longer_than(@String, @Int -> @Bool)
   requires(@Int.0 >= 0)
@@ -4196,8 +4209,7 @@ private fn longer_than(@String, @Int -> @Bool)
   string_length(@String.0) > @Int.0
 }
 """)
-        assert result.summary.tier1_verified >= 2
-        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier3_runtime >= 1
 
 
 class TestStringPredicateVerification:
@@ -4297,19 +4309,21 @@ class TestRefinedTypeParamSorts:
         """RefinedType(STRING) param uses SeqSort — string predicates resolve to Tier 1.
 
         Without the RefinedType branch in _is_string_type, the parameter falls through to
-        declare_int (IntSort) and string_length uses the uninterpreted function, which cannot
-        prove string_length(@NonEmptyString.0) > 0 even with the requires assumption (Tier 3).
-        With the fix, z3.Length() is used and Z3 proves the ensures from the requires (Tier 1).
+        declare_int (IntSort) and the string predicate uses an uninterpreted function, which
+        cannot prove it even with the requires assumption (Tier 3).  With the fix the param
+        is a SeqSort and Z3's PrefixOf proves the ensures from the requires (Tier 1).  Uses
+        string_starts_with (a Tier-1 predicate); string_length now defers to Tier 3 for
+        non-literal arguments (#802), so it is no longer the right probe for SeqSort wiring.
         """
         result = _verify("""
-type NonEmptyString = { @String | string_length(@String.0) > 0 };
+type HttpsUrl = { @String | string_starts_with(@String.0, "https://") };
 
-private fn pass_through(@NonEmptyString -> @Bool)
-  requires(string_length(@NonEmptyString.0) > 0)
+private fn pass_through(@HttpsUrl -> @Bool)
+  requires(string_starts_with(@HttpsUrl.0, "https://"))
   ensures(@Bool.result)
   effects(pure)
 {
-  string_length(@NonEmptyString.0) > 0
+  string_starts_with(@HttpsUrl.0, "https://")
 }
 """)
         assert result.summary.tier3_runtime == 0
@@ -4405,16 +4419,18 @@ class TestRefinementPredicateTranslation:
         assert z3.is_false(z3.simplify(z3.substitute(result, (v, z3.IntVal(-1)))))
 
     def test_string_predicate_with_builtin_call(self) -> None:
-        """A predicate calling a builtin (`string_length(@String.0) > 0`)
+        """A predicate calling a builtin (`string_starts_with(@String.0, "h")`)
         translates with the binder substituted — same surface as a `requires`
-        clause, so `translate_expr` handles it."""
+        clause, so `translate_expr` handles it.  (string_length is no longer the
+        probe here: it defers to Tier 3 for non-literal args (#802), so a
+        string_length refinement translates to None.)"""
         import z3
         from vera.smt import SmtContext
         from vera.types import RefinedType, STRING
         from vera.verifier import ContractVerifier
 
         pred = self._predicate_of(
-            "type NEStr = { @String | string_length(@String.0) > 0 };\n"
+            'type HStr = { @String | string_starts_with(@String.0, "h") };\n'
         )
         refined = RefinedType(STRING, pred)
         smt = SmtContext()
@@ -4422,10 +4438,10 @@ class TestRefinementPredicateTranslation:
         result = ContractVerifier._translate_refined_predicate(smt, refined, s)
         assert result is not None
         assert z3.is_true(
-            z3.simplify(z3.substitute(result, (s, z3.StringVal("ab"))))
+            z3.simplify(z3.substitute(result, (s, z3.StringVal("hi"))))
         )
         assert z3.is_false(
-            z3.simplify(z3.substitute(result, (s, z3.StringVal(""))))
+            z3.simplify(z3.substitute(result, (s, z3.StringVal("x"))))
         )
 
     def test_non_primitive_base_is_none(self) -> None:
@@ -4561,13 +4577,15 @@ private fn caller(@Int -> @Int)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert len(self._refine_obligations(result, "verified")) == 1
 
-    def test_string_length_predicate_discharges(self) -> None:
-        """A predicate calling a builtin (`string_length(...) > 0`) discharges
-        a non-empty string literal at a call argument (R8)."""
+    def test_string_predicate_discharges(self) -> None:
+        """A predicate calling a builtin (`string_starts_with(...)`) discharges
+        a matching string literal at a call argument (R8).  (string_length now
+        defers to Tier 3 for non-literal args (#802), so it is no longer the
+        probe for refinement discharge.)"""
         result = _verify("""
-type NonEmpty = { @String | string_length(@String.0) > 0 };
+type StartsH = { @String | string_starts_with(@String.0, "h") };
 
-private fn use(@NonEmpty -> @Int)
+private fn use(@StartsH -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 }
 

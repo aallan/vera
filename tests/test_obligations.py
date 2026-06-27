@@ -590,9 +590,13 @@ class TestObligationKinds:
         arguments substituted, and the fix shows concrete code — the
         guard with the rendered call, and the requires() to add.
         """
+        # Uses string_starts_with (a Tier-1 string predicate) rather than
+        # string_length, which now defers to Tier 3 (#802) and so would not
+        # produce a static call-site E501 — the test is about E501 *rendering*,
+        # not string_length specifically.
         source = (
             "private fn need_pos(@String -> @String)\n"
-            "  requires(string_length(@String.0) > 0)\n"
+            '  requires(string_starts_with(@String.0, "x"))\n'
             "  ensures(true)\n"
             "  effects(pure)\n"
             "{\n"
@@ -612,13 +616,13 @@ class TestObligationKinds:
         e501 = [d for d in result.diagnostics if d.error_code == "E501"]
         assert len(e501) == 1
         d = e501[0]
-        assert 'At this call site: string_length("") > 0' in d.description
+        assert 'At this call site: string_starts_with("", "x")' in d.description
         assert d.fix is not None
         assert (
-            'if string_length("") > 0 then { need_pos("") } else { ... }'
+            'if string_starts_with("", "x") then { need_pos("") } else { ... }'
             in d.fix
         )
-        assert "requires(string_length(\"\") > 0)" in d.fix
+        assert 'requires(string_starts_with("", "x"))' in d.fix
 
     def test_e501_substitution_resolves_de_bruijn_order(self) -> None:
         """Slot substitution must honour De Bruijn most-recent-first:
