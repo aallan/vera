@@ -1203,6 +1203,26 @@ public fn len(@Unit -> @Nat)
 '''
         assert _run(source, fn="len") == 3
 
+    def test_string_length_non_ascii_counts_utf8_bytes(self) -> None:
+        """#802: string_length counts UTF-8 BYTES at runtime — "é" (U+00E9) is
+        2 bytes and "😀" (U+1F600) is 4 bytes, each a single code point.  This
+        pins the runtime premise the verifier's literal byte-model relies on:
+        if codegen regressed to code-point counting, the verifier-side
+        soundness tests (test_string_length_soundness.py) would stay green but
+        this would catch it."""
+        two = r'''
+public fn len(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_length("\u{e9}") }
+'''
+        assert _run(two, fn="len") == 2
+        four = r'''
+public fn len(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_length("\u{1F600}") }
+'''
+        assert _run(four, fn="len") == 4
+
 
 # =====================================================================
 # Bool comparison codegen (i32 path)

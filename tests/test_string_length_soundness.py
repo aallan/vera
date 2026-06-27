@@ -110,13 +110,43 @@ public fn f(@Unit -> @Int)
 """)
         assert _ok(ok) and ok.summary.tier1_verified >= 1
 
+    def test_escaped_unicode_literal_byte_length(self) -> None:
+        # The byte count comes from the DECODED literal value, not the raw source
+        # text: "\\u{e9}" decodes to é (2 UTF-8 bytes), not its 6 source chars.
+        # A naive raw-source-length model would (wrongly) prove == 6.
+        ok = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 2) effects(pure)
+{ string_length("\\u{e9}") }
+""")
+        assert _ok(ok) and ok.summary.tier1_verified >= 1
+
+    def test_four_byte_emoji_literal_byte_length(self) -> None:
+        # A 4-byte UTF-8 character (U+1F600) — code-point count 1, byte count 4,
+        # the case where code points and bytes diverge most.
+        ok = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 4) effects(pure)
+{ string_length("\\u{1F600}") }
+""")
+        assert _ok(ok) and ok.summary.tier1_verified >= 1
+
+    def test_empty_string_literal_byte_length(self) -> None:
+        ok = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 0) effects(pure)
+{ string_length("") }
+""")
+        assert _ok(ok) and ok.summary.tier1_verified >= 1
+
 
 class TestStringPredicateSoundness802:
     """contains / starts_with / ends_with are boolean predicates; under UTF-8
     self-synchronization a valid-UTF-8 needle matches at the byte level iff at
     the code-point level, so Z3's Contains/PrefixOf/SuffixOf stay sound on
     non-ASCII input — they remain Tier-1 (this is the verifier side; the
-    end-to-end verify↔run agreement is pinned in test_string_length_codegen)."""
+    end-to-end runtime byte semantics are pinned by the non-ASCII string_length
+    runtime tests in tests/test_codegen.py)."""
 
     def test_starts_with_non_ascii_tier1(self) -> None:
         result = _verify("""
@@ -147,3 +177,41 @@ public fn f(@String -> @Bool)
 { string_contains(@String.0, "afé") }
 """)
         assert _ok(result) and result.summary.tier3_runtime == 0
+
+
+class TestAstralStringLiteral802:
+    """Z3's string sort alphabet is U+0000..U+2FFFF.  Above that the Python
+    binding's `z3.StringVal` silently stores the literal's *escape string*
+    instead of the character, so a predicate over such a literal could prove a
+    false contract (`string_contains("\\u{10FFFF}", "f")` — the astral char has
+    no `f` byte, yet the phantom escape string does).  Such literals defer to
+    Tier 3 (smt.py returns None for them), so the verifier never falsely proves
+    over them.  `string_length` is unaffected — it byte-counts the decoded value,
+    not `z3.StringVal` (covered in TestStringLengthSoundness802)."""
+
+    def test_astral_predicate_not_proved_at_tier1(self) -> None:
+        # Pre-fix the verifier PROVED this false contract at Tier 1 (the phantom
+        # escape string matched "f"); now the astral literal defers, so nothing
+        # about it is a Tier-1 proof — no false proof. (U+10FFFF as bytes
+        # f4 8f bf bf contains no "f"; the runtime returns false.)
+        result = _verify("""
+public fn check(@String -> @Bool)
+  requires(@String.0 == "\\u{10FFFF}")
+  ensures(@Bool.result == true)
+  effects(pure)
+{ string_contains(@String.0, "f") }
+""")
+        assert result.summary.tier1_verified == 0, (
+            result.summary.tier1_verified, result.summary.tier3_runtime,
+        )
+
+    def test_astral_string_length_still_byte_modeled(self) -> None:
+        # string_length bypasses z3.StringVal (it byte-counts the decoded value),
+        # so even an astral literal's byte length is soundly Tier-1: U+10FFFF is
+        # 4 UTF-8 bytes.
+        ok = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 4) effects(pure)
+{ string_length("\\u{10FFFF}") }
+""")
+        assert _ok(ok) and ok.summary.tier1_verified >= 1

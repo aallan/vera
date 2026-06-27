@@ -572,6 +572,17 @@ class SmtContext:
             return z3.BoolVal(expr.value)
 
         if isinstance(expr, ast.StringLit):
+            # #802: Z3's string sort alphabet is U+0000..U+2FFFF.  For any code
+            # point above that, the Python binding's z3.StringVal silently stores
+            # the *escape string* (the literal "\U000xxxxx" ASCII characters)
+            # instead of the character — so Contains/PrefixOf/SuffixOf over such
+            # a literal match phantom ASCII bytes the byte-level runtime never
+            # sees, proving false contracts at Tier 1.  Defer the literal to
+            # Tier 3 (return None) rather than model it unsoundly.  (string_length
+            # is unaffected: it models a literal via Python's UTF-8 byte count,
+            # not z3.StringVal.)
+            if any(ord(ch) > 0x2FFFF for ch in expr.value):
+                return None
             return z3.StringVal(expr.value)
 
         if isinstance(expr, ast.FloatLit):
