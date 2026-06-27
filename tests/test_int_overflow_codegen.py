@@ -176,6 +176,16 @@ public fn mul(@Nat, @Nat -> @Nat)
 { @Nat.1 * @Nat.0 }
 """
 
+# @Nat SUBTRACTION — the #520 nat_sub *underflow* path, NOT a #798 overflow.
+# De Bruijn: sub(a, b) computes @Nat.1 - @Nat.0 = a - b.  Slot operands give it
+# @Nat provenance, so the nat_sub guard applies (a pure-literal `0 - 1` would be
+# exempt and would NOT trap — hence slots, not literals).
+_NAT_SUB = """
+public fn sub(@Nat, @Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.1 - @Nat.0 }
+"""
+
 
 # Literal-LEFT @Int: the site is classified on the EXPRESSION's resolved type
 # (@Int / i64), not the literal's @Nat self-type — so the overflow is caught
@@ -342,6 +352,30 @@ class TestNatMulOverflow798:
 
     def test_max_times_one_no_trap(self) -> None:
         _assert_no_trap(_NAT_MUL, "mul", [U64_MAX, 1], U64_MAX)
+
+
+class TestNatSubUnderflow798:
+    """@Nat subtraction stays the #520 nat_sub *underflow* guard and must NOT be
+    switched to #798 high-overflow arithmetic — it is excluded on both the
+    verifier and codegen sides.  This co-located block pins the #798 exclusion
+    boundary so a regression that started overflow-guarding @Nat subtraction
+    surfaces right next to the overflow tests (nat_sub codegen is also covered in
+    test_codegen.py).  Operands are slots so the guard applies — a pure-literal
+    `0 - 1` is intentionally exempt and would not trap.  De Bruijn: sub(a, b)
+    computes @Nat.1 - @Nat.0 = a - b.
+    """
+
+    def test_underflow_traps(self) -> None:
+        _assert_traps(_NAT_SUB, "sub", [3, 5])       # 3 - 5 underflows
+
+    def test_zero_minus_one_via_slots_traps(self) -> None:
+        _assert_traps(_NAT_SUB, "sub", [0, 1])       # 0 - 1, slot provenance
+
+    def test_in_range_difference_no_trap(self) -> None:
+        _assert_no_trap(_NAT_SUB, "sub", [5, 3], 2)  # 5 - 3 = 2
+
+    def test_equal_operands_no_trap(self) -> None:
+        _assert_no_trap(_NAT_SUB, "sub", [7, 7], 0)  # 7 - 7 = 0
 
 
 # =====================================================================

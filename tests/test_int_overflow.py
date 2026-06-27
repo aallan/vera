@@ -116,6 +116,12 @@ public fn over(@Nat -> @Nat)
         assert len(ovf) == 1, [(o.kind, o.status) for o in result.obligations]
         assert ovf[0].status == "violated", ovf[0].status
         assert ovf[0].error_code == "E528", ovf[0].error_code
+        # Also assert the user-facing E528 diagnostic, mirroring the signed
+        # ceiling test above — the @Nat branch must surface on both the internal
+        # obligation and the external diagnostic surface (CR #809).
+        assert any(d.error_code == "E528" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
 
     def test_nat_subtraction_excluded_from_overflow_obligation(self) -> None:
         # The SUB+Nat exclusion checked at the REAL verifier gate (not the

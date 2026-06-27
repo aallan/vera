@@ -37,7 +37,18 @@ CONFORMANCE_DIR = REPO_ROOT / "tests" / "conformance"
 
 
 def _corpus_files() -> list[Path]:
-    """Examples + every verify/run-level conformance program."""
+    """Examples + every verify/run-level conformance program, plus imported
+    library modules swept *standalone*.
+
+    A cross-module *consumer* (e.g. ``ch07_cross_module_contracts.vera``) cannot
+    be swept in place: the verifier obligates arithmetic per-module, so an
+    imported site reads as unobligated in the consumer's verification while the
+    codegen guards the imported body it inlines — a category mismatch, not a
+    desync (verifier ``None`` vs codegen ``Int``).  Instead we sweep the
+    imported ``*_lib.vera`` modules on their own, where they typecheck cleanly
+    and their sites ARE in lockstep, so cross-module arithmetic is still covered
+    without that false positive (CR #809).
+    """
     manifest = json.loads(
         (CONFORMANCE_DIR / "manifest.json").read_text(encoding="utf-8"),
     )
@@ -46,7 +57,13 @@ def _corpus_files() -> list[Path]:
         for entry in manifest
         if entry["level"] in ("verify", "run")
     ]
-    return sorted(EXAMPLES_DIR.glob("*.vera")) + sorted(conformance)
+    lib_modules = [
+        CONFORMANCE_DIR / entry["file"]
+        for entry in manifest
+        if entry["level"] == "check" and entry["file"].endswith("_lib.vera")
+    ]
+    return (sorted(EXAMPLES_DIR.glob("*.vera"))
+            + sorted(conformance) + sorted(lib_modules))
 
 
 def _binary_sites(program: ast.Program) -> list[ast.BinaryExpr]:
