@@ -4039,6 +4039,14 @@ private fn sum(@List<Int> -> @Int)
         example contracts over a slot-arg string_length move T1 -> T3.  Net:
         -2 T1, +2 T3, +0 total (the obligations persist, only their tier
         changes): 273/78/351 -> 271/80/351.
+
+        #807: float_to_int(x) now carries a domain obligation (NaN / Inf /
+        out-of-i64-range, E529) at every site.  `json.vera` has one SYMBOLIC
+        site — `float_to_int(@Float64.0 * 10.0)` — which defers to Tier 3 (Z3's
+        FP<->Real reasoning is unreliable, so symbolic float_to_int is concrete-
+        gated to Tier 3, guarded by the codegen trunc trap).  No example has a
+        concrete float_to_int site, so no T1 is added.  Net: +1 T3, +1 total:
+        271/80/351 -> 271/81/352.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -4052,8 +4060,8 @@ private fn sum(@List<Int> -> @Int)
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
         assert t1 == 271, f"Expected 271 T1, got {t1}"
-        assert t3 == 80, f"Expected 80 T3, got {t3}"
-        assert total == 351, f"Expected 351 total, got {total}"
+        assert t3 == 81, f"Expected 81 T3, got {t3}"
+        assert total == 352, f"Expected 352 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

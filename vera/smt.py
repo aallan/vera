@@ -40,6 +40,76 @@ if TYPE_CHECKING:
 # default to RNE, so `_translate_binary` needs no rounding-mode change.
 _FLOAT64_SORT = z3.FPSort(11, 53)
 
+# i64 range — the codegen target width for @Int and the trap boundary for
+# float_to_int's `i64.trunc_f64_s` (#807).
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+
+
+def _wasm_fp_max(a: z3.FPRef, b: z3.FPRef) -> z3.FPRef:
+    """Z3 model of WASM ``f64.max`` (#807).
+
+    Z3's own ``z3.fpMax`` does NOT match WASM: SMT-LIB ``fp.max`` returns the
+    *other* operand when one is NaN and leaves the ±0 case implementation-
+    defined, whereas WASM ``f64.max`` PROPAGATES NaN and returns ``+0`` for any
+    ``max(±0, ∓0)``.  Modeling ``float_clamp`` with ``z3.fpMax`` would therefore
+    be unsound (it would prove ``!float_is_nan(clamp(NaN, …))``).  This builds
+    the faithful WASM semantics explicitly:
+
+      - either operand NaN → NaN;
+      - strictly greater operand wins;
+      - on a tie (includes ±0 and equal values): both ±0 → ``+0`` unless BOTH
+        are ``-0`` (in which case ``-0``); otherwise the (equal) operand.
+    """
+    return z3.If(
+        z3.Or(z3.fpIsNaN(a), z3.fpIsNaN(b)),
+        z3.fpNaN(_FLOAT64_SORT),
+        z3.If(
+            z3.fpGT(a, b),
+            a,
+            z3.If(
+                z3.fpGT(b, a),
+                b,
+                z3.If(
+                    z3.And(z3.fpIsZero(a), z3.fpIsZero(b)),
+                    z3.If(
+                        z3.And(z3.fpIsNegative(a), z3.fpIsNegative(b)),
+                        z3.fpMinusZero(_FLOAT64_SORT),
+                        z3.fpPlusZero(_FLOAT64_SORT),
+                    ),
+                    a,
+                ),
+            ),
+        ),
+    )
+
+
+def _wasm_fp_min(a: z3.FPRef, b: z3.FPRef) -> z3.FPRef:
+    """Z3 model of WASM ``f64.min`` (#807) — the ``min`` dual of
+    :func:`_wasm_fp_max`.  NaN propagates; on a ±0 tie WASM returns ``-0`` if
+    EITHER operand is ``-0`` (otherwise ``+0``)."""
+    return z3.If(
+        z3.Or(z3.fpIsNaN(a), z3.fpIsNaN(b)),
+        z3.fpNaN(_FLOAT64_SORT),
+        z3.If(
+            z3.fpLT(a, b),
+            a,
+            z3.If(
+                z3.fpLT(b, a),
+                b,
+                z3.If(
+                    z3.And(z3.fpIsZero(a), z3.fpIsZero(b)),
+                    z3.If(
+                        z3.Or(z3.fpIsNegative(a), z3.fpIsNegative(b)),
+                        z3.fpMinusZero(_FLOAT64_SORT),
+                        z3.fpPlusZero(_FLOAT64_SORT),
+                    ),
+                    a,
+                ),
+            ),
+        ),
+    )
+
 
 # =====================================================================
 # Slot environment — De Bruijn → Z3 variable mapping
@@ -1141,6 +1211,70 @@ class SmtContext:
             return z3.fpNaN(_FLOAT64_SORT)
         if call.name == "infinity" and len(call.args) == 0:
             return z3.fpPlusInfinity(_FLOAT64_SORT)
+
+        # Built-in: float_clamp(v, lo, hi) → f64.min(f64.max(v, lo), hi) (#807).
+        # Pure Float64, so modeled unconditionally — Z3 reasons reliably over the
+        # FP sort here (unlike the Int↔Float conversions below).  Must mirror the
+        # codegen ORDER exactly: max-then-min, so that lo > hi clamps to hi (the
+        # reverse, min-then-max, would clamp to lo).  Uses the faithful WASM
+        # min/max helpers, NOT z3.fpMin/fpMax which diverge on NaN/±0.
+        if call.name == "float_clamp" and len(call.args) == 3:
+            v = self.translate_expr(call.args[0], env)
+            lo = self.translate_expr(call.args[1], env)
+            hi = self.translate_expr(call.args[2], env)
+            if (isinstance(v, z3.FPRef)
+                    and isinstance(lo, z3.FPRef)
+                    and isinstance(hi, z3.FPRef)):
+                return _wasm_fp_min(_wasm_fp_max(v, lo), hi)
+            return None
+
+        # Built-in: int_to_float(n) → f64.convert_i64_s (#807).  Modeled as
+        # fpToFP(RNE, ToReal(n)) — round-nearest-ties-to-even, matching the
+        # runtime conversion — but ONLY for a CONCRETE (constant-foldable)
+        # argument.  Z3's symbolic Int↔Real↔FP reasoning is unreliable: it
+        # returns spurious `sat` counterexamples that don't satisfy their own
+        # constraints (non-deterministically across timeouts), so a symbolic
+        # argument defers to a sound Tier 3 rather than risk a false
+        # discharge/refutation.  (int_to_float is total — no trap — so no
+        # obligation is needed; out-of-i64 n cannot occur at runtime, and the
+        # over-approximation is sound for the concrete case we model.)
+        if call.name == "int_to_float" and len(call.args) == 1:
+            n = self.translate_expr(call.args[0], env)
+            if not isinstance(n, z3.ArithRef) or n.sort() != z3.IntSort():
+                return None
+            ns = z3.simplify(n)
+            if not z3.is_int_value(ns):
+                return None  # symbolic → Tier 3
+            return z3.simplify(
+                z3.fpToFP(z3.RNE(), z3.ToReal(ns), _FLOAT64_SORT)
+            )
+
+        # Built-in: float_to_int(x) → i64.trunc_f64_s (#807).  Partial: traps on
+        # NaN / ±Inf / out-of-i64-range, so the verifier ALSO emits a domain
+        # obligation (E529) at each site.  Here we model only the VALUE, and only
+        # for a CONCRETE, finite, in-range argument — computed exactly as the
+        # truncated-toward-zero integer (Python int() on the exact rational of
+        # the FP literal).  A symbolic argument (Z3's FP↔Real reasoning is
+        # unreliable — see int_to_float above) or a NaN/Inf/out-of-range literal
+        # (no integer value; the obligation flags it, the runtime traps) returns
+        # None → Tier 3.
+        if call.name == "float_to_int" and len(call.args) == 1:
+            x = self.translate_expr(call.args[0], env)
+            if not isinstance(x, z3.FPRef):
+                return None
+            xs = z3.simplify(x)
+            if not z3.is_fp_value(xs):
+                return None  # symbolic → Tier 3
+            if (z3.is_true(z3.simplify(z3.fpIsNaN(xs)))
+                    or z3.is_true(z3.simplify(z3.fpIsInf(xs)))):
+                return None  # no integer value; obligation flags, runtime traps
+            real = z3.simplify(z3.fpToReal(xs))
+            if not z3.is_rational_value(real):
+                return None  # pragma: no cover — finite FP → rational
+            truncated = int(real.as_fraction())  # toward zero
+            if not (_I64_MIN <= truncated <= _I64_MAX):
+                return None  # out of range; obligation flags, runtime traps
+            return z3.IntVal(truncated)
 
         # Built-in: byte_to_int() — identity (both IntSort in Z3)
         if call.name == "byte_to_int" and len(call.args) == 1:

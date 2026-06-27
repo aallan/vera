@@ -119,7 +119,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("01-lexical-structure.md", 45): "FRAGMENT",  # "fn  let  if  then ..."
 
     # Chapter 4 — type alias + bare let statement (not top-level)
-    ("04-expressions.md", 132): "FRAGMENT",  # type alias + let @PosInt = 42
+    ("04-expressions.md", 134): "FRAGMENT",  # type alias + let @PosInt = 42
 
     # Chapter 5 — template with metavariable placeholders
     ("05-functions.md", 19): "FRAGMENT",  # fn function_name(@ParamType1 ...)
@@ -142,7 +142,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("05-functions.md", 324): "FRAGMENT",   # fn(A -> B) in param position
 
     # Chapter 6 — inline function type in type alias
-    ("06-contracts.md", 349): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+    ("06-contracts.md", 352): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
     ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body

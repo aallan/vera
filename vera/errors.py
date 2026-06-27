@@ -447,6 +447,7 @@ ERROR_CODES: dict[str, str] = {
     "E146": "Unary not requires Bool",
     "E147": "Unary negate requires numeric",
     "E148": "Non-convertible type in string interpolation",
+    "E149": "Integer literal out of range for its target type",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
     "E170": "Let binding type mismatch",
@@ -512,6 +513,7 @@ ERROR_CODES: dict[str, str] = {
     "E526": "Division or modulo by zero",
     "E527": "Array index out of bounds",
     "E528": "Arithmetic overflow",
+    "E529": "float_to_int domain (NaN, infinity, or out of i64 range)",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",
