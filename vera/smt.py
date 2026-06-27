@@ -572,16 +572,20 @@ class SmtContext:
             return z3.BoolVal(expr.value)
 
         if isinstance(expr, ast.StringLit):
-            # #802: Z3's string sort alphabet is U+0000..U+2FFFF.  For any code
-            # point above that, the Python binding's z3.StringVal silently stores
-            # the *escape string* (the literal "\U000xxxxx" ASCII characters)
-            # instead of the character — so Contains/PrefixOf/SuffixOf over such
-            # a literal match phantom ASCII bytes the byte-level runtime never
-            # sees, proving false contracts at Tier 1.  Defer the literal to
-            # Tier 3 (return None) rather than model it unsoundly.  (string_length
-            # is unaffected: it models a literal via Python's UTF-8 byte count,
-            # not z3.StringVal.)
-            if any(ord(ch) > 0x2FFFF for ch in expr.value):
+            # #802: Z3's string sort cannot faithfully model two kinds of code
+            # point, so a literal containing either defers to Tier 3 (return
+            # None) rather than be reasoned over as a corrupted term:
+            #   - above its alphabet (> U+2FFFF): the Python binding silently
+            #     stores the *escape string* (literal "\U000xxxxx" ASCII chars)
+            #     instead of the character, so Contains/PrefixOf/SuffixOf match
+            #     phantom bytes the runtime never sees, proving false contracts;
+            #   - a lone surrogate (U+D800..U+DFFF): not UTF-8-encodable, so
+            #     z3.StringVal raises on it.
+            # (string_length models a literal via its UTF-8 byte count, not
+            # z3.StringVal, so it is unaffected by the alphabet limit — but it
+            # too must guard the surrogate case, below.)
+            if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
+                   for ch in expr.value):
                 return None
             return z3.StringVal(expr.value)
 
@@ -1075,7 +1079,12 @@ class SmtContext:
         if call.name == "string_length" and len(call.args) == 1:
             arg_node = call.args[0]
             if isinstance(arg_node, ast.StringLit):
-                byte_len = len(arg_node.value.encode("utf-8"))
+                try:
+                    byte_len = len(arg_node.value.encode("utf-8"))
+                except UnicodeEncodeError:
+                    # A lone surrogate (U+D800..U+DFFF) is not UTF-8-encodable;
+                    # its byte length is undefined, so defer to Tier 3.
+                    return None
                 return z3.IntVal(byte_len)
             return None
 

@@ -189,21 +189,69 @@ class TestAstralStringLiteral802:
     over them.  `string_length` is unaffected — it byte-counts the decoded value,
     not `z3.StringVal` (covered in TestStringLengthSoundness802)."""
 
-    def test_astral_predicate_not_proved_at_tier1(self) -> None:
+    def test_astral_literal_predicate_defers_to_tier3(self) -> None:
         # Pre-fix the verifier PROVED this false contract at Tier 1 (the phantom
-        # escape string matched "f"); now the astral literal defers, so nothing
-        # about it is a Tier-1 proof — no false proof. (U+10FFFF as bytes
-        # f4 8f bf bf contains no "f"; the runtime returns false.)
+        # escape string matched "f"); now the astral literal defers cleanly to a
+        # runtime-guarded Tier-3 obligation.  (U+10FFFF as bytes f4 8f bf bf
+        # contains no "f", so the runtime returns false — the contract is false,
+        # and the verifier must NOT prove it.)
         result = _verify("""
-public fn check(@String -> @Bool)
-  requires(@String.0 == "\\u{10FFFF}")
-  ensures(@Bool.result == true)
-  effects(pure)
-{ string_contains(@String.0, "f") }
+public fn f(@Unit -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{ string_contains("\\u{10FFFF}", "f") }
 """)
-        assert result.summary.tier1_verified == 0, (
+        # Verification succeeds with no spurious error, no false Tier-1 proof:
+        # the astral predicate is a runtime-guarded Tier-3 obligation (pre-fix it
+        # was a Tier-1 proof, so tier3_runtime was 0).
+        assert _ok(result), [d.description for d in result.diagnostics]
+        assert result.summary.tier3_runtime >= 1, (
             result.summary.tier1_verified, result.summary.tier3_runtime,
         )
+
+    def test_astral_cutoff_boundary(self) -> None:
+        # Pin the exact `ord(ch) > 0x2FFFF` cutoff (guards against a `>=`
+        # regression): U+2FFFF is on the modeled side — a predicate over it stays
+        # Tier 1 (tier3 == 0); U+30000, one above, defers (tier3 >= 1).  Uses a
+        # predicate, not string_length, because string_length byte-counts via
+        # Python and so does not exercise the z3.StringVal alphabet cutoff.
+        modeled = _verify("""
+public fn f(@String -> @Bool)
+  requires(@String.0 == "\\u{2FFFF}")
+  ensures(@Bool.result == true)
+  effects(pure)
+{ string_starts_with(@String.0, "\\u{2FFFF}") }
+""")
+        assert _ok(modeled) and modeled.summary.tier3_runtime == 0, (
+            modeled.summary.tier1_verified, modeled.summary.tier3_runtime,
+        )
+        deferred = _verify("""
+public fn f(@String -> @Bool)
+  requires(@String.0 == "\\u{30000}")
+  ensures(@Bool.result == true)
+  effects(pure)
+{ string_starts_with(@String.0, "\\u{30000}") }
+""")
+        assert deferred.summary.tier3_runtime >= 1, (
+            deferred.summary.tier1_verified, deferred.summary.tier3_runtime,
+        )
+
+    def test_surrogate_literal_does_not_crash(self) -> None:
+        # A lone surrogate (U+D800) is not UTF-8-encodable; before the guard,
+        # string_length's `value.encode("utf-8")` and the predicate's
+        # `z3.StringVal` both raised UnicodeEncodeError and crashed `vera verify`.
+        # Both must now defer to Tier 3 without crashing.
+        length = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 1) effects(pure)
+{ string_length("\\u{D800}") }
+""")
+        assert length.summary.tier3_runtime >= 1  # deferred, no crash
+        predicate = _verify("""
+public fn f(@Unit -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{ string_contains("\\u{D800}", "x") }
+""")
+        assert predicate.summary.tier3_runtime >= 1  # deferred, no crash
 
     def test_astral_string_length_still_byte_modeled(self) -> None:
         # string_length bypasses z3.StringVal (it byte-counts the decoded value),
