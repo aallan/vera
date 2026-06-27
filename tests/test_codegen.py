@@ -25,6 +25,7 @@ from vera.codegen import (
     compile,
     execute,
 )
+from vera.codegen.api import WasmTrapError
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -1202,6 +1203,50 @@ public fn len(@Unit -> @Nat)
 { string_length("a\nb") }
 '''
         assert _run(source, fn="len") == 3
+
+    def test_string_length_non_ascii_counts_utf8_bytes(self) -> None:
+        """#802: string_length counts UTF-8 BYTES at runtime — "é" (U+00E9) is
+        2 bytes and "😀" (U+1F600) is 4 bytes, each a single code point.  This
+        pins the runtime premise the verifier's literal byte-model relies on:
+        if codegen regressed to code-point counting, the verifier-side
+        soundness tests (test_string_length_soundness.py) would stay green but
+        this would catch it."""
+        two = r'''
+public fn len(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_length("\u{e9}") }
+'''
+        assert _run(two, fn="len") == 2
+        four = r'''
+public fn len(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_length("\u{1F600}") }
+'''
+        assert _run(four, fn="len") == 4
+
+    def test_string_length_deferred_contract_enforced_at_runtime(self) -> None:
+        """#802 soundness loop: a slot-arg string_length contract that `vera
+        verify` DEFERS to Tier 3 is still enforced at runtime — the false
+        `ensures(@Int.result == 1)` over "é" (2 bytes) raises a postcondition
+        violation.  This proves the deferral is *sound* (the runtime catches the
+        false contract verify could not prove), not merely imprecise — it closes
+        the loop the verifier-side deferral tests in
+        tests/test_string_length_soundness.py leave open."""
+        source = r'''
+public fn f(@String -> @Int)
+  requires(true) ensures(@Int.result == 1) effects(pure)
+{ string_length(@String.0) }
+'''
+        result = _compile_ok(source)
+        # Pin the *exact* observable: execute() normalises every wasmtime trap
+        # into a WasmTrapError, so a broad raises((WasmtimeError, Trap,
+        # RuntimeError)) would green-pass on any failure — a compile/setup
+        # error or a regression that traps for a different reason.  Assert the
+        # contract-violation kind so the test fails iff this specific deferral
+        # stops being caught.
+        with pytest.raises(WasmTrapError) as excinfo:
+            execute(result, fn_name="f", raw_args=["é"])
+        assert excinfo.value.kind == "contract_violation"
 
 
 # =====================================================================

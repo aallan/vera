@@ -1236,11 +1236,16 @@ public fn head_wrap(@Array<MyAdt> -> @MyAdt)
         """#667 follow-up — `_translate_call_with_info` now
         declares String-returning calls with a String Z3 var
         rather than falling back to Int.  Pin: the caller's
-        postcondition `string_length(result) > 0` translates and
-        the predicate counts as Tier 1.  Pre-fix the call's
-        return var was Int, so `string_length(int_var)` got an
-        Int-domain length function rather than the String-domain
-        one, breaking the predicate's typing.
+        postcondition `string_starts_with(result, "h")` translates
+        and the predicate counts as Tier 1.  Pre-fix the call's
+        return var was Int, so the string predicate got an
+        Int-domain function rather than the String-domain one,
+        breaking the predicate's typing.
+
+        Uses string_starts_with (a Tier-1 string predicate) rather
+        than string_length, which defers to Tier 3 for non-literal
+        arguments (#802) and so would warn regardless of the call's
+        return typing — masking this #667 test.
 
         Uses an @Int arg (not @Unit) so the call's argument
         translates cleanly — UnitLit returns None from
@@ -1251,15 +1256,15 @@ public fn head_wrap(@Array<MyAdt> -> @MyAdt)
         result = _verify("""
 private fn echo_str(@Int -> @String)
   requires(true)
-  ensures(string_length(@String.result) > 0)
+  ensures(string_starts_with(@String.result, "h"))
   effects(pure)
 { "hello" }
 
-public fn use_str(@Int -> @Int)
+public fn use_str(@Int -> @Bool)
   requires(true)
-  ensures(@Int.result > 0)
+  ensures(@Bool.result)
   effects(pure)
-{ string_length(echo_str(@Int.0)) }
+{ string_starts_with(echo_str(@Int.0), "h") }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Expected no errors, got: {errors}"

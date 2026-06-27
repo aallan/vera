@@ -572,6 +572,24 @@ class SmtContext:
             return z3.BoolVal(expr.value)
 
         if isinstance(expr, ast.StringLit):
+            # #802: Z3's string sort cannot faithfully model two kinds of code
+            # point, so a literal containing either defers to Tier 3 (return
+            # None) rather than be reasoned over as a corrupted term.  For both,
+            # the Python binding silently stores the code point's *escape text*
+            # instead of the character (e.g. z3.StringVal("\U00030000") holds
+            # "\u{5c}u{30000}" — the backslash itself becomes "\u{5c}"), so
+            # Contains/PrefixOf/SuffixOf match phantom ASCII bytes the runtime
+            # never sees, proving false contracts.  The two cases:
+            #   - above the alphabet (> U+2FFFF); and
+            #   - a lone surrogate (U+D800..U+DFFF), which additionally has no
+            #     UTF-8 encoding at all (see string_length below).
+            # We must return None *before* z3.StringVal sees either.  (string_length
+            # models a literal via its UTF-8 byte count, not z3.StringVal, so it
+            # is unaffected by the alphabet limit — but it too must guard the
+            # surrogate case, below, where the byte encoding genuinely fails.)
+            if any(ord(ch) > 0x2FFFF or 0xD800 <= ord(ch) <= 0xDFFF
+                   for ch in expr.value):
+                return None
             return z3.StringVal(expr.value)
 
         if isinstance(expr, ast.FloatLit):
@@ -1053,22 +1071,25 @@ class SmtContext:
         if call.name == "nat_to_int" and len(call.args) == 1:
             return self.translate_expr(call.args[0], env)
 
-        # Built-in: string_length() — use z3.Length() for String sorts so that
-        # Z3's string theory gives exact lengths (e.g. for literal arguments at
-        # call sites).  Fall back to an uninterpreted function for other sorts.
+        # Built-in: string_length() (#802).  Vera's runtime string_length counts
+        # UTF-8 *bytes*, but Z3's Length over z3.String counts Unicode *code
+        # points* — they disagree on every multibyte character (e.g. "é" is 1
+        # code point but 2 bytes), so z3.Length proved false contracts at Tier 1.
+        # A string LITERAL has a known exact byte length, so model it precisely;
+        # for any non-literal argument no byte-length operator exists in Z3's
+        # string theory, so defer to Tier 3 (return None), matching the
+        # numeric-cast / quantifier / decimal precedent.
         if call.name == "string_length" and len(call.args) == 1:
-            arg = self.translate_expr(call.args[0], env)
-            if arg is not None:
-                if isinstance(arg.sort(), z3.SeqSortRef):
-                    result = z3.Length(arg)
-                else:
-                    length_fn = z3.Function(
-                        "string_length", arg.sort(), z3.IntSort(),
-                    )
-                    result = length_fn(arg)
-                self.solver.add(result >= 0)
-                return result
-            return None  # pragma: no cover
+            arg_node = call.args[0]
+            if isinstance(arg_node, ast.StringLit):
+                try:
+                    byte_len = len(arg_node.value.encode("utf-8"))
+                except UnicodeEncodeError:
+                    # A lone surrogate (U+D800..U+DFFF) is not UTF-8-encodable;
+                    # its byte length is undefined, so defer to Tier 3.
+                    return None
+                return z3.IntVal(byte_len)
+            return None
 
         # Built-ins: string_contains / string_starts_with / string_ends_with
         # Z3's native string theory encodes these exactly.

@@ -1,5 +1,8 @@
 -- Conformance: string built-in functions (Chapter 4)
 -- Tests: string_length, string_concat, string_slice, string_char_code, to_string
+-- Also covers #802: string_length counts UTF-8 bytes, and a string-literal
+-- length is modeled at its exact byte count (so a non-ASCII length both
+-- verifies at Tier 1 and runs).
 effect IO {
   op print(String -> Unit);
 }
@@ -10,6 +13,18 @@ public fn test_length(@Unit -> @Int)
   effects(pure)
 {
   string_length("hello")
+}
+
+-- #802: "é" (U+00E9) is one Unicode code point but TWO UTF-8 bytes, and
+-- string_length counts bytes.  Pre-fix the verifier proved this == 1 (Z3's
+-- code-point Length); now a string-literal length is modeled at its exact byte
+-- count, so == 2 both verifies (Tier 1) and runs.
+public fn test_length_non_ascii(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  string_length("é")
 }
 
 public fn test_concat(@Unit -> @String)

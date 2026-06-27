@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.182] - 2026-06-27
+
+### Fixed
+
+- **Verifier soundness: `string_length` no longer proves a false length for non-ASCII strings** (final sub-task of the [#392](https://github.com/aallan/vera/issues/392) `smt.py` soundness audit).  `vera verify` translated `string_length` to Z3's `Length`, which counts Unicode **code points**, but Vera's runtime counts **UTF-8 bytes** — so `ensures(string_length("é") == 1)` verified at Tier 1 while the runtime returns `2`.  `string_length` is now modeled at Tier 1 only for a string **literal** (whose exact byte length is known); on any non-literal argument it defers to a runtime-guarded **Tier 3** obligation (Z3's string theory has no byte-length operator), matching the numeric-cast / quantifier / decimal precedent.  The boolean predicates `string_contains` / `string_starts_with` / `string_ends_with` stay Tier 1 — UTF-8 is self-synchronizing, so a valid substring / prefix / suffix matches at the byte level exactly when it matches at the code-point level — with one further guard: a string literal containing a code point above Z3's string-sort alphabet (> U+2FFFF), or a lone surrogate (U+D800–U+DFFF) with no UTF-8 encoding, also defers to Tier 3 — the Z3 Python binding would otherwise store it as escape text and let the predicates match phantom bytes (and a surrogate has no UTF-8 byte length to take).  This was the last of the six soundness bugs ([#797](https://github.com/aallan/vera/issues/797)–[#802](https://github.com/aallan/vera/issues/802)) found by the [#392](https://github.com/aallan/vera/issues/392) audit, which is now complete.  ([#802](https://github.com/aallan/vera/issues/802))
+
 ## [0.0.181] - 2026-06-27
 
 ### Fixed
@@ -2604,7 +2610,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.181...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.182...HEAD
+[0.0.182]: https://github.com/aallan/vera/compare/v0.0.181...v0.0.182
 [0.0.181]: https://github.com/aallan/vera/compare/v0.0.180...v0.0.181
 [0.0.180]: https://github.com/aallan/vera/compare/v0.0.179...v0.0.180
 [0.0.179]: https://github.com/aallan/vera/compare/v0.0.178...v0.0.179

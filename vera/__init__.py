@@ -1,4 +1,4 @@
 """Vera: a programming language designed for LLMs."""
 
-__version__ = "0.0.181"
+__version__ = "0.0.182"
 version = __version__
