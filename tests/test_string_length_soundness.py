@@ -245,13 +245,16 @@ public fn f(@Unit -> @Int)
   requires(true) ensures(@Int.result == 1) effects(pure)
 { string_length("\\u{D800}") }
 """)
-        assert length.summary.tier3_runtime >= 1  # deferred, no crash
+        # Graceful Tier-3 fallback, not a crash and not an E500/checker error.
+        assert _ok(length), [d.description for d in length.diagnostics]
+        assert length.summary.tier3_runtime >= 1
         predicate = _verify("""
 public fn f(@Unit -> @Bool)
   requires(true) ensures(@Bool.result == true) effects(pure)
 { string_contains("\\u{D800}", "x") }
 """)
-        assert predicate.summary.tier3_runtime >= 1  # deferred, no crash
+        assert _ok(predicate), [d.description for d in predicate.diagnostics]
+        assert predicate.summary.tier3_runtime >= 1
 
     def test_astral_string_length_still_byte_modeled(self) -> None:
         # string_length bypasses z3.StringVal (it byte-counts the decoded value),
