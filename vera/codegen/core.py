@@ -37,6 +37,7 @@ from vera.codegen.compilability import CompilabilityMixin
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
+    from vera.types import Type
     from vera.wasm.context import WasmContext
 
 
@@ -82,11 +83,23 @@ class CodeGenerator(
         source: str = "",
         file: str | None = None,
         resolved_modules: list[ResolvedModule] | None = None,
+        expr_semantic_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = None,
     ) -> None:
         self.source = source
         self.file = file
         self.diagnostics: list[Diagnostic] = []
         self.string_pool = StringPool()
+        # #798: the checker's resolved-type side-table (keyed by
+        # ``ast.span_key``).  Threaded into every ``WasmContext`` so the
+        # integer-overflow guard classifies an arithmetic operand's Int/Nat
+        # type the same way the verifier's ``int_overflow`` obligation does.
+        # ``None`` when a caller skipped typecheck (the guard then falls back
+        # to the AST-only classifier).
+        self._expr_semantic_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = expr_semantic_types
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}

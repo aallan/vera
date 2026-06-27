@@ -134,7 +134,7 @@ Every diagnostic has a stable error code grouped by compiler phase:
 - **E120–E176** — Type check: core + expressions (type mismatches, slot resolution, operators)
 - **E200–E233** — Type check: calls (unresolved functions, argument mismatches, module calls)
 - **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
-- **E500–E525** — Verification (contract violations, undecidable fallbacks)
+- **E500–E528** — Verification (contract violations, undecidable fallbacks, primitive-operation safety incl. arithmetic overflow)
 - **E600–E614** — Codegen (unsupported features, typed holes block compilation)
 - **E700–E702** — Testing (contract violations, input generation, execution errors)
 

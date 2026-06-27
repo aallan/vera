@@ -90,6 +90,9 @@ class FunctionCompilationMixin:
         # resolve the element type of `f()[i]` when `f` returns
         # `Array<T>`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #798: resolved-type side-table for the integer-overflow guard's
+        # Int/Nat operand classifier (kept in lockstep with the verifier).
+        ctx.set_expr_semantic_types(self._expr_semantic_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)

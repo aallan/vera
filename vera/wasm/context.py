@@ -231,6 +231,25 @@ class WasmContext(
         # codegen base's `_harvest_inference_failures` emits a
         # specific [E616] before falling through to [E602].
         self._apply_fn_inference_failures: list[ast.Expr] = []
+        # #798: the checker's resolved-type side-table (keyed by
+        # ``ast.span_key``), threaded from the CodeGenerator.  The
+        # integer-overflow guard reads it to classify an arithmetic operand
+        # as @Int (i64) vs @Nat (u64) using the SAME resolved type the
+        # verifier's ``int_overflow`` obligation uses, so codegen guards
+        # exactly the sites — at exactly the range — the verifier obligates.
+        # ``None`` when typecheck was skipped (AST-only fallback).
+        self._expr_semantic_types: (
+            dict[tuple[int, int, int, int], object] | None
+        ) = None
+
+    def set_expr_semantic_types(
+        self,
+        types: dict[tuple[int, int, int, int], object] | None,
+    ) -> None:
+        """Seed the checker's resolved-type side-table for the #798 overflow
+        guard's Int/Nat operand classifier (mirrors the verifier's
+        ``_resolved_type_of`` / ``_overflow_int_type``)."""
+        self._expr_semantic_types = types
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],

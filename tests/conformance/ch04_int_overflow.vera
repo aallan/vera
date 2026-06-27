@@ -1,0 +1,53 @@
+-- Conformance: @Int / @Nat arithmetic overflow obligation (Chapter 4)
+--
+-- Tests the proof obligation introduced by #798: every `+` / `-` / `*` on
+-- `@Int` / `@Nat` carries a Tier-1 obligation that the result stays within the
+-- i64 / u64 range; a site the solver cannot prove safe falls to a runtime
+-- overflow trap (spec/06 §6.4.3, alongside @Nat underflow and signed division;
+-- the partial-arithmetic story in spec/04 §4.4 and spec/11 §11.2.1).  Overflow
+-- is classified at the operands' COMMON (coerced) type — `@Int` if either
+-- operand is `@Int` (since `@Nat <: @Int`), else `@Nat`.
+--
+-- Every site here verifies at Tier 1: the overflow obligation is discharged
+-- from explicit `requires` bounds, a path condition, or trivial literal folding.
+-- Discharged via explicit requires: bounded operands keep `a + b` in i64.
+public fn add_bounded(@Int, @Int -> @Int)
+  requires(@Int.0 >= 0 && @Int.0 < 1000 && @Int.1 >= 0 && @Int.1 < 1000)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(pure)
+{
+  @Int.0 + @Int.1
+}
+
+-- Discharged for @Nat (u64 range): a bounded product stays within u64.
+public fn nat_mul_bounded(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 < 1000 && @Nat.1 < 1000)
+  ensures(@Nat.result == @Nat.0 * @Nat.1)
+  effects(pure)
+{
+  @Nat.0 * @Nat.1
+}
+
+-- Discharged via path condition: the then-branch is reached only when both
+-- `0 <= @Int.0` and `@Int.0 < 1000`, so `@Int.0 * 2 < 2000` is in i64 range.
+public fn doubler(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 >= 0 && @Int.0 < 1000 then {
+    @Int.0 * 2
+  } else {
+    0
+  }
+}
+
+-- Top-level entry: inline literal arithmetic, discharged trivially (the
+-- constant-folded result is provably in range).
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  10 + 20
+}

@@ -16541,13 +16541,27 @@ public fn main(@Unit -> @Nat)
             f"got: {body!r}"
         )
 
-    def test_int_subtract_emits_no_guard(self) -> None:
-        """`@Int - @Int` does not get the guard — Int can be negative.
+    def test_int_subtract_emits_no_nat_underflow_guard(self) -> None:
+        """`@Int - @Int` does not get the #520 *nat-sub underflow* guard.
 
-        Sister to the structural test above: the guard fires only on
-        sites where the result is statically @Nat AND at least one
-        operand has @Nat origin.  Int-Int sites must emit a bare
-        `i64.sub` with no `i64.lt_s`/`unreachable` pair adjacent.
+        Sister to the structural test above: the #520 nat-sub guard fires only
+        on sites where the result is statically @Nat AND at least one operand
+        has @Nat origin.  @Int - @Int is not such a site (Int can be negative),
+        so it must NOT carry the nat-sub guard — which would wrongly trap on a
+        legitimate negative result like ``5 - 10``.
+
+        Note (#798): @Int - @Int now DOES carry the *overflow* guard, a
+        distinct mechanism — the two-XOR signed-overflow test
+        ``((a^b) & (a^r)) < 0`` followed by ``unreachable``.  That guard does
+        not fire on ``5 - 10`` (in range), so the runtime behaviour this test
+        cares about (no spurious trap on a negative Int result) is unchanged.
+        The discriminator below is therefore the *shape*: the #520 guard
+        compares the two operands directly (``i64.lt_s`` on lhs/rhs straight
+        after loading them, no ``i64.xor``), whereas the #798 overflow guard
+        is XOR-based.  We assert the overflow-guard shape is present and the
+        nat-sub shape (an ``i64.lt_s`` not preceded by the XOR sign-test) is
+        not the mechanism, by pinning runtime behaviour: ``5 - 10 = -5`` must
+        return cleanly, never trap.
         """
         src = """
 private fn int_sub(@Int, @Int -> @Int)
@@ -16555,7 +16569,7 @@ private fn int_sub(@Int, @Int -> @Int)
   ensures(true)
   effects(pure)
 {
-  @Int.0 - @Int.1
+  @Int.1 - @Int.0
 }
 
 public fn main(@Unit -> @Int)
@@ -16574,19 +16588,19 @@ public fn main(@Unit -> @Int)
         body = wat[int_sub_idx:body_end]
         # i64.sub must be present (it's the actual subtraction).
         assert "i64.sub" in body
-        # But the guard pieces must NOT be — Int subtraction is unguarded.
-        # Banning *both* `i64.lt_s` and `i64.lt_u` (regex
-        # `\bi64\.lt_[su]\b`) defends against a future codegen flip
-        # to unsigned-comparison or any other compare-then-trap
-        # variant; the previous `not in body` substring check would
-        # have silently passed if the guard mechanism changed.
-        assert not re.search(r"\bi64\.lt_[su]\b", body), (
-            f"Unexpected `i64.lt_[su]` in int_sub body — Int subtraction "
-            f"should not have an underflow guard. Body:\n{body}"
+        # The #798 overflow guard IS present — and is XOR-based (the signed
+        # overflow test), distinguishing it from the #520 nat-sub guard which
+        # never uses i64.xor.
+        assert "i64.xor" in body, (
+            f"Expected the #798 overflow guard's i64.xor sign-test in "
+            f"int_sub body. Body:\n{body}"
         )
-        assert "unreachable" not in body, (
-            f"Unexpected `unreachable` in int_sub body — Int subtraction "
-            f"should not emit a trap. Body:\n{body}"
+        # The #520 nat-sub underflow guard would trap on a legitimate negative
+        # result; pin that it does NOT — main() computes int_sub(5, 10) = 5-10
+        # = -5 and must return it cleanly, never trap.
+        assert _run(src) == -5, (
+            "Int subtraction of 5 - 10 must return -5, not trap — the #520 "
+            "nat-sub underflow guard must not apply to @Int - @Int."
         )
 
     def test_pure_literal_subtract_emits_no_guard(self) -> None:

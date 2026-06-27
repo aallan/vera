@@ -391,6 +391,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.178 | 25 Jun | **`vera builtins/effects/errors --json` compiler introspection subcommands make the compiler the source of truth for its own built-ins, effects, and error codes, each with a best-effort `since` version** ([#539](https://github.com/aallan/vera/issues/539)). |
 | v0.0.179 | 26 Jun | **The `smt.py` soundness-audit batch lands: signed `/` and `%` truncate toward zero, a body `assert(P)` carries a Tier-1 obligation (loud `E507`), contract-position divisions get a `div_zero` obligation, and a prior `assert`/`assume` now discharges later obligations plus the postcondition at Tier 1** ([#392](https://github.com/aallan/vera/issues/392)). |
 | v0.0.180 | 26 Jun | **`@Float64` contracts are verified against Z3's IEEE-754 FloatingPoint sort instead of mathematical reals, so Tier-1 proofs respect `NaN`/`Inf`/signed-zero/rounding and `%` (C `fmod`) and match the runtime, so unsound relational / reflexive Float64 contracts are now correctly rejected** ([#797](https://github.com/aallan/vera/issues/797)). |
+| v0.0.181 | 27 Jun | **`@Int` / `@Nat` arithmetic overflow now traps: `+` / `-` / `*` are partial operations carrying an auto-synthesised `int_overflow` obligation, so a result that provably leaves i64 / u64 range is a compile error (E528) and a dynamic one is a runtime-guarded trap, instead of the verifier proving postconditions the two's-complement runtime then violated** ([#798](https://github.com/aallan/vera/issues/798)). |
 
 ---
 
@@ -406,4 +407,4 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
 
-Total: **1,400+ commits, 180 tagged releases, 77 active development days.**
+Total: **1,400+ commits, 181 tagged releases, 77 active development days.**

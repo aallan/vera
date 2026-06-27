@@ -320,6 +320,21 @@
     ]
   },
   {
+    "id": "ch04_int_overflow",
+    "file": "ch04_int_overflow.vera",
+    "chapter": 4,
+    "title": "@Int / @Nat arithmetic overflow obligation (#798)",
+    "level": "run",
+    "spec_ref": "Section 6.4.3",
+    "features": [
+      "int_overflow",
+      "overflow_obligation",
+      "tier1_discharge",
+      "requires_discharge",
+      "path_condition_discharge"
+    ]
+  },
+  {
     "id": "ch04_comparison",
     "file": "ch04_comparison.vera",
     "chapter": 4,
