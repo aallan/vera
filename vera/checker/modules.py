@@ -107,8 +107,8 @@ class ModulesMixin:
                                 f"or remove it from the import list."
                             ),
                             spec_ref=(
-                                'Chapter 5, Section 5.8 '
-                                '"Function Visibility"'
+                                'Chapter 8, Section 8.4 '
+                                '"Visibility"'
                             ),
                             error_code="E150",
                         )
@@ -126,8 +126,8 @@ class ModulesMixin:
                                 f"or remove it from the import list."
                             ),
                             spec_ref=(
-                                'Chapter 5, Section 5.8 '
-                                '"Function Visibility"'
+                                'Chapter 8, Section 8.4 '
+                                '"Visibility"'
                             ),
                             error_code="E150",
                         )
