@@ -17,7 +17,8 @@ class FunctionCompilationMixin:
     """Methods for compiling function bodies to WAT."""
 
     def _compile_fn(
-        self, decl: ast.FnDecl, *, export: bool = True
+        self, decl: ast.FnDecl, *, export: bool = True,
+        module_renames: dict[str, str] | None = None,
     ) -> str | None:
         """Compile a single function to WAT.
 
@@ -101,6 +102,14 @@ class FunctionCompilationMixin:
         ctx.set_type_alias_params(self._type_alias_params)
         ctx.set_closure_id_start(self._next_closure_id)
         ctx.set_closure_sigs(self._closure_sigs)
+        # #814 §8.5.3: module-qualified call target table, so a ``m::f`` call
+        # whose bare name is shadowed by a local resolves to the module's
+        # body (emitted under a distinct ``mod$…`` name) rather than the local.
+        ctx.set_module_qualified_targets(self._module_qualified_targets)
+        # #814 C2: intra-module call renames, set ONLY when compiling a
+        # ``mod$…`` body, so a bare sibling call inside it reaches the
+        # module's version rather than the main program's local shadow.
+        ctx.set_intra_module_renames(module_renames or {})
         env = WasmSlotEnv()
 
         # Allocate parameters and track pointer params for GC prologue

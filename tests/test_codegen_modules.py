@@ -293,6 +293,329 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 999  # local abs, not imported
 
+    def test_qualified_call_bypasses_local_shadow(self) -> None:
+        """§8.5.3: a module-qualified call bypasses a local shadow.
+
+        Regression for #814: codegen desugared ModuleCall to a bare FnCall,
+        dropping the module path, so ``m::hundred`` wrongly resolved to the
+        shadowing local instead of the module's function.  A non-builtin name
+        keeps the verifier/codegen built-in models (abs/min/max) from
+        confounding the test.
+        """
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m(hundred);
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::hundred(0) }
+""", [mod], fn="main")
+        assert val == 100  # module's hundred() = 100, NOT the local 0
+
+    def test_qualified_call_verifier_codegen_agree(self) -> None:
+        """#814 differential: the verifier and codegen resolve a module-
+        qualified call to the SAME function (cross-component soundness).
+
+        For a program where the module's ``hundred`` returns 100 and a local
+        shadow returns 0, the verifier proves ``ensures(== 100)`` via the
+        module's contract while codegen must *run* the module's body (100).
+        A desync in either direction fails here: if codegen ran the local,
+        ``run`` returns 0 ≠ 100; if the verifier used the local, it could not
+        prove ``== 100`` and emits an error.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from vera.checker import typecheck
+        from vera.verifier import verify
+
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ 100 }
+""")
+        main_src = """\
+import m(hundred);
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 0) effects(pure)
+{ 0 }
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ m::hundred(0) }
+"""
+        # Codegen side: runs the module's body, returning 100 (not local 0).
+        assert self._run_mod(main_src, [mod], fn="main") == 100
+
+        # Verifier side: proves ensures(== 100) via the module's contract.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(main_src)
+            f.flush()
+            path = f.name
+        try:
+            prog = transform(parse_file(path))
+            # Assert the check stage is clean too, so a check-stage module-
+            # resolution regression is caught independently of verify
+            # (typecheck returns the diagnostics list directly).
+            check_diags = typecheck(prog, main_src, resolved_modules=[mod])
+            check_errors = [d for d in check_diags if d.severity == "error"]
+            assert check_errors == [], [e.description for e in check_errors]
+            vres = verify(prog, main_src, resolved_modules=[mod])
+            errors = [d for d in vres.diagnostics if d.severity == "error"]
+            assert errors == [], [e.description for e in errors]
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_qualified_call_body_reaches_module_siblings(self) -> None:
+        """#814 C2: inside a qualified-reached ``mod$`` body, an intra-module
+        call lands on the module's sibling, not a local shadow of its name.
+
+        Module ``outer`` calls ``inner``; the importer shadows BOTH locally.
+        ``m::outer`` runs the module's ``outer``, whose ``inner(...)`` must in
+        turn reach the module's ``inner`` (100), not the local shadow (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@Int.0) }
+""")
+        val = self._run_mod("""\
+import m(inner, outer);
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module inner via module outer, NOT local inner (7)
+
+    def test_wildcard_qualified_and_bare_calls_coexist(self) -> None:
+        """#814: under a wildcard ``import m;``, a qualified call and a bare
+        call to the same shadowed name resolve independently within one
+        expression — qualified → module (100), bare → local (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m;
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::hundred(0) + hundred(0) }
+""", [mod], fn="main")
+        assert val == 107  # 100 (qualified -> module) + 7 (bare -> local)
+
+    def test_imported_body_reaches_module_sibling_over_local_shadow(
+        self,
+    ) -> None:
+        """#814 C2 (Pass 2.5 mirror): a NON-shadowed imported fn whose body
+        calls a sibling reaches the module's sibling, not a local shadow of
+        that name.
+
+        ``outer`` is imported (not locally shadowed, so it compiles in Pass
+        2.5 under its bare name) and calls ``inner``; the importer shadows
+        only ``inner``.  A bare ``outer()`` must run the module's ``outer``,
+        whose ``inner(...)`` reaches the module's ``inner`` (100) via the
+        intra-rename map — not the local shadow (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@Int.0) }
+""")
+        val = self._run_mod("""\
+import m(inner, outer);
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module inner via module outer (Pass 2.5), not local 7
+
+    def test_imported_where_fn_reaches_module_helper_over_local_shadow(
+        self,
+    ) -> None:
+        """#814 C2 (where-fn mirror): an imported fn's `where` helper resolves
+        to the module's helper even when the importer locally shadows that
+        helper's name.
+
+        ``outer`` (imported, not shadowed) calls its `where` helper ``helper``;
+        the importer defines a local ``helper``.  ``outer()`` must reach the
+        module's helper (100) via the intra-rename map, not the local shadow
+        (7) — the where-fns go through the same shadow wiring as top-level fns.
+        """
+        mod = self._resolved(("m",), """\
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(@Int.0) }
+where {
+  fn helper(@Int -> @Int) requires(true) ensures(true) effects(pure) { 100 }
+}
+""")
+        val = self._run_mod("""\
+import m(outer);
+public fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module's where-helper, NOT the local shadow (7)
+
+    def test_local_where_fn_shadows_imported_name(self) -> None:
+        """#814: a LOCAL `where`-fn shadowing an imported name must not produce
+        a duplicate bare WASM function.
+
+        The importer's `main` has a `where` helper `helper`, and the module
+        also exports `helper`.  A `where`-fn flattens to a bare ``$helper``, so
+        the imported `helper` must be recognized as shadowed (emitted only
+        under its ``mod$…`` name, never a second bare ``$helper``).  Before the
+        fix, `local_fn_names` collected only top-level names, so the imported
+        `helper` was emitted bare too → a duplicate-`$helper` WASM module that
+        wasmtime rejects.
+        """
+        mod = self._resolved(("m",), """\
+public fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m(helper);
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(0) }
+where {
+  fn helper(@Int -> @Int) requires(true) ensures(true) effects(pure) { 7 }
+}
+""", [mod], fn="main")
+        assert val == 7  # local where-helper; no duplicate-$helper WASM error
+
+    def test_unit_returning_qualified_call_in_statement_position(self) -> None:
+        """#814: a `@Unit`-returning module-qualified call in non-tail
+        statement position must not emit a stray `drop`.
+
+        The drop-classifier (`_is_void_expr`) inspects the raw `ModuleCall`
+        node before it is desugared, so it must resolve the qualified target
+        and recognize a `@Unit` return — otherwise `m::noop(); 42` appends a
+        `drop` for a value that was never pushed, and wasmtime rejects the
+        module ("expected a type but nothing on stack").  Same class as the
+        user-`@Unit`-fn statement-position case (#584).
+        """
+        mod = self._resolved(("m",), """\
+public fn noop(@Int -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ () }
+""")
+        val = self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::noop(0);
+  42
+}
+""", [mod], fn="main")
+        assert val == 42  # unit ModuleCall dropped cleanly; no stray-drop WASM error
+
+    def test_pair_returning_qualified_call_in_statement_position(self) -> None:
+        """#814: a `@String`/`@Array`-returning module-qualified call in
+        non-tail statement position must drop BOTH stack values (i32 ptr +
+        i32 len), not one.
+
+        Sibling of ``test_unit_returning_qualified_call_in_statement_position``
+        for the *pair* result shape.  The drop-classifier
+        (``_is_pair_result_expr``) inspects the raw ``ModuleCall`` node and
+        must resolve the qualified target through ``_module_qualified_targets``
+        to recognize a pair-returning (``@String`` / ``@Array``) callee.  The
+        local ``make_str`` where-shadow forces resolution through the mangled
+        ``mod$…`` target (not the bare-name fallback), so this also pins the
+        shadowed branch of the classifier.  If the ModuleCall clause is
+        missing, only one of the two i32 values is dropped and wasmtime
+        rejects the module as invalid WASM.
+        """
+        mod = self._resolved(("m",), """\
+public fn make_str(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hi" }
+""")
+        val = self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::make_str(0);
+  42
+}
+where {
+  fn make_str(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { 7 }
+}
+""", [mod], fn="main")
+        assert val == 42  # pair ModuleCall dropped cleanly; no invalid-WASM error
+
+    def test_nat_param_guard_mirrored_on_shadowed_qualified_call(self) -> None:
+        """#814: the @Nat-parameter narrowing guard is mirrored onto a
+        shadowed module fn's mangled ``mod$…`` target.
+
+        A qualified call ``m::f(0 - 1)`` to a *shadowed* module fn whose
+        parameter is ``@Nat`` must still emit the call-site ``value >= 0``
+        narrowing guard, which keys on the resolved ``mod$…`` target via
+        ``_fn_nat_params``.  The ``0 - 1`` underflow idiom is Tier-3-deferred
+        by the verifier (so ``vera verify`` is clean) and must TRAP at
+        runtime.  If the guard bitmap is *not* mirrored onto the mangled name
+        (``vera/codegen/modules.py``), the negative value is passed unchecked
+        — verified: the program then returns ``-1`` with no trap, an unsound
+        @Nat.  The local ``f`` where-shadow forces resolution through the
+        mangled target rather than the bare name.
+        """
+        mod = self._resolved(("m",), """\
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError),
+        ):
+            self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::f(0 - 1)
+}
+where {
+  fn f(@Nat -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { @Nat.0 }
+}
+""", [mod], fn="main")
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

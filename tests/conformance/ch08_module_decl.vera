@@ -1,0 +1,9 @@
+module vera.examples.ch08_demo;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  42
+}

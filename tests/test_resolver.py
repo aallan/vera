@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
+from vera.errors import Diagnostic
 from vera.resolver import ModuleResolver, ResolvedModule
 
 
@@ -409,3 +411,184 @@ private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         resolved = _resolve_ok(tmp_path, main)
         assert resolved == []
+
+
+# =====================================================================
+# Error codes (#679 — module-resolution diagnostics carry stable E-codes)
+# =====================================================================
+
+
+class TestResolverErrorCodes:
+    """Module-resolution diagnostics must carry stable E-codes (#679).
+
+    Every Vera diagnostic carries an E001–E702 code (DESIGN.md), but the
+    resolver's three error paths previously emitted ``error_code=""``.  The
+    Chapter 8 conformance suite's negative test asserts the circular-import
+    code (E011) specifically, so these codes are load-bearing, not cosmetic.
+    """
+
+    def _errors(
+        self,
+        tmp_path: Path,
+        main_source: str,
+        modules: dict[str, str] | None = None,
+        main_name: str = "main.vera",
+    ) -> list[Diagnostic]:
+        from vera.parser import parse_file
+        from vera.transform import transform
+
+        main_file = _write_file(tmp_path, main_name, main_source)
+        for rel, content in (modules or {}).items():
+            _write_file(tmp_path, rel, content)
+        resolver = ModuleResolver(_root=tmp_path)
+        program = transform(parse_file(str(main_file)))
+        resolver.resolve_imports(program, main_file)
+        return resolver.errors
+
+    def test_circular_import_is_E011(self, tmp_path: Path) -> None:
+        a_src = (
+            "import b;\n\nprivate fn fa(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        b_src = (
+            "import a;\n\nprivate fn fb(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(
+            tmp_path, a_src, {"b.vera": b_src}, main_name="a.vera",
+        )
+        codes = [e.error_code for e in errs]
+        assert "E011" in codes, [
+            (e.error_code, e.description) for e in errs
+        ]
+
+    def test_cannot_resolve_import_is_E012(self, tmp_path: Path) -> None:
+        main = (
+            "import nonexistent;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(tmp_path, main)
+        codes = [e.error_code for e in errs]
+        assert "E012" in codes, [
+            (e.error_code, e.description) for e in errs
+        ]
+
+    def test_parse_error_in_import_is_E013(self, tmp_path: Path) -> None:
+        main = (
+            "import broken;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(
+            tmp_path, main, {"broken.vera": "not valid vera {{{"},
+        )
+        codes = [e.error_code for e in errs]
+        assert "E013" in codes, [
+            (e.error_code, e.description) for e in errs
+        ]
+
+    def _diag_by_code(
+        self, errs: list[Diagnostic], code: str,
+    ) -> Diagnostic:
+        matches = [e for e in errs if e.error_code == code]
+        assert matches, (
+            f"no {code} diagnostic among "
+            f"{[(e.error_code, e.description) for e in errs]}"
+        )
+        return matches[0]
+
+    def test_resolver_diagnostics_carry_full_contract(
+        self, tmp_path: Path,
+    ) -> None:
+        """E011/E012/E013 carry the full diagnostic contract.
+
+        Every user-facing diagnostic exposes a consistent
+        ``description``/``rationale``/``fix``/``spec_ref``/``error_code``
+        field set (CLAUDE.md, AGENTS.md).  ``Diagnostic.to_dict()`` omits
+        empty fields, so a bare diagnostic yields a JSON schema that
+        drifts from its peers — machine consumers of ``vera check
+        --json`` would then have to special-case module-resolution
+        failures.  All three resolver paths must cite Chapter 8.
+        """
+        e011 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import b;\n\nprivate fn fa(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+                {
+                    "b.vera": (
+                        "import a;\n\nprivate fn fb(-> @Unit) "
+                        "requires(true) ensures(true) effects(pure) "
+                        "{ () }\n"
+                    ),
+                },
+                main_name="a.vera",
+            ),
+            "E011",
+        )
+        e012 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import nonexistent;\n\nprivate fn main(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+            ),
+            "E012",
+        )
+        e013 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import broken;\n\nprivate fn main(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+                {"broken.vera": "not valid vera {{{"},
+            ),
+            "E013",
+        )
+        for diag in (e011, e012, e013):
+            assert diag.rationale, (diag.error_code, "missing rationale")
+            assert diag.fix, (diag.error_code, "missing fix")
+            assert diag.spec_ref, (diag.error_code, "missing spec_ref")
+            assert "Chapter 8" in diag.spec_ref, (
+                diag.error_code, diag.spec_ref,
+            )
+            # The location must name the importing file and the offending
+            # import line must round-trip into the JSON, like every checker
+            # diagnostic — so machine consumers of `vera check --json` see a
+            # uniform schema (Diagnostic.to_dict() drops empty fields).
+            assert diag.location.file, (diag.error_code, "missing file")
+            assert diag.source_line, (diag.error_code, "missing source_line")
+            assert "import" in diag.source_line, (
+                diag.error_code, diag.source_line,
+            )
+
+    def test_internal_error_not_masked_as_E013(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unexpected internal error must propagate, not become E013.
+
+        E013 ("Error parsing imported module") is for *genuine* parse /
+        transform failures of the user's imported file.  A broad
+        ``except Exception`` would relabel a compiler bug (e.g. an
+        ``AttributeError`` raised deep in ``transform``) as E013, blaming
+        the user's module for a crash that is ours.  The resolver narrows
+        the catch to the documented resolution failures, so a real bug
+        surfaces as a crash/traceback instead of a misleading diagnostic.
+        """
+        import vera.resolver as resolver_mod
+
+        def _boom(_tree: object) -> object:
+            raise AttributeError("simulated compiler bug in transform")
+
+        # Patch only the resolver's ``transform`` (used on the *imported*
+        # module); the helper transforms the main program via its own
+        # local import, so it is unaffected.
+        monkeypatch.setattr(resolver_mod, "transform", _boom)
+
+        main = (
+            "import ok;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        ok_src = (
+            "private fn helper(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        with pytest.raises(AttributeError, match="simulated compiler bug"):
+            self._errors(tmp_path, main, {"ok.vera": ok_src})

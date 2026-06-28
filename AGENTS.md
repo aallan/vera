@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 93 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 101 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the two Chapter 8 negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -182,7 +182,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 93 conformance programs must pass
+python scripts/check_conformance.py    # All 101 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 35 examples must pass
 ```
 
@@ -192,7 +192,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 93 conformance programs in `tests/conformance/` must pass their declared level
+- All 101 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) must *fail* `check` with their `expected_error` E-code
 - All 35 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass

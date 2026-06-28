@@ -62,10 +62,31 @@ class TestConformance:
         assert tree is not None
 
     def test_check(self, entry: dict) -> None:
-        """Programs at level check/verify/run must type-check cleanly."""
+        """Programs at level check/verify/run must type-check cleanly — or,
+        for a negative entry (``expected_error``), must FAIL check with that
+        error code (e.g. ch08_circular_import → E011)."""
         if not _at_least(entry, "check"):
             pytest.skip("parse-only")
         path = str(CONFORMANCE_DIR / entry["file"])
+        expected_error = entry.get("expected_error")
+        if expected_error is not None:
+            # The diagnostic fires during check, so a negative entry must be
+            # declared at level "check"; a verify/run negative would otherwise
+            # silently skip its declared stage.  Fail fast on a mislabel.
+            assert entry["level"] == "check", (
+                f"expected_error is only valid at level 'check'; "
+                f"{entry['id']} is level {entry['level']!r}"
+            )
+            result = _vera("check", "--json", path)
+            payload = json.loads(result.stdout)
+            codes = [d.get("error_code")
+                     for d in payload.get("diagnostics", [])]
+            assert payload.get("ok") is False and expected_error in codes, (
+                f"Expected {entry['id']} to fail check with "
+                f"{expected_error}; got ok={payload.get('ok')} "
+                f"codes={codes}\n{result.stdout}"
+            )
+            return
         result = _vera("check", path)
         assert "OK:" in result.stdout, (
             f"Type-check failed for {entry['id']}:\n{result.stdout}\n{result.stderr}"

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.184] - 2026-06-28
+
+### Added
+
+- **Chapter 8 (modules) conformance programs** — the last spec chapter without `chNN_*.vera` coverage now has eight ([#679](https://github.com/aallan/vera/issues/679)): module declaration (§8.2), wildcard (§8.3.1) and selective (§8.3.2) imports, `public` / `private` visibility (§8.4), shadowing (§8.5.2), module-qualified calls (§8.5.3), and circular-import detection (§8.6.3).  Two are **negative tests** that assert a specific diagnostic is emitted, enabled by new `expected_error` support in the conformance harness (`scripts/check_conformance.py` + `tests/test_conformance.py`): a manifest entry may declare it must fail `check` with a given E-code.
+
+### Fixed
+
+- **Codegen soundness: a module-qualified call now bypasses a local shadow** ([#814](https://github.com/aallan/vera/issues/814)).  Per spec §8.5.3 a qualified call `m::f` resolves to the module's function even when a local `f` shadows the bare name.  Codegen desugared `ModuleCall` to a bare `FnCall`, **dropping the module path**, so `m::f` wrongly invoked the shadowing local — while the verifier resolved it correctly to the module's function via its per-module registry.  The result was an unsound verifier↔runtime desync: `vera verify` proved a postcondition against the module's contract that the runtime then violated (`verify` OK, `run` traps).  Shadowed module functions are now also emitted under a distinct, collision-free `mod$…` WASM name (the `$` separator is illegal in Vera identifiers, like the monomorphizer's `name$T`), and qualified calls resolve to it via a `(module path, name) → target` table; bare calls still resolve to the local (§8.5.2, unchanged).  A bare *intra-module* call inside a qualified-reached body is likewise redirected to the module's sibling rather than a local shadow of that name, so the fix holds one level deep.  Pinned by a verifier↔codegen differential.  Surfaced while adding the Chapter 8 conformance coverage above; `ch08_module_qualified_call` and `ch08_shadowing` are now written to the distinguishing spec behaviour.
+- **Module-resolution diagnostics now carry stable E-codes** ([#679](https://github.com/aallan/vera/issues/679)).  Every Vera *error* diagnostic carries an E001–E702 code (DESIGN.md; warnings use the W-series), but the resolver/visibility errors emitted none.  Added **E011** (circular import detected), **E012** (cannot resolve import — no file found), **E013** (error parsing an imported module), and **E150** (cannot import a private declaration).  Each also carries the full diagnostic contract — `location.file`, `source_line`, `rationale`, `fix`, and a Chapter 8 `spec_ref` — so that `vera check --json` exposes module-resolution failures with the same field set as every other diagnostic (`Diagnostic.to_dict()` omits empty fields, so a bare diagnostic would otherwise drift from the documented schema).  The resolver's parse/transform error handling is also narrowed from a blanket `except Exception` to the documented resolution failures (`ParseError`, `TransformError`, `OSError`, `UnicodeDecodeError`), so an internal compiler bug propagates as a crash rather than being silently relabeled E013 "Error parsing imported module" and blamed on the user's file.  The visibility diagnostics now also cite the correct spec section: **E150** (private import), **E232** (private module-qualified call), and the missing-visibility error were repointed from the stale `Chapter 5, Section 5.8 "Function Visibility"` (which no longer exists) to `Chapter 8, Section 8.4 "Visibility"`, where the module-visibility rules now live.
+
 ## [0.0.183] - 2026-06-27
 
 ### Added
@@ -2620,7 +2631,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.183...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.184...HEAD
+[0.0.184]: https://github.com/aallan/vera/compare/v0.0.183...v0.0.184
 [0.0.183]: https://github.com/aallan/vera/compare/v0.0.182...v0.0.183
 [0.0.182]: https://github.com/aallan/vera/compare/v0.0.181...v0.0.182
 [0.0.181]: https://github.com/aallan/vera/compare/v0.0.180...v0.0.181

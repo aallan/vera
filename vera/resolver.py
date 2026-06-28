@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vera import ast
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import (
+    Diagnostic,
+    ParseError,
+    SourceLocation,
+    TransformError,
+)
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -102,12 +107,23 @@ class ModuleResolver:
                         f"'{'.'.join(mod_path)}' is already being "
                         f"resolved."
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
                     rationale=(
-                        "Circular imports are not allowed. Restructure "
-                        "the modules to break the dependency cycle."
+                        "Circular imports are not allowed. The module "
+                        "dependency graph must be acyclic."
+                    ),
+                    fix=(
+                        "Break the cycle: remove one of the imports, or "
+                        "extract the shared declarations into a third "
+                        "module that both modules import."
+                    ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.3 '
+                        '"Circular Import Detection"'
                     ),
                     severity="error",
+                    error_code="E011",
                 ),
             )
             return None
@@ -121,7 +137,8 @@ class ModuleResolver:
                         f"Cannot resolve import "
                         f"'{'.'.join(mod_path)}': no file found."
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
                     rationale=(
                         f"Looked for "
                         f"'{'/'.join(mod_path)}.vera' relative to "
@@ -132,7 +149,11 @@ class ModuleResolver:
                         f"'{'/'.join(mod_path)}.vera' or check the "
                         f"import path."
                     ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.1 "Path Mapping"'
+                    ),
                     severity="error",
+                    error_code="E012",
                 ),
             )
             return None
@@ -162,15 +183,37 @@ class ModuleResolver:
 
             self._cache[mod_path] = mod
             return mod
-        except Exception as exc:
+        except (
+            ParseError, TransformError, OSError, UnicodeDecodeError,
+        ) as exc:
+            # Only genuine resolution failures of the imported file become
+            # E013: ParseError/TransformError from parse_file/transform, and
+            # OSError/UnicodeDecodeError from read_text.  Any other exception
+            # is an internal compiler bug and must propagate, not be relabeled
+            # as the user's module failing to parse.
             self._errors.append(
                 Diagnostic(
                     description=(
                         f"Error parsing imported module "
                         f"'{'.'.join(mod_path)}': {exc}"
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
+                    rationale=(
+                        "An imported module must itself parse and "
+                        "transform successfully before its declarations "
+                        "can be used by the importing program."
+                    ),
+                    fix=(
+                        f"Run `vera check {'/'.join(mod_path)}.vera` "
+                        f"directly to see the detailed syntax diagnostic, "
+                        f"then correct the imported module."
+                    ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.5 "Resolution Errors"'
+                    ),
                     severity="error",
+                    error_code="E013",
                 ),
             )
             return None
@@ -203,11 +246,39 @@ class ModuleResolver:
         return None
 
     @staticmethod
-    def _location_from_node(node: ast.Node) -> SourceLocation:
-        """Extract a SourceLocation from an AST node's span."""
+    def _location_from_node(
+        node: ast.Node, importing_file: Path | None = None,
+    ) -> SourceLocation:
+        """Extract a SourceLocation from an AST node's span.
+
+        ``importing_file`` names the file that contains ``node`` (the
+        importing program); threading it through populates
+        ``location.file`` so resolver diagnostics match the file-qualified
+        location every checker diagnostic carries.
+        """
+        file = str(importing_file) if importing_file is not None else None
         if node.span:
             return SourceLocation(
+                file=file,
                 line=node.span.line,
                 column=node.span.column,
             )
-        return SourceLocation()
+        return SourceLocation(file=file)
+
+    @staticmethod
+    def _source_line(importing_file: Path, node: ast.Node) -> str:
+        """Read the offending import line from the importing file.
+
+        Best-effort: a missing or unreadable file yields ``""`` rather
+        than raising, since the source line is contextual, not essential.
+        Mirrors the checker's ``_source_line`` so ``vera check --json``
+        carries the offending line for resolver errors too.
+        """
+        if not node.span:
+            return ""
+        try:
+            lines = importing_file.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return ""
+        idx = node.span.line - 1
+        return lines[idx] if 0 <= idx < len(lines) else ""

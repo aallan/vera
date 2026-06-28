@@ -1,0 +1,11 @@
+module vera.cycle_b;
+
+import vera.cycle_a;
+
+public fn fb(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  2
+}

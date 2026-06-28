@@ -34,7 +34,7 @@ class RegistrationMixin:
                         "an explicit visibility annotation."
                     ),
                     fix=f"private {kind} {name}(...) or public {kind} {name}(...)",
-                    spec_ref='Chapter 5, Section 5.8 "Function Visibility"',
+                    spec_ref='Chapter 8, Section 8.4 "Visibility"',
                 )
             self._register_decl(tld.decl, visibility=tld.visibility)
 

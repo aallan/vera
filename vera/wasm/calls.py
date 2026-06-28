@@ -462,6 +462,14 @@ class CallsMixin:
             if resolved is not None:
                 call_target = resolved
 
+        # #814 C2: inside an emitted ``mod$…`` body, redirect a bare call to a
+        # locally-shadowed same-module sibling to the module's ``mod$``
+        # version (the rename map is empty for every non-mod$ body, so normal
+        # compilation is unaffected).  Shadowed siblings are non-generic, so
+        # this never collides with the generic rewrite above.
+        if call_target in self._intra_module_renames:
+            call_target = self._intra_module_renames[call_target]
+
         # Guard rail: reject calls to functions not defined in this module.
         # In practice the cross-module check upstream has already emitted
         # a diagnostic for genuine unknown-fn cases.  This path also fires

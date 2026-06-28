@@ -1,6 +1,3 @@
--- Stub module: vera.math (conformance suite copy)
--- Provides basic math utilities for cross-module conformance tests.
-
 module vera.math;
 
 public fn abs(@Int -> @Int)
@@ -8,7 +5,11 @@ public fn abs(@Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
 }
 
 public fn max(@Int, @Int -> @Int)
@@ -17,5 +18,25 @@ public fn max(@Int, @Int -> @Int)
   ensures(@Int.result >= @Int.1)
   effects(pure)
 {
-  if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 }
+  if @Int.0 >= @Int.1 then {
+    @Int.0
+  } else {
+    @Int.1
+  }
+}
+
+public fn hundred(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 100)
+  effects(pure)
+{
+  100
+}
+
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
 }

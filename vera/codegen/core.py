@@ -15,6 +15,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import wasmtime
@@ -220,8 +221,37 @@ class CodeGenerator(
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
         )
-        # Imported FnDecls to compile in Pass 2.5
-        self._imported_fn_decls: list[ast.FnDecl] = []
+        # Imported (module path, FnDecl) to compile in Pass 2.5.  The path is
+        # carried so Pass 2.5 can apply that module's intra-rename map (#814
+        # C2): a bare sibling call inside an imported body must reach the
+        # module's version, not a local shadow of that name.
+        self._imported_fn_decls: list[tuple[tuple[str, ...], ast.FnDecl]] = []
+        # #814 §8.5.3: WASM target name for a module-qualified call
+        # ``m::f`` keyed by (module path, fn name).  Normally the bare name;
+        # for a module fn whose bare name is shadowed by a LOCAL definition
+        # it is a distinct ``mod$…`` name so the qualified call reaches the
+        # module's body while bare calls keep resolving to the local shadow.
+        self._module_qualified_targets: dict[
+            tuple[tuple[str, ...], str], str
+        ] = {}
+        # (module path, mangled name, FnDecl) of shadowed module fns to emit
+        # in Pass 2.6.
+        self._shadowed_module_fns: list[
+            tuple[tuple[str, ...], str, ast.FnDecl]
+        ] = []
+        # Per-module intra-module call rename map: module path → {bare name →
+        # mod$ name} for that module's locally-shadowed functions.  Applied
+        # ONLY inside an emitted ``mod$…`` body so an intra-module call lands
+        # on the module's version, not the main program's local shadow (#814
+        # C2 — the residual the verifier↔codegen review found).
+        self._module_intra_renames: dict[
+            tuple[str, ...], dict[str, str]
+        ] = {}
+        # Names of ALL local functions (top-level + recursive where-fns) that
+        # shadow the importer's flat namespace.  Populated by _register_modules;
+        # Pass 2.5 consults it so an imported fn shadowed by a local where-fn is
+        # not emitted under a clashing bare name (#814).
+        self._local_shadowed_fn_names: set[str] = set()
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -537,14 +567,49 @@ class CodeGenerator(
 
         # Pass 2.5: compile imported function bodies (C7e)
         imported_seen: set[str] = set()
-        for idecl in self._imported_fn_decls:
+        for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
-            # Skip if a local function already defined this name
-            if idecl.name in fn_visibility:
+            # Skip if a local function already defined this name — a top-level
+            # local (fn_visibility) OR a local `where`-fn helper
+            # (_local_shadowed_fn_names).  Either flattens to a bare ``$name``
+            # that owns the namespace; emitting the imported body under the
+            # same bare name would duplicate it (the qualified target reaches
+            # the module via its ``mod$…`` emission instead, #814).
+            if (idecl.name in fn_visibility
+                    or idecl.name in self._local_shadowed_fn_names):
                 continue
             imported_seen.add(idecl.name)
-            fn_wat = self._compile_fn(idecl, export=False)
+            # #814 C2 (Pass 2.5 mirror): pass the originating module's
+            # intra-rename map so a bare sibling call inside this imported
+            # body resolves to the module's version (its `mod$…` emission)
+            # rather than a local shadow of that name.
+            fn_wat = self._compile_fn(
+                idecl, export=False,
+                module_renames=self._module_intra_renames.get(path, {}),
+            )
+            if fn_wat is not None:
+                functions_wat.append(fn_wat)
+
+        # Pass 2.6: emit shadowed module functions under their qualified
+        # ('mod$…') WASM name (#814 §8.5.3).  The plain Pass 2.5 above skips
+        # any imported fn whose bare name a local redefines (so bare calls
+        # resolve to the local, §8.5.2); here we additionally emit the
+        # module's body under a distinct name so a module-qualified call
+        # ``m::f`` reaches it.  ``dataclasses.replace`` only renames the WASM
+        # function; the body's intra-module calls are redirected to their own
+        # ``mod$`` targets via ``module_renames`` (C2) so a sibling call
+        # inside the body also lands on the module's version, not a local
+        # shadow.
+        for path, mangled, idecl in self._shadowed_module_fns:
+            if mangled in imported_seen:
+                continue
+            imported_seen.add(mangled)
+            fn_wat = self._compile_fn(
+                dataclasses.replace(idecl, name=mangled),
+                export=False,
+                module_renames=self._module_intra_renames.get(path, {}),
+            )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
 
