@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 
 from vera.errors import Diagnostic
 from vera.resolver import ModuleResolver, ResolvedModule
@@ -548,3 +549,37 @@ class TestResolverErrorCodes:
             assert "Chapter 8" in diag.spec_ref, (
                 diag.error_code, diag.spec_ref,
             )
+
+    def test_internal_error_not_masked_as_E013(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unexpected internal error must propagate, not become E013.
+
+        E013 ("Error parsing imported module") is for *genuine* parse /
+        transform failures of the user's imported file.  A broad
+        ``except Exception`` would relabel a compiler bug (e.g. an
+        ``AttributeError`` raised deep in ``transform``) as E013, blaming
+        the user's module for a crash that is ours.  The resolver narrows
+        the catch to the documented resolution failures, so a real bug
+        surfaces as a crash/traceback instead of a misleading diagnostic.
+        """
+        import vera.resolver as resolver_mod
+
+        def _boom(_tree: object) -> object:
+            raise AttributeError("simulated compiler bug in transform")
+
+        # Patch only the resolver's ``transform`` (used on the *imported*
+        # module); the helper transforms the main program via its own
+        # local import, so it is unaffected.
+        monkeypatch.setattr(resolver_mod, "transform", _boom)
+
+        main = (
+            "import ok;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        ok_src = (
+            "private fn helper(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        with pytest.raises(AttributeError, match="simulated compiler bug"):
+            self._errors(tmp_path, main, {"ok.vera": ok_src})

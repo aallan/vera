@@ -542,6 +542,80 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 42  # unit ModuleCall dropped cleanly; no stray-drop WASM error
 
+    def test_pair_returning_qualified_call_in_statement_position(self) -> None:
+        """#814: a `@String`/`@Array`-returning module-qualified call in
+        non-tail statement position must drop BOTH stack values (i32 ptr +
+        i32 len), not one.
+
+        Sibling of ``test_unit_returning_qualified_call_in_statement_position``
+        for the *pair* result shape.  The drop-classifier
+        (``_is_pair_result_expr``) inspects the raw ``ModuleCall`` node and
+        must resolve the qualified target through ``_module_qualified_targets``
+        to recognize a pair-returning (``@String`` / ``@Array``) callee.  The
+        local ``make_str`` where-shadow forces resolution through the mangled
+        ``mod$…`` target (not the bare-name fallback), so this also pins the
+        shadowed branch of the classifier.  If the ModuleCall clause is
+        missing, only one of the two i32 values is dropped and wasmtime
+        rejects the module as invalid WASM.
+        """
+        mod = self._resolved(("m",), """\
+public fn make_str(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hi" }
+""")
+        val = self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::make_str(0);
+  42
+}
+where {
+  fn make_str(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { 7 }
+}
+""", [mod], fn="main")
+        assert val == 42  # pair ModuleCall dropped cleanly; no invalid-WASM error
+
+    def test_nat_param_guard_mirrored_on_shadowed_qualified_call(self) -> None:
+        """#814: the @Nat-parameter narrowing guard is mirrored onto a
+        shadowed module fn's mangled ``mod$…`` target.
+
+        A qualified call ``m::f(0 - 1)`` to a *shadowed* module fn whose
+        parameter is ``@Nat`` must still emit the call-site ``value >= 0``
+        narrowing guard, which keys on the resolved ``mod$…`` target via
+        ``_fn_nat_params``.  The ``0 - 1`` underflow idiom is Tier-3-deferred
+        by the verifier (so ``vera verify`` is clean) and must TRAP at
+        runtime.  If the guard bitmap is *not* mirrored onto the mangled name
+        (``vera/codegen/modules.py``), the negative value is passed unchecked
+        — verified: the program then returns ``-1`` with no trap, an unsound
+        @Nat.  The local ``f`` where-shadow forces resolution through the
+        mangled target rather than the bare name.
+        """
+        mod = self._resolved(("m",), """\
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError),
+        ):
+            self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::f(0 - 1)
+}
+where {
+  fn f(@Nat -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { @Nat.0 }
+}
+""", [mod], fn="main")
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

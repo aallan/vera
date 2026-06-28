@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vera import ast
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import (
+    Diagnostic,
+    ParseError,
+    SourceLocation,
+    TransformError,
+)
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -176,7 +181,14 @@ class ModuleResolver:
 
             self._cache[mod_path] = mod
             return mod
-        except Exception as exc:
+        except (
+            ParseError, TransformError, OSError, UnicodeDecodeError,
+        ) as exc:
+            # Only genuine resolution failures of the imported file become
+            # E013: ParseError/TransformError from parse_file/transform, and
+            # OSError/UnicodeDecodeError from read_text.  Any other exception
+            # is an internal compiler bug and must propagate, not be relabeled
+            # as the user's module failing to parse.
             self._errors.append(
                 Diagnostic(
                     description=(

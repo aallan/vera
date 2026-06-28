@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,334 across 46 files (~63,000 lines of test code; 5,298 passed + 16 stress, 20 skipped) |
+| **Tests** | 5,337 across 46 files (~63,000 lines of test code; 5,301 passed + 16 stress, 20 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 101 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -69,7 +69,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_contracts.py` | 32 | 570 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,320 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 50 | 1,618 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
-| `test_codegen_modules.py` | 31 | 1,077 | Cross-module guard rail, cross-module codegen, module-qualified call resolution bypassing a local shadow incl. intra-module siblings, where-fn helpers both directions, and unit-returning calls in statement position (#814 §8.5.3), name collision detection (E608/E609/E610) |
+| `test_codegen_modules.py` | 33 | 1,151 | Cross-module guard rail, cross-module codegen, module-qualified call resolution bypassing a local shadow incl. intra-module siblings, where-fn helpers both directions, unit- and pair-returning calls in statement position, and the @Nat-parameter guard mirrored onto shadowed targets (#814 §8.5.3), name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 244 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_execute_characterization.py` | 22 | 467 | Characterization harness pinning `execute()`'s observable contract ahead of the #421 runtime decomposition (#734): every `ExecuteResult` field (`value` int/float/str/heap-pointer/None, `stdout`, `state`, `exit_code`, `stderr`) crossed with the three completion modes — normal return, WASM trap (raises `WasmTrapError` with a classified `kind`, output-before-trap preserved), and interrupt/exit (`IO.exit(n)` → `exit_code` n with `value` None, Ctrl-C → 130) — plus the positional-constructor compatibility shape and `capture_stderr` True-vs-default. **Mutation-validated**: every cell confirmed to flip RED when its target return path in `api.py` is deliberately broken (9 mutations, 0 green-for-the-wrong-reason tests) |
 | `test_walker_defensive_branches_597.py` | 21 | 296 | Synthetic-AST tests for the 11 defensive `isinstance` branches added by #597 (`_scan_io_ops` / `_scan_expr_for_handlers` / `_infer_expr_wasm_type` / `_infer_vera_type`) plus the 5 pr-review fixes (#2/#3/#8 — ModuleCall/AnonFn/QualifiedCall return None; dead `is not None` guards on Block/HandleExpr removed) |
@@ -80,7 +80,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_formatter.py` | 124 | 1,074 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
 | `test_cli.py` | 242 | 3,504 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch |
 | `test_introspect.py` | 38 | 192 | `vera builtins/effects/errors --json` registry introspection (#539): the `{schema, items}` envelope, count-equals-registry differential per registry, error-phase derivation, effect/ability `kind` tagging, the parameterised `Exn<T>` effect, and best-effort `since` attribution with full-coverage guards |
-| `test_resolver.py` | 19 | 550 | Module resolution, path lookup, parse caching, circular import detection |
+| `test_resolver.py` | 20 | 585 | Module resolution, path lookup, parse caching, circular import detection, the E011/E012/E013 diagnostic contract, and internal-error isolation (a compiler bug is not masked as E013) |
 | `test_types.py` | 73 | 388 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 24 | 344 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_verifier_coverage.py` | 91 | 1,594 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches, **#667 SMT translator coverage for `FloatLit` / `IndexExpr` / `ArrayLit`** (Tier 1 verification of float/array literal/index contract predicates) |
