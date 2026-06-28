@@ -201,10 +201,10 @@ class CrossModuleMixin:
                 # 2.5 nor emitted under a mangled name.
                 if tld.decl.forall_vars:
                     continue
-                self._imported_fn_decls.append(tld.decl)
+                self._imported_fn_decls.append((mod.path, tld.decl))
                 if tld.decl.where_fns:
                     for wfn in tld.decl.where_fns:
-                        self._imported_fn_decls.append(wfn)
+                        self._imported_fn_decls.append((mod.path, wfn))
                 fn_name = tld.decl.name
                 is_public = (tld.visibility or "private") == "public"
                 in_filter = name_filter is None or fn_name in name_filter

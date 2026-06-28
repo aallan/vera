@@ -419,6 +419,38 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 107  # 100 (qualified -> module) + 7 (bare -> local)
 
+    def test_imported_body_reaches_module_sibling_over_local_shadow(
+        self,
+    ) -> None:
+        """#814 C2 (Pass 2.5 mirror): a NON-shadowed imported fn whose body
+        calls a sibling reaches the module's sibling, not a local shadow of
+        that name.
+
+        ``outer`` is imported (not locally shadowed, so it compiles in Pass
+        2.5 under its bare name) and calls ``inner``; the importer shadows
+        only ``inner``.  A bare ``outer()`` must run the module's ``outer``,
+        whose ``inner(...)`` reaches the module's ``inner`` (100) via the
+        intra-rename map — not the local shadow (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@Int.0) }
+""")
+        val = self._run_mod("""\
+import m(inner, outer);
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module inner via module outer (Pass 2.5), not local 7
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

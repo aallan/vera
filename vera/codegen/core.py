@@ -221,8 +221,11 @@ class CodeGenerator(
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
         )
-        # Imported FnDecls to compile in Pass 2.5
-        self._imported_fn_decls: list[ast.FnDecl] = []
+        # Imported (module path, FnDecl) to compile in Pass 2.5.  The path is
+        # carried so Pass 2.5 can apply that module's intra-rename map (#814
+        # C2): a bare sibling call inside an imported body must reach the
+        # module's version, not a local shadow of that name.
+        self._imported_fn_decls: list[tuple[tuple[str, ...], ast.FnDecl]] = []
         # #814 §8.5.3: WASM target name for a module-qualified call
         # ``m::f`` keyed by (module path, fn name).  Normally the bare name;
         # for a module fn whose bare name is shadowed by a LOCAL definition
@@ -559,14 +562,21 @@ class CodeGenerator(
 
         # Pass 2.5: compile imported function bodies (C7e)
         imported_seen: set[str] = set()
-        for idecl in self._imported_fn_decls:
+        for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
             # Skip if a local function already defined this name
             if idecl.name in fn_visibility:
                 continue
             imported_seen.add(idecl.name)
-            fn_wat = self._compile_fn(idecl, export=False)
+            # #814 C2 (Pass 2.5 mirror): pass the originating module's
+            # intra-rename map so a bare sibling call inside this imported
+            # body resolves to the module's version (its `mod$…` emission)
+            # rather than a local shadow of that name.
+            fn_wat = self._compile_fn(
+                idecl, export=False,
+                module_renames=self._module_intra_renames.get(path, {}),
+            )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
 
