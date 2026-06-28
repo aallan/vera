@@ -104,7 +104,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 ## Conformance Suite
 
-The conformance suite is a collection of 101 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 101 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -131,7 +131,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `verify` | Type-checks and all contracts verified by Z3 | 8 |
 | `run` | Compiles to WASM and executes correctly | 87 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Six programs (`ch03_typed_holes`, `ch07_cross_module_contracts_lib`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_http`, `ch09_inference`) are at the `check` level — the last two of those are **negative tests** that assert a specific diagnostic (`ch08_circular_import` → E011, `ch08_visibility_private` → E150) via the manifest's `expected_error` field. Eight programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Six programs (`ch03_typed_holes`, `ch07_cross_module_contracts_lib`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_http`, `ch09_inference`) are at the `check` level. Two of them — `ch08_circular_import` and `ch08_visibility_private` — are **negative tests** that assert a specific diagnostic (E011 and E150 respectively) via the manifest's `expected_error` field; `ch09_http` and `ch09_inference` are environment-gated (network / API key). Eight programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
 
 ### Skipped tests
 

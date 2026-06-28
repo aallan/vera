@@ -195,12 +195,16 @@ class CrossModuleMixin:
             for tld in mod.program.declarations:
                 if not isinstance(tld.decl, ast.FnDecl):
                     continue
+                # Generics are excluded before they enter any list: cross-
+                # module generic monomorphisation is unimplemented (#774), and
+                # a generic body (or its where-fns) can't be compiled in Pass
+                # 2.5 nor emitted under a mangled name.
+                if tld.decl.forall_vars:
+                    continue
                 self._imported_fn_decls.append(tld.decl)
                 if tld.decl.where_fns:
                     for wfn in tld.decl.where_fns:
                         self._imported_fn_decls.append(wfn)
-                if tld.decl.forall_vars:
-                    continue
                 fn_name = tld.decl.name
                 is_public = (tld.visibility or "private") == "public"
                 in_filter = name_filter is None or fn_name in name_filter
