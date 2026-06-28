@@ -100,7 +100,7 @@ The **commit-stage** hooks (26, each gated to relevant files) include:
 - Lint with ruff (default rules)
 - mypy type checking
 - pytest test suite
-- All conformance programs pass their declared level
+- All conformance programs hold at their declared level — positives pass; the negatives fail `check` with their `expected_error` E-code
 - All `.vera` examples type-check and verify cleanly
 - README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
