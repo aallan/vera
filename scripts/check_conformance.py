@@ -51,6 +51,16 @@ def main() -> int:
         # positive pipeline for this entry.
         expected_error = entry.get("expected_error")
         if expected_error is not None:
+            # The diagnostic fires during check, so a negative entry must be
+            # declared at level "check".  Fail fast on a mislabelled entry so a
+            # verify/run negative can't silently skip its declared stage.
+            if level != "check":
+                failed.append((
+                    entry_id, "manifest",
+                    f"expected_error is only valid at level 'check'; "
+                    f"got level={level!r}",
+                ))
+                continue
             result = _vera("check", "--json", path)
             try:
                 payload = json.loads(result.stdout)

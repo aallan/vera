@@ -70,6 +70,13 @@ class TestConformance:
         path = str(CONFORMANCE_DIR / entry["file"])
         expected_error = entry.get("expected_error")
         if expected_error is not None:
+            # The diagnostic fires during check, so a negative entry must be
+            # declared at level "check"; a verify/run negative would otherwise
+            # silently skip its declared stage.  Fail fast on a mislabel.
+            assert entry["level"] == "check", (
+                f"expected_error is only valid at level 'check'; "
+                f"{entry['id']} is level {entry['level']!r}"
+            )
             result = _vera("check", "--json", path)
             payload = json.loads(result.stdout)
             codes = [d.get("error_code")
