@@ -108,6 +108,7 @@ class ModuleResolver:
                         "the modules to break the dependency cycle."
                     ),
                     severity="error",
+                    error_code="E011",
                 ),
             )
             return None
@@ -133,6 +134,7 @@ class ModuleResolver:
                         f"import path."
                     ),
                     severity="error",
+                    error_code="E012",
                 ),
             )
             return None
@@ -171,6 +173,7 @@ class ModuleResolver:
                     ),
                     location=self._location_from_node(imp),
                     severity="error",
+                    error_code="E013",
                 ),
             )
             return None

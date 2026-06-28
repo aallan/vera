@@ -838,6 +838,102 @@
     ]
   },
   {
+    "id": "ch08_module_decl",
+    "file": "ch08_module_decl.vera",
+    "chapter": 8,
+    "title": "Module declaration",
+    "level": "run",
+    "spec_ref": "Section 8.2",
+    "features": [
+      "module_decl"
+    ]
+  },
+  {
+    "id": "ch08_import_wildcard",
+    "file": "ch08_import_wildcard.vera",
+    "chapter": 8,
+    "title": "Wildcard import",
+    "level": "run",
+    "spec_ref": "Section 8.3.1",
+    "features": [
+      "wildcard_import",
+      "bare_call"
+    ]
+  },
+  {
+    "id": "ch08_import_selective",
+    "file": "ch08_import_selective.vera",
+    "chapter": 8,
+    "title": "Selective import",
+    "level": "run",
+    "spec_ref": "Section 8.3.2",
+    "features": [
+      "selective_import",
+      "bare_call"
+    ]
+  },
+  {
+    "id": "ch08_visibility_public",
+    "file": "ch08_visibility_public.vera",
+    "chapter": 8,
+    "title": "Public visibility is importable",
+    "level": "run",
+    "spec_ref": "Section 8.4",
+    "features": [
+      "visibility_public",
+      "selective_import"
+    ]
+  },
+  {
+    "id": "ch08_visibility_private",
+    "file": "ch08_visibility_private.vera",
+    "chapter": 8,
+    "title": "Private declarations are not importable",
+    "level": "check",
+    "spec_ref": "Section 8.4",
+    "expected_error": "E150",
+    "features": [
+      "visibility_private",
+      "import_error"
+    ]
+  },
+  {
+    "id": "ch08_shadowing",
+    "file": "ch08_shadowing.vera",
+    "chapter": 8,
+    "title": "Local definition shadows import",
+    "level": "run",
+    "spec_ref": "Section 8.5.2",
+    "features": [
+      "shadowing",
+      "name_resolution"
+    ]
+  },
+  {
+    "id": "ch08_module_qualified_call",
+    "file": "ch08_module_qualified_call.vera",
+    "chapter": 8,
+    "title": "Module-qualified call syntax",
+    "level": "run",
+    "spec_ref": "Section 8.5.3",
+    "features": [
+      "module_qualified_call"
+    ]
+  },
+  {
+    "id": "ch08_circular_import",
+    "file": "ch08_circular_import.vera",
+    "chapter": 8,
+    "title": "Circular import detection",
+    "level": "check",
+    "spec_ref": "Section 8.6.3",
+    "expected_error": "E011",
+    "features": [
+      "circular_import",
+      "resolution_error"
+    ]
+  },
+  {
     "id": "ch09_map",
     "file": "ch09_map.vera",
     "chapter": 9,

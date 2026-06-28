@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.184] - 2026-06-28
+
+### Added
+
+- **Chapter 8 (modules) conformance programs** — the last spec chapter without `chNN_*.vera` coverage now has eight ([#679](https://github.com/aallan/vera/issues/679)): module declaration (§8.2), wildcard (§8.3.1) and selective (§8.3.2) imports, `public` / `private` visibility (§8.4), shadowing (§8.5.2), module-qualified calls (§8.5.3), and circular-import detection (§8.6.3).  Two are **negative tests** that assert a specific diagnostic is emitted, enabled by new `expected_error` support in the conformance harness (`scripts/check_conformance.py` + `tests/test_conformance.py`): a manifest entry may declare it must fail `check` with a given E-code.
+
+### Fixed
+
+- **Module-resolution diagnostics now carry stable E-codes** ([#679](https://github.com/aallan/vera/issues/679)).  Every Vera diagnostic carries an E001–E702 code (DESIGN.md), but the resolver/visibility errors emitted none.  Added **E011** (circular import detected), **E012** (cannot resolve import — no file found), **E013** (error parsing an imported module), and **E150** (cannot import a private declaration).
+
 ## [0.0.183] - 2026-06-27
 
 ### Added
@@ -2620,7 +2630,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.183...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.184...HEAD
+[0.0.184]: https://github.com/aallan/vera/compare/v0.0.183...v0.0.184
 [0.0.183]: https://github.com/aallan/vera/compare/v0.0.182...v0.0.183
 [0.0.182]: https://github.com/aallan/vera/compare/v0.0.181...v0.0.182
 [0.0.181]: https://github.com/aallan/vera/compare/v0.0.180...v0.0.181

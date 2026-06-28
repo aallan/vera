@@ -1,0 +1,17 @@
+import vera.math(abs);
+
+public fn abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  42
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  abs(0 - 5)
+}

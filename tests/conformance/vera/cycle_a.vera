@@ -1,0 +1,11 @@
+module vera.cycle_a;
+
+import vera.cycle_b;
+
+public fn fa(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}

@@ -1,0 +1,9 @@
+import vera.math;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  vera.math::abs(0 - 5)
+}

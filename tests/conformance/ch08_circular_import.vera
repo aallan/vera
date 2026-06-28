@@ -1,0 +1,9 @@
+import vera.cycle_a;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

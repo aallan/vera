@@ -44,6 +44,32 @@ def main() -> int:
         level = entry["level"]
         level_n = _LEVEL_ORDER.get(level, 0)
 
+        # Negative test: the program must FAIL at its level with a specific
+        # error code (e.g. ch08_circular_import → E011).  Only `check`-level
+        # negatives are supported (the diagnostic fires during check); assert
+        # `ok == false` and the expected code is present, then skip the
+        # positive pipeline for this entry.
+        expected_error = entry.get("expected_error")
+        if expected_error is not None:
+            result = _vera("check", "--json", path)
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                failed.append((
+                    entry_id, "check (negative)",
+                    "expected JSON diagnostics, got:\n"
+                    + result.stdout + result.stderr,
+                ))
+                continue
+            codes = [d.get("error_code") for d in payload.get("diagnostics", [])]
+            if payload.get("ok") is not False or expected_error not in codes:
+                failed.append((
+                    entry_id, "check (negative)",
+                    f"expected failure with {expected_error}; "
+                    f"got ok={payload.get('ok')} codes={codes}",
+                ))
+            continue
+
         # Parse
         result = _vera("check", path)  # check implies parse
         if level_n >= _LEVEL_ORDER["check"]:

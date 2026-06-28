@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
+from vera.errors import Diagnostic
 from vera.resolver import ModuleResolver, ResolvedModule
 
 
@@ -409,3 +410,79 @@ private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         resolved = _resolve_ok(tmp_path, main)
         assert resolved == []
+
+
+# =====================================================================
+# Error codes (#679 — module-resolution diagnostics carry stable E-codes)
+# =====================================================================
+
+
+class TestResolverErrorCodes:
+    """Module-resolution diagnostics must carry stable E-codes (#679).
+
+    Every Vera diagnostic carries an E001–E702 code (DESIGN.md), but the
+    resolver's three error paths previously emitted ``error_code=""``.  The
+    Chapter 8 conformance suite's negative test asserts the circular-import
+    code (E011) specifically, so these codes are load-bearing, not cosmetic.
+    """
+
+    def _errors(
+        self,
+        tmp_path: Path,
+        main_source: str,
+        modules: dict[str, str] | None = None,
+        main_name: str = "main.vera",
+    ) -> list[Diagnostic]:
+        from vera.parser import parse_file
+        from vera.transform import transform
+
+        main_file = _write_file(tmp_path, main_name, main_source)
+        for rel, content in (modules or {}).items():
+            _write_file(tmp_path, rel, content)
+        resolver = ModuleResolver(_root=tmp_path)
+        program = transform(parse_file(str(main_file)))
+        resolver.resolve_imports(program, main_file)
+        return resolver.errors
+
+    def test_circular_import_is_E011(self, tmp_path: Path) -> None:
+        a_src = (
+            "import b;\n\nprivate fn fa(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        b_src = (
+            "import a;\n\nprivate fn fb(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(
+            tmp_path, a_src, {"b.vera": b_src}, main_name="a.vera",
+        )
+        codes = [e.error_code for e in errs if "Circular import" in e.description]
+        assert codes and all(c == "E011" for c in codes), [
+            (e.error_code, e.description) for e in errs
+        ]
+
+    def test_cannot_resolve_import_is_E012(self, tmp_path: Path) -> None:
+        main = (
+            "import nonexistent;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(tmp_path, main)
+        codes = [e.error_code for e in errs
+                 if "Cannot resolve import" in e.description]
+        assert codes and all(c == "E012" for c in codes), [
+            (e.error_code, e.description) for e in errs
+        ]
+
+    def test_parse_error_in_import_is_E013(self, tmp_path: Path) -> None:
+        main = (
+            "import broken;\n\nprivate fn main(-> @Unit) "
+            "requires(true) ensures(true) effects(pure) { () }\n"
+        )
+        errs = self._errors(
+            tmp_path, main, {"broken.vera": "not valid vera {{{"},
+        )
+        codes = [e.error_code for e in errs
+                 if "Error parsing imported module" in e.description]
+        assert codes and all(c == "E013" for c in codes), [
+            (e.error_code, e.description) for e in errs
+        ]

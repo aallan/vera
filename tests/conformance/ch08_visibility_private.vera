@@ -1,0 +1,9 @@
+import vera.math(helper);
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

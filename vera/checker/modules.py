@@ -110,6 +110,7 @@ class ModulesMixin:
                                 'Chapter 5, Section 5.8 '
                                 '"Function Visibility"'
                             ),
+                            error_code="E150",
                         )
                     elif (priv_dt is not None
                             and not self._is_public(priv_dt.visibility)):
@@ -128,6 +129,7 @@ class ModulesMixin:
                                 'Chapter 5, Section 5.8 '
                                 '"Function Visibility"'
                             ),
+                            error_code="E150",
                         )
 
             # 5. Inject public names into main env for bare calls

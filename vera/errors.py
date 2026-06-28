@@ -427,6 +427,10 @@ ERROR_CODES: dict[str, str] = {
     "E008": "Module-qualified call uses dot instead of ::",
     "E009": "Invalid string escape sequence",
     "E010": "Unhandled grammar rule",
+    # E01x — Module resolution
+    "E011": "Circular import detected",
+    "E012": "Cannot resolve import (no file found)",
+    "E013": "Error parsing imported module",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",
     "E121": "Function body type mismatch",
@@ -448,6 +452,7 @@ ERROR_CODES: dict[str, str] = {
     "E147": "Unary negate requires numeric",
     "E148": "Non-convertible type in string interpolation",
     "E149": "Integer literal out of range for its target type",
+    "E150": "Cannot import private declaration",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
     "E170": "Let binding type mismatch",
