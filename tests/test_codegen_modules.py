@@ -515,6 +515,33 @@ where {
 """, [mod], fn="main")
         assert val == 7  # local where-helper; no duplicate-$helper WASM error
 
+    def test_unit_returning_qualified_call_in_statement_position(self) -> None:
+        """#814: a `@Unit`-returning module-qualified call in non-tail
+        statement position must not emit a stray `drop`.
+
+        The drop-classifier (`_is_void_expr`) inspects the raw `ModuleCall`
+        node before it is desugared, so it must resolve the qualified target
+        and recognize a `@Unit` return — otherwise `m::noop(); 42` appends a
+        `drop` for a value that was never pushed, and wasmtime rejects the
+        module ("expected a type but nothing on stack").  Same class as the
+        user-`@Unit`-fn statement-position case (#584).
+        """
+        mod = self._resolved(("m",), """\
+public fn noop(@Int -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ () }
+""")
+        val = self._run_mod("""\
+import m;
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  m::noop(0);
+  42
+}
+""", [mod], fn="main")
+        assert val == 42  # unit ModuleCall dropped cleanly; no stray-drop WASM error
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

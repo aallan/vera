@@ -654,6 +654,7 @@ class WasmContext(
         #   IfExpr            → True if both branches are void
         #   Block             → True if trailing expr is void
         #   HandleExpr        → True if body is void
+        #   ModuleCall        → True if resolved target fn returns @Unit
         #
         # Intentionally ignored (default `return False` = produces value):
         #   IntLit            → always Int (i64) on stack
@@ -670,7 +671,6 @@ class WasmContext(
         #   ConstructorCall   → ADT (i32) on stack
         #   NullaryConstructor → ADT (i32) on stack
         #   AnonFn            → closure handle (i32) on stack
-        #   ModuleCall        → return value on stack
         #   ForallExpr        → Bool (i32) on stack
         #   ExistsExpr        → Bool (i32) on stack
         #
@@ -713,6 +713,17 @@ class WasmContext(
         # nothing on stack" (#584).
         if isinstance(expr, ast.FnCall) and expr.name in self._fn_ret_types:
             return self._fn_ret_types[expr.name] is None
+        # A module-qualified call is void iff its resolved target returns
+        # @Unit — mirror the FnCall clause on the resolved WASM target (bare
+        # name, or the ``mod$…`` name when the bare name is locally shadowed),
+        # so a unit-returning ``m::f()`` in statement position gets no stray
+        # drop (#814; same class as the user-@Unit-fn case #584).
+        if isinstance(expr, ast.ModuleCall):
+            target = self._module_qualified_targets.get(
+                (tuple(expr.path), expr.name), expr.name)
+            if target in self._fn_ret_types:
+                return self._fn_ret_types[target] is None
+            return False
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return True  # assert/assume return Unit (void)
         # Compound expressions: void if all branches are void
@@ -747,5 +758,15 @@ class WasmContext(
             return ret == "i32_pair"
         if isinstance(expr, ast.QualifiedCall):
             ret = self._infer_qualified_call_wasm_type(expr)
+            return ret == "i32_pair"
+        if isinstance(expr, ast.ModuleCall):
+            # Resolve the qualified target (bare name, or ``mod$…`` when
+            # shadowed) and reuse the FnCall inference so a String/Array-
+            # returning ``m::f()`` in statement position drops both stack
+            # values, not one (#814).
+            target = self._module_qualified_targets.get(
+                (tuple(expr.path), expr.name), expr.name)
+            ret = self._infer_fncall_wasm_type(
+                ast.FnCall(name=target, args=expr.args, span=expr.span))
             return ret == "i32_pair"
         return False
