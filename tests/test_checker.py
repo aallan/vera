@@ -3814,6 +3814,36 @@ where {
 """)
         assert "E151" in self._codes(errs), self._codes(errs)
 
+    def test_rejected_where_fn_does_not_shadow_canonical_builtin(self) -> None:
+        """A rejected where-helper must not overwrite the canonical built-in
+        entry in `env.functions` (#815).
+
+        Discriminating via a *different arity*: the where-fn `abs` takes two
+        args; a sibling `other` calls the one-arg built-in `abs`. If the
+        two-arg helper leaked into `env.functions`, `other`'s call would hit
+        a spurious arity error — so the only diagnostic must be the E151 on
+        the redefinition itself, nothing attributed to `other`.
+        """
+        errs = _errors("""
+public fn other(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ abs(@Int.0) }
+
+public fn caller(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+where {
+  fn abs(@Int, @Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { @Int.0 }
+}
+""")
+        codes = self._codes(errs)
+        assert "E151" in codes, codes
+        # The 2-arg where-fn must not have leaked over the 1-arg built-in:
+        # `other`'s call resolves to the built-in, so E151 is the *only* error.
+        assert [c for c in codes if c != "E151"] == [], codes
+
     def test_imported_module_redefining_builtin_is_E151(self) -> None:
         """An imported module that redefines a built-in is rejected in the
         importer (#815 — "user/module" scope).
@@ -3844,6 +3874,10 @@ where {
         diags = typecheck(prog, source="", resolved_modules=[mod])
         codes = [d.error_code for d in diags]
         assert "E151" in codes, codes
+        # The harvested diagnostic carries the *module's* file path (#815), so
+        # `vera check --json` points at where the redefinition actually is.
+        e151 = next(d for d in diags if d.error_code == "E151")
+        assert e151.location.file == "/fake/badmath.vera", e151.location.file
 
     def test_generic_redefining_builtin_is_E151(self) -> None:
         """A generic ``forall<T>`` fn named after a built-in is rejected."""

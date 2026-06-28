@@ -45,7 +45,10 @@ class ModulesMixin:
 
         # 2. Register each module in isolation, harvest declarations
         for mod in self._resolved_modules:
-            temp = TypeChecker(source=mod.source)
+            # Pass the module's file path so any harvested diagnostic (e.g. the
+            # E151 below) carries `location.file`, matching every other
+            # diagnostic; `temp` is built with the module's own source/path.
+            temp = TypeChecker(source=mod.source, file=str(mod.file_path))
             temp._register_all(mod.program)
 
             # #815: surface E151 (a module fn redefining a built-in) into the
