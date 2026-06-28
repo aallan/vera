@@ -59,8 +59,13 @@ class RegistrationMixin:
             # (and a silent verifier↔runtime unsoundness for the
             # verifier-modelled built-ins).  Covers top-level and module
             # functions and their where-helpers; prelude combinators exempt.
-            if isinstance(tld.decl, ast.FnDecl):
-                self._check_builtin_redefinition(tld.decl)
+            if (isinstance(tld.decl, ast.FnDecl)
+                    and self._check_builtin_redefinition(tld.decl)):
+                # Rejected built-in redefinition — do not register it over the
+                # canonical entry in ``env.functions`` (#815); leave the
+                # built-in in scope so later references resolve to it, not the
+                # invalid user definition.
+                continue
             self._register_decl(tld.decl, visibility=tld.visibility)
 
         # Post-registration cycle detection on type aliases (#648).
@@ -76,18 +81,21 @@ class RegistrationMixin:
         # registered, emit `[E132]` for any cycle we find.
         self._check_alias_cycles(program)
 
-    def _check_builtin_redefinition(self, decl: ast.FnDecl) -> None:
+    def _check_builtin_redefinition(self, decl: ast.FnDecl) -> bool:
         """Emit E151 if ``decl`` (or a nested where-helper) redefines a
         built-in (#815).
 
-        Recurses into ``where_fns`` so a helper named after a built-in is
-        caught too — otherwise the verifier models the call with the
-        built-in's idealized model while codegen runs the where-body, the
-        exact verify-proves / run-violates desync one scope deeper.  The
+        Returns ``True`` if ``decl`` itself redefines a built-in, so the
+        caller can skip registering it over the canonical entry.  Recurses
+        into ``where_fns`` so a helper named after a built-in is caught too —
+        otherwise the verifier models the call with the built-in's idealized
+        model while codegen runs the where-body, the exact
+        verify-proves / run-violates desync one scope deeper.  The
         prelude-injected combinators are exempt (see
         :func:`_builtin_reject_names`).
         """
-        if decl.name in _builtin_reject_names():
+        rejected = decl.name in _builtin_reject_names()
+        if rejected:
             bn = decl.name
             self._error(
                 decl,
@@ -117,6 +125,7 @@ class RegistrationMixin:
             )
         for wfn in decl.where_fns or ():
             self._check_builtin_redefinition(wfn)
+        return rejected
 
     def _check_alias_cycles(self, program: ast.Program) -> None:
         """Detect cyclic type aliases and emit `[E132]`.

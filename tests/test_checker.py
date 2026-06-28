@@ -3775,6 +3775,16 @@ public fn option_map(@Unit -> @Int)
 { 0 }
 """)
         assert "E151" not in self._codes(errs), self._codes(errs)
+        # ...but the exemption is *specific* to the prelude combinators: a
+        # non-combinator built-in such as the iterative `array_map` is NOT
+        # exempt and must still be rejected (boundary guard — a too-broad
+        # exemption would wrongly let this through).
+        arr_errs = _errors("""
+public fn array_map(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+        assert "E151" in self._codes(arr_errs), self._codes(arr_errs)
 
     def test_non_builtin_name_is_allowed(self) -> None:
         """A user fn whose name is not a built-in is unaffected."""
