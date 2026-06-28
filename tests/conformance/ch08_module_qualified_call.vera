@@ -1,9 +1,17 @@
 import vera.math;
 
-public fn main(@Unit -> @Int)
+public fn hundred(@Int -> @Int)
   requires(true)
-  ensures(@Int.result >= 0)
+  ensures(@Int.result == 0)
   effects(pure)
 {
-  vera.math::abs(0 - 5)
+  0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 100)
+  effects(pure)
+{
+  vera.math::hundred(0)
 }

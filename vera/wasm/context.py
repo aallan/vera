@@ -155,6 +155,14 @@ class WasmContext(
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
+        # #814 §8.5.3: (module path, fn name) → WASM target name for a
+        # module-qualified call.  Lets `m::f` bypass a local shadow.
+        self._module_qualified_targets: dict[
+            tuple[tuple[str, ...], str], str
+        ] = {}
+        # #814 C2: bare name → mod$ name, set only while compiling a `mod$…`
+        # body so an intra-module sibling call reaches the module's version.
+        self._intra_module_renames: dict[str, str] = {}
         # Function return *Vera* type expressions, retained alongside
         # `_fn_ret_types` because some inference paths need the full
         # NamedType (with type_args) — e.g. resolving the element type
@@ -256,6 +264,21 @@ class WasmContext(
     ) -> None:
         """Set function return WASM types for FnCall type inference."""
         self._fn_ret_types = ret_types
+
+    def set_module_qualified_targets(
+        self, targets: dict[tuple[tuple[str, ...], str], str],
+    ) -> None:
+        """Set the (module path, fn name) → WASM target map (#814 §8.5.3)."""
+        self._module_qualified_targets = targets
+
+    def set_intra_module_renames(self, renames: dict[str, str]) -> None:
+        """Set the intra-module bare-call rename map (#814 C2).
+
+        Non-empty only while compiling a ``mod$…`` body; redirects a bare
+        call to a locally-shadowed same-module function to the module's
+        ``mod$`` version instead of the main program's local shadow.
+        """
+        self._intra_module_renames = renames
 
     def set_fn_ret_type_exprs(
         self, ret_type_exprs: dict[str, ast.TypeExpr],
@@ -435,9 +458,16 @@ class WasmContext(
 
         if isinstance(expr, ast.ModuleCall):
             # C7e: desugar to flat FnCall — imported function is compiled
-            # into the same WASM module via flattening.
+            # into the same WASM module via flattening.  #814 §8.5.3: a
+            # module-qualified call MUST reach the module's function even
+            # when a local shadows its bare name, so resolve the WASM target
+            # via the qualified-target table (mod$… name for a shadowed fn,
+            # else the bare name) rather than blindly dropping the path.
+            target = self._module_qualified_targets.get(
+                (tuple(expr.path), expr.name), expr.name,
+            )
             desugared = ast.FnCall(
-                name=expr.name,
+                name=target,
                 args=expr.args,
                 span=expr.span,
             )

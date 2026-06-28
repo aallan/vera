@@ -45,6 +45,15 @@ class CrossModuleMixin:
                 set(imp.names) if imp.names is not None else None
             )
 
+        # #814 §8.5.3: names of LOCAL functions in the importing program.  A
+        # module fn whose bare name appears here is shadowed for bare calls
+        # (§8.5.2); its module-qualified target must point at a distinct
+        # ``mod$…`` WASM name so ``m::f`` still reaches the module's body.
+        local_fn_names: set[str] = {
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.FnDecl)
+        }
+
         # Provenance tracking for collision detection
         fn_provenance: dict[str, tuple[str, ...]] = {}
         adt_provenance: dict[str, tuple[str, ...]] = {}
@@ -165,14 +174,66 @@ class CrossModuleMixin:
             for alias_name, alias_expr in temp._type_aliases.items():
                 self._type_aliases.setdefault(alias_name, alias_expr)
 
-            # Collect ALL FnDecls from this module for compilation
+            # Collect ALL FnDecls from this module for compilation, and wire
+            # up module-qualified-call resolution (#814 §8.5.3 + C2).
+            #
+            # Generic (`forall`) fns are excluded throughout: cross-module
+            # generic monomorphisation is separately unimplemented (#774), and
+            # a generic body can't be emitted under a mangled name.
+            #
+            # A module fn whose bare name a LOCAL shadows is emitted (Pass
+            # 2.6) under a distinct ``mod$…`` name (collision-free: '$' is
+            # illegal in Vera identifiers) so a qualified call can reach the
+            # module's body while bare calls keep resolving to the local.  We
+            # do this for BOTH public and private shadowed fns: a private
+            # helper isn't qualified-callable, but a *public* shadowed fn's
+            # body may call it, and inside the emitted ``mod$`` body that
+            # intra-module call must reach the module's version too (C2) — so
+            # both get a ``mod$`` emission and an intra-rename entry.  Only
+            # public, in-filter fns additionally get a ``_module_qualified_
+            # targets`` entry (the table the desugar consults for ``m::f``).
             for tld in mod.program.declarations:
-                if isinstance(tld.decl, ast.FnDecl):
-                    self._imported_fn_decls.append(tld.decl)
-                    # Also include where-block functions
-                    if tld.decl.where_fns:
-                        for wfn in tld.decl.where_fns:
-                            self._imported_fn_decls.append(wfn)
+                if not isinstance(tld.decl, ast.FnDecl):
+                    continue
+                self._imported_fn_decls.append(tld.decl)
+                if tld.decl.where_fns:
+                    for wfn in tld.decl.where_fns:
+                        self._imported_fn_decls.append(wfn)
+                if tld.decl.forall_vars:
+                    continue
+                fn_name = tld.decl.name
+                is_public = (tld.visibility or "private") == "public"
+                in_filter = name_filter is None or fn_name in name_filter
+                # Only a SHADOWED name needs a table entry: the desugar falls
+                # back to the bare name for any (path, name) not present, which
+                # is already correct for a non-shadowed module fn (emitted
+                # under its bare name).  So we register entries only when a
+                # local shadows the bare name.
+                if fn_name not in local_fn_names:
+                    continue
+                mangled = self._module_qualified_wasm_name(mod.path, fn_name)
+                mangled_sig = temp._fn_sigs.get(fn_name)
+                if mangled_sig is None:
+                    continue
+                self._fn_sigs.setdefault(mangled, mangled_sig)
+                self._shadowed_module_fns.append((mod.path, mangled, tld.decl))
+                self._module_intra_renames.setdefault(
+                    mod.path, {})[fn_name] = mangled
+                if is_public and in_filter:
+                    self._module_qualified_targets[(mod.path, fn_name)] = mangled
+
+    @staticmethod
+    def _module_qualified_wasm_name(
+        path: tuple[str, ...], name: str,
+    ) -> str:
+        """WASM name for a module fn reached via a qualified call ``m::f``
+        when its bare name is shadowed by a local definition (#814 §8.5.3).
+
+        Uses ``$`` as the separator — illegal in Vera identifiers, so the
+        result can never collide with a user function name — mirroring the
+        monomorphizer's ``name$TypeArg`` mangling convention.
+        """
+        return "mod$" + "$".join(path) + "$" + name
 
     # -----------------------------------------------------------------
     # Name collision diagnostics

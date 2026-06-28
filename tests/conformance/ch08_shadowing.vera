@@ -1,17 +1,17 @@
-import vera.math(abs);
+import vera.math(hundred);
 
-public fn abs(@Int -> @Int)
+public fn hundred(@Int -> @Int)
   requires(true)
-  ensures(@Int.result == 42)
+  ensures(@Int.result == 0)
   effects(pure)
 {
-  42
+  0
 }
 
 public fn main(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result >= 0)
+  ensures(@Int.result == 0)
   effects(pure)
 {
-  abs(0 - 5)
+  hundred(0)
 }

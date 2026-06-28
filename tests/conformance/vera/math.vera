@@ -25,6 +25,14 @@ public fn max(@Int, @Int -> @Int)
   }
 }
 
+public fn hundred(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 100)
+  effects(pure)
+{
+  100
+}
+
 private fn helper(@Int -> @Int)
   requires(true)
   ensures(true)

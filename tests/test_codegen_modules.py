@@ -293,6 +293,132 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 999  # local abs, not imported
 
+    def test_qualified_call_bypasses_local_shadow(self) -> None:
+        """§8.5.3: a module-qualified call bypasses a local shadow.
+
+        Regression for #814: codegen desugared ModuleCall to a bare FnCall,
+        dropping the module path, so ``m::hundred`` wrongly resolved to the
+        shadowing local instead of the module's function.  A non-builtin name
+        keeps the verifier/codegen built-in models (abs/min/max) from
+        confounding the test.
+        """
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m(hundred);
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::hundred(0) }
+""", [mod], fn="main")
+        assert val == 100  # module's hundred() = 100, NOT the local 0
+
+    def test_qualified_call_verifier_codegen_agree(self) -> None:
+        """#814 differential: the verifier and codegen resolve a module-
+        qualified call to the SAME function (cross-component soundness).
+
+        For a program where the module's ``hundred`` returns 100 and a local
+        shadow returns 0, the verifier proves ``ensures(== 100)`` via the
+        module's contract while codegen must *run* the module's body (100).
+        A desync in either direction fails here: if codegen ran the local,
+        ``run`` returns 0 ≠ 100; if the verifier used the local, it could not
+        prove ``== 100`` and emits an error.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from vera.checker import typecheck
+        from vera.verifier import verify
+
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ 100 }
+""")
+        main_src = """\
+import m(hundred);
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(@Int.result == 0) effects(pure)
+{ 0 }
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 100) effects(pure)
+{ m::hundred(0) }
+"""
+        # Codegen side: runs the module's body, returning 100 (not local 0).
+        assert self._run_mod(main_src, [mod], fn="main") == 100
+
+        # Verifier side: proves ensures(== 100) via the module's contract.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(main_src)
+            f.flush()
+            path = f.name
+        try:
+            prog = transform(parse_file(path))
+            typecheck(prog, main_src, resolved_modules=[mod])
+            vres = verify(prog, main_src, resolved_modules=[mod])
+            errors = [d for d in vres.diagnostics if d.severity == "error"]
+            assert errors == [], [e.description for e in errors]
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_qualified_call_body_reaches_module_siblings(self) -> None:
+        """#814 C2: inside a qualified-reached ``mod$`` body, an intra-module
+        call lands on the module's sibling, not a local shadow of its name.
+
+        Module ``outer`` calls ``inner``; the importer shadows BOTH locally.
+        ``m::outer`` runs the module's ``outer``, whose ``inner(...)`` must in
+        turn reach the module's ``inner`` (100), not the local shadow (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@Int.0) }
+""")
+        val = self._run_mod("""\
+import m(inner, outer);
+public fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module inner via module outer, NOT local inner (7)
+
+    def test_wildcard_qualified_and_bare_calls_coexist(self) -> None:
+        """#814: under a wildcard ``import m;``, a qualified call and a bare
+        call to the same shadowed name resolve independently within one
+        expression — qualified → module (100), bare → local (7).
+        """
+        mod = self._resolved(("m",), """\
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m;
+public fn hundred(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ m::hundred(0) + hundred(0) }
+""", [mod], fn="main")
+        assert val == 107  # 100 (qualified -> module) + 7 (bare -> local)
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

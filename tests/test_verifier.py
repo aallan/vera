@@ -3378,6 +3378,38 @@ private fn wrap(@Int -> @Int)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 
+    def test_local_shadow_uses_local_contract(self) -> None:
+        """§8.5.2: a bare call resolves to the LOCAL shadow's contract.
+
+        A non-builtin name (``triple``) isolates module shadowing from the
+        verifier's built-in models (abs/min/max).  The local's ensures
+        (== 42) lets the caller's ensures(== 42) verify; the imported ensures
+        (>= 0) alone would not — so this pins that the verifier reasons with
+        the local definition for a bare call, matching codegen (§8.5.2).
+        """
+        mod = self._resolved(("m",), """\
+public fn triple(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+""")
+        result = self._verify_mod("""\
+import m(triple);
+public fn triple(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{ 42 }
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{ triple(0 - 5) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
     # -- Precondition violation -------------------------------------------
 
     def test_imported_precondition_violation(self) -> None:
