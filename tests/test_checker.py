@@ -3876,8 +3876,10 @@ where {
         assert "E151" in codes, codes
         # The harvested diagnostic carries the *module's* file path (#815), so
         # `vera check --json` points at where the redefinition actually is.
+        # Compare to str(mod.file_path) (not a hard-coded POSIX string) so the
+        # assertion holds on Windows too, where str(Path) uses backslashes.
         e151 = next(d for d in diags if d.error_code == "E151")
-        assert e151.location.file == "/fake/badmath.vera", e151.location.file
+        assert e151.location.file == str(mod.file_path), e151.location.file
 
     def test_generic_redefining_builtin_is_E151(self) -> None:
         """A generic ``forall<T>`` fn named after a built-in is rejected."""
