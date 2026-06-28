@@ -482,6 +482,34 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 100  # module's where-helper, NOT the local shadow (7)
 
+    def test_local_where_fn_shadows_imported_name(self) -> None:
+        """#814: a LOCAL `where`-fn shadowing an imported name must not produce
+        a duplicate bare WASM function.
+
+        The importer's `main` has a `where` helper `helper`, and the module
+        also exports `helper`.  A `where`-fn flattens to a bare ``$helper``, so
+        the imported `helper` must be recognized as shadowed (emitted only
+        under its ``mod$…`` name, never a second bare ``$helper``).  Before the
+        fix, `local_fn_names` collected only top-level names, so the imported
+        `helper` was emitted bare too → a duplicate-`$helper` WASM module that
+        wasmtime rejects.
+        """
+        mod = self._resolved(("m",), """\
+public fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 100 }
+""")
+        val = self._run_mod("""\
+import m(helper);
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(0) }
+where {
+  fn helper(@Int -> @Int) requires(true) ensures(true) effects(pure) { 7 }
+}
+""", [mod], fn="main")
+        assert val == 7  # local where-helper; no duplicate-$helper WASM error
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

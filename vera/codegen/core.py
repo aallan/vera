@@ -247,6 +247,11 @@ class CodeGenerator(
         self._module_intra_renames: dict[
             tuple[str, ...], dict[str, str]
         ] = {}
+        # Names of ALL local functions (top-level + recursive where-fns) that
+        # shadow the importer's flat namespace.  Populated by _register_modules;
+        # Pass 2.5 consults it so an imported fn shadowed by a local where-fn is
+        # not emitted under a clashing bare name (#814).
+        self._local_shadowed_fn_names: set[str] = set()
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -565,8 +570,14 @@ class CodeGenerator(
         for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
-            # Skip if a local function already defined this name
-            if idecl.name in fn_visibility:
+            # Skip if a local function already defined this name — a top-level
+            # local (fn_visibility) OR a local `where`-fn helper
+            # (_local_shadowed_fn_names).  Either flattens to a bare ``$name``
+            # that owns the namespace; emitting the imported body under the
+            # same bare name would duplicate it (the qualified target reaches
+            # the module via its ``mod$…`` emission instead, #814).
+            if (idecl.name in fn_visibility
+                    or idecl.name in self._local_shadowed_fn_names):
                 continue
             imported_seen.add(idecl.name)
             # #814 C2 (Pass 2.5 mirror): pass the originating module's

@@ -50,14 +50,16 @@ class CrossModuleMixin:
                 set(imp.names) if imp.names is not None else None
             )
 
-        # #814 §8.5.3: names of LOCAL functions in the importing program.  A
-        # module fn whose bare name appears here is shadowed for bare calls
-        # (§8.5.2); its module-qualified target must point at a distinct
-        # ``mod$…`` WASM name so ``m::f`` still reaches the module's body.
-        local_fn_names: set[str] = {
-            tld.decl.name for tld in program.declarations
-            if isinstance(tld.decl, ast.FnDecl)
-        }
+        # #814 §8.5.3: names of LOCAL functions in the importing program,
+        # INCLUDING (recursively) `where`-fn helpers.  A module fn whose bare
+        # name appears here is shadowed for bare calls (§8.5.2); its module-
+        # qualified target must point at a distinct ``mod$…`` WASM name so
+        # ``m::f`` still reaches the module's body, and Pass 2.5 must not emit
+        # it under a bare name that would collide with the local helper.  A
+        # `where`-fn flattens to a bare ``$name`` just like a top-level fn, so
+        # it shadows the namespace identically and must be collected too.
+        local_fn_names = self._collect_local_fn_names(program)
+        self._local_shadowed_fn_names = local_fn_names
 
         # Provenance tracking for collision detection
         fn_provenance: dict[str, tuple[str, ...]] = {}
@@ -226,6 +228,28 @@ class CrossModuleMixin:
                         mod.path, wfn, temp, local_fn_names,
                         qualified_eligible=False,
                     )
+
+    @staticmethod
+    def _collect_local_fn_names(program: ast.Program) -> set[str]:
+        """All locally-declared function names, including (recursively) the
+        names of ``where``-fn helpers.
+
+        A ``where``-fn flattens to a bare ``$name`` in the single WASM module
+        exactly like a top-level fn, so it shadows the importer's namespace
+        identically — an imported fn of the same name must therefore be treated
+        as shadowed too (reached via ``mod$…``, not a clashing bare emission).
+        """
+        def walk(decl: ast.FnDecl) -> set[str]:
+            names = {decl.name}
+            for wfn in decl.where_fns or ():
+                names |= walk(wfn)
+            return names
+
+        out: set[str] = set()
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                out |= walk(tld.decl)
+        return out
 
     def _register_shadowed_import(
         self,
