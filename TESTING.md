@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,329 across 46 files (~63,000 lines of test code; 5,236 passed + 16 stress, 16 skipped) |
+| **Tests** | 5,329 across 46 files (~63,000 lines of test code; 5,293 passed + 16 stress, 20 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 101 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -80,7 +80,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_formatter.py` | 124 | 1,074 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
 | `test_cli.py` | 242 | 3,504 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch |
 | `test_introspect.py` | 38 | 192 | `vera builtins/effects/errors --json` registry introspection (#539): the `{schema, items}` envelope, count-equals-registry differential per registry, error-phase derivation, effect/ability `kind` tagging, the parameterised `Exn<T>` effect, and best-effort `since` attribution with full-coverage guards |
-| `test_resolver.py` | 18 | 488 | Module resolution, path lookup, parse caching, circular import detection |
+| `test_resolver.py` | 18 | 486 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 388 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 24 | 344 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_verifier_coverage.py` | 91 | 1,594 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches, **#667 SMT translator coverage for `FloatLit` / `IndexExpr` / `ArrayLit`** (Tier 1 verification of float/array literal/index contract predicates) |
@@ -104,7 +104,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 ## Conformance Suite
 
-The conformance suite is a collection of 93 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 101 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -131,11 +131,11 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `verify` | Type-checks and all contracts verified by Z3 | 8 |
 | `run` | Compiles to WASM and executes correctly | 87 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Four programs (`ch07_cross_module_contracts_lib`, `ch09_http`, `ch09_inference`, `ch03_typed_holes`) are at the `check` level. Eight programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Six programs (`ch03_typed_holes`, `ch07_cross_module_contracts_lib`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_http`, `ch09_inference`) are at the `check` level — the last two of those are **negative tests** that assert a specific diagnostic (`ch08_circular_import` → E011, `ch08_visibility_private` → E150) via the manifest's `expected_error` field. Eight programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
 
 ### Skipped tests
 
-`pytest tests/ -v` reports 16 skipped tests across two categories:
+`pytest tests/ -v` reports 20 skipped tests across two categories:
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -152,6 +152,10 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch07_io_read_char]` | `ch07_io_read_char.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch07_io_sleep]` | `ch07_io_sleep.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch07_random_effect]` | `ch07_random_effect.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+| `test_verify[ch08_circular_import]` | `ch08_circular_import.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E011`): verify stage not run |
+| `test_run[ch08_circular_import]` | `ch08_circular_import.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch08_visibility_private]` | `ch08_visibility_private.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E150`): verify stage not run |
+| `test_run[ch08_visibility_private]` | `ch08_visibility_private.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_run[ch09_math_builtins]` | `ch09_math_builtins.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 
 **Environment-gated skips** — these programs require network access or a live API key that is not available in CI. They pass `vera check` (type-checking) but cannot be executed.

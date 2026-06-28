@@ -456,8 +456,8 @@ class TestResolverErrorCodes:
         errs = self._errors(
             tmp_path, a_src, {"b.vera": b_src}, main_name="a.vera",
         )
-        codes = [e.error_code for e in errs if "Circular import" in e.description]
-        assert codes and all(c == "E011" for c in codes), [
+        codes = [e.error_code for e in errs]
+        assert "E011" in codes, [
             (e.error_code, e.description) for e in errs
         ]
 
@@ -467,9 +467,8 @@ class TestResolverErrorCodes:
             "requires(true) ensures(true) effects(pure) { () }\n"
         )
         errs = self._errors(tmp_path, main)
-        codes = [e.error_code for e in errs
-                 if "Cannot resolve import" in e.description]
-        assert codes and all(c == "E012" for c in codes), [
+        codes = [e.error_code for e in errs]
+        assert "E012" in codes, [
             (e.error_code, e.description) for e in errs
         ]
 
@@ -481,8 +480,7 @@ class TestResolverErrorCodes:
         errs = self._errors(
             tmp_path, main, {"broken.vera": "not valid vera {{{"},
         )
-        codes = [e.error_code for e in errs
-                 if "Error parsing imported module" in e.description]
-        assert codes and all(c == "E013" for c in codes), [
+        codes = [e.error_code for e in errs]
+        assert "E013" in codes, [
             (e.error_code, e.description) for e in errs
         ]

@@ -219,6 +219,12 @@ class CrossModuleMixin:
                 self._shadowed_module_fns.append((mod.path, mangled, tld.decl))
                 self._module_intra_renames.setdefault(
                     mod.path, {})[fn_name] = mangled
+                # Mirror the @Nat-parameter guard bitmap onto the mangled name
+                # so a qualified call to a shadowed module fn with a @Nat
+                # parameter still emits the call-site `value >= 0` narrowing
+                # guard (it keys on the resolved target, #814).
+                self._fn_nat_params.setdefault(
+                    mangled, temp._fn_nat_params.get(fn_name, ()))
                 if is_public and in_filter:
                     self._module_qualified_targets[(mod.path, fn_name)] = mangled
 
