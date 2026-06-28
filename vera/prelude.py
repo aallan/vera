@@ -405,7 +405,11 @@ def overridable_builtin_names() -> frozenset[str]:
     fall back to.
 
     Derived from the combinator source blocks so the exempt set stays in
-    sync automatically if a combinator is added or removed.
+    sync automatically if a combinator is added or removed.  Note the
+    iterative array built-ins (``array_map`` / ``array_filter`` /
+    ``array_fold``) are *not* exempt: ``_ARRAY_COMBINATORS`` is empty
+    (they are codegen-modelled, not prelude-injected Vera bodies), so
+    redefining them is correctly rejected by E151.
     """
     names: set[str] = set()
     for block in (

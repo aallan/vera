@@ -48,6 +48,17 @@ class ModulesMixin:
             temp = TypeChecker(source=mod.source)
             temp._register_all(mod.program)
 
+            # #815: surface E151 (a module fn redefining a built-in) into the
+            # importer.  ``temp`` is built with the module's own source, so
+            # these diagnostics already carry the correct module-file location
+            # and source line.  Without this, a module imported but never
+            # checked standalone would let the redefinition through silently —
+            # the importer's verifier reasons with the built-in's model while
+            # the module's body runs (verify proves, run violates).
+            self.errors.extend(
+                e for e in temp.errors if e.error_code == "E151"
+            )
+
             # All module-declared names (exclude builtins)
             all_fns = {
                 k: v for k, v in temp.env.functions.items()

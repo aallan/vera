@@ -1,3 +1,6 @@
+-- Stub module: vera.math
+-- Provides basic math utilities for cross-module examples.
+
 module vera.math;
 
 public fn magnitude(@Int -> @Int)

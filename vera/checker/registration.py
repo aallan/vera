@@ -57,37 +57,10 @@ class RegistrationMixin:
                 )
             # #815: redefining a built-in is a one-canonical-form violation
             # (and a silent verifier↔runtime unsoundness for the
-            # verifier-modelled built-ins).  Fires for top-level and module
-            # functions; the prelude-injected combinators are exempt.
-            if (isinstance(tld.decl, ast.FnDecl)
-                    and tld.decl.name in _builtin_reject_names()):
-                bn = tld.decl.name
-                self._error(
-                    tld.decl,
-                    f"Function '{bn}' redefines a built-in.",
-                    rationale=(
-                        f"'{bn}' is a built-in function (spec §9.6) — it is "
-                        f"always in scope as the single canonical '{bn}'. "
-                        f"Vera provides exactly one way to express each "
-                        f"operation, so re-declaring a built-in is not "
-                        f"allowed: there is nothing to gain by rolling your "
-                        f"own, and a second definition is a second way to say "
-                        f"the same thing. For the verifier-modelled built-ins "
-                        f"it is also silently unsound — the verifier reasons "
-                        f"about every call using the built-in's contract while "
-                        f"codegen runs your body, so a postcondition can be "
-                        f"proved against the built-in yet violated at runtime "
-                        f"by your version."
-                    ),
-                    fix=(
-                        f"Delete this definition and call the built-in '{bn}' "
-                        f"directly — it needs no import. If you intend "
-                        f"genuinely different behaviour, give the function a "
-                        f"distinct name (e.g. '{bn}_custom')."
-                    ),
-                    spec_ref='Chapter 9, Section 9.6 "Built-in Functions"',
-                    error_code="E151",
-                )
+            # verifier-modelled built-ins).  Covers top-level and module
+            # functions and their where-helpers; prelude combinators exempt.
+            if isinstance(tld.decl, ast.FnDecl):
+                self._check_builtin_redefinition(tld.decl)
             self._register_decl(tld.decl, visibility=tld.visibility)
 
         # Post-registration cycle detection on type aliases (#648).
@@ -102,6 +75,48 @@ class RegistrationMixin:
         # Fix: walk the alias chain in the AST after all aliases have
         # registered, emit `[E132]` for any cycle we find.
         self._check_alias_cycles(program)
+
+    def _check_builtin_redefinition(self, decl: ast.FnDecl) -> None:
+        """Emit E151 if ``decl`` (or a nested where-helper) redefines a
+        built-in (#815).
+
+        Recurses into ``where_fns`` so a helper named after a built-in is
+        caught too — otherwise the verifier models the call with the
+        built-in's idealized model while codegen runs the where-body, the
+        exact verify-proves / run-violates desync one scope deeper.  The
+        prelude-injected combinators are exempt (see
+        :func:`_builtin_reject_names`).
+        """
+        if decl.name in _builtin_reject_names():
+            bn = decl.name
+            self._error(
+                decl,
+                f"Function '{bn}' redefines a built-in.",
+                rationale=(
+                    f"'{bn}' is a built-in function (spec §9.6) — it is "
+                    f"always in scope as the single canonical '{bn}'. "
+                    f"Vera provides exactly one way to express each "
+                    f"operation, so re-declaring a built-in is not "
+                    f"allowed: there is nothing to gain by rolling your "
+                    f"own, and a second definition is a second way to say "
+                    f"the same thing. For the verifier-modelled built-ins "
+                    f"it is also silently unsound — the verifier reasons "
+                    f"about every call using the built-in's model while "
+                    f"codegen runs your body, so a postcondition can be "
+                    f"proved against the built-in yet violated at runtime "
+                    f"by your version."
+                ),
+                fix=(
+                    f"Delete this definition and call the built-in '{bn}' "
+                    f"directly — it needs no import. If you intend "
+                    f"genuinely different behaviour, give the function a "
+                    f"distinct name (e.g. '{bn}_custom')."
+                ),
+                spec_ref='Chapter 9, Section 9.6 "Built-in Functions"',
+                error_code="E151",
+            )
+        for wfn in decl.where_fns or ():
+            self._check_builtin_redefinition(wfn)
 
     def _check_alias_cycles(self, program: ast.Program) -> None:
         """Detect cyclic type aliases and emit `[E132]`.

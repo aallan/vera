@@ -3181,13 +3181,13 @@ class TestCrossModuleTyping:
 
     # Reusable module sources
     MATH_MODULE = """\
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 { if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -3224,39 +3224,39 @@ public data Option<T> { None, Some(T) }
     # -- Bare calls (parsed normally) -----------------------------------
 
     def test_bare_call_resolves_type(self) -> None:
-        """import m(abs); abs(42) -> no errors."""
+        """import m(magnitude); magnitude(42) -> no errors."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
-import math(abs);
+import math(magnitude);
 private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ magnitude(@Int.0) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 
     def test_bare_call_arity_mismatch(self) -> None:
-        """abs(1, 2) where abs takes 1 arg -> arity error."""
+        """magnitude(1, 2) where magnitude takes 1 arg -> arity error."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
-import math(abs);
+import math(magnitude);
 private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0, @Int.0) }
+{ magnitude(@Int.0, @Int.0) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert any("expects 1" in e.description for e in errors)
 
     def test_bare_call_type_mismatch(self) -> None:
-        """abs(true) where abs expects Int -> type error."""
+        """magnitude(true) where magnitude expects Int -> type error."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
-import math(abs);
+import math(magnitude);
 private fn main(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Bool.0) }
+{ magnitude(@Bool.0) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -3283,7 +3283,7 @@ private fn main(@Int -> @Int)
 import math;
 private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ max(@Int.0, abs(@Int.0)) }
+{ larger(@Int.0, magnitude(@Int.0)) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -3330,10 +3330,10 @@ private fn main(@Int -> @List<Int>)
         """ModuleCall to resolved function -> correct type, no errors."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
-            path=("math",), name="abs",
+            path=("math",), name="magnitude",
             args=(ast.IntLit(value=42),),
         )
-        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        imp = ast.ImportDecl(path=("math",), names=("magnitude",))
         fn = ast.FnDecl(
             name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
@@ -3360,10 +3360,10 @@ private fn main(@Int -> @List<Int>)
         """Module-qualified call with wrong arity -> error."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
-            path=("math",), name="abs",
+            path=("math",), name="magnitude",
             args=(ast.IntLit(value=1), ast.IntLit(value=2)),
         )
-        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        imp = ast.ImportDecl(path=("math",), names=("magnitude",))
         fn = ast.FnDecl(
             name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
@@ -3388,11 +3388,11 @@ private fn main(@Int -> @List<Int>)
         """Module call to name not in selective import -> error."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
-            path=("math",), name="max",
+            path=("math",), name="larger",
             args=(ast.IntLit(value=1), ast.IntLit(value=2)),
         )
-        # Only import "abs", not "max"
-        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        # Only import "magnitude", not "larger"
+        imp = ast.ImportDecl(path=("math",), names=("magnitude",))
         fn = ast.FnDecl(
             name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
@@ -3441,16 +3441,16 @@ private fn main(@Int -> @List<Int>)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found in module" in w.description for w in warns)
-        assert any("abs" in w.description for w in warns)  # available list
+        assert any("magnitude" in w.description for w in warns)  # available list
 
     def test_multi_segment_path(self) -> None:
         """Multi-segment module path (vera.math) works."""
         mod = self._resolved(("vera", "math"), self.MATH_MODULE)
         call = ast.ModuleCall(
-            path=("vera", "math"), name="abs",
+            path=("vera", "math"), name="magnitude",
             args=(ast.IntLit(value=42),),
         )
-        imp = ast.ImportDecl(path=("vera", "math"), names=("abs",))
+        imp = ast.ImportDecl(path=("vera", "math"), names=("magnitude",))
         fn = ast.FnDecl(
             name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
@@ -3785,6 +3785,80 @@ public fn saturating_abs(@Int -> @Int)
 """)
         assert "E151" not in self._codes(errs), self._codes(errs)
 
+    def test_where_fn_redefining_builtin_is_E151(self) -> None:
+        """A where-helper named after a built-in is rejected too (#815).
+
+        Otherwise the verifier models the *call* with the built-in's
+        idealized model while codegen runs the where-body — the exact
+        verify-proves / run-violates desync, just one scope deeper.
+        """
+        errs = _errors("""
+public fn caller(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ abs(@Int.0) }
+where {
+  fn abs(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { 0 - @Int.0 }
+}
+""")
+        assert "E151" in self._codes(errs), self._codes(errs)
+
+    def test_imported_module_redefining_builtin_is_E151(self) -> None:
+        """An imported module that redefines a built-in is rejected in the
+        importer (#815 — "user/module" scope).
+
+        Otherwise the importer's `vera check` reports OK while its verifier
+        reasons with the built-in's model and the module's body runs — the
+        unsound path stays open whenever the module is imported but never
+        checked standalone.
+        """
+        mod_src = (
+            "module badmath;\n"
+            "public fn abs(@Int -> @Int)\n"
+            "  requires(true) ensures(@Int.result >= 0) effects(pure)\n"
+            "{ 0 - 1 }\n"
+        )
+        mod = ResolvedModule(
+            path=("badmath",),
+            file_path=Path("/fake/badmath.vera"),
+            program=parse_to_ast(mod_src),
+            source=mod_src,
+        )
+        prog = parse_to_ast(
+            "import badmath(abs);\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(@Int.result >= 0) effects(pure)\n"
+            "{ abs(5) }\n"
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        codes = [d.error_code for d in diags]
+        assert "E151" in codes, codes
+
+    def test_generic_redefining_builtin_is_E151(self) -> None:
+        """A generic ``forall<T>`` fn named after a built-in is rejected."""
+        errs = _errors("""
+public forall<T> fn abs(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+""")
+        assert "E151" in self._codes(errs), self._codes(errs)
+
+    def test_overriding_json_combinator_is_allowed(self) -> None:
+        """The exemption covers *all* prelude combinators, not just
+        ``option_map`` — a user ``json_get`` override is allowed.
+
+        Regression guard for the exempt-set derivation across every
+        combinator source block (a JSON block, distinct from the Option
+        block ``test_overriding_option_map_combinator`` covers).
+        """
+        errs = _errors("""
+public fn json_get(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+        assert "E151" not in self._codes(errs), self._codes(errs)
+
 
 # =====================================================================
 # Module-qualified call parse tests (#95)
@@ -3794,13 +3868,13 @@ class TestModuleCallParsed:
     """Module-qualified call tests using parsed :: syntax (#95)."""
 
     MATH_MODULE = """\
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 { if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -3827,10 +3901,10 @@ public fn tag(@Int, @String -> @String)
         """Parsed :: syntax produces ModuleCall that type-checks."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(abs);
+import math(magnitude);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ math::abs(@Int.0) }
+{ math::magnitude(@Int.0) }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
@@ -3838,13 +3912,13 @@ private fn f(@Int -> @Int)
         assert errors == [], [e.description for e in errors]
 
     def test_parsed_multi_segment_path(self) -> None:
-        """Multi-segment path vera.math::abs type-checks."""
+        """Multi-segment path vera.math::magnitude type-checks."""
         mod = self._resolved(("vera", "math"), self.MATH_MODULE)
         source = """\
-import vera.math(abs);
+import vera.math(magnitude);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ vera.math::abs(@Int.0) }
+{ vera.math::magnitude(@Int.0) }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
@@ -3855,10 +3929,10 @@ private fn f(@Int -> @Int)
         """Parsed :: call with wrong arity produces error."""
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(abs);
+import math(magnitude);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ math::abs(@Int.0, @Int.0) }
+{ math::magnitude(@Int.0, @Int.0) }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
@@ -3869,10 +3943,10 @@ private fn f(@Int -> @Int)
         """Pipe into module-qualified call type-checks without E201. (#326)"""
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(abs);
+import math(magnitude);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 |> math::abs() }
+{ @Int.0 |> math::magnitude() }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
@@ -3883,10 +3957,10 @@ private fn f(@Int -> @Int)
         """Chained pipes into module-qualified calls type-check. (#326)"""
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(abs);
+import math(magnitude);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 |> math::abs() |> math::abs() }
+{ @Int.0 |> math::magnitude() |> math::magnitude() }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
