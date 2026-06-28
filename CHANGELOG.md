@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.185] - 2026-06-28
+
+### Fixed
+
+- **Redefining a built-in function is now a checker error (E151)** ([#815](https://github.com/aallan/vera/issues/815)).  A top-level, module, or `where`-block `fn` whose name matches an opaque, verifier-modelled built-in (`abs`, `min`, `max`, `clamp`, `to_string`, `string_*`, `array_*`, `parse_*`, …) is rejected at `vera check` — including a function defined in an *imported* module, surfaced in the importer.  This closes a soundness hole: `vera/smt.py` models the core numeric built-ins *by name* before consulting the user's definition, so a shadowing `fn abs` let `vera verify` reason with the built-in's idealized model (`abs(5) = 5`) while code generation ran the user's body — `verify` *proved* `ensures(@Int.result >= 0)` that `run` then *violated* at runtime, with no runtime guard.  Per DESIGN.md "one canonical form" + fail-loud, the checker disallows the redefinition rather than having the verifier silently defer to the user body; the diagnostic is instructional — it names the rule, the verifier↔runtime soundness reason, and the fix (call the built-in directly, no import needed, or choose a distinct name).  The Option/Result/Json/Html *combinators* the prelude injects (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`) are **exempt**: they are ordinary Vera functions, so a user override is sound (verifier and codegen use the same body) and remains supported.  The shipped example, conformance, and spec programs that previously shadowed `abs` / `max` / `clamp` / `to_string` were renamed to non-built-in names (`magnitude`, `larger`, `clamp_to_range`, `show_bool`).
+- **`clamp_to_range` example used the wrong De Bruijn slot mapping** ([#815](https://github.com/aallan/vera/issues/815)).  The `clamp_to_range(value, lo, hi)` example clamped its *third* argument into `[second, first]`: the precondition `requires(@Int.1 <= @Int.2)` constrained `lo ≤ value` rather than `lo ≤ hi`, so a legitimate call with `value < lo` (e.g. `clamp_to_range(0, 1, 10)`) was wrongly rejected by the precondition.  The body — `max(lo, min(hi, value))` — is symmetric in the two bounds, so the bug stayed invisible for symmetric inputs.  Corrected the slots to `value = @Int.2`, `lo = @Int.1`, `hi = @Int.0` consistently across `spec/08-modules.md`, `examples/modules.vera`, `tests/conformance/ch06_ensures.vera`, `SKILL.md`, and `DE_BRUIJN.md`.
+- **E151 no longer cascades into the enclosing function body** ([#815](https://github.com/aallan/vera/issues/815)).  When a `where`-helper redefining a built-in was rejected (and stripped from registration), the parent function's body could still resolve a call to that helper against the canonical built-in and emit a bogus secondary arity/type error after the E151.  The nested rejection now propagates to the enclosing declaration, so its body is skipped in the check phase and the E151 is the only diagnostic.
+
 ## [0.0.184] - 2026-06-28
 
 ### Added
@@ -2631,7 +2639,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.184...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.185...HEAD
+[0.0.185]: https://github.com/aallan/vera/compare/v0.0.184...v0.0.185
 [0.0.184]: https://github.com/aallan/vera/compare/v0.0.183...v0.0.184
 [0.0.183]: https://github.com/aallan/vera/compare/v0.0.182...v0.0.183
 [0.0.182]: https://github.com/aallan/vera/compare/v0.0.181...v0.0.182

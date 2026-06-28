@@ -105,7 +105,7 @@ Constructors:
 Pattern matching on `Result<T, E>` is exhaustive: both `Ok` and `Err` must be handled.
 
 ```
-private fn parse_nat(@Int -> @Result<Nat, String>)
+private fn checked_nat(@Int -> @Result<Nat, String>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -564,6 +564,8 @@ private fn classify(@String -> @Result<String, String>)
 - User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release ([#372](https://github.com/aallan/vera/issues/372))
 
 ## 9.6 Built-in Functions
+
+Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound — the verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for genuinely different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are the exception: they are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
 
 ### 9.6.1 array\_length
 

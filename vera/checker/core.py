@@ -174,6 +174,11 @@ class TypeChecker(
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
+        # #815: ids of FnDecls rejected for redefining a built-in (E151).
+        # They are not registered (the built-in stays canonical), so the
+        # check phase skips them — re-checking would resolve their own body
+        # against the built-in and emit bogus secondary diagnostics.
+        self._rejected_builtin_redefs: set[int] = set()
         # #222 Phase D: opt-in artifact collection for LSP features.
         # None = off (the default for every existing caller; zero
         # cost).  When dicts are installed by typecheck_with_artifacts,
@@ -278,6 +283,11 @@ class TypeChecker(
         self._register_modules(program)  # C7b: cross-module imports
         self._register_all(program)  # local declarations shadow imports
         for tld in program.declarations:
+            # #815: a built-in redefinition (E151) is already reported and not
+            # registered; skip checking its body so it isn't re-checked against
+            # the canonical built-in (which would emit bogus diagnostics).
+            if id(tld.decl) in self._rejected_builtin_redefs:
+                continue
             self._check_decl(tld.decl)
 
     def _check_decl(self, decl: ast.Decl) -> None:
@@ -414,6 +424,11 @@ class TypeChecker(
         # 8. Check where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:
+                # #815: skip a where-helper rejected for redefining a built-in
+                # (E151 already emitted; it is not registered, so re-checking
+                # would resolve its body against the built-in).
+                if id(wfn) in self._rejected_builtin_redefs:
+                    continue
                 self._check_fn(wfn)
 
         # 9. Restore context

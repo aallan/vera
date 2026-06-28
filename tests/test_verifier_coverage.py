@@ -1030,7 +1030,7 @@ class TestMultipleEnsures:
 
     def test_multiple_ensures_all_verified(self) -> None:
         _verify_ok("""
-private fn clamp(@Int -> @Int)
+private fn clamp_to_range(@Int -> @Int)
   requires(@Int.0 >= 0)
   requires(@Int.0 <= 100)
   ensures(@Int.result >= 0)

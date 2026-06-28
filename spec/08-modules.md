@@ -55,7 +55,7 @@ A wildcard import makes all `public` declarations from the imported module avail
 ### 8.3.2 Selective Import
 
 ```
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 ```
 
 A selective import makes only the named declarations available. Each name in the parenthesised list must refer to a `public` declaration in the imported module. Attempting to import a `private` declaration is an error:
@@ -81,7 +81,7 @@ Import names can be lowercase (functions) or uppercase (data type names). Import
 Every top-level `fn` and `data` declaration must have an explicit visibility modifier: `public` or `private`. Omitting the modifier is a compile error.
 
 ```
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -151,22 +151,22 @@ Imported declarations are available as **bare calls** — the importer does not 
 ```
 module vera.examples.modules;
 
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 
 public fn abs_max(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(@Int.0, @Int.1))
+  magnitude(larger(@Int.0, @Int.1))
 }
 ```
 
-Here, `abs` and `max` resolve to the imported functions from `vera.math`.
+Here, `magnitude` and `larger` resolve to the imported functions from `vera.math`.
 
 ### 8.5.2 Shadowing
 
-Local definitions shadow imported declarations. If a module imports `abs` from `vera.math` but also defines its own `abs`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
+Local definitions shadow imported declarations. If a module imports `magnitude` from `vera.math` but also defines its own `magnitude`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
 
 The shadowing rule is implemented via `setdefault`: imported names are injected into the type environment only if no local definition with the same name already exists.
 
@@ -175,10 +175,10 @@ The shadowing rule is implemented via `setdefault`: imported names are injected 
 Vera supports module-qualified function calls using `::` to separate the module path from the function name:
 
 ```
-vera.math::abs(-5)
+vera.math::magnitude(-5)
 ```
 
-The path portion (`vera.math`) identifies the module using dot separators, and `::` separates the path from the function name (`abs`). Arguments follow in parentheses. This syntax can be used anywhere a function call is valid.
+The path portion (`vera.math`) identifies the module using dot separators, and `::` separates the path from the function name (`magnitude`). Arguments follow in parentheses. This syntax can be used anywhere a function call is valid.
 
 The grammar is:
 
@@ -186,9 +186,9 @@ The grammar is:
 module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 ```
 
-Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `abs`, a module-qualified call `vera.math::abs(x)` still calls the module's version.
+Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
 
-**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). When two imported modules export identically-named functions, the module-qualified call syntax (`vera.math::abs(x)`) provides unambiguous disambiguation without introducing a second name for the same declaration. Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
+**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). When two imported modules export identically-named functions, the module-qualified call syntax (`vera.math::magnitude(x)`) provides unambiguous disambiguation without introducing a second name for the same declaration. Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
 
 ### 8.5.4 Constructor Resolution
 
@@ -304,7 +304,7 @@ This is the standard modular verification approach: each module verifies its own
 Given an imported function:
 
 ```
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -317,21 +317,21 @@ public fn abs(@Int -> @Int)
 }
 ```
 
-A caller in another module can rely on `abs(x) >= 0`:
+A caller in another module can rely on `magnitude(x) >= 0`:
 
 ```
-import vera.math(abs);
+import vera.math(magnitude);
 
 public fn non_negative(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(@Int.0)
+  magnitude(@Int.0)
 }
 ```
 
-The verifier proves `non_negative`'s postcondition by assuming `abs`'s postcondition (`@Int.result >= 0`).
+The verifier proves `non_negative`'s postcondition by assuming `magnitude`'s postcondition (`@Int.result >= 0`).
 
 ## 8.9 Cross-Module Compilation
 
@@ -343,7 +343,7 @@ The code generator uses a **flattening** strategy: imported function bodies are 
 
 2. **Pass 2.5 — Imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies — both public and private — as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
 
-3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math.abs(x)`) are desugared to flat `FnCall` nodes (e.g., `abs(x)`) since the imported function exists in the same WASM module.
+3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math.magnitude(x)`) are desugared to flat `FnCall` nodes (e.g., `magnitude(x)`) since the imported function exists in the same WASM module.
 
 ### 8.9.2 Export Rules
 
@@ -368,7 +368,7 @@ A complete multi-module example demonstrating all features:
 ```
 module vera.math;
 
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -380,7 +380,7 @@ public fn abs(@Int -> @Int)
   }
 }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
@@ -415,22 +415,22 @@ public data Option<T> {
 ```
 module vera.examples.modules;
 
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 import vera.collections(List, Option);
 
-public fn clamp(@Int, @Int, @Int -> @Int)
-  requires(@Int.1 <= @Int.2)
+public fn clamp_to_range(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.0)
   ensures(@Int.result >= @Int.1)
-  ensures(@Int.result <= @Int.2)
+  ensures(@Int.result <= @Int.0)
   effects(pure)
 {
-  if @Int.0 < @Int.1 then {
+  if @Int.2 < @Int.1 then {
     @Int.1
   } else {
-    if @Int.0 > @Int.2 then {
-      @Int.2
-    } else {
+    if @Int.2 > @Int.0 then {
       @Int.0
+    } else {
+      @Int.2
     }
   }
 }
@@ -440,7 +440,7 @@ public fn abs_max(@Int, @Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(@Int.0, @Int.1))
+  magnitude(larger(@Int.0, @Int.1))
 }
 
 private fn helper(@Int -> @Int)
@@ -464,7 +464,7 @@ OK: examples/modules.vera
 $ vera run examples/modules.vera --fn abs_max -- -3 -5
 3
 
-$ vera run examples/modules.vera --fn clamp -- 10 1 5
+$ vera run examples/modules.vera --fn clamp_to_range -- 10 1 5
 5
 ```
 

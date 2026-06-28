@@ -277,18 +277,18 @@ The result is inner + outer. Swapping gives the same result here (addition is co
 This is the scenario that produces the most confusion:
 
 ```vera
-private fn clamp(@Int, @Int, @Int -> @Int)
-  requires(@Int.2 <= @Int.1)
-  ensures(@Int.result >= @Int.2 && @Int.result <= @Int.1)
+private fn clamp_to_range(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.0)
+  ensures(@Int.result >= @Int.1 && @Int.result <= @Int.0)
   effects(pure)
 {
-  if @Int.0 < @Int.2 then {
-    @Int.2
+  if @Int.2 < @Int.1 then {
+    @Int.1
   } else {
-    if @Int.0 > @Int.1 then {
-      @Int.1
-    } else {
+    if @Int.2 > @Int.0 then {
       @Int.0
+    } else {
+      @Int.2
     }
   }
 }
@@ -298,13 +298,13 @@ The assignment, right-to-left (most-recent first):
 
 | Index | Parameter position | Semantic role |
 |-------|-------------------|---------------|
-| `@Int.0` | Third (rightmost) | Value to clamp |
-| `@Int.1` | Second | Maximum |
-| `@Int.2` | First (leftmost) | Minimum |
+| `@Int.0` | Third (rightmost) | Maximum (upper bound) |
+| `@Int.1` | Second | Minimum (lower bound) |
+| `@Int.2` | First (leftmost) | Value to clamp |
 
 A useful mnemonic: read the parameter list right-to-left and assign indices 0, 1, 2, … in that order.
 
-The `requires` clause encodes the precondition that minimum ≤ maximum: `@Int.2 <= @Int.1`. The `ensures` clause bounds the result between them. Reading the indices without the mnemonic, this takes practice; with it, it becomes mechanical.
+The `requires` clause encodes the precondition that minimum ≤ maximum: `@Int.1 <= @Int.0`. The `ensures` clause bounds the result between them. Reading the indices without the mnemonic, this takes practice; with it, it becomes mechanical.
 
 ---
 

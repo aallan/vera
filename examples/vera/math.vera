@@ -3,19 +3,27 @@
 
 module vera.math;
 
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
 }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
   effects(pure)
 {
-  if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 }
+  if @Int.0 >= @Int.1 then {
+    @Int.0
+  } else {
+    @Int.1
+  }
 }

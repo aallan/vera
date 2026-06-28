@@ -16,6 +16,8 @@ defined declarations with the same name shadow the prelude versions:
 
 from __future__ import annotations
 
+import re
+
 from vera import ast
 
 
@@ -387,6 +389,38 @@ private forall<A, B, E> fn result_map(@Result<A, E>, @ResultMapFn<A, B> -> @Resu
   }
 }
 """
+
+
+def overridable_builtin_names() -> frozenset[str]:
+    """Built-in names the prelude injects as *overridable* Vera combinators.
+
+    Each is a real Vera ``FnDecl`` injected by :func:`inject_prelude`, so a
+    user override is sound — the verifier and codegen both reason about
+    whichever body is in the program — and ``inject_prelude`` deliberately
+    skips its own injection when the user defines one (see the loop in that
+    function).  These are therefore *exempt* from the E151 "redefines a
+    built-in" check (#815): the unsoundness that motivates E151 is the
+    idealized-model-vs-runtime desync of the *opaque*, verifier-modelled
+    built-ins (``abs`` / ``min`` / ``max`` / …), which have no Vera body to
+    fall back to.
+
+    Derived from the combinator source blocks so the exempt set stays in
+    sync automatically if a combinator is added or removed.  Note the
+    iterative array built-ins (``array_map`` / ``array_filter`` /
+    ``array_fold``) are *not* exempt: ``_ARRAY_COMBINATORS`` is empty
+    (they are codegen-modelled, not prelude-injected Vera bodies), so
+    redefining them is correctly rejected by E151.
+    """
+    names: set[str] = set()
+    for block in (
+        _OPTION_COMBINATORS,
+        _RESULT_COMBINATORS,
+        _JSON_COMBINATORS,
+        _HTML_COMBINATORS,
+        _ARRAY_COMBINATORS,
+    ):
+        names.update(re.findall(r"\bfn\s+([a-z_][A-Za-z0-9_]*)", block))
+    return frozenset(names)
 
 
 # =====================================================================

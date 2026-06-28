@@ -1,9 +1,9 @@
-import vera.math(abs);
+import vera.math(magnitude);
 
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(0 - 7)
+  magnitude(0 - 7)
 }

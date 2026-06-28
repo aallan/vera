@@ -1,6 +1,6 @@
 module vera.math;
 
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -12,7 +12,7 @@ public fn abs(@Int -> @Int)
   }
 }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
