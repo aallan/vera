@@ -55,7 +55,7 @@ A wildcard import makes all `public` declarations from the imported module avail
 ### 8.3.2 Selective Import
 
 ```
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 ```
 
 A selective import makes only the named declarations available. Each name in the parenthesised list must refer to a `public` declaration in the imported module. Attempting to import a `private` declaration is an error:
@@ -151,22 +151,22 @@ Imported declarations are available as **bare calls** — the importer does not 
 ```
 module vera.examples.modules;
 
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 
 public fn abs_max(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(@Int.0, @Int.1))
+  magnitude(larger(@Int.0, @Int.1))
 }
 ```
 
-Here, `abs` and `max` resolve to the imported functions from `vera.math`.
+Here, `magnitude` and `larger` resolve to the imported functions from `vera.math`.
 
 ### 8.5.2 Shadowing
 
-Local definitions shadow imported declarations. If a module imports `abs` from `vera.math` but also defines its own `abs`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
+Local definitions shadow imported declarations. If a module imports `magnitude` from `vera.math` but also defines its own `magnitude`, the local definition takes precedence for bare-call resolution. The import is not an error — it is simply unused for that name.
 
 The shadowing rule is implemented via `setdefault`: imported names are injected into the type environment only if no local definition with the same name already exists.
 
@@ -175,10 +175,10 @@ The shadowing rule is implemented via `setdefault`: imported names are injected 
 Vera supports module-qualified function calls using `::` to separate the module path from the function name:
 
 ```
-vera.math::abs(-5)
+vera.math::magnitude(-5)
 ```
 
-The path portion (`vera.math`) identifies the module using dot separators, and `::` separates the path from the function name (`abs`). Arguments follow in parentheses. This syntax can be used anywhere a function call is valid.
+The path portion (`vera.math`) identifies the module using dot separators, and `::` separates the path from the function name (`magnitude`). Arguments follow in parentheses. This syntax can be used anywhere a function call is valid.
 
 The grammar is:
 
@@ -186,9 +186,9 @@ The grammar is:
 module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 ```
 
-Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `abs`, a module-qualified call `vera.math::abs(x)` still calls the module's version.
+Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `magnitude`, a module-qualified call `vera.math::magnitude(x)` still calls the module's version.
 
-**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). When two imported modules export identically-named functions, the module-qualified call syntax (`vera.math::abs(x)`) provides unambiguous disambiguation without introducing a second name for the same declaration. Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
+**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). When two imported modules export identically-named functions, the module-qualified call syntax (`vera.math::magnitude(x)`) provides unambiguous disambiguation without introducing a second name for the same declaration. Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
 
 ### 8.5.4 Constructor Resolution
 
@@ -419,18 +419,18 @@ import vera.math(magnitude, larger);
 import vera.collections(List, Option);
 
 public fn clamp_to_range(@Int, @Int, @Int -> @Int)
-  requires(@Int.1 <= @Int.2)
+  requires(@Int.1 <= @Int.0)
   ensures(@Int.result >= @Int.1)
-  ensures(@Int.result <= @Int.2)
+  ensures(@Int.result <= @Int.0)
   effects(pure)
 {
-  if @Int.0 < @Int.1 then {
+  if @Int.2 < @Int.1 then {
     @Int.1
   } else {
-    if @Int.0 > @Int.2 then {
-      @Int.2
-    } else {
+    if @Int.2 > @Int.0 then {
       @Int.0
+    } else {
+      @Int.2
     }
   }
 }

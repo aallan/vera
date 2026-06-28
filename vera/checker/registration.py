@@ -146,8 +146,18 @@ class RegistrationMixin:
                 spec_ref='Chapter 9, Section 9.6 "Built-in Functions"',
                 error_code="E151",
             )
+        nested_rejected = False
         for wfn in decl.where_fns or ():
-            self._check_builtin_redefinition(wfn)
+            if self._check_builtin_redefinition(wfn):
+                nested_rejected = True
+        # #815: a rejected nested helper is stripped from registration, so if
+        # the parent body calls it the call resolves against the canonical
+        # built-in and cascades bogus arity/type errors. Mark the parent so its
+        # body is skipped in the check phase too. The return value still
+        # reflects only whether ``decl``'s own name shadows a built-in, so the
+        # parent itself is still registered under its (legitimate) name.
+        if nested_rejected:
+            self._rejected_builtin_redefs.add(id(decl))
         return rejected
 
     def _check_alias_cycles(self, program: ast.Program) -> None:

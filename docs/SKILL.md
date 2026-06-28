@@ -253,19 +253,19 @@ Visibility does **not** apply to: type aliases (`type Foo = ...`), effect declar
 Multiple `requires` and `ensures` clauses are allowed. They are conjunctive (AND'd together):
 
 ```vera
-private fn clamp(@Int, @Int, @Int -> @Int)
-  requires(@Int.1 <= @Int.2)
+private fn clamp_to_range(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.0)
   ensures(@Int.result >= @Int.1)
-  ensures(@Int.result <= @Int.2)
+  ensures(@Int.result <= @Int.0)
   effects(pure)
 {
-  if @Int.0 < @Int.1 then {
+  if @Int.2 < @Int.1 then {
     @Int.1
   } else {
-    if @Int.0 > @Int.2 then {
-      @Int.2
-    } else {
+    if @Int.2 > @Int.0 then {
       @Int.0
+    } else {
+      @Int.2
     }
   }
 }
@@ -336,7 +336,7 @@ private fn example(@Int -> @Int)
 Only valid inside `ensures` clauses. Refers to the function's return value:
 
 ```vera
-private fn abs(@Int -> @Nat)
+private fn absolute(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -1739,7 +1739,7 @@ Four built-in abilities are available — no declarations needed:
 The `Ordering` type is a built-in ADT with three constructors: `Less`, `Equal`, `Greater`. Use it with pattern matching:
 
 ```vera
-public fn sign(@Int, @Int -> @Int)
+public fn signum(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1782,9 +1782,9 @@ Every top-level `fn` and `data` must have explicit `public` or `private` visibil
 
 Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.vera` relative to the importing file's directory (or the project root). Imported files are parsed and cached automatically. Circular imports are detected and reported as errors.
 
-Imported functions can be called by name (bare calls): `import vera.math(abs); abs(-5)` resolves `abs` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
+Imported functions can be called by name (bare calls): `import vera.math(magnitude); magnitude(-5)` resolves `magnitude` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
 
-Imported function contracts are verified at call sites by the SMT solver. Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
+Imported function contracts are verified at call sites by the SMT solver. Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `magnitude(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
 
 Cross-module compilation uses a flattening strategy: imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
 
@@ -1792,7 +1792,7 @@ If two imported modules define a function, data type, or constructor with the sa
 
 Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
 
-Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing. Note: module-qualified calls (`math::abs(42)`) are available for readability but do not yet resolve name collisions in flat compilation — the compiler will still report a collision error. A future version will support qualified-call disambiguation via name mangling.
+Module-qualified calls use `::` between the module path and the function name: `vera.math::magnitude(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing. Note: module-qualified calls (`math::magnitude(42)`) are available for readability but do not yet resolve name collisions in flat compilation — the compiler will still report a collision error. A future version will support qualified-call disambiguation via name mangling.
 
 There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash across modules, rename the conflicting declaration in one of the source modules. This preserves the one-canonical-form principle — every function has exactly one name.
 
@@ -2100,13 +2100,13 @@ if @Bool.0 then {
 
 WRONG — Vera does not support renaming imports:
 ```vera
-import vera.math(abs as math_abs);
+import vera.math(magnitude as math_magnitude);
 ```
 
 CORRECT — use selective import and qualified calls for readability:
 ```vera
-import vera.math(abs);
-vera.math::abs(-5)
+import vera.math(magnitude);
+vera.math::magnitude(-5)
 ```
 
 Note: if two imported modules define the same name, the compiler reports a collision error (E608/E609/E610). Rename the conflicting declaration in one of the source modules.
@@ -2115,12 +2115,12 @@ Note: if two imported modules define the same name, the compiler reports a colli
 
 WRONG — Vera does not support `hiding` syntax:
 ```vera
-import vera.math hiding(max);
+import vera.math hiding(larger);
 ```
 
 CORRECT — use selective import to list the names you need:
 ```vera
-import vera.math(abs, min);
+import vera.math(magnitude, larger);
 ```
 
 ### Trying to use raw or multi-line strings

@@ -119,7 +119,7 @@ Before changing code — **adding or removing** — write the test that proves y
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
-- All 102 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) must *fail* `check` with their `expected_error` E-code
+- All 102 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) must *fail* `check` with their `expected_error` E-code
 - All 35 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`

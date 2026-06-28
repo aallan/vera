@@ -14,18 +14,18 @@ public fn absolute(@Int -> @Nat)
 }
 
 public fn clamp_to_range(@Int, @Int, @Int -> @Int)
-  requires(@Int.1 <= @Int.2)
+  requires(@Int.1 <= @Int.0)
   ensures(@Int.result >= @Int.1)
-  ensures(@Int.result <= @Int.2)
+  ensures(@Int.result <= @Int.0)
   effects(pure)
 {
-  if @Int.0 < @Int.1 then {
+  if @Int.2 < @Int.1 then {
     @Int.1
   } else {
-    if @Int.0 > @Int.2 then {
-      @Int.2
-    } else {
+    if @Int.2 > @Int.0 then {
       @Int.0
+    } else {
+      @Int.2
     }
   }
 }

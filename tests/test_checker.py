@@ -3862,6 +3862,31 @@ public fn abs(@Int, @Int -> @Int)
         assert "E151" in codes, codes
         assert [c for c in codes if c != "E151"] == [], codes
 
+    def test_nested_helper_rejection_skips_parent_body(self) -> None:
+        """A rejected where-helper must not cascade into the *parent* body (#815).
+
+        The helper `abs` (2-arg) is rejected (E151) and stripped from
+        registration. The parent `caller`'s body calls it with two args; if the
+        parent body is still checked, that call resolves against the 1-arg
+        built-in `abs` and emits a spurious E201. Propagating the nested
+        rejection up to `caller` skips its body too, so the only diagnostic is
+        the E151 on the helper. (Sibling case to
+        ``test_rejected_builtin_redef_is_not_rechecked``, one scope deeper.)
+        """
+        errs = _errors("""
+public fn caller(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ abs(@Int.0, @Int.0) }
+where {
+  fn abs(@Int, @Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { @Int.0 }
+}
+""")
+        codes = self._codes(errs)
+        assert "E151" in codes, codes
+        assert [c for c in codes if c != "E151"] == [], codes
+
     def test_imported_module_redefining_builtin_is_E151(self) -> None:
         """An imported module that redefines a built-in is rejected in the
         importer (#815 — "user/module" scope).

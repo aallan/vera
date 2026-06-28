@@ -2313,7 +2313,7 @@ public fn clamp_to_range(@Int -> @Int)
 }
 """
         path = tmp_path / "clamp_to_range.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_test(str(path), trials=5)
         assert rc == 0
         out = capsys.readouterr().out
