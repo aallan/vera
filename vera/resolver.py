@@ -107,7 +107,8 @@ class ModuleResolver:
                         f"'{'.'.join(mod_path)}' is already being "
                         f"resolved."
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
                     rationale=(
                         "Circular imports are not allowed. The module "
                         "dependency graph must be acyclic."
@@ -136,7 +137,8 @@ class ModuleResolver:
                         f"Cannot resolve import "
                         f"'{'.'.join(mod_path)}': no file found."
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
                     rationale=(
                         f"Looked for "
                         f"'{'/'.join(mod_path)}.vera' relative to "
@@ -195,7 +197,8 @@ class ModuleResolver:
                         f"Error parsing imported module "
                         f"'{'.'.join(mod_path)}': {exc}"
                     ),
-                    location=self._location_from_node(imp),
+                    location=self._location_from_node(imp, importing_file),
+                    source_line=self._source_line(importing_file, imp),
                     rationale=(
                         "An imported module must itself parse and "
                         "transform successfully before its declarations "
@@ -243,11 +246,39 @@ class ModuleResolver:
         return None
 
     @staticmethod
-    def _location_from_node(node: ast.Node) -> SourceLocation:
-        """Extract a SourceLocation from an AST node's span."""
+    def _location_from_node(
+        node: ast.Node, importing_file: Path | None = None,
+    ) -> SourceLocation:
+        """Extract a SourceLocation from an AST node's span.
+
+        ``importing_file`` names the file that contains ``node`` (the
+        importing program); threading it through populates
+        ``location.file`` so resolver diagnostics match the file-qualified
+        location every checker diagnostic carries.
+        """
+        file = str(importing_file) if importing_file is not None else None
         if node.span:
             return SourceLocation(
+                file=file,
                 line=node.span.line,
                 column=node.span.column,
             )
-        return SourceLocation()
+        return SourceLocation(file=file)
+
+    @staticmethod
+    def _source_line(importing_file: Path, node: ast.Node) -> str:
+        """Read the offending import line from the importing file.
+
+        Best-effort: a missing or unreadable file yields ``""`` rather
+        than raising, since the source line is contextual, not essential.
+        Mirrors the checker's ``_source_line`` so ``vera check --json``
+        carries the offending line for resolver errors too.
+        """
+        if not node.span:
+            return ""
+        try:
+            lines = importing_file.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return ""
+        idx = node.span.line - 1
+        return lines[idx] if 0 <= idx < len(lines) else ""

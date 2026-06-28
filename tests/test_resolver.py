@@ -549,6 +549,15 @@ class TestResolverErrorCodes:
             assert "Chapter 8" in diag.spec_ref, (
                 diag.error_code, diag.spec_ref,
             )
+            # The location must name the importing file and the offending
+            # import line must round-trip into the JSON, like every checker
+            # diagnostic — so machine consumers of `vera check --json` see a
+            # uniform schema (Diagnostic.to_dict() drops empty fields).
+            assert diag.location.file, (diag.error_code, "missing file")
+            assert diag.source_line, (diag.error_code, "missing source_line")
+            assert "import" in diag.source_line, (
+                diag.error_code, diag.source_line,
+            )
 
     def test_internal_error_not_masked_as_E013(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
