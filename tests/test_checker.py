@@ -3511,12 +3511,17 @@ private data Secret { Hidden }
     # -- Mandatory visibility -------------------------------------------
 
     def test_missing_visibility_on_fn(self) -> None:
-        """Bare fn (no public/private) -> error."""
-        _check_err("""
+        """Bare fn (no public/private) -> error citing the §8.4 rule."""
+        errs = _check_err("""
 fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """, "Missing visibility on 'foo'")
+        # Visibility is mandated by Chapter 8 §8.4, not the stale §5.8.
+        vis = [e for e in errs if "Missing visibility" in e.description]
+        assert vis[0].spec_ref == 'Chapter 8, Section 8.4 "Visibility"', (
+            vis[0].spec_ref
+        )
 
     def test_missing_visibility_on_data(self) -> None:
         """Bare data (no public/private) -> error."""
@@ -3656,7 +3661,14 @@ private fn main(@Int -> @Int)
         assert any("private" in e.description for e in errors), (
             [e.description for e in errors]
         )
-        assert any(e.error_code == "E232" for e in errors)
+        e232 = [e for e in errors if e.error_code == "E232"]
+        assert e232, [e.error_code for e in errors]
+        # E232 (private qualified call) must cite the Chapter 8 visibility
+        # rule, like the parallel import-visibility diagnostic E150 — not
+        # the stale "Chapter 5, Section 5.8" that no longer exists.
+        assert e232[0].spec_ref == 'Chapter 8, Section 8.4 "Visibility"', (
+            e232[0].spec_ref
+        )
 
     # -- Own file's declarations always accessible ----------------------
 

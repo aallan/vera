@@ -598,7 +598,7 @@ class CallsMixin:
                     f"public fn {fn_name}(...)"
                 ),
                 spec_ref=(
-                    'Chapter 5, Section 5.8 "Function Visibility"'
+                    'Chapter 8, Section 8.4 "Visibility"'
                 ),
                 error_code="E232",
             )
