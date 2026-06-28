@@ -361,7 +361,12 @@ public fn main(@Unit -> @Int)
             path = f.name
         try:
             prog = transform(parse_file(path))
-            typecheck(prog, main_src, resolved_modules=[mod])
+            # Assert the check stage is clean too, so a check-stage module-
+            # resolution regression is caught independently of verify
+            # (typecheck returns the diagnostics list directly).
+            check_diags = typecheck(prog, main_src, resolved_modules=[mod])
+            check_errors = [d for d in check_diags if d.severity == "error"]
+            assert check_errors == [], [e.description for e in check_errors]
             vres = verify(prog, main_src, resolved_modules=[mod])
             errors = [d for d in vres.diagnostics if d.severity == "error"]
             assert errors == [], [e.description for e in errors]
