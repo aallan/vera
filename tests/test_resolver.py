@@ -484,3 +484,67 @@ class TestResolverErrorCodes:
         assert "E013" in codes, [
             (e.error_code, e.description) for e in errs
         ]
+
+    def _diag_by_code(
+        self, errs: list[Diagnostic], code: str,
+    ) -> Diagnostic:
+        matches = [e for e in errs if e.error_code == code]
+        assert matches, (
+            f"no {code} diagnostic among "
+            f"{[(e.error_code, e.description) for e in errs]}"
+        )
+        return matches[0]
+
+    def test_resolver_diagnostics_carry_full_contract(
+        self, tmp_path: Path,
+    ) -> None:
+        """E011/E012/E013 carry the full diagnostic contract.
+
+        Every user-facing diagnostic exposes a consistent
+        ``description``/``rationale``/``fix``/``spec_ref``/``error_code``
+        field set (CLAUDE.md, AGENTS.md).  ``Diagnostic.to_dict()`` omits
+        empty fields, so a bare diagnostic yields a JSON schema that
+        drifts from its peers — machine consumers of ``vera check
+        --json`` would then have to special-case module-resolution
+        failures.  All three resolver paths must cite Chapter 8.
+        """
+        e011 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import b;\n\nprivate fn fa(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+                {
+                    "b.vera": (
+                        "import a;\n\nprivate fn fb(-> @Unit) "
+                        "requires(true) ensures(true) effects(pure) "
+                        "{ () }\n"
+                    ),
+                },
+                main_name="a.vera",
+            ),
+            "E011",
+        )
+        e012 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import nonexistent;\n\nprivate fn main(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+            ),
+            "E012",
+        )
+        e013 = self._diag_by_code(
+            self._errors(
+                tmp_path,
+                "import broken;\n\nprivate fn main(-> @Unit) "
+                "requires(true) ensures(true) effects(pure) { () }\n",
+                {"broken.vera": "not valid vera {{{"},
+            ),
+            "E013",
+        )
+        for diag in (e011, e012, e013):
+            assert diag.rationale, (diag.error_code, "missing rationale")
+            assert diag.fix, (diag.error_code, "missing fix")
+            assert diag.spec_ref, (diag.error_code, "missing spec_ref")
+            assert "Chapter 8" in diag.spec_ref, (
+                diag.error_code, diag.spec_ref,
+            )

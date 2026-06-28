@@ -104,8 +104,17 @@ class ModuleResolver:
                     ),
                     location=self._location_from_node(imp),
                     rationale=(
-                        "Circular imports are not allowed. Restructure "
-                        "the modules to break the dependency cycle."
+                        "Circular imports are not allowed. The module "
+                        "dependency graph must be acyclic."
+                    ),
+                    fix=(
+                        "Break the cycle: remove one of the imports, or "
+                        "extract the shared declarations into a third "
+                        "module that both modules import."
+                    ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.3 '
+                        '"Circular Import Detection"'
                     ),
                     severity="error",
                     error_code="E011",
@@ -132,6 +141,9 @@ class ModuleResolver:
                         f"Create the file "
                         f"'{'/'.join(mod_path)}.vera' or check the "
                         f"import path."
+                    ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.1 "Path Mapping"'
                     ),
                     severity="error",
                     error_code="E012",
@@ -172,6 +184,19 @@ class ModuleResolver:
                         f"'{'.'.join(mod_path)}': {exc}"
                     ),
                     location=self._location_from_node(imp),
+                    rationale=(
+                        "An imported module must itself parse and "
+                        "transform successfully before its declarations "
+                        "can be used by the importing program."
+                    ),
+                    fix=(
+                        f"Run `vera check {'/'.join(mod_path)}.vera` "
+                        f"directly to see the detailed syntax diagnostic, "
+                        f"then correct the imported module."
+                    ),
+                    spec_ref=(
+                        'Chapter 8, Section 8.6.5 "Resolution Errors"'
+                    ),
                     severity="error",
                     error_code="E013",
                 ),
