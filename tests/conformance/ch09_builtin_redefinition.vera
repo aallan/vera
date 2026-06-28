@@ -1,0 +1,20 @@
+-- Conformance: redefining a built-in is a checker error (Chapter 9, Section 9.6)
+-- Tests: E151 — a user fn named after an opaque built-in is rejected (#815).
+-- This is the exact unsoundness #815 closes: the verifier modelled `abs` by
+-- name (abs(5) = 5, satisfying `>= 0`) while codegen would run this body, so
+-- `verify` proved a postcondition `run` violated. The checker now rejects it.
+public fn abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result < 0)
+  effects(pure)
+{
+  0 - 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

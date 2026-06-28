@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 from vera import ast
 from vera.environment import (
     AbilityInfo,
@@ -12,6 +14,23 @@ from vera.environment import (
     TypeAliasInfo,
 )
 from vera.types import TypeVar
+
+
+@functools.lru_cache(maxsize=1)
+def _builtin_reject_names() -> frozenset[str]:
+    """Built-in function names a user/module ``fn`` must not redefine (E151).
+
+    The full built-in registry minus the prelude-injected combinators, which
+    the prelude lets the user override soundly (see
+    :func:`vera.prelude.overridable_builtin_names`).  Cached: the built-in
+    set is static.  Drives the #815 "one canonical form" check — redefining
+    an opaque, verifier-modelled built-in (``abs`` / ``min`` / ``max`` / …)
+    is the silent verifier↔runtime unsoundness that motivates the error.
+    """
+    from vera.environment import TypeEnv
+    from vera.prelude import overridable_builtin_names
+
+    return frozenset(TypeEnv().functions) - overridable_builtin_names()
 
 
 class RegistrationMixin:
@@ -35,6 +54,39 @@ class RegistrationMixin:
                     ),
                     fix=f"private {kind} {name}(...) or public {kind} {name}(...)",
                     spec_ref='Chapter 8, Section 8.4 "Visibility"',
+                )
+            # #815: redefining a built-in is a one-canonical-form violation
+            # (and a silent verifier↔runtime unsoundness for the
+            # verifier-modelled built-ins).  Fires for top-level and module
+            # functions; the prelude-injected combinators are exempt.
+            if (isinstance(tld.decl, ast.FnDecl)
+                    and tld.decl.name in _builtin_reject_names()):
+                bn = tld.decl.name
+                self._error(
+                    tld.decl,
+                    f"Function '{bn}' redefines a built-in.",
+                    rationale=(
+                        f"'{bn}' is a built-in function (spec §9.6) — it is "
+                        f"always in scope as the single canonical '{bn}'. "
+                        f"Vera provides exactly one way to express each "
+                        f"operation, so re-declaring a built-in is not "
+                        f"allowed: there is nothing to gain by rolling your "
+                        f"own, and a second definition is a second way to say "
+                        f"the same thing. For the verifier-modelled built-ins "
+                        f"it is also silently unsound — the verifier reasons "
+                        f"about every call using the built-in's contract while "
+                        f"codegen runs your body, so a postcondition can be "
+                        f"proved against the built-in yet violated at runtime "
+                        f"by your version."
+                    ),
+                    fix=(
+                        f"Delete this definition and call the built-in '{bn}' "
+                        f"directly — it needs no import. If you intend "
+                        f"genuinely different behaviour, give the function a "
+                        f"distinct name (e.g. '{bn}_custom')."
+                    ),
+                    spec_ref='Chapter 9, Section 9.6 "Built-in Functions"',
+                    error_code="E151",
                 )
             self._register_decl(tld.decl, visibility=tld.visibility)
 

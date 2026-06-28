@@ -1,10 +1,10 @@
 module vera.examples.modules;
 
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 import vera.collections(List, Option);
 
 -- Public function — visible to importers
-public fn clamp(@Int, @Int, @Int -> @Int)
+public fn clamp_to_range(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -27,7 +27,7 @@ public fn abs_max(@Int, @Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(@Int.0, @Int.1))
+  magnitude(larger(@Int.0, @Int.1))
 }
 
 -- Module-qualified call syntax (C8b, #95)
@@ -36,7 +36,7 @@ public fn qualified_abs(@Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  vera.math::abs(@Int.0)
+  vera.math::magnitude(@Int.0)
 }
 
 -- Private function — internal to this module

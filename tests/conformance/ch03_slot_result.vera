@@ -8,7 +8,7 @@ public fn double(@Int -> @Int)
   @Int.0 * 2
 }
 
-public fn abs(@Int -> @Nat)
+public fn magnitude(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)

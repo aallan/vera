@@ -936,7 +936,7 @@ public fn add(@Int, @Int -> @Int)
         """Run a function with negative integer arguments."""
         import tempfile
         source = """\
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
@@ -945,7 +945,7 @@ public fn abs(@Int -> @Int)
         ) as f:
             f.write(source)
             path = f.name
-        rc = cmd_run(path, fn_name="abs", fn_args=[-42])
+        rc = cmd_run(path, fn_name="magnitude", fn_args=[-42])
         assert rc == 0
         out = capsys.readouterr().out
         assert "42" in out
@@ -2267,7 +2267,7 @@ class TestCmdTestUncoveredPaths:
     ) -> None:
         """Human-readable output for tested (Tier 3) functions."""
         source = """\
-public fn clamp(@Int -> @Int)
+public fn clamp_to_range(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   ensures(@Int.result <= 100)
@@ -2277,7 +2277,7 @@ public fn clamp(@Int -> @Int)
   else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
 }
 """
-        path = tmp_path / "clamp.vera"
+        path = tmp_path / "clamp_to_range.vera"
         path.write_text(source)
         rc = cmd_test(str(path), trials=10)
         assert rc == 0
@@ -2302,7 +2302,7 @@ public fn clamp(@Int -> @Int)
     ) -> None:
         """Human-readable output shows trial counts."""
         source = """\
-public fn clamp(@Int -> @Int)
+public fn clamp_to_range(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   ensures(@Int.result <= 100)
@@ -2312,14 +2312,14 @@ public fn clamp(@Int -> @Int)
   else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
 }
 """
-        path = tmp_path / "clamp.vera"
+        path = tmp_path / "clamp_to_range.vera"
         path.write_text(source)
         rc = cmd_test(str(path), trials=5)
         assert rc == 0
         out = capsys.readouterr().out
         assert "Results:" in out
         # Must show the function was actually processed
-        assert "clamp" in out
+        assert "clamp_to_range" in out
 
 
 # =====================================================================

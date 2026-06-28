@@ -1436,5 +1436,18 @@
       "json_array_length",
       "array_fold"
     ]
+  },
+  {
+    "id": "ch09_builtin_redefinition",
+    "file": "ch09_builtin_redefinition.vera",
+    "chapter": 9,
+    "title": "Redefining a built-in is a checker error",
+    "level": "check",
+    "spec_ref": "Section 9.6",
+    "expected_error": "E151",
+    "features": [
+      "builtin_redefinition",
+      "check_error"
+    ]
   }
 ]

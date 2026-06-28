@@ -31,7 +31,7 @@ private fn classify(@Int -> @String)
 }
 
 -- Boolean patterns
-private fn to_string(@Bool -> @String)
+private fn show_bool(@Bool -> @String)
   requires(true)
   ensures(true)
   effects(pure)

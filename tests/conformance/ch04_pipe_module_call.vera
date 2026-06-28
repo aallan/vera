@@ -1,11 +1,11 @@
-import vera.math(abs);
+import vera.math(magnitude);
 
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  -5 |> vera.math::abs()
+  -5 |> vera.math::magnitude()
 }
 
 public fn test_chained(@Unit -> @Int)
@@ -13,5 +13,5 @@ public fn test_chained(@Unit -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  -5 |> vera.math::abs() |> vera.math::abs()
+  -5 |> vera.math::magnitude() |> vera.math::magnitude()
 }

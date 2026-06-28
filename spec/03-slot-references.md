@@ -294,7 +294,7 @@ In the `Cons` arm:
 ### Example 10: Multiple Return-Type References in Contracts
 
 ```
-private fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp_to_range(@Int, @Int, @Int -> @Int)
   requires(@Int.2 <= @Int.1)
   ensures(@Int.result >= @Int.2 && @Int.result <= @Int.1)
   effects(pure)

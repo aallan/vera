@@ -5,5 +5,5 @@ public fn main(@Unit -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(0 - 5, 3))
+  magnitude(larger(0 - 5, 3))
 }

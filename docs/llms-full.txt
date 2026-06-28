@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.184. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.185. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -1210,7 +1210,7 @@ infinity()                         -- returns Float64 (positive infinity)
 
 `float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
 
-**Shadowing**: If you define a function with the same name as a built-in (e.g. `array_length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
+**Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and — for the verifier-modelled built-ins — silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for genuinely different behaviour. The one exception is the prelude's Option/Result/Json/Html *combinators* (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`): these are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
 
 Example:
 
@@ -2356,7 +2356,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 101 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the two Chapter 8 negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 102 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the two Chapter 8 negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2530,7 +2530,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 101 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 102 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 35 examples must pass
 ```
 
@@ -2540,7 +2540,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 101 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) must *fail* `check` with their `expected_error` E-code
+- All 102 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`) must *fail* `check` with their `expected_error` E-code
 - All 35 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2964,7 +2964,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (101 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (102 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -3005,7 +3005,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus a 101-program conformance suite
+- Over 3,000 unit tests plus a 102-program conformance suite
 - 35 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
@@ -3100,6 +3100,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E148**: Non-convertible type in string interpolation
 - **E149**: Integer literal out of range for its target type
 - **E150**: Cannot import private declaration
+- **E151**: Function redefines a built-in
 - **E160**: Array index must be Int or Nat
 - **E161**: Cannot index non-array type
 - **E170**: Let binding type mismatch

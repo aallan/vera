@@ -1204,7 +1204,7 @@ infinity()                         -- returns Float64 (positive infinity)
 
 `float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
 
-**Shadowing**: If you define a function with the same name as a built-in (e.g. `array_length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
+**Redefining a built-in is an error (E151)**: a function whose name matches a built-in (e.g. `abs`, `array_length`, `clamp`, `to_string`) is rejected at `vera check`. Built-ins are always in scope as the single canonical definition, so a second one is both redundant (one canonical form) and — for the verifier-modelled built-ins — silently unsound: the verifier would reason with the built-in's model while codegen runs your body. Call the built-in directly (no import needed), or give your function a distinct name (e.g. `magnitude`) for genuinely different behaviour. The one exception is the prelude's Option/Result/Json/Html *combinators* (`option_map`, `option_and_then`, `option_unwrap_or`, `result_map`, `result_unwrap_or`, `json_*`, `html_attr`): these are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.
 
 Example:
 

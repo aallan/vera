@@ -81,7 +81,7 @@ Import names can be lowercase (functions) or uppercase (data type names). Import
 Every top-level `fn` and `data` declaration must have an explicit visibility modifier: `public` or `private`. Omitting the modifier is a compile error.
 
 ```
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -304,7 +304,7 @@ This is the standard modular verification approach: each module verifies its own
 Given an imported function:
 
 ```
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -317,21 +317,21 @@ public fn abs(@Int -> @Int)
 }
 ```
 
-A caller in another module can rely on `abs(x) >= 0`:
+A caller in another module can rely on `magnitude(x) >= 0`:
 
 ```
-import vera.math(abs);
+import vera.math(magnitude);
 
 public fn non_negative(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(@Int.0)
+  magnitude(@Int.0)
 }
 ```
 
-The verifier proves `non_negative`'s postcondition by assuming `abs`'s postcondition (`@Int.result >= 0`).
+The verifier proves `non_negative`'s postcondition by assuming `magnitude`'s postcondition (`@Int.result >= 0`).
 
 ## 8.9 Cross-Module Compilation
 
@@ -343,7 +343,7 @@ The code generator uses a **flattening** strategy: imported function bodies are 
 
 2. **Pass 2.5 — Imported function compilation**: After compiling local functions (Pass 2), compile all imported function bodies — both public and private — as internal WASM functions. Private helpers must be compiled because imported public functions may call them.
 
-3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math.abs(x)`) are desugared to flat `FnCall` nodes (e.g., `abs(x)`) since the imported function exists in the same WASM module.
+3. **Call desugaring**: `ModuleCall` AST nodes (e.g., `vera.math.magnitude(x)`) are desugared to flat `FnCall` nodes (e.g., `magnitude(x)`) since the imported function exists in the same WASM module.
 
 ### 8.9.2 Export Rules
 
@@ -368,7 +368,7 @@ A complete multi-module example demonstrating all features:
 ```
 module vera.math;
 
-public fn abs(@Int -> @Int)
+public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -380,7 +380,7 @@ public fn abs(@Int -> @Int)
   }
 }
 
-public fn max(@Int, @Int -> @Int)
+public fn larger(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
@@ -415,10 +415,10 @@ public data Option<T> {
 ```
 module vera.examples.modules;
 
-import vera.math(abs, max);
+import vera.math(magnitude, larger);
 import vera.collections(List, Option);
 
-public fn clamp(@Int, @Int, @Int -> @Int)
+public fn clamp_to_range(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -440,7 +440,7 @@ public fn abs_max(@Int, @Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  abs(max(@Int.0, @Int.1))
+  magnitude(larger(@Int.0, @Int.1))
 }
 
 private fn helper(@Int -> @Int)
@@ -464,7 +464,7 @@ OK: examples/modules.vera
 $ vera run examples/modules.vera --fn abs_max -- -3 -5
 3
 
-$ vera run examples/modules.vera --fn clamp -- 10 1 5
+$ vera run examples/modules.vera --fn clamp_to_range -- 10 1 5
 5
 ```
 

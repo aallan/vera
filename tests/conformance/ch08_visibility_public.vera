@@ -1,9 +1,9 @@
-import vera.math(max);
+import vera.math(larger);
 
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(@Int.result >= 10)
   effects(pure)
 {
-  max(10, 4)
+  larger(10, 4)
 }

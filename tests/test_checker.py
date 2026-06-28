@@ -962,7 +962,7 @@ class TestControlFlow:
 
     def test_if_then_else(self) -> None:
         _check_ok("""
-private fn abs(@Int -> @Int)
+private fn magnitude(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 >= 0 then { @Int.0 }
@@ -1608,7 +1608,7 @@ private fn count(@Nat -> @Nat)
 
     def test_multiple_contracts(self) -> None:
         _check_ok("""
-private fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp_to_range(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -3290,16 +3290,22 @@ private fn main(@Int -> @Int)
         assert errors == [], [e.description for e in errors]
 
     def test_local_shadows_import(self) -> None:
-        """Local fn abs shadows imported abs."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        """Local fn magnitude shadows imported magnitude."""
+        mod = self._resolved(("math",), """\
+public fn magnitude(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+""")
         prog = parse_to_ast("""\
-import math(abs);
-private fn abs(@Int -> @Int)
+import math(magnitude);
+private fn magnitude(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ abs(@Int.0) }
+{ magnitude(@Int.0) }
 """)
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -3701,6 +3707,83 @@ private fn main(@Int -> @Int)
         assert "private" in msg.lower()
         assert "priv_fn" in msg
         assert "mymod" in msg
+
+
+# =====================================================================
+# Built-in redefinition (E151) — #815 one-canonical-form
+# =====================================================================
+
+
+class TestBuiltinRedefinition:
+    """Redefining an opaque built-in is a checker error (E151, #815).
+
+    Per DESIGN.md "one canonical form" + fail-loud: a user/module ``fn``
+    named after a verifier-modelled built-in (``abs`` / ``min`` / ``max`` /
+    ``clamp`` / ``to_string`` / ``string_*`` / …) is rejected, because the
+    verifier reasons with the built-in's model while codegen runs the
+    user's body — a silent verifier↔runtime unsoundness.  The Option /
+    Result / Json / Html *combinators* the prelude injects are exempt:
+    they are real Vera functions, so a user override is sound, and the
+    prelude deliberately lets the user replace them.
+    """
+
+    @staticmethod
+    def _codes(errs: list[Diagnostic]) -> list[str]:
+        return [e.error_code for e in errs]
+
+    def test_redefining_abs_is_E151(self) -> None:
+        errs = _errors("""
+public fn abs(@Int -> @Int)
+  requires(true) ensures(@Int.result < 0) effects(pure)
+{ 0 - 1 }
+""")
+        assert "E151" in self._codes(errs), self._codes(errs)
+        diag = next(e for e in errs if e.error_code == "E151")
+        assert "abs" in diag.description
+        assert "redefines a built-in" in diag.description
+        # Instructional: states the rule, the why, and the fix.
+        assert diag.rationale and diag.fix and diag.spec_ref
+        assert "Chapter 9" in diag.spec_ref
+
+    def test_redefining_clamp_is_E151(self) -> None:
+        errs = _errors("""
+public fn clamp(@Int, @Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        assert "E151" in self._codes(errs), self._codes(errs)
+
+    def test_redefining_to_string_is_E151(self) -> None:
+        errs = _errors("""
+public data Color { Red, Green, Blue }
+public fn to_string(@Color -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "x" }
+""")
+        assert "E151" in self._codes(errs), self._codes(errs)
+
+    def test_overriding_option_map_combinator_is_allowed(self) -> None:
+        """The prelude combinators stay user-overridable — exempt from E151.
+
+        This is the regression guard for the #815 design decision: a naive
+        "reject every built-in name" rule would wrongly fire here.
+        """
+        errs = _errors("""
+public data Option<T> { None, Some(T) }
+public fn option_map(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+        assert "E151" not in self._codes(errs), self._codes(errs)
+
+    def test_non_builtin_name_is_allowed(self) -> None:
+        """A user fn whose name is not a built-in is unaffected."""
+        errs = _errors("""
+public fn saturating_abs(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+""")
+        assert "E151" not in self._codes(errs), self._codes(errs)
 
 
 # =====================================================================

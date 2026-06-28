@@ -4079,6 +4079,14 @@ private fn sum(@List<Int> -> @Int)
         gated to Tier 3, guarded by the codegen trunc trap).  No example has a
         concrete float_to_int site, so no T1 is added.  Net: +1 T3, +1 total:
         271/80/351 -> 271/81/352.
+
+        #815: `examples/modules.vera` renamed its built-in calls
+        (`abs(max(...))` -> `magnitude(larger(...))`, `vera.math::abs` ->
+        `vera.math::magnitude`) to avoid the new E151 built-in-redefinition
+        error.  The built-in `abs` carried a Tier-1-known `result >= 0`
+        postcondition the verifier discharged statically; the user-defined
+        `magnitude`/`larger` shed it, so one obligation moves T1 -> T3.  Net:
+        -1 T1, +1 T3, +0 total: 271/81/352 -> 270/82/352.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -4091,8 +4099,8 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
-        assert t1 == 271, f"Expected 271 T1, got {t1}"
-        assert t3 == 81, f"Expected 81 T3, got {t3}"
+        assert t1 == 270, f"Expected 270 T1, got {t1}"
+        assert t3 == 82, f"Expected 82 T3, got {t3}"
         assert total == 352, f"Expected 352 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
