@@ -53,7 +53,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS cove
 VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for #593-class GC-rooting bugs)
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_conformance.py    # Verify all 101 conformance programs pass their declared level
+python scripts/check_conformance.py    # Verify all 101 conformance programs (positives pass their level; negatives fail with their expected_error E-code)
 python scripts/check_examples.py      # Verify all 35 examples parse + check + verify
 python scripts/check_examples_readme.py # Verify vera run commands in examples/README.md
 python scripts/check_spec_examples.py # Verify spec code blocks parse
