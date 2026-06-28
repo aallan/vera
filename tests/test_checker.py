@@ -3844,6 +3844,24 @@ where {
         # `other`'s call resolves to the built-in, so E151 is the *only* error.
         assert [c for c in codes if c != "E151"] == [], codes
 
+    def test_rejected_builtin_redef_is_not_rechecked(self) -> None:
+        """A rejected built-in redefinition is skipped in the check phase, so
+        its own body produces no bogus secondary diagnostics (#815).
+
+        Since the rejected `abs` is not registered (the built-in stays
+        canonical), re-checking its 2-arg recursive body would resolve `abs`
+        to the 1-arg built-in and emit a spurious E201 on top of the E151.
+        The only diagnostic must be the E151 on the redefinition itself.
+        """
+        errs = _errors("""
+public fn abs(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0, @Int.1) }
+""")
+        codes = self._codes(errs)
+        assert "E151" in codes, codes
+        assert [c for c in codes if c != "E151"] == [], codes
+
     def test_imported_module_redefining_builtin_is_E151(self) -> None:
         """An imported module that redefines a built-in is rejected in the
         importer (#815 — "user/module" scope).

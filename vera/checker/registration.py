@@ -118,6 +118,7 @@ class RegistrationMixin:
         """
         rejected = decl.name in _builtin_reject_names()
         if rejected:
+            self._rejected_builtin_redefs.add(id(decl))
             bn = decl.name
             self._error(
                 decl,
