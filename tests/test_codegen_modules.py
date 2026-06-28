@@ -451,6 +451,37 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 100  # module inner via module outer (Pass 2.5), not local 7
 
+    def test_imported_where_fn_reaches_module_helper_over_local_shadow(
+        self,
+    ) -> None:
+        """#814 C2 (where-fn mirror): an imported fn's `where` helper resolves
+        to the module's helper even when the importer locally shadows that
+        helper's name.
+
+        ``outer`` (imported, not shadowed) calls its `where` helper ``helper``;
+        the importer defines a local ``helper``.  ``outer()`` must reach the
+        module's helper (100) via the intra-rename map, not the local shadow
+        (7) — the where-fns go through the same shadow wiring as top-level fns.
+        """
+        mod = self._resolved(("m",), """\
+public fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(@Int.0) }
+where {
+  fn helper(@Int -> @Int) requires(true) ensures(true) effects(pure) { 100 }
+}
+""")
+        val = self._run_mod("""\
+import m(outer);
+public fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 7 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(0) }
+""", [mod], fn="main")
+        assert val == 100  # module's where-helper, NOT the local shadow (7)
+
     # -- Guard rail ----------------------------------------------------------
 
     def test_guard_rail_still_catches_unknowns(self) -> None:

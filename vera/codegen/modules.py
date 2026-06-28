@@ -6,8 +6,13 @@ call detection) of the code generation pipeline.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
+
+if TYPE_CHECKING:
+    from vera.codegen.core import CodeGenerator
 
 
 class CrossModuleMixin:
@@ -201,36 +206,72 @@ class CrossModuleMixin:
                 # 2.5 nor emitted under a mangled name.
                 if tld.decl.forall_vars:
                     continue
-                self._imported_fn_decls.append((mod.path, tld.decl))
-                if tld.decl.where_fns:
-                    for wfn in tld.decl.where_fns:
-                        self._imported_fn_decls.append((mod.path, wfn))
-                fn_name = tld.decl.name
                 is_public = (tld.visibility or "private") == "public"
-                in_filter = name_filter is None or fn_name in name_filter
-                # Only a SHADOWED name needs a table entry: the desugar falls
-                # back to the bare name for any (path, name) not present, which
-                # is already correct for a non-shadowed module fn (emitted
-                # under its bare name).  So we register entries only when a
-                # local shadows the bare name.
-                if fn_name not in local_fn_names:
-                    continue
-                mangled = self._module_qualified_wasm_name(mod.path, fn_name)
-                mangled_sig = temp._fn_sigs.get(fn_name)
-                if mangled_sig is None:
-                    continue
-                self._fn_sigs.setdefault(mangled, mangled_sig)
-                self._shadowed_module_fns.append((mod.path, mangled, tld.decl))
-                self._module_intra_renames.setdefault(
-                    mod.path, {})[fn_name] = mangled
-                # Mirror the @Nat-parameter guard bitmap onto the mangled name
-                # so a qualified call to a shadowed module fn with a @Nat
-                # parameter still emits the call-site `value >= 0` narrowing
-                # guard (it keys on the resolved target, #814).
-                self._fn_nat_params.setdefault(
-                    mangled, temp._fn_nat_params.get(fn_name, ()))
-                if is_public and in_filter:
-                    self._module_qualified_targets[(mod.path, fn_name)] = mangled
+                in_filter = name_filter is None or tld.decl.name in name_filter
+                self._imported_fn_decls.append((mod.path, tld.decl))
+                self._register_shadowed_import(
+                    mod.path, tld.decl, temp, local_fn_names,
+                    qualified_eligible=is_public and in_filter,
+                )
+                # where-fns compile in Pass 2.5 too, so they need the SAME
+                # shadow wiring: an imported body's call to a locally-shadowed
+                # helper must reach the module's helper, not the local (#814
+                # C2).  They are private nested fns, never qualified-callable,
+                # so they never get a ``_module_qualified_targets`` entry.
+                for wfn in tld.decl.where_fns or ():
+                    if wfn.forall_vars:
+                        continue
+                    self._imported_fn_decls.append((mod.path, wfn))
+                    self._register_shadowed_import(
+                        mod.path, wfn, temp, local_fn_names,
+                        qualified_eligible=False,
+                    )
+
+    def _register_shadowed_import(
+        self,
+        mod_path: tuple[str, ...],
+        decl: ast.FnDecl,
+        temp: CodeGenerator,
+        local_fn_names: set[str],
+        *,
+        qualified_eligible: bool,
+    ) -> None:
+        """Wire up a module function (top-level or where-fn) whose bare name a
+        LOCAL shadows (#814 §8.5.3 + C2).
+
+        Only a SHADOWED name needs anything: the desugar and the intra-rename
+        map fall back to the bare name otherwise, which is already correct for
+        a non-shadowed module fn (emitted under its bare name).  For a shadowed
+        one we emit the module's version under a distinct ``mod$…`` name (Pass
+        2.6) and record an intra-rename so an imported body's bare sibling call
+        reaches the module's version, not the local shadow.  Only a top-level
+        public, in-filter declaration additionally gets a ``_module_qualified_
+        targets`` entry (the table the ``m::f`` desugar consults) — a where-fn
+        is private and never qualified-callable, so ``qualified_eligible`` is
+        ``False`` for it.
+        """
+        fn_name = decl.name
+        if fn_name not in local_fn_names:
+            return
+        mangled_sig = temp._fn_sigs.get(fn_name)
+        if mangled_sig is None:
+            return
+        mangled = self._module_qualified_wasm_name(mod_path, fn_name)
+        self._fn_sigs.setdefault(mangled, mangled_sig)
+        self._shadowed_module_fns.append((mod_path, mangled, decl))
+        self._module_intra_renames.setdefault(mod_path, {})[fn_name] = mangled
+        # Mirror the per-name side-tables onto the mangled name so a call that
+        # resolves to it keeps the same inference/guards as the bare name:
+        #  - @Nat-parameter guard bitmap → call-site ``value >= 0`` narrowing;
+        #  - return-type expression → index / interpolation element-type
+        #    inference for a shadowed fn returning ``String`` / ``Array<T>``.
+        self._fn_nat_params.setdefault(
+            mangled, temp._fn_nat_params.get(fn_name, ()))
+        ret_te = temp._fn_ret_type_exprs.get(fn_name)
+        if ret_te is not None:
+            self._fn_ret_type_exprs.setdefault(mangled, ret_te)
+        if qualified_eligible:
+            self._module_qualified_targets[(mod_path, fn_name)] = mangled
 
     @staticmethod
     def _module_qualified_wasm_name(
