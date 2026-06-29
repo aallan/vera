@@ -233,6 +233,43 @@ public fn opt_field(@Nat -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
+    def test_array_element_widening_unguarded_disclosed_E531(self) -> None:
+        # `[@Nat.0]` into an `@Array<Int>` widens each @Nat element.  The array
+        # literal is typed by its element values (source) and the let binding is
+        # a pointer-pair copy, so the element coercion is NOT runtime-guarded —
+        # disclosed UNGUARDED (E531), not a silent false Tier-1.
+        result = _verify("""
+public fn arr_elem(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert any(o.status == "tier3_unguarded" for o in co), [
+            (o.kind, o.status) for o in co
+        ]
+        assert any(d.error_code == "E531" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_pipe_argument_widening_tier3(self) -> None:
+        # `@Nat.0 |> identity()` desugars to `identity(@Nat.0)`, widening a @Nat
+        # into identity's @Int formal.  Codegen guards the desugared call-arg,
+        # so the verifier obligation is Tier-3 (runtime-guarded) — without the
+        # pipe-handler dual it was a silent false Tier-1.
+        result = _verify("""
+private fn identity(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn pipe_widen(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 |> identity() }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
     def test_adt_subpattern_nat_field_extracted_as_int_tier3(self) -> None:
         # `match @Box.0 { Box(@Int) -> }` on a `Box(Nat)` extracts the @Nat
         # field into an @Int slot — codegen guards the extraction

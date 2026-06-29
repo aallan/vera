@@ -2582,6 +2582,15 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument", guarded=True,
                         )
+                    elif (self._int_widening_target(arg, None)
+                            and self._result_is_nat(arg)):
+                        # #813: a piped @Nat argument widening into an @Int
+                        # formal.  Codegen desugars the pipe to the FnCall and
+                        # guards it at the call-argument site, hence guarded.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="call argument",
+                        )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.left, smt, slot_env, assumptions,
                 )
@@ -3132,6 +3141,24 @@ class ContractVerifier:
         # still be visited.  (The #520 subtraction walker has the same
         # pre-existing container gap; aligning it is out of #552's scope.)
         if isinstance(expr, ast.ArrayLit):
+            # #813: a @Nat element widening into an @Array<Int> literal.  The
+            # literal codegen types the array by its element *values* (source),
+            # and the `let @Array<Int> = …` binding is a pointer-pair copy with
+            # no element-wise coercion — so this site is NOT runtime-guarded.
+            # Disclose the unguarded widening (E531) rather than a silent false
+            # Tier-1; codegen-guarding it (threading the target element type) is
+            # a tracked follow-up.
+            target = self._target_type_of(expr)
+            base = target.base if isinstance(target, RefinedType) else target
+            if (isinstance(base, AdtType) and base.name == "Array"
+                    and base.type_args
+                    and self._is_int_type(base.type_args[0])):
+                for elem in expr.elements:
+                    if self._result_is_nat(elem):
+                        self._check_int_widening_obligation(
+                            decl, elem, smt, slot_env, list(assumptions),
+                            site="array element", guarded=False,
+                        )
             for elem in expr.elements:
                 self._walk_for_nat_binding_obligations(
                     decl, elem, smt, slot_env, assumptions,
