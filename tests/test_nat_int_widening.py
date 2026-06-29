@@ -233,6 +233,20 @@ public fn opt_field(@Nat -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
+    def test_adt_subpattern_nat_field_extracted_as_int_tier3(self) -> None:
+        # `match @Box.0 { Box(@Int) -> }` on a `Box(Nat)` extracts the @Nat
+        # field into an @Int slot — codegen guards the extraction
+        # (`layout.nat_fields`), so the unbounded widening is Tier-3.
+        result = _verify("""
+private data Box { Box(Nat) }
+public fn box_extract(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Box = Box(@Nat.0); match @Box.0 { Box(@Int) -> @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
     def test_tuple_construction_component_unguarded_disclosed_E531(self) -> None:
         # `Tuple(@Nat.0, ...)` widens a @Nat into an @Int tuple component.
         # Codegen does not component-guard a tuple at construction (the boundary

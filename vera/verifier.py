@@ -3926,6 +3926,49 @@ class ContractVerifier:
             tier=3,
         )
 
+    def _check_int_widening_obligation_term(
+        self,
+        decl: ast.FnDecl,
+        term: object,
+        smt: SmtContext,
+        assumptions: list[object],
+        *,
+        site: str,
+        node: ast.Expr,
+        guarded: bool = True,
+    ) -> None:
+        """Discharge ``term <= i64.MAX`` for a *projected* @Nat value widening
+        into an @Int slot — an ADT sub-pattern field whose Z3 term we already
+        have (#813), the dual of
+        :py:meth:`_check_nat_binding_obligation_term`.
+
+        The field accessor carries its source ``>= 0`` fact but no upper bound
+        (a @Nat is [0, u64.MAX]), so an unbounded @Nat field is neither
+        provably ``<= i64.MAX`` (Tier 1) nor provably ``> i64.MAX`` (E530) and
+        falls to Tier-3 — where ``guarded`` decides honesty: codegen's
+        ``_extract_constructor_fields`` runtime-guards a concrete @Nat field
+        extracted into an @Int sub-pattern (``guarded=True`` -> tier3_runtime).
+        """
+        self.summary.total += 1
+        hi = z3.IntVal(_I64_MAX)
+        safe = smt.check_valid(term <= hi, list(assumptions))
+        if safe.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", node, "verified")
+            return
+        bad = smt.check_valid(term > hi, list(assumptions))
+        if bad.status == "verified":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", node, "violated",
+                error_code="E530", counterexample=safe.counterexample,
+            )
+            self._report_nat_to_int(decl, node, site, safe.counterexample)
+        else:
+            self._record_int_widen_tier3(
+                decl, node, site, "tier3", guarded=guarded)
+
     def _check_refined_binding_obligation(
         self,
         decl: ast.FnDecl,
@@ -4397,6 +4440,15 @@ class ContractVerifier:
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
                 )
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(field_ty)):
+                # #813: dual — a @Nat field extracted into an @Int sub-pattern
+                # slot widens it; codegen guards the concrete @Nat-field
+                # extraction (`layout.nat_fields`), so this is tier3_runtime.
+                self._check_int_widening_obligation_term(
+                    decl, field_term, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                )
 
     def _obligate_subpattern_narrowings(
         self,
@@ -4513,33 +4565,55 @@ class ContractVerifier:
                     self._record_refined_bind_tier3(
                         decl, scrutinee, "ADT sub-pattern bind", guarded=False)
                 continue
-            if not (self._is_nat_type(target)
+            if (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
-                continue
-            if lit_args is not None:
-                if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
-                    self._check_nat_binding_obligation(
-                        decl, lit_args[i], smt, slot_env, assumptions,
-                        site="ADT sub-pattern bind",
+                if lit_args is not None:
+                    if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
+                        self._check_nat_binding_obligation(
+                            decl, lit_args[i], smt, slot_env, assumptions,
+                            site="ADT sub-pattern bind",
+                        )
+                elif sort is not None and idx is not None:
+                    field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    self._check_nat_binding_obligation_term(
+                        decl, field_term, smt, assumptions,
+                        site="ADT sub-pattern bind", node=scrutinee,
                     )
-            elif sort is not None and idx is not None:
-                field_term = sort.accessor(idx, i)(scrutinee_z3)
-                self._check_nat_binding_obligation_term(
-                    decl, field_term, smt, assumptions,
-                    site="ADT sub-pattern bind", node=scrutinee,
-                )
-            else:
-                # An opaque scrutinee the SMT layer cannot translate (e.g. a
-                # function call returning the ADT): the narrowing is real but
-                # unprojectable here, yet codegen still guards the @Nat
-                # sub-pattern bind at run time — so record a guarded Tier-3
-                # outcome rather than dropping it silently.  The +1 counts the
-                # obligation (a guarded site leaves total untouched in
-                # _record_nat_bind_tier3, mirroring the let / destructure path).
-                self.summary.total += 1
-                self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3",
-                    guarded=True)
+                else:
+                    # An opaque scrutinee the SMT layer cannot translate (e.g. a
+                    # function call returning the ADT): the narrowing is real
+                    # but unprojectable here, yet codegen still guards the @Nat
+                    # sub-pattern bind at run time — so record a guarded Tier-3
+                    # outcome rather than dropping it silently.  The +1 counts
+                    # the obligation (a guarded site leaves total untouched in
+                    # _record_nat_bind_tier3, mirroring the let / destructure
+                    # path).
+                    self.summary.total += 1
+                    self._record_nat_bind_tier3(
+                        decl, scrutinee, "ADT sub-pattern bind", "tier3",
+                        guarded=True)
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(field_ty)):
+                # #813: dual — a @Nat field bound into an @Int sub-pattern slot
+                # widens it.  Codegen guards the concrete @Nat-field extraction
+                # (`layout.nat_fields`), so an unbounded widening is Tier-3.
+                if lit_args is not None:
+                    if i < len(lit_args) and self._result_is_nat(lit_args[i]):
+                        self._check_int_widening_obligation(
+                            decl, lit_args[i], smt, slot_env, list(assumptions),
+                            site="ADT sub-pattern bind",
+                        )
+                elif sort is not None and idx is not None:
+                    field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    self._check_int_widening_obligation_term(
+                        decl, field_term, smt, assumptions,
+                        site="ADT sub-pattern bind", node=scrutinee,
+                    )
+                else:
+                    self.summary.total += 1
+                    self._record_int_widen_tier3(
+                        decl, scrutinee, "ADT sub-pattern bind", "tier3",
+                        guarded=True)
         return facts
 
     def _obligate_destructure_narrowings(

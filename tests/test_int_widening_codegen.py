@@ -124,6 +124,18 @@ public fn ctor_field(@Nat -> @Int)
 { let @WrapInt = WrapInt(@Nat.0); match @WrapInt.0 { WrapInt(@Int) -> @Int.0 } }
 """
 
+# #813 stage 2c — extracting a concrete @Nat *field* into an @Int sub-pattern
+# slot (`match @Box.0 { Box(@Int) -> }` on a `Box(Nat)`).  Codegen guards the
+# extraction only when the source field is @Nat (`layout.nat_fields[i]`), never
+# a genuine @Int field — a widen guard would otherwise wrongly trap a
+# legitimately-negative @Int.
+_WIDEN_ADT_SUBPATTERN = """
+private data Box { Box(Nat) }
+public fn box_extract(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Box = Box(@Nat.0); match @Box.0 { Box(@Int) -> @Int.0 } }
+"""
+
 
 class TestNatToIntWideningTrap813:
     def test_return_widening_traps_above_i64_max(self) -> None:
@@ -156,3 +168,9 @@ class TestNatToIntWideningTrap813:
 
     def test_ctor_field_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_CTOR_FIELD, "ctor_field", [42], 42)
+
+    def test_adt_subpattern_widening_traps(self) -> None:
+        _assert_traps(_WIDEN_ADT_SUBPATTERN, "box_extract", [U64_MAX])
+
+    def test_adt_subpattern_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_ADT_SUBPATTERN, "box_extract", [42], 42)

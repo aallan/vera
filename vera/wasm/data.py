@@ -583,6 +583,17 @@ class DataMixin:
                 # (CR #756).
                 if self._resolve_base_type_name(type_name) == "Nat":
                     load = self._emit_nat_bind_guard(load)
+                # #813: dual — extracting a concrete @Nat *field* into an @Int
+                # sub-pattern slot (`match @Box.0 { Box(@Int) -> }` on a
+                # `Box(Nat)`) widens it; a @Nat field above i64.MAX would
+                # reinterpret to a negative @Int.  The widen guard must fire
+                # only when the SOURCE field is @Nat (``layout.nat_fields[i]``),
+                # never on a genuine @Int field — unlike the narrowing guard it
+                # would otherwise wrongly trap a legitimately-negative @Int.
+                elif (self._resolve_base_type_name(type_name) == "Int"
+                        and i < len(layout.nat_fields)
+                        and layout.nat_fields[i]):
+                    load = self._emit_int_widen_guard(load)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
                 # #705: shadow-push heap-pointer match bindings so
