@@ -402,7 +402,7 @@ array, useful when processing diagnostics programmatically.
 - `Unit` — singleton type, value is `()`
 - `Never` — bottom type (used for non-terminating expressions like `throw`)
 
-**`Int` and `Nat` are interchangeable in both directions**, not just widening.  `@Nat <: @Int` always (safe widening, no obligation); `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  **Do not** insert `nat_to_int` defensively; it's only needed when the value is genuinely allowed to be negative.  See spec §2.2.1 for the formal rule.
+**`Int` and `Nat` are interchangeable in both directions.**  `@Nat <: @Int` is a formal subtyping rule at the *type* level (use a `@Nat` anywhere `@Int` is expected, no `nat_to_int` call), and `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  Both directions carry a *value*-level obligation, because `@Nat` is a u64 and `@Int` an i64: narrowing requires `>= 0` (`E503`/`E504`), and widening requires `<= i64.MAX` (`E530`; or an `E531` warning at the tuple / array / generic-ADT component sites code generation cannot guard) — a `@Nat` above i64.MAX bit-reinterprets to a negative `@Int`.  **Do not** insert `nat_to_int` defensively; it's only needed when the value is genuinely allowed to be negative.  See spec §2.2.1 for the formal rule.
 
 ### Composite types
 

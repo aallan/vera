@@ -320,6 +320,20 @@
     ]
   },
   {
+    "id": "ch04_nat_int_widening",
+    "file": "ch04_nat_int_widening.vera",
+    "chapter": 4,
+    "title": "@Nat -> @Int widening coercion obligation (#813)",
+    "level": "run",
+    "spec_ref": "Section 2.2.1 / Section 11.2.1",
+    "features": [
+      "nat_int_widening",
+      "coercion_obligation",
+      "tier1_discharge",
+      "requires_discharge"
+    ]
+  },
+  {
     "id": "ch04_int_overflow",
     "file": "ch04_int_overflow.vera",
     "chapter": 4,

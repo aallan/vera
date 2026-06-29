@@ -1,0 +1,87 @@
+-- Conformance: @Nat -> @Int widening coercion obligation (Chapter 4)
+--
+-- The dual of ch04_nat_binding: #813.  @Nat is u64 and @Int is i64, so a @Nat
+-- in (i64.MAX, u64.MAX] bit-reinterprets to a negative @Int when widened
+-- (u64.MAX -> -1).  Every @Nat -> @Int coercion site carries a
+-- `nat_to_int_coerce` obligation that the value is `<= i64.MAX`:
+-- provably-out-of-range raises E530, otherwise the site is runtime-guarded
+-- (return, let, call argument, concrete constructor field, ADT sub-pattern,
+-- match binding) or — at the component coercions codegen cannot guard (tuple /
+-- array / generic-ADT) — disclosed as an E531 warning.  Per spec/02 §2.2.1 and
+-- spec/11 §11.2.1.
+--
+-- All sites here verify at Tier 1 — the @Nat is constrained `<= i64.MAX` via
+-- `requires`, so the coercion discharges statically (no E530, no runtime trap).
+-- 9223372036854775807 = i64.MAX = 2**63 - 1.
+-- return-position widening, discharged via requires.
+public fn widen_return(@Nat -> @Int)
+  requires(@Nat.0 <= 9223372036854775807)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  @Nat.0
+}
+
+-- let widening, discharged via requires.
+public fn widen_let(@Nat -> @Int)
+  requires(@Nat.0 <= 9223372036854775807)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = @Nat.0;
+  @Int.0
+}
+
+-- call-argument widening, discharged via requires.
+public fn take_int(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn widen_call(@Nat -> @Int)
+  requires(@Nat.0 <= 9223372036854775807)
+  ensures(true)
+  effects(pure)
+{
+  take_int(@Nat.0)
+}
+
+-- constructor-field widening into a concrete @Int field, discharged via
+-- requires (codegen guards the concrete @Int field at construction).
+private data WrapInt {
+  WrapInt(Int)
+}
+
+public fn widen_ctor_field(@Nat -> @Int)
+  requires(@Nat.0 <= 9223372036854775807)
+  ensures(true)
+  effects(pure)
+{
+  let @WrapInt = WrapInt(@Nat.0);
+  match @WrapInt.0 {
+    WrapInt(@Int) -> @Int.0
+  }
+}
+
+-- match-binding widening (@Nat scrutinee bound by an @Int pattern), discharged
+-- via requires.
+public fn widen_match_bind(@Nat -> @Int)
+  requires(@Nat.0 <= 9223372036854775807)
+  ensures(true)
+  effects(pure)
+{
+  match @Nat.0 {
+    @Int -> @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  widen_return(5)
+}
