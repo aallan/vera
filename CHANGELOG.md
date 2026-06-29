@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Widening a `@Nat` above i64.MAX to `@Int` is now sound** ([#813](https://github.com/aallan/vera/issues/813)).  `@Nat` is an unsigned i64 and `@Int` a signed i64 with `@Nat <: @Int`, so a `@Nat` in `(i64.MAX, u64.MAX]` *reinterprets* to a negative `@Int` when widened (`u64.MAX` → `-1`).  The verifier reasoned over the mathematical non-negative value and could therefore *prove* a false Tier-1 postcondition — e.g. `fn widen(@Nat -> @Int) ensures(@Int.result >= 0) { @Nat.0 }` verified, yet `vera run widen(18446744073709551615)` returned `-1`.  The verifier now emits a `nat_to_int_coerce` obligation (**E530**) at every `@Nat → @Int` coercion site (return, `let` binding, call argument), discharged with the two-check pattern: provably `<= i64.MAX` → Tier 1; provably out of range → a loud E530 error; otherwise deferred to a Tier-3 runtime guard.  Code generation emits the matching guard so `vera run` / `vera compile` programs **trap** instead of silently returning a reinterpreted negative value.  The verifier (statically) and codegen (at runtime) re-derive the coercion sites from the same precise result-type classifier, kept in lockstep by a verifier↔codegen differential test.
+
+### Added
+
+- **Documentation examples are gated against built-in redefinition** ([#819](https://github.com/aallan/vera/issues/819)).  `scripts/check_doc_builtin_shadowing.py` (run in CI) verifies that no example in the spec, README, SKILL, FAQ, or other docs redefines an opaque verifier-modelled built-in — the E151 soundness rule shipped in v0.0.185 — so a doc snippet can never reintroduce the `verify`↔`run` divergence the rule closes.
+
 ## [0.0.185] - 2026-06-28
 
 ### Fixed

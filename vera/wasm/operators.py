@@ -858,6 +858,48 @@ class OperatorsMixin:
             ) == "Nat"
         return False
 
+    def _result_is_nat(self, expr: ast.Expr) -> bool:
+        """Codegen mirror of ``ContractVerifier._result_is_nat`` (#813).
+
+        The *precise* result type — the join over a ``Block`` trailing expr,
+        ``IfExpr`` branches, and ``MatchExpr`` arms — used to decide whether a
+        value widening into an @Int slot needs the @Nat->@Int coercion guard.
+
+        Unlike :py:meth:`_is_static_nat_typed`, a non-negative ``IntLit`` is NOT
+        @Nat here (a literal in an @Int context is just an @Int literal, already
+        range-checked) and arithmetic is @Nat only when *both* operands are — so
+        a single @Int component makes the result @Int.  Must agree with the
+        verifier's ``_result_is_nat`` so the codegen guard fires at exactly the
+        sites the verifier obligates (the verifier<->codegen differential).
+        """
+        if isinstance(expr, ast.Block):
+            return expr.expr is not None and self._result_is_nat(expr.expr)
+        if isinstance(expr, ast.IfExpr):
+            return (expr.else_branch is not None
+                    and self._result_is_nat(expr.then_branch)
+                    and self._result_is_nat(expr.else_branch))
+        if isinstance(expr, ast.MatchExpr):
+            return bool(expr.arms) and all(
+                self._result_is_nat(arm.body) for arm in expr.arms)
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                return (self._result_is_nat(expr.left)
+                        and self._result_is_nat(expr.right))
+            return False
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type(expr) == "Nat"
+        if isinstance(expr, ast.ModuleCall):
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
+            ) == "Nat"
+        # IntLit (literal in target context), UnaryExpr (negation -> @Int), else.
+        return False
+
     def _has_nat_origin_codegen(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* derives from a definitely-@Nat source.
 
@@ -972,6 +1014,42 @@ class OperatorsMixin:
         tracked as a follow-up.  The guard never fires on a value
         the verifier proved non-negative, so a Tier-1-clean program pays
         only dead instructions, never a trap.
+        """
+        return self._emit_negative_i64_guard(value)
+
+    def _emit_int_widen_guard(self, value: list[str]) -> list[str]:
+        """Emit a guarded value that traps if a @Nat exceeds i64.MAX (#813).
+
+        The @Nat -> @Int widening dual of :py:meth:`_emit_nat_bind_guard`: a
+        runtime safety net for the ``nat_to_int_coerce`` obligation (E530) the
+        verifier could not discharge statically (Tier 3), or that reaches codegen
+        without ``vera verify`` having run.  A @Nat is stored as an i64; its
+        unsigned value exceeds i64.MAX exactly when the sign bit is set — i.e.
+        when the i64 reads as negative — so the guard traps on ``value < 0``
+        (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
+        @Nat -> @Int coercion sites the verifier obligates (return, call
+        argument, let).  The bare ``unreachable`` reuses the existing trap
+        taxonomy (a dedicated widening trap kind, like #808 for overflow, is a
+        follow-up); the guard never fires on a value the verifier proved
+        ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
+        """
+        return self._emit_negative_i64_guard(value)
+
+    def _emit_negative_i64_guard(self, value: list[str]) -> list[str]:
+        """Shared mechanism behind the @Int->@Nat narrowing guard (#552) and
+        the @Nat->@Int widening guard (#813): leave *value* on the stack, but
+        trap (bare ``unreachable``, classified by ``api.py:_classify_trap``)
+        when it reads as a negative i64.  Both callers reduce to this same
+        sign-bit check today; they stay distinct entry points because each has
+        its own deferred dedicated trap kind (#754 narrowing, #808-style
+        widening) that will give them tailored Fix paragraphs.
+
+            [value]
+            local.tee $tmp     ;; leave value on stack, copy to temp
+            i64.const 0
+            i64.lt_s           ;; value < 0?
+            if unreachable end ;; trap
+            local.get $tmp     ;; restore the (now-checked) value
         """
         tmp = self.alloc_local("i64")
         return [

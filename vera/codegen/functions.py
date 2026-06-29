@@ -97,6 +97,9 @@ class FunctionCompilationMixin:
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)
+        # #813: per-parameter concrete-@Int flags for the call-site
+        # runtime @Nat -> @Int widening guard.
+        ctx.set_fn_int_params(self._fn_int_params)
         # Provide type aliases so closures can resolve FnType return types
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)
@@ -392,6 +395,15 @@ class FunctionCompilationMixin:
         self._random_ops_used.update(ctx._random_ops_used)
         # Propagate Math host-import tracking (#467)
         self._math_ops_used.update(ctx._math_ops_used)
+
+        # #813: guard a @Nat -> @Int widening at the return position.  A @Nat
+        # result above i64.MAX reinterprets to a negative @Int (u64.MAX -> -1),
+        # so trap rather than silently return it — the runtime backstop for the
+        # verifier's nat_to_int_coerce obligation (7c).  @Int is i64, so this
+        # runs before (and is unaffected by) the i32 coercion below.
+        if (self._type_expr_to_slot_name(decl.return_type) == "Int"
+                and ctx._result_is_nat(decl.body)):
+            body_instrs = ctx._emit_int_widen_guard(body_instrs)
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)

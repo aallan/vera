@@ -132,6 +132,12 @@ class CrossModuleMixin:
             for fn_name, nat_params in temp._fn_nat_params.items():
                 self._fn_nat_params.setdefault(fn_name, nat_params)
 
+            # #813: same harvest for the dual @Int-parameter bitmap, so a
+            # cross-module call `f(@Nat.0)` into an imported `f(@Int -> …)`
+            # keeps its runtime widening guard.
+            for fn_name, int_params in temp._fn_int_params.items():
+                self._fn_int_params.setdefault(fn_name, int_params)
+
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
                 # Builtin ADTs (Option, Result, Ordering, etc.) appear in
@@ -291,6 +297,8 @@ class CrossModuleMixin:
         #    inference for a shadowed fn returning ``String`` / ``Array<T>``.
         self._fn_nat_params.setdefault(
             mangled, temp._fn_nat_params.get(fn_name, ()))
+        self._fn_int_params.setdefault(  # #813: dual widening-guard bitmap
+            mangled, temp._fn_int_params.get(fn_name, ()))
         ret_te = temp._fn_ret_type_exprs.get(fn_name)
         if ret_te is not None:
             self._fn_ret_type_exprs.setdefault(mangled, ret_te)
