@@ -1,6 +1,6 @@
 # Vera Examples
 
-33 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+35 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -38,6 +38,7 @@ vera run examples/factorial.vera --fn factorial -- 10
 | `generics.vera` | `vera run examples/generics.vera --fn test_generics` | Parametric polymorphism, generic ADTs |
 | `quantifiers.vera` | `vera run examples/quantifiers.vera --fn test_process` | Universal/existential quantifiers in contracts |
 | `closures.vera` | `vera run examples/closures.vera --fn test_closure` | First-class functions, anonymous functions |
+| `nested_closures.vera` | `vera run examples/nested_closures.vera --fn grid_sum` | Closures nested inside closure bodies, 2D array_map |
 
 ### Effects
 
@@ -61,11 +62,13 @@ vera run examples/factorial.vera --fn factorial -- 10
 
 | Example | Run | Demonstrates |
 |---------|-----|-------------|
+| `array_utilities.vera` | `vera run examples/array_utilities.vera --fn merge_sections` | array_flatten, array_mapi, array_sort_by, array_reverse, array_slice, array_find, array_any, array_all |
 | `string_ops.vera` | `vera run examples/string_ops.vera` | String search, transform, split, join |
 | `string_utilities.vera` | `vera run examples/string_utilities.vera --fn padded_id` | string_chars, string_lines, string_words, string_pad_*, string_trim_*, string_reverse, char_to_*, is_digit/alpha/alphanumeric/whitespace/upper/lower |
 | `regex.vera` | `vera run examples/regex.vera` | regex_match, regex_find, regex_find_all, regex_replace |
 | `markdown.vera` | `vera run examples/markdown.vera` | md_parse, pattern matching on MdBlock ADT |
 | `json.vera` | `vera run examples/json.vera` | json_parse, json_get, Json ADT, API response handling |
+| `html.vera` | `vera run examples/html.vera` | html_parse, html_query, HtmlNode ADT, link/heading extraction |
 | `base64.vera` | `vera run examples/base64.vera` | base64_encode, base64_decode |
 | `url_encoding.vera` | `vera run examples/url_encoding.vera` | url_encode, url_decode |
 | `url_parsing.vera` | `vera run examples/url_parsing.vera` | url_parse, UrlParts ADT |
