@@ -32,9 +32,13 @@ from vera.environment import TypeEnv
 from vera.prelude import overridable_builtin_names
 
 # A `fn` definition (top-level, module, or `where`-block); `public`/`private`
-# optional. This def form only appears in code blocks — prose references carry
-# backticks ("the `fn abs`"), not a bare line-leading `fn abs(`.
-_FN_DEF = re.compile(r"^\s*(?:public |private )?fn\s+([a-z_][A-Za-z0-9_]*)\b")
+# and a `forall<...>` generic header are optional.  This def form only appears
+# in code blocks — prose references carry backticks ("the `fn abs`"), not a bare
+# line-leading `fn abs(`.  `forall<T> fn abs(...)` would still E151, so it must
+# match too (CR #821 review).
+_FN_DEF = re.compile(
+    r"^\s*(?:public |private )?(?:forall<.*>\s+)?fn\s+([a-z_][A-Za-z0-9_]*)\b"
+)
 
 # Reference file that legitimately defines built-in signatures (not examples).
 _EXEMPT = {"spec/09-standard-library.md"}
@@ -63,13 +67,26 @@ def find_shadowing_defs(
     return hits
 
 
+# Trees that are generated, vendored, or artefacts — not authored doc surfaces.
+_SKIP_DIRS = {".venv", "docs", "mutants", ".git", "node_modules", "site"}
+
+
 def doc_files(root: Path) -> list[Path]:
-    """The doc surfaces to scan: top-level ``*.md`` (README, SKILL, DE_BRUIJN,
-    FAQ, …) plus ``spec/*.md``. Generated (``docs/``), artefact (``mutants/``),
-    and dependency (``.venv/``) trees are excluded by construction — they are
-    not direct children here."""
-    files = sorted(root.glob("*.md")) + sorted((root / "spec").glob("*.md"))
-    return [f for f in files if f.relative_to(root).as_posix() not in _EXEMPT]
+    """Every authored ``*.md`` doc surface in the repo — top-level (README,
+    SKILL, FAQ, …), ``spec/`` chapters, AND nested READMEs such as
+    ``examples/README.md`` (a checked surface via ``check_examples_readme.py``),
+    so an E151-invalid example there is caught too (CR #821 review).  The
+    ``_EXEMPT`` reference files and the generated / vendored / artefact trees in
+    ``_SKIP_DIRS`` are excluded."""
+    files = sorted(root.rglob("*.md"))
+    return [
+        f
+        for f in files
+        if f.relative_to(root).as_posix() not in _EXEMPT
+        and not any(
+            part in _SKIP_DIRS for part in f.relative_to(root).parts
+        )
+    ]
 
 
 def main() -> int:

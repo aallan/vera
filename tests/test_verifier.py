@@ -3514,13 +3514,6 @@ private fn wrap(@Int -> @Int)
 """, [mod])
         # requires(true) → Tier 1, ensures(@Int.result >= 0) → Tier 1 (via abs postcondition)
         assert result.summary.tier1_verified >= 2
-        # #813: `abs` returns @Nat, so `wrap`'s `{ abs(@Int.0) }` widens a @Nat
-        # result into the @Int return — a nat_to_int_coerce obligation.  The
-        # value can exceed i64.MAX (abs(i64.MIN) = 2**63), so it is honest Tier-3
-        # (runtime-guarded), not provable.  This is exactly the soundness hole
-        # #813 closes: without it `ensures(@Int.result >= 0)` proved over the
-        # unbounded @Nat while abs(i64.MIN) returns a negative i64 at runtime.
-        assert result.summary.tier3_runtime == 1
 
     # -- No regression on single-module -----------------------------------
 

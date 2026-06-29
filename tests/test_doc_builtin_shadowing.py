@@ -55,6 +55,22 @@ def test_flags_where_block_builtin_helper() -> None:
     assert (3, "abs") in find_shadowing_defs(src, reject)
 
 
+def test_flags_generic_forall_builtin_redefinition() -> None:
+    """A `forall<...> fn <builtin>` generic header still redefines the built-in
+    and would E151, so the regex must look past the generic header — including a
+    `where`-bounded one with nested `<...>` (CR #821 review)."""
+    reject = reject_names()
+    assert find_shadowing_defs(
+        "public forall<T> fn abs(@T -> @T)\n", reject) == [(1, "abs")]
+    assert find_shadowing_defs(
+        "private forall<T where Eq<T>> fn clamp(@T -> @T)\n", reject) == [
+        (1, "clamp")
+    ]
+    # A generic helper with a non-built-in name is still ignored.
+    assert find_shadowing_defs(
+        "forall<T> fn my_helper(@T -> @T)\n", reject) == []
+
+
 def test_ignores_non_builtin_name() -> None:
     reject = reject_names()
     assert find_shadowing_defs("public fn clamp_to_range(@Int -> @Int)\n", reject) == []
