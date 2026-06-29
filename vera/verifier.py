@@ -5439,16 +5439,28 @@ class ContractVerifier:
         @Nat value — so it contributes False.  Only a value carrying the @Nat
         invariant forward — a @Nat slot, a @Nat-returning call, or @Nat-only
         arithmetic — is a genuine widening.  The join descends ``Block`` trailing
-        exprs, ``IfExpr`` branches, and ``MatchExpr`` arms (all must be @Nat).
+        exprs, ``IfExpr`` branches, and ``MatchExpr`` arms: the whole expression
+        is @Nat iff every arm is @Nat-*compatible* (a real @Nat or a non-negative
+        literal) and at least one arm is a genuine @Nat (#813 follow-up site 2a —
+        see :py:meth:`_arm_nat_compatible`).
         """
         if isinstance(expr, ast.Block):
             return expr.expr is not None and self._result_is_nat(expr.expr)
         if isinstance(expr, ast.IfExpr):
-            return (self._result_is_nat(expr.then_branch)
-                    and self._result_is_nat(expr.else_branch))
+            if expr.else_branch is None:
+                return False
+            return (
+                self._arm_nat_compatible(expr.then_branch)
+                and self._arm_nat_compatible(expr.else_branch)
+                and (self._result_is_nat(expr.then_branch)
+                     or self._result_is_nat(expr.else_branch))
+            )
         if isinstance(expr, ast.MatchExpr):
-            return bool(expr.arms) and all(
-                self._result_is_nat(arm.body) for arm in expr.arms)
+            return (
+                bool(expr.arms)
+                and all(self._arm_nat_compatible(a.body) for a in expr.arms)
+                and any(self._result_is_nat(a.body) for a in expr.arms)
+            )
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
         if isinstance(expr, ast.BinaryExpr):
@@ -5463,6 +5475,21 @@ class ContractVerifier:
                         and self._result_is_nat(expr.right))
             return False
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # `nat_to_int(x)` is the explicit @Nat -> @Int conversion built-in.
+            # Its declared return is @Int, so the resolved-type table reports
+            # "Int" and the call would be classified not-@Nat — but the *value*
+            # carries its argument's unbounded @Nat forward and needs the same
+            # `nat_to_int_coerce` obligation (value <= i64.MAX) as an implicit
+            # @Nat -> @Int widening.  `nat_to_int` is an opaque built-in (E151
+            # forbids redefining it), so a bare `nat_to_int` call is always the
+            # conversion (#813 follow-up audit site 1).
+            if (
+                isinstance(expr, ast.FnCall)
+                and expr.name == "nat_to_int"
+                and expr.args
+                and self._result_is_nat(expr.args[0])
+            ):
+                return True
             # A call whose callee returns @Nat is a genuine widening, but the
             # callee's return type cannot be resolved robustly here: the
             # checker's semantic side-table is sparse (None for ordinary calls),
@@ -5480,6 +5507,33 @@ class ContractVerifier:
         # (negation always produces @Int), and everything else: not a
         # reinterpreted runtime @Nat value.
         return False
+
+    def _arm_nat_compatible(self, expr: ast.Expr) -> bool:
+        """An if/match arm is @Nat-*compatible* if its value is intrinsically
+        @Nat (:py:meth:`_result_is_nat`) OR a non-negative literal (#813 site
+        2a).
+
+        A non-negative literal is always ``<= i64.MAX`` (#812 range-checks it),
+        so it can neither trigger an out-of-range @Nat -> @Int widening nor
+        false-trap the boundary widen guard.  Treating it as @Nat-compatible
+        keeps a heterogeneous-with-literal if/match (``if c then { @Nat.0 } else
+        { 0 }``) classified @Nat, so the *real* @Nat arm is obligated and guarded
+        at the single boundary site — without needing the per-arm join type,
+        which the checker's sparse side-tables do not record.  A genuine @Int arm
+        (a slot/call that can be negative) is NOT @Nat-compatible: it makes the
+        result @Int, and a @Nat sibling widening into it is the architecturally
+        deferred site-2b case (tracked in #820), not a boundary widening."""
+        return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
+
+    @staticmethod
+    def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
+        """True iff *expr* is (a block trailing into) a non-negative integer
+        literal — always ``<= i64.MAX`` and so safe at a widening join (#813)."""
+        while isinstance(expr, ast.Block):
+            if expr.expr is None:
+                return False
+            expr = expr.expr
+        return isinstance(expr, ast.IntLit) and expr.value >= 0
 
     def _has_nat_origin(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* derives from a definitely-@Nat source.

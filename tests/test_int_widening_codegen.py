@@ -192,6 +192,51 @@ public fn pipe_widen(@Nat -> @Int)
 { @Nat.0 |> identity() }
 """
 
+# #813 follow-up (audit site 1): the explicit `nat_to_int` built-in widens its
+# @Nat argument to @Int.  Its declared return is @Int, so the resolved-type
+# side-table reports "Int" and the plain `_result_is_nat` FnCall branch misses
+# that the *value* carries an unbounded @Nat forward — leaving it unguarded
+# (silent -1 on u64.MAX).  Both `_result_is_nat` helpers special-case it.
+_WIDEN_NAT_TO_INT = """
+public fn ntoi(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(@Nat.0) }
+"""
+
+# #813 follow-up (audit site 2a): an if-expr with a real @Nat arm and a
+# NON-NEGATIVE LITERAL arm.  A literal is always <= i64.MAX, so it is @Nat-
+# compatible: `_result_is_nat` keeps the whole if @Nat (`_arm_nat_compatible`),
+# and the single boundary guard fires on the real @Nat arm.  `if true` forces
+# the @Nat then-arm; `else { 0 }` is the literal arm (never out-of-range).
+# (Site 2b — a genuine @Int *slot* sibling arm — needs the join type the sparse
+# side-tables don't record and codegen lacks entirely; deferred to #820.)
+_WIDEN_HETERO_IF = """
+public fn hif(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if true then { @Nat.0 } else { 0 } }
+"""
+
+# #813 follow-up (audit site 2a): the same literal-arm shape via `match`.  The
+# `0 -> 0` arm is a literal (@Nat-compatible), the `_ -> @Nat.0` wildcard arm
+# returns the @Nat scrutinee (the real @Nat arm) with no match-bind — so the
+# whole match is @Nat and the boundary guard fires.  u64.MAX falls to `_`.
+_WIDEN_HETERO_MATCH = """
+public fn hmatch(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { 0 -> 0, _ -> @Nat.0 } }
+"""
+
+# Control (site 2b is unguarded, not false-trapping): an if with a genuine @Int
+# *slot* arm is NOT classified @Nat (`_arm_nat_compatible` rejects a genuine
+# @Int arm), so it is left unguarded — a negative @Int value must round-trip
+# rather than trap.  `if false` forces the @Int else-arm (`@Int.0`).  (The @Nat
+# then-arm here is the deferred site-2b silent gap, tracked in #820.)
+_HETERO_IF_INT_ARM_CONTROL = """
+public fn hctrl(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if false then { @Nat.0 } else { @Int.0 } }
+"""
+
 
 class TestNatToIntWideningTrap813:
     def test_return_widening_traps_above_i64_max(self) -> None:
@@ -262,3 +307,34 @@ class TestNatToIntWideningTrap813:
 
     def test_pipe_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_PIPE, "pipe_widen", [42], 42)
+
+    def test_nat_to_int_widening_traps(self) -> None:
+        # #813 follow-up site 1: `nat_to_int(@Nat.0)` widened to @Int must trap
+        # on u64.MAX.  Pre-fix the built-in's declared @Int return masked the
+        # @Nat source and it silently returned -1.
+        _assert_traps(_WIDEN_NAT_TO_INT, "ntoi", [U64_MAX])
+
+    def test_nat_to_int_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_NAT_TO_INT, "ntoi", [42], 42)
+
+    def test_hetero_if_nat_arm_widening_traps(self) -> None:
+        # #813 follow-up site 2: the @Nat then-arm of a heterogeneous if must
+        # trap on u64.MAX even though the if's join type is @Int.
+        _assert_traps(_WIDEN_HETERO_IF, "hif", [U64_MAX])
+
+    def test_hetero_if_nat_arm_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_HETERO_IF, "hif", [42], 42)
+
+    def test_hetero_match_nat_arm_widening_traps(self) -> None:
+        # u64.MAX falls to the `_` arm returning the @Nat scrutinee; the literal
+        # `0 -> 0` arm keeps the match @Nat-classified, so the boundary guard
+        # fires — must trap.
+        _assert_traps(_WIDEN_HETERO_MATCH, "hmatch", [U64_MAX])
+
+    def test_hetero_match_nat_arm_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_HETERO_MATCH, "hmatch", [42], 42)
+
+    def test_hetero_if_int_arm_no_trap_on_negative(self) -> None:
+        # Control: the genuine @Int arm of a heterogeneous if must NOT trap on a
+        # negative value — the per-arm guard fires only on the @Nat arm.
+        _assert_no_trap(_HETERO_IF_INT_ARM_CONTROL, "hctrl", [0, -5], -5)

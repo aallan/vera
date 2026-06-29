@@ -157,6 +157,29 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { let @Int 
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 { if @Nat.0 > 5 then { @Nat.0 } else { @Nat.0 } }
 """, "f"),
+    # #813 follow-up site 1: the explicit `nat_to_int` built-in.  Its declared
+    # @Int return hides the @Nat source from the side-table; both `_result_is_nat`
+    # helpers special-case it so the result is obligated (verifier) and guarded
+    # (codegen) like an implicit widening.  Pre-fix: silent -1.
+    ("nat_to_int", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ nat_to_int(@Nat.0) }
+""", "f"),
+    # #813 follow-up site 2: a HETEROGENEOUS if (one @Nat arm, one @Int arm)
+    # joins to @Int, so the boundary guard — keyed on the whole if being @Nat —
+    # never fires.  The @Nat arm is obligated/guarded PER-ARM.  `if true` forces
+    # the @Nat then-arm.  Pre-fix: silent -1.
+    ("hetero_if", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ if true then { @Nat.0 } else { 0 } }
+""", "f"),
+    # #813 follow-up site 2 (match form): the `_` arm returns the @Nat scrutinee
+    # value as @Nat (no match-bind), the `0 ->` arm is @Int — heterogeneous, so
+    # the `_` arm is obligated/guarded per-arm.  u64.MAX falls to `_`.
+    ("hetero_match", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { 0 -> 0, _ -> @Nat.0 } }
+""", "f"),
 ]
 
 _DISCLOSED = [

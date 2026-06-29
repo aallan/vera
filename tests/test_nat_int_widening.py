@@ -347,3 +347,100 @@ public fn tup_construct(@Nat -> @Int)
         assert any(d.error_code == "E531" for d in result.diagnostics), [
             d.error_code for d in result.diagnostics
         ]
+
+
+class TestNatToIntBuiltinWidening813:
+    """#813 follow-up site 1: the explicit `nat_to_int` built-in.  Its declared
+    @Int return hid the @Nat source, so the widening went unobligated — verify
+    falsely proved `ensures(result >= 0)` while `run(u64.MAX)` returned -1."""
+
+    def test_nat_to_int_unbounded_emits_tier3_coerce(self) -> None:
+        result = _verify("""
+public fn ntoi(@Nat -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ nat_to_int(@Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_nat_to_int_bounded_discharges_tier1(self) -> None:
+        result = _verify("""
+public fn ntoi(@Nat -> @Int)
+  requires(@Nat.0 < 100) ensures(true) effects(pure)
+{ nat_to_int(@Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "verified", [(o.kind, o.status) for o in co]
+
+    def test_nat_to_int_provably_out_of_range_E530(self) -> None:
+        result = _verify("""
+public fn ntoi(@Nat -> @Int)
+  requires(@Nat.0 >= 9223372036854775808) ensures(true) effects(pure)
+{ nat_to_int(@Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert any(o.status == "violated" and o.error_code == "E530"
+                   for o in co), [(o.status, o.error_code) for o in co]
+
+
+class TestHeterogeneousArmWidening813:
+    """#813 follow-up site 2: a heterogeneous if/match (one @Nat arm, one @Int
+    arm) joins to @Int, so the boundary obligation — keyed on the WHOLE
+    expression being @Nat — never fired and the @Nat arm widened unobligated.
+    The @Nat arm is now obligated PER-ARM (never the @Int arm)."""
+
+    def test_hetero_if_nat_arm_emits_tier3_coerce(self) -> None:
+        result = _verify("""
+public fn hif(@Nat -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ if true then { @Nat.0 } else { 0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_hetero_match_nat_arm_emits_tier3_coerce(self) -> None:
+        result = _verify("""
+public fn hmatch(@Nat -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ match @Nat.0 { 0 -> 0, _ -> @Nat.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_hetero_if_provably_out_of_range_E530(self) -> None:
+        # The @Nat arm provably exceeds i64.MAX -> the per-arm obligation is the
+        # loud E530, not a silent tier3 (the path-conditioned arm sees the
+        # requires).  2**63 = smallest @Nat strictly above i64.MAX.
+        result = _verify("""
+public fn hif(@Nat -> @Int)
+  requires(@Nat.0 >= 9223372036854775808) ensures(true) effects(pure)
+{ if true then { @Nat.0 } else { 0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert any(o.status == "violated" and o.error_code == "E530"
+                   for o in co), [(o.status, o.error_code) for o in co]
+
+    def test_homogeneous_nat_if_emits_single_boundary_obligation(self) -> None:
+        # Control: an all-@Nat if widened to @Int is homogeneous — its join is
+        # @Nat, so the boundary site emits ONE obligation, not a per-arm pair.
+        result = _verify("""
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Nat.0 > 5 then { @Nat.0 } else { @Nat.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in co]
+
+    def test_all_int_if_emits_no_coerce_obligation(self) -> None:
+        # Control: an if with no @Nat arm is not a widening — no per-arm
+        # obligation fires (guards against an over-eager heterogeneous walk).
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 > 5 then { @Int.0 } else { 0 } }
+""")
+        assert [o for o in result.obligations if o.kind == _KIND] == []

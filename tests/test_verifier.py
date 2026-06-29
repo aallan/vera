@@ -4111,9 +4111,17 @@ private fn sum(@List<Int> -> @Int)
         #   (`let @Int = string_length("hello")` — verified, literal length) +1 T1
         #   and (`to_string(@Nat.0)` call-arg from a parse_nat result) +1 T3:
         #   270/86/356 -> 271/88/359.
+        #
+        # #813 follow-up site 1 (the explicit `nat_to_int` built-in): its declared
+        # @Int return previously masked the @Nat source, so `nat_to_int(@Nat.x)`
+        # widenings went unobligated.  Now obligated like an implicit widening —
+        # `json.vera::average`, `life.vera::initial_cell` (x2), `life.vera::make_grid`
+        # each call `nat_to_int(@Nat.x)` on an unbounded @Nat: +4 T3, +4 total:
+        # 271/88/359 -> 271/92/363.  (Site 2a — a literal-arm heterogeneous
+        # if/match — adds no corpus obligation: no example has that shape.)
         assert t1 == 271, f"Expected 271 T1, got {t1}"
-        assert t3 == 88, f"Expected 88 T3, got {t3}"
-        assert total == 359, f"Expected 359 total, got {total}"
+        assert t3 == 92, f"Expected 92 T3, got {t3}"
+        assert total == 363, f"Expected 363 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

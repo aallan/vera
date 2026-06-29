@@ -875,12 +875,26 @@ class OperatorsMixin:
         if isinstance(expr, ast.Block):
             return expr.expr is not None and self._result_is_nat(expr.expr)
         if isinstance(expr, ast.IfExpr):
-            return (expr.else_branch is not None
-                    and self._result_is_nat(expr.then_branch)
-                    and self._result_is_nat(expr.else_branch))
+            # #813 follow-up site 2a: a non-negative literal arm is @Nat-
+            # compatible (always <= i64.MAX, so it never out-of-range-widens nor
+            # false-traps the boundary guard).  Keep a heterogeneous-with-literal
+            # if (`if c then { @Nat.0 } else { 0 }`) classified @Nat so the
+            # boundary guard fires on the real @Nat arm — must mirror the
+            # verifier's `_result_is_nat` exactly (the widening differential).
+            if expr.else_branch is None:
+                return False
+            return (
+                self._arm_nat_compatible(expr.then_branch)
+                and self._arm_nat_compatible(expr.else_branch)
+                and (self._result_is_nat(expr.then_branch)
+                     or self._result_is_nat(expr.else_branch))
+            )
         if isinstance(expr, ast.MatchExpr):
-            return bool(expr.arms) and all(
-                self._result_is_nat(arm.body) for arm in expr.arms)
+            return (
+                bool(expr.arms)
+                and all(self._arm_nat_compatible(a.body) for a in expr.arms)
+                and any(self._result_is_nat(a.body) for a in expr.arms)
+            )
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
         if isinstance(expr, ast.BinaryExpr):
@@ -892,6 +906,17 @@ class OperatorsMixin:
                         and self._result_is_nat(expr.right))
             return False
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # Mirror the verifier: `nat_to_int(x)` explicitly widens its @Nat
+            # argument to @Int.  Its declared @Int return hides the @Nat source
+            # from the side-table, so special-case it so the result is guarded
+            # at every widening boundary (#813 follow-up audit site 1).
+            if (
+                isinstance(expr, ast.FnCall)
+                and expr.name == "nat_to_int"
+                and expr.args
+                and self._result_is_nat(expr.args[0])
+            ):
+                return True
             # Match the verifier's `_result_is_nat` FnCall branch, which reads
             # the checker's resolved-type side-table (`_resolved_type_of`).  A
             # call's @Nat return cannot be recovered from
@@ -912,6 +937,21 @@ class OperatorsMixin:
             return self._infer_fncall_vera_type(call) == "Nat"
         # IntLit (literal in target context), UnaryExpr (negation -> @Int), else.
         return False
+
+    def _arm_nat_compatible(self, expr: ast.Expr) -> bool:
+        """Codegen mirror of ``ContractVerifier._arm_nat_compatible`` (#813 site
+        2a): an if/match arm is @Nat-compatible if intrinsically @Nat or a
+        non-negative literal (always <= i64.MAX, so safe at a widening join)."""
+        return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
+
+    @staticmethod
+    def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
+        """Codegen mirror: (a block trailing into) a non-negative int literal."""
+        while isinstance(expr, ast.Block):
+            if expr.expr is None:
+                return False
+            expr = expr.expr
+        return isinstance(expr, ast.IntLit) and expr.value >= 0
 
     def _has_nat_origin_codegen(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* derives from a definitely-@Nat source.
