@@ -105,6 +105,16 @@ repos:
         pass_filenames: false
         files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$)'
 
+      # #819 — fails when a doc example *defines* a function named after an
+      # opaque built-in (which `vera check` rejects with E151).  The other doc
+      # validators only parse, so such examples would otherwise slip through.
+      - id: doc-builtin-shadowing
+        name: doc builtin shadowing
+        entry: .venv/bin/python scripts/check_doc_builtin_shadowing.py
+        language: system
+        pass_filenames: false
+        files: '(\.md$|vera/environment\.py$|vera/prelude\.py$)'
+
       # Layer 1 of #626 — fails when any compile of an example or
       # conformance program emits [E602] (body unsupported) or
       # [E604] (param unsupported) outside the explicit allowlist

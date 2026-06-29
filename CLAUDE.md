@@ -62,6 +62,7 @@ python scripts/check_examples_doc.py  # Verify EXAMPLES.md code blocks parse
 python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
+python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date
 python scripts/check_version_sync.py  # Verify version consistency
