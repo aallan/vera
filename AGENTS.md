@@ -182,7 +182,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 102 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 103 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 35 examples must pass
 ```
 
@@ -192,7 +192,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 102 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) must *fail* `check` with their `expected_error` E-code
+- All 103 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) must *fail* `check` with their `expected_error` E-code
 - All 35 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass

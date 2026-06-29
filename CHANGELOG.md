@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.186] - 2026-06-29
+
+### Fixed
+
+- **Widening a `@Nat` above i64.MAX to `@Int` is now sound** ([#813](https://github.com/aallan/vera/issues/813)).  `@Nat` is an unsigned i64 and `@Int` a signed i64 with `@Nat <: @Int`, so a `@Nat` in `(i64.MAX, u64.MAX]` *reinterprets* to a negative `@Int` when widened (`u64.MAX` → `-1`).  The verifier reasoned over the mathematical non-negative value and could therefore *prove* a false Tier-1 postcondition — e.g. `fn widen(@Nat -> @Int) ensures(@Int.result >= 0) { @Nat.0 }` verified, yet `vera run widen(18446744073709551615)` returned `-1`.  A completeness audit found this coercion happens at *ten* sites, not one.  The verifier now emits a `nat_to_int_coerce` obligation (**E530**) at every `@Nat → @Int` coercion: provably `<= i64.MAX` → Tier 1; provably out of range → a loud E530 error; otherwise Tier-3.  Code generation emits a runtime trap where it can statically determine the source is `@Nat` — at the **return**, **`let`**, **call-argument**, concrete **`@Int` constructor-field**, **ADT sub-pattern** extraction, **match-binding**, the explicit **`nat_to_int`** built-in, and **heterogeneous `if`/`match` arms whose alternative is a non-negative literal** sites — so those programs trap instead of silently returning the reinterpreted value (the guard fires only for a `@Nat` source, never a genuine `@Int`, which may be legitimately negative).  At the component-coercion sites code generation cannot yet guard — tuple construction/destructure, array-literal element, and a generic-instantiated `@Int` field (e.g. `Some(@Nat.0)` into `Option<Int>`) — the widening is **disclosed** as an unguarded **E531** warning rather than a silent false Tier-1.  A verifier↔codegen differential (`tests/test_int_widening_differential.py`) pins the contract — every codegen-guarded site traps on `u64.MAX`, every E531 site does not — and `tests/conformance/ch04_nat_int_widening.vera` exercises the Tier-1 discharge.  The remaining deferred sites — effect-op argument, closures, the E531-disclosed component coercions, and heterogeneous `if`/`match` arms whose alternative is a genuine `@Int` *slot* (not a literal) — share one architectural blocker: code generation has no per-component target-type metadata, the same gap that defers the `@Int → @Nat` narrowing duals ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#758](https://github.com/aallan/vera/issues/758)).  They are tracked in [#820](https://github.com/aallan/vera/issues/820).
+
+### Added
+
+- **Documentation examples are gated against built-in redefinition** ([#819](https://github.com/aallan/vera/issues/819)).  `scripts/check_doc_builtin_shadowing.py` (run in CI) verifies that no example in the spec, README, SKILL, FAQ, or other docs redefines an opaque verifier-modelled built-in — the E151 soundness rule shipped in v0.0.185 — so a doc snippet can never reintroduce the `verify`↔`run` divergence the rule closes.
+
 ## [0.0.185] - 2026-06-28
 
 ### Fixed
@@ -2639,7 +2649,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.185...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.186...HEAD
+[0.0.186]: https://github.com/aallan/vera/compare/v0.0.185...v0.0.186
 [0.0.185]: https://github.com/aallan/vera/compare/v0.0.184...v0.0.185
 [0.0.184]: https://github.com/aallan/vera/compare/v0.0.183...v0.0.184
 [0.0.183]: https://github.com/aallan/vera/compare/v0.0.182...v0.0.183

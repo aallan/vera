@@ -495,6 +495,11 @@ class CallsMixin:
         # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
         # exactly like a concrete `f(@Nat -> …)` call.
         nat_params = self._fn_nat_params.get(call_target, ())
+        # #813: dual bitmap — concrete-@Int formals receiving a @Nat-typed
+        # argument widen it; a @Nat above i64.MAX reinterprets to a negative
+        # @Int, so the call site needs the runtime widening guard.  Disjoint
+        # from `nat_params` (a formal resolves to one base or neither).
+        int_params = self._fn_int_params.get(call_target, ())
         for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -502,6 +507,9 @@ class CallsMixin:
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+            elif (i < len(int_params) and int_params[i]
+                    and self._result_is_nat(arg)):
+                arg_instrs = self._emit_int_widen_guard(arg_instrs)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position

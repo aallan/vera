@@ -177,6 +177,9 @@ class WasmContext(
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
+        # #813: per-parameter concrete-@Int flags, the dual, for the runtime
+        # @Nat -> @Int widening guard at call sites.
+        self._fn_int_params: dict[str, tuple[bool, ...]] = {}
         # Closure compilation state — accumulated during translation
         # Each entry: (anon_fn, captures, closure_id)
         # captures: list of (type_name, outer_de_bruijn, wasm_type)
@@ -292,6 +295,13 @@ class WasmContext(
         """Set per-parameter concrete-@Nat flags for the call-site
         runtime narrowing guard (#747)."""
         self._fn_nat_params = nat_params
+
+    def set_fn_int_params(
+        self, int_params: dict[str, tuple[bool, ...]],
+    ) -> None:
+        """Set per-parameter concrete-@Int flags for the call-site
+        runtime @Nat -> @Int widening guard (#813)."""
+        self._fn_int_params = int_params
 
     def set_type_aliases(
         self, aliases: dict[str, ast.TypeExpr],
@@ -575,6 +585,12 @@ class WasmContext(
                         and self._narrows_into_nat(stmt.value)):
                     instructions.extend(
                         self._emit_nat_bind_guard(val_instrs))
+                elif (self._resolve_base_type_name(type_name) == "Int"
+                        and self._result_is_nat(stmt.value)):
+                    # #813: guard a @Nat -> @Int let widening — a @Nat value
+                    # above i64.MAX reinterprets to a negative @Int.
+                    instructions.extend(
+                        self._emit_int_widen_guard(val_instrs))
                 else:
                     instructions.extend(val_instrs)
                 instructions.append(f"local.set {local_idx}")

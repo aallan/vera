@@ -402,7 +402,7 @@ array, useful when processing diagnostics programmatically.
 - `Unit` — singleton type, value is `()`
 - `Never` — bottom type (used for non-terminating expressions like `throw`)
 
-**`Int` and `Nat` are interchangeable in both directions**, not just widening.  `@Nat <: @Int` always (safe widening, no obligation); `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  **Do not** insert `nat_to_int` defensively; it's only needed when the value is genuinely allowed to be negative.  See spec §2.2.1 for the formal rule.
+**`Int` and `Nat` are interchangeable in both directions.**  `@Nat <: @Int` is a formal subtyping rule at the *type* level (use a `@Nat` anywhere `@Int` is expected, no `nat_to_int` call), and `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  Both directions carry a *value*-level obligation, because `@Nat` is a u64 and `@Int` an i64: narrowing requires `>= 0` (`E503`/`E504`), and widening requires `<= i64.MAX` (`E530`; or an `E531` warning at the tuple / array / generic-ADT component sites code generation cannot guard) — a `@Nat` above i64.MAX bit-reinterprets to a negative `@Int`.  **Do not** insert `nat_to_int` defensively; it's only needed when the value is genuinely allowed to be negative.  See spec §2.2.1 for the formal rule.
 
 ### Composite types
 
@@ -1183,13 +1183,13 @@ All log and trig functions follow IEEE 754 semantics: `NaN` for out-of-domain in
 ```vera
 int_to_float(@Int.0)                -- returns Float64 (int to float)
 float_to_int(@Float64.0)           -- returns Int (truncation toward zero)
-nat_to_int(@Nat.0)                 -- returns Int (identity, both i64)
+nat_to_int(@Nat.0)                 -- returns Int (guarded: traps if @Nat > i64.MAX)
 int_to_nat(@Int.0)                 -- returns Option<Nat> (None if negative)
 byte_to_int(@Byte.0)              -- returns Int (zero-extension)
 int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255)
 ```
 
-Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
+Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float` and `byte_to_int` are widening conversions that always succeed (a `@Byte` is `0..255`, always in i64 range). `nat_to_int` widens `@Nat → @Int`, but a `@Nat` above i64.MAX bit-reinterprets to a negative `@Int`, so — like the implicit `@Nat → @Int` coercion — it carries a `<= i64.MAX` obligation (`E530`): Tier 1 when the value is provably bounded, otherwise a runtime trap (`vera run` traps rather than silently returning the reinterpreted value). `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `byte_to_int` is SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
 
 `Byte` is excluded from arithmetic operators (`+`, `-`, `*`, `/`, `%`, unary `-`) at type-check time — `@Byte.0 + @Byte.1` produces `E140`. For byte-level math, convert to `Int` via `byte_to_int`, do the arithmetic in `@Int`, and convert back via `int_to_byte` if needed. The forward-looking design question of allowing direct `@Byte` arithmetic (with verified underflow + overflow guards) is tracked speculatively as [#564](https://github.com/aallan/vera/issues/564); the current convention keeps the verifier's range-checking story focused on `@Nat` (where only underflow can occur).
 

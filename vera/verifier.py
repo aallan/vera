@@ -261,6 +261,27 @@ class ContractVerifier:
         target = self._target_type_of(arg)
         return target is not None and self._is_nat_type(target)
 
+    def _int_widening_target(
+        self, arg: ast.Expr, formal: Type | None
+    ) -> bool:
+        """True if *arg* binds into a slot whose declared or *instantiated*
+        type is @Int — the widening dual of :py:meth:`_nat_binding_target`
+        (#813).
+
+        Pairs with :py:meth:`_result_is_nat` (the value side): an @Int slot
+        receiving an intrinsically-@Nat value is a @Nat -> @Int widening that
+        can reinterpret above i64.MAX.  Generic-formal resolution mirrors
+        ``_nat_binding_target``: a concretely-@Int formal obligates directly; a
+        ``TypeVar`` formal fixed to @Int at this site is recovered from the
+        checker's instantiated-target side-table.
+        """
+        if formal is not None and self._is_int_type(formal):
+            return True
+        if formal is not None and not contains_typevar(formal):
+            return False
+        target = self._target_type_of(arg)
+        return target is not None and self._is_int_type(target)
+
     def _refined_binding_target(
         self, arg: ast.Expr, formal: Type | None
     ) -> "Type | None":
@@ -1648,6 +1669,22 @@ class ContractVerifier:
                     self._record_refined_bind_tier3(
                         decl, ret_node, "return type", guarded=True)
 
+        # 7c. #813: a bare @Nat body widening into an @Int return reinterprets
+        #     its bit pattern above i64.MAX (u64.MAX -> -1), so a Tier-1 proof
+        #     over the unbounded non-negative value is unsound (the postcondition
+        #     `@Int.result >= 0` proves yet `widen(u64.MAX)` returns -1).
+        #     Obligate `result <= i64.MAX` — the dual of #552's @Int->@Nat `>= 0`
+        #     narrowing.  The codegen return guard backs the Tier-3 case so the
+        #     postcondition stays sound (the function traps before returning a
+        #     reinterpreted value).  Refined @Int returns are handled by 7b.
+        if (decl.body is not None
+                and self._is_int_type(ret_type)
+                and self._result_is_nat(decl.body)):
+            self._check_int_widening_obligation(
+                decl, decl.body, smt, slot_env, list(assumptions),
+                site="return type",
+            )
+
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
         # into the decreases checking below.
@@ -2545,6 +2582,15 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument", guarded=True,
                         )
+                    elif (self._int_widening_target(arg, None)
+                            and self._result_is_nat(arg)):
+                        # #813: a piped @Nat argument widening into an @Int
+                        # formal.  Codegen desugars the pipe to the FnCall and
+                        # guards it at the call-argument site, hence guarded.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="call argument",
+                        )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.left, smt, slot_env, assumptions,
                 )
@@ -2597,6 +2643,14 @@ class ContractVerifier:
                             # guard keys on the resolved call target, CR #756).
                             guarded=True,
                         )
+                    elif (self._int_widening_target(arg, formal)
+                            and self._result_is_nat(arg)):
+                        # #813: an intrinsically-@Nat argument widening into an
+                        # @Int formal can reinterpret above i64.MAX.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="call argument",
+                        )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -2632,6 +2686,18 @@ class ContractVerifier:
                             # field instantiated to @Nat here erases to i64, so
                             # an untranslatable arg is genuinely unguarded.
                             guarded=self._is_nat_type(field_ty),
+                        )
+                    elif (self._int_widening_target(arg, field_ty)
+                            and self._result_is_nat(arg)):
+                        # #813: dual — a @Nat argument widening into an @Int
+                        # field can reinterpret above i64.MAX.  A concrete @Int
+                        # field is codegen-guarded (the layout `int_fields`
+                        # bitmap); a generic-instantiated one erases to i64 with
+                        # no per-field mono metadata, so it is unguarded (E531).
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="constructor field",
+                            guarded=self._is_int_type(field_ty),
                         )
             else:
                 # `Tuple` (and any other built-in carrier) is NOT user-
@@ -2677,6 +2743,17 @@ class ContractVerifier:
                         # site, not this one).
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
+                            site="tuple component", guarded=False,
+                        )
+                    elif (self._is_int_type(comp_ty)
+                            and self._result_is_nat(arg)):
+                        # #813: dual — a @Nat component widening into an @Int
+                        # tuple slot.  guarded=False, like the @Nat path above:
+                        # codegen does not component-guard a tuple at
+                        # construction (the boundary guard is a separate site),
+                        # so disclose the unguarded widening via E531.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
                             site="tuple component", guarded=False,
                         )
             for arg in expr.args:
@@ -2792,6 +2869,14 @@ class ContractVerifier:
                             decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
                         )
+                    elif (self._is_int_type(let_ty)
+                            and self._result_is_nat(stmt.value)):
+                        # #813: `let @Int = <@Nat>` widens the @Nat RHS into the
+                        # @Int slot — obligate `value <= i64.MAX`.
+                        self._check_int_widening_obligation(
+                            decl, stmt.value, smt, cur_env, block_assumptions,
+                            site="let binding",
+                        )
                     # Rebind the let slot in cur_env so a later obligation
                     # translates against this value, not a stale outer binding
                     # of the same slot name.  When the RHS translates, `val` is
@@ -2849,6 +2934,18 @@ class ContractVerifier:
                                 self._check_nat_binding_obligation(
                                     decl, sub, smt, cur_env, block_assumptions,
                                     site="tuple destructure",
+                                )
+                            elif (self._is_int_type(comp_ty)
+                                    and self._result_is_nat(sub)):
+                                # #813: dual — a @Nat literal component
+                                # destructured into an @Int slot widens it.
+                                # Codegen does not guard the tuple-component
+                                # coercion (like construction), so disclose
+                                # E531 (guarded=False).
+                                self._check_int_widening_obligation(
+                                    decl, sub, smt, cur_env,
+                                    list(block_assumptions),
+                                    site="tuple destructure", guarded=False,
                                 )
                     else:
                         # Non-literal source (#747): project the tuple
@@ -3029,6 +3126,15 @@ class ContractVerifier:
                                 decl, expr.scrutinee, smt, slot_env,
                                 assumptions, site="match binding",
                             )
+                        elif (self._is_int_type(pat_ty)
+                                and self._result_is_nat(expr.scrutinee)):
+                            # #813: dual — `match @Nat.0 { @Int -> }` widens the
+                            # @Nat scrutinee into the @Int bind slot.  Codegen
+                            # guards the match-bind (data.py), so tier3_runtime.
+                            self._check_int_widening_obligation(
+                                decl, expr.scrutinee, smt, slot_env,
+                                list(assumptions), site="match binding",
+                            )
                     elif isinstance(arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
                         # non-@Nat ADT field — the @Int payload of
@@ -3056,6 +3162,24 @@ class ContractVerifier:
         # still be visited.  (The #520 subtraction walker has the same
         # pre-existing container gap; aligning it is out of #552's scope.)
         if isinstance(expr, ast.ArrayLit):
+            # #813: a @Nat element widening into an @Array<Int> literal.  The
+            # literal codegen types the array by its element *values* (source),
+            # and the `let @Array<Int> = …` binding is a pointer-pair copy with
+            # no element-wise coercion — so this site is NOT runtime-guarded.
+            # Disclose the unguarded widening (E531) rather than a silent false
+            # Tier-1; codegen-guarding it (threading the target element type) is
+            # a tracked follow-up.
+            target = self._target_type_of(expr)
+            base = target.base if isinstance(target, RefinedType) else target
+            if (isinstance(base, AdtType) and base.name == "Array"
+                    and base.type_args
+                    and self._is_int_type(base.type_args[0])):
+                for elem in expr.elements:
+                    if self._result_is_nat(elem):
+                        self._check_int_widening_obligation(
+                            decl, elem, smt, slot_env, list(assumptions),
+                            site="array element", guarded=False,
+                        )
             for elem in expr.elements:
                 self._walk_for_nat_binding_obligations(
                     decl, elem, smt, slot_env, assumptions,
@@ -3727,6 +3851,172 @@ class ContractVerifier:
             self._record_nat_bind_tier3(
                 decl, node, site, "timeout", guarded=True)
 
+    def _check_int_widening_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+        guarded: bool = True,
+    ) -> None:
+        """Discharge a ``value <= i64.MAX`` obligation at one @Nat -> @Int
+        widening site (#813) — the dual of
+        :py:meth:`_check_nat_binding_obligation`'s ``value >= 0``.
+
+        @Nat is u64 and @Int is i64, so a @Nat in (i64.MAX, u64.MAX]
+        reinterprets its bit pattern when widened to @Int (u64.MAX -> -1).
+        Two-check, mirroring :py:meth:`_check_overflow_obligation` (#798): a
+        value provably ``<= i64.MAX`` -> Tier 1; provably ``> i64.MAX`` -> loud
+        E530; else Tier-3, where ``guarded`` decides honesty (the dual of
+        ``_check_nat_binding_obligation``): a codegen-guarded site
+        (``guarded=True`` — return, let, call-arg, concrete @Int field)
+        counts ``tier3_runtime``; an unguarded one (``guarded=False`` —
+        tuple construction component, or a generic-instantiated @Int field
+        with no per-field mono metadata) surfaces an E531 warning and is
+        excluded from the totals, never claiming a runtime check it does not
+        get.  Path conditions in ``smt._path_conditions`` are folded in by
+        :py:meth:`SmtContext.check_valid`.
+        """
+        self.summary.total += 1
+        val = smt.translate_expr(value_node, slot_env)
+        if val is None:  # pragma: no cover — untranslatable value
+            self._record_int_widen_tier3(
+                decl, value_node, site, "tier3", guarded=guarded)
+            return
+
+        hi = z3.IntVal(_I64_MAX)
+        safe = smt.check_valid(val <= hi, list(assumptions))
+        if safe.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "verified")
+            return
+
+        # Not provably in range — is it provably OUT of range (a real bug)?
+        bad = smt.check_valid(val > hi, list(assumptions))
+        if bad.status == "verified":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "violated",
+                error_code="E530", counterexample=safe.counterexample,
+            )
+            self._report_nat_to_int(decl, value_node, site, safe.counterexample)
+        else:
+            self._record_int_widen_tier3(
+                decl, value_node, site, "tier3", guarded=guarded)
+
+    def _record_int_widen_tier3(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        site: str,
+        status: ObligationStatus,
+        *,
+        guarded: bool,
+    ) -> None:
+        """Record a Tier-3 ``nat_to_int_coerce`` outcome, the #813 dual of
+        :py:meth:`_record_nat_bind_tier3`.  A codegen-guarded widening
+        (``guarded=True`` — return, let, call-arg, and the concrete @Int
+        constructor field) genuinely falls to a runtime coercion trap
+        (``tier3_runtime``).  The unguarded cases (``guarded=False`` — the
+        tuple-construction component and the generic-instantiated @Int field,
+        which erases to i64 with no per-field mono metadata) are neither
+        statically proven nor runtime-checked, so surface an E531 warning and
+        are excluded from the discharged totals rather than silently counting
+        a runtime check they never get."""
+        if guarded:
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, status)
+        else:
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "tier3_unguarded",
+                error_code="E531",
+            )
+            self._report_int_widen_unguarded(decl, value_node, site)
+
+    def _report_int_widen_unguarded(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an E531 warning for a @Nat -> @Int widening the SMT layer
+        could not discharge and codegen does not guard (#813) — the dual of
+        :py:meth:`_report_nat_binding_unguarded`'s E504."""
+        self._warning(
+            node,
+            (
+                f"@Nat value widening into an @Int {site} in '{decl.name}' "
+                "could not be verified statically and is not runtime-guarded "
+                "— constrain it with `requires(... <= 9223372036854775807)`, "
+                "bind it to a `let @Int` first (which is guarded), or guard it "
+                "with `if ... <= 9223372036854775807 then ... else ...`."
+            ),
+            rationale=(
+                "@Nat is u64 and @Int is i64, so a @Nat above i64.MAX "
+                "reinterprets to a negative @Int when widened.  The value is "
+                "outside Z3's decidable fragment (untranslatable or the solver "
+                "timed out), so the `<= i64.MAX` obligation could not be "
+                "discharged.  Codegen runtime-guards the concrete @Int "
+                "coercion sites (return, let, call-argument, concrete @Int "
+                "field) but not this one — a tuple-construction component, or a "
+                "generic-instantiated @Int field with no per-field mono "
+                "metadata — so here the widening is neither statically proven "
+                "nor runtime-checked."
+            ),
+            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
+            error_code="E531",
+            tier=3,
+        )
+
+    def _check_int_widening_obligation_term(
+        self,
+        decl: ast.FnDecl,
+        term: object,
+        smt: SmtContext,
+        assumptions: list[object],
+        *,
+        site: str,
+        node: ast.Expr,
+        guarded: bool = True,
+    ) -> None:
+        """Discharge ``term <= i64.MAX`` for a *projected* @Nat value widening
+        into an @Int slot — an ADT sub-pattern field whose Z3 term we already
+        have (#813), the dual of
+        :py:meth:`_check_nat_binding_obligation_term`.
+
+        The field accessor carries its source ``>= 0`` fact but no upper bound
+        (a @Nat is [0, u64.MAX]), so an unbounded @Nat field is neither
+        provably ``<= i64.MAX`` (Tier 1) nor provably ``> i64.MAX`` (E530) and
+        falls to Tier-3 — where ``guarded`` decides honesty: codegen's
+        ``_extract_constructor_fields`` runtime-guards a concrete @Nat field
+        extracted into an @Int sub-pattern (``guarded=True`` -> tier3_runtime).
+        """
+        self.summary.total += 1
+        hi = z3.IntVal(_I64_MAX)
+        safe = smt.check_valid(term <= hi, list(assumptions))
+        if safe.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", node, "verified")
+            return
+        bad = smt.check_valid(term > hi, list(assumptions))
+        if bad.status == "verified":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", node, "violated",
+                error_code="E530", counterexample=safe.counterexample,
+            )
+            self._report_nat_to_int(decl, node, site, safe.counterexample)
+        else:
+            self._record_int_widen_tier3(
+                decl, node, site, "tier3", guarded=guarded)
+
     def _check_refined_binding_obligation(
         self,
         decl: ast.FnDecl,
@@ -4198,6 +4488,15 @@ class ContractVerifier:
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=diag_node,
                 )
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(field_ty)):
+                # #813: dual — a @Nat field extracted into an @Int sub-pattern
+                # slot widens it; codegen guards the concrete @Nat-field
+                # extraction (`layout.nat_fields`), so this is tier3_runtime.
+                self._check_int_widening_obligation_term(
+                    decl, field_term, smt, assumptions,
+                    site="ADT sub-pattern bind", node=diag_node,
+                )
 
     def _obligate_subpattern_narrowings(
         self,
@@ -4314,33 +4613,55 @@ class ContractVerifier:
                     self._record_refined_bind_tier3(
                         decl, scrutinee, "ADT sub-pattern bind", guarded=False)
                 continue
-            if not (self._is_nat_type(target)
+            if (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
-                continue
-            if lit_args is not None:
-                if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
-                    self._check_nat_binding_obligation(
-                        decl, lit_args[i], smt, slot_env, assumptions,
-                        site="ADT sub-pattern bind",
+                if lit_args is not None:
+                    if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
+                        self._check_nat_binding_obligation(
+                            decl, lit_args[i], smt, slot_env, assumptions,
+                            site="ADT sub-pattern bind",
+                        )
+                elif sort is not None and idx is not None:
+                    field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    self._check_nat_binding_obligation_term(
+                        decl, field_term, smt, assumptions,
+                        site="ADT sub-pattern bind", node=scrutinee,
                     )
-            elif sort is not None and idx is not None:
-                field_term = sort.accessor(idx, i)(scrutinee_z3)
-                self._check_nat_binding_obligation_term(
-                    decl, field_term, smt, assumptions,
-                    site="ADT sub-pattern bind", node=scrutinee,
-                )
-            else:
-                # An opaque scrutinee the SMT layer cannot translate (e.g. a
-                # function call returning the ADT): the narrowing is real but
-                # unprojectable here, yet codegen still guards the @Nat
-                # sub-pattern bind at run time — so record a guarded Tier-3
-                # outcome rather than dropping it silently.  The +1 counts the
-                # obligation (a guarded site leaves total untouched in
-                # _record_nat_bind_tier3, mirroring the let / destructure path).
-                self.summary.total += 1
-                self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3",
-                    guarded=True)
+                else:
+                    # An opaque scrutinee the SMT layer cannot translate (e.g. a
+                    # function call returning the ADT): the narrowing is real
+                    # but unprojectable here, yet codegen still guards the @Nat
+                    # sub-pattern bind at run time — so record a guarded Tier-3
+                    # outcome rather than dropping it silently.  The +1 counts
+                    # the obligation (a guarded site leaves total untouched in
+                    # _record_nat_bind_tier3, mirroring the let / destructure
+                    # path).
+                    self.summary.total += 1
+                    self._record_nat_bind_tier3(
+                        decl, scrutinee, "ADT sub-pattern bind", "tier3",
+                        guarded=True)
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(field_ty)):
+                # #813: dual — a @Nat field bound into an @Int sub-pattern slot
+                # widens it.  Codegen guards the concrete @Nat-field extraction
+                # (`layout.nat_fields`), so an unbounded widening is Tier-3.
+                if lit_args is not None:
+                    if i < len(lit_args) and self._result_is_nat(lit_args[i]):
+                        self._check_int_widening_obligation(
+                            decl, lit_args[i], smt, slot_env, list(assumptions),
+                            site="ADT sub-pattern bind",
+                        )
+                elif sort is not None and idx is not None:
+                    field_term = sort.accessor(idx, i)(scrutinee_z3)
+                    self._check_int_widening_obligation_term(
+                        decl, field_term, smt, assumptions,
+                        site="ADT sub-pattern bind", node=scrutinee,
+                    )
+                else:
+                    self.summary.total += 1
+                    self._record_int_widen_tier3(
+                        decl, scrutinee, "ADT sub-pattern bind", "tier3",
+                        guarded=True)
         return facts
 
     def _obligate_destructure_narrowings(
@@ -4384,6 +4705,7 @@ class ContractVerifier:
         # the rest fall to the @Nat `>= 0` path.  The two lists stay disjoint.
         refined_narrowing: list[tuple[int, Type]] = []
         nat_narrowing: list[int] = []
+        int_widening: list[int] = []  # #813: @Nat source -> @Int target
         for i, te in enumerate(stmt.type_bindings):
             if i >= len(source_args):
                 continue
@@ -4394,7 +4716,10 @@ class ContractVerifier:
             elif (self._is_nat_type(target)
                     and not self._is_nat_type(source_args[i])):
                 nat_narrowing.append(i)
-        if not refined_narrowing and not nat_narrowing:
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(source_args[i])):
+                int_widening.append(i)
+        if not refined_narrowing and not nat_narrowing and not int_widening:
             return
         rhs_z3 = smt.translate_expr(stmt.value, slot_env)
         sort = None
@@ -4421,6 +4746,13 @@ class ContractVerifier:
                 self.summary.total += 1
                 self._record_refined_bind_tier3(
                     decl, stmt.value, "tuple destructure", guarded=False)
+            for _ in int_widening:
+                # #813: codegen does not guard a tuple-destructure component
+                # widening (like tuple construction), so disclose E531.
+                self.summary.total += 1
+                self._record_int_widen_tier3(
+                    decl, stmt.value, "tuple destructure", "tier3",
+                    guarded=False)
             return
         # `i` is a valid field index (filtered against `source_args`, whose
         # length matches the tuple sort's fields), so each accessor is safe
@@ -4437,6 +4769,15 @@ class ContractVerifier:
                 decl, comp_term, target, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
                 source_ty=source_args[i],
+            )
+        for i in int_widening:
+            # #813: a @Nat component destructured into an @Int slot widens it;
+            # codegen does not guard the tuple-component coercion, so disclose
+            # the unguarded widening (E531) — the dual of the @Nat narrowing.
+            comp_term = sort.accessor(idx, i)(rhs_z3)
+            self._check_int_widening_obligation_term(
+                decl, comp_term, smt, assumptions,
+                site="tuple destructure", node=stmt.value, guarded=False,
             )
 
     def _record_nat_bind_tier3(
@@ -4816,6 +5157,53 @@ class ContractVerifier:
             error_code="E503",
         )
 
+    def _report_nat_to_int(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E530 diagnostic for a provably out-of-range @Nat -> @Int
+        widening (#813) — the dual of :py:meth:`_report_nat_binding`."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = (
+            f"@Nat value widening into an @Int {site} in '{decl.name}' "
+            f"may exceed i64.MAX."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            node,
+            description,
+            rationale=(
+                "@Nat is u64 and @Int is i64, and the type checker permits "
+                "Nat <: Int widening.  A @Nat value above i64.MAX "
+                "(9223372036854775807) reinterprets its bit pattern when "
+                "widened — u64.MAX becomes -1 — so a postcondition proved over "
+                "the non-negative mathematical value would be violated at "
+                "runtime.  The SMT solver found inputs where the value exceeds "
+                "i64.MAX."
+            ),
+            fix=(
+                "Add a precondition bounding the value, e.g. "
+                "`requires(@Nat.0 <= 9223372036854775807)`.  Alternatively "
+                "guard the widen: `if @Nat.0 <= 9223372036854775807 then ... "
+                "else ...` — the path condition discharges the obligation in "
+                "the then-branch."
+            ),
+            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
+            error_code="E530",
+        )
+
     def _report_refined_binding(
         self,
         decl: ast.FnDecl,
@@ -5037,6 +5425,115 @@ class ContractVerifier:
         # UnaryExpr: negation always produces @Int.
         # Other AST node types: conservative False.
         return False
+
+    def _result_is_nat(self, expr: ast.Expr) -> bool:
+        """True iff the *result value* of *expr* is intrinsically @Nat — the
+        precise static result type, used by the #813 return-position widening
+        obligation so it fires only on an actual @Nat -> @Int widening.
+
+        Distinct from :py:meth:`_is_nat_typed`, which over-approximates ("could
+        any sub-position be @Nat", treating non-negative ``IntLit``\\ s as @Nat
+        and an ``@Int + @Nat`` sum as @Nat).  Here a single @Int component makes
+        the result @Int, and a literal in an @Int context is just an @Int
+        literal (already range-checked by #812), never a reinterpreted runtime
+        @Nat value — so it contributes False.  Only a value carrying the @Nat
+        invariant forward — a @Nat slot, a @Nat-returning call, or @Nat-only
+        arithmetic — is a genuine widening.  The join descends ``Block`` trailing
+        exprs, ``IfExpr`` branches, and ``MatchExpr`` arms: the whole expression
+        is @Nat iff every arm is @Nat-*compatible* (a real @Nat or a non-negative
+        literal) and at least one arm is a genuine @Nat (#813 follow-up site 2a —
+        see :py:meth:`_arm_nat_compatible`).
+        """
+        if isinstance(expr, ast.Block):
+            return expr.expr is not None and self._result_is_nat(expr.expr)
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (
+                self._arm_nat_compatible(expr.then_branch)
+                and self._arm_nat_compatible(expr.else_branch)
+                and (self._result_is_nat(expr.then_branch)
+                     or self._result_is_nat(expr.else_branch))
+            )
+        if isinstance(expr, ast.MatchExpr):
+            return (
+                bool(expr.arms)
+                and all(self._arm_nat_compatible(a.body) for a in expr.arms)
+                and any(self._result_is_nat(a.body) for a in expr.arms)
+            )
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.BinaryExpr):
+            # @Nat arithmetic stays @Nat only when BOTH operands are @Nat; an
+            # @Int operand widens the result to @Int.  Non-arithmetic ops
+            # (comparison / logical) produce @Bool, not @Nat.
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                return (self._result_is_nat(expr.left)
+                        and self._result_is_nat(expr.right))
+            return False
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # `nat_to_int(x)` is the explicit @Nat -> @Int conversion built-in.
+            # Its declared return is @Int, so the resolved-type table reports
+            # "Int" and the call would be classified not-@Nat — but the *value*
+            # carries its argument's unbounded @Nat forward and needs the same
+            # `nat_to_int_coerce` obligation (value <= i64.MAX) as an implicit
+            # @Nat -> @Int widening.  `nat_to_int` is an opaque built-in (E151
+            # forbids redefining it), so a bare `nat_to_int` call is always the
+            # conversion (#813 follow-up audit site 1).
+            if (
+                isinstance(expr, ast.FnCall)
+                and expr.name == "nat_to_int"
+                and expr.args
+                and self._result_is_nat(expr.args[0])
+            ):
+                return True
+            # A call whose callee returns @Nat is a genuine widening, but the
+            # callee's return type cannot be resolved robustly here: the
+            # checker's semantic side-table is sparse (None for ordinary calls),
+            # and `env.lookup_function` resolves a bare name to the *built-in*
+            # rather than an imported/shadowing definition (e.g. it returns the
+            # @Nat built-in `abs` for a call that the checker bound to an
+            # imported @Int `math.abs`), which would fire spuriously.  Treat a
+            # call result conservatively as not-@Nat for the return-position
+            # obligation; call-result widening is covered at the call-argument
+            # sites by the binding-site walker (#813 stage 2b), where the callee
+            # is resolved precisely.
+            resolved = self._resolved_type_of(expr)
+            return resolved is not None and self._is_nat_type(resolved)
+        # IntLit (a literal directly in the @Int target context), UnaryExpr
+        # (negation always produces @Int), and everything else: not a
+        # reinterpreted runtime @Nat value.
+        return False
+
+    def _arm_nat_compatible(self, expr: ast.Expr) -> bool:
+        """An if/match arm is @Nat-*compatible* if its value is intrinsically
+        @Nat (:py:meth:`_result_is_nat`) OR a non-negative literal (#813 site
+        2a).
+
+        A non-negative literal is always ``<= i64.MAX`` (#812 range-checks it),
+        so it can neither trigger an out-of-range @Nat -> @Int widening nor
+        false-trap the boundary widen guard.  Treating it as @Nat-compatible
+        keeps a heterogeneous-with-literal if/match (``if c then { @Nat.0 } else
+        { 0 }``) classified @Nat, so the *real* @Nat arm is obligated and guarded
+        at the single boundary site — without needing the per-arm join type,
+        which the checker's sparse side-tables do not record.  A genuine @Int arm
+        (a slot/call that can be negative) is NOT @Nat-compatible: it makes the
+        result @Int, and a @Nat sibling widening into it is the architecturally
+        deferred site-2b case (tracked in #820), not a boundary widening."""
+        return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
+
+    @staticmethod
+    def _is_nonneg_int_literal(expr: ast.Expr) -> bool:
+        """True iff *expr* is (a block trailing into) a non-negative integer
+        literal — always ``<= i64.MAX`` and so safe at a widening join (#813)."""
+        while isinstance(expr, ast.Block):
+            if expr.expr is None:
+                return False
+            expr = expr.expr
+        return isinstance(expr, ast.IntLit) and expr.value >= 0
 
     def _has_nat_origin(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* derives from a definitely-@Nat source.

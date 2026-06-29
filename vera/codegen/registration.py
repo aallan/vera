@@ -44,6 +44,13 @@ class RegistrationMixin:
         self._fn_nat_params[decl.name] = tuple(
             self._type_resolves_to_nat(p) for p in decl.params
         )
+        # #813: dual bitmap of concrete-@Int formals, for the runtime
+        # @Nat -> @Int *widening* guard at call sites (a @Nat value above
+        # i64.MAX reinterprets to a negative @Int).  Disjoint from the @Nat
+        # bitmap above: a formal resolves to one primitive base or neither.
+        self._fn_int_params[decl.name] = tuple(
+            self._type_resolves_to_int(p) for p in decl.params
+        )
         # #614: also register the full Vera return type expression so
         # `_infer_index_element_type_expr` can extract the element type
         # of an `Array<T>`-returning call inside `f()[i]`.  Without
@@ -259,6 +266,7 @@ class RegistrationMixin:
         offset = 4  # tag (i32) at offset 0, occupies 4 bytes
         field_offsets: list[tuple[int, str]] = []
         nat_fields: list[bool] = []
+        int_fields: list[bool] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -272,6 +280,9 @@ class RegistrationMixin:
                 # (type param) instantiated to @Nat is erased to i64
                 # here, so it stays statically-only (verifier-obligated).
                 nat_fields.append(self._type_resolves_to_nat(field_te))
+                # #813: a concrete @Int field receives the runtime @Nat -> @Int
+                # widening guard when constructed with a @Nat argument.
+                int_fields.append(self._type_resolves_to_int(field_te))
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -279,6 +290,7 @@ class RegistrationMixin:
             field_offsets=tuple(field_offsets),
             total_size=total_size,
             nat_fields=tuple(nat_fields),
+            int_fields=tuple(int_fields),
         )
 
     def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:
@@ -296,13 +308,30 @@ class RegistrationMixin:
         arguments are bound into the body via ``substitute_type_vars`` so
         ``Id<Nat>`` resolves to ``Nat`` rather than the bare type-param ``T``.
         """
+        return self._type_resolves_to_base(te, "Nat")
+
+    def _type_resolves_to_int(self, te: ast.TypeExpr) -> bool:
+        """True if *te* resolves to a concrete ``@Int`` — directly, through a
+        ``type X = Int`` alias, the base of a refinement (``{ @Int | p }``),
+        or a generic alias instantiated to @Int.  The #813 dual of
+        ``_type_resolves_to_nat``: a @Int formal receiving a @Nat-typed
+        argument widens it, and a @Nat value above i64.MAX reinterprets to a
+        negative @Int, so the call site needs the runtime widening guard."""
+        return self._type_resolves_to_base(te, "Int")
+
+    def _type_resolves_to_base(
+        self, te: ast.TypeExpr, base_name: str,
+    ) -> bool:
+        """Shared alias/refinement-resolving check behind
+        ``_type_resolves_to_nat`` / ``_type_resolves_to_int``: True if *te*
+        resolves to the primitive named *base_name*."""
         seen: set[str] = set()
         while True:
             if isinstance(te, ast.RefinementType):
                 te = te.base_type
                 continue
             if isinstance(te, ast.NamedType):
-                if te.name == "Nat":
+                if te.name == base_name:
                     return True
                 alias = self._type_aliases.get(te.name)
                 if alias is not None and te.name not in seen:
