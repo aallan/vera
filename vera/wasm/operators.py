@@ -891,12 +891,25 @@ class OperatorsMixin:
                 return (self._result_is_nat(expr.left)
                         and self._result_is_nat(expr.right))
             return False
-        if isinstance(expr, ast.FnCall):
-            return self._infer_fncall_vera_type(expr) == "Nat"
-        if isinstance(expr, ast.ModuleCall):
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
-            ) == "Nat"
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # Match the verifier's `_result_is_nat` FnCall branch, which reads
+            # the checker's resolved-type side-table (`_resolved_type_of`).  A
+            # call's @Nat return cannot be recovered from
+            # `_infer_fncall_vera_type`: it maps the i64 WASM return back to
+            # "Int" (both @Nat and @Int lower to i64) and so NEVER yields "Nat",
+            # which left every @Nat-returning call result unguarded at the
+            # return / let / call-argument sites while the verifier obligated it
+            # `tier3` — an unsound silent reinterpretation (#813 review).
+            # Consult the side-table first; fall back to `_infer_fncall_vera_type`
+            # for built-in @Nat returns when codegen runs without the table.
+            resolved = self._resolved_codegen_type(expr)
+            if resolved is not None:
+                return resolved == "Nat"
+            call = (
+                expr if isinstance(expr, ast.FnCall)
+                else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)
+            )
+            return self._infer_fncall_vera_type(call) == "Nat"
         # IntLit (literal in target context), UnaryExpr (negation -> @Int), else.
         return False
 

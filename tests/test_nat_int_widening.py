@@ -94,6 +94,20 @@ public fn over(@Nat -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
+    def test_let_widening_violated_out_of_range_E530(self) -> None:
+        # E530 (the loud-error arm) fires at a non-return coercion site too — a
+        # regression that downgraded it to tier3 at the let site would silently
+        # re-open the hole there.  2**63 = smallest @Nat strictly above i64.MAX.
+        result = _verify("""
+public fn f(@Nat -> @Int)
+  requires(@Nat.0 >= 9223372036854775808) ensures(true) effects(pure)
+{ let @Int = @Nat.0; @Int.0 }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert any(o.status == "violated" and o.error_code == "E530"
+                   for o in co), [(o.status, o.error_code) for o in co]
+
     def test_int_to_int_return_emits_no_coerce_obligation(self) -> None:
         # Control: a plain @Int return is not a widening — no coercion obligation
         # (guards against a walker that fires on every return position).

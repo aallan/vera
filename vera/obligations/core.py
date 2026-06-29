@@ -102,13 +102,16 @@ ObligationStatus = Literal[
     "violated",  # Z3 produced a counterexample; an error was emitted
     "tier3",     # outside the decidable fragment; runtime check emitted
     "timeout",   # solver returned unknown; falls back to runtime check
-    "tier3_unguarded",  # untranslatable/timeout at a narrowing site with no
-                        # runtime guard, excluded from totals — surfaced as an
-                        # E504 warning for an unguarded @Nat narrowing
-                        # (nat_bind, #552/#747) or an E506 warning for an
+    "tier3_unguarded",  # untranslatable/timeout/unbounded at a coercion site
+                        # with no runtime guard, excluded from totals — surfaced
+                        # as an E504 warning for an unguarded @Nat narrowing
+                        # (nat_bind, #552/#747), an E506 warning for an
                         # *internal* refinement narrowing (refine_bind, #746:
                         # let / field / match / destructure — boundary sites
-                        # ARE runtime-guarded and recorded `tier3` instead)
+                        # ARE runtime-guarded and recorded `tier3` instead), or
+                        # an E531 warning for an unguarded @Nat->@Int widening
+                        # (nat_to_int_coerce, #813: the tuple / array /
+                        # generic-ADT component coercions codegen cannot guard)
 ]
 
 

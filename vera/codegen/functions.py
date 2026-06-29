@@ -401,8 +401,11 @@ class FunctionCompilationMixin:
         # so trap rather than silently return it — the runtime backstop for the
         # verifier's nat_to_int_coerce obligation (7c).  @Int is i64, so this
         # runs before (and is unaffected by) the i32 coercion below.
-        if (self._type_expr_to_slot_name(decl.return_type) == "Int"
-                and ctx._result_is_nat(decl.body)):
+        widen_guarded = (
+            self._type_expr_to_slot_name(decl.return_type) == "Int"
+            and ctx._result_is_nat(decl.body)
+        )
+        if widen_guarded:
             body_instrs = ctx._emit_int_widen_guard(body_instrs)
 
         # Coerce body result if return type is i32 but body produces i64
@@ -486,9 +489,13 @@ class FunctionCompilationMixin:
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
 
-        if post_instrs:
-            # Postcondition checks must run; return_call would skip
-            # them.  Revert every return_call to plain call.
+        if post_instrs or widen_guarded:
+            # Postcondition checks must run; return_call would skip them.  The
+            # #813 @Nat->@Int return widen guard (above) is the same case: it is
+            # appended *after* the trailing tail call, so a `return_call` would
+            # return before the guard runs, silently leaking a reinterpreted
+            # negative @Int (e.g. `fn f(@Nat -> @Int) { make_nat(@Nat.0) }`).
+            # Revert every return_call to plain call so the guard is reached.
             body_instrs = [
                 instr.replace("return_call ", "call ", 1)
                 if instr.lstrip().startswith("return_call ")

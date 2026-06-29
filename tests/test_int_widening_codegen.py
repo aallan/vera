@@ -153,6 +153,45 @@ public fn mbint(@Int -> @Int)
 { match @Int.0 { @Int -> @Int.0 } }
 """
 
+# #813 review (C1): a @Nat-returning CALL widened at the return position.  This
+# is the case the original corpus missed — codegen's _result_is_nat must resolve
+# make's @Nat return via the side-table, and the return guard must survive
+# tail-call lowering (the call is in tail position).  Pre-fix: returned -1.
+_WIDEN_RETURN_CALL = """
+private fn make(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ make(@Nat.0) }
+"""
+
+# I2 controls: a genuine @Int source at a widening-target slot must NOT trap on
+# a negative value (the guard keys on a @Nat source, not the @Int target).
+_RETURN_INT_SOURCE = """
+public fn ret_int(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+_LET_INT_SOURCE = """
+public fn let_int(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = @Int.0; @Int.0 }
+"""
+
+# S5: pipe arg `@Nat.0 |> identity()` desugars to identity(@Nat.0); codegen
+# guards it at the call-argument site, so u64.MAX must trap.
+_WIDEN_PIPE = """
+private fn identity(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn pipe_widen(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 |> identity() }
+"""
+
 
 class TestNatToIntWideningTrap813:
     def test_return_widening_traps_above_i64_max(self) -> None:
@@ -202,3 +241,24 @@ class TestNatToIntWideningTrap813:
         # A genuine @Int scrutinee bound by `@Int ->` must NOT trap on a
         # negative value — the widen guard fires only on a @Nat source.
         _assert_no_trap(_MATCH_BIND_INT_SOURCE, "mbint", [-5], -5)
+
+    def test_return_call_result_widening_traps(self) -> None:
+        # #813 review C1: a @Nat-returning call widened at return must trap —
+        # codegen must resolve the call's @Nat return AND the guard must survive
+        # tail-call lowering.  Pre-fix this silently returned -1.
+        _assert_traps(_WIDEN_RETURN_CALL, "f", [U64_MAX])
+
+    def test_return_call_result_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_RETURN_CALL, "f", [7], 7)
+
+    def test_return_int_source_no_trap_on_negative(self) -> None:
+        _assert_no_trap(_RETURN_INT_SOURCE, "ret_int", [-5], -5)
+
+    def test_let_int_source_no_trap_on_negative(self) -> None:
+        _assert_no_trap(_LET_INT_SOURCE, "let_int", [-5], -5)
+
+    def test_pipe_widening_traps(self) -> None:
+        _assert_traps(_WIDEN_PIPE, "pipe_widen", [U64_MAX])
+
+    def test_pipe_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_PIPE, "pipe_widen", [42], 42)

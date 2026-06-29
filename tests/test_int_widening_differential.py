@@ -121,6 +121,42 @@ public fn mb(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
 { match @Nat.0 { @Int -> @Int.0 } }
 """, "mb"),
+    # #813 review: a @Nat-returning *call* result widened to @Int.  Codegen's
+    # _result_is_nat must resolve the callee's @Nat return via the side-table
+    # (not _infer_fncall_vera_type, which can't see @Nat through i64) AND the
+    # return-position guard must survive tail-call lowering — both regressions
+    # the original corpus (bare-slot values only) missed, returning -1.
+    ("return_call", """
+private fn make(@Nat -> @Nat) requires(true) ensures(true) effects(pure) { @Nat.0 }
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { make(@Nat.0) }
+""", "f"),
+    ("let_call", """
+private fn make(@Nat -> @Nat) requires(true) ensures(true) effects(pure) { @Nat.0 }
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { let @Int = make(@Nat.0); @Int.0 }
+""", "f"),
+    ("call_arg_call", """
+private fn make(@Nat -> @Nat) requires(true) ensures(true) effects(pure) { @Nat.0 }
+private fn take_int(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { take_int(make(@Nat.0)) }
+""", "f"),
+    # #813 review: a GENERIC callee instantiated to T=Nat — monomorphisation
+    # picks `identity$Nat`, whose @Nat return must still be resolved via the
+    # side-table (`_infer_fncall_vera_type` maps the erased i64 back to "Int"),
+    # at both the return and let sites.  Pre-fix these returned -1.
+    ("generic_return", """
+private forall<T> fn identity(@T -> @T) requires(true) ensures(true) effects(pure) { @T.0 }
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { identity(@Nat.0) }
+""", "f"),
+    ("generic_let", """
+private forall<T> fn identity(@T -> @T) requires(true) ensures(true) effects(pure) { @T.0 }
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure) { let @Int = identity(@Nat.0); @Int.0 }
+""", "f"),
+    # #813 review (I4): an if-expr whose branches are both @Nat is itself @Nat,
+    # so widening it to @Int must guard — exercises the _result_is_nat join.
+    ("if_join", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ if @Nat.0 > 5 then { @Nat.0 } else { @Nat.0 } }
+""", "f"),
 ]
 
 _DISCLOSED = [
