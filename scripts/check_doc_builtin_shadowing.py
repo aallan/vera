@@ -24,6 +24,7 @@ those ``fn <builtin>`` lines are correct there — they are not user examples.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -77,16 +78,22 @@ def doc_files(root: Path) -> list[Path]:
     ``examples/README.md`` (a checked surface via ``check_examples_readme.py``),
     so an E151-invalid example there is caught too (CR #821 review).  The
     ``_EXEMPT`` reference files and the generated / vendored / artefact trees in
-    ``_SKIP_DIRS`` are excluded."""
-    files = sorted(root.rglob("*.md"))
-    return [
-        f
-        for f in files
-        if f.relative_to(root).as_posix() not in _EXEMPT
-        and not any(
-            part in _SKIP_DIRS for part in f.relative_to(root).parts
-        )
-    ]
+    ``_SKIP_DIRS`` are excluded.
+
+    Uses ``os.walk`` with in-place pruning of ``_SKIP_DIRS`` from ``dirnames``
+    so traversal never *descends* into ``.venv`` / ``node_modules`` etc. — vs.
+    ``rglob``, which would stat every file under those (large) trees first and
+    only then filter them out (CR #821 review)."""
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            if not name.endswith(".md"):
+                continue
+            f = Path(dirpath) / name
+            if f.relative_to(root).as_posix() not in _EXEMPT:
+                out.append(f)
+    return sorted(out)
 
 
 def main() -> int:

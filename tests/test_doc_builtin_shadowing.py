@@ -66,6 +66,13 @@ def test_flags_generic_forall_builtin_redefinition() -> None:
         "private forall<T where Eq<T>> fn clamp(@T -> @T)\n", reject) == [
         (1, "clamp")
     ]
+    # A genuinely nested header with multiple `>` pairs (`Map<K, V>` inside
+    # `Ord<...>` inside `forall<...>`) must still match — the greedy
+    # `forall<.*>` has to look past every inner `>` to the one before `fn`.
+    assert find_shadowing_defs(
+        "public forall<T where Ord<Map<K, V>>> fn max(@T -> @T)\n", reject) == [
+        (1, "max")
+    ]
     # A generic helper with a non-built-in name is still ignored.
     assert find_shadowing_defs(
         "forall<T> fn my_helper(@T -> @T)\n", reject) == []
