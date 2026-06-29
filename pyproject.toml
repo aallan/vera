@@ -58,7 +58,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6",
     "mypy>=2.1.0",
-    "ruff>=0.15.18",
+    "ruff>=0.15.20",
     "pre-commit>=4.6.0",
     "pip-licenses>=5.5.5",
     # Self-referential extra: dev pulls in [lsp] so CI's single
