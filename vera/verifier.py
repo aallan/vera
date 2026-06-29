@@ -261,6 +261,27 @@ class ContractVerifier:
         target = self._target_type_of(arg)
         return target is not None and self._is_nat_type(target)
 
+    def _int_widening_target(
+        self, arg: ast.Expr, formal: Type | None
+    ) -> bool:
+        """True if *arg* binds into a slot whose declared or *instantiated*
+        type is @Int — the widening dual of :py:meth:`_nat_binding_target`
+        (#813).
+
+        Pairs with :py:meth:`_result_is_nat` (the value side): an @Int slot
+        receiving an intrinsically-@Nat value is a @Nat -> @Int widening that
+        can reinterpret above i64.MAX.  Generic-formal resolution mirrors
+        ``_nat_binding_target``: a concretely-@Int formal obligates directly; a
+        ``TypeVar`` formal fixed to @Int at this site is recovered from the
+        checker's instantiated-target side-table.
+        """
+        if formal is not None and self._is_int_type(formal):
+            return True
+        if formal is not None and not contains_typevar(formal):
+            return False
+        target = self._target_type_of(arg)
+        return target is not None and self._is_int_type(target)
+
     def _refined_binding_target(
         self, arg: ast.Expr, formal: Type | None
     ) -> "Type | None":
@@ -2613,6 +2634,14 @@ class ContractVerifier:
                             # guard keys on the resolved call target, CR #756).
                             guarded=True,
                         )
+                    elif (self._int_widening_target(arg, formal)
+                            and self._result_is_nat(arg)):
+                        # #813: an intrinsically-@Nat argument widening into an
+                        # @Int formal can reinterpret above i64.MAX.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="call argument",
+                        )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -2805,6 +2834,14 @@ class ContractVerifier:
                     elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
                         self._check_nat_binding_obligation(
+                            decl, stmt.value, smt, cur_env, block_assumptions,
+                            site="let binding",
+                        )
+                    elif (self._is_int_type(let_ty)
+                            and self._result_is_nat(stmt.value)):
+                        # #813: `let @Int = <@Nat>` widens the @Nat RHS into the
+                        # @Int slot — obligate `value <= i64.MAX`.
+                        self._check_int_widening_obligation(
                             decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
                         )

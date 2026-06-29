@@ -103,3 +103,53 @@ public fn ident(@Int -> @Int)
 { @Int.0 }
 """)
         assert [o for o in result.obligations if o.kind == _KIND] == []
+
+
+class TestNatToIntWideningSites813:
+    """The widening obligation fires at every coercion site, not just the
+    return position (#813 stage 2b — the dual of #552's binding-site walker)."""
+
+    def test_call_argument_widening(self) -> None:
+        # @Nat.0 passed to an @Int formal widens at the call site.  The call
+        # result is @Int (takes_int returns @Int), so the only widening is the
+        # argument, not the return — exactly one coercion obligation, Tier-3.
+        result = _verify("""
+public fn takes_int(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn caller(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ takes_int(@Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_let_binding_widening(self) -> None:
+        # `let @Int = @Nat.0` widens the @Nat RHS into the @Int slot.  The body
+        # then returns @Int.0 (@Int — no return widening), so exactly one
+        # coercion obligation at the let site.
+        result = _verify("""
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Int = @Nat.0; @Int.0 }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_call_argument_widening_discharged_when_bounded(self) -> None:
+        # A bounded @Nat argument discharges the call-site widening at Tier 1.
+        result = _verify("""
+public fn takes_int(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn caller(@Nat -> @Int)
+  requires(@Nat.0 < 100) ensures(true) effects(pure)
+{ takes_int(@Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "verified", [(o.kind, o.status) for o in co]
