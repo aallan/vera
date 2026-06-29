@@ -3514,7 +3514,13 @@ private fn wrap(@Int -> @Int)
 """, [mod])
         # requires(true) → Tier 1, ensures(@Int.result >= 0) → Tier 1 (via abs postcondition)
         assert result.summary.tier1_verified >= 2
-        assert result.summary.tier3_runtime == 0
+        # #813: `abs` returns @Nat, so `wrap`'s `{ abs(@Int.0) }` widens a @Nat
+        # result into the @Int return — a nat_to_int_coerce obligation.  The
+        # value can exceed i64.MAX (abs(i64.MIN) = 2**63), so it is honest Tier-3
+        # (runtime-guarded), not provable.  This is exactly the soundness hole
+        # #813 closes: without it `ensures(@Int.result >= 0)` proved over the
+        # unbounded @Nat while abs(i64.MIN) returns a negative i64 at runtime.
+        assert result.summary.tier3_runtime == 1
 
     # -- No regression on single-module -----------------------------------
 
@@ -4099,9 +4105,16 @@ private fn sum(@List<Int> -> @Int)
             total += result.summary.total
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
+        # #813: the @Nat -> @Int widening obligation (nat_to_int_coerce) now
+        # fires at four genuine return-position widenings across the corpus —
+        # `array_utilities.vera::count_above_cutoff` (a @Nat fold result) and
+        # `::lowest_grade`, `html.vera::text_length` (string_length is @Nat), and
+        # `nested_closures.vera::grid_sum` — each a @Nat value returned as @Int
+        # that can exceed i64.MAX, so each is honest Tier-3 (runtime-guarded):
+        # +4 T3, +4 total: 270/82/352 -> 270/86/356.
         assert t1 == 270, f"Expected 270 T1, got {t1}"
-        assert t3 == 82, f"Expected 82 T3, got {t3}"
-        assert total == 352, f"Expected 352 total, got {total}"
+        assert t3 == 86, f"Expected 86 T3, got {t3}"
+        assert total == 356, f"Expected 356 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

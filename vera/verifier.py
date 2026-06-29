@@ -1648,6 +1648,22 @@ class ContractVerifier:
                     self._record_refined_bind_tier3(
                         decl, ret_node, "return type", guarded=True)
 
+        # 7c. #813: a bare @Nat body widening into an @Int return reinterprets
+        #     its bit pattern above i64.MAX (u64.MAX -> -1), so a Tier-1 proof
+        #     over the unbounded non-negative value is unsound (the postcondition
+        #     `@Int.result >= 0` proves yet `widen(u64.MAX)` returns -1).
+        #     Obligate `result <= i64.MAX` — the dual of #552's @Int->@Nat `>= 0`
+        #     narrowing.  The codegen return guard backs the Tier-3 case so the
+        #     postcondition stays sound (the function traps before returning a
+        #     reinterpreted value).  Refined @Int returns are handled by 7b.
+        if (decl.body is not None
+                and self._is_int_type(ret_type)
+                and self._result_is_nat(decl.body)):
+            self._check_int_widening_obligation(
+                decl, decl.body, smt, slot_env, list(assumptions),
+                site="return type",
+            )
+
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
         # into the decreases checking below.
@@ -3727,6 +3743,59 @@ class ContractVerifier:
             self._record_nat_bind_tier3(
                 decl, node, site, "timeout", guarded=True)
 
+    def _check_int_widening_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Discharge a ``value <= i64.MAX`` obligation at one @Nat -> @Int
+        widening site (#813) — the dual of
+        :py:meth:`_check_nat_binding_obligation`'s ``value >= 0``.
+
+        @Nat is u64 and @Int is i64, so a @Nat in (i64.MAX, u64.MAX]
+        reinterprets its bit pattern when widened to @Int (u64.MAX -> -1).
+        Two-check, mirroring :py:meth:`_check_overflow_obligation` (#798): a
+        value provably ``<= i64.MAX`` -> Tier 1; provably ``> i64.MAX`` -> loud
+        E530; else honest Tier-3 (the codegen coercion trap is the runtime
+        guard, so the postcondition stays sound).  Path conditions in
+        ``smt._path_conditions`` are folded in by
+        :py:meth:`SmtContext.check_valid`.
+        """
+        self.summary.total += 1
+        val = smt.translate_expr(value_node, slot_env)
+        if val is None:  # pragma: no cover — untranslatable value
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "tier3")
+            return
+
+        hi = z3.IntVal(_I64_MAX)
+        safe = smt.check_valid(val <= hi, list(assumptions))
+        if safe.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "verified")
+            return
+
+        # Not provably in range — is it provably OUT of range (a real bug)?
+        bad = smt.check_valid(val > hi, list(assumptions))
+        if bad.status == "verified":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "violated",
+                error_code="E530", counterexample=safe.counterexample,
+            )
+            self._report_nat_to_int(decl, value_node, site, safe.counterexample)
+        else:
+            self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "tier3")
+
     def _check_refined_binding_obligation(
         self,
         decl: ast.FnDecl,
@@ -4816,6 +4885,53 @@ class ContractVerifier:
             error_code="E503",
         )
 
+    def _report_nat_to_int(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E530 diagnostic for a provably out-of-range @Nat -> @Int
+        widening (#813) — the dual of :py:meth:`_report_nat_binding`."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = (
+            f"@Nat value widening into an @Int {site} in '{decl.name}' "
+            f"may exceed i64.MAX."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            node,
+            description,
+            rationale=(
+                "@Nat is u64 and @Int is i64, and the type checker permits "
+                "Nat <: Int widening.  A @Nat value above i64.MAX "
+                "(9223372036854775807) reinterprets its bit pattern when "
+                "widened — u64.MAX becomes -1 — so a postcondition proved over "
+                "the non-negative mathematical value would be violated at "
+                "runtime.  The SMT solver found inputs where the value exceeds "
+                "i64.MAX."
+            ),
+            fix=(
+                "Add a precondition bounding the value, e.g. "
+                "`requires(@Nat.0 <= 9223372036854775807)`.  Alternatively "
+                "guard the widen: `if @Nat.0 <= 9223372036854775807 then ... "
+                "else ...` — the path condition discharges the obligation in "
+                "the then-branch."
+            ),
+            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
+            error_code="E530",
+        )
+
     def _report_refined_binding(
         self,
         decl: ast.FnDecl,
@@ -5036,6 +5152,61 @@ class ContractVerifier:
             return False
         # UnaryExpr: negation always produces @Int.
         # Other AST node types: conservative False.
+        return False
+
+    def _result_is_nat(self, expr: ast.Expr) -> bool:
+        """True iff the *result value* of *expr* is intrinsically @Nat — the
+        precise static result type, used by the #813 return-position widening
+        obligation so it fires only on an actual @Nat -> @Int widening.
+
+        Distinct from :py:meth:`_is_nat_typed`, which over-approximates ("could
+        any sub-position be @Nat", treating non-negative ``IntLit``\\ s as @Nat
+        and an ``@Int + @Nat`` sum as @Nat).  Here a single @Int component makes
+        the result @Int, and a literal in an @Int context is just an @Int
+        literal (already range-checked by #812), never a reinterpreted runtime
+        @Nat value — so it contributes False.  Only a value carrying the @Nat
+        invariant forward — a @Nat slot, a @Nat-returning call, or @Nat-only
+        arithmetic — is a genuine widening.  The join descends ``Block`` trailing
+        exprs, ``IfExpr`` branches, and ``MatchExpr`` arms (all must be @Nat).
+        """
+        if isinstance(expr, ast.Block):
+            return expr.expr is not None and self._result_is_nat(expr.expr)
+        if isinstance(expr, ast.IfExpr):
+            return (self._result_is_nat(expr.then_branch)
+                    and self._result_is_nat(expr.else_branch))
+        if isinstance(expr, ast.MatchExpr):
+            return bool(expr.arms) and all(
+                self._result_is_nat(arm.body) for arm in expr.arms)
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.BinaryExpr):
+            # @Nat arithmetic stays @Nat only when BOTH operands are @Nat; an
+            # @Int operand widens the result to @Int.  Non-arithmetic ops
+            # (comparison / logical) produce @Bool, not @Nat.
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                return (self._result_is_nat(expr.left)
+                        and self._result_is_nat(expr.right))
+            return False
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # A call whose callee returns @Nat is a genuine widening, but the
+            # callee's return type cannot be resolved robustly here: the
+            # checker's semantic side-table is sparse (None for ordinary calls),
+            # and `env.lookup_function` resolves a bare name to the *built-in*
+            # rather than an imported/shadowing definition (e.g. it returns the
+            # @Nat built-in `abs` for a call that the checker bound to an
+            # imported @Int `math.abs`), which would fire spuriously.  Treat a
+            # call result conservatively as not-@Nat for the return-position
+            # obligation; call-result widening is covered at the call-argument
+            # sites by the binding-site walker (#813 stage 2b), where the callee
+            # is resolved precisely.
+            resolved = self._resolved_type_of(expr)
+            return resolved is not None and self._is_nat_type(resolved)
+        # IntLit (a literal directly in the @Int target context), UnaryExpr
+        # (negation always produces @Int), and everything else: not a
+        # reinterpreted runtime @Nat value.
         return False
 
     def _has_nat_origin(self, expr: ast.Expr) -> bool:
