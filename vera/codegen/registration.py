@@ -266,6 +266,7 @@ class RegistrationMixin:
         offset = 4  # tag (i32) at offset 0, occupies 4 bytes
         field_offsets: list[tuple[int, str]] = []
         nat_fields: list[bool] = []
+        int_fields: list[bool] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -279,6 +280,9 @@ class RegistrationMixin:
                 # (type param) instantiated to @Nat is erased to i64
                 # here, so it stays statically-only (verifier-obligated).
                 nat_fields.append(self._type_resolves_to_nat(field_te))
+                # #813: a concrete @Int field receives the runtime @Nat -> @Int
+                # widening guard when constructed with a @Nat argument.
+                int_fields.append(self._type_resolves_to_int(field_te))
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -286,6 +290,7 @@ class RegistrationMixin:
             field_offsets=tuple(field_offsets),
             total_size=total_size,
             nat_fields=tuple(nat_fields),
+            int_fields=tuple(int_fields),
         )
 
     def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:

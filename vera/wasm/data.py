@@ -133,6 +133,13 @@ class DataMixin:
                 if (i < len(layout.nat_fields) and layout.nat_fields[i]
                         and self._narrows_into_nat(expr.args[i])):
                     field_val = self._emit_nat_bind_guard(field_val)
+                # #813: dual — runtime-guard a @Nat -> @Int widening into a
+                # concrete @Int constructor field (`WrapI(@Nat.0)` where
+                # `WrapI(Int)`); a @Nat above i64.MAX would otherwise be stored
+                # and later extracted as a reinterpreted negative @Int.
+                elif (i < len(layout.int_fields) and layout.int_fields[i]
+                        and self._result_is_nat(expr.args[i])):
+                    field_val = self._emit_int_widen_guard(field_val)
                 instructions.extend(field_val)
                 instructions.append(f"{wt}.store offset={fo}")
 

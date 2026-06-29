@@ -24,6 +24,11 @@ class ConstructorLayout:
     # for built-in layouts, where consumers bounds-check (`i < len(...)`)
     # rather than assume a flag exists for every field.
     nat_fields: tuple[bool, ...] = ()
+    # #813: per-field "is a concrete @Int field" flags, the dual of
+    # ``nat_fields``, for the runtime @Nat -> @Int *widening* guard when a
+    # @Nat-typed argument is stored into an @Int field.  Same length / empty
+    # conventions as ``nat_fields``.
+    int_fields: tuple[bool, ...] = ()
 
     def __post_init__(self) -> None:
         # #759: ``nat_fields`` runs parallel to ``field_offsets``.  User
@@ -36,6 +41,11 @@ class ConstructorLayout:
         if self.nat_fields and len(self.nat_fields) != len(self.field_offsets):
             raise ValueError(
                 f"nat_fields (len {len(self.nat_fields)}) must match "
+                f"field_offsets (len {len(self.field_offsets)}) or be empty"
+            )
+        if self.int_fields and len(self.int_fields) != len(self.field_offsets):
+            raise ValueError(
+                f"int_fields (len {len(self.int_fields)}) must match "
                 f"field_offsets (len {len(self.field_offsets)}) or be empty"
             )
 

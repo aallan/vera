@@ -113,6 +113,17 @@ public fn f(@Nat -> @Int)
 { let @Int = @Nat.0; @Int.0 }
 """
 
+# #813 stage 2c — @Nat into a concrete @Int constructor field, found by the
+# completeness audit.  Codegen guards the concrete @Int field via the layout
+# `int_fields` bitmap (the dual of `nat_fields`); without the guard the stored
+# bits reinterpret to a negative @Int when extracted (u64.MAX -> -1).
+_WIDEN_CTOR_FIELD = """
+private data WrapInt { WrapInt(Int) }
+public fn ctor_field(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @WrapInt = WrapInt(@Nat.0); match @WrapInt.0 { WrapInt(@Int) -> @Int.0 } }
+"""
+
 
 class TestNatToIntWideningTrap813:
     def test_return_widening_traps_above_i64_max(self) -> None:
@@ -139,3 +150,9 @@ class TestNatToIntWideningTrap813:
 
     def test_let_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_LET, "f", [9], 9)
+
+    def test_ctor_field_widening_traps(self) -> None:
+        _assert_traps(_WIDEN_CTOR_FIELD, "ctor_field", [U64_MAX])
+
+    def test_ctor_field_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_CTOR_FIELD, "ctor_field", [42], 42)

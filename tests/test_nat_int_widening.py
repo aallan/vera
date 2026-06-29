@@ -153,3 +153,101 @@ public fn caller(@Nat -> @Int)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert co[0].status == "verified", [(o.kind, o.status) for o in co]
+
+
+class TestNatToIntWideningCallResult813:
+    """#813 step 5 — a @Nat-returning *call* result widened to @Int must obligate
+    too, matching the codegen guard (codegen resolves the callee robustly via
+    ``_infer_fncall_vera_type``).  The verifier's ``_result_is_nat`` FnCall branch
+    was conservative (``_resolved_type_of`` only); the checker's semantic
+    side-table is sparse for ordinary calls, so the call result classified
+    not-@Nat and ``verify`` silently proved a postcondition codegen then guards at
+    runtime — a verifier↔codegen divergence the differential test now forbids."""
+
+    def test_nat_returning_call_widened_at_return(self) -> None:
+        # widen_call returns a @Nat-typed call result (make_nat -> @Nat) through
+        # an @Int return type.  The result is unbounded, so the coercion is
+        # Tier-3 (runtime-guarded) — but it MUST be obligated, not silently
+        # assumed exact.  Pre-step-5: no obligation (conservative FnCall branch).
+        result = _verify("""
+public fn make_nat(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+
+public fn widen_call(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ make_nat(@Int.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+
+class TestNatToIntWideningConstructorField813:
+    """#813 stage 2c — @Nat -> @Int widening into an @Int constructor field,
+    found by the completeness audit (workflow wie2dpfln) and confirmed by
+    `vera run`: a @Nat stored into an @Int field and later extracted as @Int
+    silently reinterprets above i64.MAX (u64.MAX -> -1)."""
+
+    def test_concrete_int_field_tier3_guarded(self) -> None:
+        # `WrapInt(Int)` field receiving @Nat.0 — codegen guards the concrete
+        # @Int field (layout `int_fields`), so an unbounded @Nat is Tier-3
+        # (runtime-guarded), not silently assumed exact.
+        result = _verify("""
+private data WrapInt { WrapInt(Int) }
+public fn ctor_field(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @WrapInt = WrapInt(@Nat.0); match @WrapInt.0 { WrapInt(@Int) -> @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_concrete_int_field_discharged_when_bounded(self) -> None:
+        result = _verify("""
+private data WrapInt { WrapInt(Int) }
+public fn ctor_field(@Nat -> @Int)
+  requires(@Nat.0 < 100) ensures(true) effects(pure)
+{ let @WrapInt = WrapInt(@Nat.0); match @WrapInt.0 { WrapInt(@Int) -> @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "verified", [(o.kind, o.status) for o in co]
+
+    def test_generic_int_field_unguarded_disclosed_E531(self) -> None:
+        # `Some(@Nat.0)` into `Option<Int>` — the generic field erases to i64
+        # with no per-field mono metadata, so codegen cannot guard it.  The
+        # widening is disclosed UNGUARDED (E531) rather than silently assumed
+        # exact or claiming a runtime check it never gets (the dual of the
+        # generic-@Nat-field E504 narrowing case).
+        result = _verify("""
+public fn opt_field(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3_unguarded", [(o.kind, o.status) for o in co]
+        assert co[0].error_code == "E531", co[0].error_code
+        assert any(d.error_code == "E531" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
+    def test_tuple_construction_component_unguarded_disclosed_E531(self) -> None:
+        # `Tuple(@Nat.0, ...)` widens a @Nat into an @Int tuple component.
+        # Codegen does not component-guard a tuple at construction (the boundary
+        # guard is a separate site), so the widening is disclosed UNGUARDED
+        # (E531), mirroring the @Nat tuple-component narrowing's E504.
+        result = _verify("""
+public fn tup_construct(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Tuple<Int, Int> = Tuple(@Nat.0, 0); match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert all(o.status == "tier3_unguarded" for o in co), [
+            (o.kind, o.status) for o in co
+        ]
+        assert any(d.error_code == "E531" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]

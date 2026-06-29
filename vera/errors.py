@@ -521,6 +521,7 @@ ERROR_CODES: dict[str, str] = {
     "E528": "Arithmetic overflow",
     "E529": "float_to_int domain (NaN, infinity, or out of i64 range)",
     "E530": "Nat-to-Int widening out of i64 range",
+    "E531": "Nat-to-Int widening unverified and not runtime-guarded",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",

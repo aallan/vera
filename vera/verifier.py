@@ -2678,6 +2678,18 @@ class ContractVerifier:
                             # an untranslatable arg is genuinely unguarded.
                             guarded=self._is_nat_type(field_ty),
                         )
+                    elif (self._int_widening_target(arg, field_ty)
+                            and self._result_is_nat(arg)):
+                        # #813: dual — a @Nat argument widening into an @Int
+                        # field can reinterpret above i64.MAX.  A concrete @Int
+                        # field is codegen-guarded (the layout `int_fields`
+                        # bitmap); a generic-instantiated one erases to i64 with
+                        # no per-field mono metadata, so it is unguarded (E531).
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
+                            site="constructor field",
+                            guarded=self._is_int_type(field_ty),
+                        )
             else:
                 # `Tuple` (and any other built-in carrier) is NOT user-
                 # registered, so `_lookup_constructor_info` is None and the
@@ -2722,6 +2734,17 @@ class ContractVerifier:
                         # site, not this one).
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
+                            site="tuple component", guarded=False,
+                        )
+                    elif (self._is_int_type(comp_ty)
+                            and self._result_is_nat(arg)):
+                        # #813: dual — a @Nat component widening into an @Int
+                        # tuple slot.  guarded=False, like the @Nat path above:
+                        # codegen does not component-guard a tuple at
+                        # construction (the boundary guard is a separate site),
+                        # so disclose the unguarded widening via E531.
+                        self._check_int_widening_obligation(
+                            decl, arg, smt, slot_env, list(assumptions),
                             site="tuple component", guarded=False,
                         )
             for arg in expr.args:
@@ -3789,6 +3812,7 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
+        guarded: bool = True,
     ) -> None:
         """Discharge a ``value <= i64.MAX`` obligation at one @Nat -> @Int
         widening site (#813) — the dual of
@@ -3798,17 +3822,21 @@ class ContractVerifier:
         reinterprets its bit pattern when widened to @Int (u64.MAX -> -1).
         Two-check, mirroring :py:meth:`_check_overflow_obligation` (#798): a
         value provably ``<= i64.MAX`` -> Tier 1; provably ``> i64.MAX`` -> loud
-        E530; else honest Tier-3 (the codegen coercion trap is the runtime
-        guard, so the postcondition stays sound).  Path conditions in
-        ``smt._path_conditions`` are folded in by
+        E530; else Tier-3, where ``guarded`` decides honesty (the dual of
+        ``_check_nat_binding_obligation``): a codegen-guarded site
+        (``guarded=True`` — return, let, call-arg, concrete @Int field)
+        counts ``tier3_runtime``; an unguarded one (``guarded=False`` —
+        tuple construction component, or a generic-instantiated @Int field
+        with no per-field mono metadata) surfaces an E531 warning and is
+        excluded from the totals, never claiming a runtime check it does not
+        get.  Path conditions in ``smt._path_conditions`` are folded in by
         :py:meth:`SmtContext.check_valid`.
         """
         self.summary.total += 1
         val = smt.translate_expr(value_node, slot_env)
         if val is None:  # pragma: no cover — untranslatable value
-            self.summary.tier3_runtime += 1
-            self._record_obligation(
-                decl.name, "nat_to_int_coerce", value_node, "tier3")
+            self._record_int_widen_tier3(
+                decl, value_node, site, "tier3", guarded=guarded)
             return
 
         hi = z3.IntVal(_I64_MAX)
@@ -3829,9 +3857,74 @@ class ContractVerifier:
             )
             self._report_nat_to_int(decl, value_node, site, safe.counterexample)
         else:
+            self._record_int_widen_tier3(
+                decl, value_node, site, "tier3", guarded=guarded)
+
+    def _record_int_widen_tier3(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        site: str,
+        status: ObligationStatus,
+        *,
+        guarded: bool,
+    ) -> None:
+        """Record a Tier-3 ``nat_to_int_coerce`` outcome, the #813 dual of
+        :py:meth:`_record_nat_bind_tier3`.  A codegen-guarded widening
+        (``guarded=True`` — return, let, call-arg, and the concrete @Int
+        constructor field) genuinely falls to a runtime coercion trap
+        (``tier3_runtime``).  The unguarded cases (``guarded=False`` — the
+        tuple-construction component and the generic-instantiated @Int field,
+        which erases to i64 with no per-field mono metadata) are neither
+        statically proven nor runtime-checked, so surface an E531 warning and
+        are excluded from the discharged totals rather than silently counting
+        a runtime check they never get."""
+        if guarded:
             self.summary.tier3_runtime += 1
             self._record_obligation(
-                decl.name, "nat_to_int_coerce", value_node, "tier3")
+                decl.name, "nat_to_int_coerce", value_node, status)
+        else:
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_to_int_coerce", value_node, "tier3_unguarded",
+                error_code="E531",
+            )
+            self._report_int_widen_unguarded(decl, value_node, site)
+
+    def _report_int_widen_unguarded(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an E531 warning for a @Nat -> @Int widening the SMT layer
+        could not discharge and codegen does not guard (#813) — the dual of
+        :py:meth:`_report_nat_binding_unguarded`'s E504."""
+        self._warning(
+            node,
+            (
+                f"@Nat value widening into an @Int {site} in '{decl.name}' "
+                "could not be verified statically and is not runtime-guarded "
+                "— constrain it with `requires(... <= 9223372036854775807)`, "
+                "bind it to a `let @Int` first (which is guarded), or guard it "
+                "with `if ... <= 9223372036854775807 then ... else ...`."
+            ),
+            rationale=(
+                "@Nat is u64 and @Int is i64, so a @Nat above i64.MAX "
+                "reinterprets to a negative @Int when widened.  The value is "
+                "outside Z3's decidable fragment (untranslatable or the solver "
+                "timed out), so the `<= i64.MAX` obligation could not be "
+                "discharged.  Codegen runtime-guards the concrete @Int "
+                "coercion sites (return, let, call-argument, concrete @Int "
+                "field) but not this one — a tuple-construction component, or a "
+                "generic-instantiated @Int field with no per-field mono "
+                "metadata — so here the widening is neither statically proven "
+                "nor runtime-checked."
+            ),
+            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
+            error_code="E531",
+            tier=3,
+        )
 
     def _check_refined_binding_obligation(
         self,
