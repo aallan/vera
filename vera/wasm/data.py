@@ -233,6 +233,12 @@ class DataMixin:
             # call-arg / ctor-field metadata.
             if self._resolve_base_type_name(type_name) == "Nat":
                 load = self._emit_nat_bind_guard(load)
+            # #813: a @Nat component destructured into an @Int slot
+            # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component widening.
+            # Like tuple *construction*, codegen does not guard it here (the
+            # component coercion has no per-element guard site); the verifier
+            # discloses it UNGUARDED (E531).  A future codegen guard for these
+            # is tracked as a follow-up.
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
             # PR #707 review: same heap-pointer rooting
@@ -293,7 +299,8 @@ class DataMixin:
 
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
-            expr.arms, scr_local, scr_wasm_type, result_type, env
+            expr.arms, scr_local, scr_wasm_type, result_type, env,
+            expr.scrutinee,
         )
         if arm_instrs is None:
             return None
@@ -318,8 +325,14 @@ class DataMixin:
         scr_wasm_type: str,
         result_type: str | None,
         env: WasmSlotEnv,
+        scrutinee: ast.Expr | None = None,
     ) -> list[str] | None:
-        """Compile match arms as a chained if-else cascade."""
+        """Compile match arms as a chained if-else cascade.
+
+        *scrutinee* is the match scrutinee expression (#813): threaded so a
+        top-level binding pattern can tell whether the bound value is @Nat
+        (`_result_is_nat`) and thus needs the @Nat -> @Int widening guard.
+        """
         if not arms:
             return None
 
@@ -334,7 +347,7 @@ class DataMixin:
         if cond is None or not remaining:
             # Unconditional arm (catch-all) or last arm — emit directly
             setup = self._setup_match_arm_env(
-                arm.pattern, scr_local, scr_wasm_type, env
+                arm.pattern, scr_local, scr_wasm_type, env, scrutinee
             )
             if setup is None:
                 return None
@@ -346,7 +359,7 @@ class DataMixin:
 
         # Conditional arm with more arms following
         setup = self._setup_match_arm_env(
-            arm.pattern, scr_local, scr_wasm_type, env
+            arm.pattern, scr_local, scr_wasm_type, env, scrutinee
         )
         if setup is None:
             return None
@@ -357,7 +370,7 @@ class DataMixin:
 
         # Compile remaining arms (else branch)
         else_instrs = self._compile_match_arms(
-            remaining, scr_local, scr_wasm_type, result_type, env
+            remaining, scr_local, scr_wasm_type, result_type, env, scrutinee
         )
         if else_instrs is None:
             return None
@@ -439,6 +452,7 @@ class DataMixin:
         scr_local: int,
         scr_wasm_type: str,
         env: WasmSlotEnv,
+        scrutinee: ast.Expr | None = None,
     ) -> tuple[list[str], WasmSlotEnv] | None:
         """Extract fields and set up environment bindings for a match arm.
 
@@ -466,6 +480,15 @@ class DataMixin:
             if (self._resolve_base_type_name(type_name) == "Nat"
                     and scr_wasm_type == "i64"):
                 bind_val = self._emit_nat_bind_guard(bind_val)
+            # #813: dual — `match @Nat.0 { @Int -> … }` binds a @Nat scrutinee
+            # into an @Int slot, widening it.  Guard only when the scrutinee is
+            # provably @Nat (`_result_is_nat`), never a genuine @Int scrutinee
+            # (which can be legitimately negative).
+            elif (self._resolve_base_type_name(type_name) == "Int"
+                    and scr_wasm_type == "i64"
+                    and scrutinee is not None
+                    and self._result_is_nat(scrutinee)):
+                bind_val = self._emit_int_widen_guard(bind_val)
             instrs = [
                 *bind_val,
                 f"local.set {local_idx}",

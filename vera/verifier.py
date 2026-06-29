@@ -2935,6 +2935,18 @@ class ContractVerifier:
                                     decl, sub, smt, cur_env, block_assumptions,
                                     site="tuple destructure",
                                 )
+                            elif (self._is_int_type(comp_ty)
+                                    and self._result_is_nat(sub)):
+                                # #813: dual — a @Nat literal component
+                                # destructured into an @Int slot widens it.
+                                # Codegen does not guard the tuple-component
+                                # coercion (like construction), so disclose
+                                # E531 (guarded=False).
+                                self._check_int_widening_obligation(
+                                    decl, sub, smt, cur_env,
+                                    list(block_assumptions),
+                                    site="tuple destructure", guarded=False,
+                                )
                     else:
                         # Non-literal source (#747): project the tuple
                         # components out of the translated RHS and obligate
@@ -3113,6 +3125,15 @@ class ContractVerifier:
                             self._check_nat_binding_obligation(
                                 decl, expr.scrutinee, smt, slot_env,
                                 assumptions, site="match binding",
+                            )
+                        elif (self._is_int_type(pat_ty)
+                                and self._result_is_nat(expr.scrutinee)):
+                            # #813: dual — `match @Nat.0 { @Int -> }` widens the
+                            # @Nat scrutinee into the @Int bind slot.  Codegen
+                            # guards the match-bind (data.py), so tier3_runtime.
+                            self._check_int_widening_obligation(
+                                decl, expr.scrutinee, smt, slot_env,
+                                list(assumptions), site="match binding",
                             )
                     elif isinstance(arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
@@ -4684,6 +4705,7 @@ class ContractVerifier:
         # the rest fall to the @Nat `>= 0` path.  The two lists stay disjoint.
         refined_narrowing: list[tuple[int, Type]] = []
         nat_narrowing: list[int] = []
+        int_widening: list[int] = []  # #813: @Nat source -> @Int target
         for i, te in enumerate(stmt.type_bindings):
             if i >= len(source_args):
                 continue
@@ -4694,7 +4716,10 @@ class ContractVerifier:
             elif (self._is_nat_type(target)
                     and not self._is_nat_type(source_args[i])):
                 nat_narrowing.append(i)
-        if not refined_narrowing and not nat_narrowing:
+            elif (self._is_int_type(target)
+                    and self._is_nat_type(source_args[i])):
+                int_widening.append(i)
+        if not refined_narrowing and not nat_narrowing and not int_widening:
             return
         rhs_z3 = smt.translate_expr(stmt.value, slot_env)
         sort = None
@@ -4721,6 +4746,13 @@ class ContractVerifier:
                 self.summary.total += 1
                 self._record_refined_bind_tier3(
                     decl, stmt.value, "tuple destructure", guarded=False)
+            for _ in int_widening:
+                # #813: codegen does not guard a tuple-destructure component
+                # widening (like tuple construction), so disclose E531.
+                self.summary.total += 1
+                self._record_int_widen_tier3(
+                    decl, stmt.value, "tuple destructure", "tier3",
+                    guarded=False)
             return
         # `i` is a valid field index (filtered against `source_args`, whose
         # length matches the tuple sort's fields), so each accessor is safe
@@ -4737,6 +4769,15 @@ class ContractVerifier:
                 decl, comp_term, target, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
                 source_ty=source_args[i],
+            )
+        for i in int_widening:
+            # #813: a @Nat component destructured into an @Int slot widens it;
+            # codegen does not guard the tuple-component coercion, so disclose
+            # the unguarded widening (E531) — the dual of the @Nat narrowing.
+            comp_term = sort.accessor(idx, i)(rhs_z3)
+            self._check_int_widening_obligation_term(
+                decl, comp_term, smt, assumptions,
+                site="tuple destructure", node=stmt.value, guarded=False,
             )
 
     def _record_nat_bind_tier3(

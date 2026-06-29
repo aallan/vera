@@ -252,6 +252,37 @@ public fn arr_elem(@Nat -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
+    def test_match_bind_widening_tier3(self) -> None:
+        # `match @Nat.0 { @Int -> @Int.0 }` binds a @Nat scrutinee into an @Int
+        # slot — codegen guards the match-bind, so the unbounded widening is
+        # Tier-3 (runtime-guarded), not a silent false Tier-1.
+        result = _verify("""
+public fn mb(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { @Int -> @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_tuple_destructure_literal_unguarded_disclosed_E531(self) -> None:
+        # `let Tuple<@Int,@Int> = Tuple(@Nat.0, @Nat.0)` widens each @Nat
+        # component into an @Int slot.  Codegen does not guard a tuple-component
+        # coercion (like construction), so it is disclosed UNGUARDED (E531).
+        result = _verify("""
+public fn tup_destr(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(@Nat.0, @Nat.0); @Int.0 }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert all(o.status == "tier3_unguarded" for o in co), [
+            (o.kind, o.status) for o in co
+        ]
+        assert any(d.error_code == "E531" for d in result.diagnostics), [
+            d.error_code for d in result.diagnostics
+        ]
+
     def test_pipe_argument_widening_tier3(self) -> None:
         # `@Nat.0 |> identity()` desugars to `identity(@Nat.0)`, widening a @Nat
         # into identity's @Int formal.  Codegen guards the desugared call-arg,

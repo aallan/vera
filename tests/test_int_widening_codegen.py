@@ -136,6 +136,23 @@ public fn box_extract(@Nat -> @Int)
 { let @Box = Box(@Nat.0); match @Box.0 { Box(@Int) -> @Int.0 } }
 """
 
+# #813 stage 2c — `match @Nat.0 { @Int -> }` binds a @Nat scrutinee into an @Int
+# slot.  Codegen guards the bind only when the scrutinee is @Nat
+# (`_result_is_nat`), never a genuine @Int scrutinee (which can be negative).
+_WIDEN_MATCH_BIND = """
+public fn mb(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { @Int -> @Int.0 } }
+"""
+
+# Control: a @Int scrutinee match-bind must NOT trap on a negative value —
+# proves the widen guard keys on the SOURCE being @Nat, not the target slot.
+_MATCH_BIND_INT_SOURCE = """
+public fn mbint(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { @Int -> @Int.0 } }
+"""
+
 
 class TestNatToIntWideningTrap813:
     def test_return_widening_traps_above_i64_max(self) -> None:
@@ -174,3 +191,14 @@ class TestNatToIntWideningTrap813:
 
     def test_adt_subpattern_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_ADT_SUBPATTERN, "box_extract", [42], 42)
+
+    def test_match_bind_widening_traps(self) -> None:
+        _assert_traps(_WIDEN_MATCH_BIND, "mb", [U64_MAX])
+
+    def test_match_bind_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_MATCH_BIND, "mb", [42], 42)
+
+    def test_match_bind_int_source_no_trap_on_negative(self) -> None:
+        # A genuine @Int scrutinee bound by `@Int ->` must NOT trap on a
+        # negative value — the widen guard fires only on a @Nat source.
+        _assert_no_trap(_MATCH_BIND_INT_SOURCE, "mbint", [-5], -5)
