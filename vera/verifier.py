@@ -5071,7 +5071,7 @@ class ContractVerifier:
                 "Correct or weaken the assertion, or establish the missing "
                 "precondition / prior `assert` that makes `P` provable."
             ),
-            spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
+            spec_ref='Chapter 6, Section 6.2.5 "Assertions (`assert`)"',
             error_code="E507",
         )
 
@@ -5789,7 +5789,7 @@ class ContractVerifier:
                 "ensures(...) if the postcondition overstates "
                 "the intended guarantee."
             ),
-            spec_ref='Chapter 6, Section 6.4.1 "Verification Conditions"',
+            spec_ref='Chapter 6, Section 6.4.1 "Verification Condition (VC) Generation"',
             error_code="E500",
         )
 
@@ -5939,7 +5939,7 @@ class ContractVerifier:
                     f"callee's precondition is satisfied."
                 )
             ),
-            spec_ref='Chapter 6, Section 6.4.2 "Call-Site Verification"',
+            spec_ref='Chapter 6, Section 6.4.2 "Call Site Verification"',
             error_code="E501",
         )
 

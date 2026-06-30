@@ -319,7 +319,7 @@ class TypeChecker(
                     fix="Make the invariant expression a Bool-valued predicate, "
                         "e.g. wrap it in a comparison: "
                         "invariant(@Field.0 > 0) instead of invariant(@Field.0).",
-                    spec_ref='Chapter 2, Section 2.5 "Algebraic Data Types"',
+                    spec_ref='Chapter 2, Section 2.4.1 "ADT Invariants"',
                     error_code="E120",
                 )
 
@@ -405,7 +405,7 @@ class TypeChecker(
                               "declared return type.",
                     fix="Change the return type or adjust the body "
                         "expression.",
-                    spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                    spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E121",
                 )
 
@@ -476,7 +476,7 @@ class TypeChecker(
                     fix="Turn the requires() argument into a Bool-valued "
                         "predicate, e.g. requires(@Int.0 > 0) instead of "
                         "requires(@Int.0).",
-                    spec_ref='Chapter 6, Section 6.2.1 "Preconditions"',
+                    spec_ref='Chapter 6, Section 6.2.1 "Preconditions (`requires`)"',
                     error_code="E123",
                 )
 
@@ -496,7 +496,7 @@ class TypeChecker(
                         "predicate over the result, e.g. "
                         "ensures(@Int.result > 0) instead of "
                         "ensures(@Int.result).",
-                    spec_ref='Chapter 6, Section 6.2.2 "Postconditions"',
+                    spec_ref='Chapter 6, Section 6.2.2 "Postconditions (`ensures`)"',
                     error_code="E124",
                 )
 

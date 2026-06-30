@@ -53,10 +53,11 @@ diagnostic added to `vera/` is rejected at the door.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -215,25 +216,146 @@ def check_paths(paths: Iterable[Path]) -> list[Violation]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# spec_ref validity.  A *present* spec_ref must also cite a real spec section
+# (or chapter) whose title matches — otherwise it is a misleading instruction,
+# exactly the failure the diagnostics-as-instructions claim cannot afford.
+# Title comparison is lenient (case, backticks, and parentheticals ignored) so
+# a cosmetic spec re-title doesn't break the gate, while a wrong section (right
+# number, wrong rule — e.g. citing §4.3 "Operators" when §4.3 is "Slot
+# References") still fails.
+# ---------------------------------------------------------------------------
+
+_REF_SEC = re.compile(r'Chapter\s+(\d+),\s+Section\s+([\d.]+)\s+"([^"]+)"')
+_REF_CH = re.compile(r'^Chapter\s+(\d+),\s+"([^"]+)"\s*$')
+_HEAD = re.compile(r'^#{1,6}\s+(\d+(?:\.\d+)*)\.?\s+(.+?)\s*$')
+_CH_PREFIX = re.compile(r'^Chapter\s+\d+\s*[:—.\-]\s*')
+_spec_cache: tuple[dict[str, str], dict[str, str]] | None = None
+
+
+def _load_spec(spec_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ({section-number: title}, {chapter-number: chapter-title})."""
+    global _spec_cache
+    if _spec_cache is not None:
+        return _spec_cache
+    sections: dict[str, str] = {}
+    chapters: dict[str, str] = {}
+    for md in sorted(spec_dir.glob("*.md")):
+        cm = re.match(r"^(\d+)-", md.name)
+        cnum = (cm.group(1).lstrip("0") or "0") if cm else None
+        first_h1: str | None = None
+        for line in md.read_text(encoding="utf-8").splitlines():
+            h1 = re.match(r"^#\s+(.+?)\s*$", line)
+            if h1 and first_h1 is None:
+                first_h1 = h1.group(1).strip()
+            m = _HEAD.match(line)
+            if m:
+                sections[m.group(1)] = m.group(2).strip()
+        if cnum is not None and first_h1 is not None:
+            chapters[cnum] = _CH_PREFIX.sub("", first_h1).strip()
+    _spec_cache = (sections, chapters)
+    return _spec_cache
+
+
+def _norm(s: str) -> str:
+    s = s.lower().replace("`", "")
+    s = re.sub(r"\([^)]*\)", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _iter_spec_refs(
+    source: str, filename: str,
+) -> Iterator[tuple[int, str, str | None]]:
+    """Yield (lineno, ref_text, snippet) for each non-empty literal spec_ref."""
+    tree = ast.parse(source, filename=filename)
+    src_lines = source.splitlines()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if not ((isinstance(f, ast.Name) and f.id == "Diagnostic")
+                or (isinstance(f, ast.Attribute)
+                    and f.attr in ("_error", "_warning"))):
+            continue
+        for kw in n.keywords:
+            if kw.arg == "spec_ref" and isinstance(kw.value, ast.Constant) \
+                    and isinstance(kw.value.value, str) and kw.value.value.strip():
+                ln = kw.value.lineno
+                snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
+                yield ln, kw.value.value, snip
+
+
+def spec_ref_violations_in_source(source: str, filename: str,
+                                  spec_dir: Path | None = None) -> list[Violation]:
+    """Flag every spec_ref in one source that does not resolve to a real spec
+    section/chapter with a matching (normalized) title."""
+    sections, chapters = _load_spec(spec_dir or (ROOT / "spec"))
+    out: list[Violation] = []
+    for ln, ref, snip in _iter_spec_refs(source, filename):
+        m = _REF_SEC.search(ref)
+        if m:
+            chap, sec, title = m.group(1), m.group(2), m.group(3)
+            actual = sections.get(sec)
+            if actual is None:
+                why = f"cites §{sec}, which does not exist in the spec"
+            elif _norm(actual) != _norm(title):
+                why = f'cites §{sec} as "{title}" but it is "{actual}"'
+            elif not (sec == chap or sec.startswith(chap + ".")):
+                why = f"§{sec} is not in Chapter {chap}"
+            else:
+                continue
+        else:
+            mc = _REF_CH.match(ref)
+            if not mc:
+                why = f"unrecognised spec_ref format: {ref!r}"
+            else:
+                chap, title = mc.group(1), mc.group(2)
+                actual = chapters.get(chap)
+                if actual is None or _norm(actual) != _norm(title):
+                    why = f'Chapter {chap} is "{actual}", not "{title}"'
+                else:
+                    continue
+        out.append(Violation(filename, ln, "spec_ref", [why], snip))
+    return out
+
+
+def spec_ref_violations(paths: Iterable[Path],
+                        spec_dir: Path | None = None) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(spec_ref_violations_in_source(
+            p.read_text(encoding="utf-8"), rel, spec_dir))
+    return out
+
+
 def main() -> int:
-    violations = check_paths(iter_vera_files(ROOT / "vera"))
+    files = iter_vera_files(ROOT / "vera")
+    presence = check_paths(files)
+    validity = spec_ref_violations(files)
+    violations = presence + validity
     if not violations:
-        print("check_diagnostic_fields: OK — every diagnostic is fully tagged.")
+        print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
+              "and every spec_ref resolves.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
         by_file.setdefault(v.file, []).append(v)
-    print(f"check_diagnostic_fields: {len(violations)} under-tagged "
-          f"diagnostic site(s) in {len(by_file)} file(s).\n")
-    print("Every diagnostic MUST carry error_code + rationale + fix + "
-          "spec_ref (spec §0.5.1).")
-    print("Populate the missing field(s), or add `# diag-fields-exempt: "
-          "<reason>` for a\ngenuinely fix-less internal/defensive site.\n")
+    print(f"check_diagnostic_fields: {len(violations)} problem(s) in "
+          f"{len(by_file)} file(s).\n")
+    print("Every diagnostic MUST carry rationale + fix + spec_ref (spec "
+          "§0.5.1), and the spec_ref must resolve to a real section/chapter.")
+    print("Populate the missing field(s) / fix the spec_ref, or add "
+          "`# diag-fields-exempt: <reason>` for a genuinely fix-less "
+          "internal/defensive site.\n")
     for fname in sorted(by_file):
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
-            print(f"    line {v.line:<5} {v.target:<11} missing: "
-                  f"{', '.join(v.missing)}")
+            if v.target == "spec_ref":
+                print(f"    line {v.line:<5} spec_ref    {v.missing[0]}")
+            else:
+                print(f"    line {v.line:<5} {v.target:<11} missing: "
+                      f"{', '.join(v.missing)}")
     return 1
 
 

@@ -231,12 +231,48 @@ class TestPlumbingSkip:
 
 
 # =====================================================================
-# Integration: the live vera/ tree (RED until backfill lands)
+# spec_ref validity: a present spec_ref must cite a real spec section
+# =====================================================================
+
+class TestSpecRefValidity:
+    def _v(self, mod: object, ref: str) -> list:
+        src = f"self._error(node, 'd', spec_ref='{ref}')\n"
+        return mod.spec_ref_violations_in_source(src, "vera/checker/x.py")
+
+    def test_valid_section_ref_passes(self, mod: object) -> None:
+        assert self._v(mod, 'Chapter 4, Section 4.4 "Arithmetic Expressions"') == []
+
+    def test_nonexistent_section_flagged(self, mod: object) -> None:
+        v = self._v(mod, 'Chapter 4, Section 4.99 "Nope"')
+        assert len(v) == 1 and "does not exist" in v[0].missing[0]
+
+    def test_wrong_title_right_section_flagged(self, mod: object) -> None:
+        # §4.3 is "Slot References", not "Operators" — the canonical drift bug.
+        v = self._v(mod, 'Chapter 4, Section 4.3 "Operators"')
+        assert len(v) == 1 and "Slot References" in v[0].missing[0]
+
+    def test_cosmetic_title_drift_is_tolerated(self, mod: object) -> None:
+        # Actual title is "Anonymous Functions (Closures)"; the lenient norm
+        # drops the parenthetical, so a cosmetic re-title does not break.
+        assert self._v(mod, 'Chapter 5, Section 5.7 "Anonymous Functions"') == []
+
+    def test_valid_chapter_only_ref_passes(self, mod: object) -> None:
+        assert self._v(mod, 'Chapter 6, "Contracts"') == []
+
+    def test_typed_hole_section_exists(self, mod: object) -> None:
+        # §4.17 was added by this change; W001 / E614 cite it.
+        assert self._v(mod, 'Chapter 4, Section 4.17 "Typed Holes"') == []
+
+
+# =====================================================================
+# Integration: the live vera/ tree must be fully tagged AND every
+# spec_ref must resolve to a real spec section.
 # =====================================================================
 
 class TestLiveTree:
     def test_live_vera_tree_is_clean(self, mod: object) -> None:
-        violations = mod.check_paths(mod.iter_vera_files(ROOT / "vera"))
+        files = mod.iter_vera_files(ROOT / "vera")
+        violations = mod.check_paths(files) + mod.spec_ref_violations(files)
         report = "\n".join(
-            f"  {v.file}:{v.line} {v.target} missing {v.missing}" for v in violations)
-        assert violations == [], f"{len(violations)} under-tagged diagnostics:\n{report}"
+            f"  {v.file}:{v.line} {v.target} {v.missing}" for v in violations)
+        assert violations == [], f"{len(violations)} diagnostic problem(s):\n{report}"

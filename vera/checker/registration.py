@@ -208,7 +208,7 @@ class RegistrationMixin:
                             "because the indirection is a heap "
                             "pointer)."
                         ),
-                        spec_ref='Chapter 4, Section 4.3 "Type Aliases"',
+                        spec_ref='Chapter 3, Section 3.8 "Type Alias and Reference Resolution"',
                         error_code="E132",
                     )
                     break

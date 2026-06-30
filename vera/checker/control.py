@@ -150,7 +150,7 @@ class ControlFlowMixin:
                         fix=f"Make this arm produce {pretty_type(result_type)} "
                             f"to match the other arms (or change every arm to "
                             f"a common type).",
-                        spec_ref='Chapter 4, Section 4.9 "Pattern Matching"',
+                        spec_ref='Chapter 4, Section 4.9 "Match Expressions"',
                         error_code="E302",
                     )
 
@@ -186,7 +186,7 @@ class ControlFlowMixin:
                     rationale="A wildcard or binding pattern already "
                     "matches all remaining values.",
                     fix="Remove this arm or move it before the catch-all.",
-                    spec_ref='Chapter 4, Section 4.9.3 "Unreachable Arms"',
+                    spec_ref='Chapter 4, Section 4.9.3 "Redundancy"',
                     error_code="E310",
                 )
             return  # catch-all guarantees exhaustiveness
@@ -213,8 +213,7 @@ class ControlFlowMixin:
                     rationale="All constructors of the matched type "
                     "must be covered.",
                     fix="Add a wildcard '_' arm or cover all cases.",
-                    spec_ref='Chapter 4, Section 4.9.2 '
-                    '"Exhaustiveness Checking"',
+                    spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
                     error_code="E311",
                 )
             return
@@ -238,8 +237,7 @@ class ControlFlowMixin:
                     f"{', '.join(missing_bools)}.",
                     rationale="Bool matches must cover both true and false.",
                     fix="Add a wildcard '_' arm or cover all cases.",
-                    spec_ref='Chapter 4, Section 4.9.2 '
-                    '"Exhaustiveness Checking"',
+                    spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
                     error_code="E312",
                 )
             return
@@ -253,8 +251,7 @@ class ControlFlowMixin:
             rationale="Matches on types with infinite values cannot "
             "enumerate all cases.",
             fix="Add a wildcard '_' arm or a binding pattern.",
-            spec_ref='Chapter 4, Section 4.9.2 '
-            '"Exhaustiveness Checking"',
+            spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
             error_code="E313",
         )
 

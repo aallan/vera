@@ -205,7 +205,7 @@ def missing_contract_block(
             "    ...\n"
             "  }"
         ),
-        spec_ref='Chapter 5, Section 5.1 "Function Structure"',
+        spec_ref='Chapter 5, Section 5.4 "Contract Clauses"',
         error_code="E001",
     )
 
@@ -232,7 +232,7 @@ def missing_effect_clause(
             '  effects(<State<Int>>)      -- for stateful functions\n'
             '  effects(<State<Int>, IO>)  -- for multiple effects'
         ),
-        spec_ref='Chapter 7, Section 7.1 "Effect Declarations"',
+        spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
         error_code="E002",
     )
 
@@ -261,7 +261,7 @@ def malformed_slot_reference(
             "  @Bool.0    -- most recent Bool binding\n"
             "  @T.result  -- return value (in postconditions only)"
         ),
-        spec_ref='Chapter 3, Section 3.1 "Slot Reference Syntax"',
+        spec_ref='Chapter 3, Section 3.1 "Overview"',
         error_code="E003",
     )
 
@@ -283,7 +283,7 @@ def unclosed_block(
         fix=(
             'Add the missing "}" to close the block.'
         ),
-        spec_ref='Chapter 1, Section 1.6 "Canonical Formatting"',
+        spec_ref='Chapter 10, Section 10.3.14 "Block Expressions"',
         error_code="E004",
     )
 
@@ -349,7 +349,7 @@ def unexpected_token(
             "or check for a missing delimiter (such as '}', ')', or ',') "
             "earlier in the construct."
         ),
-        spec_ref='Chapter 10, "Grammar"',
+        spec_ref='Chapter 10, "Formal Grammar"',
         error_code="E005",
     )
 

@@ -106,7 +106,7 @@ class CallsMixin:
                 fix=f"Call '{fn_info.name}' with exactly "
                     f"{len(fn_info.param_types)} argument(s) matching its "
                     f"declared parameter types.",
-                spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                 error_code="E201",
             )
             return fn_info.return_type
@@ -167,7 +167,7 @@ class CallsMixin:
                         f"argument {i}, or convert the current value (e.g. "
                         f"int_to_nat(...), int_to_float(...)) to "
                         f"{pretty_type(param_ty)}.",
-                    spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                    spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E202",
                 )
 

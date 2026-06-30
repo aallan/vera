@@ -412,7 +412,7 @@ class CodeGenerator(
                         "cannot be compiled to WebAssembly."
                     ),
                     fix="Replace ? with a complete expression.",
-                    spec_ref='Chapter 3, Section 3.10 "Typed Holes"',
+                    spec_ref='Chapter 4, Section 4.17 "Typed Holes"',
                     severity="error",
                     error_code="E614",
                 ))

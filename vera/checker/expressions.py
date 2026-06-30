@@ -353,7 +353,7 @@ class ExpressionsMixin:
                           "return value, which is only meaningful in "
                           "postcondition context.",
                 fix="Move the @T.result reference inside an ensures() clause.",
-                spec_ref='Chapter 3, Section 3.6 "The @result Reference"',
+                spec_ref='Chapter 3, Section 3.6 "The `@result` Reference"',
                 error_code="E131",
             )
             return UnknownType()
@@ -399,7 +399,7 @@ class ExpressionsMixin:
                         "Float64); convert any non-numeric operand to a numeric "
                         "type first."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                     error_code="E140",
                 )
                 return UnknownType()
@@ -419,7 +419,7 @@ class ExpressionsMixin:
                     "implicit numeric coercion — e.g. convert the Int operand "
                     "to Float64 (or vice versa) so both sides match."
                 ),
-                spec_ref='Chapter 4, Section 4.3 "Operators"',
+                spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                 error_code="E141",
             )
             return UnknownType()
@@ -440,7 +440,7 @@ class ExpressionsMixin:
                         "of the other — convert one operand so both sides share "
                         "a type before applying '==' or '!='."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E142",
                 )
             return BOOL
@@ -465,7 +465,7 @@ class ExpressionsMixin:
                         "Nat, Float64); a non-orderable type must be reduced to "
                         "an orderable value before comparing."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E143",
                 )
             elif not (is_subtype(left_base, right_base)
@@ -486,7 +486,7 @@ class ExpressionsMixin:
                         "numeric coercion — convert one operand (e.g. Int to "
                         "Float64) so both sides share a type before comparing."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E142",
                 )
             return BOOL
@@ -508,7 +508,7 @@ class ExpressionsMixin:
                         "Make the left operand a Bool — e.g. compare it to a "
                         f"value to yield a Bool before applying '{op.value}'."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E144",
                 )
             if not is_subtype(right_base, BOOL):
@@ -524,7 +524,7 @@ class ExpressionsMixin:
                         "Make the right operand a Bool — e.g. compare it to a "
                         f"value to yield a Bool before applying '{op.value}'."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E145",
                 )
             return BOOL
@@ -583,7 +583,7 @@ class ExpressionsMixin:
                         "Apply '!' to a Bool — e.g. negate a comparison or a "
                         "predicate that already yields Bool."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E146",
                 )
             return BOOL
@@ -602,7 +602,7 @@ class ExpressionsMixin:
                         "Apply '-' to a numeric operand; convert a non-numeric "
                         "value to Int, Nat, or Float64 before negating it."
                     ),
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                     error_code="E147",
                 )
                 return UnknownType()
@@ -679,7 +679,7 @@ class ExpressionsMixin:
                             "Use an Int or Nat index — convert the index "
                             "expression to an integer type before indexing."
                         ),
-                        spec_ref='Chapter 4, Section 4.4 "Array Access"',
+                        spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
                         error_code="E160",
                     )
             return elem_type
@@ -697,7 +697,7 @@ class ExpressionsMixin:
                 "obtain its elements another way (e.g. pattern-match an ADT or "
                 "use a built-in accessor)."
             ),
-            spec_ref='Chapter 4, Section 4.4 "Array Access"',
+            spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
             error_code="E161",
         )
         return UnknownType()
@@ -746,7 +746,7 @@ class ExpressionsMixin:
                             "or change the binding's declared type to match the "
                             f"value's type {pretty_type(val_type)}."
                         ),
-                        spec_ref='Chapter 4, Section 4.5 "Let Bindings"',
+                        spec_ref='Chapter 4, Section 4.7 "Let Bindings"',
                         error_code="E170",
                     )
 
@@ -796,7 +796,7 @@ class ExpressionsMixin:
                         "the closure's declared return type to "
                         f"{pretty_type(body_type)}."
                     ),
-                    spec_ref='Chapter 5, Section 5.7 "Anonymous Functions"',
+                    spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
                     error_code="E171",
                 )
 
@@ -887,7 +887,7 @@ class ExpressionsMixin:
                 "bindings so the hole can be filled in."
             ),
             fix=fix_hint,
-            spec_ref='Chapter 3, Section 3.10 "Typed Holes"',
+            spec_ref='Chapter 4, Section 4.17 "Typed Holes"',
             severity="warning",
             error_code="W001",
         )
@@ -913,7 +913,7 @@ class ExpressionsMixin:
                         "Pass a Bool condition to assert() — e.g. compare the "
                         "value or call a predicate that returns Bool."
                     ),
-                    spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
+                    spec_ref='Chapter 6, Section 6.2.5 "Assertions (`assert`)"',
                     error_code="E172",
                 )
         return UNIT
@@ -934,7 +934,7 @@ class ExpressionsMixin:
                         "Pass a Bool condition to assume() — e.g. compare the "
                         "value or call a predicate that returns Bool."
                     ),
-                    spec_ref='Chapter 6, Section 6.2.6 "Assumptions"',
+                    spec_ref='Chapter 6, Section 6.2.6 "Assumptions (`assume`)"',
                     error_code="E173",
                 )
         return UNIT

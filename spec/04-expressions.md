@@ -413,3 +413,20 @@ This is deliberate: loops require reasoning about mutable state across iteration
 There are no assignment statements. All `let` bindings are immutable. State changes are handled through the effect system (Chapter 7).
 
 The only way to "modify" data is to construct a new value. This is the standard functional programming approach, and Vera's garbage collector handles the allocation overhead.
+
+## 4.17 Typed Holes
+
+A **typed hole** is written `?` and stands in for an expression the author has
+not yet written. Its type is inferred from the position it occupies, so a
+partial program still type-checks and the surrounding slot, contract, and
+effect machinery can be explored before every expression is filled in.
+
+A hole is a development aid, not a runtime value:
+
+- `vera check` reports each hole as a **warning** (`W001`): a partial program
+  type-checks, but every unfinished spot is surfaced.
+- `vera compile` / `vera run` **reject** a program that still contains a hole
+  (`E614`) — a hole has no runtime behaviour, so it can never be executed.
+
+Replace each `?` with a concrete expression of the inferred type before
+compiling.

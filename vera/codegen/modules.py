@@ -352,7 +352,7 @@ class CrossModuleMixin:
                 "unique across imported modules to avoid silent overwrites."
             ),
             fix=f"Rename '{name}' in one of the source modules.",
-            spec_ref="Chapter 11, Section 11.16",
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
             severity="error",
             error_code=error_code,
         ))
@@ -388,7 +388,7 @@ class CrossModuleMixin:
                 "names cause incorrect pattern matching and memory layouts."
             ),
             fix=f"Rename constructor '{ctor_name}' in one of the data types.",
-            spec_ref="Chapter 11, Section 11.16",
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
             severity="error",
             error_code="E610",
         ))
