@@ -104,7 +104,7 @@ class ContractsMixin:
                         "predicates is unsupported — the runtime guard would "
                         "silently drop the inner base predicate, so codegen "
                         "rejects this rather than emit a partial guard.",
-                        error_code="E600",
+                        error_code="E618",
                     )
                     return None
                 if (isinstance(base_node, ast.NamedType)

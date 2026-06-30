@@ -106,7 +106,7 @@ class ResolutionMixin:
                              f"so that `{name}` is given exactly "
                              f"{n_expected}."
                     ),
-                    spec_ref='Chapter 3, Section 3.8 "Type Alias and Reference Resolution"',
+                    spec_ref='Chapter 2, Section 2.6.3 "Type Aliases with Refinements"',
                     error_code="E133",
                 )
                 return UnknownType()

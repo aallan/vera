@@ -422,7 +422,7 @@ class TypeChecker(
                           "call effect operations.",
                 fix=f"Declare the appropriate effects, e.g. "
                     f"effects(<{next(iter(self._effect_ops_used), '...')}>).",
-                spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
+                spec_ref='Chapter 5, Section 5.5 "Effect Declaration"',
                 error_code="E122",
             )
 

@@ -232,7 +232,7 @@ def missing_effect_clause(
             '  effects(<State<Int>>)      -- for stateful functions\n'
             '  effects(<State<Int>, IO>)  -- for multiple effects'
         ),
-        spec_ref='Chapter 7, Section 7.2 "Effect Declarations"',
+        spec_ref='Chapter 5, Section 5.5 "Effect Declaration"',
         error_code="E002",
     )
 
@@ -564,6 +564,7 @@ ERROR_CODES: dict[str, str] = {
     "E615": "Cannot interpolate value of unknown type",
     "E616": "Cannot infer closure return type for call_indirect",
     "E617": "Refinement predicate not compilable to runtime guard",
+    "E618": "Nested refinement base unsupported",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

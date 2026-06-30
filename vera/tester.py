@@ -327,7 +327,7 @@ class _TestEngine:
                         "from each parameter's type; a type Z3 cannot encode "
                         "cannot be exercised, so the function is skipped."
                     ),
-                    spec_ref='Chapter 6, "Contracts"',
+                    spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
                     severity="warning",
                     error_code="E701",
                 ))

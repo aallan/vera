@@ -5161,8 +5161,8 @@ class ContractVerifier:
                 "condition discharges the obligation in the then-branch."
             ),
             spec_ref=(
-                'Chapter 4, Section 4.7 "Let Bindings" and Chapter 11, '
-                'Section 11.2.1 "Nat as i64"'
+                'Chapter 2, Section 2.2.1 "`Int` and `Nat` compatibility" '
+                'and Chapter 11, Section 11.2.1 "Nat as i64"'
             ),
             error_code="E503",
         )

@@ -5794,9 +5794,9 @@ public fn f(@Tiny -> @Int) requires(true) ensures(true) effects(pure) { 0 }
 """
         result = _compile(src)
         errs = [d for d in result.diagnostics
-                if d.severity == "error" and d.error_code == "E600"]
+                if d.severity == "error" and d.error_code == "E618"]
         assert errs, (
-            f"expected E600 rejecting the nested refinement base; "
+            f"expected E618 rejecting the nested refinement base; "
             f"diagnostics: {result.diagnostics}"
         )
         assert "resolves to another refinement" in errs[0].description
