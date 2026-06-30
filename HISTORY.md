@@ -423,7 +423,7 @@ Six releases, chosen for the capability each one unlocked rather than even spaci
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|
 | Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign |
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,459 |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,461 |
 | Examples | 13 | 15 | 18 | 30 | 35 | 35 |
 | Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 |
 | Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 |
