@@ -144,9 +144,17 @@ def _optout_lines(source: str) -> dict[int, str]:
     out: dict[int, str] = {}
     try:
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-            if tok.type == tokenize.COMMENT and OPT_OUT in tok.string:
-                rest = tok.string.split(OPT_OUT, 1)[1]
-                out[tok.start[0]] = rest.lstrip(" :").strip()
+            if tok.type != tokenize.COMMENT:
+                continue
+            text = tok.string.strip()
+            # Anchored directive only: the comment must BE the marker, or the
+            # marker immediately followed by ':' or whitespace.  A comment that
+            # merely mentions the marker mid-text, or a near-miss like
+            # `# diag-fields-exempt-foo`, must NOT disable the gate.
+            if text == OPT_OUT:
+                out[tok.start[0]] = ""
+            elif text.startswith(OPT_OUT + ":") or text.startswith(OPT_OUT + " "):
+                out[tok.start[0]] = text[len(OPT_OUT):].lstrip(" :").strip()
     except (tokenize.TokenError, IndentationError):
         pass
     return out

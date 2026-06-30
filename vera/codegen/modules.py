@@ -565,6 +565,21 @@ class CrossModuleMixin:
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
+        # A module-qualified call (`m::f`) and a bare call (`f`) fail for
+        # different reasons and have different remedies / spec sections.
+        if qualified is not None:
+            fix = (
+                f"Ensure '{qualified}' names a function exported by a module "
+                f"this file imports — check the import path and that the "
+                f"target module declares it."
+            )
+            spec_ref = 'Chapter 8, Section 8.5.3 "Module-Qualified Calls"'
+        else:
+            fix = (
+                f"Define '{name}' in this module, or import it from the "
+                f"module that declares it: import the.module({name});"
+            )
+            spec_ref = 'Chapter 8, Section 8.5.1 "Bare Calls"'
         self.diagnostics.append(Diagnostic(
             description=(
                 f"Function '{display}' is not defined in this module "
@@ -578,10 +593,7 @@ class CrossModuleMixin:
                 "against; the checker only warns (E200) on it, so the program "
                 "still reaches code generation."
             ),
-            fix=(
-                f"Define '{display}' in this module, or import it from the "
-                f"module that declares it: import the.module({name});"
-            ),
-            spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
+            fix=fix,
+            spec_ref=spec_ref,
             severity="error",
         ))

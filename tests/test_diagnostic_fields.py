@@ -229,6 +229,18 @@ class TestOptOut:
         assert len(v) == 1
         assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
 
+    def test_unanchored_marker_does_not_exempt(self, mod: object) -> None:
+        """The directive must be anchored: a near-miss (`-foo` suffix) or a
+        mid-comment mention must NOT disable the gate."""
+        src = (
+            "class C:\n"
+            "    def f(self, node):\n"
+            "        self._error(node, 'x', error_code='E1')  # diag-fields-exempt-not-really\n"
+        )
+        v = mod.check_source(src, "vera/transform.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
 
 # =====================================================================
 # Plumbing skip: Diagnostic() inside an _error/_warning helper def
