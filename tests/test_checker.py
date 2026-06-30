@@ -4225,6 +4225,20 @@ private fn f(@Bool -> @Int)
         diags = _errors(src)
         assert any(d.error_code == "E140" for d in diags)
 
+    def test_E140_carries_a_fix_paragraph_682(self) -> None:
+        """#682 AC5: the operator-type-mismatch diagnostic (E140) must
+        carry a concrete `Fix:` paragraph, not just a description +
+        rationale — this is the canonical example from the issue."""
+        src = """\
+private fn f(@Bool, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 + @Int.0 }
+"""
+        e140 = [d for d in _errors(src) if d.error_code == "E140"]
+        assert e140, "expected an E140 diagnostic for `@Bool.0 + @Int.0`"
+        assert e140[0].fix.strip(), "E140 must carry a non-empty fix"
+        assert "Fix:" in e140[0].format()
+
 
 # =====================================================================
 # String built-in operations

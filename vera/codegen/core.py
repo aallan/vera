@@ -720,7 +720,7 @@ class CodeGenerator(
         try:
             wasm_bytes = wasmtime.wat2wasm(wat)
         except Exception as exc:
-            self.diagnostics.append(Diagnostic(
+            self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
                 description=f"WAT compilation failed: {exc}",
                 location=SourceLocation(file=self.file),
                 severity="error",

@@ -20212,6 +20212,10 @@ public fn main(-> @Int)
         assert _run(src) == 0
 
 
+# #738: this trio compiles and runs full GC-reclamation programs at scale
+# (~minutes locally), so it is marked `stress` and deselected from the
+# default per-PR pytest run.  Run via `pytest -m stress` or nightly CI.
+@pytest.mark.stress
 class TestHostHandleReclamation573:
     """Reclamation regressions originally for the heap-wrap-as-ADT
     migration of Map (#573), Set (#575), and Decimal (#576), updated

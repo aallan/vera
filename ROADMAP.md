@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,461 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,479 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -23,7 +23,6 @@ The infrastructure that catches the next regression before a user does, plus the
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
-| [#738](https://github.com/aallan/vera/issues/738) | Mark the `TestHostHandleReclamation573` trio as stress tests so the local inner loop stops paying ~12 minutes per run. |
 | [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
 | [#420](https://github.com/aallan/vera/issues/420) | Split `tests/test_checker.py` (6,347 lines) into phase-focused test files.  Promoted from "Not doing now". |
 
@@ -70,7 +69,7 @@ Deliberate trade-offs, recorded so they aren't re-litigated by accident.
 Not milestone-gated; advanced alongside whatever tier is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the benchmark suite is its own thread, no longer inside Milestone 1.  Compiler-side: [#225](https://github.com/aallan/vera/issues/225) (pass@k, more models, more tiers).
-- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#682](https://github.com/aallan/vera/issues/682) diagnostic-tagging enforcement + backfill, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry.
+- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry.
 - **Spec and doc audits** — [#653](https://github.com/aallan/vera/issues/653) §0.2/§0.3 design-principle violations, [#519](https://github.com/aallan/vera/issues/519) SKILL.md gap inventory.
 
 ## Milestones — beyond the roadmap

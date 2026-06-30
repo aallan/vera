@@ -152,6 +152,16 @@ repos:
         # drift silent-skip class this PR is meant to close.
         files: '(vera/.*\.py$|scripts/check_walker_coverage\.py$)'
 
+      - id: diagnostic-fields
+        name: diagnostic fields
+        entry: .venv/bin/python scripts/check_diagnostic_fields.py
+        language: system
+        pass_filenames: false
+        # The script auto-discovers every Diagnostic(...) constructor and
+        # _error/_warning call under `vera/**/*.py`, so the trigger must be
+        # at least as broad as that glob (same reasoning as walker-coverage).
+        files: '(vera/.*\.py$|scripts/check_diagnostic_fields\.py$)'
+
       - id: limitations-sync
         name: limitations sync
         entry: .venv/bin/python scripts/check_limitations_sync.py

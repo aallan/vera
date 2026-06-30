@@ -129,6 +129,16 @@ class ResolutionMixin:
             if te.type_args:
                 self._error(
                     te, "Decimal does not accept type arguments.",
+                    rationale=(
+                        "`Decimal` is a non-parameterised, opaque "
+                        "built-in type, so it takes no type "
+                        "arguments.  Writing it with a `<...>` "
+                        "argument list applies it as if it were a "
+                        "generic type, which the type system does "
+                        "not permit."
+                    ),
+                    fix="Write `Decimal` with no type arguments.",
+                    spec_ref='Chapter 9, Section 9.7.2 "Decimal"',
                     error_code="E130",
                 )
             return AdtType(name, ())

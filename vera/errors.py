@@ -340,6 +340,16 @@ def unexpected_token(
         ),
         location=SourceLocation(file=file, line=line, column=column),
         source_line=_get_source_line(source, line),
+        rationale=(
+            "The parser reached this position expecting one of the listed "
+            "tokens; the token found does not begin any construct valid here."
+        ),
+        fix=(
+            "Replace the unexpected token with one of the expected tokens, "
+            "or check for a missing delimiter (such as '}', ')', or ',') "
+            "earlier in the construct."
+        ),
+        spec_ref='Chapter 10, "Grammar"',
         error_code="E005",
     )
 
@@ -398,11 +408,21 @@ def diagnose_lark_error(
             ),
             location=SourceLocation(file=file, line=line, column=column),
             source_line=_get_source_line(source, line),
+            rationale=(
+                "Vera's lexical grammar accepts only a fixed alphabet of "
+                "characters; this character is not part of any token."
+            ),
+            fix=(
+                "Remove the invalid character, or replace it with valid "
+                "syntax (for example, use a string literal if the character "
+                "was intended as text)."
+            ),
+            spec_ref='Chapter 1, "Lexical Structure"',
             error_code="E006",
         )
 
     # Unknown exception type — wrap it
-    return Diagnostic(
+    return Diagnostic(  # diag-fields-exempt: internal fallback for an unrecognised Lark exception; indicates a parser bug, not a user error, so no source-level fix or spec section applies.
         description=f"Internal parser error: {exc}",
         location=SourceLocation(file=file),
         error_code="E007",

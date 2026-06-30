@@ -565,7 +565,7 @@ class CrossModuleMixin:
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
-        self.diagnostics.append(Diagnostic(
+        self.diagnostics.append(Diagnostic(  # diag-fields-exempt: codegen backstop; the checker reports undefined calls (E130) first, so this is not reachable from a checked program.
             description=(
                 f"Function '{display}' is not defined in this module "
                 f"and was not found in any imported module."

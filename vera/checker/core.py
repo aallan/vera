@@ -316,6 +316,9 @@ class TypeChecker(
                     f"Invariant must be Bool, found {pretty_type(inv_type)}.",
                     rationale="Data type invariants are predicates that must "
                               "evaluate to Bool.",
+                    fix="Make the invariant expression a Bool-valued predicate, "
+                        "e.g. wrap it in a comparison: "
+                        "invariant(@Field.0 > 0) instead of invariant(@Field.0).",
                     spec_ref='Chapter 2, Section 2.5 "Algebraic Data Types"',
                     error_code="E120",
                 )
@@ -470,6 +473,9 @@ class TypeChecker(
                     f"requires() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
+                    fix="Turn the requires() argument into a Bool-valued "
+                        "predicate, e.g. requires(@Int.0 > 0) instead of "
+                        "requires(@Int.0).",
                     spec_ref='Chapter 6, Section 6.2.1 "Preconditions"',
                     error_code="E123",
                 )
@@ -486,6 +492,10 @@ class TypeChecker(
                     f"ensures() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
+                    fix="Turn the ensures() argument into a Bool-valued "
+                        "predicate over the result, e.g. "
+                        "ensures(@Int.result > 0) instead of "
+                        "ensures(@Int.result).",
                     spec_ref='Chapter 6, Section 6.2.2 "Postconditions"',
                     error_code="E124",
                 )

@@ -328,11 +328,12 @@ reviews:
           implementation following. scripts/check_spec_examples.py only
           validates that spec code blocks still parse/check/verify — it does
           NOT catch silent prose-vs-behaviour drift, which this targets.
-      - name: "Diagnostics carry full metadata"
+      - name: "Diagnostics carry an error code"
         mode: "warning"
         instructions: |
-          Fail if a new or changed error-severity diagnostic lacks any of:
-          a stable error_code (E###), a rationale, a concrete fix, or a
-          spec_ref. Vera's diagnostics-as-instructions philosophy is
-          load-bearing. INTERIM advisory layer until the deterministic hook
-          in issue #682 lands; relax or retire once #682 gates this.
+          Fail if a new or changed error-severity diagnostic lacks a stable
+          error_code (E###). The rationale / fix / spec_ref fields are now
+          enforced deterministically by scripts/check_diagnostic_fields.py
+          (#682), so this advisory check is narrowed to the one field that
+          gate does not yet cover; retire it once error_code enforcement
+          lands too.

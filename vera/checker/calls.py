@@ -63,9 +63,13 @@ class CallsMixin:
         self._error(
             node,
             f"Unresolved function '{name}'.",
-            rationale="The function is not defined in this file and may come "
-                      "from an unresolved import.",
+            rationale="A bare call must resolve to a function, effect "
+                      "operation, or ability operation in scope; no "
+                      "declaration named this could be found.",
+            fix=f"Define 'fn {name}(...)' in this file, or import it from "
+                f"the module that declares it: import the.module({name});",
             severity="warning",
+            spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
             error_code="E200",
         )
         # Still synth arg types to find errors within them
@@ -96,6 +100,12 @@ class CallsMixin:
                 node,
                 f"Function '{fn_info.name}' expects {len(fn_info.param_types)}"
                 f" argument(s), got {len(args)}.",
+                rationale="A call must supply exactly one argument per "
+                          "declared parameter; the arity does not match the "
+                          "function signature.",
+                fix=f"Call '{fn_info.name}' with exactly "
+                    f"{len(fn_info.param_types)} argument(s) matching its "
+                    f"declared parameter types.",
                 spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
                 error_code="E201",
             )
@@ -151,6 +161,12 @@ class CallsMixin:
                     f"Argument {i} of '{fn_info.name}' has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(param_ty)}.",
+                    rationale="Each argument's type must be a subtype of the "
+                              "corresponding declared parameter type.",
+                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
+                        f"argument {i}, or convert the current value (e.g. "
+                        f"int_to_nat(...), int_to_float(...)) to "
+                        f"{pretty_type(param_ty)}.",
                     spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
                     error_code="E202",
                 )
@@ -206,6 +222,13 @@ class CallsMixin:
                 node,
                 f"Effect operation '{op_info.name}' expects "
                 f"{len(param_types)} argument(s), got {len(args)}.",
+                rationale="An effect operation is called like a function and "
+                          "must receive exactly the number of arguments "
+                          "declared in its 'op' signature.",
+                fix=f"Call '{op_info.name}' with exactly {len(param_types)} "
+                    f"argument(s) matching the 'op' declaration in its "
+                    f"effect.",
+                spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
                 error_code="E203",
             )
             return return_type
@@ -221,6 +244,13 @@ class CallsMixin:
                     f"Argument {i} of '{op_info.name}' has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(param_ty)}.",
+                    rationale="Each argument to an effect operation must be a "
+                              "subtype of the parameter type declared in its "
+                              "'op' signature.",
+                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
+                        f"argument {i} of '{op_info.name}', or convert the "
+                        f"current value to {pretty_type(param_ty)}.",
+                    spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
                     error_code="E204",
                 )
 
@@ -261,6 +291,13 @@ class CallsMixin:
                 node,
                 f"Ability operation '{op_info.name}' expects "
                 f"{len(param_types)} argument(s), got {len(args)}.",
+                rationale="An ability operation is called like a function and "
+                          "must receive exactly the number of arguments "
+                          "declared in its 'op' signature.",
+                fix=f"Call '{op_info.name}' with exactly {len(param_types)} "
+                    f"argument(s) matching the 'op' declaration in its "
+                    f"ability.",
+                spec_ref='Chapter 9, Section 9.8 "Abilities"',
                 error_code="E240",
             )
             return return_type
@@ -277,6 +314,15 @@ class CallsMixin:
                     f"Argument {i} of '{op_info.name}' has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(param_ty)}.",
+                    rationale="Each argument to an ability operation must be a "
+                              "subtype of the parameter type declared in its "
+                              "'op' signature, after the ability's type "
+                              "variable is instantiated.",
+                    fix=f"Pass a value of type {pretty_type(param_ty)} for "
+                        f"argument {i} of '{op_info.name}', or ensure the "
+                        f"ability's type variable resolves to a type that "
+                        f"accepts {pretty_type(arg_ty)}.",
+                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     error_code="E241",
                 )
 
@@ -320,7 +366,14 @@ class CallsMixin:
             self._error(
                 expr,
                 f"Unknown constructor '{expr.name}'.",
+                rationale="A constructor call must name a constructor declared "
+                          "by some 'data' type in scope; no such constructor "
+                          "is defined or imported.",
+                fix=f"Declare '{expr.name}' as a constructor in a 'data' type, "
+                    f"or import the data type that defines it (importing a "
+                    f"data type makes its constructors available).",
                 severity="warning",
+                spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                 error_code="E210",
             )
             for arg in expr.args:
@@ -361,6 +414,11 @@ class CallsMixin:
                     expr,
                     f"Constructor '{expr.name}' is nullary but was given "
                     f"{len(expr.args)} argument(s).",
+                    rationale="A constructor declared with no fields takes no "
+                              "arguments and must be used as a bare name.",
+                    fix=f"Use the constructor without parentheses: "
+                        f"'{expr.name}' instead of '{expr.name}(...)'.",
+                    spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"',
                     error_code="E211",
                 )
             return self._ctor_result_type(ci, arg_types, expected=expected)
@@ -370,6 +428,14 @@ class CallsMixin:
                 expr,
                 f"Constructor '{expr.name}' expects "
                 f"{len(ci.field_types)} field(s), got {len(expr.args)}.",
+                rationale="A constructor call must supply exactly one argument "
+                          "per declared field; the count does not match the "
+                          "'data' declaration.",
+                fix=f"Call '{expr.name}' with exactly {len(ci.field_types)} "
+                    f"argument(s), one per field in its 'data' declaration.",
+                spec_ref=(
+                    'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
+                ),
                 error_code="E212",
             )
             return self._ctor_result_type(ci, arg_types, expected=expected)
@@ -404,6 +470,15 @@ class CallsMixin:
                     f"Constructor '{expr.name}' field {i} has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(field_ty)}.",
+                    rationale="Each constructor argument's type must be a "
+                              "subtype of the corresponding field type in the "
+                              "'data' declaration.",
+                    fix=f"Pass a value of type {pretty_type(field_ty)} for "
+                        f"field {i}, or convert the current value to "
+                        f"{pretty_type(field_ty)}.",
+                    spec_ref=(
+                        'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
+                    ),
                     error_code="E213",
                 )
 
@@ -417,6 +492,11 @@ class CallsMixin:
             self._error(
                 expr,
                 "Tuple constructor requires at least one field.",
+                rationale="A tuple is a heterogeneous product of one or more "
+                          "components; the empty tuple is not a valid tuple "
+                          "type.",
+                fix="Provide at least one element, e.g. Tuple(@Int.0), or use "
+                    "the unit value () if no payload is needed.",
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
                 error_code="E210",
             )
@@ -435,8 +515,20 @@ class CallsMixin:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
         if ci is None:
-            self._error(expr, f"Unknown constructor '{expr.name}'.",
-                        severity="warning", error_code="E214")
+            self._error(
+                expr,
+                f"Unknown constructor '{expr.name}'.",
+                rationale="A nullary constructor reference must name a "
+                          "constructor declared by some 'data' type in "
+                          "scope; no such constructor is defined or imported.",
+                fix=f"Declare '{expr.name}' as a constructor in a 'data' "
+                    f"type, or import the data type that defines it.",
+                severity="warning",
+                spec_ref=(
+                    'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
+                ),
+                error_code="E214",
+            )
             return UnknownType()
 
         if ci.field_types is not None:
@@ -444,6 +536,13 @@ class CallsMixin:
                 expr,
                 f"Constructor '{expr.name}' requires "
                 f"{len(ci.field_types)} field(s) but was used as nullary.",
+                rationale="A constructor declared with fields must be applied "
+                          "to arguments; it cannot be used as a bare name.",
+                fix=f"Apply '{expr.name}' to {len(ci.field_types)} "
+                    f"argument(s): {expr.name}(...).",
+                spec_ref=(
+                    'Chapter 2, Section 2.4 "Algebraic Data Types (ADTs)"'
+                ),
                 error_code="E215",
             )
 
@@ -519,7 +618,14 @@ class CallsMixin:
         self._error(
             expr,
             f"Unresolved qualified call '{expr.qualifier}.{expr.name}'.",
+            rationale="A qualified call 'Effect.op' must name an operation of "
+                      "an effect that is in scope; no effect named "
+                      f"'{expr.qualifier}' declares an op '{expr.name}'.",
+            fix=f"Add '{expr.qualifier}' to the function's effects clause and "
+                f"declare 'op {expr.name}(...)' in that effect, or correct "
+                f"the qualifier or operation name.",
             severity="warning",
+            spec_ref='Chapter 7, Section 7.4.1 "Ambiguous Operations"',
             error_code="E220",
         )
         for arg in expr.args:
@@ -551,6 +657,12 @@ class CallsMixin:
                     "No module matching this import path was resolved. "
                     "Check that the file exists and is imported."
                 ),
+                fix=(
+                    f"Add 'import {mod_label};' and create the file "
+                    f"'{mod_label.replace('.', '/')}.vera' relative to the "
+                    f"importing file or project root."
+                ),
+                spec_ref='Chapter 8, Section 8.6.5 "Resolution Errors"',
                 error_code="E230",
             )
             for arg in expr.args:
@@ -574,6 +686,7 @@ class CallsMixin:
                     f"import {mod_label}"
                     f"({', '.join(sorted(import_filter | {fn_name}))});"
                 ),
+                spec_ref='Chapter 8, Section 8.3.2 "Selective Import"',
                 error_code="E231",
             )
             for arg in expr.args:
@@ -619,7 +732,14 @@ class CallsMixin:
             f"Function '{fn_name}' not found in module "
             f"'{mod_label}'."
             + (f" Available functions: {available}." if available else ""),
+            rationale="A module-qualified call must name a public function "
+                      "declared in the target module; the module was resolved "
+                      "but declares no such function.",
+            fix=f"Define 'public fn {fn_name}(...)' in module '{mod_label}', "
+                f"or correct the name to one the module exports"
+            + (f" (e.g. {available[0]})." if available else "."),
             severity="warning",
+            spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
             error_code="E233",
         )
         for arg in expr.args:

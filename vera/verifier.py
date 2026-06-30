@@ -1185,6 +1185,16 @@ class ContractVerifier:
             location=SourceLocation(
                 file=self.file, line=rep_ob.line, column=rep_ob.column,
             ),
+            rationale=(
+                "A contract obligation was neither discharged statically nor "
+                "matched a more specific diagnostic; it must still be surfaced "
+                "rather than silently dropped (which would be a false Tier-1)."
+            ),
+            fix=(
+                "Strengthen the precondition, add an `assert` to guide the "
+                "proof, or correct the implementation so the obligation holds."
+            ),
+            spec_ref='Chapter 6, "Contracts"',
             severity="error",
             error_code=synth_error_code,
             tier=None,
