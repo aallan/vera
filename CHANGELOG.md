@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI hardening — CodeRabbit Pro+ configuration** (no compiler or runtime change).  `.coderabbit.yaml` gains three agentic pre-merge checks — *changelog covers public-surface changes*, *spec and implementation move together*, and *diagnostics carry full metadata* — all in `warning` (advisory) mode, so they surface drift during review without blocking merge.  The deterministic floor (mypy, `scripts/check_*.py`, pre-commit, the conformance suite) remains the only hard gate; these checks complement it and target judgment-gaps it cannot cheaply cover (e.g. "the changelog *describes* the change", not merely "a bullet exists").  Also raised the GitHub-Checks ingestion timeout to 15 min so CodeRabbit waits for the full multi-OS test matrix before commenting; added `AGENTS.md` to the Code Guidelines set; linked `aallan/vera-bench` so a downstream-breaking CLI / exit-code / diagnostic-format change here is flagged during review; and extended the `tests/**` review guidance to call out the commutative-operations slot-ordering trap.  The deterministic counterparts surfaced by this round — a diagnostic-metadata gate ([#682](https://github.com/aallan/vera/issues/682)) and ruff `flake8-bandit` for assert-as-guard ([#657](https://github.com/aallan/vera/issues/657)) — are tracked as follow-ups.
+
 ## [0.0.187] - 2026-06-30
 
 ### Fixed
