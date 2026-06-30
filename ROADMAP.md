@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,500 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,505 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -33,6 +33,7 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | Issue | What |
 |---|---|
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
+| [#828](https://github.com/aallan/vera/issues/828) | Make `error_code` one-concept-per-code: `ERROR_CODES` names codes but doesn't stop two unrelated diagnostics sharing one (4 such collisions surfaced in #682).  A cheap emission-side registration check shipped; the proper fix is a collision-detection gate + making the registry the single home of each code's concept. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |

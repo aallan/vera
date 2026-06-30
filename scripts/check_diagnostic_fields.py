@@ -13,7 +13,11 @@ This script makes "is every diagnostic fully tagged?" a mechanically
 checkable contract, mirroring `scripts/check_walker_coverage.py`
 (#597).  It AST-parses every `Diagnostic(...)` constructor and every
 `self._error(...)` / `self._warning(...)` call under `vera/` and fails
-if a required field is missing.
+if a required field is missing.  It also validates that every present
+`spec_ref` resolves to a real spec section/chapter and that every
+literal `error_code` is *registered* in `vera/errors.py` `ERROR_CODES`
+(a cheap emission-side check; making each code *unique* per concept and
+enforcing error_code presence are tracked in #828).
 
 Design — explicit over implicit (DESIGN.md §"Explicitness over
 convenience"; no silently-inferred exemptions):
@@ -419,14 +423,110 @@ def spec_ref_violations(paths: Iterable[Path],
     return out
 
 
+# ---------------------------------------------------------------------------
+# error_code registration.  A cheap, deterministic *emission-side* check: every
+# literal error_code on a diagnostic must exist in vera/errors.py ERROR_CODES.
+# Catches typos and unregistered codes.  It does NOT detect collisions (one
+# registered code reused for two unrelated concepts) — that needs the semantic /
+# structural work tracked in #828.  error_code *presence* stays deferred (#828);
+# this only validates a code that IS present as a literal.
+# ---------------------------------------------------------------------------
+
+
+def _load_error_codes(errors_py: Path) -> set[str]:
+    """Extract the registered code keys from `vera/errors.py` ERROR_CODES."""
+    tree = ast.parse(errors_py.read_text(encoding="utf-8"),
+                     filename=str(errors_py))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if (any(isinstance(t, ast.Name) and t.id == "ERROR_CODES"
+                for t in targets)
+                and isinstance(node.value, ast.Dict)):
+            return {
+                str(k.value) for k in node.value.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+    return set()
+
+
+def _diagnostic_call_sites(source: str, filename: str) -> Iterator[ast.Call]:
+    """Yield each Diagnostic() / ._error() / ._warning() Call node, skipping the
+    plumbing Diagnostic() construction inside an _error/_warning helper def."""
+    tree = ast.parse(source, filename=filename)
+    helper_spans = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in ("_error", "_warning")
+    ]
+
+    def inside_helper(lineno: int) -> bool:
+        return any(a <= lineno <= b for a, b in helper_spans)
+
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        is_ctor = isinstance(f, ast.Name) and f.id == "Diagnostic"
+        is_helper = (isinstance(f, ast.Attribute)
+                     and f.attr in ("_error", "_warning"))
+        if not (is_ctor or is_helper):
+            continue
+        if is_ctor and inside_helper(n.lineno):
+            continue
+        yield n
+
+
+def error_code_registration_violations_in_source(
+    source: str, filename: str, registry: set[str],
+) -> list[Violation]:
+    """Flag any *literal* error_code on a diagnostic that is not in ERROR_CODES.
+    Non-literal (threaded) codes are skipped — they cannot be checked
+    statically."""
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for call in _diagnostic_call_sites(source, filename):
+        for kw in call.keywords:
+            if kw.arg != "error_code":
+                continue
+            v = kw.value
+            if (isinstance(v, ast.Constant) and isinstance(v.value, str)
+                    and v.value and v.value not in registry):
+                ln = v.lineno
+                snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
+                out.append(Violation(
+                    filename, ln, "error_code",
+                    [f"emits unregistered error_code {v.value!r} — add it to "
+                     f"ERROR_CODES in vera/errors.py"], snip))
+    return out
+
+
+def error_code_registration_violations(
+    paths: Iterable[Path], registry: set[str],
+) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(error_code_registration_violations_in_source(
+            p.read_text(encoding="utf-8"), rel, registry))
+    return out
+
+
 def main() -> int:
     files = iter_vera_files(ROOT / "vera")
     presence = check_paths(files)
     validity = spec_ref_violations(files)
-    violations = presence + validity
+    registry = _load_error_codes(ROOT / "vera" / "errors.py")
+    codes = error_code_registration_violations(files, registry)
+    violations = presence + validity + codes
     if not violations:
-        print("check_diagnostic_fields: OK — every diagnostic is fully tagged "
-              "and every spec_ref resolves.")
+        print("check_diagnostic_fields: OK — every diagnostic is fully tagged, "
+              "every spec_ref resolves, and every error_code is registered.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
@@ -435,15 +535,16 @@ def main() -> int:
           f"{len(by_file)} file(s).\n")
     print("Every diagnostic MUST carry rationale + spec_ref, and an error-"
           "severity one a fix too (warnings are fix-exempt) — spec §0.5.1; the "
-          "spec_ref must also resolve to a real section/chapter.")
-    print("Populate the missing field(s) / fix the spec_ref, or add "
-          "`# diag-fields-exempt: <reason>` for a genuinely fix-less "
-          "internal/defensive site.\n")
+          "spec_ref must also resolve to a real section/chapter, and any "
+          "error_code must be registered in vera/errors.py ERROR_CODES.")
+    print("Populate the missing field(s) / fix the spec_ref / register the "
+          "error_code, or add `# diag-fields-exempt: <reason>` for a genuinely "
+          "fix-less internal/defensive site.\n")
     for fname in sorted(by_file):
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
-            if v.target == "spec_ref":
-                print(f"    line {v.line:<5} spec_ref    {v.missing[0]}")
+            if v.target in ("spec_ref", "error_code"):
+                print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "
                       f"{', '.join(v.missing)}")

@@ -391,6 +391,47 @@ class TestSpecRefValidity:
 
 
 # =====================================================================
+# error_code registration: every literal code must be in ERROR_CODES (#828)
+# =====================================================================
+
+class TestErrorCodeRegistration:
+    REG = {"E130", "E216", "W001"}
+
+    def test_unregistered_literal_flagged(self, mod: object) -> None:
+        src = "self._error(node, 'd', error_code='E999')\n"
+        v = mod.error_code_registration_violations_in_source(
+            src, "vera/checker/x.py", self.REG)
+        assert len(v) == 1 and "E999" in v[0].missing[0]
+
+    def test_registered_literal_passes(self, mod: object) -> None:
+        src = "self._error(node, 'd', error_code='E130')\n"
+        assert mod.error_code_registration_violations_in_source(
+            src, "vera/checker/x.py", self.REG) == []
+
+    def test_non_literal_code_skipped(self, mod: object) -> None:
+        # A threaded error_code (variable) cannot be checked statically.
+        src = "self._error(node, 'd', error_code=code)\n"
+        assert mod.error_code_registration_violations_in_source(
+            src, "vera/checker/x.py", self.REG) == []
+
+    def test_plumbing_literal_code_skipped(self, mod: object) -> None:
+        # A literal code inside an _error helper def is plumbing, not a site.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, *, error_code=''):\n"
+            "        self.diagnostics.append(Diagnostic(\n"
+            "            description='d', location=loc, error_code='E999'))\n"
+        )
+        assert mod.error_code_registration_violations_in_source(
+            src, "vera/checker/core.py", self.REG) == []
+
+    def test_load_error_codes_reads_live_registry(self, mod: object) -> None:
+        codes = mod._load_error_codes(ROOT / "vera" / "errors.py")
+        assert {"E130", "E618", "W001", "E002"} <= codes
+        assert "E999" not in codes
+
+
+# =====================================================================
 # _load_spec caches per resolved spec_dir
 # =====================================================================
 
@@ -429,7 +470,10 @@ class TestSpecDirCache:
 class TestLiveTree:
     def test_live_vera_tree_is_clean(self, mod: object) -> None:
         files = mod.iter_vera_files(ROOT / "vera")
-        violations = mod.check_paths(files) + mod.spec_ref_violations(files)
+        registry = mod._load_error_codes(ROOT / "vera" / "errors.py")
+        violations = (mod.check_paths(files)
+                      + mod.spec_ref_violations(files)
+                      + mod.error_code_registration_violations(files, registry))
         report = "\n".join(
             f"  {v.file}:{v.line} {v.target} {v.missing}" for v in violations)
         assert violations == [], f"{len(violations)} diagnostic problem(s):\n{report}"
