@@ -959,7 +959,7 @@ Checked narrowing from signed integer to natural number. Returns `Some(n)` if th
 
 ```
 match int_to_nat(42) {
-  Some(@Nat) -> nat_to_int(@Nat.0),
+  Some(@Nat) -> @Nat.0,
   None -> 0 - 1
 }
 ```
@@ -1116,7 +1116,7 @@ Returns `Some(i)` where `i` is the byte offset of the first occurrence of the ne
 
 ```vera
 match string_index_of("hello world", "world") {
-  Some(@Nat) -> nat_to_int(@Nat.0),
+  Some(@Nat) -> @Nat.0,
   None -> 0 - 1
 }
 -- evaluates to 6
@@ -1592,7 +1592,7 @@ public forall<A, B> fn array_mapi(@Array<A>, fn(A, Nat -> B) effects(pure) -> @A
 
 ```vera
 array_mapi([10, 20, 30], fn(@Int, @Nat -> @Int) effects(pure) {
-  @Int.0 + nat_to_int(@Nat.0)
+  @Int.0 + @Nat.0
 })
 -- [10, 21, 32]
 ```
