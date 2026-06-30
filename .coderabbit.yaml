@@ -331,9 +331,11 @@ reviews:
       - name: "Diagnostics carry an error code"
         mode: "warning"
         instructions: |
-          Fail if a new or changed error-severity diagnostic lacks a stable
-          error_code (E###). The rationale / fix / spec_ref fields are now
-          enforced deterministically by scripts/check_diagnostic_fields.py
-          (#682), so this advisory check is narrowed to the one field that
-          gate does not yet cover; retire it once error_code enforcement
+          Fail if a new or changed diagnostic lacks a stable code matching
+          [EW]\d{3} — E### for error-severity, W### for warning-severity
+          (warnings are a first-class diagnostic family). The rationale / fix /
+          spec_ref fields are now enforced deterministically by
+          scripts/check_diagnostic_fields.py (#682), so this advisory check is
+          narrowed to the one field that gate does not yet cover (the stable
+          code itself, across both severities); retire it once code enforcement
           lands too.
