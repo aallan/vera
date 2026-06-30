@@ -316,9 +316,11 @@ class TypeChecker(
                     f"Invariant must be Bool, found {pretty_type(inv_type)}.",
                     rationale="Data type invariants are predicates that must "
                               "evaluate to Bool.",
-                    fix="Make the invariant expression a Bool-valued predicate, "
-                        "e.g. wrap it in a comparison: "
-                        "invariant(@Field.0 > 0) instead of invariant(@Field.0).",
+                    fix="The invariant must be a Bool-valued predicate.  Note "
+                        "that `data` invariants are not yet implemented (#686); "
+                        "until then, express the constraint as a refinement "
+                        "type over a real base type, e.g. "
+                        "`type Positive = { @Int | @Int.0 > 0 };`.",
                     spec_ref='Chapter 2, Section 2.4.1 "ADT Invariants"',
                     error_code="E120",
                 )

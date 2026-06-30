@@ -602,7 +602,9 @@ class CrossModuleMixin:
                 rationale=rationale,
                 fix=(
                     f"Define '{name}' in this module, or import it from the "
-                    f"module that declares it: import the.module({name});"
+                    f"module that declares it with 'import <module>({name});' "
+                    f"(replace <module> with that module's path, e.g. "
+                    f"'vera.math')."
                 ),
                 spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
                 severity="error",

@@ -66,8 +66,9 @@ class CallsMixin:
             rationale="A bare call must resolve to a function, effect "
                       "operation, or ability operation in scope; no "
                       "declaration named this could be found.",
-            fix=f"Define 'fn {name}(...)' in this file, or import it from "
-                f"the module that declares it: import the.module({name});",
+            fix=f"Define 'fn {name}(...)' in this file, or import it from the "
+                f"module that declares it with 'import <module>({name});' "
+                f"(replace <module> with that module's path, e.g. 'vera.math').",
             severity="warning",
             spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
             error_code="E200",
