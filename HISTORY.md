@@ -412,14 +412,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.185 | 28 Jun | Redefining an opaque, verifier-modelled built-in is now a checker error, closing a `verify`/`run` soundness hole ([#815](https://github.com/aallan/vera/issues/815)). |
 | v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: a value above i64.MAX no longer reinterprets to a negative `@Int` ([#813](https://github.com/aallan/vera/issues/813)). |
 | v0.0.187 | 30 Jun | Integer-overflow runtime traps now carry a precise `overflow` trap kind instead of the generic `unreachable` ([#808](https://github.com/aallan/vera/issues/808)). |
-
-## Stage 16: The safety net (30 June onwards)
-
-*Hardening the development toolchain and the regression net so quality gaps surface in review and CI before users hit them.*
-
-| Version | Date | What shipped |
-|---------|------|-------------|
-| v0.0.188 | 30 Jun | Every diagnostic is gated for complete, spec-accurate metadata, with 54 checker sites backfilled and 30-plus stale spec references corrected ([#682](https://github.com/aallan/vera/issues/682)). |
+| v0.0.188 | 30 Jun | The no-silent-failures discipline reaches the diagnostics layer: every diagnostic is gated for complete, spec-accurate metadata, with 54 checker sites backfilled and 30-plus stale spec references corrected ([#682](https://github.com/aallan/vera/issues/682)). |
 
 ---
 
