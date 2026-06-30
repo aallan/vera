@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.188] - 2026-06-30
+
 ### Added
 
 - **Diagnostic-field discipline is now enforced** ([#682](https://github.com/aallan/vera/issues/682)).  `spec/00-introduction.md` §0.5.1 requires every diagnostic to carry a `rationale`, a `fix`, and a `spec_ref`, but the `Diagnostic` dataclass defaults all three to `""` — so a partially-tagged diagnostic compiled and shipped silently, weakening the "diagnostics as instructions" guarantee (DESIGN.md §Checkability).  New `scripts/check_diagnostic_fields.py` (wired into pre-commit and the CI `lint` job, mirroring the #597 walker-coverage gate) AST-parses every `Diagnostic(...)` constructor and `self._error(...)` / `self._warning(...)` call under `vera/` and fails when one of the three fields is missing — or when a present `spec_ref` does not resolve to a real spec section/chapter with a matching title (the *present-but-wrong* case, e.g. citing §4.3 "Operators" when §4.3 is "Slot References").  The exemption surface is **explicit and reasoned**, never silently inferred (DESIGN.md §"Explicitness over convenience"): a `warning` is not required to carry a `fix` (it has no corrected-code template); the codegen `_error`/`_warning` helpers — internal-compiler (E699) and "function skipped" diagnostics with no user fix or spec section — are exempt via a documented registry in the script; and a one-off internal/defensive site carries a `# diag-fields-exempt: <reason>` marker (a dedicated token, deliberately *not* `# noqa:`-prefixed so it cannot collide with ruff's suppression namespace).  Enforcing `error_code` as well is tracked as a follow-up.
@@ -2681,7 +2683,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.187...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.188...HEAD
+[0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
 [0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187
 [0.0.186]: https://github.com/aallan/vera/compare/v0.0.185...v0.0.186
 [0.0.185]: https://github.com/aallan/vera/compare/v0.0.184...v0.0.185
