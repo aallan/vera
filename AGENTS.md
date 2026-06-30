@@ -89,7 +89,7 @@ For machine-parseable errors, use the `--json` flag:
       "source_line": "private fn add(@Int, @Int -> @Int)",
       "rationale": "Vera requires all functions to have explicit contracts...",
       "fix": "Add a contract block after the signature:\n\n  private fn example(@Int -> @Int)\n    requires(true)\n    ensures(@Int.result >= 0)\n    effects(pure)\n  {\n    ...\n  }",
-      "spec_ref": "Chapter 5, Section 5.1 \"Function Structure\"",
+      "spec_ref": "Chapter 5, Section 5.2 \"Function Declaration Syntax\"",
       "error_code": "E001"
     }
   ],
