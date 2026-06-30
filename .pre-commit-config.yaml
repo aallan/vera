@@ -160,7 +160,10 @@ repos:
         # The script auto-discovers every Diagnostic(...) constructor and
         # _error/_warning call under `vera/**/*.py`, so the trigger must be
         # at least as broad as that glob (same reasoning as walker-coverage).
-        files: '(vera/.*\.py$|scripts/check_diagnostic_fields\.py$)'
+        # It ALSO validates each spec_ref against the section/chapter titles in
+        # `spec/**/*.md`, so a spec-only retitle can invalidate an unchanged
+        # citation — include spec markdown so that edit re-runs the check too.
+        files: '(vera/.*\.py$|spec/.*\.md$|scripts/check_diagnostic_fields\.py$)'
 
       - id: limitations-sync
         name: limitations sync

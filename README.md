@@ -100,7 +100,7 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
         ...
       }
 
-  See: Chapter 5, Section 5.4 "Contract Clauses"
+  See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
 Every diagnostic has a stable error code (`E001`–`E702`) and is available as structured JSON via the `--json` flag.

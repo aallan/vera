@@ -205,7 +205,7 @@ def missing_contract_block(
             "    ...\n"
             "  }"
         ),
-        spec_ref='Chapter 5, Section 5.4 "Contract Clauses"',
+        spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
         error_code="E001",
     )
 
