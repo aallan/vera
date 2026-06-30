@@ -499,7 +499,7 @@ class CallsMixin:
                 fix="Provide at least one element, e.g. Tuple(@Int.0), or use "
                     "the unit value () if no payload is needed.",
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
-                error_code="E210",
+                error_code="E216",
             )
             return UnknownType()
         arg_types: list[Type] = []

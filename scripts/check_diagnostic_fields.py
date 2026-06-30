@@ -433,8 +433,9 @@ def main() -> int:
         by_file.setdefault(v.file, []).append(v)
     print(f"check_diagnostic_fields: {len(violations)} problem(s) in "
           f"{len(by_file)} file(s).\n")
-    print("Every diagnostic MUST carry rationale + fix + spec_ref (spec "
-          "§0.5.1), and the spec_ref must resolve to a real section/chapter.")
+    print("Every diagnostic MUST carry rationale + spec_ref, and an error-"
+          "severity one a fix too (warnings are fix-exempt) — spec §0.5.1; the "
+          "spec_ref must also resolve to a real section/chapter.")
     print("Populate the missing field(s) / fix the spec_ref, or add "
           "`# diag-fields-exempt: <reason>` for a genuinely fix-less "
           "internal/defensive site.\n")

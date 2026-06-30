@@ -3090,6 +3090,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E131**: Result ref outside ensures
 - **E132**: Cyclic type alias
 - **E133**: Type alias arity mismatch
+- **E134**: Type does not take type arguments
 - **E140**: Arithmetic requires numeric operands
 - **E141**: Arithmetic requires matching numeric types
 - **E142**: Cannot compare incompatible types
@@ -3124,6 +3125,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E213**: Constructor field type mismatch
 - **E214**: Unknown nullary constructor
 - **E215**: Constructor requires arguments
+- **E216**: Empty tuple type
 - **E220**: Unresolved qualified call
 - **E230**: Module not found
 - **E231**: Function not imported from module
@@ -3141,6 +3143,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E320**: Unknown constructor in pattern
 - **E321**: Pattern constructor wrong arity
 - **E322**: Unknown nullary constructor in pattern
+- **E323**: Empty tuple pattern
 - **E330**: Unknown effect in handler
 - **E331**: Handler state type mismatch
 - **E332**: Effect has no such operation

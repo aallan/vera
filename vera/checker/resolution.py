@@ -139,7 +139,7 @@ class ResolutionMixin:
                     ),
                     fix="Write `Decimal` with no type arguments.",
                     spec_ref='Chapter 9, Section 9.7.2 "Decimal"',
-                    error_code="E130",
+                    error_code="E134",
                 )
             return AdtType(name, ())
 

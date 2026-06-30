@@ -347,7 +347,7 @@ class ControlFlowMixin:
                 fix="Add one sub-pattern per tuple component, e.g. "
                     "Tuple(@Int, @Bool) for a two-element tuple.",
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
-                error_code="E320",
+                error_code="E323",
             )
             return []
         # Derive field types from expected Tuple type if available
