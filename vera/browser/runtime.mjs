@@ -33,6 +33,7 @@ let wasm = null;       // WebAssembly instance exports
 let stdoutBuf = '';    // Captured IO.print output
 let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
+let lastOverflow = false; // #808: #798 integer-overflow guard fired this call
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 let stdinQueue = [];   // Pre-queued input lines for IO.read_line
 let cliArgs = [];      // Command-line arguments for IO.args
@@ -361,6 +362,17 @@ function hostStderr(ptr, len) {
 /** vera.contract_fail(ptr, len) → store message; WASM executes unreachable. */
 function hostContractFail(ptr, len) {
   lastViolation = readString(ptr, len);
+}
+
+/**
+ * vera.overflow_trap() → signal an integer overflow; WASM executes unreachable.
+ * #808: the #798 `@Int` / `@Nat` arithmetic-overflow guard calls this right
+ * before its `unreachable`, so `call()` reports "Integer overflow" instead of
+ * the generic trap (mirrors `hostContractFail`; parameterless — the message is
+ * fixed, not interned).
+ */
+function hostOverflowTrap() {
+  lastOverflow = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,6 +1192,11 @@ function buildImportObject(module) {
   // Contract fail
   if (needed.has('contract_fail')) {
     imports.vera.contract_fail = hostContractFail;
+  }
+
+  // #808: integer-overflow trap signal (declared by the #798 overflow guard)
+  if (needed.has('overflow_trap')) {
+    imports.vera.overflow_trap = hostOverflowTrap;
   }
 
   // State<T> bindings — dynamically created from import names.
@@ -2572,6 +2589,7 @@ export function call(fnName, ...args) {
   }
   exitCode = null;
   lastViolation = '';
+  lastOverflow = false;
   try {
     return fn(...args);
   } catch (e) {
@@ -2582,6 +2600,10 @@ export function call(fnName, ...args) {
     // Check for contract violation message
     if (lastViolation && e instanceof WebAssembly.RuntimeError) {
       throw new Error(lastViolation);
+    }
+    // #808: integer-overflow guard fired before the trap
+    if (lastOverflow && e instanceof WebAssembly.RuntimeError) {
+      throw new Error('Integer overflow');
     }
     throw e;
   }
@@ -2634,6 +2656,7 @@ export function reset() {
   stdoutBuf = '';
   stderrBuf = '';
   lastViolation = '';
+  lastOverflow = false;
   exitCode = null;
   resetState();
   stdinQueue = [];

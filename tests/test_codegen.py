@@ -21150,3 +21150,47 @@ public fn main(-> @Unit)
 """
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run_io(src) == "3"
+
+
+class TestPostconditionHostImportPropagation823:
+    """A host-import builtin or an allocation used *only* inside an
+    ``ensures(...)`` postcondition must still get its import / memory / GC
+    declaration.
+
+    Codegen propagates a function's accumulated host-import and resource flags
+    from the per-function ``ctx`` to the module *after* lowering postconditions
+    (``functions.py``).  Propagating earlier — the historical position, before
+    ``_compile_postconditions`` — dropped any flag a builtin or allocation set
+    while lowering an ``ensures(...)`` predicate, so the import / memory / GC
+    declaration was omitted and the orphaned ``call``/``global.get`` failed WAT
+    compilation.  #808 surfaced this (its new ``vera.overflow_trap`` was the
+    first import to expose it) and fixed the general ordering for every
+    host-import family and ``$alloc`` (#823).
+
+    Each fixture's BODY is a plain slot — no arithmetic, no allocation — so the
+    flag is set ONLY while lowering the postcondition.  These would compile fine
+    if the propagation ran before postconditions only because the body happened
+    to need the same import; the scalar body rules that out.
+    """
+
+    def test_math_host_import_in_postcondition_compiles(self) -> None:
+        # `sin` lowers to `call $vera.sin`; the body returns the slot unchanged,
+        # so the import is needed only because of the ensures() predicate.
+        src = (
+            "public fn h(@Float64 -> @Float64) "
+            "requires(true) ensures(sin(@Float64.result) <= 2.0) "
+            "effects(pure) { @Float64.0 }"
+        )
+        assert _run_float(src, "h", [0.5]) == 0.5
+
+    def test_alloc_in_postcondition_compiles(self) -> None:
+        # `int_to_string` allocates → needs_alloc / needs_memory and the GC
+        # shadow-stack globals ($gc_sp); the scalar body never allocates, so the
+        # allocation is reachable only via the ensures() predicate.
+        src = (
+            "public fn f(@Int -> @Int) "
+            "requires(true) "
+            "ensures(string_length(int_to_string(@Int.result)) > 0) "
+            "effects(pure) { @Int.0 }"
+        )
+        assert _run(src, "f", [5]) == 5

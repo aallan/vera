@@ -370,31 +370,12 @@ class FunctionCompilationMixin:
             )
             return None
 
-        # Propagate resource flags from WasmContext (e.g. array allocation)
-        if ctx.needs_alloc:
-            self._needs_alloc = True
-            self._needs_memory = True
-        # Propagate Map host-import tracking
-        self._map_imports.update(ctx._map_imports)
-        self._map_ops_used.update(ctx._map_ops_used)
-        # Propagate Set host-import tracking
-        self._set_imports.update(ctx._set_imports)
-        self._set_ops_used.update(ctx._set_ops_used)
-        # Propagate Decimal host-import tracking
-        self._decimal_imports.update(ctx._decimal_imports)
-        self._decimal_ops_used.update(ctx._decimal_ops_used)
-        # Propagate Json host-import tracking
-        self._json_ops_used.update(ctx._json_ops_used)
-        # Propagate Html host-import tracking
-        self._html_ops_used.update(ctx._html_ops_used)
-        # Propagate Http host-import tracking
-        self._http_ops_used.update(ctx._http_ops_used)
-        # Propagate Inference host-import tracking
-        self._inference_ops_used.update(ctx._inference_ops_used)
-        # Propagate Random host-import tracking (#465)
-        self._random_ops_used.update(ctx._random_ops_used)
-        # Propagate Math host-import tracking (#467)
-        self._math_ops_used.update(ctx._math_ops_used)
+        # NOTE: resource / host-import flags accumulated on ``ctx`` are
+        # propagated to the module ``self`` *after* ``_compile_postconditions``
+        # below — not here — so a builtin or allocation used only inside an
+        # ``ensures(...)`` predicate (lowered after this point) still gets its
+        # import / memory declaration.  See the propagation block after the
+        # postcondition compile (#808 / #823).
 
         # #813: guard a @Nat -> @Int widening at the return position.  A @Nat
         # result above i64.MAX reinterprets to a negative @Int (u64.MAX -> -1),
@@ -446,6 +427,38 @@ class FunctionCompilationMixin:
 
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
+
+        # Propagate resource / host-import flags from ``ctx`` to the module
+        # ``self`` that ``_assemble_module`` reads.  This runs HERE — after the
+        # precondition (`_compile_preconditions`), body (`translate_block`),
+        # lifted-closure, AND postcondition (`_compile_postconditions`) lowering
+        # — because ``ctx`` accumulates these flags across every one of those
+        # phases.  Propagating earlier (the historical position, before
+        # postconditions) dropped any flag a builtin or allocation set while
+        # lowering an ``ensures(...)`` predicate, so the import / memory / GC
+        # declaration was omitted and the orphaned `call`/`global.get` failed
+        # WAT compilation (#808 for `vera.overflow_trap`; #823 for the other
+        # host-import families and `$alloc`/`$gc_sp`).  Nothing between the old
+        # position and here reads these flags — they are consumed only at module
+        # assembly — so the move is purely additive in correctness.
+        if ctx.needs_alloc:
+            self._needs_alloc = True
+            self._needs_memory = True
+        self._map_imports.update(ctx._map_imports)
+        self._map_ops_used.update(ctx._map_ops_used)
+        self._set_imports.update(ctx._set_imports)
+        self._set_ops_used.update(ctx._set_ops_used)
+        self._decimal_imports.update(ctx._decimal_imports)
+        self._decimal_ops_used.update(ctx._decimal_ops_used)
+        self._json_ops_used.update(ctx._json_ops_used)
+        self._html_ops_used.update(ctx._html_ops_used)
+        self._http_ops_used.update(ctx._http_ops_used)
+        self._inference_ops_used.update(ctx._inference_ops_used)
+        self._random_ops_used.update(ctx._random_ops_used)
+        self._math_ops_used.update(ctx._math_ops_used)
+        self._needs_overflow_trap = (
+            self._needs_overflow_trap or ctx._needs_overflow_trap
+        )
 
         # #517 — tail-call optimization fallback for functions whose
         # bodies are followed by post-body work that must run before

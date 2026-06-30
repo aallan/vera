@@ -122,6 +122,9 @@ class CodeGenerator(
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
+        # #808: set when an overflow guard emits a `vera.overflow_trap` call,
+        # so assembly.py declares the host import.
+        self._needs_overflow_trap: bool = False
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
         self._exn_types: list[tuple[str, str]] = []  # (type_name, wasm_type)

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.187] - 2026-06-30
+
+### Fixed
+
+- **Integer-overflow runtime traps now carry a precise `overflow` trap kind** ([#808](https://github.com/aallan/vera/issues/808)).  The [#798](https://github.com/aallan/vera/issues/798) `@Int` / `@Nat` arithmetic-overflow guard trapped via a bare `unreachable`, so a dynamic overflow was classified `kind="unreachable"` and surfaced the generic non-exhaustive-`match` Fix paragraph — indistinguishable from an unrelated `unreachable`.  The guard now calls a new `vera.overflow_trap` host import (mirroring `vera.contract_fail`) immediately before its `unreachable`; that signals an out-of-band channel `_classify_trap` checks *before* the `str(exc)` substring scan (which would otherwise match the trailing `unreachable` first), so the trap classifies `kind="overflow"` and carries the overflow Fix paragraph (the i64 / u64 range and the `requires(...)` remediation).  Both runtimes provide the new import — the wasmtime host in `execute()` and the browser/Node `runtime.mjs`, whose dynamic import builder now binds `vera.overflow_trap` so a `--target browser` bundle still instantiates and surfaces "Integer overflow" rather than `LinkError`-ing on any arithmetic.  The `@Nat`-subtraction underflow ([#520](https://github.com/aallan/vera/issues/520)) and `@Nat` → `@Int` widen ([#813](https://github.com/aallan/vera/issues/813)) guards are unchanged and still classify `unreachable` — `tests/test_int_overflow_codegen.py::TestOverflowTrapKind808` pins the new `overflow` classification (all five `+` / `-` / `*` sites, both `int_mul` trap branches, plus the lifted-closure and `ensures(...)`-postcondition paths) and those two unchanged controls, and `tests/test_browser.py` pins the wasmtime↔Node parity.
+
+- **Host-import / allocation flags used only inside an `ensures(...)` postcondition are now declared** ([#823](https://github.com/aallan/vera/issues/823)).  Code generation propagated a function's accumulated host-import and resource flags from the per-function context to the module *before* lowering postconditions, so a builtin or allocation reachable only through an `ensures(...)` predicate set its flag too late — the import / memory / GC declaration was omitted and the orphaned `call`/`global.get` failed WAT compilation (`unknown func: $vera.sin`, `unknown global: $gc_sp`, …).  Surfaced while wiring #808's `vera.overflow_trap` (the first new host import to expose it); the propagation now runs *after* `_compile_postconditions`, fixing the whole class — every host-import family (`sin`/`cos`/`pow`, `json_*`, `map_*`/`set_*`, `decimal_*`, `http_*`, `inference_*`, `random_*`) and `$alloc`/`$gc_sp`.  Nothing between the old and new position reads these flags (they are consumed only at module assembly), so the move is purely additive in correctness.  Pinned by `tests/test_codegen.py::TestPostconditionHostImportPropagation823` (math host import + allocation in a postcondition over a scalar body).
+
 ### Changed
 
 - **Documentation consistency pass** (no code or behaviour change).
@@ -2657,7 +2665,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.186...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.187...HEAD
+[0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187
 [0.0.186]: https://github.com/aallan/vera/compare/v0.0.185...v0.0.186
 [0.0.185]: https://github.com/aallan/vera/compare/v0.0.184...v0.0.185
 [0.0.184]: https://github.com/aallan/vera/compare/v0.0.183...v0.0.184

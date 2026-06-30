@@ -411,6 +411,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.184 | 28 Jun | Chapter 8 (modules) gains eight conformance programs, with `expected_error` negative-test support and stable module-resolution E-codes (E011/E012/E013/E150) ([#679](https://github.com/aallan/vera/issues/679)). |
 | v0.0.185 | 28 Jun | Redefining an opaque, verifier-modelled built-in is now a checker error (E151), closing a soundness hole where a shadowing `abs` let `vera verify` prove a postcondition `run` violated ([#815](https://github.com/aallan/vera/issues/815)). |
 | v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: every coercion carries a `nat_to_int_coerce` obligation (E530), runtime-trapped where codegen knows the source is `@Nat` and disclosed as an E531 warning at the component sites it cannot guard; ships with a CI gate that doc examples never redefine a built-in (#819) ([#813](https://github.com/aallan/vera/issues/813)). |
+| v0.0.187 | 30 Jun | The #798 integer-overflow runtime trap now classifies `kind="overflow"` via a new `vera.overflow_trap` host import, so a dynamic overflow surfaces the overflow diagnostic instead of the generic `unreachable`; the same work fixes host-import and allocation flags used only inside an `ensures(...)` postcondition (#823) ([#808](https://github.com/aallan/vera/issues/808)). |
 
 ---
 

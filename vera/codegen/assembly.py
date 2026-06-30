@@ -281,6 +281,14 @@ class AssemblyMixin:
                 "(func $vera.contract_fail (param i32 i32)))"
             )
 
+        # #808: import overflow_trap so the #798 integer-overflow guard
+        # surfaces the precise `kind="overflow"` diagnostic.
+        if self._needs_overflow_trap:
+            parts.append(
+                '  (import "vera" "overflow_trap" '
+                "(func $vera.overflow_trap))"
+            )
+
         # Import State<T> host functions if needed
         for type_name, wasm_t in self._state_types:
             parts.append(

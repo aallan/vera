@@ -1082,7 +1082,8 @@ class OperatorsMixin:
         (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
         @Nat -> @Int coercion sites the verifier obligates (return, call
         argument, let).  The bare ``unreachable`` reuses the existing trap
-        taxonomy (a dedicated widening trap kind, like #808 for overflow, is a
+        taxonomy (a dedicated *widening* trap kind — modelled on the
+        ``kind="overflow"`` #808 added for arithmetic overflow — is a
         follow-up); the guard never fires on a value the verifier proved
         ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
         """
@@ -1094,8 +1095,9 @@ class OperatorsMixin:
         trap (bare ``unreachable``, classified by ``api.py:_classify_trap``)
         when it reads as a negative i64.  Both callers reduce to this same
         sign-bit check today; they stay distinct entry points because each has
-        its own deferred dedicated trap kind (#754 narrowing, #808-style
-        widening) that will give them tailored Fix paragraphs.
+        its own deferred dedicated trap kind (#754 narrowing, and a widening
+        kind modelled on #808's ``kind="overflow"``) that will give them
+        tailored Fix paragraphs.
 
             [value]
             local.tee $tmp     ;; leave value on stack, copy to temp
@@ -1315,13 +1317,16 @@ class OperatorsMixin:
         """Dispatch to the per-(op, type) guarded arithmetic sequence (#798).
 
         Each sequence computes the wrapping result, checks whether the true
-        (unbounded) result left the i64 (@Int) / u64 (@Nat) range, traps via a
-        bare ``unreachable`` if so (classified ``kind="unreachable"`` by the
-        trap taxonomy — a precise ``"overflow"`` kind via host import is a
-        follow-up, mirroring the #520 / #552 guards), and leaves the wrapping
-        result on the stack otherwise.  @Nat SUB never reaches here (excluded
-        by the caller; it is ``nat_sub`` underflow).
+        (unbounded) result left the i64 (@Int) / u64 (@Nat) range, and on
+        overflow calls ``vera.overflow_trap`` then ``unreachable`` so the trap
+        classifies as the precise ``kind="overflow"`` (#808) — carrying the
+        overflow Fix paragraph — rather than the generic ``unreachable``;
+        otherwise it leaves the wrapping result on the stack.  @Nat SUB never
+        reaches here (excluded by the caller; it is ``nat_sub`` underflow).
         """
+        # #808: every guard below traps through `vera.overflow_trap` + an
+        # `unreachable`, so declare the host import.
+        self._needs_overflow_trap = True
         if ovf == "Nat":
             if op == ast.BinOp.ADD:
                 return self._emit_nat_add_guard(left, right)
@@ -1365,6 +1370,7 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
+            "  call $vera.overflow_trap",
             "  unreachable",
             "end",                           # stack: [r]
         ]
@@ -1400,6 +1406,7 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
+            "  call $vera.overflow_trap",
             "  unreachable",
             "end",                           # stack: [r]
         ]
@@ -1442,6 +1449,7 @@ class OperatorsMixin:
             f"    i64.const {self._I64_MIN_CODEGEN}",
             "    i64.eq",
             "    if",                        # b == INT_MIN → overflow
+            "      call $vera.overflow_trap",
             "      unreachable",
             "    end",
             "  else",                        # a != 0 && a != -1 → safe to divide
@@ -1451,6 +1459,7 @@ class OperatorsMixin:
             f"    local.get {b_tmp}",
             "    i64.ne",
             "    if",                        # r/a != b → overflow
+            "      call $vera.overflow_trap",
             "      unreachable",
             "    end",
             "  end",
@@ -1482,6 +1491,7 @@ class OperatorsMixin:
             f"local.get {a_tmp}",
             "i64.lt_u",                      # r <u a ?  stack: [r, cond]
             "if",
+            "  call $vera.overflow_trap",
             "  unreachable",
             "end",                           # stack: [r]
         ]
@@ -1514,6 +1524,7 @@ class OperatorsMixin:
             f"  local.get {b_tmp}",
             "  i64.ne",
             "  if",                          # r/u a != b → overflow
+            "    call $vera.overflow_trap",
             "    unreachable",
             "  end",
             "end",

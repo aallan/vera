@@ -389,11 +389,13 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
         "which constructors are uncovered."
     ),
     "overflow": (
-        "Integer arithmetic produced a value outside the i64 range "
-        "`[-2^63, 2^63)`.  Add a `requires` precondition that constrains "
-        "the operands so Z3 can prove the result is representable, or "
-        "change the operation to a saturating / checked variant via a "
-        "helper function."
+        "Integer arithmetic produced a value outside the representable "
+        "range — the signed i64 range `[-2^63, 2^63)` for `@Int`, or the "
+        "unsigned u64 range `[0, 2^64)` for `@Nat` (#808 routes `@Nat` "
+        "overflows here too).  Add a `requires` precondition that "
+        "constrains the operands so Z3 can prove the result is "
+        "representable, or change the operation to a saturating / checked "
+        "variant via a helper function."
     ),
     "contract_violation": "",
     "unknown": "",
@@ -401,7 +403,9 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
 
 
 def _classify_trap(
-    exc: BaseException, last_violation: list[str]
+    exc: BaseException,
+    last_violation: list[str],
+    last_overflow: list[object] | None = None,
 ) -> tuple[str, str, str]:
     """Classify a wasmtime trap into ``(kind, description, fix)``.
 
@@ -441,6 +445,20 @@ def _classify_trap(
             "contract_violation",
             last_violation[0],
             _TRAP_FIX_PARAGRAPHS["contract_violation"],
+        )
+
+    # #808: the #798 integer-overflow guard calls the ``vera.overflow_trap``
+    # host import (which signals this channel) immediately before its
+    # ``unreachable``, so the trap classifies as the precise ``overflow`` kind
+    # with its Fix paragraph rather than the generic ``unreachable`` a bare
+    # instruction produces.  Checked before the ``str(exc)`` substring scan
+    # below — that scan would otherwise match the trailing ``unreachable``
+    # first (the host signals but the WASM still traps via ``unreachable``).
+    if last_overflow:
+        return (
+            "overflow",
+            "Integer overflow",
+            _TRAP_FIX_PARAGRAPHS["overflow"],
         )
 
     msg = str(exc).lower()

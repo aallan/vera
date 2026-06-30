@@ -1526,6 +1526,50 @@ class TestBrowserContracts:
         assert py_error is not None, "Python should report contract error"
         assert node_result["error"] is not None, "Node should report contract error"
 
+    def test_overflow_trap_parity(self, tmp_path: Path) -> None:
+        """#808: an @Int overflow traps in BOTH runtimes with an
+        overflow-flavoured message, and the browser bundle still instantiates.
+
+        The #798 guard now declares the `vera.overflow_trap` host import, so
+        `runtime.mjs`'s dynamic import builder must provide a binding — without
+        it `WebAssembly.instantiate` raises a `LinkError` on *any* arithmetic
+        program.  This is the cross-runtime parity for the wasmtime-side
+        `TestOverflowTrapKind808` (which classifies `kind="overflow"`)."""
+        source = (
+            "public fn add(@Int, @Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.1 + @Int.0 }\n"
+        )
+        vera_file = tmp_path / "ovf.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        # i64.MAX + 1 overflows i64 → both runtimes must trap.
+        py_error: str | None = None
+        try:
+            _run_python(result, fn_name="add", args=[9223372036854775807, 1])
+        except Exception as exc:
+            py_error = str(exc)
+
+        node_result = _run_node(
+            wasm_path, fn="add", fn_args=["9223372036854775807", "1"],
+        )
+
+        assert py_error is not None, "Python should trap on overflow"
+        assert "overflow" in py_error.lower(), py_error
+        # Node must instantiate (overflow_trap import provided) and surface the
+        # overflow as an error, not a silent wrap.
+        assert node_result["error"] is not None, (
+            "Node should report the overflow trap"
+        )
+        assert "overflow" in node_result["error"].lower(), node_result["error"]
+
+        # Companion no-trap: a safe sum returns cleanly in Node — proving the
+        # trap above is the guard firing, not the bundle failing to instantiate.
+        safe = _run_node(wasm_path, fn="add", fn_args=["10", "5"])
+        assert safe["error"] is None, safe
+        assert safe["value"] == 15, safe
+
 
 # =====================================================================
 # TestBrowserMarkdown — md_* host bindings
