@@ -379,8 +379,8 @@ class _TestEngine:
                         rationale=(
                             "Contract-driven testing ran the compiled "
                             "function on Z3-generated inputs satisfying its "
-                            "`requires`, and an `ensures` clause failed on a "
-                            "real result."
+                            "`requires`; on a real result it either violated "
+                            "an `ensures` clause or trapped at runtime."
                         ),
                         fix=(
                             "Correct the implementation so the postcondition "

@@ -53,8 +53,10 @@ diagnostic added to `vera/` is rejected at the door.
 from __future__ import annotations
 
 import ast
+import io
 import re
 import sys
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -133,16 +135,21 @@ def _field_present(call: ast.Call, name: str) -> bool:
     return False
 
 
-def _opt_out_reason(span_lines: list[str]) -> str | None:
-    """Return "" if a `# diag-fields-exempt` marker exists with no reason,
-    the reason text if one is given, or None if no marker is present."""
-    for line in span_lines:
-        idx = line.find(OPT_OUT)
-        if idx == -1:
-            continue
-        rest = line[idx + len(OPT_OUT):]
-        return rest.lstrip(" :").strip()
-    return None
+def _optout_lines(source: str) -> dict[int, str]:
+    """Map a line number to its opt-out reason, but ONLY where the marker
+    appears in a real ``COMMENT`` token — never inside a string literal or
+    other source text.  (A raw line scan would let a diagnostic whose
+    *description* merely contains the marker text silently exempt itself.)
+    The reason is "" when the marker carries none (itself a violation)."""
+    out: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT and OPT_OUT in tok.string:
+                rest = tok.string.split(OPT_OUT, 1)[1]
+                out[tok.start[0]] = rest.lstrip(" :").strip()
+    except (tokenize.TokenError, IndentationError):
+        pass
+    return out
 
 
 def check_source(source: str, filename: str) -> list[Violation]:
@@ -162,6 +169,7 @@ def check_source(source: str, filename: str) -> list[Violation]:
     def inside_helper(lineno: int) -> bool:
         return any(a <= lineno <= b for a, b in helper_spans)
 
+    optout = _optout_lines(source)
     violations: list[Violation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -196,12 +204,18 @@ def check_source(source: str, filename: str) -> list[Violation]:
         else:
             continue
 
-        span = src_lines[node.lineno - 1:(node.end_lineno or node.lineno)]
         snippet = src_lines[node.lineno - 1] if node.lineno - 1 < len(src_lines) else None
 
-        reason = _opt_out_reason(span)
-        if reason is not None:
-            if reason == "":
+        # Per-call opt-out: a `# diag-fields-exempt[: reason]` COMMENT on any of
+        # the call's source lines suppresses it (a missing reason is itself a
+        # violation).  Comment-only — a marker inside a string does not count.
+        opt_reason = next(
+            (optout[ln] for ln in range(node.lineno,
+                                        (node.end_lineno or node.lineno) + 1)
+             if ln in optout),
+            None)
+        if opt_reason is not None:
+            if opt_reason == "":
                 violations.append(Violation(
                     filename, node.lineno, target, ["<opt-out reason>"], snippet))
             continue  # opt-out with a reason suppresses the site

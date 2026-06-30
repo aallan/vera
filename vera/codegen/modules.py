@@ -565,7 +565,7 @@ class CrossModuleMixin:
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
-        self.diagnostics.append(Diagnostic(  # diag-fields-exempt: codegen backstop; the checker reports undefined calls (E130) first, so this is not reachable from a checked program.
+        self.diagnostics.append(Diagnostic(
             description=(
                 f"Function '{display}' is not defined in this module "
                 f"and was not found in any imported module."
@@ -573,9 +573,15 @@ class CrossModuleMixin:
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=(
-                "The WASM code generator compiles imported functions into "
-                "the same binary.  If a function cannot be resolved, it "
-                "cannot be called."
+                "The WASM code generator compiles imported functions into the "
+                "same binary.  An unresolved call has no target to compile "
+                "against; the checker only warns (E200) on it, so the program "
+                "still reaches code generation."
             ),
+            fix=(
+                f"Define '{display}' in this module, or import it from the "
+                f"module that declares it: import the.module({name});"
+            ),
+            spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
             severity="error",
         ))

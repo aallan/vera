@@ -221,6 +221,14 @@ class TestOptOut:
         v = mod.check_source(src, "vera/transform.py")
         assert len(v) == 1 and v[0].missing == ["<opt-out reason>"]
 
+    def test_marker_inside_a_string_does_not_exempt(self, mod: object) -> None:
+        """The opt-out is comment-only: the marker text appearing inside a
+        string literal (e.g. a description) must NOT suppress the site."""
+        src = "d = Diagnostic(description='see # diag-fields-exempt: x', location=loc)\n"
+        v = mod.check_source(src, "vera/transform.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
 
 # =====================================================================
 # Plumbing skip: Diagnostic() inside an _error/_warning helper def
@@ -270,6 +278,20 @@ class TestSpecRefValidity:
     def test_typed_hole_section_exists(self, mod: object) -> None:
         # §4.17 was added by this change; W001 / E614 cite it.
         assert self._v(mod, 'Chapter 4, Section 4.17 "Typed Holes"') == []
+
+    def test_section_under_wrong_chapter_flagged(self, mod: object) -> None:
+        # §4.4 is real and the title matches, but it lives in Chapter 4, not 5.
+        v = self._v(mod, 'Chapter 5, Section 4.4 "Arithmetic Expressions"')
+        assert len(v) == 1 and "not in Chapter 5" in v[0].missing[0]
+
+    def test_unrecognised_format_flagged(self, mod: object) -> None:
+        v = self._v(mod, 'see the spec please')
+        assert len(v) == 1 and "unrecognised" in v[0].missing[0]
+
+    def test_chapter_only_wrong_title_flagged(self, mod: object) -> None:
+        # Chapter 6 exists but is "Contracts", not "Wibble".
+        v = self._v(mod, 'Chapter 6, "Wibble"')
+        assert len(v) == 1 and "Contracts" in v[0].missing[0]
 
 
 # =====================================================================

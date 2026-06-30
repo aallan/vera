@@ -110,7 +110,7 @@ def _transform_error(
     loc = SourceLocation()
     if meta and hasattr(meta, "line") and meta.line is not None:
         loc = SourceLocation(line=meta.line, column=meta.column)
-    return TransformError(Diagnostic(  # diag-fields-exempt: generic transform-phase error factory (E008-E010); reports structural invariants the grammar largely prevents — per-call rationale/fix/spec_ref tracked as a follow-up.
+    return TransformError(Diagnostic(  # diag-fields-exempt: generic transform-phase error factory (E009 escapes / E010 unhandled rule); reports structural invariants the grammar largely prevents — per-call rationale/fix/spec_ref tracked as a follow-up.
         description=msg, location=loc, error_code=error_code))
 
 
