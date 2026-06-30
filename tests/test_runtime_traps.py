@@ -139,6 +139,33 @@ class TestClassifyTrap:
         assert "i64" in fix or "2^63" in fix
         assert "requires" in fix
 
+    def test_overflow_channel_beats_unreachable_substring(self) -> None:
+        # #808: the overflow guard signals `last_overflow` then traps via a bare
+        # `unreachable`, so the raw exception message still says "unreachable".
+        # `_classify_trap` must consult `last_overflow` BEFORE the substring
+        # scan — otherwise the "unreachable" arm shadows it to kind="unreachable".
+        # No end-to-end test can pin this ordering (one trap sets one channel),
+        # so assert it directly at the helper level.
+        kind, description, _ = _classify_trap(
+            _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
+            [],
+            [True],  # last_overflow set
+        )
+        assert kind == "overflow"
+        assert "overflow" in description.lower()
+
+    def test_contract_violation_beats_overflow_channel(self) -> None:
+        # Precedence when BOTH channels are set: the contract message is more
+        # specific than the generic overflow kind, so `last_violation` wins.
+        # Unreachable end-to-end (a single trap cannot signal both a
+        # contract_fail and an overflow guard), so pin it at the helper level.
+        kind, _, _ = _classify_trap(
+            _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
+            ["Contract violation: ensures(...) failed"],
+            [True],
+        )
+        assert kind == "contract_violation"
+
     def test_unknown_trap_surfaces_raw_message(self) -> None:
         kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: some novel reason we have not classified"),

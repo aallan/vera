@@ -581,7 +581,7 @@ def _trap_kind(source: str, fn: str, args: list[int]) -> str:
 
 # #813 @Nat -> @Int widening: a @Nat value above i64.MAX reinterprets to a
 # negative @Int at the return position, so the #813 guard traps.  Its trap stays
-# a bare ``unreachable`` (its own deferred follow-up, #754 / #820) — the #808
+# a bare ``unreachable`` (its own deferred dedicated trap kind, #820) — the #808
 # overflow_trap import must NOT leak into it.  De Bruijn: widen returns @Nat.0.
 _NAT_TO_INT_WIDEN = """
 public fn widen(@Nat -> @Int)
