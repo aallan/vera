@@ -331,6 +331,28 @@ class TestSpecRefValidity:
         v = self._v(mod, 'Chapter 6, "Wibble"')
         assert len(v) == 1 and "Contracts" in v[0].missing[0]
 
+    def test_valid_multi_section_ref_passes(self, mod: object) -> None:
+        # A spec_ref may cite two sections (this is a real shape in verifier.py).
+        # Both citations are correct, so it must pass.
+        assert self._v(
+            mod,
+            'Chapter 4, Section 4.7 "Let Bindings" and '
+            'Chapter 11, Section 11.2.1 "Nat as i64"') == []
+
+    def test_wrong_second_citation_flagged(self, mod: object) -> None:
+        # First citation correct, SECOND bogus — must NOT ship silently
+        # (`.search()` would only have validated the first).
+        v = self._v(
+            mod,
+            'Chapter 4, Section 4.7 "Let Bindings" and '
+            'Chapter 11, Section 11.9999 "Bogus"')
+        assert len(v) == 1 and "11.9999" in v[0].missing[0]
+
+    def test_garbage_around_citation_rejected(self, mod: object) -> None:
+        # `.search()` tolerates a non-citation prefix; the residue check rejects it.
+        v = self._v(mod, 'LIES Chapter 4, Section 4.4 "Arithmetic Expressions"')
+        assert len(v) == 1 and "unrecognised text" in v[0].missing[0]
+
     def test_non_literal_spec_ref_flagged(self, mod: object) -> None:
         # A spec_ref threaded through a variable passes the *presence* check
         # (any non-constant counts as present) but cannot be validated against
@@ -339,18 +361,33 @@ class TestSpecRefValidity:
         v = mod.spec_ref_violations_in_source(src, "vera/checker/x.py")
         assert len(v) == 1 and "not a string literal" in v[0].missing[0]
 
-    def test_plumbing_non_literal_spec_ref_skipped(self, mod: object) -> None:
-        # The Diagnostic() construction *inside* an _error helper threads its
-        # spec_ref param (a Name) by design — it is plumbing, not a site, and
-        # must NOT be flagged as a non-literal spec_ref.
-        src = (
+    def test_plumbing_spec_ref_skipped(self, mod: object) -> None:
+        # The Diagnostic() construction *inside* an _error helper is plumbing,
+        # not a site, and the validity pass must skip it.  Use a LITERAL but
+        # INVALID spec_ref so this assertion goes RED whenever the helper-skip
+        # is removed — via the literal validity path, INDEPENDENT of the
+        # (co-shipped) non-literal-flagging code.  (A threaded `spec_ref=spec_ref`
+        # would only flip red if the non-literal path were also present, so the
+        # two fixes would mask each other — the "green before and after" trap.)
+        src_literal = (
+            "class C:\n"
+            "    def _error(self, node, description, *, spec_ref=''):\n"
+            "        self.diagnostics.append(Diagnostic(\n"
+            "            description=description, location=loc,\n"
+            "            spec_ref='Chapter 99, \"Nope\"'))\n"
+        )
+        assert mod.spec_ref_violations_in_source(
+            src_literal, "vera/checker/core.py") == []
+        # The original threaded-param (non-literal) shape is also skipped.
+        src_threaded = (
             "class C:\n"
             "    def _error(self, node, description, *, spec_ref=''):\n"
             "        self.diagnostics.append(Diagnostic(\n"
             "            description=description, location=loc,\n"
             "            spec_ref=spec_ref))\n"
         )
-        assert mod.spec_ref_violations_in_source(src, "vera/checker/core.py") == []
+        assert mod.spec_ref_violations_in_source(
+            src_threaded, "vera/checker/core.py") == []
 
 
 # =====================================================================

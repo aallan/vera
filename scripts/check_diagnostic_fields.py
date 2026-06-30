@@ -368,18 +368,33 @@ def spec_ref_violations_in_source(source: str, filename: str,
                 ["spec_ref is not a string literal — the gate cannot validate "
                  "it against the spec; make it a literal"], snip))
             continue
-        m = _REF_SEC.search(ref)
-        if m:
-            chap, sec, title = m.group(1), m.group(2), m.group(3)
-            actual = sections.get(sec)
-            if actual is None:
-                why = f"cites §{sec}, which does not exist in the spec"
-            elif _norm(actual) != _norm(title):
-                why = f'cites §{sec} as "{title}" but it is "{actual}"'
-            elif not (sec == chap or sec.startswith(chap + ".")):
-                why = f"§{sec} is not in Chapter {chap}"
-            else:
-                continue
+        why: str | None = None
+        sec_matches = list(_REF_SEC.finditer(ref))
+        if sec_matches:
+            # A spec_ref may cite SEVERAL sections (e.g. `§4.7 "Let Bindings"
+            # and §11.2.1 "Nat as i64"`).  Validate EVERY citation, not just the
+            # first — a wrong/bogus later citation is just as misleading and
+            # must not ship silently.
+            for m in sec_matches:
+                chap, sec, title = m.group(1), m.group(2), m.group(3)
+                actual = sections.get(sec)
+                if actual is None:
+                    why = f"cites §{sec}, which does not exist in the spec"
+                elif _norm(actual) != _norm(title):
+                    why = f'cites §{sec} as "{title}" but it is "{actual}"'
+                elif not (sec == chap or sec.startswith(chap + ".")):
+                    why = f"§{sec} is not in Chapter {chap}"
+                if why is not None:
+                    break
+            # Reject stray non-citation text (e.g. a `LIES ` prefix): once the
+            # citations and their joiners (commas / "and" / whitespace) are
+            # stripped, nothing should remain.  `.finditer` alone would tolerate
+            # garbage around an otherwise-valid citation.
+            if why is None:
+                residue = re.sub(r"\band\b|[,\s]+", "", _REF_SEC.sub("", ref))
+                if residue:
+                    why = ("spec_ref has unrecognised text around its "
+                           f"citation(s): {ref!r}")
         else:
             mc = _REF_CH.match(ref)
             if not mc:
@@ -389,9 +404,8 @@ def spec_ref_violations_in_source(source: str, filename: str,
                 actual = chapters.get(chap)
                 if actual is None or _norm(actual) != _norm(title):
                     why = f'Chapter {chap} is "{actual}", not "{title}"'
-                else:
-                    continue
-        out.append(Violation(filename, ln, "spec_ref", [why], snip))
+        if why is not None:
+            out.append(Violation(filename, ln, "spec_ref", [why], snip))
     return out
 
 
