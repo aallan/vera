@@ -224,6 +224,18 @@ class FunctionCompilationMixin:
 
         # Scan body for IO qualified calls to register per-op imports
         self._scan_io_ops(decl.body)
+        # #823: also scan the contract predicates.  Markdown / regex host
+        # imports are registered ONLY by this scan (they have no per-function
+        # `ctx` set-site, unlike map/set/http/…), and the scan is otherwise
+        # body-only — so an `md_*` / `regex_*` builtin inside a runtime-checked
+        # `requires(...)` / `ensures(...)` would emit an orphaned
+        # `call $vera.<name>` with no import declaration and fail WAT
+        # compilation.  Contracts are pure, so the QualifiedCall (IO / Http /
+        # Inference / Random) branches of the scan never fire here.
+        for _contract in decl.contracts:
+            _pred = getattr(_contract, "expr", None)
+            if _pred is not None:
+                self._scan_io_ops(_pred)
 
         # #517 — configure tail-call optimization for this function.
         # The analyzer marks `id(FnCall)` for every call in syntactic

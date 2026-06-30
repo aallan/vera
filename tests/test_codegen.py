@@ -21194,3 +21194,28 @@ class TestPostconditionHostImportPropagation823:
             "effects(pure) { @Int.0 }"
         )
         assert _run(src, "f", [5]) == 5
+
+    def test_regex_host_import_in_postcondition_compiles(self) -> None:
+        # `regex_*` (and `md_*`) host imports are registered ONLY by the body
+        # pre-scan — they have no per-function `ctx` set-site — and that scan
+        # was body-only, so a regex builtin reachable only via an `ensures(...)`
+        # emitted an orphaned `call $vera.regex_match` with no import.  The
+        # `match` scrutinee always evaluates the builtin; both arms are `true`
+        # so the postcondition holds regardless of the regex result.
+        src = (
+            "public fn f(-> @Bool) requires(true) "
+            'ensures(match regex_match("ab", "a") '
+            "{ Ok(@Bool) -> true, Err(@String) -> true }) "
+            "effects(pure) { true }"
+        )
+        assert _run(src, "f") == 1
+
+    def test_md_host_import_in_postcondition_compiles(self) -> None:
+        # Markdown sibling of the regex case — same body-only-pre-scan gap.
+        src = (
+            "public fn g(-> @Bool) requires(true) "
+            'ensures(match md_parse("# H") '
+            "{ Ok(@MdBlock) -> true, Err(@String) -> true }) "
+            "effects(pure) { true }"
+        )
+        assert _run(src, "g") == 1
