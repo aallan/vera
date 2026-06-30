@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 14, across 77 active development days.
+How the Vera compiler was built, from initial commit through the ongoing soundness campaign (Stage 15), across 90 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -417,14 +417,17 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.134 (6 May) | v0.0.170 (12 Jun) |
-|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,716 | 4,342 |
-| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 | 35 |
-| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 | 164 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 82 | 89 |
-| Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
-| Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
+Six releases, chosen for the capability each one unlocked rather than even spacing.
 
-Total: **1,400+ commits, 183 tagged releases, 77 active development days.**
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.187 (30 Jun) |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|
+| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign |
+| Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,459 |
+| Examples | 13 | 15 | 18 | 30 | 35 | 35 |
+| Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 |
+| Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 |
+| Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 |
+| Code coverage | — | — | 90% | 96% | 95% | 91% |
+
+Total: **1,700+ commits, 187 tagged releases, 90 active development days.**
