@@ -150,6 +150,14 @@ class TestSeverityRule:
         )
         assert mod.check_source(src, "vera/tester.py") == []
 
+    def test_nonconstant_severity_is_flagged(self, mod: object) -> None:
+        """A non-literal `severity=` can't be resolved statically, so the gate
+        flags it rather than silently assuming 'error' (which would wrongly
+        demand a fix of a possibly-warning diagnostic)."""
+        src = "d = Diagnostic(description='d', location=loc, severity=lvl)\n"
+        v = mod.check_source(src, "vera/tester.py")
+        assert len(v) == 1 and "not a string literal" in v[0].missing[0]
+
 
 # =====================================================================
 # Structural registry: codegen helpers are fix/spec_ref-exempt

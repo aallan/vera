@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,485 across 51 files (~63,000 lines of test code; 5,437 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,486 across 51 files (~63,000 lines of test code; 5,438 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -77,7 +77,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_execute_characterization.py` | 22 | 467 | Characterization harness pinning `execute()`'s observable contract ahead of the #421 runtime decomposition (#734): every `ExecuteResult` field (`value` int/float/str/heap-pointer/None, `stdout`, `state`, `exit_code`, `stderr`) crossed with the three completion modes — normal return, WASM trap (raises `WasmTrapError` with a classified `kind`, output-before-trap preserved), and interrupt/exit (`IO.exit(n)` → `exit_code` n with `value` None, Ctrl-C → 130) — plus the positional-constructor compatibility shape and `capture_stderr` True-vs-default. **Mutation-validated**: every cell confirmed to flip RED when its target return path in `api.py` is deliberately broken (9 mutations, 0 green-for-the-wrong-reason tests) |
 | `test_walker_defensive_branches_597.py` | 21 | 296 | Synthetic-AST tests for the 11 defensive `isinstance` branches added by #597 (`_scan_io_ops` / `_scan_expr_for_handlers` / `_infer_expr_wasm_type` / `_infer_vera_type`) plus the 5 pr-review fixes (#2/#3/#8 — ModuleCall/AnonFn/QualifiedCall return None; dead `is not None` guards on Block/HandleExpr removed) |
 | `test_check_walker_coverage_597.py` | 15 | 311 | Unit tests for `scripts/check_walker_coverage.py` parsing logic — Expr subclass extraction, isinstance flattening (incl. tuple form), checklist-block anchoring (incl. CR-3 regression test: `# Foo → bar` outside WALKER_COVERAGE block not counted), section-header tolerance, auto-discovery invariants, end-to-end main exit code |
-| `test_diagnostic_fields.py` | 23 | 278 | Unit tests for `scripts/check_diagnostic_fields.py` (#682) — required-field detection, the warning severity rule (no `fix`), the codegen structural-exemption registry, the `# diag-fields-exempt` per-call opt-out, plumbing-skip, and a live-tree integration check that all of `vera/` is fully tagged |
+| `test_diagnostic_fields.py` | 24 | 286 | Unit tests for `scripts/check_diagnostic_fields.py` (#682) — required-field detection, the warning severity rule (no `fix`), the codegen structural-exemption registry, the `# diag-fields-exempt` per-call opt-out, plumbing-skip, and a live-tree integration check that all of `vera/` is fully tagged |
 | `test_stress.py` | 16 | 553 | Scale-dependent regression tests (#596) — `@pytest.mark.stress`, skipped by default.  9 logical tests × eager-GC lane parametrisation = 16 test instances.  10K `array_map`, 5K nested-array `array_map`, 1K-deep tail recursion with allocating arg, 1M-deep tail recursion with allocating arg (#549 GC-aware TCO), 20×20 nested array-fold-of-array-fold, 100K `array_fold`, 10K String allocations, 1K `State<Int>` get/put cycles, 10K `IO.print` calls.  Pins #570 / #515 / #593 / #549 / #487 / #348 / #573 regression coverage |
 | `test_string_length_soundness.py` | 15 | 278 | #802 — string_length code-point vs UTF-8 byte soundness: a non-literal `string_length` defers to Tier 3 (the issue's `"é"` probe no longer proves `== 1` at Tier 1), a string-literal length is modeled at its exact UTF-8 byte count (`== 2` for `"é"`), and the boolean predicates `string_contains` / `string_starts_with` / `string_ends_with` stay Tier 1 (sound under UTF-8 self-synchronization), while a predicate over an astral (> U+2FFFF) or lone-surrogate literal defers to Tier 3 (z3.StringVal cannot model those code points) |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
@@ -140,7 +140,7 @@ Almost all programs are at the `run` level — they compile and execute, produci
 
 ### Skipped tests
 
-`pytest tests/ -v` reports 20 skipped tests across two categories:
+`pytest tests/ -v` reports 22 skipped tests across two categories:
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -161,6 +161,8 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch08_circular_import]` | `ch08_circular_import.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_verify[ch08_visibility_private]` | `ch08_visibility_private.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E150`): verify stage not run |
 | `test_run[ch08_visibility_private]` | `ch08_visibility_private.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch09_builtin_redefinition]` | `ch09_builtin_redefinition.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E151`): verify stage not run |
+| `test_run[ch09_builtin_redefinition]` | `ch09_builtin_redefinition.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_run[ch09_math_builtins]` | `ch09_math_builtins.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 
 **Environment-gated skips** — these programs require network access or a live API key that is not available in CI. They pass `vera check` (type-checking) but cannot be executed.

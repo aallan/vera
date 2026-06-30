@@ -172,9 +172,24 @@ def check_source(source: str, filename: str) -> list[Violation]:
                 continue  # plumbing
             target = "Diagnostic"
             method = None
-            sev_kw = [kw.value.value for kw in node.keywords
-                      if kw.arg == "severity" and isinstance(kw.value, ast.Constant)]
-            severity = sev_kw[0] if sev_kw else "error"
+            severity = "error"
+            sev_kws = [kw for kw in node.keywords if kw.arg == "severity"]
+            if sev_kws:
+                sev_val = sev_kws[0].value
+                if isinstance(sev_val, ast.Constant) and isinstance(sev_val.value, str):
+                    severity = sev_val.value
+                else:
+                    # A non-literal severity (e.g. `severity=level`) can't be
+                    # resolved statically — the gate can't tell error from
+                    # warning and would silently fall back to "error" and
+                    # demand a `fix`.  Flag it rather than guess.
+                    snip = (src_lines[node.lineno - 1]
+                            if node.lineno - 1 < len(src_lines) else None)
+                    violations.append(Violation(
+                        filename, node.lineno, "Diagnostic",
+                        ["severity is not a string literal — the gate cannot "
+                         "tell error from warning; make it a literal"], snip))
+                    continue
         elif isinstance(f, ast.Attribute) and f.attr in ("_error", "_warning"):
             target = method = f.attr
             severity = "error" if f.attr == "_error" else "warning"
