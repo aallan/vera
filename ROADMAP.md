@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,442 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,461 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,6 @@ The infrastructure that catches the next regression before a user does, plus the
 
 | Issue | What |
 |---|---|
-| [#808](https://github.com/aallan/vera/issues/808) | Give the `@Int` / `@Nat` arithmetic-overflow runtime trap (#798) a precise `overflow` trap kind, so a dynamic overflow surfaces as a dedicated trap message rather than the generic `unreachable` kind it currently shares. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
@@ -36,7 +35,6 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 |---|---|
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
-| [#539](https://github.com/aallan/vera/issues/539) | `vera builtins/effects/errors --json` introspection subcommands — the compiler becomes the source of truth for its own counts. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
@@ -54,7 +52,7 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#724](https://github.com/aallan/vera/issues/724) | LSP: buffer-aware module resolution (imports currently resolve from disk, not open buffers). |
 | [#725](https://github.com/aallan/vera/issues/725) | LSP: handler-aware `vera/addEffect` propagation bounding. |
 | [#181](https://github.com/aallan/vera/issues/181) | Slot go-to-definition and mechanical slot-index rewriting beyond parameters (`let`/`match` bindings). |
-| [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — sequenced after the #421 decomposition reshapes the mixin sets. |
+| [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — unblocked now that the #421 decomposition has reshaped the mixin sets. |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
 | [#795](https://github.com/aallan/vera/issues/795) | **Extend mutation testing beyond the soundness core.**  #387 hardened the trust root (`verifier`/`smt`/`checker`/`obligations`, 80.8% → 83.3% caught); this extends the sweep to `codegen`/`wasm`/`transform`/`parser`/CLI, where a surviving mutant is a weak test for an already-*loud* failure (wrong output / trap, already caught by `test_codegen.py` + conformance + execution tests) rather than a silent verification gap — so it ranks below the Tier 1 soundness work.  Needs the full marathon sweep made reliable first: it deadlocks on `mutmut` 3.6 / Python 3.14 (targeted per-function runs are fine).  The deep `smt.py` translate-layer hardening + the verifier timeout probe are tracked in [#792](https://github.com/aallan/vera/issues/792). |
@@ -119,7 +117,7 @@ The longer arcs.  Each pulls forward when the tiers above empty out, not before.
 
 **Concurrency and streaming** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (depends on #237), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin + input concurrency (wait on a key and a clock at once).
 
-**Ecosystem** — [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#294](https://github.com/aallan/vera/issues/294) effect row variable unification.
+**Ecosystem** — [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#294](https://github.com/aallan/vera/issues/294) effect row variable unification, [#785](https://github.com/aallan/vera/issues/785) GitHits MCP for dependency-reference retrieval (bookmark — trial when the dependency-facing package work lands).
 
 **Standard library completeness** — [#367](https://github.com/aallan/vera/issues/367) Markdown extractors, [#368](https://github.com/aallan/vera/issues/368) HTML accessors, [#507](https://github.com/aallan/vera/issues/507) ability-dispatched array operations, [#509](https://github.com/aallan/vera/issues/509) Unicode-aware string built-ins, [#187](https://github.com/aallan/vera/issues/187) → [#127](https://github.com/aallan/vera/issues/127) module-qualified call disambiguation → module re-exports.
 

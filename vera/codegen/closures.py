@@ -453,6 +453,13 @@ class ClosureLiftingMixin:
         self._decimal_imports.update(ctx._decimal_imports)
         self._json_ops_used.update(ctx._json_ops_used)
         self._html_ops_used.update(ctx._html_ops_used)
+        # #808: a #798 integer-overflow guard inside a lifted closure body sets
+        # this on the closure ctx; OR it into the module ``self`` so
+        # ``_assemble_module`` emits the ``vera.overflow_trap`` import (same
+        # propagation the per-function merge does in functions.py).
+        self._needs_overflow_trap = (
+            self._needs_overflow_trap or ctx._needs_overflow_trap
+        )
 
         # Build GC prologue/epilogue (only when closure body allocates).
         # Two-phase prologue: ``gc_prologue`` runs before ``load_instrs``

@@ -7,10 +7,13 @@ codegen emit a runtime guard at *exactly* those sites so ``vera run`` /
 ``vera compile`` programs trap on overflow instead of silently wrapping at the
 i64 / u64 boundary.
 
-The trap is a bare ``unreachable`` (Option A in the design doc — matches the
-#520 ``nat_sub`` and #552 nat-bind precedent), so it classifies as
-``kind="unreachable"`` today.  A precise ``"overflow"`` trap kind via a host
-import is a deliberate follow-up.
+The #798 guard originally emitted a bare ``unreachable`` (Option A in the design
+doc — matching the #520 ``nat_sub`` and #552 nat-bind precedent), so it
+classified as ``kind="unreachable"``.  #808 wired it to the ``vera.overflow_trap``
+host import, so an integer-overflow trap now classifies as ``kind="overflow"``
+and carries the overflow Fix paragraph; ``TestOverflowTrapKind808`` pins that,
+with controls proving the #520 ``nat_sub`` underflow and #813 ``@Nat``→``@Int``
+widen guards are unchanged (still bare ``unreachable``).
 
 Written test-first: every ``*_traps`` test FAILS on the pre-Stage-3 codegen
 (the op wraps silently → no trap → ``execute`` returns a value), and every
@@ -35,6 +38,7 @@ from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
+from vera.runtime.traps import WasmTrapError
 
 I64_MAX = 9223372036854775807
 I64_MIN = -9223372036854775808
@@ -565,3 +569,148 @@ public fn run_it(@Unit -> @Int)
         )
         exec_result = execute(result, fn_name="run_it", args=[])
         assert exec_result.value == 42
+
+
+def _trap_kind(source: str, fn: str, args: list[int]) -> str:
+    """Run ``fn(args)`` and return the `kind` of the WasmTrapError it raises."""
+    result = _compile_with_types(source)
+    with pytest.raises(WasmTrapError) as exc_info:
+        execute(result, fn_name=fn, args=args)
+    return exc_info.value.kind
+
+
+# #813 @Nat -> @Int widening: a @Nat value above i64.MAX reinterprets to a
+# negative @Int at the return position, so the #813 guard traps.  Its trap stays
+# a bare ``unreachable`` (its own deferred dedicated trap kind, #820) — the #808
+# overflow_trap import must NOT leak into it.  De Bruijn: widen returns @Nat.0.
+_NAT_TO_INT_WIDEN = """
+public fn widen(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+"""
+
+
+class TestOverflowTrapKind808:
+    """#808: the #798 integer-overflow guard surfaces a precise
+    ``kind="overflow"`` (via the ``vera.overflow_trap`` host import) rather than
+    the generic ``"unreachable"``, so the runtime diagnostic carries the
+    overflow Fix paragraph.  The ``@Nat``-underflow (#520) and negative-i64
+    (#552 / #813) guards are unchanged and still classify ``"unreachable"``."""
+
+    def test_int_add_overflow_is_overflow_kind(self) -> None:
+        assert _trap_kind(_INT_ADD, "add", [I64_MAX, 1]) == "overflow"
+
+    def test_int_sub_overflow_is_overflow_kind(self) -> None:
+        assert _trap_kind(_INT_SUB, "sub", [I64_MIN, 1]) == "overflow"
+
+    def test_int_mul_overflow_is_overflow_kind(self) -> None:
+        # Exercises the `r/a != b` general MUL guard branch.
+        assert _trap_kind(_INT_MUL, "mul", [I64_MAX, 2]) == "overflow"
+
+    def test_int_mul_neg_one_times_min_overflow_kind(self) -> None:
+        # `_emit_int_mul_guard` has a SECOND trap site — the `b == INT_MIN`
+        # branch that exists to dodge a native `i64.div_s` INT_MIN/-1 trap in
+        # the round-trip check (mul(-1, I64_MIN) = 2^63 overflows).  Without its
+        # own kind assertion that overflow_trap site is unpinned: reverting it
+        # to a bare `unreachable` would silently regress this case to
+        # "unreachable" while the `[I64_MAX, 2]` test above stays green.
+        assert _trap_kind(_INT_MUL, "mul", [-1, I64_MIN]) == "overflow"
+
+    def test_nat_add_overflow_is_overflow_kind(self) -> None:
+        assert _trap_kind(_NAT_ADD, "add", [U64_MAX, 1]) == "overflow"
+
+    def test_nat_mul_overflow_is_overflow_kind(self) -> None:
+        assert _trap_kind(_NAT_MUL, "mul", [U64_MAX, 2]) == "overflow"
+
+    # --- controls: unchanged guards still classify "unreachable" ---
+    # These pin the #808 boundary: the overflow_trap import is wired ONLY into
+    # the #798 integer-overflow guard, NOT the #520 nat_sub underflow guard nor
+    # the #813 @Nat->@Int widen guard (both deferred, still bare unreachable).
+    # Without them, a regression wiring overflow_trap into *every* guard would
+    # still pass the "overflow" cases above — the controls make the change
+    # distinguishable from "classify everything as overflow".
+
+    def test_nat_sub_underflow_still_unreachable_kind(self) -> None:
+        assert _trap_kind(_NAT_SUB, "sub", [3, 5]) == "unreachable"
+
+    def test_nat_to_int_widen_still_unreachable_kind(self) -> None:
+        assert _trap_kind(_NAT_TO_INT_WIDEN, "widen", [U64_MAX]) == "unreachable"
+
+
+# A lifted closure body performs the overflowing @Int add (captured + arg).
+# Closures are compiled on their own context and merged into the module via a
+# *separate* path (closures.py) from ordinary functions (functions.py), so the
+# `vera.overflow_trap` import must be propagated there too — without that merge
+# the closure's WAT references `$vera.overflow_trap` with no import declaration
+# and fails to compile.  De Bruijn: the closure body is `@Int.0 + @Int.1` =
+# arg + captured; `run_overflow(a, b)` captures `a`, applies it to `b`.
+_CLOSURE_INT_ADD = """
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn make_adder(@Int -> @IntToInt)
+  requires(true) ensures(true) effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+}
+
+public fn run_overflow(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @IntToInt = make_adder(@Int.1);
+  apply_fn(@IntToInt.0, @Int.0)
+}
+"""
+
+
+class TestClosureOverflowTrapKind808:
+    """An overflow guard inside a *lifted closure* body also classifies
+    ``kind="overflow"`` — closures merge their host-import needs through the
+    closures.py path, distinct from the per-function functions.py merge, so this
+    pins that path.  (Conformance `ch05_closures` caught the missing merge; this
+    is the focused regression.)"""
+
+    def test_closure_int_add_overflow_is_overflow_kind(self) -> None:
+        assert _trap_kind(_CLOSURE_INT_ADD, "run_overflow", [I64_MAX, 1]) == (
+            "overflow"
+        )
+
+    def test_closure_safe_add_no_trap(self) -> None:
+        # The safe companion: a non-overflowing call returns cleanly, so the
+        # trap above is the guard firing — not the closure's import path broken.
+        _assert_no_trap(_CLOSURE_INT_ADD, "run_overflow", [10, 5], 15)
+
+
+# #808 regression: an overflow guard emitted inside an `ensures(...)`
+# postcondition.  Postconditions are lowered AFTER the per-function host-import
+# merge, so without a re-merge the postcondition's `call $vera.overflow_trap` is
+# orphaned (no import declared) and the module fails WAT compilation.  The BODY
+# has NO arithmetic — so the body/precondition merge path cannot mask the gap;
+# the only overflow guard is in the postcondition.  De Bruijn: `f(a)` returns a,
+# and the postcondition computes `@Int.result + 1`.
+_ENSURES_OVERFLOW = """
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result + 1 > @Int.0)
+  effects(pure)
+{ @Int.0 }
+"""
+
+
+class TestEnsuresOverflowTrapKind808:
+    """An overflow guard inside an `ensures(...)` postcondition must (a) compile
+    — the `vera.overflow_trap` import is declared even though postconditions are
+    lowered after the per-function merge — and (b) classify ``kind="overflow"``
+    when it actually overflows at runtime.  Pins the post-postcondition re-merge
+    in functions.py (the critical regression the #798→#808 import introduced;
+    pre-#808 the postcondition guard was a bare `unreachable` needing no
+    import)."""
+
+    def test_ensures_overflow_compiles_and_returns(self) -> None:
+        # f(5): postcondition 5 + 1 > 5 holds and does not overflow → returns 5.
+        # If the import were not declared, _compile_with_types would fail here.
+        _assert_no_trap(_ENSURES_OVERFLOW, "f", [5], 5)
+
+    def test_ensures_overflow_traps_overflow_kind(self) -> None:
+        # f(I64_MAX): the postcondition computes I64_MAX + 1, overflowing i64 in
+        # the ensures() check → traps, classified "overflow" (not "unreachable").
+        assert _trap_kind(_ENSURES_OVERFLOW, "f", [I64_MAX]) == "overflow"

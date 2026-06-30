@@ -761,6 +761,22 @@ def execute(
         host_contract_fail, access_caller=True,
     )
 
+    # Host function: vera.overflow_trap() -> ()  (#808)
+    # Signals that the #798 integer-overflow guard fired, so `_classify_trap`
+    # reports the precise `kind="overflow"` (with its Fix paragraph) instead of
+    # the generic `unreachable` a bare trap instruction yields.  Mirrors
+    # `host_contract_fail`'s store-then-trap channel; parameterless because the
+    # diagnostic is per-kind — there is no dynamic message to intern.
+    last_overflow: list[object] = []
+
+    def host_overflow_trap() -> None:
+        last_overflow.append(True)
+
+    overflow_trap_type = wasmtime.FuncType([], [])
+    linker.define_func(
+        "vera", "overflow_trap", overflow_trap_type, host_overflow_trap,
+    )
+
     # State<T> host functions
     state_store: dict[str, list[int | float]] = {}
     register_state(linker, result.state_types, initial_state, state_store)
@@ -1124,7 +1140,9 @@ def execute(
             # canned per-kind text (empty string for the kinds that
             # don't admit a generic suggestion: contract_violation /
             # unknown).
-            kind, message, fix = _classify_trap(exc, last_violation)
+            kind, message, fix = _classify_trap(
+                exc, last_violation, last_overflow,
+            )
             # #516 Stage 2 — resolve trap frames against the source map.
             # Pre-Stage-2 the user got a hex-offset wasmtime backtrace
             # in the exception message and nothing else; now they get

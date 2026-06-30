@@ -152,6 +152,12 @@ class WasmContext(
         self._random_ops_used: set[str] = set()
         # Math host-import tracking (propagated to codegen core, #467)
         self._math_ops_used: set[str] = set()
+        # #808: the #798 integer-overflow guard calls $vera.overflow_trap so the
+        # trap classifies as kind="overflow" rather than bare "unreachable".
+        # Set in operators._emit_overflow_guard; merged into codegen core (which
+        # emits the import) in functions.py after each function is compiled (and
+        # in closures.py for lifted-closure bodies).
+        self._needs_overflow_trap: bool = False
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
