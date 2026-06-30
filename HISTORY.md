@@ -322,8 +322,8 @@ Agent-written programs at real scale — capstone: Conway's Life — drove a sus
 | v0.0.136 | 6 May | Two host-runtime hygiene fixes ([#586](https://github.com/aallan/vera/issues/586)). |
 | — | 7 May | `examples/life.vera`: Conway's Game of Life with nested array combinators, a recursive `<IO>` loop, ANSI rendering, and the formal B3/S23 rule on `next_cell`. |
 | — | 7 May | `VERA_EAGER_GC=1` debug knob: GC on every `$alloc` so missing-shadow-root bugs surface immediately (documented in ENVIRONMENT.md). |
-| v0.0.137 | 7 May | **Captured-`Array<T>` indexing inside closure body** ([#588](https://github.com/aallan/vera/issues/588)). |
-| v0.0.138 | 7 May | **Closure-return shadow-push asymmetry** ([#593](https://github.com/aallan/vera/issues/593)). |
+| v0.0.137 | 7 May | Captured-`Array<T>` indexing inside a closure body ([#588](https://github.com/aallan/vera/issues/588)). |
+| v0.0.138 | 7 May | Closure-return shadow-push asymmetry ([#593](https://github.com/aallan/vera/issues/593)). |
 | v0.0.139 | 8 May | Closure codegen pair: `f()[i]` element-type inference ([#614](https://github.com/aallan/vera/issues/614)) and capture ordering. |
 | v0.0.140 | 8 May | String-returning FnCall in interpolation ([#602](https://github.com/aallan/vera/issues/602)). |
 | v0.0.141 | 8 May | Inline-refinement return types in interpolation, the third trigger in the same bug class. |
@@ -356,7 +356,7 @@ First the gates: Windows in CI, walker-completeness enforcement, the stress harn
 | v0.0.155 | 13 May | Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug ([#578](https://github.com/aallan/vera/issues/578)). |
 | v0.0.156 | 19 May | `vera test` fails closed on verifier-refuted contracts ([#674](https://github.com/aallan/vera/issues/674)). |
 | v0.0.157 | 19 May | `IO.read_char` effect operation for single-character input ([#618](https://github.com/aallan/vera/issues/618)). |
-| v0.0.158 | 19 May | Host-side shadow-stack rooting closes the last `$gc_collect`-during-host-walk free-list-corruption bug ([#692](https://github.com/aallan/vera/issues/692)). |
+| v0.0.158 | 19 May | Host-side shadow-stack rooting closes the last GC-during-host-walk corruption bug ([#692](https://github.com/aallan/vera/issues/692)). |
 | v0.0.159 | 28 May | `Map<K, T_heap>` and `Set<T_heap>` no longer drop heap-pointer values under GC pressure on either target ([#695](https://github.com/aallan/vera/issues/695)). |
 | v0.0.160 | 29 May | Ctrl-C-during-host-import handling centralized on `wasmtime>=45.0.0`, removing the four per-import workaround guards ([#599](https://github.com/aallan/vera/issues/599)). |
 
@@ -372,15 +372,15 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.161 | 10 Jun | Proof obligations reified as first-class records with a warm-Z3 `VerificationSession`, the semantic core for the LSP server ([#222](https://github.com/aallan/vera/issues/222) Phase A). |
+| v0.0.161 | 10 Jun | Proof obligations reified as first-class records with a warm-Z3 `VerificationSession` ([#222](https://github.com/aallan/vera/issues/222) Phase A). |
 | v0.0.162 | 10 Jun | Incremental verification: unchanged functions replay cached obligations instead of re-entering Z3 ([#222](https://github.com/aallan/vera/issues/222) Phase B). |
-| v0.0.163 | 10 Jun | `vera lsp` serves LSP over stdio: transport skeleton, document sync, and the coordinate-conversion layer ([#222](https://github.com/aallan/vera/issues/222) Phase C). |
-| v0.0.164 | 10 Jun | LSP language features: tier-annotated diagnostics, type hover, slot go-to-definition, and typed-hole completion ([#222](https://github.com/aallan/vera/issues/222) Phase D). |
-| v0.0.165 | 11 Jun | `vera/speculativeEdit` proof-delta: agents learn whether an edit keeps, breaks, or strengthens the program's proofs before committing it ([#222](https://github.com/aallan/vera/issues/222) Phase E). |
-| v0.0.166 | 11 Jun | `vera/proposeEdit`: edit, verify, and apply as one LSP method, applying only when the proof delta is non-breaking ([#222](https://github.com/aallan/vera/issues/222) Phase F1). |
-| v0.0.167 | 11 Jun | `vera/strengthenContract`: contract changes with a call-site audit that refuses when a caller no longer satisfies a tightened precondition ([#222](https://github.com/aallan/vera/issues/222) Phase F2). |
-| v0.0.168 | 11 Jun | `vera/addEffect` rewrites the `effects(...)` clauses of a function and its transitive callers in one verified multi-site edit, closing [#222](https://github.com/aallan/vera/issues/222). |
-| v0.0.169 | 11 Jun | The language server gets its user manual (LSP_SERVER.md) and the VS Code extension gains an LSP client ([#222](https://github.com/aallan/vera/issues/222) follow-up). |
+| v0.0.163 | 10 Jun | `vera lsp` serves LSP over stdio ([#222](https://github.com/aallan/vera/issues/222) Phase C). |
+| v0.0.164 | 10 Jun | LSP language features: diagnostics, hover, go-to-definition, completion ([#222](https://github.com/aallan/vera/issues/222) Phase D). |
+| v0.0.165 | 11 Jun | `vera/speculativeEdit` reports whether an edit keeps, breaks, or strengthens the program's proofs ([#222](https://github.com/aallan/vera/issues/222) Phase E). |
+| v0.0.166 | 11 Jun | `vera/proposeEdit`: edit, verify, and apply in one method, only when the proof delta is non-breaking ([#222](https://github.com/aallan/vera/issues/222) Phase F1). |
+| v0.0.167 | 11 Jun | `vera/strengthenContract`: contract edits gated by a call-site precondition audit ([#222](https://github.com/aallan/vera/issues/222) Phase F2). |
+| v0.0.168 | 11 Jun | `vera/addEffect` propagates an `effects(...)` change across a function and its callers in one verified edit ([#222](https://github.com/aallan/vera/issues/222)). |
+| v0.0.169 | 11 Jun | The language server gets a user manual and a VS Code LSP client ([#222](https://github.com/aallan/vera/issues/222) follow-up). |
 | v0.0.170 | 12 Jun | Editor hovers carry the same Fix: instructions as `--json`, exactly once per call site ([#728](https://github.com/aallan/vera/issues/728)). |
 
 After v0.0.170 the editor loop was complete, and attention turned to the verifier's soundness gaps.
@@ -395,23 +395,23 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.171 | 15 Jun | Map and Set host storage moved to bucket-as-truth, deleting the Python/JS mirror so collection contents live in one place ([#706](https://github.com/aallan/vera/issues/706)). |
+| v0.0.171 | 15 Jun | Map and Set host storage moved to bucket-as-truth, ending the dual Python/JS mirror ([#706](https://github.com/aallan/vera/issues/706)). |
 | v0.0.172 | 16 Jun | The `@Nat >= 0` invariant is obligation-checked at every binding site, not just `@Nat` subtractions ([#552](https://github.com/aallan/vera/issues/552)). |
-| v0.0.173 | 17 Jun | The `@Nat >= 0` narrowing obligation now reaches projection and instantiation sites: ADT sub-patterns, tuple destructures, and generic/imported constructors ([#747](https://github.com/aallan/vera/issues/747)). |
-| v0.0.174 | 19 Jun | General refinement-type predicates are verified statically: a value narrowing into a `{ @T \| P }` slot or refined return position carries a Tier-1 obligation that the predicate holds ([#746](https://github.com/aallan/vera/issues/746)). |
+| v0.0.173 | 17 Jun | The `@Nat >= 0` narrowing obligation now reaches projection and instantiation sites ([#747](https://github.com/aallan/vera/issues/747)). |
+| v0.0.174 | 19 Jun | General refinement-type predicates (`{ @T \| P }`) are now verified statically ([#746](https://github.com/aallan/vera/issues/746)). |
 | v0.0.175 | 21 Jun | Generic function bodies are statically verified at each concrete instantiation instead of being deferred to runtime ([#732](https://github.com/aallan/vera/issues/732)). |
 | v0.0.176 | 21 Jun | A call's precondition is checked even when its result is discarded ([#730](https://github.com/aallan/vera/issues/730)). |
-| v0.0.177 | 21 Jun | Integer division/modulo by zero and array index bounds carry auto-synthesised obligations (E526/E527) ([#680](https://github.com/aallan/vera/issues/680)). |
-| v0.0.178 | 25 Jun | `vera builtins`/`effects`/`errors --json` introspection subcommands make the compiler the source of truth for its own built-ins, effects, and error codes ([#539](https://github.com/aallan/vera/issues/539)). |
-| v0.0.179 | 26 Jun | `smt.py` soundness-audit batch: signed `/` and `%` truncate toward zero, `assert(P)` carries a Tier-1 obligation (E507), and contract-position divisions get a `div_zero` obligation ([#392](https://github.com/aallan/vera/issues/392)). |
-| v0.0.180 | 26 Jun | `@Float64` contracts are verified against Z3's IEEE-754 sort instead of mathematical reals, so Tier-1 proofs respect NaN/Inf/signed-zero/rounding and match the runtime ([#797](https://github.com/aallan/vera/issues/797)). |
-| v0.0.181 | 27 Jun | `@Int` / `@Nat` arithmetic overflow now traps: `+` / `-` / `*` carry an `int_overflow` obligation, so a provable overflow is a compile error (E528) and a dynamic one a runtime trap ([#798](https://github.com/aallan/vera/issues/798)). |
-| v0.0.182 | 27 Jun | `string_length` UTF-8 byte soundness: non-literal `string_length` defers to Tier 3, string literals are modelled at their exact byte length ([#802](https://github.com/aallan/vera/issues/802)). |
-| v0.0.183 | 27 Jun | Tier-1 modeling for the modelable `@Float64` builtins (`float_clamp`, concrete-gated `int_to_float` / `float_to_int`) with a `float_to_int` domain obligation (E529); integer literals are range-checked against their target machine type (E149, #812) ([#807](https://github.com/aallan/vera/issues/807)). |
-| v0.0.184 | 28 Jun | Chapter 8 (modules) gains eight conformance programs, with `expected_error` negative-test support and stable module-resolution E-codes (E011/E012/E013/E150) ([#679](https://github.com/aallan/vera/issues/679)). |
-| v0.0.185 | 28 Jun | Redefining an opaque, verifier-modelled built-in is now a checker error (E151), closing a soundness hole where a shadowing `abs` let `vera verify` prove a postcondition `run` violated ([#815](https://github.com/aallan/vera/issues/815)). |
-| v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: every coercion carries a `nat_to_int_coerce` obligation (E530), runtime-trapped where codegen knows the source is `@Nat` and disclosed as an E531 warning at the component sites it cannot guard; ships with a CI gate that doc examples never redefine a built-in (#819) ([#813](https://github.com/aallan/vera/issues/813)). |
-| v0.0.187 | 30 Jun | The #798 integer-overflow runtime trap now classifies `kind="overflow"` via a new `vera.overflow_trap` host import, so a dynamic overflow surfaces the overflow diagnostic instead of the generic `unreachable`; the same work fixes host-import and allocation flags used only inside an `ensures(...)` postcondition (#823) ([#808](https://github.com/aallan/vera/issues/808)). |
+| v0.0.177 | 21 Jun | Integer division/modulo by zero and array-index bounds now carry auto-synthesised obligations ([#680](https://github.com/aallan/vera/issues/680)). |
+| v0.0.178 | 25 Jun | `vera builtins`/`effects`/`errors --json` make the compiler the source of truth for its own registries ([#539](https://github.com/aallan/vera/issues/539)). |
+| v0.0.179 | 26 Jun | Soundness pass on `smt.py`: signed division/modulo and `assert` are modelled correctly for Tier-1 verification ([#392](https://github.com/aallan/vera/issues/392)). |
+| v0.0.180 | 26 Jun | `@Float64` contracts are verified against Z3's IEEE-754 sort, so Tier-1 proofs match the runtime ([#797](https://github.com/aallan/vera/issues/797)). |
+| v0.0.181 | 27 Jun | `@Int` / `@Nat` arithmetic overflow now traps instead of silently wrapping ([#798](https://github.com/aallan/vera/issues/798)). |
+| v0.0.182 | 27 Jun | `string_length` is modelled soundly for UTF-8 byte length, deferring non-literals to Tier 3 ([#802](https://github.com/aallan/vera/issues/802)). |
+| v0.0.183 | 27 Jun | More `@Float64` built-ins gain Tier-1 modelling, and integer literals are range-checked against their target machine type ([#807](https://github.com/aallan/vera/issues/807)). |
+| v0.0.184 | 28 Jun | Chapter 8 (modules) gains eight conformance programs with negative-test (`expected_error`) support ([#679](https://github.com/aallan/vera/issues/679)). |
+| v0.0.185 | 28 Jun | Redefining an opaque, verifier-modelled built-in is now a checker error, closing a `verify`/`run` soundness hole ([#815](https://github.com/aallan/vera/issues/815)). |
+| v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: a value above i64.MAX no longer reinterprets to a negative `@Int` ([#813](https://github.com/aallan/vera/issues/813)). |
+| v0.0.187 | 30 Jun | Integer-overflow runtime traps now carry a precise `overflow` trap kind instead of the generic `unreachable` ([#808](https://github.com/aallan/vera/issues/808)). |
 
 ---
 
