@@ -22,8 +22,21 @@ knowledge_base:
     filePatterns:
       - "SKILL.md"
       - "CLAUDE.md"
+      - "AGENTS.md"
       - "CONTRIBUTING.md"
       - "FAQ.md"
+  # ── Cross-repo context ────────────────────────────────────────────
+  #
+  # Vera is upstream of vera-bench, which consumes the compiler purely as
+  # a black-box CLI. Linking lets CodeRabbit flag a CLI-flag / exit-code /
+  # diagnostic-format change here that would silently break the harness,
+  # during review of the vera PR rather than after vera-bench's own CI.
+  linked_repositories:
+    - repository: "aallan/vera-bench"
+      instructions: |
+        Black-box benchmark harness; consumes the compiler only as a CLI.
+        Flag changes to CLI flags, exit codes, or diagnostic output format
+        that could break the harness.
 
 chat:
   auto_reply: true
@@ -123,6 +136,11 @@ reviews:
         - Tests that don't assert anything meaningful
         - Duplicated test names (pytest silently shadows these)
         - Missing edge cases for new compiler features
+        - Missing coverage of the commutative-operations slot-ordering
+          trap: swapping @Int.0 and @Int.1 is invisible for + and *, but
+          wrong for - / division / comparison / recursive calls. A test
+          for a non-commutative op that only checks a commutative case
+          (or whose inputs are symmetric) cannot catch a slot-order bug.
 
     - path: "tests/conformance/**"
       instructions: |
@@ -224,6 +242,14 @@ reviews:
     gitleaks:
       enabled: true
 
+    # GitHub Checks ingestion — wait for the long multi-OS test matrix
+    # (4 OS × 3 Python) plus the lint job (~12 min) so CodeRabbit ingests
+    # CI failures instead of commenting before they land. 900000 ms = the
+    # 15-minute maximum; if a run exceeds it, re-trigger with
+    # `@coderabbitai review` after CI completes.
+    github-checks:
+      timeout_ms: 900000
+
     # Not applicable to this project
     eslint:
       enabled: false
@@ -263,3 +289,50 @@ reviews:
       enabled: true
     simplify:
       enabled: false
+
+  # ── Pre-merge checks (Pro+) ──────────────────────────────────────────
+  #
+  # Agentic, natural-language checks that run per-PR against the diff, git
+  # history, and linked issues, returning pass / fail / inconclusive with
+  # reasoning. They COMPLEMENT — never replace — the deterministic floor
+  # (mypy, scripts/check_*.py, pre-commit, the conformance suite).
+  #
+  # All three start in "warning" (advisory: surfaced in review, blocks
+  # nothing). Promote an individual check to "error" only after ~a week of
+  # low false positives, and only once the Pro+ custom-check tier/cap is
+  # confirmed in the dashboard and reviews.request_changes_workflow +
+  # branch-protection required-checks are updated. Dry-run before relying:
+  #   @coderabbitai evaluate custom pre-merge check --name <name> --instructions <text> --mode warning
+  pre_merge_checks:
+    # Once a check is a blocking gate, only requested reviewers (not the
+    # author/bot) may override a failure.
+    override_requested_reviewers_only: true
+    custom_checks:
+      - name: "Changelog covers public-surface changes"
+        mode: "warning"        # promote to "error" once stable
+        instructions: |
+          Fail if a change to the public surface is not DESCRIBED (not
+          merely "touched") in CHANGELOG.md. Public surface includes: CLI
+          subcommands/flags (vera/cli.py), diagnostics and error codes
+          (vera/errors.py), the formal specification (spec/), the language
+          server surface (vera/lsp/), and the WASM ABI / execute() result
+          shape (vera/codegen/api.py). The deterministic gate
+          (scripts/check_changelog_updated.py) only checks that a bullet
+          exists; this verifies the actual change is covered.
+      - name: "Spec and implementation move together"
+        mode: "warning"
+        instructions: |
+          Fail if language semantics changed in the compiler (parser,
+          checker, verifier, codegen under vera/) without a matching update
+          to the formal spec (spec/), or if the spec changed without the
+          implementation following. scripts/check_spec_examples.py only
+          validates that spec code blocks still parse/check/verify — it does
+          NOT catch silent prose-vs-behaviour drift, which this targets.
+      - name: "Diagnostics carry full metadata"
+        mode: "warning"
+        instructions: |
+          Fail if a new or changed error-severity diagnostic lacks any of:
+          a stable error_code (E###), a rationale, a concrete fix, or a
+          spec_ref. Vera's diagnostics-as-instructions philosophy is
+          load-bearing. INTERIM advisory layer until the deterministic hook
+          in issue #682 lands; relax or retire once #682 gates this.
