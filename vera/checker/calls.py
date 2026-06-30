@@ -625,7 +625,7 @@ class CallsMixin:
                 f"declare 'op {expr.name}(...)' in that effect, or correct "
                 f"the qualifier or operation name.",
             severity="warning",
-            spec_ref='Chapter 7, Section 7.4.1 "Ambiguous Operations"',
+            spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
             error_code="E220",
         )
         for arg in expr.args:
