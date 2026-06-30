@@ -232,6 +232,7 @@ class TestOptOut:
     def test_unanchored_marker_does_not_exempt(self, mod: object) -> None:
         """The directive must be anchored: a near-miss (`-foo` suffix) or a
         mid-comment mention must NOT disable the gate."""
+        # (a) suffix near-miss
         src = (
             "class C:\n"
             "    def f(self, node):\n"
@@ -240,6 +241,31 @@ class TestOptOut:
         v = mod.check_source(src, "vera/transform.py")
         assert len(v) == 1
         assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        # (b) mid-comment mention — marker not at the start of the comment
+        src2 = (
+            "class C:\n"
+            "    def f(self, node):\n"
+            "        self._error(node, 'x', error_code='E1')  # note diag-fields-exempt later\n"
+        )
+        v2 = mod.check_source(src2, "vera/transform.py")
+        assert len(v2) == 1
+        assert set(v2[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_tab_separated_optout_is_honored(self, mod: object) -> None:
+        """An anchored directive whose boundary is a TAB (not a space, and no
+        colon) must still be honored — the boundary check accepts any
+        whitespace, not just a literal space."""
+        # NB: a bare tab directly after the marker — no colon, so this exercises
+        # the whitespace boundary and NOT the `OPT_OUT + ":"` path.
+        src = (
+            "class C:\n"
+            "    def f(self, node):\n"
+            "        self._error(node, 'x', error_code='E1')  # diag-fields-exempt\tdefensive internal branch\n"
+        )
+        assert mod.check_source(src, "vera/transform.py") == []
+        # and the reason is captured (not blank → not itself a violation)
+        reasons = mod._optout_lines(src)
+        assert any("defensive internal branch" == r for r in reasons.values())
 
 
 # =====================================================================
@@ -304,6 +330,58 @@ class TestSpecRefValidity:
         # Chapter 6 exists but is "Contracts", not "Wibble".
         v = self._v(mod, 'Chapter 6, "Wibble"')
         assert len(v) == 1 and "Contracts" in v[0].missing[0]
+
+    def test_non_literal_spec_ref_flagged(self, mod: object) -> None:
+        # A spec_ref threaded through a variable passes the *presence* check
+        # (any non-constant counts as present) but cannot be validated against
+        # the spec — it must be flagged, mirroring the non-literal-severity rule.
+        src = "self._error(node, 'd', spec_ref=COMMON_REF)\n"
+        v = mod.spec_ref_violations_in_source(src, "vera/checker/x.py")
+        assert len(v) == 1 and "not a string literal" in v[0].missing[0]
+
+    def test_plumbing_non_literal_spec_ref_skipped(self, mod: object) -> None:
+        # The Diagnostic() construction *inside* an _error helper threads its
+        # spec_ref param (a Name) by design — it is plumbing, not a site, and
+        # must NOT be flagged as a non-literal spec_ref.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, spec_ref=''):\n"
+            "        self.diagnostics.append(Diagnostic(\n"
+            "            description=description, location=loc,\n"
+            "            spec_ref=spec_ref))\n"
+        )
+        assert mod.spec_ref_violations_in_source(src, "vera/checker/core.py") == []
+
+
+# =====================================================================
+# _load_spec caches per resolved spec_dir
+# =====================================================================
+
+class TestSpecDirCache:
+    def test_cache_is_per_spec_dir(self, mod: object, tmp_path: Path) -> None:
+        """A later call with a different spec_dir must validate against that
+        directory's files, not reuse an earlier directory's cached map."""
+        ref = 'Chapter 4, Section 4.4 "Arithmetic Expressions"'
+        src = f"self._error(node, 'd', spec_ref='{ref}')\n"
+
+        d1 = tmp_path / "spec_a"
+        d1.mkdir()
+        (d1 / "04-x.md").write_text(
+            "# Chapter 4: Expressions\n\n### 4.4 Arithmetic Expressions\n",
+            encoding="utf-8")
+        d2 = tmp_path / "spec_b"
+        d2.mkdir()
+        (d2 / "04-x.md").write_text(
+            "# Chapter 4: Expressions\n\n### 4.4 Something Else\n",
+            encoding="utf-8")
+
+        # Valid against d1 (title matches there)...
+        assert mod.spec_ref_violations_in_source(
+            src, "vera/x.py", spec_dir=d1) == []
+        # ...but invalid against d2 — a shared global cache would wrongly reuse
+        # d1's map here and pass.
+        v = mod.spec_ref_violations_in_source(src, "vera/x.py", spec_dir=d2)
+        assert len(v) == 1 and "Something Else" in v[0].missing[0]
 
 
 # =====================================================================

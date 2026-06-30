@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,491 across 51 files (~63,000 lines of test code; 5,443 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,495 across 51 files (~63,000 lines of test code; 5,447 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -77,7 +77,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_execute_characterization.py` | 22 | 467 | Characterization harness pinning `execute()`'s observable contract ahead of the #421 runtime decomposition (#734): every `ExecuteResult` field (`value` int/float/str/heap-pointer/None, `stdout`, `state`, `exit_code`, `stderr`) crossed with the three completion modes — normal return, WASM trap (raises `WasmTrapError` with a classified `kind`, output-before-trap preserved), and interrupt/exit (`IO.exit(n)` → `exit_code` n with `value` None, Ctrl-C → 130) — plus the positional-constructor compatibility shape and `capture_stderr` True-vs-default. **Mutation-validated**: every cell confirmed to flip RED when its target return path in `api.py` is deliberately broken (9 mutations, 0 green-for-the-wrong-reason tests) |
 | `test_walker_defensive_branches_597.py` | 21 | 296 | Synthetic-AST tests for the 11 defensive `isinstance` branches added by #597 (`_scan_io_ops` / `_scan_expr_for_handlers` / `_infer_expr_wasm_type` / `_infer_vera_type`) plus the 5 pr-review fixes (#2/#3/#8 — ModuleCall/AnonFn/QualifiedCall return None; dead `is not None` guards on Block/HandleExpr removed) |
 | `test_check_walker_coverage_597.py` | 15 | 311 | Unit tests for `scripts/check_walker_coverage.py` parsing logic — Expr subclass extraction, isinstance flattening (incl. tuple form), checklist-block anchoring (incl. CR-3 regression test: `# Foo → bar` outside WALKER_COVERAGE block not counted), section-header tolerance, auto-discovery invariants, end-to-end main exit code |
-| `test_diagnostic_fields.py` | 29 | 320 | Unit tests for `scripts/check_diagnostic_fields.py` (#682) — required-field detection, the warning severity rule (no `fix`), the codegen structural-exemption registry, the `# diag-fields-exempt` per-call opt-out, plumbing-skip, and a live-tree integration check that all of `vera/` is fully tagged |
+| `test_diagnostic_fields.py` | 33 | 398 | Unit tests for `scripts/check_diagnostic_fields.py` (#682) — required-field detection, the warning severity rule (no `fix`), the codegen structural-exemption registry, the `# diag-fields-exempt` per-call opt-out, plumbing-skip, and a live-tree integration check that all of `vera/` is fully tagged |
 | `test_stress.py` | 16 | 553 | Scale-dependent regression tests (#596) — `@pytest.mark.stress`, skipped by default.  9 logical tests × eager-GC lane parametrisation = 16 test instances.  10K `array_map`, 5K nested-array `array_map`, 1K-deep tail recursion with allocating arg, 1M-deep tail recursion with allocating arg (#549 GC-aware TCO), 20×20 nested array-fold-of-array-fold, 100K `array_fold`, 10K String allocations, 1K `State<Int>` get/put cycles, 10K `IO.print` calls.  Pins #570 / #515 / #593 / #549 / #487 / #348 / #573 regression coverage |
 | `test_string_length_soundness.py` | 15 | 278 | #802 — string_length code-point vs UTF-8 byte soundness: a non-literal `string_length` defers to Tier 3 (the issue's `"é"` probe no longer proves `== 1` at Tier 1), a string-literal length is modeled at its exact UTF-8 byte count (`== 2` for `"é"`), and the boolean predicates `string_contains` / `string_starts_with` / `string_ends_with` stay Tier 1 (sound under UTF-8 self-synchronization), while a predicate over an astral (> U+2FFFF) or lone-surrogate literal defers to Tier 3 (z3.StringVal cannot model those code points) |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
@@ -549,7 +549,7 @@ Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 | `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
 | `check_changelog_updated.py` | CHANGELOG.md gains an entry when substantive files change (`Skip-changelog:` trailer to bypass) |
 | `check_walker_coverage.py` | Every walker function in `vera/` covers every `Expr` subclass via `isinstance` dispatch or `# WALKER_COVERAGE:` checklist comment (#597) |
-| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale/fix/spec_ref, or a `# diag-fields-exempt` reason (#682) |
+| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); otherwise a `# diag-fields-exempt` reason (#682) |
 | `check_e602_clean.py` | No unexpected E602/E604 silent-skip sites outside the explicit allowlist |
 | `check_doc_builtin_shadowing.py` | No documentation example defines a function named after an opaque verifier-modelled built-in (would fail `vera check` with E151); the `spec/09` signature reference is exempt ([#819](https://github.com/aallan/vera/issues/819)) |
 | `check_wheel_availability.py` | Every runtime dependency ships wheels for all supported platforms |
@@ -648,7 +648,7 @@ Every push is checked by 30 configured hooks across two stages: 28 are configure
 | `check_e602_clean.py` | No unexpected `[E602]` (body unsupported) / `[E604]` (param unsupported) silent skips outside the explicit allowlist (Layer 1 of [#626](https://github.com/aallan/vera/issues/626)) |
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_walker_coverage.py` | Every walker function covers every `Expr` subclass via dispatch or checklist comment (#597) |
-| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale/fix/spec_ref, or a `# diag-fields-exempt` reason (#682) |
+| `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); otherwise a `# diag-fields-exempt` reason (#682) |
 | `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
 | `check_licenses.py` | All package licenses are MIT-compatible |
 | `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |

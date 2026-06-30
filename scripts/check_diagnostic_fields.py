@@ -153,7 +153,10 @@ def _optout_lines(source: str) -> dict[int, str]:
             # `# diag-fields-exempt-foo`, must NOT disable the gate.
             if text == OPT_OUT:
                 out[tok.start[0]] = ""
-            elif text.startswith(OPT_OUT + ":") or text.startswith(OPT_OUT + " "):
+            elif text.startswith(OPT_OUT) and (
+                    text[len(OPT_OUT)] == ":" or text[len(OPT_OUT)].isspace()):
+                # Boundary char is ':' or ANY whitespace (space, tab, …) — the
+                # trailing .strip() then drops it whatever it was.
                 out[tok.start[0]] = text[len(OPT_OUT):].lstrip(" :").strip()
     except (tokenize.TokenError, IndentationError):
         pass
@@ -267,14 +270,17 @@ _REF_SEC = re.compile(r'Chapter\s+(\d+),\s+Section\s+([\d.]+)\s+"([^"]+)"')
 _REF_CH = re.compile(r'^Chapter\s+(\d+),\s+"([^"]+)"\s*$')
 _HEAD = re.compile(r'^#{1,6}\s+(\d+(?:\.\d+)*)\.?\s+(.+?)\s*$')
 _CH_PREFIX = re.compile(r'^Chapter\s+\d+\s*[:—.\-]\s*')
-_spec_cache: tuple[dict[str, str], dict[str, str]] | None = None
+# Cache keyed by *resolved* spec directory — a later call with a different
+# spec_dir (e.g. a test fixture) must not reuse another directory's map.
+_spec_cache: dict[Path, tuple[dict[str, str], dict[str, str]]] = {}
 
 
 def _load_spec(spec_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
     """Return ({section-number: title}, {chapter-number: chapter-title})."""
-    global _spec_cache
-    if _spec_cache is not None:
-        return _spec_cache
+    key = spec_dir.resolve()
+    cached = _spec_cache.get(key)
+    if cached is not None:
+        return cached
     sections: dict[str, str] = {}
     chapters: dict[str, str] = {}
     for md in sorted(spec_dir.glob("*.md")):
@@ -290,8 +296,8 @@ def _load_spec(spec_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
                 sections[m.group(1)] = m.group(2).strip()
         if cnum is not None and first_h1 is not None:
             chapters[cnum] = _CH_PREFIX.sub("", first_h1).strip()
-    _spec_cache = (sections, chapters)
-    return _spec_cache
+    _spec_cache[key] = (sections, chapters)
+    return _spec_cache[key]
 
 
 def _norm(s: str) -> str:
@@ -302,24 +308,51 @@ def _norm(s: str) -> str:
 
 def _iter_spec_refs(
     source: str, filename: str,
-) -> Iterator[tuple[int, str, str | None]]:
-    """Yield (lineno, ref_text, snippet) for each non-empty literal spec_ref."""
+) -> Iterator[tuple[int, str | None, str | None]]:
+    """Yield (lineno, ref_text_or_None, snippet) for each spec_ref argument.
+
+    ``ref_text`` is the literal string for a constant spec_ref; ``None`` marks
+    a *non-literal* spec_ref (a variable / f-string / concatenation) that the
+    gate cannot resolve to a spec section and so flags — mirroring how a
+    non-literal ``severity`` is rejected in ``check_source``.  Empty / blank /
+    non-string constant spec_refs are skipped here: the presence check owns
+    "missing".  Diagnostic() plumbing inside the _error/_warning helper defs is
+    skipped — its call sites plus the registry govern it."""
     tree = ast.parse(source, filename=filename)
     src_lines = source.splitlines()
+    helper_spans = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in ("_error", "_warning")
+    ]
+
+    def inside_helper(lineno: int) -> bool:
+        return any(a <= lineno <= b for a, b in helper_spans)
+
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
         f = n.func
-        if not ((isinstance(f, ast.Name) and f.id == "Diagnostic")
-                or (isinstance(f, ast.Attribute)
-                    and f.attr in ("_error", "_warning"))):
+        is_ctor = isinstance(f, ast.Name) and f.id == "Diagnostic"
+        is_helper = (isinstance(f, ast.Attribute)
+                     and f.attr in ("_error", "_warning"))
+        if not (is_ctor or is_helper):
             continue
+        if is_ctor and inside_helper(n.lineno):
+            continue  # plumbing
         for kw in n.keywords:
-            if kw.arg == "spec_ref" and isinstance(kw.value, ast.Constant) \
-                    and isinstance(kw.value.value, str) and kw.value.value.strip():
-                ln = kw.value.lineno
-                snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
-                yield ln, kw.value.value, snip
+            if kw.arg != "spec_ref":
+                continue
+            v = kw.value
+            ln = v.lineno
+            snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
+            if isinstance(v, ast.Constant):
+                if isinstance(v.value, str) and v.value.strip():
+                    yield ln, v.value, snip
+                # empty / None / non-str literal → presence check owns "missing"
+            else:
+                yield ln, None, snip  # non-literal: unresolvable, flag it
 
 
 def spec_ref_violations_in_source(source: str, filename: str,
@@ -329,6 +362,12 @@ def spec_ref_violations_in_source(source: str, filename: str,
     sections, chapters = _load_spec(spec_dir or (ROOT / "spec"))
     out: list[Violation] = []
     for ln, ref, snip in _iter_spec_refs(source, filename):
+        if ref is None:
+            out.append(Violation(
+                filename, ln, "spec_ref",
+                ["spec_ref is not a string literal — the gate cannot validate "
+                 "it against the spec; make it a literal"], snip))
+            continue
         m = _REF_SEC.search(ref)
         if m:
             chap, sec, title = m.group(1), m.group(2), m.group(3)
