@@ -1,7 +1,7 @@
 """Additional coverage tests for vera/smt.py and vera/verifier.py.
 
 Exercises SMT encoding paths, verifier edge cases, and defensive
-branches that are not covered by the main test_verifier.py suite.
+branches that are not covered by the main test_verifier_*.py suite.
 """
 
 from __future__ import annotations
