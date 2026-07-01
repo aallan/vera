@@ -27,14 +27,14 @@ Crossed with the five ``ExecuteResult`` fields the issue scopes —
 compatibility shape and ``capture_stderr`` True-vs-default.
 
 Reuse, not duplication: many of these cells were already exercised
-*indirectly* by feature tests scattered across ``test_codegen.py`` and
+*indirectly* by feature tests scattered across the ``test_codegen_*.py`` suite and
 ``test_runtime_traps.py``.  Where so, the fixture is reused verbatim and
 the overlap is named in a ``# overlaps`` comment — but each cell here
 adds the *discriminating* assertion the scattered tests lacked (e.g.
 ``value is None`` on ``IO.exit``, the declared field order, the
 str-decode-vs-array-pointer asymmetry pinned side by side).  Out of
 scope: ``host_store_sizes`` (#573) and ``peak_heap_bytes`` (#706),
-already pinned by the GC-reclamation suite in ``test_codegen.py``.
+already pinned by the GC-reclamation suite in ``test_codegen_gc_reclamation.py``.
 
 Every assertion is chosen to be *discriminating*: it would change if the
 field's own code path broke.  The companion mutation sweep (#734 / #387 —
@@ -104,7 +104,7 @@ public fn positive(@Int -> @Int)
 
 # An opaque array index that is out of bounds at runtime.  Codegen
 # lowers an OOB index to a WASM ``unreachable``
-# (test_codegen.py::test_array_wat_has_bounds_check); the index is a param
+# (test_codegen_arrays.py::test_array_wat_has_bounds_check); the index is a param
 # so #680 routes it to honest Tier-3 at verify, and execute() (no verify)
 # just traps at runtime.  The array is let-bound before indexing (the
 # proven shape in test_array_wat_has_bounds_check) — a bare index on an
@@ -129,7 +129,7 @@ class TestExecuteValueField734:
 
     def test_int_return(self) -> None:
         """An @Int return surfaces as a Python int."""
-        # overlaps test_codegen.py::TestIntLit — adds the isinstance pin.
+        # overlaps test_codegen_expressions.py::TestIntLit — adds the isinstance pin.
         result = _compile(
             "public fn f(-> @Int) requires(true) ensures(true) "
             "effects(pure) { 42 }"
@@ -140,7 +140,7 @@ class TestExecuteValueField734:
 
     def test_float_return(self) -> None:
         """A @Float64 return surfaces as a Python float, not an int."""
-        # overlaps test_codegen.py::TestFloatSlotRef — the isinstance pin
+        # overlaps test_codegen_expressions.py::TestFloatSlotRef — the isinstance pin
         # is the discriminator: a regression returning the int bit-pattern
         # would still satisfy ``== 7.5`` under Python numeric coercion in
         # some paths, but not ``isinstance float``.
@@ -154,7 +154,7 @@ class TestExecuteValueField734:
 
     def test_string_return_is_decoded(self) -> None:
         """A @String return is decoded to a Python str, not a bare pointer."""
-        # overlaps test_codegen.py::test_string_return_execution.  KEY
+        # overlaps test_codegen_strings.py::test_string_return_execution.  KEY
         # cell: a ``@String`` return is decoded from the (ptr,len) pair to
         # a Python ``str`` because ``hello`` is in ``fn_string_returns``.
         # Pinned side-by-side with the array case below to lock the
@@ -169,7 +169,7 @@ class TestExecuteValueField734:
 
     def test_array_return_is_bare_heap_pointer(self) -> None:
         """An Array<T> return stays a raw heap-pointer int, never decoded."""
-        # overlaps test_codegen.py::test_array_return_unchanged.  The
+        # overlaps test_codegen_strings.py::test_array_return_unchanged.  The
         # other half of the asymmetry: an ``Array<T>`` return is NOT
         # decoded — ``value`` is the raw heap pointer (an int), never a
         # Python list and never a decoded string.
@@ -242,7 +242,7 @@ class TestExecuteStateField734:
 
     def test_state_reflects_final_put(self) -> None:
         """state holds the final State<Int> value after a put."""
-        # overlaps test_codegen.py::TestStateEffect::test_increment_pattern.
+        # overlaps test_codegen_effects.py::TestStateEffect::test_increment_pattern.
         result = _compile(
             "public fn increment(@Unit -> @Unit) requires(true) ensures(true) "
             "effects(<State<Int>>) { let @Int = get(()); put(@Int.0 + 1); () }"
@@ -253,7 +253,7 @@ class TestExecuteStateField734:
 
     def test_initial_state_round_trips(self) -> None:
         """initial_state seeds the starting State<Int> value."""
-        # overlaps test_codegen.py::test_state_initial_value.  10 is
+        # overlaps test_codegen_effects.py::test_state_initial_value.  10 is
         # distinct from the State<Int> default of 0, so this fails if the
         # initial_state seam is ignored.
         result = _compile(
@@ -294,7 +294,7 @@ class TestExecuteExitCodeField734:
 
     def test_io_exit_sets_code_and_value_none(self) -> None:
         """IO.exit(n) sets exit_code to n with value None."""
-        # overlaps test_codegen.py::test_io_exit_nonzero — adds the
+        # overlaps test_codegen_io.py::test_io_exit_nonzero — adds the
         # ``value is None`` pin the existing test omits.
         result = _compile(
             'public fn main(-> @Unit) requires(true) ensures(true) '
@@ -307,7 +307,7 @@ class TestExecuteExitCodeField734:
 
     def test_io_exit_zero_is_distinct_from_none(self) -> None:
         """IO.exit(0) sets exit_code to 0, distinct from None."""
-        # overlaps test_codegen.py::test_io_exit_zero.  Discriminator: 0
+        # overlaps test_codegen_io.py::test_io_exit_zero.  Discriminator: 0
         # is falsy but is NOT None — a regression conflating "exited with
         # 0" and "did not exit" (e.g. ``exit_code or None``) flips RED
         # here where ``== 0`` and ``is not None`` disagree with None.
@@ -342,7 +342,7 @@ class TestExecuteStderrField734:
 
     def test_stderr_captured_when_requested(self) -> None:
         """capture_stderr=True captures IO.stderr into stderr."""
-        # overlaps test_codegen.py::test_io_stderr_captured_when_requested.
+        # overlaps test_codegen_io.py::test_io_stderr_captured_when_requested.
         result = _compile(self._STDERR_PROG)
         r = execute(result, fn_name="main", capture_stderr=True)
         assert r.stderr == "to stderr"
@@ -350,7 +350,7 @@ class TestExecuteStderrField734:
 
     def test_stderr_empty_by_default(self) -> None:
         """Without capture_stderr, stderr stays empty."""
-        # overlaps test_codegen.py::test_io_stderr_default_not_captured.
+        # overlaps test_codegen_io.py::test_io_stderr_default_not_captured.
         result = _compile(self._STDERR_PROG)
         r = execute(result, fn_name="main")  # capture_stderr defaults False
         assert r.stderr == ""

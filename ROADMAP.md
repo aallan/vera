@@ -12,15 +12,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## The roadmap
 
-Tier 0 — close every silent failure — is done: no known case remains where Vera accepts a program and quietly does something weaker than it promised (see [HISTORY.md](HISTORY.md)).  The three remaining tiers are worked roughly top to bottom; small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a higher one.
-
-### Tier 1 — Safety net and runtime robustness
-
-The infrastructure that catches the next regression before a user does, plus the decomposition that makes the runtime testable.
-
-| Issue | What |
-|---|---|
-| [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
+Tier 0 — close every silent failure — is done: no known case remains where Vera accepts a program and quietly does something weaker than it promised (see [HISTORY.md](HISTORY.md)).  Tier 1 — safety net and runtime robustness — is done too: the mutation sweep hardened the soundness core, the execution runtime was decomposed into testable modules, and the oversized test oracles were split into feature-focused files (see [HISTORY.md](HISTORY.md)).  The two remaining tiers are worked roughly top to bottom; small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a higher one.
 
 ### Tier 2 — Single source of truth
 
@@ -52,7 +44,7 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — unblocked now that the #421 decomposition has reshaped the mixin sets. |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
-| [#795](https://github.com/aallan/vera/issues/795) | **Extend mutation testing beyond the soundness core.**  #387 hardened the trust root (`verifier`/`smt`/`checker`/`obligations`, 80.8% → 83.3% caught); this extends the sweep to `codegen`/`wasm`/`transform`/`parser`/CLI, where a surviving mutant is a weak test for an already-*loud* failure (wrong output / trap, already caught by `test_codegen.py` + conformance + execution tests) rather than a silent verification gap — so it ranks below the Tier 1 soundness work.  Needs the full marathon sweep made reliable first: it deadlocks on `mutmut` 3.6 / Python 3.14 (targeted per-function runs are fine).  The deep `smt.py` translate-layer hardening + the verifier timeout probe are tracked in [#792](https://github.com/aallan/vera/issues/792). |
+| [#795](https://github.com/aallan/vera/issues/795) | **Extend mutation testing beyond the soundness core.**  #387 hardened the trust root (`verifier`/`smt`/`checker`/`obligations`, 80.8% → 83.3% caught); this extends the sweep to `codegen`/`wasm`/`transform`/`parser`/CLI, where a surviving mutant is a weak test for an already-*loud* failure (wrong output / trap, already caught by the `test_codegen_*.py` suite + conformance + execution tests) rather than a silent verification gap — so it ranked below the Tier 1 soundness work (now complete).  Needs the full marathon sweep made reliable first: it deadlocks on `mutmut` 3.6 / Python 3.14 (targeted per-function runs are fine).  The deep `smt.py` translate-layer hardening + the verifier timeout probe are tracked in [#792](https://github.com/aallan/vera/issues/792). |
 | [#827](https://github.com/aallan/vera/issues/827) | Narrow the diagnostic-fields gate's plumbing-skip: it keys on function name, so a stray/second `Diagnostic` in an `_error`/`_warning` helper would escape both gate passes (latent — no live escape; from the #826 adversarial review). |
 
 ### Not doing now

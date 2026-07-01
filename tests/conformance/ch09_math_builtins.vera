@@ -10,7 +10,7 @@
 -- contracts that depend on specific values would fall to Tier 3.
 -- Contract plumbing and effect inference are what this test
 -- exercises; runtime behaviour is covered by unit tests in
--- tests/test_codegen.py.
+-- tests/test_codegen_numeric.py.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

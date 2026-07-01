@@ -64,11 +64,7 @@ Things Vera cannot do yet, as distinct from defects in what it claims to do.
 
 ## Refactoring needed
 
-Files that have grown beyond a comfortable size and need decomposition. None of these affect correctness — they are purely internal structural debt.
-
-| File | Lines | Refactoring | Issue |
-|------|-------|-------------|-------|
-| `tests/test_codegen.py` | 21,093 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types). More than doubled since the issue was filed; roadmap Tier 1, after the mutation sweep. | [#419](https://github.com/aallan/vera/issues/419) |
+No files currently need decomposition.
 
 ## Test coverage gaps
 

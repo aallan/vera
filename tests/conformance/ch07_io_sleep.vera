@@ -4,7 +4,7 @@
 -- successful run says only "the sleep returned", which depends on
 -- host wall-clock behaviour.  Contract verification (Tier 1) proves
 -- the signature and effect row are wired up correctly; the run-
--- level behaviour is exercised by unit tests in tests/test_codegen.py.
+-- level behaviour is exercised by unit tests in tests/test_codegen_io.py.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

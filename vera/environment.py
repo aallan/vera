@@ -1703,8 +1703,8 @@ class TypeEnv:
         # evaluate `min(max(v, lo), hi)` — so when `lo <= hi` the
         # result is pinned to `[lo, hi]`, but when `lo > hi` the
         # outer `min` dominates and the result equals `hi`.  This
-        # fallthrough is intentional; tests/test_codegen.py asserts
-        # it for both `clamp` (Int) and `float_clamp` (Float64).
+        # fallthrough is intentional; tests/test_codegen_numeric.py
+        # asserts it for both `clamp` (Int) and `float_clamp` (Float64).
         self.functions["sign"] = FunctionInfo(
             name="sign",
             forall_vars=None,

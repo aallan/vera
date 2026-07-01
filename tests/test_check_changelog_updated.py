@@ -64,7 +64,7 @@ class TestIsSubstantive:
 
     @pytest.mark.parametrize("path", [
         # Test files
-        "tests/test_codegen.py",
+        "tests/test_codegen_expressions.py",
         "tests/conformance/ch03_slot_indexing.vera",
         # Scripts and CI
         "scripts/check_examples.py",

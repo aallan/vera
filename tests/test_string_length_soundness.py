@@ -146,7 +146,7 @@ class TestStringPredicateSoundness802:
     the code-point level, so Z3's Contains/PrefixOf/SuffixOf stay sound on
     non-ASCII input — they remain Tier-1 (this is the verifier side; the
     end-to-end runtime byte semantics are pinned by the non-ASCII string_length
-    runtime tests in tests/test_codegen.py)."""
+    runtime tests in tests/test_codegen_strings.py)."""
 
     def test_starts_with_non_ascii_tier1(self) -> None:
         result = _verify("""

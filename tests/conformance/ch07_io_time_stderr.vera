@@ -1,7 +1,7 @@
 -- Conformance: IO.time and IO.stderr operations (Chapter 7, #463)
 -- Tests: built-in IO effect's time (Unit -> Nat) and stderr (String -> Unit)
 -- IO.sleep is omitted from this test because wall-clock timing makes
--- it non-deterministic — covered by unit tests in tests/test_codegen.py.
+-- it non-deterministic — covered by unit tests in tests/test_codegen_io.py.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

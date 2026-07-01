@@ -364,7 +364,7 @@ class TestNatSubUnderflow798:
     verifier and codegen sides.  This co-located block pins the #798 exclusion
     boundary so a regression that started overflow-guarding @Nat subtraction
     surfaces right next to the overflow tests (nat_sub codegen is also covered in
-    test_codegen.py).  Operands are slots so the guard applies — a pure-literal
+    test_codegen_nat_guards.py).  Operands are slots so the guard applies — a pure-literal
     `0 - 1` is intentionally exempt and would not trap.  De Bruijn: sub(a, b)
     computes @Nat.1 - @Nat.0 = a - b.
     """

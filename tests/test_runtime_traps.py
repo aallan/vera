@@ -670,7 +670,7 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """``execute()`` defaults to no tee — protects test suite silence.
 
-        ``_run_io()`` and ``_run()`` in test_codegen.py call
+        ``_run_io()`` and ``_run()`` in tests/codegen_helpers.py call
         ``execute()`` without ``tee_stdout`` and rely on the captured
         ``ExecuteResult.stdout`` for assertions.  If the default
         flipped to True, every test that runs an IO.print program
