@@ -55,7 +55,8 @@ def test_bare_text_call_is_flagged(mod: object, src: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# An explicit encoding= (any value) satisfies the gate.
+# An explicit UTF-8 literal (any common spelling, case-insensitive) satisfies
+# the gate.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("src", [
@@ -63,10 +64,27 @@ def test_bare_text_call_is_flagged(mod: object, src: str) -> None:
     'p.write_text(data, encoding="utf-8")',
     'open(path, encoding="utf-8")',
     'open(path, "w", encoding="utf-8")',
-    "p.read_text(encoding=enc)",  # non-literal encoding still counts as present
+    'p.read_text(encoding="UTF-8")',   # case-insensitive
+    'p.read_text(encoding="utf8")',    # hyphen-optional spelling
 ])
-def test_explicit_encoding_passes(mod: object, src: str) -> None:
+def test_utf8_literal_encoding_passes(mod: object, src: str) -> None:
     assert mod.check_source(src, "<t>.py") == []
+
+
+# ---------------------------------------------------------------------------
+# A non-UTF-8 codec or a non-literal encoding is rejected — the repo rule is
+# UTF-8, and a deliberate exception must use `# encoding-exempt`, not a bare
+# `encoding=` of any value (#645 CR).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    'p.read_text(encoding="latin-1")',   # wrong codec
+    'open(path, encoding="ascii")',
+    "p.read_text(encoding=enc)",         # non-literal — unverifiable
+    "p.write_text(data, encoding=ENC)",
+])
+def test_non_utf8_or_nonliteral_encoding_is_flagged(mod: object, src: str) -> None:
+    assert len(mod.check_source(src, "<t>.py")) == 1
 
 
 # ---------------------------------------------------------------------------

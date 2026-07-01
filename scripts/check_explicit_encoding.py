@@ -11,7 +11,11 @@ with ``PYTHONUTF8=1``; the durable fix (#645) is an explicit
 convention cannot rot (and so the CI backstop can be removed).
 
 Scope (per #645): builtin ``open(...)``, ``X.read_text(...)`` and
-``X.write_text(...)`` under ``vera/``, ``scripts/``, ``tests/``.
+``X.write_text(...)`` under ``vera/``, ``scripts/``, ``tests/``.  The
+``encoding=`` must be a UTF-8 *string literal* (``"utf-8"`` / ``"UTF-8"`` /
+``"utf8"``); a non-literal (``encoding=enc``) or a different codec
+(``encoding="latin-1"``) is rejected — the repo rule is UTF-8, and a deliberate
+non-UTF-8 site uses ``# encoding-exempt: <reason>``.
 
 Deliberately NOT flagged:
 
@@ -82,8 +86,22 @@ def _optout_lines(source: str) -> dict[int, str]:
     return out
 
 
-def _has_encoding(call: ast.Call) -> bool:
-    return any(kw.arg == "encoding" for kw in call.keywords)
+def _encoding_kw(call: ast.Call) -> ast.keyword | None:
+    for kw in call.keywords:
+        if kw.arg == "encoding":
+            return kw
+    return None
+
+
+def _is_utf8_literal(node: ast.expr) -> bool:
+    """True iff ``node`` is a string literal naming UTF-8.
+
+    Accepts the common spellings (``"utf-8"``, ``"UTF-8"``, ``"utf8"``,
+    ``"utf_8"``) case-insensitively.  A non-literal (``encoding=enc``) or a
+    different codec (``encoding="latin-1"``) is NOT accepted — the repo-wide rule
+    is UTF-8, and a deliberate exception uses ``# encoding-exempt: <reason>``."""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and node.value.lower().replace("-", "").replace("_", "") == "utf8")
 
 
 def _open_mode_is_binary(call: ast.Call) -> bool | None:
@@ -131,8 +149,9 @@ def check_source(source: str, filename: str) -> list[Violation]:
         else:
             continue
 
-        if _has_encoding(node):
-            continue
+        enc_kw = _encoding_kw(node)
+        if enc_kw is not None and _is_utf8_literal(enc_kw.value):
+            continue  # explicit UTF-8 — good
 
         snippet = (src_lines[node.lineno - 1]
                    if 0 <= node.lineno - 1 < len(src_lines) else None)
@@ -151,7 +170,11 @@ def check_source(source: str, filename: str) -> list[Violation]:
                     "`# encoding-exempt` marker without a reason", snippet))
             continue
 
-        if non_literal_mode:
+        if enc_kw is not None:
+            why = (f'{call_name}(...) passes a non-UTF-8 or non-literal '
+                   'encoding=; the repo rule is encoding="utf-8" (use it, or '
+                   '`# encoding-exempt: <reason>` for a deliberate codec)')
+        elif non_literal_mode:
             why = ('open(...) has a non-literal mode and no encoding=; pass '
                    'encoding="utf-8" for text mode, or open in binary')
         else:
