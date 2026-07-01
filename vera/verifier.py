@@ -1185,6 +1185,16 @@ class ContractVerifier:
             location=SourceLocation(
                 file=self.file, line=rep_ob.line, column=rep_ob.column,
             ),
+            rationale=(
+                "A contract obligation was neither discharged statically nor "
+                "matched a more specific diagnostic; it must still be surfaced "
+                "rather than silently dropped (which would be a false Tier-1)."
+            ),
+            fix=(
+                "Strengthen the precondition, add an `assert` to guide the "
+                "proof, or correct the implementation so the obligation holds."
+            ),
+            spec_ref='Chapter 6, "Contracts"',
             severity="error",
             error_code=synth_error_code,
             tier=None,
@@ -5061,7 +5071,7 @@ class ContractVerifier:
                 "Correct or weaken the assertion, or establish the missing "
                 "precondition / prior `assert` that makes `P` provable."
             ),
-            spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
+            spec_ref='Chapter 6, Section 6.2.5 "Assertions (`assert`)"',
             error_code="E507",
         )
 
@@ -5151,8 +5161,8 @@ class ContractVerifier:
                 "condition discharges the obligation in the then-branch."
             ),
             spec_ref=(
-                'Chapter 4, Section 4.7 "Let Bindings" and Chapter 11, '
-                'Section 11.2.1 "Nat as i64"'
+                'Chapter 2, Section 2.2.1 "`Int` and `Nat` compatibility" '
+                'and Chapter 11, Section 11.2.1 "Nat as i64"'
             ),
             error_code="E503",
         )
@@ -5779,7 +5789,7 @@ class ContractVerifier:
                 "ensures(...) if the postcondition overstates "
                 "the intended guarantee."
             ),
-            spec_ref='Chapter 6, Section 6.4.1 "Verification Conditions"',
+            spec_ref='Chapter 6, Section 6.4.1 "Verification Condition (VC) Generation"',
             error_code="E500",
         )
 
@@ -5929,7 +5939,7 @@ class ContractVerifier:
                     f"callee's precondition is satisfied."
                 )
             ),
-            spec_ref='Chapter 6, Section 6.4.2 "Call-Site Verification"',
+            spec_ref='Chapter 6, Section 6.4.2 "Call Site Verification"',
             error_code="E501",
         )
 

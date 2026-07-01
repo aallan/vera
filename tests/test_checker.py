@@ -4149,6 +4149,31 @@ private fn f(@Int -> @Int)
         diags = _errors(src)
         assert any(d.error_code == "E130" for d in diags)
 
+    def test_decimal_type_args_is_E134_not_E130(self) -> None:
+        """`Decimal<...>` (a non-generic type given type arguments) is E134 —
+        distinct from the E130 slot-resolution error it previously collided
+        with (#826).  The `not E130` assertion is the collision-regression."""
+        src = """\
+private fn f(@Decimal<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E134" for d in diags)
+        assert not any(d.error_code == "E130" for d in diags)
+
+    def test_empty_tuple_is_E216_not_E210(self) -> None:
+        """`Tuple()` with no fields is E216 — distinct from the E210
+        unknown-constructor error it previously collided with (#826)."""
+        src = """\
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Tuple = Tuple(); 0 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E216" for d in diags)
+        assert not any(d.error_code == "E210" for d in diags)
+
     def test_body_type_mismatch_has_code_E121(self) -> None:
         """Function body type mismatch produces E121."""
         src = """\
@@ -4224,6 +4249,20 @@ private fn f(@Bool -> @Int)
 """
         diags = _errors(src)
         assert any(d.error_code == "E140" for d in diags)
+
+    def test_E140_carries_a_fix_paragraph_682(self) -> None:
+        """#682 AC5: the operator-type-mismatch diagnostic (E140) must
+        carry a concrete `Fix:` paragraph, not just a description +
+        rationale — this is the canonical example from the issue."""
+        src = """\
+private fn f(@Bool, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 + @Int.0 }
+"""
+        e140 = [d for d in _errors(src) if d.error_code == "E140"]
+        assert e140, "expected an E140 diagnostic for `@Bool.0 + @Int.0`"
+        assert e140[0].fix.strip(), "E140 must carry a non-empty fix"
+        assert "Fix:" in e140[0].format()
 
 
 # =====================================================================

@@ -100,7 +100,7 @@ class TestMissingEffectDiagnostic:
 
     def test_has_spec_ref(self) -> None:
         d = missing_effect_clause("test.vera", "", 1, 1)
-        assert "Chapter 7" in d.spec_ref
+        assert "Chapter 5" in d.spec_ref
 
 
 class TestSlotReferenceDiagnostic:

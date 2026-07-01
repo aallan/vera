@@ -205,7 +205,7 @@ def missing_contract_block(
             "    ...\n"
             "  }"
         ),
-        spec_ref='Chapter 5, Section 5.1 "Function Structure"',
+        spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
         error_code="E001",
     )
 
@@ -232,7 +232,7 @@ def missing_effect_clause(
             '  effects(<State<Int>>)      -- for stateful functions\n'
             '  effects(<State<Int>, IO>)  -- for multiple effects'
         ),
-        spec_ref='Chapter 7, Section 7.1 "Effect Declarations"',
+        spec_ref='Chapter 5, Section 5.5 "Effect Declaration"',
         error_code="E002",
     )
 
@@ -261,7 +261,7 @@ def malformed_slot_reference(
             "  @Bool.0    -- most recent Bool binding\n"
             "  @T.result  -- return value (in postconditions only)"
         ),
-        spec_ref='Chapter 3, Section 3.1 "Slot Reference Syntax"',
+        spec_ref='Chapter 3, Section 3.1 "Overview"',
         error_code="E003",
     )
 
@@ -283,7 +283,7 @@ def unclosed_block(
         fix=(
             'Add the missing "}" to close the block.'
         ),
-        spec_ref='Chapter 1, Section 1.6 "Canonical Formatting"',
+        spec_ref='Chapter 10, Section 10.3.14 "Block Expressions"',
         error_code="E004",
     )
 
@@ -340,6 +340,16 @@ def unexpected_token(
         ),
         location=SourceLocation(file=file, line=line, column=column),
         source_line=_get_source_line(source, line),
+        rationale=(
+            "The parser reached this position expecting one of the listed "
+            "tokens; the token found does not begin any construct valid here."
+        ),
+        fix=(
+            "Replace the unexpected token with one of the expected tokens, "
+            "or check for a missing delimiter (such as '}', ')', or ',') "
+            "earlier in the construct."
+        ),
+        spec_ref='Chapter 10, "Formal Grammar"',
         error_code="E005",
     )
 
@@ -398,11 +408,21 @@ def diagnose_lark_error(
             ),
             location=SourceLocation(file=file, line=line, column=column),
             source_line=_get_source_line(source, line),
+            rationale=(
+                "Vera's lexical grammar accepts only a fixed alphabet of "
+                "characters; this character is not part of any token."
+            ),
+            fix=(
+                "Remove the invalid character, or replace it with valid "
+                "syntax (for example, use a string literal if the character "
+                "was intended as text)."
+            ),
+            spec_ref='Chapter 1, "Lexical Structure"',
             error_code="E006",
         )
 
     # Unknown exception type — wrap it
-    return Diagnostic(
+    return Diagnostic(  # diag-fields-exempt: internal fallback for an unrecognised Lark exception; indicates a parser bug, not a user error, so no source-level fix or spec section applies.
         description=f"Internal parser error: {exc}",
         location=SourceLocation(file=file),
         error_code="E007",
@@ -442,6 +462,7 @@ ERROR_CODES: dict[str, str] = {
     "E131": "Result ref outside ensures",
     "E132": "Cyclic type alias",
     "E133": "Type alias arity mismatch",
+    "E134": "Type does not take type arguments",
     "E140": "Arithmetic requires numeric operands",
     "E141": "Arithmetic requires matching numeric types",
     "E142": "Cannot compare incompatible types",
@@ -477,6 +498,7 @@ ERROR_CODES: dict[str, str] = {
     "E213": "Constructor field type mismatch",
     "E214": "Unknown nullary constructor",
     "E215": "Constructor requires arguments",
+    "E216": "Empty tuple type",
     "E220": "Unresolved qualified call",
     "E230": "Module not found",
     "E231": "Function not imported from module",
@@ -495,6 +517,7 @@ ERROR_CODES: dict[str, str] = {
     "E320": "Unknown constructor in pattern",
     "E321": "Pattern constructor wrong arity",
     "E322": "Unknown nullary constructor in pattern",
+    "E323": "Empty tuple pattern",
     "E330": "Unknown effect in handler",
     "E331": "Handler state type mismatch",
     "E332": "Effect has no such operation",
@@ -541,6 +564,7 @@ ERROR_CODES: dict[str, str] = {
     "E615": "Cannot interpolate value of unknown type",
     "E616": "Cannot infer closure return type for call_indirect",
     "E617": "Refinement predicate not compilable to runtime guard",
+    "E618": "Nested refinement base unsupported",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

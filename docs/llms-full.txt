@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.187. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.188. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -2438,7 +2438,7 @@ For machine-parseable errors, use the `--json` flag:
       "source_line": "private fn add(@Int, @Int -> @Int)",
       "rationale": "Vera requires all functions to have explicit contracts...",
       "fix": "Add a contract block after the signature:\n\n  private fn example(@Int -> @Int)\n    requires(true)\n    ensures(@Int.result >= 0)\n    effects(pure)\n  {\n    ...\n  }",
-      "spec_ref": "Chapter 5, Section 5.1 \"Function Structure\"",
+      "spec_ref": "Chapter 5, Section 5.2 \"Function Declaration Syntax\"",
       "error_code": "E001"
     }
   ],
@@ -3090,6 +3090,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E131**: Result ref outside ensures
 - **E132**: Cyclic type alias
 - **E133**: Type alias arity mismatch
+- **E134**: Type does not take type arguments
 - **E140**: Arithmetic requires numeric operands
 - **E141**: Arithmetic requires matching numeric types
 - **E142**: Cannot compare incompatible types
@@ -3124,6 +3125,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E213**: Constructor field type mismatch
 - **E214**: Unknown nullary constructor
 - **E215**: Constructor requires arguments
+- **E216**: Empty tuple type
 - **E220**: Unresolved qualified call
 - **E230**: Module not found
 - **E231**: Function not imported from module
@@ -3141,6 +3143,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E320**: Unknown constructor in pattern
 - **E321**: Pattern constructor wrong arity
 - **E322**: Unknown nullary constructor in pattern
+- **E323**: Empty tuple pattern
 - **E330**: Unknown effect in handler
 - **E331**: Handler state type mismatch
 - **E332**: Effect has no such operation
@@ -3185,6 +3188,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E615**: Cannot interpolate value of unknown type
 - **E616**: Cannot infer closure return type for call_indirect
 - **E617**: Refinement predicate not compilable to runtime guard
+- **E618**: Nested refinement base unsupported
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs

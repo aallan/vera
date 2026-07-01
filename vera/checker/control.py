@@ -39,6 +39,10 @@ class ControlFlowMixin:
                     expr.condition,
                     f"If condition must be Bool, found "
                     f"{pretty_type(cond_ty)}.",
+                    rationale="The condition of an if-expression must have "
+                              "type Bool.",
+                    fix="Replace the condition with a Bool-typed expression, "
+                        "e.g. a comparison: if @Int.0 > 0 { ... } else { ... }.",
                     spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
                     error_code="E300",
                 )
@@ -88,6 +92,9 @@ class ControlFlowMixin:
             f"{pretty_type(else_ty)}.",
             rationale="Both branches of an if-expression must have "
                       "the same type.",
+            fix=f"Make both branches produce the same type: convert one "
+                f"branch to {pretty_type(else_ty)} (or both to a common "
+                f"type), so then and else agree.",
             spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
             error_code="E301",
         )
@@ -140,7 +147,10 @@ class ControlFlowMixin:
                         f"incompatible with previous arm type "
                         f"{pretty_type(result_type)}.",
                         rationale="All match arms must have the same type.",
-                        spec_ref='Chapter 4, Section 4.9 "Pattern Matching"',
+                        fix=f"Make this arm produce {pretty_type(result_type)} "
+                            f"to match the other arms (or change every arm to "
+                            f"a common type).",
+                        spec_ref='Chapter 4, Section 4.9 "Match Expressions"',
                         error_code="E302",
                     )
 
@@ -176,7 +186,7 @@ class ControlFlowMixin:
                     rationale="A wildcard or binding pattern already "
                     "matches all remaining values.",
                     fix="Remove this arm or move it before the catch-all.",
-                    spec_ref='Chapter 4, Section 4.9.3 "Unreachable Arms"',
+                    spec_ref='Chapter 4, Section 4.9.3 "Redundancy"',
                     error_code="E310",
                 )
             return  # catch-all guarantees exhaustiveness
@@ -203,8 +213,7 @@ class ControlFlowMixin:
                     rationale="All constructors of the matched type "
                     "must be covered.",
                     fix="Add a wildcard '_' arm or cover all cases.",
-                    spec_ref='Chapter 4, Section 4.9.2 '
-                    '"Exhaustiveness Checking"',
+                    spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
                     error_code="E311",
                 )
             return
@@ -228,8 +237,7 @@ class ControlFlowMixin:
                     f"{', '.join(missing_bools)}.",
                     rationale="Bool matches must cover both true and false.",
                     fix="Add a wildcard '_' arm or cover all cases.",
-                    spec_ref='Chapter 4, Section 4.9.2 '
-                    '"Exhaustiveness Checking"',
+                    spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
                     error_code="E312",
                 )
             return
@@ -243,8 +251,7 @@ class ControlFlowMixin:
             rationale="Matches on types with infinite values cannot "
             "enumerate all cases.",
             fix="Add a wildcard '_' arm or a binding pattern.",
-            spec_ref='Chapter 4, Section 4.9.2 '
-            '"Exhaustiveness Checking"',
+            spec_ref='Chapter 4, Section 4.9.2 "Exhaustiveness"',
             error_code="E313",
         )
 
@@ -280,8 +287,19 @@ class ControlFlowMixin:
 
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
-            self._error(pat, f"Unknown constructor '{pat.name}' in pattern.",
-                        severity="warning", error_code="E320")
+            self._error(
+                pat,
+                f"Unknown constructor '{pat.name}' in pattern.",
+                severity="warning",
+                rationale="A constructor pattern must name a constructor "
+                          "declared by an ADT's data declaration.",
+                fix=f"Declare '{pat.name}' as a constructor in a data "
+                    f"declaration, or use a constructor that exists on the "
+                    f"matched type (check the spelling and capitalisation).",
+                spec_ref='Chapter 2, Section 2.4 '
+                         '"Algebraic Data Types (ADTs)"',
+                error_code="E320",
+            )
             return []
 
         # Infer type args from expected type
@@ -300,6 +318,12 @@ class ControlFlowMixin:
                 pat,
                 f"Constructor '{pat.name}' has {len(field_types)} field(s), "
                 f"pattern has {len(pat.sub_patterns)} sub-pattern(s).",
+                rationale="A constructor pattern must supply exactly one "
+                          "sub-pattern per field of the constructor.",
+                fix=f"Give '{pat.name}' exactly {len(field_types)} "
+                    f"sub-pattern(s), one per field, e.g. "
+                    f"{pat.name}({', '.join('@T' for _ in field_types)}).",
+                spec_ref='Chapter 4, Section 4.9.1 "Patterns"',
                 error_code="E321",
             )
             return []
@@ -317,8 +341,13 @@ class ControlFlowMixin:
             self._error(
                 pat,
                 "Tuple pattern requires at least one field.",
+                rationale="A tuple type has at least one component, so a "
+                          "Tuple pattern must contain at least one "
+                          "sub-pattern.",
+                fix="Add one sub-pattern per tuple component, e.g. "
+                    "Tuple(@Int, @Bool) for a two-element tuple.",
                 spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
-                error_code="E320",
+                error_code="E323",
             )
             return []
         # Derive field types from expected Tuple type if available
@@ -336,8 +365,20 @@ class ControlFlowMixin:
         """Check a nullary constructor pattern."""
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
-            self._error(pat, f"Unknown constructor '{pat.name}' in pattern.",
-                        severity="warning", error_code="E322")
+            self._error(
+                pat,
+                f"Unknown constructor '{pat.name}' in pattern.",
+                severity="warning",
+                rationale="A nullary pattern must name a no-field "
+                          "constructor declared by an ADT's data "
+                          "declaration.",
+                fix=f"Declare '{pat.name}' as a constructor in a data "
+                    f"declaration, or use an existing constructor of the "
+                    f"matched type (check spelling and capitalisation).",
+                spec_ref='Chapter 2, Section 2.4 '
+                         '"Algebraic Data Types (ADTs)"',
+                error_code="E322",
+            )
         return []
 
     def _check_binding_pattern(self, pat: ast.BindingPattern,
@@ -363,6 +404,12 @@ class ControlFlowMixin:
             self._error(
                 expr.effect,
                 f"Unknown effect '{effect_inst.name}' in handler.",
+                rationale="A handler must name an effect that has been "
+                          "declared with an 'effect' declaration.",
+                fix=f"Declare '{effect_inst.name}' with an effect "
+                    f"declaration (effect {effect_inst.name} {{ op ...; }}) "
+                    f"or handle an effect that is in scope.",
+                spec_ref='Chapter 7, Section 7.5 "Effect Handlers"',
                 error_code="E330",
             )
             return UnknownType()
@@ -384,6 +431,13 @@ class ControlFlowMixin:
                         f"Handler state initial value has type "
                         f"{pretty_type(init_type)}, expected "
                         f"{pretty_type(state_type)}.",
+                        rationale="A handler's initial state value must have "
+                                  "the declared handler state type.",
+                        fix=f"Provide an initial value of type "
+                            f"{pretty_type(state_type)}, e.g. "
+                            f"handle[Eff](@{pretty_type(state_type)} = "
+                            f"<value>) {{ ... }}.",
+                        spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                         error_code="E331",
                     )
 
@@ -401,6 +455,14 @@ class ControlFlowMixin:
                     clause if hasattr(clause, 'span') else expr,
                     f"Effect '{eff_info.name}' has no operation "
                     f"'{clause.op_name}'.",
+                    rationale="Each handler clause must implement an "
+                              "operation declared by the handled effect.",
+                    fix=f"Rename the clause to one of '{eff_info.name}'s "
+                        f"declared operations "
+                        f"({', '.join(sorted(eff_info.operations)) or 'none'})"
+                        f", or add 'op {clause.op_name}(...)' to the effect "
+                        f"declaration.",
+                    spec_ref='Chapter 7, Section 7.5.1 "Handler Syntax"',
                     error_code="E332",
                 )
                 continue
@@ -441,6 +503,13 @@ class ControlFlowMixin:
                         clause,
                         "Handler clause has 'with' state update but "
                         "handler has no state declaration.",
+                        rationale="A 'with' state update may only appear in a "
+                                  "handler that declares state to update.",
+                        fix="Declare handler state, e.g. "
+                            "handle[Eff](@Int = 0) { ... }, or remove the "
+                            "'with' clause from this operation.",
+                        spec_ref='Chapter 7, Section 7.5.2 '
+                                 '"Handler Semantics"',
                         error_code="E333",
                     )
                 else:
@@ -451,6 +520,12 @@ class ControlFlowMixin:
                             f"State update type '{upd_slot}' does not "
                             f"match handler state type "
                             f"'{state_tname_outer}'.",
+                            rationale="A 'with' state update must target the "
+                                      "handler's declared state type.",
+                            fix=f"Update the declared state type instead: "
+                                f"with @{state_tname_outer} = <expr>.",
+                            spec_ref='Chapter 7, Section 7.5.2 '
+                                     '"Handler Semantics"',
                             error_code="E334",
                         )
                     upd_type = self._synth_expr(upd_expr)
@@ -462,6 +537,14 @@ class ControlFlowMixin:
                             f"State update expression has type "
                             f"{pretty_type(upd_type)}, expected "
                             f"{pretty_type(state_type)}.",
+                            rationale="The value assigned by a 'with' state "
+                                      "update must have the handler's declared "
+                                      "state type.",
+                            fix=f"Make the update expression evaluate to "
+                                f"{pretty_type(state_type)} (convert it or use "
+                                f"a {pretty_type(state_type)}-typed value).",
+                            spec_ref='Chapter 7, Section 7.5.2 '
+                                     '"Handler Semantics"',
                             error_code="E335",
                         )
 

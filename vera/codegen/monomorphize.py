@@ -222,6 +222,17 @@ class MonomorphizationMixin:
                         f"support {constraint.ability_name}."
                     ),
                     location=SourceLocation(file=self.file),
+                    rationale=(
+                        "A monomorphized generic instantiates each type "
+                        "parameter with a concrete type that must satisfy the "
+                        "parameter's ability bounds; this type does not."
+                    ),
+                    fix=(
+                        f"Instantiate the generic with a type that supports "
+                        f"'{constraint.ability_name}', or derive the ability "
+                        f"for '{concrete}'."
+                    ),
+                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     severity="error",
                     error_code="E613",
                 ))
@@ -233,6 +244,15 @@ class MonomorphizationMixin:
                         f"supported for code generation."
                     ),
                     location=SourceLocation(file=self.file),
+                    rationale=(
+                        "Code generation implements a fixed set of built-in "
+                        "abilities; this ability has no compilation support."
+                    ),
+                    fix=(
+                        "Constrain the type parameter with a built-in ability "
+                        "(Eq, Ord, Hash, or Show) instead."
+                    ),
+                    spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     severity="error",
                     error_code="E613",
                 ))

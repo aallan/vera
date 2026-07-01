@@ -241,7 +241,23 @@ class ExpressionsMixin:
             return self._check_old_expr(expr)
         if isinstance(expr, ast.NewExpr):
             return self._check_new_expr(expr)
-        self._error(expr, f"Unknown expression type: {type(expr).__name__}", error_code="E176")
+        self._error(
+            expr,
+            f"Unknown expression type: {type(expr).__name__}",
+            rationale=(
+                "The type checker reached an expression form it does not "
+                "recognise; only the expression forms defined by the language "
+                "may appear here."
+            ),
+            fix=(
+                "Rewrite the expression using a supported form (literal, slot "
+                "reference, operator, call, if/match, block, or quantifier). If "
+                "this is valid Vera, it signals a compiler bug — please report "
+                "it."
+            ),
+            spec_ref='Chapter 4, Section 4.1 "Overview"',
+            error_code="E176",
+        )
         return None
 
     # -----------------------------------------------------------------
@@ -283,6 +299,17 @@ class ExpressionsMixin:
                     f"automatically converted to String in string "
                     f"interpolation. Only String, Int, Nat, Bool, "
                     f"Byte, and Float64 are supported.",
+                    rationale=(
+                        "An interpolated expression must be String or a "
+                        "primitive with a built-in string conversion; other "
+                        "types have no automatic rendering."
+                    ),
+                    fix=(
+                        "Convert the value to String before interpolating, e.g. "
+                        "call a *_to_string builtin or wrap it in an explicit "
+                        "conversion that yields String."
+                    ),
+                    spec_ref='Chapter 4, Section 4.13.1 "String Interpolation"',
                     error_code="E148",
                 )
         return STRING
@@ -326,7 +353,7 @@ class ExpressionsMixin:
                           "return value, which is only meaningful in "
                           "postcondition context.",
                 fix="Move the @T.result reference inside an ensures() clause.",
-                spec_ref='Chapter 3, Section 3.6 "The @result Reference"',
+                spec_ref='Chapter 3, Section 3.6 "The `@result` Reference"',
                 error_code="E131",
             )
             return UnknownType()
@@ -367,7 +394,12 @@ class ExpressionsMixin:
                     f"{pretty_type(left_ty)} and {pretty_type(right_ty)}.",
                     rationale="Arithmetic operators work on Int, Nat, or "
                               "Float64.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    fix=(
+                        f"Apply '{op.value}' to numeric operands (Int, Nat, or "
+                        "Float64); convert any non-numeric operand to a numeric "
+                        "type first."
+                    ),
+                    spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                     error_code="E140",
                 )
                 return UnknownType()
@@ -382,7 +414,12 @@ class ExpressionsMixin:
                 f"found {pretty_type(left_ty)} and {pretty_type(right_ty)}.",
                 rationale="Both operands must be the same numeric type "
                           "(or Nat where Int is expected).",
-                spec_ref='Chapter 4, Section 4.3 "Operators"',
+                fix=(
+                    "Make both operands the same numeric type. Vera has no "
+                    "implicit numeric coercion — e.g. convert the Int operand "
+                    "to Float64 (or vice versa) so both sides match."
+                ),
+                spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                 error_code="E141",
             )
             return UnknownType()
@@ -398,7 +435,12 @@ class ExpressionsMixin:
                     f"Cannot compare {pretty_type(left_ty)} with "
                     f"{pretty_type(right_ty)}.",
                     rationale="Equality comparison requires compatible types.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    fix=(
+                        "Compare values of the same type. One must be a subtype "
+                        "of the other — convert one operand so both sides share "
+                        "a type before applying '==' or '!='."
+                    ),
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E142",
                 )
             return BOOL
@@ -413,7 +455,17 @@ class ExpressionsMixin:
                     f"Operator '{op.value}' requires orderable operands, "
                     f"found {pretty_type(left_ty)} and "
                     f"{pretty_type(right_ty)}.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    rationale=(
+                        "Ordering operators (<, >, <=, >=) are defined only on "
+                        "orderable types — the numeric types and other types "
+                        "with a total order."
+                    ),
+                    fix=(
+                        f"Apply '{op.value}' to orderable operands (e.g. Int, "
+                        "Nat, Float64); a non-orderable type must be reduced to "
+                        "an orderable value before comparing."
+                    ),
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E143",
                 )
             elif not (is_subtype(left_base, right_base)
@@ -429,7 +481,12 @@ class ExpressionsMixin:
                     f"Cannot compare {pretty_type(left_ty)} with "
                     f"{pretty_type(right_ty)}.",
                     rationale="Ordering comparison requires compatible types.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    fix=(
+                        "Order values of the same type. Vera has no implicit "
+                        "numeric coercion — convert one operand (e.g. Int to "
+                        "Float64) so both sides share a type before comparing."
+                    ),
+                    spec_ref='Chapter 4, Section 4.5 "Comparison Expressions"',
                     error_code="E142",
                 )
             return BOOL
@@ -443,7 +500,15 @@ class ExpressionsMixin:
                     expr,
                     f"Left operand of '{op.value}' must be Bool, found "
                     f"{pretty_type(left_ty)}.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    rationale=(
+                        "Logical operators (&&, ||, ==>) combine Bool values; "
+                        "their left operand must already be Bool."
+                    ),
+                    fix=(
+                        "Make the left operand a Bool — e.g. compare it to a "
+                        f"value to yield a Bool before applying '{op.value}'."
+                    ),
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E144",
                 )
             if not is_subtype(right_base, BOOL):
@@ -451,7 +516,15 @@ class ExpressionsMixin:
                     expr,
                     f"Right operand of '{op.value}' must be Bool, found "
                     f"{pretty_type(right_ty)}.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    rationale=(
+                        "Logical operators (&&, ||, ==>) combine Bool values; "
+                        "their right operand must already be Bool."
+                    ),
+                    fix=(
+                        "Make the right operand a Bool — e.g. compare it to a "
+                        f"value to yield a Bool before applying '{op.value}'."
+                    ),
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E145",
                 )
             return BOOL
@@ -502,7 +575,15 @@ class ExpressionsMixin:
                     expr,
                     f"Operator '!' requires Bool operand, found "
                     f"{pretty_type(operand_ty)}.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    rationale=(
+                        "Logical negation '!' is defined only on Bool; it has "
+                        "no meaning for non-Bool operands."
+                    ),
+                    fix=(
+                        "Apply '!' to a Bool — e.g. negate a comparison or a "
+                        "predicate that already yields Bool."
+                    ),
+                    spec_ref='Chapter 4, Section 4.6 "Logical Expressions"',
                     error_code="E146",
                 )
             return BOOL
@@ -513,7 +594,15 @@ class ExpressionsMixin:
                     expr,
                     f"Operator '-' requires numeric operand, found "
                     f"{pretty_type(operand_ty)}.",
-                    spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    rationale=(
+                        "Unary negation '-' is defined only on the numeric "
+                        "types (Int, Nat, Float64)."
+                    ),
+                    fix=(
+                        "Apply '-' to a numeric operand; convert a non-numeric "
+                        "value to Int, Nat, or Float64 before negating it."
+                    ),
+                    spec_ref='Chapter 4, Section 4.4 "Arithmetic Expressions"',
                     error_code="E147",
                 )
                 return UnknownType()
@@ -582,7 +671,15 @@ class ExpressionsMixin:
                         expr.index,
                         f"Array index must be Int or Nat, found "
                         f"{pretty_type(idx_ty)}.",
-                        spec_ref='Chapter 4, Section 4.4 "Array Access"',
+                        rationale=(
+                            "Array elements are addressed by integer position, "
+                            "so the index expression must be an Int or Nat."
+                        ),
+                        fix=(
+                            "Use an Int or Nat index — convert the index "
+                            "expression to an integer type before indexing."
+                        ),
+                        spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
                         error_code="E160",
                     )
             return elem_type
@@ -591,7 +688,16 @@ class ExpressionsMixin:
             expr.collection,
             f"Cannot index {pretty_type(coll_ty)}: indexing requires "
             f"Array<T>.",
-            spec_ref='Chapter 4, Section 4.4 "Array Access"',
+            rationale=(
+                "The index operator [] is defined only on Array<T>; other "
+                "types have no positional element access."
+            ),
+            fix=(
+                "Index an Array<T> value. If the collection is not an array, "
+                "obtain its elements another way (e.g. pattern-match an ADT or "
+                "use a built-in accessor)."
+            ),
+            spec_ref='Chapter 4, Section 4.12.2 "Array Indexing"',
             error_code="E161",
         )
         return UnknownType()
@@ -631,7 +737,16 @@ class ExpressionsMixin:
                         stmt.value,
                         f"Let binding expects {pretty_type(declared_type)}, "
                         f"value has type {pretty_type(val_type)}.",
-                        spec_ref='Chapter 4, Section 4.5 "Let Bindings"',
+                        rationale=(
+                            "A let binding's value must be a subtype of the "
+                            "binding's declared type."
+                        ),
+                        fix=(
+                            f"Give the value type {pretty_type(declared_type)}, "
+                            "or change the binding's declared type to match the "
+                            f"value's type {pretty_type(val_type)}."
+                        ),
+                        spec_ref='Chapter 4, Section 4.7 "Let Bindings"',
                         error_code="E170",
                     )
 
@@ -672,7 +787,16 @@ class ExpressionsMixin:
                     f"Anonymous function body has type "
                     f"{pretty_type(body_type)}, expected "
                     f"{pretty_type(ret_type)}.",
-                    spec_ref='Chapter 5, Section 5.7 "Anonymous Functions"',
+                    rationale=(
+                        "An anonymous function's body must produce a value that "
+                        "is a subtype of its declared return type."
+                    ),
+                    fix=(
+                        f"Make the body yield {pretty_type(ret_type)}, or change "
+                        "the closure's declared return type to "
+                        f"{pretty_type(body_type)}."
+                    ),
+                    spec_ref='Chapter 5, Section 5.7 "Anonymous Functions (Closures)"',
                     error_code="E171",
                 )
 
@@ -763,7 +887,7 @@ class ExpressionsMixin:
                 "bindings so the hole can be filled in."
             ),
             fix=fix_hint,
-            spec_ref='Chapter 3, Section 3.10 "Typed Holes"',
+            spec_ref='Chapter 4, Section 4.17 "Typed Holes"',
             severity="warning",
             error_code="W001",
         )
@@ -781,7 +905,15 @@ class ExpressionsMixin:
                 self._error(
                     expr.expr,
                     f"assert() requires Bool, found {pretty_type(ty)}.",
-                    spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
+                    rationale=(
+                        "assert() states a condition to be verified, so its "
+                        "argument must be a Bool predicate."
+                    ),
+                    fix=(
+                        "Pass a Bool condition to assert() — e.g. compare the "
+                        "value or call a predicate that returns Bool."
+                    ),
+                    spec_ref='Chapter 6, Section 6.2.5 "Assertions (`assert`)"',
                     error_code="E172",
                 )
         return UNIT
@@ -794,7 +926,15 @@ class ExpressionsMixin:
                 self._error(
                     expr.expr,
                     f"assume() requires Bool, found {pretty_type(ty)}.",
-                    spec_ref='Chapter 6, Section 6.2.6 "Assumptions"',
+                    rationale=(
+                        "assume() introduces a condition the verifier may take "
+                        "as given, so its argument must be a Bool predicate."
+                    ),
+                    fix=(
+                        "Pass a Bool condition to assume() — e.g. compare the "
+                        "value or call a predicate that returns Bool."
+                    ),
+                    spec_ref='Chapter 6, Section 6.2.6 "Assumptions (`assume`)"',
                     error_code="E173",
                 )
         return UNIT
@@ -827,6 +967,12 @@ class ExpressionsMixin:
             self._error(
                 expr,
                 "old() is only valid inside ensures() clauses.",
+                rationale=(
+                    "old() snapshots effect state from before the call, which "
+                    "is only meaningful in a postcondition that relates "
+                    "before- and after-states."
+                ),
+                fix="Move the old() expression inside an ensures() clause.",
                 spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
                 error_code="E174",
             )
@@ -841,6 +987,12 @@ class ExpressionsMixin:
             self._error(
                 expr,
                 "new() is only valid inside ensures() clauses.",
+                rationale=(
+                    "new() snapshots effect state from after the call, which "
+                    "is only meaningful in a postcondition that relates "
+                    "before- and after-states."
+                ),
+                fix="Move the new() expression inside an ensures() clause.",
                 spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
                 error_code="E175",
             )

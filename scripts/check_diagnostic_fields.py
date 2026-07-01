@@ -1,0 +1,555 @@
+#!/usr/bin/env python3
+"""Diagnostic-field enforcement script (#682).
+
+`spec/00-introduction.md` §0.5.1 ("Diagnostic Structure") says every
+diagnostic MUST include an error code, a description, a rationale, a
+fix, and a spec reference.  "Diagnostics as instructions" is a core
+differentiator (DESIGN.md §"Checkability"), so this is a load-bearing
+claim — yet the `Diagnostic` dataclass defaults `rationale`/`fix`/
+`spec_ref`/`error_code` to `""`, so a partially-tagged diagnostic
+compiles and ships silently.
+
+This script makes "is every diagnostic fully tagged?" a mechanically
+checkable contract, mirroring `scripts/check_walker_coverage.py`
+(#597).  It AST-parses every `Diagnostic(...)` constructor and every
+`self._error(...)` / `self._warning(...)` call under `vera/` and fails
+if a required field is missing.  It also validates that every present
+`spec_ref` resolves to a real spec section/chapter and that every
+literal `error_code` is *registered* in `vera/errors.py` `ERROR_CODES`
+(a cheap emission-side check; making each code *unique* per concept and
+enforcing error_code presence are tracked in #828).
+
+Design — explicit over implicit (DESIGN.md §"Explicitness over
+convenience"; no silently-inferred exemptions):
+
+- **Required by default:** ``rationale``, ``fix``, ``spec_ref`` on every
+  site (the three content fields of spec §0.5.1, per #682's acceptance
+  criteria; ``error_code`` enforcement is a tracked follow-up).  A field
+  counts as present if its kwarg is a non-empty string literal, or any
+  non-constant expression (a variable / f-string / concatenation
+  threading the value through).
+- **Severity rule:** a ``warning`` carries no corrected-code template,
+  so ``fix`` is not required of warning-severity diagnostics.
+- **Structural registry (`STRUCTURAL_EXEMPTIONS`):** the codegen
+  ``_error`` / ``_warning`` helpers build internal-compiler (E699) and
+  "function skipped" limitation diagnostics that have no user-facing
+  fix or spec section.  These are exempt from ``fix`` / ``spec_ref`` —
+  declared *once*, with a written reason, here.  A new helper or a new
+  direct ``Diagnostic(...)`` defaults to fully-required until added.
+- **Per-call opt-out:** ``# diag-fields-exempt: <reason>`` on the call,
+  the reason mandatory — for one-off defensive / internal branches
+  (e.g. an "unknown expression type" fallback).  A marker without a
+  reason is itself a violation.  (A dedicated token, not a ruff-style
+  suppression comment — see ``OPT_OUT`` below for why.)
+- **Plumbing skip:** the ``Diagnostic(...)`` construction *inside* an
+  ``_error`` / ``_warning`` helper def is not an independent site — its
+  call sites plus the registry govern it.
+
+Usage:
+    python scripts/check_diagnostic_fields.py   # exit 0 if all sites
+                                                # fully tagged; 1 + a
+                                                # report otherwise.
+
+Wired into pre-commit and the CI lint job so a new under-tagged
+diagnostic added to `vera/` is rejected at the door.
+"""
+
+from __future__ import annotations
+
+import ast
+import io
+import re
+import sys
+import tokenize
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Iterator
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Fields this gate enforces — items 3/4/5 of spec §0.5.1 (rationale, fix,
+# spec_ref), matching issue #682's acceptance criteria.  Description (item 2)
+# is a mandatory dataclass field, always structurally present.  error_code
+# (item 1) is near-universal already; enforcing it — plus the handful of
+# codeless sites and the error_code/registry-name mismatches — is a tracked
+# follow-up, deliberately out of this gate's scope.
+REQUIRED_FIELDS = ("rationale", "fix", "spec_ref")
+
+# Per-call opt-out marker.  Deliberately a dedicated token rather than a
+# ruff-style suppression comment (issue #682's first suggestion): ruff claims
+# every "noqa"-prefixed comment as its own directive and warns on an unknown
+# code there, and a near-miss spelling would read to it as a blanket
+# suppression.  A distinct token sidesteps the linter collision entirely.
+OPT_OUT = "# diag-fields-exempt"
+
+# (file-family, helper-method) -> (exempt fields, reason).  The codegen
+# helpers' Diagnostic construction omits these by design; the diagnostic
+# class genuinely has no such content.  Declared here so the exemption
+# surface is explicit and reviewable rather than inferred from helper
+# signatures.  (Warning-severity `fix` exemption is handled generally by
+# the severity rule, not per-entry.)
+STRUCTURAL_EXEMPTIONS: dict[tuple[str, str], tuple[set[str], str]] = {
+    ("codegen", "_error"): (
+        {"fix", "spec_ref"},
+        "E699 internal-compiler errors: the type checker should have "
+        "rejected the input before codegen; no user-facing fix or spec "
+        "section exists.",
+    ),
+    ("codegen", "_warning"): (
+        {"fix", "spec_ref"},
+        "codegen 'function skipped' limitation warnings: report an "
+        "unsupported-feature limitation, not a user error; no single "
+        "corrected-code fix or spec section applies.",
+    ),
+}
+
+
+@dataclass
+class Violation:
+    file: str
+    line: int
+    target: str           # "_error" | "_warning" | "Diagnostic"
+    missing: list[str]
+    snippet: str | None
+
+
+def family(filename: str) -> str:
+    """Map a file path to its diagnostic-helper family."""
+    s = filename.replace("\\", "/")
+    if "/checker/" in s or s.endswith("/checker.py"):
+        return "checker"
+    if "verifier" in s:
+        return "verifier"
+    if "/codegen/" in s:
+        return "codegen"
+    return "other"
+
+
+def _field_present(call: ast.Call, name: str) -> bool:
+    """A field is present if its kwarg is a non-empty string literal, or
+    any non-constant expression (variable / f-string / concatenation
+    threading the value through)."""
+    for kw in call.keywords:
+        if kw.arg != name:
+            continue
+        v = kw.value
+        if isinstance(v, ast.Constant):
+            return isinstance(v.value, str) and v.value.strip() != ""
+        return True  # Name / JoinedStr / Call / BinOp(concat) → threaded
+    return False
+
+
+def _optout_lines(source: str) -> dict[int, str]:
+    """Map a line number to its opt-out reason, but ONLY where the marker
+    appears in a real ``COMMENT`` token — never inside a string literal or
+    other source text.  (A raw line scan would let a diagnostic whose
+    *description* merely contains the marker text silently exempt itself.)
+    The reason is "" when the marker carries none (itself a violation)."""
+    out: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type != tokenize.COMMENT:
+                continue
+            text = tok.string.strip()
+            # Anchored directive only: the comment must BE the marker, or the
+            # marker immediately followed by ':' or whitespace.  A comment that
+            # merely mentions the marker mid-text, or a near-miss like
+            # `# diag-fields-exempt-foo`, must NOT disable the gate.
+            if text == OPT_OUT:
+                out[tok.start[0]] = ""
+            elif text.startswith(OPT_OUT) and (
+                    text[len(OPT_OUT)] == ":" or text[len(OPT_OUT)].isspace()):
+                # Boundary char is ':' or ANY whitespace (space, tab, …) — the
+                # trailing .strip() then drops it whatever it was.
+                out[tok.start[0]] = text[len(OPT_OUT):].lstrip(" :").strip()
+    except (tokenize.TokenError, IndentationError):
+        pass
+    return out
+
+
+def check_source(source: str, filename: str) -> list[Violation]:
+    """Return every under-tagged diagnostic site in one source string."""
+    tree = ast.parse(source, filename=filename)
+    src_lines = source.splitlines()
+    fam = family(filename)
+
+    # Spans of _error/_warning helper *definitions* — Diagnostic()
+    # constructions inside them are plumbing, not independent sites.
+    helper_spans: list[tuple[int, int]] = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                n.name in ("_error", "_warning"):
+            helper_spans.append((n.lineno, n.end_lineno or n.lineno))
+
+    def inside_helper(lineno: int) -> bool:
+        return any(a <= lineno <= b for a, b in helper_spans)
+
+    optout = _optout_lines(source)
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id == "Diagnostic":
+            if inside_helper(node.lineno):
+                continue  # plumbing
+            target = "Diagnostic"
+            method = None
+            severity = "error"
+            sev_kws = [kw for kw in node.keywords if kw.arg == "severity"]
+            if sev_kws:
+                sev_val = sev_kws[0].value
+                if isinstance(sev_val, ast.Constant) and isinstance(sev_val.value, str):
+                    severity = sev_val.value
+                else:
+                    # A non-literal severity (e.g. `severity=level`) can't be
+                    # resolved statically — the gate can't tell error from
+                    # warning and would silently fall back to "error" and
+                    # demand a `fix`.  Flag it rather than guess.
+                    snip = (src_lines[node.lineno - 1]
+                            if node.lineno - 1 < len(src_lines) else None)
+                    violations.append(Violation(
+                        filename, node.lineno, "Diagnostic",
+                        ["severity is not a string literal — the gate cannot "
+                         "tell error from warning; make it a literal"], snip))
+                    continue
+        elif isinstance(f, ast.Attribute) and f.attr in ("_error", "_warning"):
+            target = method = f.attr
+            severity = "error" if f.attr == "_error" else "warning"
+        else:
+            continue
+
+        snippet = src_lines[node.lineno - 1] if node.lineno - 1 < len(src_lines) else None
+
+        # Per-call opt-out: a `# diag-fields-exempt[: reason]` COMMENT on any of
+        # the call's source lines suppresses it (a missing reason is itself a
+        # violation).  Comment-only — a marker inside a string does not count.
+        opt_reason = next(
+            (optout[ln] for ln in range(node.lineno,
+                                        (node.end_lineno or node.lineno) + 1)
+             if ln in optout),
+            None)
+        if opt_reason is not None:
+            if opt_reason == "":
+                violations.append(Violation(
+                    filename, node.lineno, target, ["<opt-out reason>"], snippet))
+            continue  # opt-out with a reason suppresses the site
+
+        required = set(REQUIRED_FIELDS)
+        if severity == "warning":
+            required.discard("fix")
+        if method is not None:
+            exempt, _why = STRUCTURAL_EXEMPTIONS.get((fam, method), (set(), ""))
+            required -= exempt
+
+        missing = sorted(fld for fld in required if not _field_present(node, fld))
+        if missing:
+            violations.append(Violation(filename, node.lineno, target, missing, snippet))
+    return violations
+
+
+def iter_vera_files(root: Path) -> list[Path]:
+    return sorted(root.rglob("*.py"))
+
+
+def check_paths(paths: Iterable[Path]) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(check_source(p.read_text(encoding="utf-8"), rel))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# spec_ref validity.  A *present* spec_ref must also cite a real spec section
+# (or chapter) whose title matches — otherwise it is a misleading instruction,
+# exactly the failure the diagnostics-as-instructions claim cannot afford.
+# Title comparison is lenient (case, backticks, and parentheticals ignored) so
+# a cosmetic spec re-title doesn't break the gate, while a wrong section (right
+# number, wrong rule — e.g. citing §4.3 "Operators" when §4.3 is "Slot
+# References") still fails.
+# ---------------------------------------------------------------------------
+
+_REF_SEC = re.compile(r'Chapter\s+(\d+),\s+Section\s+([\d.]+)\s+"([^"]+)"')
+_REF_CH = re.compile(r'^Chapter\s+(\d+),\s+"([^"]+)"\s*$')
+_HEAD = re.compile(r'^#{1,6}\s+(\d+(?:\.\d+)*)\.?\s+(.+?)\s*$')
+_CH_PREFIX = re.compile(r'^Chapter\s+\d+\s*[:—.\-]\s*')
+# Cache keyed by *resolved* spec directory — a later call with a different
+# spec_dir (e.g. a test fixture) must not reuse another directory's map.
+_spec_cache: dict[Path, tuple[dict[str, str], dict[str, str]]] = {}
+
+
+def _load_spec(spec_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ({section-number: title}, {chapter-number: chapter-title})."""
+    key = spec_dir.resolve()
+    cached = _spec_cache.get(key)
+    if cached is not None:
+        return cached
+    sections: dict[str, str] = {}
+    chapters: dict[str, str] = {}
+    for md in sorted(spec_dir.glob("*.md")):
+        cm = re.match(r"^(\d+)-", md.name)
+        cnum = (cm.group(1).lstrip("0") or "0") if cm else None
+        first_h1: str | None = None
+        for line in md.read_text(encoding="utf-8").splitlines():
+            h1 = re.match(r"^#\s+(.+?)\s*$", line)
+            if h1 and first_h1 is None:
+                first_h1 = h1.group(1).strip()
+            m = _HEAD.match(line)
+            if m:
+                sections[m.group(1)] = m.group(2).strip()
+        if cnum is not None and first_h1 is not None:
+            chapters[cnum] = _CH_PREFIX.sub("", first_h1).strip()
+    _spec_cache[key] = (sections, chapters)
+    return _spec_cache[key]
+
+
+def _norm(s: str) -> str:
+    s = s.lower().replace("`", "")
+    s = re.sub(r"\([^)]*\)", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _iter_spec_refs(
+    source: str, filename: str,
+) -> Iterator[tuple[int, str | None, str | None]]:
+    """Yield (lineno, ref_text_or_None, snippet) for each spec_ref argument.
+
+    ``ref_text`` is the literal string for a constant spec_ref; ``None`` marks
+    a *non-literal* spec_ref (a variable / f-string / concatenation) that the
+    gate cannot resolve to a spec section and so flags — mirroring how a
+    non-literal ``severity`` is rejected in ``check_source``.  Empty / blank /
+    non-string constant spec_refs are skipped here: the presence check owns
+    "missing".  Diagnostic() plumbing inside the _error/_warning helper defs is
+    skipped — its call sites plus the registry govern it."""
+    tree = ast.parse(source, filename=filename)
+    src_lines = source.splitlines()
+    helper_spans = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in ("_error", "_warning")
+    ]
+
+    def inside_helper(lineno: int) -> bool:
+        return any(a <= lineno <= b for a, b in helper_spans)
+
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        is_ctor = isinstance(f, ast.Name) and f.id == "Diagnostic"
+        is_helper = (isinstance(f, ast.Attribute)
+                     and f.attr in ("_error", "_warning"))
+        if not (is_ctor or is_helper):
+            continue
+        if is_ctor and inside_helper(n.lineno):
+            continue  # plumbing
+        for kw in n.keywords:
+            if kw.arg != "spec_ref":
+                continue
+            v = kw.value
+            ln = v.lineno
+            snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
+            if isinstance(v, ast.Constant):
+                if isinstance(v.value, str) and v.value.strip():
+                    yield ln, v.value, snip
+                # empty / None / non-str literal → presence check owns "missing"
+            else:
+                yield ln, None, snip  # non-literal: unresolvable, flag it
+
+
+def spec_ref_violations_in_source(source: str, filename: str,
+                                  spec_dir: Path | None = None) -> list[Violation]:
+    """Flag every spec_ref in one source that does not resolve to a real spec
+    section/chapter with a matching (normalized) title."""
+    sections, chapters = _load_spec(spec_dir or (ROOT / "spec"))
+    out: list[Violation] = []
+    for ln, ref, snip in _iter_spec_refs(source, filename):
+        if ref is None:
+            out.append(Violation(
+                filename, ln, "spec_ref",
+                ["spec_ref is not a string literal — the gate cannot validate "
+                 "it against the spec; make it a literal"], snip))
+            continue
+        why: str | None = None
+        sec_matches = list(_REF_SEC.finditer(ref))
+        if sec_matches:
+            # A spec_ref may cite SEVERAL sections (e.g. `§4.7 "Let Bindings"
+            # and §11.2.1 "Nat as i64"`).  Validate EVERY citation, not just the
+            # first — a wrong/bogus later citation is just as misleading and
+            # must not ship silently.
+            for m in sec_matches:
+                chap, sec, title = m.group(1), m.group(2), m.group(3)
+                actual = sections.get(sec)
+                if actual is None:
+                    why = f"cites §{sec}, which does not exist in the spec"
+                elif _norm(actual) != _norm(title):
+                    why = f'cites §{sec} as "{title}" but it is "{actual}"'
+                elif not (sec == chap or sec.startswith(chap + ".")):
+                    why = f"§{sec} is not in Chapter {chap}"
+                if why is not None:
+                    break
+            # Reject stray non-citation text (e.g. a `LIES ` prefix): once the
+            # citations and their joiners (commas / "and" / whitespace) are
+            # stripped, nothing should remain.  `.finditer` alone would tolerate
+            # garbage around an otherwise-valid citation.
+            if why is None:
+                residue = re.sub(r"\band\b|[,\s]+", "", _REF_SEC.sub("", ref))
+                if residue:
+                    why = ("spec_ref has unrecognised text around its "
+                           f"citation(s): {ref!r}")
+        else:
+            mc = _REF_CH.match(ref)
+            if not mc:
+                why = f"unrecognised spec_ref format: {ref!r}"
+            else:
+                chap, title = mc.group(1), mc.group(2)
+                actual = chapters.get(chap)
+                if actual is None or _norm(actual) != _norm(title):
+                    why = f'Chapter {chap} is "{actual}", not "{title}"'
+        if why is not None:
+            out.append(Violation(filename, ln, "spec_ref", [why], snip))
+    return out
+
+
+def spec_ref_violations(paths: Iterable[Path],
+                        spec_dir: Path | None = None) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(spec_ref_violations_in_source(
+            p.read_text(encoding="utf-8"), rel, spec_dir))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# error_code registration.  A cheap, deterministic *emission-side* check: every
+# literal error_code on a diagnostic must exist in vera/errors.py ERROR_CODES.
+# Catches typos and unregistered codes.  It does NOT detect collisions (one
+# registered code reused for two unrelated concepts) — that needs the semantic /
+# structural work tracked in #828.  error_code *presence* stays deferred (#828);
+# this only validates a code that IS present as a literal.
+# ---------------------------------------------------------------------------
+
+
+def _load_error_codes(errors_py: Path) -> set[str]:
+    """Extract the registered code keys from `vera/errors.py` ERROR_CODES."""
+    tree = ast.parse(errors_py.read_text(encoding="utf-8"),
+                     filename=str(errors_py))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if (any(isinstance(t, ast.Name) and t.id == "ERROR_CODES"
+                for t in targets)
+                and isinstance(node.value, ast.Dict)):
+            return {
+                str(k.value) for k in node.value.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+    return set()
+
+
+def _diagnostic_call_sites(source: str, filename: str) -> Iterator[ast.Call]:
+    """Yield each Diagnostic() / ._error() / ._warning() Call node, skipping the
+    plumbing Diagnostic() construction inside an _error/_warning helper def."""
+    tree = ast.parse(source, filename=filename)
+    helper_spans = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in ("_error", "_warning")
+    ]
+
+    def inside_helper(lineno: int) -> bool:
+        return any(a <= lineno <= b for a, b in helper_spans)
+
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        is_ctor = isinstance(f, ast.Name) and f.id == "Diagnostic"
+        is_helper = (isinstance(f, ast.Attribute)
+                     and f.attr in ("_error", "_warning"))
+        if not (is_ctor or is_helper):
+            continue
+        if is_ctor and inside_helper(n.lineno):
+            continue
+        yield n
+
+
+def error_code_registration_violations_in_source(
+    source: str, filename: str, registry: set[str],
+) -> list[Violation]:
+    """Flag any *literal* error_code on a diagnostic that is not in ERROR_CODES.
+    Non-literal (threaded) codes are skipped — they cannot be checked
+    statically."""
+    src_lines = source.splitlines()
+    out: list[Violation] = []
+    for call in _diagnostic_call_sites(source, filename):
+        for kw in call.keywords:
+            if kw.arg != "error_code":
+                continue
+            v = kw.value
+            if (isinstance(v, ast.Constant) and isinstance(v.value, str)
+                    and v.value and v.value not in registry):
+                ln = v.lineno
+                snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
+                out.append(Violation(
+                    filename, ln, "error_code",
+                    [f"emits unregistered error_code {v.value!r} — add it to "
+                     f"ERROR_CODES in vera/errors.py"], snip))
+    return out
+
+
+def error_code_registration_violations(
+    paths: Iterable[Path], registry: set[str],
+) -> list[Violation]:
+    out: list[Violation] = []
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        out.extend(error_code_registration_violations_in_source(
+            p.read_text(encoding="utf-8"), rel, registry))
+    return out
+
+
+def main() -> int:
+    files = iter_vera_files(ROOT / "vera")
+    presence = check_paths(files)
+    validity = spec_ref_violations(files)
+    registry = _load_error_codes(ROOT / "vera" / "errors.py")
+    codes = error_code_registration_violations(files, registry)
+    violations = presence + validity + codes
+    if not violations:
+        print("check_diagnostic_fields: OK — every diagnostic is fully tagged, "
+              "every spec_ref resolves, and every error_code is registered.")
+        return 0
+    by_file: dict[str, list[Violation]] = {}
+    for v in violations:
+        by_file.setdefault(v.file, []).append(v)
+    print(f"check_diagnostic_fields: {len(violations)} problem(s) in "
+          f"{len(by_file)} file(s).\n")
+    print("Every diagnostic MUST carry rationale + spec_ref, and an error-"
+          "severity one a fix too (warnings are fix-exempt) — spec §0.5.1; the "
+          "spec_ref must also resolve to a real section/chapter, and any "
+          "error_code must be registered in vera/errors.py ERROR_CODES.")
+    print("Populate the missing field(s) / fix the spec_ref / register the "
+          "error_code, or add `# diag-fields-exempt: <reason>` for a genuinely "
+          "fix-less internal/defensive site.\n")
+    for fname in sorted(by_file):
+        print(f"  {fname}")
+        for v in sorted(by_file[fname], key=lambda x: x.line):
+            if v.target in ("spec_ref", "error_code"):
+                print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
+            else:
+                print(f"    line {v.line:<5} {v.target:<11} missing: "
+                      f"{', '.join(v.missing)}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

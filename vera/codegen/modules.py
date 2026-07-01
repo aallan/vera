@@ -352,7 +352,7 @@ class CrossModuleMixin:
                 "unique across imported modules to avoid silent overwrites."
             ),
             fix=f"Rename '{name}' in one of the source modules.",
-            spec_ref="Chapter 11, Section 11.16",
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
             severity="error",
             error_code=error_code,
         ))
@@ -388,7 +388,7 @@ class CrossModuleMixin:
                 "names cause incorrect pattern matching and memory layouts."
             ),
             fix=f"Rename constructor '{ctor_name}' in one of the data types.",
-            spec_ref="Chapter 11, Section 11.16",
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
             severity="error",
             error_code="E610",
         ))
@@ -565,17 +565,47 @@ class CrossModuleMixin:
         if node.span:
             loc.line = node.span.line
             loc.column = node.span.column
-        self.diagnostics.append(Diagnostic(
-            description=(
-                f"Function '{display}' is not defined in this module "
-                f"and was not found in any imported module."
-            ),
-            location=loc,
-            source_line=self._get_source_line(loc.line),
-            rationale=(
-                "The WASM code generator compiles imported functions into "
-                "the same binary.  If a function cannot be resolved, it "
-                "cannot be called."
-            ),
-            severity="error",
-        ))
+        description = (
+            f"Function '{display}' is not defined in this module "
+            f"and was not found in any imported module."
+        )
+        rationale = (
+            "The WASM code generator compiles imported functions into the "
+            "same binary.  An unresolved call has no target to compile "
+            "against; the checker only warns (E200) on it, so the program "
+            "still reaches code generation."
+        )
+        source_line = self._get_source_line(loc.line)
+        # A module-qualified call (`m::f`) and a bare call (`f`) fail for
+        # different reasons and cite different spec sections.  Emit each with a
+        # *literal* spec_ref (rather than a branched variable) so the
+        # diagnostic-fields gate can validate both citations against the spec.
+        if qualified is not None:
+            self.diagnostics.append(Diagnostic(
+                description=description,
+                location=loc,
+                source_line=source_line,
+                rationale=rationale,
+                fix=(
+                    f"Ensure '{qualified}' names a function exported by a "
+                    f"module this file imports — check the import path and "
+                    f"that the target module declares it."
+                ),
+                spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+                severity="error",
+            ))
+        else:
+            self.diagnostics.append(Diagnostic(
+                description=description,
+                location=loc,
+                source_line=source_line,
+                rationale=rationale,
+                fix=(
+                    f"Define '{name}' in this module, or import it from the "
+                    f"module that declares it with 'import <module>({name});' "
+                    f"(replace <module> with that module's path, e.g. "
+                    f"'vera.math')."
+                ),
+                spec_ref='Chapter 8, Section 8.5.1 "Bare Calls"',
+                severity="error",
+            ))

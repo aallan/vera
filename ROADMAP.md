@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,461 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,505 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -23,7 +23,6 @@ The infrastructure that catches the next regression before a user does, plus the
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
-| [#738](https://github.com/aallan/vera/issues/738) | Mark the `TestHostHandleReclamation573` trio as stress tests so the local inner loop stops paying ~12 minutes per run. |
 | [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
 | [#420](https://github.com/aallan/vera/issues/420) | Split `tests/test_checker.py` (6,347 lines) into phase-focused test files.  Promoted from "Not doing now". |
 
@@ -34,6 +33,7 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | Issue | What |
 |---|---|
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
+| [#828](https://github.com/aallan/vera/issues/828) | Make `error_code` one-concept-per-code: `ERROR_CODES` names codes but doesn't stop two unrelated diagnostics sharing one (4 such collisions surfaced in #682).  A cheap emission-side registration check shipped; the proper fix is a collision-detection gate + making the registry the single home of each code's concept. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |
@@ -56,6 +56,7 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
 | [#795](https://github.com/aallan/vera/issues/795) | **Extend mutation testing beyond the soundness core.**  #387 hardened the trust root (`verifier`/`smt`/`checker`/`obligations`, 80.8% → 83.3% caught); this extends the sweep to `codegen`/`wasm`/`transform`/`parser`/CLI, where a surviving mutant is a weak test for an already-*loud* failure (wrong output / trap, already caught by `test_codegen.py` + conformance + execution tests) rather than a silent verification gap — so it ranks below the Tier 1 soundness work.  Needs the full marathon sweep made reliable first: it deadlocks on `mutmut` 3.6 / Python 3.14 (targeted per-function runs are fine).  The deep `smt.py` translate-layer hardening + the verifier timeout probe are tracked in [#792](https://github.com/aallan/vera/issues/792). |
+| [#827](https://github.com/aallan/vera/issues/827) | Narrow the diagnostic-fields gate's plumbing-skip: it keys on function name, so a stray/second `Diagnostic` in an `_error`/`_warning` helper would escape both gate passes (latent — no live escape; from the #826 adversarial review). |
 
 ### Not doing now
 
@@ -70,7 +71,7 @@ Deliberate trade-offs, recorded so they aren't re-litigated by accident.
 Not milestone-gated; advanced alongside whatever tier is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the benchmark suite is its own thread, no longer inside Milestone 1.  Compiler-side: [#225](https://github.com/aallan/vera/issues/225) (pass@k, more models, more tiers).
-- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#682](https://github.com/aallan/vera/issues/682) diagnostic-tagging enforcement + backfill, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry.
+- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry.
 - **Spec and doc audits** — [#653](https://github.com/aallan/vera/issues/653) §0.2/§0.3 design-principle violations, [#519](https://github.com/aallan/vera/issues/519) SKILL.md gap inventory.
 
 ## Milestones — beyond the roadmap

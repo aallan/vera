@@ -106,7 +106,7 @@ class ResolutionMixin:
                              f"so that `{name}` is given exactly "
                              f"{n_expected}."
                     ),
-                    spec_ref='Chapter 2, Section 2.4 "Type Aliases"',
+                    spec_ref='Chapter 2, Section 2.6.3 "Type Aliases with Refinements"',
                     error_code="E133",
                 )
                 return UnknownType()
@@ -129,7 +129,17 @@ class ResolutionMixin:
             if te.type_args:
                 self._error(
                     te, "Decimal does not accept type arguments.",
-                    error_code="E130",
+                    rationale=(
+                        "`Decimal` is a non-parameterised, opaque "
+                        "built-in type, so it takes no type "
+                        "arguments.  Writing it with a `<...>` "
+                        "argument list applies it as if it were a "
+                        "generic type, which the type system does "
+                        "not permit."
+                    ),
+                    fix="Write `Decimal` with no type arguments.",
+                    spec_ref='Chapter 9, Section 9.7.2 "Decimal"',
+                    error_code="E134",
                 )
             return AdtType(name, ())
 
@@ -151,7 +161,7 @@ class ResolutionMixin:
                     rationale=(f"'{name}' was removed; "
                                f"use '{canonical}' instead."),
                     fix=f"Replace '{name}' with '{canonical}'.",
-                    spec_ref="Chapter 2 — Primitive Types",
+                    spec_ref='Chapter 2, Section 2.2 "Primitive Types"',
                 )
             return UnknownType()
 

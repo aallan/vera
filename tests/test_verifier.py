@@ -7429,7 +7429,7 @@ private fn narrow_neg_387(@Int -> @Nat)
         assert "@Int.0 = " in d.description, d.description
         assert "non-negativity invariant" in d.rationale, d.rationale
         assert "requires(@Int.0 >= 0)" in d.fix, d.fix
-        assert "4.7" in d.spec_ref, d.spec_ref
+        assert "2.2.1" in d.spec_ref, d.spec_ref
 
     def test_nat_binding_verified_pins_record(self) -> None:
         result = _verify("""

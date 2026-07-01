@@ -4,7 +4,7 @@
 
 From the Latin *veritas* — truth. In Vera, verification is a first-class citizen.
 
-**Current version:** [0.0.187](https://github.com/aallan/vera/releases/tag/v0.0.187)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
+**Current version:** [0.0.188](https://github.com/aallan/vera/releases/tag/v0.0.188)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
 
 ## Why?
 
@@ -114,7 +114,7 @@ When you get it wrong, every error is an instruction for the model that wrote th
         ...
       }
 
-  See: Chapter 5, Section 5.1 "Function Structure"
+  See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
 Parse errors, type errors, effect mismatches, verification failures, and contract violations all produce the same shape: what went wrong, why, how to fix it, and a spec reference.

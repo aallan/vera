@@ -322,6 +322,12 @@ class _TestEngine:
                     ),
                     location=_fn_location(decl, self.file),
                     source_line=_get_source_line(self.source, decl),
+                    rationale=(
+                        "Contract-driven testing synthesises inputs with Z3 "
+                        "from each parameter's type; a type Z3 cannot encode "
+                        "cannot be exercised, so the function is skipped."
+                    ),
+                    spec_ref='Chapter 0, Section 0.5.6 "Contract-Driven Testing"',
                     severity="warning",
                     error_code="E701",
                 ))
@@ -370,6 +376,19 @@ class _TestEngine:
                         ),
                         location=_fn_location(decl, self.file),
                         source_line=_get_source_line(self.source, decl),
+                        rationale=(
+                            "Contract-driven testing ran the compiled "
+                            "function on Z3-generated inputs satisfying its "
+                            "`requires`; on a real result it either violated "
+                            "an `ensures` clause or trapped at runtime."
+                        ),
+                        fix=(
+                            "Correct the implementation so the postcondition "
+                            "holds, or adjust the contract (strengthen "
+                            "`requires` / weaken `ensures`) to match the "
+                            "intended behaviour."
+                        ),
+                        spec_ref='Chapter 6, "Contracts"',
                         severity="error",
                         error_code="E700",
                     ))

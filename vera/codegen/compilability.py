@@ -70,6 +70,12 @@ class CompilabilityMixin:
                     decl,
                     f"Function '{decl.name}' has unsupported parameter type "
                     f"— skipped.",
+                    rationale=(
+                        "WASM code generation supports a fixed set of "
+                        "parameter types; this parameter's type is not among "
+                        "them, so the function is skipped rather than "
+                        "miscompiled."
+                    ),
                     error_code="E604",
                 )
                 return False
@@ -81,6 +87,11 @@ class CompilabilityMixin:
                 decl,
                 f"Function '{decl.name}' has unsupported return type "
                 f"— skipped.",
+                rationale=(
+                    "WASM code generation supports a fixed set of return "
+                    "types; this function's return type is not among them, "
+                    "so the function is skipped rather than miscompiled."
+                ),
                 error_code="E605",
             )
             return False

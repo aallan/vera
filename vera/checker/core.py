@@ -316,7 +316,12 @@ class TypeChecker(
                     f"Invariant must be Bool, found {pretty_type(inv_type)}.",
                     rationale="Data type invariants are predicates that must "
                               "evaluate to Bool.",
-                    spec_ref='Chapter 2, Section 2.5 "Algebraic Data Types"',
+                    fix="The invariant must be a Bool-valued predicate.  Note "
+                        "that `data` invariants are not yet implemented (#686); "
+                        "until then, express the constraint as a refinement "
+                        "type over a real base type, e.g. "
+                        "`type Positive = { @Int | @Int.0 > 0 };`.",
+                    spec_ref='Chapter 2, Section 2.4.1 "ADT Invariants"',
                     error_code="E120",
                 )
 
@@ -402,7 +407,7 @@ class TypeChecker(
                               "declared return type.",
                     fix="Change the return type or adjust the body "
                         "expression.",
-                    spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                    spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                     error_code="E121",
                 )
 
@@ -417,7 +422,7 @@ class TypeChecker(
                           "call effect operations.",
                 fix=f"Declare the appropriate effects, e.g. "
                     f"effects(<{next(iter(self._effect_ops_used), '...')}>).",
-                spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
+                spec_ref='Chapter 5, Section 5.5 "Effect Declaration"',
                 error_code="E122",
             )
 
@@ -470,7 +475,10 @@ class TypeChecker(
                     f"requires() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    spec_ref='Chapter 6, Section 6.2.1 "Preconditions"',
+                    fix="Turn the requires() argument into a Bool-valued "
+                        "predicate, e.g. requires(@Int.0 > 0) instead of "
+                        "requires(@Int.0).",
+                    spec_ref='Chapter 6, Section 6.2.1 "Preconditions (`requires`)"',
                     error_code="E123",
                 )
 
@@ -486,7 +494,11 @@ class TypeChecker(
                     f"ensures() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    spec_ref='Chapter 6, Section 6.2.2 "Postconditions"',
+                    fix="Turn the ensures() argument into a Bool-valued "
+                        "predicate over the result, e.g. "
+                        "ensures(@Int.result > 0) instead of "
+                        "ensures(@Int.result).",
+                    spec_ref='Chapter 6, Section 6.2.2 "Postconditions (`ensures`)"',
                     error_code="E124",
                 )
 

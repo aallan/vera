@@ -98,7 +98,7 @@ Every diagnostic MUST include:
         ...
       }
 
-  See: Chapter 5, Section 5.1 "Function Structure"
+  See: Chapter 5, Section 5.2 "Function Declaration Syntax"
 ```
 
 ### 0.5.3 Diagnostic Categories

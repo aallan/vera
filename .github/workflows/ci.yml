@@ -155,6 +155,9 @@ jobs:
       - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)
         run: python scripts/check_e602_clean.py
 
+      - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
+        run: python scripts/check_diagnostic_fields.py
+
       - name: Check site assets are up-to-date
         run: python scripts/check_site_assets.py
 
