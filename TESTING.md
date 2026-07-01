@@ -503,7 +503,7 @@ Surfaced via `tests/test_codegen.py::TestIOOperations::test_io_read_file_*` — 
 
 Python's text-mode `open()` / `read_text()` / `write_text()` without an explicit `encoding=` kwarg defaults to `locale.getpreferredencoding()`, which is **cp1252 on en-US Windows**.  Tests that read or write files containing `→` (right arrow), `—` (em-dash), or other non-ASCII characters fail on Windows with `UnicodeEncodeError: 'charmap' codec can't encode '→'` or `UnicodeDecodeError: ... 0x97`.
 
-Every text-mode `open()` / `read_text()` / `write_text()` under `vera/`, `scripts/`, `tests/` therefore MUST pass an explicit `encoding="utf-8"`, enforced by `scripts/check_explicit_encoding.py` (pre-commit + CI lint, #645).  This audit-and-gate replaced the earlier `PYTHONUTF8=1` CI backstop (#641), which has been removed — text file I/O is now UTF-8 regardless of the runner's or a local shell's locale.  Use the explicit form (a deliberate non-UTF-8 site can opt out with `# encoding-exempt: <reason>`):
+Every text-mode `open()` / `read_text()` / `write_text()` under `vera/`, `scripts/`, `tests/` therefore MUST pass an explicit `encoding="utf-8"`, enforced by `scripts/check_explicit_encoding.py` (pre-commit + CI lint, #645) — so text file I/O is UTF-8 regardless of the runner's or a local shell's locale.  Use the explicit form (a deliberate non-UTF-8 site can opt out with `# encoding-exempt: <reason>`).  CI still sets `PYTHONUTF8=1` (#641), because it also covers **stdio / subprocess** encoding that the file-I/O gate does not — a Vera program printing `→` / `—` through a subprocess still needs it on cp1252 Windows; removing that backstop is tracked in #832:
 
 ```python
 # Implicit — locale-dependent (cp1252 on Windows); rejected by the gate:

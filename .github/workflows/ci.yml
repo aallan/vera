@@ -24,11 +24,16 @@ jobs:
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
-    # No PYTHONUTF8 env: #645 made every text-mode open()/read_text()/
-    # write_text() pass an explicit encoding="utf-8" (enforced by
-    # scripts/check_explicit_encoding.py), so the PEP-540 CI backstop that
-    # #641 added is no longer needed — text file I/O is UTF-8 regardless of
-    # the runner's locale.
+    env:
+      # PEP-540 UTF-8 mode (added in #641).  #645 made every text-mode
+      # open()/read_text()/write_text() pass an explicit encoding="utf-8"
+      # (enforced by scripts/check_explicit_encoding.py), which removes the
+      # *file-I/O* need for this — but PYTHONUTF8 also governs stdio /
+      # subprocess text encoding, and a Vera program that prints `→` / `—`
+      # still fails on a cp1252 Windows runner without it (proven: dropping
+      # this reddened the Windows matrix on the #645 PR).  Removing it needs a
+      # separate CLI-stdout / subprocess UTF-8 pass — tracked in #832.
+      PYTHONUTF8: 1
 
     steps:
       - uses: actions/checkout@v7
