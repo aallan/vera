@@ -1,0 +1,136 @@
+"""Unit tests for `scripts/check_explicit_encoding.py` (#645).
+
+The script enforces that every text-mode `open()` / `Path.read_text()` /
+`Path.write_text()` under `vera/`, `scripts/`, `tests/` passes an explicit
+`encoding=` — the durable fix for the cp1252-on-Windows class of bug (#641).
+
+These tests pin the script's AST logic (so a future regex/AST tweak can't
+silently weaken it) AND assert the repository is currently clean (so a new bare
+call added anywhere in scope fails here as well as at the pre-commit / CI gate).
+
+The script lives in `scripts/`, not a package, so it is loaded as a module.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_PATH = ROOT / "scripts" / "check_explicit_encoding.py"
+
+
+@pytest.fixture(scope="module")
+def mod() -> object:
+    """Import `check_explicit_encoding.py` as a module."""
+    spec = importlib.util.spec_from_file_location(
+        "check_explicit_encoding", SCRIPT_PATH)
+    assert spec is not None and spec.loader is not None
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["check_explicit_encoding"] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+def _reasons(mod: object, source: str) -> list[str]:
+    return [v.reason for v in mod.check_source(source, "<test>.py")]
+
+
+# ---------------------------------------------------------------------------
+# Bare text-mode calls are flagged.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    "p.read_text()",
+    "p.write_text(data)",
+    "open(path)",
+    "open(path, 'w')",
+    "open(path, mode='w')",
+])
+def test_bare_text_call_is_flagged(mod: object, src: str) -> None:
+    assert len(mod.check_source(src, "<t>.py")) == 1
+
+
+# ---------------------------------------------------------------------------
+# An explicit encoding= (any value) satisfies the gate.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    'p.read_text(encoding="utf-8")',
+    'p.write_text(data, encoding="utf-8")',
+    'open(path, encoding="utf-8")',
+    'open(path, "w", encoding="utf-8")',
+    "p.read_text(encoding=enc)",  # non-literal encoding still counts as present
+])
+def test_explicit_encoding_passes(mod: object, src: str) -> None:
+    assert mod.check_source(src, "<t>.py") == []
+
+
+# ---------------------------------------------------------------------------
+# Binary I/O is not text — never flagged.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    "open(path, 'rb')",
+    "open(path, 'wb')",
+    "open(path, mode='rb')",
+    "open(path, 'r+b')",
+    "p.read_bytes()",
+    "p.write_bytes(data)",
+])
+def test_binary_is_not_flagged(mod: object, src: str) -> None:
+    assert mod.check_source(src, "<t>.py") == []
+
+
+def test_non_literal_open_mode_is_flagged(mod: object) -> None:
+    # A dynamic mode we can't resolve statically is flagged (conservative):
+    # the author must pass encoding= or open in binary explicitly.
+    reasons = _reasons(mod, "open(path, mode)")
+    assert len(reasons) == 1
+    assert "non-literal mode" in reasons[0]
+
+
+# ---------------------------------------------------------------------------
+# `# encoding-exempt` opt-out — reason mandatory.
+# ---------------------------------------------------------------------------
+
+def test_optout_with_reason_suppresses(mod: object) -> None:
+    src = "p.read_text()  # encoding-exempt: reads a latin-1 legacy fixture"
+    assert mod.check_source(src, "<t>.py") == []
+
+
+def test_optout_without_reason_is_itself_a_violation(mod: object) -> None:
+    reasons = _reasons(mod, "p.read_text()  # encoding-exempt")
+    assert len(reasons) == 1
+    assert "without a reason" in reasons[0]
+
+
+def test_marker_inside_a_string_does_not_suppress(mod: object) -> None:
+    # The marker only counts as a real COMMENT token — a string that merely
+    # contains the text must not exempt a sibling bare call.
+    src = 'x = "# encoding-exempt: not a real marker"\np.read_text()'
+    assert len(mod.check_source(src, "<t>.py")) == 1
+
+
+# ---------------------------------------------------------------------------
+# `.open()` method calls are out of scope (would collide with unrelated
+# `.open()` methods, e.g. the LSP document store).
+# ---------------------------------------------------------------------------
+
+def test_dot_open_method_is_out_of_scope(mod: object) -> None:
+    assert mod.check_source("store.open(uri, text, version)", "<t>.py") == []
+
+
+# ---------------------------------------------------------------------------
+# The repository itself is clean (the production assertion).
+# ---------------------------------------------------------------------------
+
+def test_repository_has_no_bare_text_calls(mod: object) -> None:
+    violations = mod.check_paths(mod.iter_scope_files())
+    assert violations == [], (
+        f"{len(violations)} bare text-mode file call(s) lack encoding='utf-8' "
+        "(#645):\n" + "\n".join(
+            f"  {v.file}:{v.line}: {v.reason}" for v in violations))

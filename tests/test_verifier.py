@@ -107,7 +107,7 @@ class TestExampleVerification:
 
     @pytest.mark.parametrize("filename", ALL_EXAMPLES)
     def test_example_verifies(self, filename: str) -> None:
-        source = (EXAMPLES_DIR / filename).read_text()
+        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
         ast = parse_to_ast(source, file=filename)
         type_diags = typecheck(ast, source, file=filename)
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -3792,7 +3792,7 @@ private fn is_nil(@List<Int> -> @Bool)
         source = EXAMPLES_DIR / "list_ops.vera"
         if not source.exists():
             pytest.skip("list_ops.vera not found")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
@@ -3850,7 +3850,7 @@ private fn sum_to(@Nat -> @Nat)
         source = EXAMPLES_DIR / "mutual_recursion.vera"
         if not source.exists():
             pytest.skip("mutual_recursion.vera not found")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
@@ -3863,7 +3863,7 @@ private fn sum_to(@Nat -> @Nat)
         source = EXAMPLES_DIR / "factorial.vera"
         if not source.exists():
             pytest.skip("factorial.vera not found")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
@@ -3938,7 +3938,7 @@ private fn sum(@List<Int> -> @Int)
         source = EXAMPLES_DIR / "list_ops.vera"
         if not source.exists():
             pytest.skip("list_ops.vera not found")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         ast = parse_to_ast(text)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
@@ -4089,7 +4089,7 @@ private fn sum(@List<Int> -> @Int)
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
-            text = f.read_text()
+            text = f.read_text(encoding="utf-8")
             prog = parse_to_ast(text)
             typecheck(prog, text)
             result = verify(prog, text, file=str(f))
@@ -4214,7 +4214,7 @@ public fn outer(@Nat -> @Nat)
         source = EXAMPLES_DIR / "mutual_recursion.vera"
         if not source.exists():
             pytest.skip("mutual_recursion.vera not found")
-        text = source.read_text()
+        text = source.read_text(encoding="utf-8")
         prog = parse_to_ast(text)
         typecheck(prog, text)
         result = verify(prog, text, file=str(source))

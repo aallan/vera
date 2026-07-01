@@ -370,7 +370,7 @@ public fn make_fn(@Unit -> @IntToInt)
         """examples/closures.vera compiles without errors."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "closures.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile(source)
         assert result.ok
 
@@ -378,7 +378,7 @@ public fn make_fn(@Unit -> @IntToInt)
         """examples/closures.vera test_closure returns 15."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "closures.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_closure")
         assert exec_result.value == 15
@@ -387,7 +387,7 @@ public fn make_fn(@Unit -> @IntToInt)
         """examples/closures.vera test_option_map returns 105."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "closures.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_option_map")
         assert exec_result.value == 105

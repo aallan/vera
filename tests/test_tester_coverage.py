@@ -29,7 +29,7 @@ from vera.cli import cmd_test
 def _write_vera(tmp_path: Path, source: str, name: str = "test.vera") -> str:
     """Write a Vera source string to a temp file and return its path."""
     p = tmp_path / name
-    p.write_text(source)
+    p.write_text(source, encoding="utf-8")
     return str(p)
 
 

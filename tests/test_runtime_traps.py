@@ -248,7 +248,7 @@ class TestStdoutOnTrap522:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "divzero.vera"
-        path.write_text(_DIVZERO_WITH_PRINTS)
+        path.write_text(_DIVZERO_WITH_PRINTS, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -285,7 +285,7 @@ class TestStdoutOnTrap522:
         ``2>&1`` redirect — see #522 for the original symptom.
         """
         path = tmp_path / "divzero.vera"
-        path.write_text(_DIVZERO_WITH_PRINTS)
+        path.write_text(_DIVZERO_WITH_PRINTS, encoding="utf-8")
 
         merged = io.StringIO()
         with contextlib.redirect_stdout(merged), \
@@ -320,7 +320,7 @@ class TestStdoutOnTrap522:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "divzero.vera"
-        path.write_text(_DIVZERO_WITH_PRINTS)
+        path.write_text(_DIVZERO_WITH_PRINTS, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -361,7 +361,7 @@ public fn main(@Unit -> @Unit)
 }
 """
         path = tmp_path / "divzero_stderr.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -398,7 +398,7 @@ class TestTrapCategorisation516Stage1:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "divzero.vera"
-        path.write_text(_DIVZERO_WITH_PRINTS)
+        path.write_text(_DIVZERO_WITH_PRINTS, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -417,7 +417,7 @@ class TestTrapCategorisation516Stage1:
         # contract message (via the host-import-recorded ``last_violation``
         # path), not a generic wasmtime trap reason.
         path = tmp_path / "trap.vera"
-        path.write_text(_PRECONDITION_FAIL)
+        path.write_text(_PRECONDITION_FAIL, encoding="utf-8")
 
         rc = cmd_run(str(path), fn_name="positive", fn_args=[0])
 
@@ -434,7 +434,7 @@ class TestTrapCategorisation516Stage1:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "divzero.vera"
-        path.write_text(_DIVZERO_WITH_PRINTS)
+        path.write_text(_DIVZERO_WITH_PRINTS, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -453,7 +453,7 @@ class TestTrapCategorisation516Stage1:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "trap.vera"
-        path.write_text(_PRECONDITION_FAIL)
+        path.write_text(_PRECONDITION_FAIL, encoding="utf-8")
 
         rc = cmd_run(str(path), fn_name="positive", fn_args=[0],
                      as_json=True)
@@ -511,7 +511,7 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """Text mode: every IO.print appears on stdout exactly once."""
         path = tmp_path / "anim.vera"
-        path.write_text(self._ANIM_PROGRAM)
+        path.write_text(self._ANIM_PROGRAM, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -534,7 +534,7 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """Live writes preserve the IO.print call order."""
         path = tmp_path / "anim.vera"
-        path.write_text(self._ANIM_PROGRAM)
+        path.write_text(self._ANIM_PROGRAM, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -551,7 +551,7 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """JSON mode never tees — would corrupt the envelope."""
         path = tmp_path / "anim.vera"
-        path.write_text(self._ANIM_PROGRAM)
+        path.write_text(self._ANIM_PROGRAM, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -606,7 +606,7 @@ public fn main(@Unit -> @Unit)
 }
 """
         path = tmp_path / "anim_trap.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -630,7 +630,7 @@ public fn main(@Unit -> @Unit)
         counting flush calls against IO.print calls.
         """
         path = tmp_path / "flush.vera"
-        path.write_text(self._ANIM_PROGRAM)
+        path.write_text(self._ANIM_PROGRAM, encoding="utf-8")
 
         flush_count = 0
         write_count = 0
@@ -959,7 +959,7 @@ class TestTrapSourceBacktrace516:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "div.vera"
-        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -990,7 +990,7 @@ class TestTrapSourceBacktrace516:
         outward — matches gdb / Python tracebacks / wasmtime CLI.
         """
         path = tmp_path / "div.vera"
-        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -1008,7 +1008,7 @@ class TestTrapSourceBacktrace516:
         self, tmp_path: Path, capsys: CaptureFixture[str],
     ) -> None:
         path = tmp_path / "div.vera"
-        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -1065,7 +1065,7 @@ public fn main(@Unit -> @Int)
         the contract message; now they get the user-frame chain too.
         """
         path = tmp_path / "ctr.vera"
-        path.write_text(self._CONTRACT_VIOLATION_PROGRAM)
+        path.write_text(self._CONTRACT_VIOLATION_PROGRAM, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -1093,7 +1093,7 @@ public fn main(@Unit -> @Int)
         consumers).
         """
         path = tmp_path / "ctr.vera"
-        path.write_text(self._CONTRACT_VIOLATION_PROGRAM)
+        path.write_text(self._CONTRACT_VIOLATION_PROGRAM, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -1178,7 +1178,7 @@ public fn main(@Unit -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
-""")
+""", encoding="utf-8")
 
         # Synthetic frame chain: two runtime helpers (gc_collect
         # then alloc) at the leaf, then the user code that called
@@ -1263,7 +1263,7 @@ public fn main(@Unit -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
-""")
+""", encoding="utf-8")
 
         from vera.runtime.traps import TrapFrame, WasmTrapError
         synthetic_frames: list[TrapFrame] = [
@@ -1321,7 +1321,7 @@ public fn main(@Unit -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
-""")
+""", encoding="utf-8")
 
         # Same synthetic shape as the text-mode collapse test, so a
         # single mock surface exercises both paths.  The wire output
@@ -1422,7 +1422,7 @@ class TestTrapFixParagraphs547:
         outputs which have always carried a Fix paragraph.
         """
         path = tmp_path / "div.vera"
-        path.write_text(_DIVZERO_FOR_FIX)
+        path.write_text(_DIVZERO_FOR_FIX, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -1484,7 +1484,7 @@ public fn main(@Unit -> @Int)
 }
 """
         path = tmp_path / "ctr.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
 
         rc = cmd_run(str(path))
 
@@ -1507,7 +1507,7 @@ public fn main(@Unit -> @Int)
         ``frames``.
         """
         path = tmp_path / "div.vera"
-        path.write_text(_DIVZERO_FOR_FIX)
+        path.write_text(_DIVZERO_FOR_FIX, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -1548,7 +1548,7 @@ public fn main(@Unit -> @Int)
 }
 """
         path = tmp_path / "ctr.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
 
         rc = cmd_run(str(path), as_json=True)
 
@@ -1601,7 +1601,7 @@ public fn main(@Unit -> @Int)
         ``"  "`` indent so the block visually nests under ``Fix:``.
         """
         path = tmp_path / "div.vera"
-        path.write_text(_DIVZERO_FOR_FIX)
+        path.write_text(_DIVZERO_FOR_FIX, encoding="utf-8")
 
         rc = cmd_run(str(path))
 

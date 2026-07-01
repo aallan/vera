@@ -26,7 +26,7 @@ from vera.parser import parse_file
 
 CONFORMANCE_DIR = Path(__file__).parent / "conformance"
 MANIFEST: list[dict] = json.loads(
-    (CONFORMANCE_DIR / "manifest.json").read_text()
+    (CONFORMANCE_DIR / "manifest.json").read_text(encoding="utf-8")
 )
 
 _LEVEL_ORDER = {"parse": 0, "check": 1, "verify": 2, "run": 3}
@@ -115,7 +115,7 @@ class TestConformance:
     def test_format_idempotent(self, entry: dict) -> None:
         """Every conformance program must be in canonical format."""
         path = CONFORMANCE_DIR / entry["file"]
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         formatted = format_source(source)
         assert formatted == source, (
             f"Not in canonical format: {entry['id']}\n"

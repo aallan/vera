@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.190] - 2026-07-01
+
+### Changed
+
+- **Every text-mode file call passes an explicit `encoding="utf-8"`, enforced by a gate** ([#645](https://github.com/aallan/vera/issues/645)).  Python's text-mode `open()` / `Path.read_text()` / `Path.write_text()` fall back to `locale.getpreferredencoding()` (cp1252 on en-US Windows) when no `encoding=` is given, so a Vera source / doc / fixture containing `→`, `—`, or any non-ASCII byte failed to read/write on a locale-default Windows shell.  [#641](https://github.com/aallan/vera/issues/641) papered over CI with a `PYTHONUTF8=1` backstop; this is the durable fix.  A new `scripts/check_explicit_encoding.py` AST-audits every text-mode `open()` / `read_text()` / `write_text()` under `vera/`, `scripts/`, `tests/` (binary mode skipped; a deliberate exception opts out with `# encoding-exempt: <reason>`) and is wired into pre-commit and the CI `lint` job.  The audit found **160 bare sites across 16 files** (far more than the ~30 the issue estimated — the suite has grown ~5× since #641); all now pass `encoding="utf-8"`.  With the audit complete and gated, the `PYTHONUTF8: 1` line was removed from the CI test matrix — text file I/O is UTF-8 regardless of the runner's or a local Windows shell's locale.  Pinned by `tests/test_check_explicit_encoding.py` (checker logic + a repo-clean assertion).
+
 ## [0.0.189] - 2026-07-01
 
 ### Changed
@@ -2695,7 +2701,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.189...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.190...HEAD
+[0.0.190]: https://github.com/aallan/vera/compare/v0.0.189...v0.0.190
 [0.0.189]: https://github.com/aallan/vera/compare/v0.0.188...v0.0.189
 [0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
 [0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187

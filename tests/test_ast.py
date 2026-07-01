@@ -113,7 +113,7 @@ EXAMPLE_FILES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
 @pytest.mark.parametrize("filename", EXAMPLE_FILES)
 def test_example_roundtrip(filename):
     """Every example file should parse and transform to a valid AST."""
-    tree = parse((EXAMPLES_DIR / filename).read_text(), file=filename)
+    tree = parse((EXAMPLES_DIR / filename).read_text(encoding="utf-8"), file=filename)
     ast = transform(tree)
     assert isinstance(ast, Program)
     # Serialisable

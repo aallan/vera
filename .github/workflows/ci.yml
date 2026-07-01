@@ -24,19 +24,11 @@ jobs:
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
-    env:
-      # #641: force Python UTF-8 mode (PEP 540) so file I/O without an
-      # explicit `encoding=` kwarg defaults to UTF-8 on every platform
-      # rather than the locale's preferred encoding (cp1252 on Windows
-      # in en-US locales).  Without this, tests that read/write source
-      # files containing `→` (right arrow) or `—` (em-dash) tripped
-      # `'charmap' codec can't encode` errors on Windows.  Locally,
-      # users without `PYTHONUTF8=1` set in their shell environment
-      # will still hit the bug on the affected files — the durable
-      # fix is to audit `open()` / `read_text()` / `write_text()`
-      # call sites for explicit `encoding='utf-8'`.  Tracked as a
-      # follow-up.
-      PYTHONUTF8: 1
+    # No PYTHONUTF8 env: #645 made every text-mode open()/read_text()/
+    # write_text() pass an explicit encoding="utf-8" (enforced by
+    # scripts/check_explicit_encoding.py), so the PEP-540 CI backstop that
+    # #641 added is no longer needed — text file I/O is UTF-8 regardless of
+    # the runner's locale.
 
     steps:
       - uses: actions/checkout@v7
@@ -157,6 +149,9 @@ jobs:
 
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
+
+      - name: Check text-mode file I/O passes explicit encoding (#645)
+        run: python scripts/check_explicit_encoding.py
 
       - name: Check site assets are up-to-date
         run: python scripts/check_site_assets.py

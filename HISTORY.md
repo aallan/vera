@@ -412,8 +412,9 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.185 | 28 Jun | Redefining an opaque, verifier-modelled built-in is now a checker error, closing a `verify`/`run` soundness hole ([#815](https://github.com/aallan/vera/issues/815)). |
 | v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: a value above i64.MAX no longer reinterprets to a negative `@Int` ([#813](https://github.com/aallan/vera/issues/813)). |
 | v0.0.187 | 30 Jun | Integer-overflow runtime traps now carry a precise `overflow` trap kind instead of the generic `unreachable` ([#808](https://github.com/aallan/vera/issues/808)). |
-| v0.0.188 | 30 Jun | The no-silent-failures discipline reaches the diagnostics layer: every diagnostic is gated for complete, spec-accurate metadata, with 54 checker sites backfilled and 30-plus stale spec references corrected ([#682](https://github.com/aallan/vera/issues/682)). |
-| v0.0.189 | 1 Jul | The UTF-8 "safe decode" invariant is centralised into one `safe_utf8_decode` helper, reached only through a shared `_slice_and_decode` helper that the three WASM-memory string readers (which the host imports delegate to) route through, replacing six brittle source-grep tests with a unit test plus three wire-real end-to-end tests ([#592](https://github.com/aallan/vera/issues/592)). |
+| v0.0.188 | 30 Jun | Every diagnostic is gated for complete, spec-accurate `rationale` / `fix` / `spec_ref` metadata ([#682](https://github.com/aallan/vera/issues/682)). |
+| v0.0.189 | 1 Jul | The UTF-8 "safe decode" invariant is centralised behind one `safe_utf8_decode` helper, replacing six brittle source-grep tests with behavioural coverage ([#592](https://github.com/aallan/vera/issues/592)). |
+| v0.0.190 | 1 Jul | Every text-mode file call now passes an explicit `encoding="utf-8"`, enforced by a pre-commit/CI gate ([#645](https://github.com/aallan/vera/issues/645)). |
 
 ---
 

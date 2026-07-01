@@ -104,7 +104,9 @@ def main() -> int:
     # ------------------------------------------------------------------
 
     # Conformance programs: count manifest entries
-    manifest = json.loads((root / "tests/conformance/manifest.json").read_text())
+    manifest = json.loads(
+        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    )
     live_conformance = len(manifest)
 
     # Conformance level breakdown
@@ -123,14 +125,14 @@ def main() -> int:
     # Per-file line counts
     file_lines: dict[str, int] = {}
     for f in test_files:
-        file_lines[f.name] = len(f.read_text().splitlines())
+        file_lines[f.name] = len(f.read_text(encoding="utf-8").splitlines())
 
     # Pre-commit hooks: parse YAML manually (avoid PyYAML dependency)
-    precommit_text = (root / ".pre-commit-config.yaml").read_text()
+    precommit_text = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     live_hooks = len(re.findall(r"^\s+- id:\s", precommit_text, re.MULTILINE))
 
     # CI jobs: count top-level keys under "jobs:"
-    ci_text = (root / ".github/workflows/ci.yml").read_text()
+    ci_text = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     in_jobs = False
     live_ci_jobs = 0
     for line in ci_text.splitlines():
@@ -184,7 +186,7 @@ def main() -> int:
     # 2. Check TESTING.md overview table
     # ------------------------------------------------------------------
 
-    testing_md = (root / "TESTING.md").read_text()
+    testing_md = (root / "TESTING.md").read_text(encoding="utf-8")
 
     def check_testing(pattern: str, expected: int, label: str) -> None:
         m = re.search(pattern, testing_md)
@@ -315,7 +317,7 @@ def main() -> int:
     # 7. Check CONTRIBUTING.md
     # ------------------------------------------------------------------
 
-    contrib_md = (root / "CONTRIBUTING.md").read_text()
+    contrib_md = (root / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
     m = re.search(r"checked by (\d+) (?:configured )?hooks", contrib_md)
     if m:
@@ -371,7 +373,7 @@ def main() -> int:
     # 8. Check CLAUDE.md
     # ------------------------------------------------------------------
 
-    claude_md = (root / "CLAUDE.md").read_text()
+    claude_md = (root / "CLAUDE.md").read_text(encoding="utf-8")
 
     for m_iter in re.finditer(r"All (\d+) conformance", claude_md):
         doc_conf = int(m_iter.group(1))
@@ -402,7 +404,7 @@ def main() -> int:
     # 9. Check README.md
     # ------------------------------------------------------------------
 
-    readme_md = (root / "README.md").read_text()
+    readme_md = (root / "README.md").read_text(encoding="utf-8")
 
     def check_readme(pattern: str, expected: int, label: str) -> None:
         m = re.search(pattern, readme_md)
@@ -439,7 +441,7 @@ def main() -> int:
     # 10. Check SKILL.md
     # ------------------------------------------------------------------
 
-    skill_md = (root / "SKILL.md").read_text()
+    skill_md = (root / "SKILL.md").read_text(encoding="utf-8")
 
     m = re.search(r"contains (\d+) small, self-contained programs", skill_md)
     if m:
@@ -454,7 +456,7 @@ def main() -> int:
     # 11. Check AGENTS.md
     # ------------------------------------------------------------------
 
-    agents_md = (root / "AGENTS.md").read_text()
+    agents_md = (root / "AGENTS.md").read_text(encoding="utf-8")
 
     m = re.search(r"contains (\d+) small, self-contained programs", agents_md)
     if m:
@@ -505,7 +507,7 @@ def main() -> int:
     # 12. Check FAQ.md
     # ------------------------------------------------------------------
 
-    faq_md = (root / "FAQ.md").read_text()
+    faq_md = (root / "FAQ.md").read_text(encoding="utf-8")
 
     for m_iter in re.finditer(
         r"conformance test suite \((\d+) programs", faq_md
@@ -535,7 +537,7 @@ def main() -> int:
     # conformance and example additions.  Pinning it here keeps it
     # honest.
 
-    index_html = (root / "docs/index.html").read_text()
+    index_html = (root / "docs/index.html").read_text(encoding="utf-8")
 
     # Accept "A" or "An" — the article depends on how the number reads
     # ("an 89-program" but "a 90-program"), so don't force one form.
@@ -575,7 +577,7 @@ def main() -> int:
     # (e.g. "3,121 tests, 65 conformance programs" for v0.0.102) that
     # would produce false positives if the whole file were searched.
 
-    roadmap_md = (root / "ROADMAP.md").read_text()
+    roadmap_md = (root / "ROADMAP.md").read_text(encoding="utf-8")
 
     where_m = re.search(
         r"## Where we are\n(.*?)(?=\n##|\Z)", roadmap_md, re.DOTALL
