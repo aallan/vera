@@ -33,7 +33,7 @@ mutmut activates a mutant **in-process** via an import trampoline. Tests that sp
 | Module | In-process oracle |
 |---|---|
 | `verifier.py`, `smt.py` | `test_verifier.py`, `test_verifier_coverage.py`, `test_obligations.py` |
-| `checker/` | `test_checker.py` |
+| `checker/` | `test_checker_*.py` |
 | `obligations/` | `test_obligations.py`, `test_lsp.py` |
 | `codegen/`, `wasm/` | `test_codegen*.py`, `test_wasm*.py` |
 

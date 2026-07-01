@@ -319,37 +319,37 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 1: Lexical | Literals (Int, Float64, Bool, Byte, String) | test_ast, test_codegen | ch01_int_literals, ch01_float_literals, ch01_bool_literals, ch01_byte_literals | most examples |
 | Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen | ch01_string_escapes | io_operations, file_io |
 | Ch 1: Lexical | Comments | test_parser | ch01_comments | — |
-| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker | ch02_builtin_types | most examples |
-| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
+| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker_* | ch02_builtin_types | most examples |
+| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker_* | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
-| Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
-| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | ch04_arithmetic, ch04_comparison, ch04_boolean_ops, ch04_int_overflow | factorial, absolute_value |
-| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
+| Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker_* | ch02_generics | generics |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker_*, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
+| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker_* | ch04_arithmetic, ch04_comparison, ch04_boolean_ops, ch04_int_overflow | factorial, absolute_value |
+| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker_* | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
 | Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
-| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | ch05_basic_function, ch05_recursion, ch05_mutual_recursion | factorial, mutual_recursion |
+| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker_* | ch05_basic_function, ch05_recursion, ch05_mutual_recursion | factorial, mutual_recursion |
 | Ch 5: Functions | Closures, higher-order functions | test_codegen_closures | ch05_closures | closures |
-| Ch 5: Functions | Visibility (`public`/`private`) | test_checker | ch05_visibility | modules |
+| Ch 5: Functions | Visibility (`public`/`private`) | test_checker_* | ch05_visibility | modules |
 | Ch 6: Contracts | Preconditions (`requires`) | test_codegen_contracts, test_verifier | ch06_requires | safe_divide |
 | Ch 6: Contracts | Postconditions (`ensures`) | test_codegen_contracts, test_verifier | ch06_ensures | absolute_value |
 | Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | ch06_decreases, ch06_assert_assume | factorial |
 | Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | ch06_quantifiers | quantifiers |
-| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
-| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | ch07_state_handler, ch07_exn_handler | effect_handler |
-| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker | ch09_numeric_builtins | — |
-| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
-| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
-| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — | — |
-| Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — | — |
+| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker_* | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
+| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker_* | ch07_state_handler, ch07_exn_handler | effect_handler |
+| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker_* | ch09_numeric_builtins | — |
+| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker_* | ch09_type_conversions | — |
+| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen, test_checker_* | ch10_float_predicates | — |
+| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker_* | — | — |
+| Ch 2: Types | Bidirectional type checking (local inference) | test_checker_* | — | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
 | Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — | — |
 | Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen, test_markdown | ch09_markdown | markdown |
-| Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen, test_checker | ch09_regex | regex |
-| Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen, test_checker | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |
-| Ch 9: Stdlib | Json (json_parse, json_stringify, json_get, json_array_get, json_array_length, json_keys, json_has_field, json_type) | test_codegen, test_checker | ch09_json | json |
-| Ch 9: Stdlib | Html (html_parse, html_to_string, html_query, html_text, html_attr) | test_codegen, test_checker | ch09_html | html |
-| Ch 9: Stdlib | Http effect (Http.get, Http.post) | test_codegen, test_checker | ch09_http | http |
+| Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen, test_checker_* | ch09_regex | regex |
+| Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen, test_checker_* | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |
+| Ch 9: Stdlib | Json (json_parse, json_stringify, json_get, json_array_get, json_array_length, json_keys, json_has_field, json_type) | test_codegen, test_checker_* | ch09_json | json |
+| Ch 9: Stdlib | Html (html_parse, html_to_string, html_query, html_text, html_attr) | test_codegen, test_checker_* | ch09_html | html |
+| Ch 9: Stdlib | Http effect (Http.get, Http.post) | test_codegen, test_checker_* | ch09_http | http |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | — | safe_divide, factorial |
 | Ch 12: Runtime | Browser runtime parity (JS host bindings match Python) | test_browser | — | — |
 
