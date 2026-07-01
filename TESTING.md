@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,559 across 60 files (~63,000 lines of test code; 5,511 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,561 across 80 files (~63,000 lines of test code; 5,513 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -24,8 +24,8 @@ All commands assume the virtual environment is active (`source .venv/bin/activat
 ```bash
 # Test suite
 pytest tests/ -v                                     # full suite, verbose
-pytest tests/test_codegen.py                         # single file
-pytest tests/test_codegen.py::TestArithmetic          # single class
+pytest tests/test_codegen_expressions.py             # single file
+pytest tests/test_codegen_expressions.py::TestArithmetic  # single class
 pytest tests/test_conformance.py -v                  # conformance suite only
 pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 
@@ -75,7 +75,27 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_int_widening_codegen.py` | 27 | 340 | #813 Stage 3 — runtime `@Nat -> @Int` widening-trap codegen: the codegen emits a guard at *exactly* the `@Nat -> @Int` coercion sites the verifier obligates (return, `let`, call argument), so `vera run`/`vera compile` programs trap when a `@Nat` above i64.MAX would reinterpret to a negative `@Int` instead of silently returning the wrong value. The trap is a bare `unreachable` (shares `_emit_negative_i64_guard` with the #552 nat-bind guard), classified `kind="unreachable"` today (a dedicated widening trap kind is a follow-up). Test-first: every `*_traps` test fails on the pre-Stage-3 codegen (`widen(u64.MAX)` returns -1, no trap); every `*_no_trap` test passes before and after (safe/bounded widen unchanged) |
 | `test_int_widening_differential.py` | 19 | 244 | #813 verifier↔codegen behavioural differential (cross-component soundness rule): at every `@Nat -> @Int` coercion site the verifier's `nat_to_int_coerce` classification must AGREE with the runtime — a `tier3` (codegen-guarded) site MUST trap on a `@Nat` above i64.MAX (return / `let` / call-arg / constructor field / ADT sub-pattern / match-bind), while a `tier3_unguarded` (E531) site must NOT trap (the tuple / array / generic-ADT component coercions codegen cannot guard).  Runs BOTH sides on one corpus so the "runtime-guarded" claim is checked against the actual trap — catching a verifier deferral codegen never guards (unsound silent -1) or a spurious trap |
 | `test_monomorphize_differential.py` | 13 | 682 | #732 differential soundness: the verifier's per-monomorphization instantiation discovery covers every instantiation codegen emits (name coverage + per-generic count), over real generic programs (conformance ch02/ch09, `examples/generics.vera`) plus inline cases for the soundness-critical scenarios — collapsed type vars, **prelude combinator emission** (`option_map`), transitive generics, a generic whose type arg is fixed only by a **where-helper's return** (a `Float64`-returning helper, so the unresolved-var `"Bool"` phantom default cannot mask a miss), a generic whose type arg is fixed only by an **imported constructor** (`id2(MkBox(7))` — the verifier's mono-context must include `_module_constructors`, else it phantom-defaults and misses codegen's `id2<Box>`), a generic whose type arg is fixed only by an **imported function's return** (`id_g(make_int(...))` — the verifier's mono-context must seed `fn_ret_types` from imported functions, else it phantom-defaults and misses codegen's `id_g<Int>`, plus a **private-shadow** case pinning the imported-fn seeding stays unfiltered like codegen since filtering would diverge into a false Tier-1), and a generic reached only through a **contract clause or `where` helper** (codegen must seed Pass 1.5 from the shared node-level walk, not just `decl.body`, or it skips the clone → `CodegenSkip` at run time) — so a missed instantiation (a false Tier-1) is caught. Guards against a vacuous pass when codegen emits nothing, plus a **determinism guard** (`vera compile --wat` is byte-stable across `PYTHONHASHSEED` — the mono worklist sorts its instantiation sets) |
-| `test_codegen.py` | 1,219 | 21,225 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, **GC-aware TCO for allocating fns (#549 — `$gc_sp` restore before each `return_call`)**, postcondition-fallback regression (still reverts to plain `call`), analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked), **@Nat narrowing runtime guards** (#552 let site; #747 extends to tuple-destructure / top-level match-bind / ADT sub-pattern / concrete ctor-field / call-arg sites — `i64.lt_s; unreachable` net, @Int targets exempt), **refinement-predicate runtime guards** (#746 — primitive-base (incl. `@Bool` / `@Float64`) refined params/returns traverse a `$vera.contract_fail` predicate guard at the function boundary: violating value traps, valid passes, call-args guarded transitively, generic refined returns guarded on the monomorphised instance; non-primitive `@Array` refinements (`array_length(...) > 0`) guarded too, the alias-aware `@Nat` base conjoins its implicit `>= 0`, and erased `@Unit` refinements emit no guard; **tuple-component boundary guards** decompose a `Tuple<PosInt, Int>` param/return at the FFI boundary — loading each refined / `@Nat` component from the heap value and guarding it recursively for nested tuples, so a violating component traps instead of laundering past the verifier's component assumption; a **generic tuple alias** (`type Box<T> = Tuple<T, Int>`) substitutes its argument so `Box<PosInt>` still guards its component, and a mutually-recursive (infinite) tuple alias **fails closed with E617** rather than silently emitting partial guards; a **refinement OVER a tuple** (`type Pair = { @Tuple<PosInt, Int> \| true }`) is unwrapped so its components are guarded too, recursively through nested `Tuple<Pair, Int>`) |
+| `test_codegen_expressions.py` | 89 | 787 | Int/Bool/Float64 literals, slot refs, arithmetic, comparison, boolean logic, unary ops, if/let, function calls, recursion, pipe operator, `CompileResult` surface (#419 split) |
+| `test_codegen_calls.py` | 32 | 1,403 | Statement-position unit calls (#556), **WASM tail-call optimization** (#517 — `return_call` emission, 50K- and 1M-iteration stress, structural `return_call`/plain-`call` boundary assertions, **GC-aware TCO for allocating fns** (#549 — `$gc_sp` restore before each `return_call`), postcondition-fallback regression, analyzer unit tests over tail-transparent constructs), pair-typed closure params + captures (#535) (#419 split) |
+| `test_codegen_infrastructure.py` | 24 | 456 | Module assembly import/memory conditionals, execute error paths, unsupported-construct skips + node-level E602 reasons (#626), built-in shadowing (#154), typed holes, example round-trips (#419 split) |
+| `test_codegen_interpolation.py` | 33 | 1,275 | String interpolation, the E615 loud inference-fallthrough channel (#630) (#419 split) |
+| `test_codegen_effects.py` | 65 | 1,264 | State\<T\> host imports, effect handlers, Exn\<E\> handlers (incl. expression-bodied, #475), Async/Future\<T\>, Random effect (#419 split) |
+| `test_codegen_data_types.py` | 67 | 1,339 | ADT metadata + constructors, match expressions (incl. nested patterns), tuples, ADT string fields, generic-monomorphization regressions (#604, #767) (#419 split) |
+| `test_codegen_arrays.py` | 82 | 1,427 | Byte type, array literals / bounds checking / length / range / concat, construction builtins (#209), compound element types (#132), array utilities (#419 split) |
+| `test_codegen_refinements.py` | 57 | 924 | Assert/assume, forall/exists quantifiers (incl. WAT inspection), refinement type aliases, **refinement-predicate runtime guards** (#746 — primitive- and `@Array`-base boundary guards, tuple-component decomposition at the FFI boundary, generic tuple aliases, infinite-alias E617 fail-closed, refinement-over-tuple unwrapping), head-over-refinement shape (#655) (#419 split) |
+| `test_codegen_strings.py` | 113 | 1,275 | String literals + IO host bindings, WAT string escaping (unit + end-to-end), String/Array signatures, format expressions, core string ops (length/concat/slice/char codes/repeat), char classification, string utilities (#419 split) |
+| `test_codegen_string_builtins.py` | 149 | 1,339 | parse\_nat/float/int/bool (Result-returning), base64, URL encode/decode/parse/join, search/transform builtins (#198), universal to-string (#106) (#419 split) |
+| `test_codegen_numeric.py` | 85 | 1,064 | Math builtins (#199), numeric type conversions (#208), Float64 predicates + constants (#212), int64-min / float-carry to-string regressions (#475) (#419 split) |
+| `test_codegen_io.py` | 42 | 824 | IO operations (#135: read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), Markdown + Regex host bindings (#419 split) |
+| `test_codegen_collections.py` | 59 | 888 | Map + Set collections (#62), wrapper-handle bit-31 tagging (#578) (#419 split) |
+| `test_codegen_json.py` | 59 | 984 | Json collection, typed accessors (#419 split) |
+| `test_codegen_decimal.py` | 57 | 780 | Decimal collection, Decimal monomorphization (#419 split) |
+| `test_codegen_host_effects.py` | 57 | 928 | Html/Http/Inference host effects, provider dispatch, postcondition host-import propagation (#823) (#419 split) |
+| `test_codegen_nat_guards.py` | 39 | 1,048 | **`@Nat` runtime guards**: subtraction underflow (#520) and binding-site narrowing (#552 let site; #747 tuple-destructure / match-bind / ADT sub-pattern / ctor-field / call-arg sites — `i64.lt_s; unreachable` net, `@Int` targets exempt) (#419 split) |
+| `test_codegen_translator_fixes.py` | 27 | 528 | WASM call-translator regression fixes (#475): string/array slice clamps, char-code bounds, URL/base64/parse edge cases, map-array-value rejection (#419 split) |
+| `test_codegen_gc_alloc.py` | 39 | 895 | Layout helpers, bump allocator, GC core (#515), shadow-stack overflow, multi-page grow (#487), worklist overflow (#348) (#419 split) |
+| `test_codegen_gc_rooting.py` | 23 | 1,137 | Opaque-handle param rooting (#347, #490), host-walker GC rooting (#692), Map host-store reachability (#695), ADT-builder rooting (#743) (#419 split) |
+| `test_codegen_gc_reclamation.py` | 21 | 706 | Transient Map/Set/Decimal reclamation (#573; scale trio marked `stress`, #738), bucket occupancy (#706), SameValueZero keys (#743) (#419 split) |
 | `test_codegen_contracts.py` | 32 | 570 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,320 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 50 | 1,618 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
@@ -101,7 +121,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester_coverage.py` | 35 | 930 | Tester coverage gaps: String/Float64/ADT parameter input generation, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases, FP model-value extraction (NaN/Inf/signed-zero, #797) |
 | `test_markdown.py` | 59 | 393 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_lsp.py` | 94 | 1211 | LSP transport + coordinate layer (#222 Phase C) and language features (#222 Phase D): parametrized code-point↔UTF-16 goldens incl. astral-plane fixtures and surrogate-pair snapping, Span (1-based, exclusive-end) and SourceLocation (0-based col) → LSP Range conversions, point→token-range widening, DocumentStore open/change/close + index invalidation, an in-process handler-drive test, and one stdio end-to-end round-trip against the real `vera lsp` subprocess (initialize → didOpen → shutdown → exit) pinning serverInfo + textDocumentSync capabilities; plus the Phase D feature suite — parse-error single-diagnostic path, type-error verification short-circuit, tier=3 in E520 diagnostic data, per-function tier Hint synthesis (and its suppression for functions with violated obligations), smallest-enclosing-span hover, De Bruijn slot goto (most-recent-parameter jump, out-of-range None, off-slot None), and typed-hole completion (inside/after hole, away-from-hole None); plus the Phase E speculativeEdit suite — identical-text all-unchanged, breaking edit surfaces newly_undischarged (violated nat_sub) with canonical state untouched, strengthening edit surfaces newly_discharged, parse/type errors report ok:false, deleted functions report removed, proof_delta purity; plus the Phase F1 proposeEdit suite — the apply gate (clean and strengthening edits apply, breaking and non-compiling edits refuse), force overriding both gates with the delta still reported, wiring against a structural fake server (apply round-trip with exact full-document replacement range, refuse touches no canonical state, unopened-URI clamp sentinel), and full-document-range goldens (trailing-newline virtual line, UTF-16 end column); plus the Phase F2 strengthenContract suite — splice goldens (first-clause-only replacement with byte-identical remainder, ensures variant, unknown-fn None), the call-site audit pin (tightened precondition refused with newly_undischarged call_pre items, canonical state untouched), provable-ensures strengthening applies, and the three splice-target refusal paths (no analysis, unparseable document, unknown function); plus the Phase F3 addEffect suite — transitive-caller closure goldens (diamond in declaration order, leaf, unknown-fn None, recursion appears once), effect-row rewrite goldens (pure to singleton set, source-preserving append, already-present None, base-name identity blocking State<Int> next to State<Bool>), diamond propagation applying one multi-site candidate with the bystander untouched, mixed append/replace rows with already-satisfied callers skipped, the fully-satisfied no-op shape, and the two refusal paths; plus the #728 instruction-contract suite — the LSP message carries description, rationale, and the Fix: paragraph (also pinning single E501 emission at the LSP surface), and a bare diagnostic maps to the description alone |
-| `test_browser.py` | 107 | 2,163 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
+| `test_browser.py` | 107 | 2,164 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 515 | 124 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 103 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
@@ -110,7 +130,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_float64_builtins_807.py` | 81 | 491 | #807 — Tier-1 modeling of the modelable `@Float64` builtins. `float_clamp` modeled unconditionally as faithful WASM `f64.min(f64.max(v,lo),hi)` (the NaN-propagation soundness guard distinguishes it from a naive `z3.fpMin`/`fpMax`); `int_to_float` / `float_to_int` concrete-gated (symbolic args defer to Tier 3 — Z3's symbolic FP↔Real reasoning returns spurious counterexamples); `float_to_int` domain obligation (E529) for concrete NaN/Inf/out-of-range args. Verify-vs-run differentials confirm each model agrees with wasmtime bit-for-bit (±0, ±inf, NaN, ties, lo>hi, the 2^53 rounding boundary, i64 max, and the trap cases) |
 | `test_build_site.py` | 23 | 316 | Site-asset tooling — `_abs_links` rewriting (relative links, fenced-block immunity incl. inline backticks and tilde fences, http/https/fragment pass-through, Vera effect syntax not mis-parsed), `build_site` `<lastmod>` stability (preserve/refresh keyed on URL-structure change), and `check_site_assets` sitemap staleness (missing / date-only-clean / structural-stale) |
 | `test_check_changelog_updated.py` | 68 | 711 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths, and `GIT_*`-env hermeticity of the temp-repo fixtures (regression for the pre-commit-hook env leak) |
-| `test_check_doc_counts.py` | 15 | 150 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
+| `test_check_doc_counts.py` | 17 | 174 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows, the #419 empty-section sentinel + its cannot-mask-a-malformed-table dual) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
 | `test_check_explicit_encoding.py` | 54 | 254 | `check_explicit_encoding.py` gate (#645): flags text-mode `open()` / `read_text()` / `write_text()` **and** `subprocess.run/Popen/check_output(..., text=True)` captures missing an `encoding="utf-8"` literal (rejects non-literal / non-UTF-8 values), skips binary/bytes-mode calls, honours the `# encoding-exempt` opt-out, and asserts the shipped repo is clean |
 | `test_check_limitations_sync.py` | 5 | 77 | `check_limitations_sync.py` section extraction: table-rows-only issue harvesting, prose-link exemption, bounding at the next second-level heading, `None` for absent or sub-level headings so renamed sections fail loudly |
 | `test_doc_builtin_shadowing.py` | 8 | 107 | `check_doc_builtin_shadowing.py` gate ([#819](https://github.com/aallan/vera/issues/819)): reject-set membership (opaque built-ins in, overridable combinators out), top-level + `where`-block `fn <builtin>` definitions flagged, non-built-in / overridable / prose-mention ignored, and the shipped docs are currently clean |
@@ -316,50 +336,51 @@ How Vera language features (by spec chapter) map to test files and example progr
 
 | Spec chapter | Feature | Test files | Conformance | Examples |
 |-------------|---------|-----------|-------------|----------|
-| Ch 1: Lexical | Literals (Int, Float64, Bool, Byte, String) | test_ast, test_codegen | ch01_int_literals, ch01_float_literals, ch01_bool_literals, ch01_byte_literals | most examples |
-| Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen | ch01_string_escapes | io_operations, file_io |
+| Ch 1: Lexical | Literals (Int, Float64, Bool, Byte, String) | test_ast, test_codegen_* | ch01_int_literals, ch01_float_literals, ch01_bool_literals, ch01_byte_literals | most examples |
+| Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen_* | ch01_string_escapes | io_operations, file_io |
 | Ch 1: Lexical | Comments | test_parser | ch01_comments | — |
-| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker_* | ch02_builtin_types | most examples |
-| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker_* | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
-| Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
+| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen_*, test_checker_* | ch02_builtin_types | most examples |
+| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen_*, test_checker_* | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
+| Ch 2: Types | Refinement types | test_codegen_*, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker_* | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker_*, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
-| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker_* | ch04_arithmetic, ch04_comparison, ch04_boolean_ops, ch04_int_overflow | factorial, absolute_value |
-| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker_* | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
-| Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
-| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker_* | ch05_basic_function, ch05_recursion, ch05_mutual_recursion | factorial, mutual_recursion |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker_*, test_codegen_* | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
+| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen_*, test_checker_* | ch04_arithmetic, ch04_comparison, ch04_boolean_ops, ch04_int_overflow | factorial, absolute_value |
+| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen_*, test_checker_* | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
+| Ch 4: Expressions | String and array builtins | test_codegen_* | ch04_string_builtins, ch04_array_ops | string_ops |
+| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen_*, test_checker_* | ch05_basic_function, ch05_recursion, ch05_mutual_recursion | factorial, mutual_recursion |
 | Ch 5: Functions | Closures, higher-order functions | test_codegen_closures | ch05_closures | closures |
 | Ch 5: Functions | Visibility (`public`/`private`) | test_checker_* | ch05_visibility | modules |
 | Ch 6: Contracts | Preconditions (`requires`) | test_codegen_contracts, test_verifier | ch06_requires | safe_divide |
 | Ch 6: Contracts | Postconditions (`ensures`) | test_codegen_contracts, test_verifier | ch06_ensures | absolute_value |
-| Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | ch06_decreases, ch06_assert_assume | factorial |
-| Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | ch06_quantifiers | quantifiers |
-| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker_* | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
-| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker_* | ch07_state_handler, ch07_exn_handler | effect_handler |
-| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker_* | ch09_numeric_builtins | — |
-| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker_* | ch09_type_conversions | — |
-| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen, test_checker_* | ch10_float_predicates | — |
+| Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen_* | ch06_decreases, ch06_assert_assume | factorial |
+| Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen_*, test_verifier | ch06_quantifiers | quantifiers |
+| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen_*, test_checker_* | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
+| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen_*, test_checker_* | ch07_state_handler, ch07_exn_handler | effect_handler |
+| Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen_*, test_checker_* | ch09_numeric_builtins | — |
+| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen_*, test_checker_* | ch09_type_conversions | — |
+| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen_*, test_checker_* | ch10_float_predicates | — |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker_* | — | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker_* | — | — |
-| Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |
+| Ch 4: Expressions | Nested constructor patterns in match | test_codegen_* | ch04_match_nested | pattern_matching |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
 | Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — | — |
-| Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen, test_markdown | ch09_markdown | markdown |
-| Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen, test_checker_* | ch09_regex | regex |
-| Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen, test_checker_* | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |
-| Ch 9: Stdlib | Json (json_parse, json_stringify, json_get, json_array_get, json_array_length, json_keys, json_has_field, json_type) | test_codegen, test_checker_* | ch09_json | json |
-| Ch 9: Stdlib | Html (html_parse, html_to_string, html_query, html_text, html_attr) | test_codegen, test_checker_* | ch09_html | html |
-| Ch 9: Stdlib | Http effect (Http.get, Http.post) | test_codegen, test_checker_* | ch09_http | http |
+| Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen_*, test_markdown | ch09_markdown | markdown |
+| Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen_*, test_checker_* | ch09_regex | regex |
+| Ch 9: Stdlib | Map, Set, Decimal collections | test_codegen_*, test_checker_* | ch09_map, ch09_set, ch09_decimal, ch09_decimal_generics | collections |
+| Ch 9: Stdlib | Json (json_parse, json_stringify, json_get, json_array_get, json_array_length, json_keys, json_has_field, json_type) | test_codegen_*, test_checker_* | ch09_json | json |
+| Ch 9: Stdlib | Html (html_parse, html_to_string, html_query, html_text, html_attr) | test_codegen_*, test_checker_* | ch09_html | html |
+| Ch 9: Stdlib | Http effect (Http.get, Http.post) | test_codegen_*, test_checker_* | ch09_http | http |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | — | safe_divide, factorial |
 | Ch 12: Runtime | Browser runtime parity (JS host bindings match Python) | test_browser | — | — |
 
 ## Test Helpers
 
 Each test module defines module-level helper functions (no `conftest.py`).  The
-`test_checker_*.py` suite (split from `test_checker.py`, #420) is the exception:
-its shared helpers live in `tests/checker_helpers.py` and are imported by each
-phase file (`test_checker_types.py`, `_patterns`, `_functions`, `_effects`,
-`_modules`, `_errors`, `_builtins_collections`, `_builtins_strings`).
+two split suites are the exception: the `test_checker_*.py` files (split from
+`test_checker.py`, #420) import their shared helpers from
+`tests/checker_helpers.py`, and the `test_codegen_*.py` feature files (split
+from `test_codegen.py`, #419) import theirs — plus the `_IO_PRELUDE` /
+`_INLINE_BUILTIN_NAMES` fixture constants — from `tests/codegen_helpers.py`.
 
 ```python
 # test_checker_*.py pattern (helpers from tests/checker_helpers.py):
@@ -371,7 +392,7 @@ _verify_ok(source)             # assert no verification errors
 _verify_err(source, "match")   # assert at least one verification error
 _verify_warn(source, "match")  # assert at least one warning
 
-# test_codegen.py pattern:
+# test_codegen_*.py pattern (helpers from tests/codegen_helpers.py):
 _compile_ok(source)            # assert compilation succeeds
 _run(source, fn, args)         # compile + execute, return result
 _run_io(source, fn, args)      # compile + execute, return captured stdout
@@ -509,7 +530,7 @@ vera_path = Path(tmp_path).as_posix()
 source = f'IO.read_file("{vera_path}")'
 ```
 
-Surfaced via `tests/test_codegen.py::TestIOOperations::test_io_read_file_*` — see PR #643 for the fix.
+Surfaced via `tests/test_codegen_io.py::TestIOOperations::test_io_read_file_*` — see PR #643 for the fix.
 
 ### File I/O without explicit encoding falls back to the locale default
 
@@ -535,7 +556,7 @@ When extending the compiler, add tests following the existing patterns:
 2. **New AST node:** Add transformation tests to `test_ast.py` (check node fields, spans, serialisation)
 3. **New type rule:** Add checker tests to the matching `test_checker_*.py` phase file using `_check_ok()`/`_check_err()` (imported from `tests/checker_helpers.py`)
 4. **New SMT support:** Add verifier tests to `test_verifier.py` using `_verify_ok()`/`_verify_err()`
-5. **New codegen support:** Add compilation tests to `test_codegen.py` using `_compile_ok()`/`_run()`/`_run_trap()`
+5. **New codegen support:** Add compilation tests to the matching `test_codegen_*.py` feature file using `_compile_ok()`/`_run()`/`_run_trap()` (imported from `tests/codegen_helpers.py`)
 6. **New example program:** Add to `examples/` -- it is automatically included in round-trip tests
 7. **New error pattern:** Add formatting tests to `test_errors.py`
 8. **New tester feature:** Add tests to `test_tester.py` using `_test(source)` helper

@@ -929,7 +929,7 @@ public fn main(-> @Unit)
     def test_array_sort_by_stability(self, tmp_path: Path) -> None:
         """Browser parity for the stability fingerprint test.
 
-        Mirrors ``test_array_sort_by_stability`` from ``test_codegen.py``
+        Mirrors ``test_array_sort_by_stability`` from ``test_codegen_arrays.py``
         — same input ``[100, 101, 202, 203, 104]`` (keys 10, 10, 20,
         20, 10 with payloads encoded in the units digit), same
         comparator that ignores the payload, same position-weighted
@@ -1868,7 +1868,7 @@ class TestBrowserExports:
 
 class TestBrowserMapHostStoreGCReachability695:
     """Browser-runtime parallel of
-    ``test_codegen.py::TestMapHostStoreGCReachability695``.
+    ``test_codegen_gc_rooting.py::TestMapHostStoreGCReachability695``.
 
     PR #707 review (pr-test-analyzer I3): the JS-side
     ``attach_bucket_to_wrapper`` implementation (~115 LOC of bucket
@@ -1923,7 +1923,7 @@ class TestBrowserMapHostStoreGCReachability695:
         tmp_path: Path,
     ) -> None:
         """Browser parallel of
-        ``test_codegen.py::test_eager_gc_set_of_json_post_walk_uaf``.
+        ``test_codegen_gc_rooting.py::test_eager_gc_set_of_json_post_walk_uaf``.
         Exercises the JS-side ``attach_bucket_to_wrapper`` Set branch
         plus the ``allocMapWrapper`` JS rooting (#707 round 2 fix).
         """
@@ -1961,7 +1961,7 @@ public fn main(-> @Unit)
         tmp_path: Path,
     ) -> None:
         """Browser parallel of
-        ``test_codegen.py::test_eager_gc_json_object_with_array_child_post_walk_uaf``.
+        ``test_codegen_gc_rooting.py::test_eager_gc_json_object_with_array_child_post_walk_uaf``.
         Exercises the JS-side ``allocMapWrapper`` (which wraps the
         JSON-parser-produced ``Map<String, Json>``) plus the
         ``readJson`` bit-31 mask fix (CR round 1 finding 2).
@@ -1998,7 +1998,7 @@ public fn main(-> @Unit)
         tmp_path: Path,
     ) -> None:
         """Browser parallel of
-        ``test_codegen.py::test_eager_gc_map_of_json_user_level_post_walk_uaf``.
+        ``test_codegen_gc_rooting.py::test_eager_gc_map_of_json_user_level_post_walk_uaf``.
         Exercises the user-level ``map_insert(map_new(), ...)`` path
         through the JS-side ``attach_bucket_to_wrapper`` Map branch,
         with EAGER_GC pressure on every alloc.
@@ -2036,8 +2036,9 @@ public fn main(-> @Unit)
 
 
 class TestBrowserRound4Fixes743:
-    """Browser-runtime parallel of ``test_codegen.py``'s
-    ``TestAdtBuilderRooting743`` and ``TestSameValueZeroKeys743`` — pins
+    """Browser-runtime parallel of ``test_codegen_gc_rooting.py``'s
+    ``TestAdtBuilderRooting743`` and ``test_codegen_gc_reclamation.py``'s
+    ``TestSameValueZeroKeys743`` — pins
     the JS ``gcRooted`` ADT-builder rooting and the ``sameValueZero``
     Float64-key comparison (folded into #706, surfaced by the CodeRabbit
     review).

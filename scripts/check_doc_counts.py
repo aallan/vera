@@ -42,6 +42,10 @@ def check_refactoring_counts(known_issues_text: str, root: Path) -> list[str]:
         return ["KNOWN_ISSUES.md: could not find '## Refactoring needed' section"]
     rows = re.findall(r"\| `([\w./-]+)` \| ([\d,]+) \|", section.group(1))
     if not rows:
+        # Empty-section convention (mirrors "No known bugs."): when the last
+        # oversized file is split, the table is replaced by this sentence.
+        if "No files currently need decomposition." in section.group(1):
+            return []
         return ["KNOWN_ISSUES.md: refactoring table has no `file` | count rows"]
     for rel, cited_s in rows:
         cited = int(cited_s.replace(",", ""))

@@ -6,7 +6,7 @@
 -- Verified at "verify" level — no run assertion because randomness
 -- is non-deterministic.  The signatures and effect-row plumbing
 -- are checked here; runtime behaviour is exercised by unit tests
--- in tests/test_codegen.py.
+-- in tests/test_codegen_effects.py.
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

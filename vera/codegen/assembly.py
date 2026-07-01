@@ -742,7 +742,7 @@ class AssemblyMixin:
             # dedicated classifier kind.  Kept as a Python comment
             # rather than a WAT comment so the emitted WAT stays
             # compact and the adjacent-sequence regex in
-            # tests/test_codegen.py::TestWrapperHandleTagging578::
+            # tests/test_codegen_collections.py::TestWrapperHandleTagging578::
             # test_alloc_emits_heap_ceiling_guard stays simple.
             #
             # Two-step overflow-safe form:
@@ -1107,7 +1107,7 @@ class AssemblyMixin:
             "      ;; as heap pointers and #578 reappears.  Two\n"
             "      ;; structural tests pin the invariant against that\n"
             "      ;; class of regression:\n"
-            "      ;; tests/test_codegen.py::TestWrapperHandleTagging578::\n"
+            "      ;; tests/test_codegen_collections.py::TestWrapperHandleTagging578::\n"
             "      ;;   test_wrap_emits_tag_or (pins the bit)\n"
             "      ;;   test_alloc_emits_heap_ceiling_guard (pins ceiling)\n"
             "      local.get $val\n"

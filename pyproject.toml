@@ -126,9 +126,10 @@ only_mutate = [
     "vera/obligations/*",
 ]
 # mutmut copies tests/ + config but nothing else by default; the
-# in-process oracle also reads these repo files (test_codegen example
-# round-trips; test_errors' error-display-sync against README / docs /
-# spec), so the ./mutants/ copy needs them or pytest errors at collection.
+# in-process oracle also reads these repo files (the example round-trips in
+# test_codegen_infrastructure / _effects / _strings; test_errors'
+# error-display-sync against README / docs / spec), so the ./mutants/ copy
+# needs them or pytest errors at collection.
 also_copy = ["examples/", "README.md", "docs/", "spec/"]
 # `mutmut run` copies the project to ./mutants/ and runs the suite there,
 # so the working tree is never mutated in place.
@@ -157,7 +158,27 @@ pytest_add_cli_args_test_selection = [
     "tests/test_checker_errors.py",
     "tests/test_checker_builtins_collections.py",
     "tests/test_checker_builtins_strings.py",
-    "tests/test_codegen.py",
+    "tests/test_codegen_expressions.py",
+    "tests/test_codegen_calls.py",
+    "tests/test_codegen_infrastructure.py",
+    "tests/test_codegen_interpolation.py",
+    "tests/test_codegen_effects.py",
+    "tests/test_codegen_data_types.py",
+    "tests/test_codegen_arrays.py",
+    "tests/test_codegen_refinements.py",
+    "tests/test_codegen_strings.py",
+    "tests/test_codegen_string_builtins.py",
+    "tests/test_codegen_numeric.py",
+    "tests/test_codegen_io.py",
+    "tests/test_codegen_collections.py",
+    "tests/test_codegen_json.py",
+    "tests/test_codegen_decimal.py",
+    "tests/test_codegen_host_effects.py",
+    "tests/test_codegen_nat_guards.py",
+    "tests/test_codegen_translator_fixes.py",
+    "tests/test_codegen_gc_alloc.py",
+    "tests/test_codegen_gc_rooting.py",
+    "tests/test_codegen_gc_reclamation.py",
     "tests/test_codegen_contracts.py",
     "tests/test_codegen_monomorphize.py",
     "tests/test_codegen_closures.py",
