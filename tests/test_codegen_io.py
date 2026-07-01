@@ -4,6 +4,8 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from vera.codegen import (
     execute,
 )
@@ -196,7 +198,7 @@ public fn main(-> @Unit)
         # collide with Vera's string-literal escape grammar — `\U`
         # would trip [E009] "invalid escape sequence" at parse time.
         # Windows file APIs accept forward slashes natively.  (#642)
-        vera_path = tmp_path.replace(os.sep, "/")
+        vera_path = Path(tmp_path).as_posix()
         source = f"""\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -224,7 +226,7 @@ public fn main(-> @Unit)
         # form so backslashes in Windows paths don't trip Vera's
         # string-literal escape grammar — see `test_io_read_file_success`
         # for the same fix and #642 for the original repro.
-        vera_path = tmp_file.replace(os.sep, "/")
+        vera_path = Path(tmp_file).as_posix()
         source = f"""\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)

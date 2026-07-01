@@ -64,6 +64,16 @@ def _compile_ok(source: str) -> CompileResult:
     return result
 
 
+def _compile_example(name: str) -> CompileResult:
+    """Compile a .vera file from examples/ by name, mirroring the real
+    file-based pipeline (read_text, parse_file, transform, compile)."""
+    path = Path(__file__).parent.parent / "examples" / name
+    source = path.read_text(encoding="utf-8")
+    tree = parse_file(str(path))
+    program = transform(tree)
+    return compile(program, source=source, file=str(path))
+
+
 def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> int:
     """Compile, execute, and return the integer result."""
     result = _compile_ok(source)

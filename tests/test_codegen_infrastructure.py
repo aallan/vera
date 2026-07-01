@@ -5,19 +5,17 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 from __future__ import annotations
 
 import pytest
-import wasmtime
 
 from vera.codegen import (
-    compile,
     CompileResult,
     execute,
 )
-from vera.parser import parse_file
-from vera.transform import transform
+from vera.codegen.api import WasmTrapError
 
 from tests.codegen_helpers import (
     _IO_PRELUDE,
     _compile,
+    _compile_example,
     _compile_ok,
     _run,
 )
@@ -88,12 +86,7 @@ class TestExampleRoundTrips:
 
     def test_absolute_value_positive(self) -> None:
         """absolute_value(5) returns 5."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("absolute_value.vera")
         assert result.ok
         assert "absolute_value" in result.exports
         exec_result = execute(result, fn_name="absolute_value", args=[5])
@@ -101,34 +94,19 @@ class TestExampleRoundTrips:
 
     def test_absolute_value_negative(self) -> None:
         """absolute_value(-7) returns 7."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("absolute_value.vera")
         exec_result = execute(result, fn_name="absolute_value", args=[-7])
         assert exec_result.value == 7
 
     def test_absolute_value_zero(self) -> None:
         """absolute_value(0) returns 0."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("absolute_value.vera")
         exec_result = execute(result, fn_name="absolute_value", args=[0])
         assert exec_result.value == 0
 
     def test_safe_divide(self) -> None:
         """safe_divide(3, 10) returns 3 (body: @Int.0/@Int.1 = 10/3)."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "safe_divide.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("safe_divide.vera")
         assert result.ok
         assert "safe_divide" in result.exports
         # De Bruijn: @Int.1 = first param (divisor), @Int.0 = second param
@@ -138,24 +116,15 @@ class TestExampleRoundTrips:
 
     def test_safe_divide_trap_on_zero(self) -> None:
         """safe_divide(0, 10) traps: requires(@Int.1 != 0) violated."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "safe_divide.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("safe_divide.vera")
         # First param (divisor) is 0 → precondition @Int.1 != 0 violated
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        with pytest.raises(WasmTrapError) as excinfo:
             execute(result, fn_name="safe_divide", args=[0, 10])
+        assert excinfo.value.kind == "contract_violation"
 
     def test_mutual_recursion_is_even(self) -> None:
         """Where-block mutual recursion: is_even(4) returns true."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "mutual_recursion.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("mutual_recursion.vera")
         assert result.ok
         assert "is_even" in result.exports
         # is_even(4) → true (1)
@@ -167,23 +136,13 @@ class TestExampleRoundTrips:
 
     def test_mutual_recursion_zero(self) -> None:
         """is_even(0) returns true (base case)."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "mutual_recursion.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("mutual_recursion.vera")
         exec_result = execute(result, fn_name="is_even", args=[0])
         assert exec_result.value == 1
 
     def test_factorial_example_file(self) -> None:
         """The actual examples/factorial.vera compiles and runs."""
-        from pathlib import Path
-        path = Path(__file__).parent.parent / "examples" / "factorial.vera"
-        source = path.read_text(encoding="utf-8")
-        tree = parse_file(str(path))
-        program = transform(tree)
-        result = compile(program, source=source, file=str(path))
+        result = _compile_example("factorial.vera")
         assert result.ok
         exec_result = execute(result, fn_name="factorial", args=[5])
         assert exec_result.value == 120

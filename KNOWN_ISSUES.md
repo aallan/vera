@@ -74,7 +74,6 @@ Internal test-quality items that don't affect correctness today but would make t
 |-----|-------|
 | Five of the six UTF-8 decode sites are pinned only by structural source-greps — a refactor that centralises the decodes would break the greps even with preserved behaviour. End-to-end tests per site (parametrizing the existing `host_print` test over an import-name/signature/payload tuple) would survive it. | [#592](https://github.com/aallan/vera/issues/592) |
 | Text-mode `open()`/`read_text()`/`write_text()` calls without explicit `encoding='utf-8'` remain at roughly 30 sites, relying on CI's `PYTHONUTF8=1` backstop. The durable fix is explicit encoding everywhere plus a pre-commit check, after which the CI variable can be dropped. | [#645](https://github.com/aallan/vera/issues/645) |
-| Four test-body idioms carried over byte-for-byte by the #419 split need a modernisation pass: the `os.sep`-replace path normalisation in `test_codegen_io.py`, the leaking tempfile parse dance in three `test_codegen_gc_rooting.py` methods, the repeated example-loading sequence in `TestExampleRoundTrips`, and a precondition-trap assertion that should narrow to the normalised `kind == "contract_violation"`. | [#838](https://github.com/aallan/vera/issues/838) |
 
 ## CI workarounds
 
