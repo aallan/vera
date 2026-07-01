@@ -19,6 +19,17 @@ from tests.checker_helpers import (
 )
 
 
+def _resolved_module(path: tuple[str, ...], source: str) -> ResolvedModule:
+    """Build a ResolvedModule from source text (shared test helper)."""
+    prog = parse_to_ast(source)
+    return ResolvedModule(
+        path=path,
+        file_path=Path(f"/fake/{'/'.join(path)}.vera"),
+        program=prog,
+        source=source,
+    )
+
+
 # =====================================================================
 # Module call diagnostics (C7a)
 # =====================================================================
@@ -131,25 +142,11 @@ public data List<T> { Nil, Cons(T, List<T>) }
 public data Option<T> { None, Some(T) }
 """
 
-    @staticmethod
-    def _resolved(
-        path: tuple[str, ...], source: str,
-    ) -> ResolvedModule:
-        """Build a ResolvedModule from source text."""
-        from vera.resolver import ResolvedModule as RM
-        prog = parse_to_ast(source)
-        return RM(
-            path=path,
-            file_path=Path(f"/fake/{'/'.join(path)}.vera"),
-            program=prog,
-            source=source,
-        )
-
     # -- Bare calls (parsed normally) -----------------------------------
 
     def test_bare_call_resolves_type(self) -> None:
         """import m(magnitude); magnitude(42) -> no errors."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(magnitude);
 private fn main(@Int -> @Int)
@@ -162,7 +159,7 @@ private fn main(@Int -> @Int)
 
     def test_bare_call_arity_mismatch(self) -> None:
         """magnitude(1, 2) where magnitude takes 1 arg -> arity error."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(magnitude);
 private fn main(@Int -> @Int)
@@ -175,7 +172,7 @@ private fn main(@Int -> @Int)
 
     def test_bare_call_type_mismatch(self) -> None:
         """magnitude(true) where magnitude expects Int -> type error."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(magnitude);
 private fn main(@Bool -> @Int)
@@ -189,7 +186,7 @@ private fn main(@Bool -> @Int)
 
     def test_bare_call_generic_inference(self) -> None:
         """import m(identity); identity(42) -> infers Int, no errors."""
-        mod = self._resolved(("gen",), self.GENERIC_MODULE)
+        mod = _resolved_module(("gen",), self.GENERIC_MODULE)
         prog = parse_to_ast("""\
 import gen(identity);
 private fn main(@Int -> @Int)
@@ -202,7 +199,7 @@ private fn main(@Int -> @Int)
 
     def test_wildcard_import_allows_all(self) -> None:
         """import math (no names) -> all functions available."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math;
 private fn main(@Int -> @Int)
@@ -215,7 +212,7 @@ private fn main(@Int -> @Int)
 
     def test_local_shadows_import(self) -> None:
         """Local fn magnitude shadows imported magnitude."""
-        mod = self._resolved(("math",), """\
+        mod = _resolved_module(("math",), """\
 public fn magnitude(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
@@ -237,7 +234,7 @@ private fn main(@Int -> @Int)
 
     def test_imported_adt_constructors(self) -> None:
         """import m(List) -> Cons and Nil constructors available."""
-        mod = self._resolved(("col",), self.COLLECTIONS_MODULE)
+        mod = _resolved_module(("col",), self.COLLECTIONS_MODULE)
         prog = parse_to_ast("""\
 import col(List);
 private fn main(@Int -> @List<Int>)
@@ -252,7 +249,7 @@ private fn main(@Int -> @List<Int>)
 
     def test_module_call_resolves_type(self) -> None:
         """ModuleCall to resolved function -> correct type, no errors."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("math",), name="magnitude",
             args=(ast.IntLit(value=42),),
@@ -282,7 +279,7 @@ private fn main(@Int -> @List<Int>)
 
     def test_module_call_arity_mismatch(self) -> None:
         """Module-qualified call with wrong arity -> error."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("math",), name="magnitude",
             args=(ast.IntLit(value=1), ast.IntLit(value=2)),
@@ -310,7 +307,7 @@ private fn main(@Int -> @List<Int>)
 
     def test_selective_import_rejects_unimported(self) -> None:
         """Module call to name not in selective import -> error."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("math",), name="larger",
             args=(ast.IntLit(value=1), ast.IntLit(value=2)),
@@ -340,7 +337,7 @@ private fn main(@Int -> @List<Int>)
 
     def test_fn_not_in_module(self) -> None:
         """Module call to nonexistent function -> warning with available list."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("math",), name="nonexistent",
             args=(ast.IntLit(value=42),),
@@ -369,7 +366,7 @@ private fn main(@Int -> @List<Int>)
 
     def test_multi_segment_path(self) -> None:
         """Multi-segment module path (vera.math) works."""
-        mod = self._resolved(("vera", "math"), self.MATH_MODULE)
+        mod = _resolved_module(("vera", "math"), self.MATH_MODULE)
         call = ast.ModuleCall(
             path=("vera", "math"), name="magnitude",
             args=(ast.IntLit(value=42),),
@@ -424,20 +421,6 @@ public data Color { Red, Green, Blue }
 private data Secret { Hidden }
 """
 
-    @staticmethod
-    def _resolved(
-        path: tuple[str, ...], source: str,
-    ) -> ResolvedModule:
-        """Build a ResolvedModule from source text."""
-        from vera.resolver import ResolvedModule as RM
-        prog = parse_to_ast(source)
-        return RM(
-            path=path,
-            file_path=Path(f"/fake/{'/'.join(path)}.vera"),
-            program=prog,
-            source=source,
-        )
-
     # -- Mandatory visibility -------------------------------------------
 
     def test_missing_visibility_on_fn(self) -> None:
@@ -479,7 +462,7 @@ public fn foo(@Int -> @Int)
 
     def test_public_fn_importable(self) -> None:
         """Public fn from module can be imported and called."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod(pub_fn);
 private fn main(@Int -> @Int)
@@ -492,7 +475,7 @@ private fn main(@Int -> @Int)
 
     def test_private_fn_not_importable(self) -> None:
         """Selective import of private fn -> error."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod(priv_fn);
 private fn main(@Int -> @Int)
@@ -507,7 +490,7 @@ private fn main(@Int -> @Int)
 
     def test_public_data_importable(self) -> None:
         """Public data type and constructors can be imported."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod(Color);
 private fn main(@Unit -> @Color)
@@ -520,7 +503,7 @@ private fn main(@Unit -> @Color)
 
     def test_private_data_not_importable(self) -> None:
         """Selective import of private data type -> error."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod(Secret);
 private fn main(@Unit -> @Secret)
@@ -535,7 +518,7 @@ private fn main(@Unit -> @Secret)
 
     def test_wildcard_import_skips_private(self) -> None:
         """Wildcard import only injects public names."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod;
 private fn main(@Int -> @Int)
@@ -548,7 +531,7 @@ private fn main(@Int -> @Int)
 
     def test_wildcard_import_private_fn_unresolved(self) -> None:
         """Wildcard import: calling private fn -> unresolved warning."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mod;
 private fn main(@Int -> @Int)
@@ -564,7 +547,7 @@ private fn main(@Int -> @Int)
 
     def test_module_call_private_fn_rejected(self) -> None:
         """ModuleCall to private function -> error."""
-        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mod",), self.MIXED_MODULE)
         call = ast.ModuleCall(
             path=("mod",), name="priv_fn",
             args=(ast.IntLit(value=42),),
@@ -618,7 +601,7 @@ private fn main(@Int -> @Int)
 
     def test_visibility_error_mentions_private(self) -> None:
         """Error message includes 'private', fn name, and module name."""
-        mod = self._resolved(("mymod",), self.MIXED_MODULE)
+        mod = _resolved_module(("mymod",), self.MIXED_MODULE)
         prog = parse_to_ast("""\
 import mymod(priv_fn);
 private fn main(@Int -> @Int)
@@ -900,19 +883,9 @@ public fn tag(@Int, @String -> @String)
 { @String.0 }
 """
 
-    @staticmethod
-    def _resolved(
-        path: tuple[str, ...], source: str
-    ) -> "ResolvedModule":
-        from vera.resolver import ResolvedModule
-        prog = parse_to_ast(source)
-        return ResolvedModule(
-            path=path, file_path=Path("/fake"), program=prog, source=source,
-        )
-
     def test_parsed_module_call_typechecks(self) -> None:
         """Parsed :: syntax produces ModuleCall that type-checks."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         source = """\
 import math(magnitude);
 private fn f(@Int -> @Int)
@@ -926,7 +899,7 @@ private fn f(@Int -> @Int)
 
     def test_parsed_multi_segment_path(self) -> None:
         """Multi-segment path vera.math::magnitude type-checks."""
-        mod = self._resolved(("vera", "math"), self.MATH_MODULE)
+        mod = _resolved_module(("vera", "math"), self.MATH_MODULE)
         source = """\
 import vera.math(magnitude);
 private fn f(@Int -> @Int)
@@ -940,7 +913,7 @@ private fn f(@Int -> @Int)
 
     def test_parsed_module_call_arity_error(self) -> None:
         """Parsed :: call with wrong arity produces error."""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         source = """\
 import math(magnitude);
 private fn f(@Int -> @Int)
@@ -954,7 +927,7 @@ private fn f(@Int -> @Int)
 
     def test_pipe_into_module_call_typechecks(self) -> None:
         """Pipe into module-qualified call type-checks without E201. (#326)"""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         source = """\
 import math(magnitude);
 private fn f(@Int -> @Int)
@@ -968,7 +941,7 @@ private fn f(@Int -> @Int)
 
     def test_pipe_chained_module_calls_typechecks(self) -> None:
         """Chained pipes into module-qualified calls type-check. (#326)"""
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         source = """\
 import math(magnitude);
 private fn f(@Int -> @Int)
@@ -989,7 +962,7 @@ private fn f(@Int -> @Int)
         expected and emit a type error — making the prepend/append distinction
         type-observable.
         """
-        mod = self._resolved(("math",), self.MATH_MODULE)
+        mod = _resolved_module(("math",), self.MATH_MODULE)
         source = """\
 import math(tag);
 private fn f(@Int -> @String)
