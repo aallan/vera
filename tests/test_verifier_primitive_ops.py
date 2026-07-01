@@ -1,4 +1,4 @@
-"""Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array/string index-bounds (E527) obligations (#680)).
+"""Tests for vera.verifier — primitive_ops (division/modulo-by-zero (E526) and array index-bounds (E527) obligations (#680)).
 
 Split from tests/test_verifier.py (#839). Shared helpers live in tests/verifier_helpers.py.
 """
