@@ -91,10 +91,22 @@ class ClosureLiftingMixin:
         while worklist:
             anon_fn, captures, closure_id = worklist.popleft()
             inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
-            lifted_wat = self._compile_lifted_closure(
-                closure_id, anon_fn, captures,
-                collect_pending=inner_pending,
-            )
+            try:
+                lifted_wat = self._compile_lifted_closure(
+                    closure_id, anon_fn, captures,
+                    collect_pending=inner_pending,
+                )
+            except CodegenInvariantError:
+                # #657: a closure-body invariant (codegen bug) aborts the
+                # worklist mid-way.  Restore `_next_closure_id` — mirroring the
+                # `any_failed` rollback below — so the consumed range is recycled
+                # and subsequent top-level fns keep their closure_id ↔
+                # table_index correspondence, then re-raise so `_compile_fn`
+                # surfaces a single [E699].  (Local buffers are discarded with
+                # the stack frame; module-level state is committed only on the
+                # all-success path below, so nothing else needs rolling back.)
+                self._next_closure_id = prev_next_closure_id
+                raise
             if lifted_wat is None:
                 # Closure body failed — diagnostics already emitted by
                 # `_compile_lifted_closure`'s harvest.  Record the

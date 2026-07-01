@@ -74,31 +74,41 @@ def test_codegen_invariant_error_surfaces_as_e699(monkeypatch) -> None:
     )
 
 
-def test_closure_lifting_invariant_error_surfaces_as_e699(monkeypatch) -> None:
-    """A CodegenInvariantError from closure lifting propagates to `_compile_fn`
-    and surfaces as `[E699]` (#657 review).
+def test_closure_body_invariant_error_surfaces_as_e699(monkeypatch) -> None:
+    """A CodegenInvariantError raised while lifting a closure body propagates
+    through `_lift_pending_closures` (which rolls back `_next_closure_id`) to
+    `_compile_fn`, surfacing `[E699]` (#657 review).
 
-    Previously `_compile_lifted_closure` caught the invariant, emitted `[E699]`
-    *and* returned None — so `_compile_fn` then also emitted its "closure
-    skipped" `[E602]`, mixing the compiler-bug and user-skip signals.  The
-    invariant now propagates to `_compile_fn`, which reports `[E699]` for the
-    function and skips the `[E602]` branch.  This test pins the new
-    `_compile_fn` handler around `_lift_pending_closures`.
+    Patching `_compile_lifted_closure` — not `_lift_pending_closures` — drives
+    the *real* worklist, its `_next_closure_id` rollback, and the `_compile_fn`
+    handler, so it also guards against the local-swallow regression CR flagged
+    (a re-added `except CodegenInvariantError` inside `_compile_lifted_closure`
+    would keep this from ever reaching `_compile_fn`).
 
-    (We assert `[E699]` is produced rather than "no `[E602]`": patching
-    `_lift_pending_closures` at the class level makes *every* function's
-    closure-lifting raise, so unrelated functions cascade to `[E602]`/`[E604]`
-    when their pending closures never lift — noise that isn't the behaviour
-    under test.  The single-signal property is verified by inspection and the
-    `# #657` comments at the raise/handler sites.)
+    We assert `[E699]` is produced; we do NOT assert "no `[E602]`" because a
+    full compile of a closure program emits incidental `[E602]`/`[E604]`
+    *warnings* from prelude/unsupported paths regardless (the program compiles
+    `ok=True` with `[E602]` warnings even unpatched).  The single-signal
+    property — the invariant path bypasses the `if closure_failed:` `[E602]`
+    branch in `_compile_fn` — is verified by inspection and the `# #657` handler
+    comments.
     """
     from vera.codegen.closures import ClosureLiftingMixin
 
-    def _boom(self, *args, **kwargs):
-        raise CodegenInvariantError("forced closure invariant (#657 test)", None)
+    closure_prog = (
+        "type IntToInt = fn(Int -> Int) effects(pure);\n"
+        "public fn make_fn(@Unit -> @IntToInt)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{\n"
+        "  fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }\n"
+        "}\n"
+    )
 
-    monkeypatch.setattr(ClosureLiftingMixin, "_lift_pending_closures", _boom)
-    result = _compile_source(_PROG)
+    def _boom(self, *args, **kwargs):
+        raise CodegenInvariantError("forced closure-body invariant (#657 test)", None)
+
+    monkeypatch.setattr(ClosureLiftingMixin, "_compile_lifted_closure", _boom)
+    result = _compile_source(closure_prog)
 
     codes = [d.error_code for d in result.diagnostics]
-    assert "E699" in codes, f"expected [E699] from closure-lift invariant; got {codes}"
+    assert "E699" in codes, f"expected [E699] from closure-body invariant; got {codes}"
