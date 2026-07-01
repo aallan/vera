@@ -331,7 +331,7 @@ class FunctionCompilationMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
+        except CodegenInvariantError as inv:  # #657: reachable — operators.py / closures.py raise this for type-check-impossible states; covered by tests/test_codegen_invariant_e699.py.
             # #626 Layer 3 — compiler bug, not a user error.  Surface
             # as [E699] at severity="error" so `vera compile` exits
             # non-zero — these should never fire in production; if

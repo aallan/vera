@@ -75,6 +75,12 @@ class OperatorsMixin:
 
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
+        # #657 / #630 [E615]: keep as `return None` — do NOT "clean up" to
+        # assert/raise.  translate_expr returns None *reachably* when an operand
+        # is a string interpolation whose inference failed (e.g. `x == "\(bad)"`):
+        # it records to _interp_inference_failures and the [E615] function-drop
+        # propagates through this forward.  Load-bearing PROPAGATE, not dead.
+        # See vera/skip.py, "Reachable None via the [E615] channel".
         if left is None or right is None:
             return None  # pragma: no cover
 
@@ -404,6 +410,10 @@ class OperatorsMixin:
     ) -> list[str] | None:
         """Translate unary operators to WAT."""
         operand = self.translate_expr(expr.operand, env)
+        # #657 / #630 [E615]: keep as `return None` — translate_expr returns
+        # None reachably for a failed string interpolation (#630); this forward
+        # propagates the [E615] drop.  Do NOT convert to assert/raise.
+        # See vera/skip.py, "Reachable None via the [E615] channel".
         if operand is None:
             return None  # pragma: no cover
 
@@ -546,6 +556,13 @@ class OperatorsMixin:
                     # miscompilation.
                     self._interp_inference_failures.append(p)
                     had_failure = True
+        # #630 [E615] / #657: THIS is the canonical reachable `return None` in
+        # codegen.  It is NOT a silent skip — the failing segments were recorded
+        # above and are surfaced as [E615] at the _compile_fn boundary.  Every
+        # enclosing translator that forwards a translate_expr / translate_block
+        # result relies on this None propagating up (see vera/skip.py,
+        # "Reachable None via the [E615] channel").  Do NOT convert forwards of
+        # it to assert/raise — that would crash instead of dropping via [E615].
         if had_failure:
             return None
 
@@ -596,6 +613,10 @@ class OperatorsMixin:
         unreachable (WASM trap).  Returns no value (Unit).
         """
         cond = self.translate_expr(expr.expr, env)
+        # #657 / #630 [E615]: keep as `return None` — translate_expr returns
+        # None reachably for a failed string interpolation (#630); this forward
+        # propagates the [E615] drop.  Do NOT convert to assert/raise.
+        # See vera/skip.py, "Reachable None via the [E615] channel".
         if cond is None:
             return None  # pragma: no cover
         return cond + ["i32.eqz", "if", "unreachable", "end"]
@@ -662,6 +683,10 @@ class OperatorsMixin:
         """
         # Evaluate domain
         domain_instrs = self.translate_expr(expr.domain, env)
+        # #657 / #630 [E615]: keep as `return None` — translate_expr returns
+        # None reachably for a failed string interpolation (#630); this forward
+        # propagates the [E615] drop.  Do NOT convert to assert/raise.
+        # See vera/skip.py, "Reachable None via the [E615] channel".
         if domain_instrs is None:
             return None  # pragma: no cover
 
@@ -681,6 +706,10 @@ class OperatorsMixin:
         inner_env = env.push(param_type_name, counter_local)
 
         body_instrs = self.translate_block(pred.body, inner_env)
+        # #657 / #630 [E615]: keep as `return None` — translate_block returns
+        # None reachably when the predicate body ends in a failed string
+        # interpolation (#630); this forward propagates the [E615] drop.  Do NOT
+        # convert to assert/raise.  See vera/skip.py, "Reachable None via [E615]".
         if body_instrs is None:
             return None  # pragma: no cover
 
