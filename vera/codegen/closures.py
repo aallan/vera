@@ -258,8 +258,9 @@ class ClosureLiftingMixin:
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:  # pragma: no cover — Unit closure param
                 continue  # Unit param, skip
-            if wt == "unsupported":  # pragma: no cover — defensive
-                return None
+            if wt == "unsupported":  # pragma: no cover — type-check rejects this
+                raise CodegenInvariantError(
+                    "closure parameter has unsupported WASM type", anon_fn)
             if wt == "i32_pair":
                 # String/Array params need two consecutive i32 slots (ptr, len).
                 # The pair convention uses ptr_idx and ptr_idx+1 implicitly, so
@@ -366,8 +367,9 @@ class ClosureLiftingMixin:
 
         # Return type
         ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
-        if ret_wt == "unsupported":  # pragma: no cover — defensive
-            return None
+        if ret_wt == "unsupported":  # pragma: no cover — type-check rejects this
+            raise CodegenInvariantError(
+                "closure return type has unsupported WASM type", anon_fn)
         if ret_wt == "i32_pair":
             result_part = " (result i32 i32)"
         elif ret_wt:
@@ -403,7 +405,7 @@ class ClosureLiftingMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
+        except CodegenInvariantError as inv:  # pragma: no cover — the INVARIANT_DEFENSIVE raises in this method (#657 Track 2) guard type-check-impossible states, so no test input reaches them; this handler is their catch-side contract.
             # Closure-body invariant violation — codegen bug.
             # Surfaced as [E699] at severity="error" so `vera compile`
             # exits non-zero.  Symmetric with the parent-boundary

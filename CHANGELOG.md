@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Codegen `return None` cleanup — defensive guards raise, dead propagation removed** ([#657](https://github.com/aallan/vera/issues/657), follow-up to [#626](https://github.com/aallan/vera/issues/626)).  The #626 audit classified every `return None` in `vera/codegen/**` and `vera/wasm/**`; #658 converted the 104 user-actionable SILENT_SKIP sites to `CodegenSkip` (`[E602]`).  This closes the remaining two tracks: the **INVARIANT_DEFENSIVE** guards (states the type-checker should already have rejected) now `raise CodegenInvariantError` (surfaced as an `[E699]` "internal compiler error, please file a bug" rather than a silent skip), and the pure **PROPAGATE** `None`-forwarding sites — unreachable now that every leaf raises — are removed.  Behaviour-preserving for all well-typed input (the converted paths are `# pragma: no cover` by construction).
+
 ## [0.0.190] - 2026-07-01
 
 ### Changed
