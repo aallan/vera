@@ -1249,6 +1249,17 @@ def cmd_errors(as_json: bool = False) -> int:
 
 
 def main() -> None:
+    # Read stdin and emit program output / diagnostics as UTF-8 regardless of
+    # the host locale: a Vera program printing OR reading `→` / `—` (or any
+    # non-ASCII — e.g. `IO.read_char` on piped UTF-8 input) must not hit cp1252
+    # on a locale-default Windows shell (#645).  Guarded via getattr — a wrapped
+    # or replaced stream (e.g. pytest's capture) may not expose reconfigure();
+    # encoding to UTF-8 never raises (it covers all of Unicode).
+    for _stream in (sys.stdin, sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            _reconfigure(encoding="utf-8")
+
     args = sys.argv[1:]
 
     # Handle version before the length check — these need no file argument.

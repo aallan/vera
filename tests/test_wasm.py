@@ -22,7 +22,7 @@ from vera.transform import transform
 def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()

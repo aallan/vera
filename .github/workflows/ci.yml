@@ -24,19 +24,12 @@ jobs:
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
-    env:
-      # #641: force Python UTF-8 mode (PEP 540) so file I/O without an
-      # explicit `encoding=` kwarg defaults to UTF-8 on every platform
-      # rather than the locale's preferred encoding (cp1252 on Windows
-      # in en-US locales).  Without this, tests that read/write source
-      # files containing `→` (right arrow) or `—` (em-dash) tripped
-      # `'charmap' codec can't encode` errors on Windows.  Locally,
-      # users without `PYTHONUTF8=1` set in their shell environment
-      # will still hit the bug on the affected files — the durable
-      # fix is to audit `open()` / `read_text()` / `write_text()`
-      # call sites for explicit `encoding='utf-8'`.  Tracked as a
-      # follow-up.
-      PYTHONUTF8: 1
+    # No PYTHONUTF8 env: #645 made text I/O UTF-8 without the PEP-540 backstop
+    # (#641).  Every text-mode open()/read_text()/write_text() and every
+    # subprocess text=True capture passes an explicit encoding="utf-8" (enforced
+    # by scripts/check_explicit_encoding.py), and the `vera` CLI reconfigures its
+    # stdout/stderr to UTF-8 at startup — so a Vera program printing `→` / `—` is
+    # UTF-8 on every runner regardless of locale, cp1252 Windows included.
 
     steps:
       - uses: actions/checkout@v7
@@ -157,6 +150,9 @@ jobs:
 
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
+
+      - name: Check text-mode file I/O passes explicit encoding (#645)
+        run: python scripts/check_explicit_encoding.py
 
       - name: Check site assets are up-to-date
         run: python scripts/check_site_assets.py

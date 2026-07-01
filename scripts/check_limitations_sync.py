@@ -147,6 +147,7 @@ def check_issue_states(issue_numbers: set[int]) -> dict[int, str]:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             if result.returncode == 0:
@@ -170,7 +171,7 @@ def main() -> int:
     # ------------------------------------------------------------------
 
     # Tier 1: KNOWN_ISSUES.md — user-facing limitations and bugs tables
-    readme_text = (root / "KNOWN_ISSUES.md").read_text()
+    readme_text = (root / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
     readme_issues = extract_limitation_table_issues(
         readme_text, "## Limitations"
     )
@@ -180,7 +181,7 @@ def main() -> int:
     readme_issues |= readme_bugs  # issues in either table count as tracked
 
     # Tier 2: vera/README.md — contributor-facing limitations table
-    vera_readme_text = (root / "vera/README.md").read_text()
+    vera_readme_text = (root / "vera/README.md").read_text(encoding="utf-8")
     vera_readme_open, vera_readme_done = extract_done_and_open(vera_readme_text)
 
     # Tier 3: Spec chapters with limitation sections
@@ -199,7 +200,7 @@ def main() -> int:
                 f" check_limitations_sync.py)"
             )
             continue
-        text = full_path.read_text()
+        text = full_path.read_text(encoding="utf-8")
         if heading.split("## ")[1] not in text:
             errors.append(
                 f"{spec_path}: expected '{heading}' section not found"

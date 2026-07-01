@@ -23,6 +23,7 @@ def _vera(*args: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-m", "vera.cli", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
@@ -31,7 +32,7 @@ def main() -> int:
         print("Manifest not found:", MANIFEST_PATH, file=sys.stderr)
         return 1
 
-    manifest: list[dict] = json.loads(MANIFEST_PATH.read_text())
+    manifest: list[dict] = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     if not manifest:
         print("Empty manifest.", file=sys.stderr)
         return 1

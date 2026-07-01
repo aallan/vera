@@ -57,6 +57,7 @@ def main() -> int:
             [sys.executable, "-m", "piplicenses", "--format=json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
     except FileNotFoundError:

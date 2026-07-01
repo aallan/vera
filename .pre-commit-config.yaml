@@ -165,6 +165,16 @@ repos:
         # citation — include spec markdown so that edit re-runs the check too.
         files: '(vera/.*\.py$|spec/.*\.md$|scripts/check_diagnostic_fields\.py$)'
 
+      - id: explicit-encoding
+        name: explicit encoding
+        entry: .venv/bin/python scripts/check_explicit_encoding.py
+        language: system
+        pass_filenames: false
+        # Auto-discovers every text-mode open()/read_text()/write_text() under
+        # vera/, scripts/, tests/ (#645), so the trigger must be at least that
+        # broad (same reasoning as diagnostic-fields / walker-coverage).
+        files: '((vera|scripts|tests)/.*\.py$)'
+
       - id: limitations-sync
         name: limitations sync
         entry: .venv/bin/python scripts/check_limitations_sync.py

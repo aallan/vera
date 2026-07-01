@@ -476,11 +476,12 @@ def _setup_repo(tmp_path: Path) -> Path:
 
     (repo / "CHANGELOG.md").write_text(
         "# Changelog\n\n## [Unreleased]\n\n## [0.0.1] - 2026-01-01\n",
+        encoding="utf-8",
     )
     (repo / "vera").mkdir()
-    (repo / "vera" / "cli.py").write_text("# placeholder\n")
+    (repo / "vera" / "cli.py").write_text("# placeholder\n", encoding="utf-8")
     (repo / "tests").mkdir()
-    (repo / "tests" / "t.py").write_text("# placeholder\n")
+    (repo / "tests" / "t.py").write_text("# placeholder\n", encoding="utf-8")
 
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "Initial")
@@ -504,6 +505,7 @@ def _run_script(repo: Path, **env_overrides: str) -> subprocess.CompletedProcess
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
@@ -545,7 +547,7 @@ class TestEndToEnd:
         """Touching only exempt files doesn't require a CHANGELOG entry."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
-        (repo / "tests" / "t.py").write_text("# modified\n")
+        (repo / "tests" / "t.py").write_text("# modified\n", encoding="utf-8")
         _git(repo, "commit", "-am", "Tweak test")
         result = _run_script(repo)
         assert result.returncode == 0, result.stderr
@@ -556,7 +558,7 @@ class TestEndToEnd:
         """Touching vera/ without CHANGELOG → fail with helpful message."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
-        (repo / "vera" / "cli.py").write_text("# modified\n")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
         _git(repo, "commit", "-am", "Tweak cli")
         result = _run_script(repo)
         assert result.returncode == 1
@@ -569,12 +571,13 @@ class TestEndToEnd:
         """Touching vera/ AND adding a CHANGELOG bullet → pass."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
-        (repo / "vera" / "cli.py").write_text("# modified\n")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
         (repo / "CHANGELOG.md").write_text(
             "# Changelog\n\n"
             "## [Unreleased]\n\n"
             "- **Tweaked the CLI** — did a thing.\n\n"
             "## [0.0.1] - 2026-01-01\n",
+            encoding="utf-8",
         )
         _git(repo, "commit", "-am", "Tweak cli")
         result = _run_script(repo)
@@ -620,11 +623,11 @@ class TestEndToEnd:
             "\n"
             "## [0.0.1] - 2026-01-01\n"
         )
-        (repo / "CHANGELOG.md").write_text(main_changelog)
+        (repo / "CHANGELOG.md").write_text(main_changelog, encoding="utf-8")
         (repo / "vera").mkdir()
-        (repo / "vera" / "cli.py").write_text("# initial\n")
+        (repo / "vera" / "cli.py").write_text("# initial\n", encoding="utf-8")
         (repo / "tests").mkdir()
-        (repo / "tests" / "t.py").write_text("# placeholder\n")
+        (repo / "tests" / "t.py").write_text("# placeholder\n", encoding="utf-8")
         _git(repo, "add", ".")
         _git(repo, "commit", "-m", "Initial with existing Unreleased entry")
 
@@ -632,7 +635,7 @@ class TestEndToEnd:
         # the ``## [Unreleased]`` heading is more than 3 lines above
         # the first added line.
         _git(repo, "checkout", "-b", "feature")
-        (repo / "vera" / "cli.py").write_text("# modified\n")
+        (repo / "vera" / "cli.py").write_text("# modified\n", encoding="utf-8")
         new_changelog = main_changelog.replace(
             "\n## [0.0.1] - 2026-01-01\n",
             "\n"
@@ -641,7 +644,7 @@ class TestEndToEnd:
             "\n"
             "## [0.0.1] - 2026-01-01\n",
         )
-        (repo / "CHANGELOG.md").write_text(new_changelog)
+        (repo / "CHANGELOG.md").write_text(new_changelog, encoding="utf-8")
         _git(repo, "commit", "-am", "Add CHANGELOG entry far below heading")
         result = _run_script(repo)
         assert result.returncode == 0, result.stderr
@@ -650,7 +653,7 @@ class TestEndToEnd:
         """``Skip-changelog:`` trailer lets substantive changes pass."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
-        (repo / "vera" / "cli.py").write_text("# cosmetic\n")
+        (repo / "vera" / "cli.py").write_text("# cosmetic\n", encoding="utf-8")
         _git(
             repo, "commit", "-am",
             "Fix typo in comment\n\nSkip-changelog: cosmetic only",
@@ -664,7 +667,7 @@ class TestEndToEnd:
         """``SKIP_CHANGELOG_LABEL=1`` lets substantive changes pass."""
         repo = _setup_repo(tmp_path)
         _git(repo, "checkout", "-b", "feature")
-        (repo / "vera" / "cli.py").write_text("# cosmetic\n")
+        (repo / "vera" / "cli.py").write_text("# cosmetic\n", encoding="utf-8")
         _git(repo, "commit", "-am", "Fix typo")
         result = _run_script(repo, SKIP_CHANGELOG_LABEL="1")
         assert result.returncode == 0, result.stderr
@@ -699,7 +702,7 @@ class TestEndToEnd:
         _git(repo, "config", "user.email", "t@e.invalid")
         _git(repo, "config", "user.name", "T")
         _git(repo, "config", "commit.gpgsign", "false")
-        (repo / "f.txt").write_text("x\n")
+        (repo / "f.txt").write_text("x\n", encoding="utf-8")
         _git(repo, "add", "f.txt")
         _git(repo, "commit", "-m", "init on feature")
 

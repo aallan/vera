@@ -93,7 +93,7 @@ class TestExampleRoundTrips:
 
     @pytest.mark.parametrize("filename", CLEAN_EXAMPLES)
     def test_clean_example(self, filename: str) -> None:
-        source = (EXAMPLES_DIR / filename).read_text()
+        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
         prog = parse_to_ast(source, file=filename)
         errors = typecheck(prog, source=source, file=filename)
         real_errors = [e for e in errors if e.severity == "error"]
@@ -103,7 +103,7 @@ class TestExampleRoundTrips:
     @pytest.mark.parametrize("filename", WARN_EXAMPLES)
     def test_warn_example(self, filename: str) -> None:
         """Examples with unresolved names: only warnings, no errors."""
-        source = (EXAMPLES_DIR / filename).read_text()
+        source = (EXAMPLES_DIR / filename).read_text(encoding="utf-8")
         prog = parse_to_ast(source, file=filename)
         errors = typecheck(prog, source=source, file=filename)
         real_errors = [e for e in errors if e.severity == "error"]

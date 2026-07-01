@@ -86,6 +86,7 @@ class TestMainErrors:
             [sys.executable, "-m", "vera.cli", "errors", "--json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -97,6 +98,7 @@ class TestMainErrors:
             [sys.executable, "-m", "vera.cli", "errors"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "E526" in result.stdout
@@ -122,6 +124,7 @@ class TestMainBuiltins:
             [sys.executable, "-m", "vera.cli", "builtins", "--json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -156,6 +159,7 @@ class TestMainEffects:
             [sys.executable, "-m", "vera.cli", "effects", "--json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -469,7 +473,7 @@ class TestCmdCompile:
         # Copy hello_world.vera to tmp_path
         src = Path(HELLO_WORLD)
         dest = tmp_path / "hello_world.vera"
-        dest.write_text(src.read_text())
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         rc = cmd_compile(str(dest))
         assert rc == 0
         wasm = tmp_path / "hello_world.wasm"
@@ -702,6 +706,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Usage:" in result.stderr
@@ -710,6 +715,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Usage:" in result.stderr
@@ -718,6 +724,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "bogus", "file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Unknown command" in result.stderr
@@ -726,6 +733,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "parse", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert len(result.stdout) > 0
@@ -734,6 +742,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "OK:" in result.stdout
@@ -742,6 +751,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "typecheck", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "OK:" in result.stdout
@@ -750,6 +760,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "verify", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "OK:" in result.stdout
@@ -759,6 +770,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "ast", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
 
@@ -766,6 +778,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "ast", "--json", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -775,6 +788,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--json", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -784,6 +798,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "verify", "--json", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -794,6 +809,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "(module" in result.stdout
@@ -803,6 +819,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--json", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -813,6 +830,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "Hello, World!" in result.stdout
@@ -822,6 +840,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "run", FACTORIAL,
              "--fn", "factorial", "--", "5"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "120" in result.stdout
@@ -830,6 +849,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", "--json", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -842,6 +862,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "run", "--json", FACTORIAL,
              "--fn", "factorial", "--", "5"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -855,6 +876,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "compile",
              "-o", str(out_path), HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert out_path.exists()
@@ -867,6 +889,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "compile",
              "--wat", "/nonexistent/file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "file not found" in result.stderr
@@ -876,6 +899,7 @@ class TestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", "/nonexistent/file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "file not found" in result.stderr
@@ -886,6 +910,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "compile",
              "--json", "/nonexistent/file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         parsed = json.loads(result.stdout)
@@ -897,6 +922,7 @@ class TestMain:
             [sys.executable, "-m", "vera.cli", "run",
              "--json", "/nonexistent/file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         parsed = json.loads(result.stdout)
@@ -921,7 +947,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.1 + @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -941,7 +967,7 @@ public fn magnitude(@Int -> @Int)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -961,7 +987,7 @@ public fn positive(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -987,7 +1013,7 @@ private fn simple(-> @Int)
 { 42 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1007,7 +1033,7 @@ public fn id(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1015,6 +1041,7 @@ public fn id(@Int -> @Int)
             [sys.executable, "-m", "vera.cli",
              "run", path, "--fn", "id", "--", "abc"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "not valid for parameter type" in result.stderr
@@ -1028,7 +1055,7 @@ public fn double(@Float64 -> @Float64)
 { @Float64.0 + @Float64.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1036,6 +1063,7 @@ public fn double(@Float64 -> @Float64)
             [sys.executable, "-m", "vera.cli",
              "run", path, "--fn", "double", "--", "3.5"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "7.0" in result.stdout
@@ -1049,7 +1077,7 @@ public fn greet(@String -> @Unit)
 { IO.print(@String.0) }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1057,6 +1085,7 @@ public fn greet(@String -> @Unit)
             [sys.executable, "-m", "vera.cli",
              "run", path, "--fn", "greet", "--", "Hello"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "Hello" in result.stdout
@@ -1070,7 +1099,7 @@ public fn identity(@Bool -> @Bool)
 { @Bool.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1078,6 +1107,7 @@ public fn identity(@Bool -> @Bool)
             [sys.executable, "-m", "vera.cli",
              "run", path, "--fn", "identity", "--", "true"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "1" in result.stdout or "true" in result.stdout.lower()
@@ -1091,7 +1121,7 @@ public fn id(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1099,6 +1129,7 @@ public fn id(@Int -> @Int)
             [sys.executable, "-m", "vera.cli",
              "run", "--json", path, "--fn", "id", "--", "xyz"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -1116,7 +1147,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1138,7 +1169,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1159,7 +1190,7 @@ private fn helper(@Int -> @Int)
 { @Int.0 + 1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1181,7 +1212,7 @@ private fn helper(@Int -> @Int)
 { @Int.0 + 1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1206,7 +1237,7 @@ public fn main(-> @Int)
 { 42 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1242,6 +1273,7 @@ private fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", str(main_file)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "OK:" in result.stdout
@@ -1259,6 +1291,7 @@ private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", str(main_file)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Cannot resolve import" in result.stderr
@@ -1277,6 +1310,7 @@ private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
             [sys.executable, "-m", "vera.cli", "check", "--json",
              str(main_file)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -1307,6 +1341,7 @@ private fn main(@Int -> @Int)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", str(main_file)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
@@ -1349,7 +1384,7 @@ class TestCmdFmt:
     ) -> None:
         """Default mode prints formatted source to stdout."""
         path = tmp_path / "test.vera"
-        path.write_text(_non_canonical_source())
+        path.write_text(_non_canonical_source(), encoding="utf-8")
         rc = cmd_fmt(str(path))
         assert rc == 0
         out = capsys.readouterr().out
@@ -1360,7 +1395,7 @@ class TestCmdFmt:
     ) -> None:
         """--check returns 0 for already-canonical source."""
         path = tmp_path / "test.vera"
-        path.write_text(_canonical_source())
+        path.write_text(_canonical_source(), encoding="utf-8")
         rc = cmd_fmt(str(path), check=True)
         assert rc == 0
         out = capsys.readouterr().out
@@ -1371,7 +1406,7 @@ class TestCmdFmt:
     ) -> None:
         """--check returns 1 for non-canonical source."""
         path = tmp_path / "test.vera"
-        path.write_text(_non_canonical_source())
+        path.write_text(_non_canonical_source(), encoding="utf-8")
         rc = cmd_fmt(str(path), check=True)
         assert rc == 1
         err = capsys.readouterr().err
@@ -1380,19 +1415,19 @@ class TestCmdFmt:
     def test_write_in_place(self, tmp_path: Path) -> None:
         """--write overwrites the file with canonical form."""
         path = tmp_path / "test.vera"
-        path.write_text(_non_canonical_source())
+        path.write_text(_non_canonical_source(), encoding="utf-8")
         rc = cmd_fmt(str(path), write=True)
         assert rc == 0
-        result = path.read_text()
+        result = path.read_text(encoding="utf-8")
         assert result == _canonical_source()
 
     def test_write_idempotent(self, tmp_path: Path) -> None:
         """--write on already-canonical file leaves it unchanged."""
         path = tmp_path / "test.vera"
-        path.write_text(_canonical_source())
+        path.write_text(_canonical_source(), encoding="utf-8")
         rc = cmd_fmt(str(path), write=True)
         assert rc == 0
-        assert path.read_text() == _canonical_source()
+        assert path.read_text(encoding="utf-8") == _canonical_source()
 
     def test_missing_file(
         self, capsys: pytest.CaptureFixture[str]
@@ -1429,45 +1464,50 @@ class TestCmdFmtMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", INCREMENT],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "fn increment" in result.stdout
 
     def test_dispatch_fmt_check_canonical(self, tmp_path: Path) -> None:
         path = tmp_path / "test.vera"
-        path.write_text(_canonical_source())
+        path.write_text(_canonical_source(), encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", "--check", str(path)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "OK:" in result.stdout
 
     def test_dispatch_fmt_check_non_canonical(self, tmp_path: Path) -> None:
         path = tmp_path / "test.vera"
-        path.write_text(_non_canonical_source())
+        path.write_text(_non_canonical_source(), encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", "--check", str(path)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Would reformat" in result.stderr
 
     def test_dispatch_fmt_write(self, tmp_path: Path) -> None:
         path = tmp_path / "test.vera"
-        path.write_text(_non_canonical_source())
+        path.write_text(_non_canonical_source(), encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", "--write", str(path)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "Formatted:" in result.stdout
-        assert path.read_text() == _canonical_source()
+        assert path.read_text(encoding="utf-8") == _canonical_source()
 
     def test_dispatch_fmt_missing_file(self) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", "/nonexistent/file.vera"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "file not found" in result.stderr
@@ -1776,7 +1816,7 @@ public fn multi(@Nat, @Nat -> @Nat)
 private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
-""")
+""", encoding="utf-8")
         rc = cmd_test(str(bad))
         assert rc == 1
 
@@ -1788,6 +1828,7 @@ class TestCmdTestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "test", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "Testing:" in result.stdout
@@ -1796,6 +1837,7 @@ class TestCmdTestMain:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "test", "--json", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
@@ -1823,6 +1865,7 @@ public fn main(@Unit -> @Int)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "test", "--json", str(prog)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -1833,6 +1876,7 @@ public fn main(@Unit -> @Int)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "test", "--trials", "5", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
 
@@ -1840,6 +1884,7 @@ public fn main(@Unit -> @Int)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "test", "--fn", "safe_divide", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
 
@@ -1856,10 +1901,11 @@ public fn main(-> @Unit)
 {
   IO.exit(42)
 }
-""")
+""", encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 42
 
@@ -1877,6 +1923,7 @@ public fn main(-> @Unit)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
             capture_output=True, text=True,
+            encoding="utf-8",
             input="hello from stdin\n",
         )
         assert result.returncode == 0
@@ -2019,7 +2066,7 @@ private fn bad(@Int -> @Int)
     ) -> None:
         """Postcondition failure prints errors to stderr."""
         path = tmp_path / "vfail.vera"
-        path.write_text(self._verify_fail_source())
+        path.write_text(self._verify_fail_source(), encoding="utf-8")
         rc = cmd_verify(str(path))
         assert rc == 1
         err = capsys.readouterr().err
@@ -2030,7 +2077,7 @@ private fn bad(@Int -> @Int)
     ) -> None:
         """Postcondition failure in JSON mode returns structured error."""
         path = tmp_path / "vfail.vera"
-        path.write_text(self._verify_fail_source())
+        path.write_text(self._verify_fail_source(), encoding="utf-8")
         rc = cmd_verify(str(path), as_json=True)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -2065,7 +2112,7 @@ class TestCmdCompileBrowser:
         """Without -o, browser target creates <stem>_browser/ next to source."""
         src = Path(HELLO_WORLD)
         dest = tmp_path / "hello_world.vera"
-        dest.write_text(src.read_text())
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         rc = cmd_compile(str(dest), target="browser")
         assert rc == 0
         captured = capsys.readouterr()
@@ -2106,7 +2153,7 @@ public fn main(-> @Int)
 { 42 }
 """
         path = tmp_path / "test.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), fn_name="nonexistent")
         assert rc == 1
         err = capsys.readouterr().err
@@ -2123,7 +2170,7 @@ public fn main(-> @Int)
 { 42 }
 """
         path = tmp_path / "test.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), fn_name="nonexistent", as_json=True)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -2144,7 +2191,7 @@ public fn main(-> @Int)
 { 42 }
 """
         path = tmp_path / "test.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), fn_name="secret", fn_args=[1], as_json=True)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -2163,7 +2210,7 @@ public fn main(-> @Unit)
 }
 """
         path = tmp_path / "exit_test.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), as_json=True)
         assert rc == 42
         data = json.loads(capsys.readouterr().out)
@@ -2182,7 +2229,7 @@ public fn main(-> @Unit)
 }
 """
         path = tmp_path / "exit_test.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path))
         assert rc == 7
 
@@ -2196,7 +2243,7 @@ public fn positive(@Int -> @Int)
 { @Int.0 }
 """
         path = tmp_path / "trap.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), fn_name="positive", fn_args=[0], as_json=True)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -2215,7 +2262,7 @@ private fn helper(@Int -> @Int)
 { @Int.0 + 1 }
 """
         path = tmp_path / "priv.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), as_json=True)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -2278,7 +2325,7 @@ public fn clamp_to_range(@Int -> @Int)
 }
 """
         path = tmp_path / "clamp_to_range.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_test(str(path), trials=10)
         assert rc == 0
         out = capsys.readouterr().out
@@ -2348,10 +2395,11 @@ class TestCmdFmtSubprocess:
 
     def test_dispatch_fmt_syntax_error(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.vera"
-        path.write_text(_syntax_error_source())
+        path.write_text(_syntax_error_source(), encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "fmt", str(path)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert len(result.stderr) > 0
@@ -2371,6 +2419,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "test",
              "--trials", "abc", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Invalid --trials value" in result.stderr
@@ -2381,6 +2430,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "test",
              "--json", "--trials", "abc", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -2393,6 +2443,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "compile",
              "--target", "invalid", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Invalid --target value" in result.stderr
@@ -2403,6 +2454,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "compile",
              "--json", "--target", "invalid", HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -2416,6 +2468,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "compile",
              "--target", "browser", "-o", str(out_dir), HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert "Browser bundle:" in result.stdout
@@ -2427,6 +2480,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "run",
              HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         # Argument count mismatch: main takes 0 args
@@ -2438,6 +2492,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "run",
              "--json", HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
@@ -2450,6 +2505,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "test",
              "--trials", "5", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
 
@@ -2459,6 +2515,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "test",
              "--fn", "safe_divide", SAFE_DIVIDE],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
 
@@ -2467,6 +2524,7 @@ class TestMainArgParsing:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat"],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Usage:" in result.stderr
@@ -2478,6 +2536,7 @@ class TestMainArgParsing:
             [sys.executable, "-m", "vera.cli", "compile",
              "-o", str(out_path), HELLO_WORLD],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert out_path.exists()
@@ -2759,7 +2818,7 @@ class TestMainInProcess:
         from unittest.mock import patch
         src = Path(INCREMENT)
         dest = tmp_path / "test.vera"
-        dest.write_text(src.read_text())
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         with patch("sys.argv", ["vera", "fmt", "--write", str(dest)]):
             with pytest.raises(SystemExit) as exc_info:
                 from vera.cli import main
@@ -2773,7 +2832,7 @@ class TestMainInProcess:
         from unittest.mock import patch
         src = Path(INCREMENT)
         dest = tmp_path / "test.vera"
-        dest.write_text(src.read_text())
+        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         with patch("sys.argv", ["vera", "fmt", "--check", str(dest)]):
             with pytest.raises(SystemExit) as exc_info:
                 from vera.cli import main
@@ -2811,7 +2870,7 @@ public fn buggy_hash(@Int -> @Int)
 }
 """
         path = tmp_path / "fail.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         cmd_test(str(path), trials=50)
         out = capsys.readouterr().out
         assert "Testing:" in out
@@ -2836,7 +2895,7 @@ public fn buggy_hash(@Int -> @Int)
 }
 """
         path = tmp_path / "fail.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         cmd_test(str(path), as_json=True, trials=50)
         out = capsys.readouterr().out
         data = json.loads(out)
@@ -2858,7 +2917,7 @@ public fn hello(-> @Unit)
 }
 """
         path = tmp_path / "io.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_test(str(path))
         assert rc == 0
         out = capsys.readouterr().out
@@ -2879,7 +2938,7 @@ public fn positive(@Int -> @Int)
 { @Int.0 }
 """
         path = tmp_path / "trap.vera"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         rc = cmd_run(str(path), fn_name="positive", fn_args=[0])
         assert rc == 1
         captured = capsys.readouterr()
@@ -2914,7 +2973,7 @@ public fn main(-> @Int)
     def test_run_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """cmd_run executes a regular .vera file correctly."""
         path = tmp_path / "input.vera"
-        path.write_text(self.SIMPLE_PROGRAM)
+        path.write_text(self.SIMPLE_PROGRAM, encoding="utf-8")
         rc = cmd_run(str(path))
         assert rc == 0
         captured = capsys.readouterr()
@@ -2929,6 +2988,7 @@ public fn main(-> @Int)
             input=self.SIMPLE_PROGRAM,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
@@ -2940,6 +3000,7 @@ public fn main(-> @Int)
             input=self.SIMPLE_PROGRAM,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "42" in result.stdout
@@ -2951,6 +3012,7 @@ public fn main(-> @Int)
             input=self.SIMPLE_PROGRAM,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "verified" in result.stdout.lower(), result.stdout
@@ -2962,6 +3024,7 @@ public fn main(-> @Int)
             input=self.SIMPLE_PROGRAM,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "(module" in result.stdout
@@ -2973,6 +3036,7 @@ public fn main(-> @Int)
             input=self.SIMPLE_PROGRAM,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=tmp_path,
         )
         assert result.returncode == 0, result.stderr
@@ -3004,12 +3068,13 @@ public fn main(-> @Int)
   effects(pure)
 { helper() }
 """
-        (tmp_path / "lib.vera").write_text(lib_source)
+        (tmp_path / "lib.vera").write_text(lib_source, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "/dev/stdin"],
             input=main_source,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=tmp_path,
         )
         assert result.returncode == 0, result.stderr
@@ -3032,7 +3097,7 @@ class TestTypedArgParsingDirect:
         from vera.parser import parse_file
         from vera.transform import transform
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             f.flush()
@@ -3170,6 +3235,7 @@ class TestCmdVersion:
             result = subprocess.run(
                 [sys.executable, "-m", "vera.cli", flag],
                 capture_output=True, text=True,
+                encoding="utf-8",
             )
             assert result.returncode == 0
             assert result.stdout.startswith("vera ")
@@ -3190,7 +3256,8 @@ class TestCmdQuiet:
             "  effects(pure)\n"
             "{\n"
             "  @Int.0 + @Int.1\n"
-            "}\n"
+            "}\n",
+            encoding="utf-8",
         )
         rc = cmd_check(str(f), quiet=True)
         captured = capsys.readouterr()
@@ -3203,7 +3270,7 @@ class TestCmdQuiet:
     ) -> None:
         """vera check --quiet still prints errors on failure."""
         f = tmp_path / "bad.vera"
-        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n", encoding="utf-8")
         rc = cmd_check(str(f), quiet=True)
         assert rc == 1
         captured = capsys.readouterr()
@@ -3221,7 +3288,8 @@ class TestCmdQuiet:
             "  effects(pure)\n"
             "{\n"
             "  @Int.0 + @Int.1\n"
-            "}\n"
+            "}\n",
+            encoding="utf-8",
         )
         rc = cmd_verify(str(f), quiet=True)
         captured = capsys.readouterr()
@@ -3235,7 +3303,7 @@ class TestCmdQuiet:
     ) -> None:
         """vera verify --quiet still emits errors on stderr when file is invalid."""
         f = tmp_path / "bad_verify.vera"
-        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n", encoding="utf-8")
         rc = cmd_verify(str(f), quiet=True)
         assert rc == 1
         captured = capsys.readouterr()
@@ -3260,10 +3328,11 @@ class TestMainQuiet:
     def test_check_quiet_suppresses_ok(self, tmp_path: Path) -> None:
         """vera check --quiet produces no stdout on success."""
         f = tmp_path / "quiet.vera"
-        f.write_text(self._GOOD_VERA)
+        f.write_text(self._GOOD_VERA, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert result.stdout == ""
@@ -3271,10 +3340,11 @@ class TestMainQuiet:
     def test_check_quiet_still_prints_errors(self, tmp_path: Path) -> None:
         """vera check --quiet still emits errors on stderr when the file is invalid."""
         f = tmp_path / "bad.vera"
-        f.write_text(self._BAD_VERA)
+        f.write_text(self._BAD_VERA, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert result.stderr != ""
@@ -3282,10 +3352,11 @@ class TestMainQuiet:
     def test_verify_quiet_suppresses_ok(self, tmp_path: Path) -> None:
         """vera verify --quiet produces no stdout on success."""
         f = tmp_path / "quiet_verify.vera"
-        f.write_text(self._GOOD_VERA)
+        f.write_text(self._GOOD_VERA, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "verify", "--quiet", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         assert result.stdout == ""
@@ -3326,10 +3397,11 @@ class TestExplainSlots:
     def test_two_same_type_params(self, tmp_path: Path) -> None:
         """Two @Int params: @Int.0 = param 2, @Int.1 = param 1."""
         f = tmp_path / "two_int.vera"
-        f.write_text(self._TWO_INT)
+        f.write_text(self._TWO_INT, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         out = result.stdout
@@ -3340,10 +3412,11 @@ class TestExplainSlots:
     def test_single_param_per_type(self, tmp_path: Path) -> None:
         """Single param: shown with 'only @T' label."""
         f = tmp_path / "single.vera"
-        f.write_text(self._SINGLE)
+        f.write_text(self._SINGLE, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         out = result.stdout
@@ -3353,10 +3426,11 @@ class TestExplainSlots:
     def test_mixed_types(self, tmp_path: Path) -> None:
         """@String and @Int each appear once: independent slot counters."""
         f = tmp_path / "mixed.vera"
-        f.write_text(self._MIXED)
+        f.write_text(self._MIXED, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         out = result.stdout
@@ -3366,10 +3440,11 @@ class TestExplainSlots:
     def test_json_output(self, tmp_path: Path) -> None:
         """--explain-slots --json includes slot_environments key."""
         f = tmp_path / "two_int.vera"
-        f.write_text(self._TWO_INT)
+        f.write_text(self._TWO_INT, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
@@ -3384,10 +3459,11 @@ class TestExplainSlots:
     def test_no_output_on_error(self, tmp_path: Path) -> None:
         """Type error → no slot environments emitted."""
         f = tmp_path / "bad.vera"
-        f.write_text(self._BAD)
+        f.write_text(self._BAD, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         assert "Slot environments" not in result.stdout
@@ -3395,10 +3471,11 @@ class TestExplainSlots:
     def test_no_output_on_error_json(self, tmp_path: Path) -> None:
         """Type error with --json → ok is False, no slot data emitted."""
         f = tmp_path / "bad.vera"
-        f.write_text(self._BAD)
+        f.write_text(self._BAD, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         parsed = json.loads(result.stdout)
@@ -3411,6 +3488,7 @@ class TestExplainSlots:
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(missing)],
             capture_output=True, text=True,
+            encoding="utf-8",
         )
         assert result.returncode == 1
         parsed = json.loads(result.stdout)
@@ -3420,7 +3498,7 @@ class TestExplainSlots:
     def test_inprocess_two_int(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """In-process: cmd_check with explain_slots=True produces slot table."""
         f = tmp_path / "two_int.vera"
-        f.write_text(self._TWO_INT)
+        f.write_text(self._TWO_INT, encoding="utf-8")
         rc = cmd_check(str(f), explain_slots=True)
         assert rc == 0
         captured = capsys.readouterr()
@@ -3430,7 +3508,7 @@ class TestExplainSlots:
     def test_inprocess_single_param(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """In-process: single param per type shows 'only @T' label."""
         f = tmp_path / "single.vera"
-        f.write_text(self._SINGLE)
+        f.write_text(self._SINGLE, encoding="utf-8")
         rc = cmd_check(str(f), explain_slots=True)
         assert rc == 0
         captured = capsys.readouterr()
@@ -3439,7 +3517,7 @@ class TestExplainSlots:
     def test_inprocess_mixed_types(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """In-process: mixed types each show 'only @T' label."""
         f = tmp_path / "mixed.vera"
-        f.write_text(self._MIXED)
+        f.write_text(self._MIXED, encoding="utf-8")
         rc = cmd_check(str(f), explain_slots=True)
         assert rc == 0
         captured = capsys.readouterr()
@@ -3451,7 +3529,7 @@ class TestExplainSlots:
         import io
         from contextlib import redirect_stdout
         f = tmp_path / "two_int.vera"
-        f.write_text(self._TWO_INT)
+        f.write_text(self._TWO_INT, encoding="utf-8")
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = cmd_check(str(f), as_json=True, explain_slots=True)
@@ -3477,7 +3555,7 @@ class TestExplainSlots:
             "}\n"
         )
         f = tmp_path / "generic.vera"
-        f.write_text(src)
+        f.write_text(src, encoding="utf-8")
         rc = cmd_check(str(f), explain_slots=True)
         assert rc == 0
         captured = capsys.readouterr()
@@ -3495,7 +3573,7 @@ class TestExplainSlots:
             "}\n"
         )
         f = tmp_path / "triple.vera"
-        f.write_text(src)
+        f.write_text(src, encoding="utf-8")
         rc = cmd_check(str(f), explain_slots=True)
         assert rc == 0
         captured = capsys.readouterr()

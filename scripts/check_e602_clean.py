@@ -134,6 +134,7 @@ def _extract_skips(
              "--json", file],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
         )
     except subprocess.TimeoutExpired:

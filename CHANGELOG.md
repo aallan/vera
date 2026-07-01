@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.190] - 2026-07-01
+
+### Changed
+
+- **Text I/O is UTF-8 regardless of the host locale, enforced by a gate** ([#645](https://github.com/aallan/vera/issues/645)).  Python's text-mode `open()` / `Path.read_text()` / `Path.write_text()` — and `subprocess.run/Popen/check_output(..., text=True)` captures — fall back to `locale.getpreferredencoding()` (cp1252 on en-US Windows) when no `encoding=` is given, so a Vera source / doc / fixture / program output containing `→`, `—`, or any non-ASCII byte failed on a locale-default Windows shell.  [#641](https://github.com/aallan/vera/issues/641) papered over CI with a `PYTHONUTF8=1` backstop; this is the durable fix.  A new `scripts/check_explicit_encoding.py` AST-audits every text-mode `open()` / `read_text()` / `write_text()` **and** every `subprocess(..., text=True)` capture under `vera/`, `scripts/`, `tests/`, requiring an explicit `encoding="utf-8"` literal (binary / bytes mode skipped; a deliberate exception opts out with `# encoding-exempt: <reason>`), wired into pre-commit and the CI `lint` job.  It found and fixed **160 bare file-I/O sites across 16 files** plus **97 subprocess text captures across 18 files** (far more than the ~30 the issue estimated — the suite has grown ~5× since #641).  The audit's scope also covers `tempfile.NamedTemporaryFile` / `TemporaryFile` / `SpooledTemporaryFile` opened in *text* mode (they default to binary, but a text one is a locale-encoded write just like `open(..., "w")` — the idiom test helpers use to stage `.vera` source containing `→` / `—`; **29 such sites across 9 files** fixed).  The `vera` CLI reconfigures **stdin** as well as stdout/stderr to UTF-8 at startup, so a Vera program's non-ASCII output *and* input (e.g. `IO.read_char` on piped UTF-8) round-trip on any locale.  Together these made text I/O locale-independent and the `PYTHONUTF8=1` CI backstop (#641) was **removed** — verified by a clean Windows matrix with the backstop gone (the tempfile and stdin gaps were surfaced by that matrix, not the audit, which is why removing the backstop is its own acceptance test).  Pinned by `tests/test_check_explicit_encoding.py` (checker logic, scope-discovery coverage, and a repo-clean assertion).  (Folds in the stdio / subprocess work that had briefly been split to [#832](https://github.com/aallan/vera/issues/832).)
+
 ## [0.0.189] - 2026-07-01
 
 ### Changed
@@ -2695,7 +2701,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.189...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.190...HEAD
+[0.0.190]: https://github.com/aallan/vera/compare/v0.0.189...v0.0.190
 [0.0.189]: https://github.com/aallan/vera/compare/v0.0.188...v0.0.189
 [0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
 [0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187

@@ -902,7 +902,8 @@ class TestTypecheckFile:
         src.write_text(
             "private fn f(@Int -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ @Int.0 }\n"
+            "{ @Int.0 }\n",
+            encoding="utf-8",
         )
         diags = typecheck_file(src)
         errors = [d for d in diags if d.severity == "error"]
@@ -914,7 +915,8 @@ class TestTypecheckFile:
         src.write_text(
             "private fn f(@Int -> @Bool)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ @Int.0 }\n"
+            "{ @Int.0 }\n",
+            encoding="utf-8",
         )
         diags = typecheck_file(src)
         errors = [d for d in diags if d.severity == "error"]
@@ -926,7 +928,8 @@ class TestTypecheckFile:
         src.write_text(
             "private fn f(@Unit -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ 42 }\n"
+            "{ 42 }\n",
+            encoding="utf-8",
         )
         diags = typecheck_file(str(src))
         errors = [d for d in diags if d.severity == "error"]
@@ -947,7 +950,8 @@ class TestVerifyFile:
         src.write_text(
             "private fn f(@Int -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ @Int.0 }\n"
+            "{ @Int.0 }\n",
+            encoding="utf-8",
         )
         result = verify_file(src)
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -961,7 +965,8 @@ class TestVerifyFile:
         src.write_text(
             "private fn f(@Unit -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
-            "{ 42 }\n"
+            "{ 42 }\n",
+            encoding="utf-8",
         )
         result = verify_file(str(src))
         assert result.summary is not None

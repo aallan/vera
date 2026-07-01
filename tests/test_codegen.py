@@ -41,7 +41,7 @@ def _compile(source: str) -> CompileResult:
     import tempfile
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()
@@ -930,7 +930,7 @@ public fn main(@Unit -> @Unit)
         """The actual examples/hello_world.vera compiles and runs."""
         from pathlib import Path
         example_path = Path(__file__).parent.parent / "examples" / "hello_world.vera"
-        source = example_path.read_text()
+        source = example_path.read_text(encoding="utf-8")
         tree = parse_file(str(example_path))
         ast = transform(tree)
         result = compile(ast, source=source, file=str(example_path))
@@ -1006,7 +1006,7 @@ class TestExampleRoundTrips:
         """absolute_value(5) returns 5."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1019,7 +1019,7 @@ class TestExampleRoundTrips:
         """absolute_value(-7) returns 7."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1030,7 +1030,7 @@ class TestExampleRoundTrips:
         """absolute_value(0) returns 0."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "absolute_value.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1041,7 +1041,7 @@ class TestExampleRoundTrips:
         """safe_divide(3, 10) returns 3 (body: @Int.0/@Int.1 = 10/3)."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "safe_divide.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1056,7 +1056,7 @@ class TestExampleRoundTrips:
         """safe_divide(0, 10) traps: requires(@Int.1 != 0) violated."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "safe_divide.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1068,7 +1068,7 @@ class TestExampleRoundTrips:
         """Where-block mutual recursion: is_even(4) returns true."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "mutual_recursion.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1085,7 +1085,7 @@ class TestExampleRoundTrips:
         """is_even(0) returns true (base case)."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "mutual_recursion.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1096,7 +1096,7 @@ class TestExampleRoundTrips:
         """The actual examples/factorial.vera compiles and runs."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "factorial.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1451,7 +1451,7 @@ public fn increment(@Unit -> @Unit)
         """examples/increment.vera compiles and executes."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "increment.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         tree = parse_file(str(path))
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
@@ -1611,7 +1611,7 @@ def _compile_with_generator(source: str):
     from vera.codegen import CodeGenerator
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()
@@ -4129,7 +4129,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera compiles without errors."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile(source)
         assert result.ok
 
@@ -4137,7 +4137,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera run_counter returns 3."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="run_counter")
         assert exec_result.value == 3
@@ -4146,7 +4146,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera test_state_init returns 42."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_state_init")
         assert exec_result.value == 42
@@ -4155,7 +4155,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera test_put_get returns 99."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_put_get")
         assert exec_result.value == 99
@@ -4164,7 +4164,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera safe_div(10, 2) returns 5."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="safe_div", args=[10, 2])
         assert exec_result.value == 5
@@ -4173,7 +4173,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera safe_div(7, 0) returns -1."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="safe_div", args=[7, 0])
         assert exec_result.value == -1
@@ -4182,7 +4182,7 @@ public fn test(@Int -> @Option<Int>)
         """examples/effect_handler.vera main returns 4."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="main")
         assert exec_result.value == 4
@@ -19403,7 +19403,7 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()
@@ -19477,7 +19477,7 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()
@@ -19534,7 +19534,7 @@ public fn is_positive_or_false(@Decimal -> @Bool)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()

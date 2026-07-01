@@ -12,7 +12,11 @@ def main() -> int:
 
     # pyproject.toml
     pyproject = root / "pyproject.toml"
-    match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.MULTILINE)
+    match = re.search(
+        r'^version\s*=\s*"([^"]+)"',
+        pyproject.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
     if match:
         versions["pyproject.toml"] = match.group(1)
     else:
@@ -21,7 +25,11 @@ def main() -> int:
 
     # vera/__init__.py
     init = root / "vera" / "__init__.py"
-    match = re.search(r'^__version__\s*=\s*"([^"]+)"', init.read_text(), re.MULTILINE)
+    match = re.search(
+        r'^__version__\s*=\s*"([^"]+)"',
+        init.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
     if match:
         versions["vera/__init__.py"] = match.group(1)
     else:
@@ -62,7 +70,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    html_text = index_html.read_text()
+    html_text = index_html.read_text(encoding="utf-8")
     badge_match = re.search(
         r'releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)">([0-9]+\.[0-9]+\.[0-9]+)</a>',
         html_text,
@@ -79,7 +87,7 @@ def main() -> int:
 
     # README.md — "active development at vX.Y.Z"
     readme = root / "README.md"
-    match = re.search(r"at v([0-9]+\.[0-9]+\.[0-9]+)", readme.read_text())
+    match = re.search(r"at v([0-9]+\.[0-9]+\.[0-9]+)", readme.read_text(encoding="utf-8"))
     if match:
         versions["README.md"] = match.group(1)
     else:
@@ -108,7 +116,7 @@ def main() -> int:
         r'\[\[package\]\]\s*\n'
         r'name\s*=\s*"vera"\s*\n'
         r'version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
-        lock.read_text(),
+        lock.read_text(encoding="utf-8"),
     )
     if not lock_match:
         print(

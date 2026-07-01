@@ -106,7 +106,7 @@ def _run(cmd: list[str]) -> str | None:
     """Run a git command, returning stdout or ``None`` on failure."""
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, check=True,
+            cmd, capture_output=True, text=True, encoding="utf-8", check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None

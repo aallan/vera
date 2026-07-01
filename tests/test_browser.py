@@ -156,6 +156,7 @@ def _run_node(
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,  # Windows runner Node startup variance + cold V8 exnref codegen — see #694
     )
     if proc.returncode != 0:
@@ -1776,6 +1777,7 @@ class TestBrowserEmit:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,  # Windows runner Node startup variance + cold V8 exnref codegen — see #694
         )
         assert proc.returncode == 0, f"stderr: {proc.stderr}"

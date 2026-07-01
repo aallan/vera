@@ -25,7 +25,7 @@ def _compile(source: str) -> CompileResult:
     import tempfile
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()
@@ -341,7 +341,7 @@ public fn main(-> @Int)
         """examples/generics.vera compiles without errors."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "generics.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile(source)
         assert result.ok
 
@@ -349,7 +349,7 @@ public fn main(-> @Int)
         """examples/list_ops.vera compiles and runs correctly (#154)."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "list_ops.vera"
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_list")
         assert exec_result.value == 60

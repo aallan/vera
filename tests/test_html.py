@@ -122,6 +122,7 @@ class TestHtmlCodeSamples:
                     [sys.executable, "-m", "vera.cli", "check", f.name],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     cwd=str(ROOT),
                     timeout=30,
                 )
@@ -161,6 +162,7 @@ class TestHtmlCodeSamples:
                     [sys.executable, "-m", "vera.cli", "verify", f.name],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     cwd=str(ROOT),
                     timeout=60,
                 )
