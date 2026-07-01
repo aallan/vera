@@ -69,7 +69,7 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | File | Lines | Refactoring | Issue |
 |------|-------|-------------|-------|
 | `tests/test_codegen.py` | 21,093 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types). More than doubled since the issue was filed; roadmap Tier 1, after the mutation sweep. | [#419](https://github.com/aallan/vera/issues/419) |
-| `tests/test_checker.py` | 6,347 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors). Roadmap Tier 1, after the test_codegen split. | [#420](https://github.com/aallan/vera/issues/420) |
+
 ## Test coverage gaps
 
 Internal test-quality items that don't affect correctness today but would make the suite more durable to refactoring.
