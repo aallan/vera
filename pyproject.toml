@@ -147,7 +147,15 @@ pytest_add_cli_args = ["--timeout=300"]
 # copy lacks).  Code reached only through the omitted suites is reported
 # "not checked", not a weak test — see MUTATION.md "Oracle".
 pytest_add_cli_args_test_selection = [
-    "tests/test_verifier.py",
+    "tests/test_verifier_contracts.py",
+    "tests/test_verifier_nat_obligations.py",
+    "tests/test_verifier_primitive_ops.py",
+    "tests/test_verifier_calls_modules.py",
+    "tests/test_verifier_adt_decreases.py",
+    "tests/test_verifier_refinements.py",
+    "tests/test_verifier_shadow_audits.py",
+    "tests/test_verifier_mutation_obligations.py",
+    "tests/test_verifier_mutation_gates_smt.py",
     "tests/test_verifier_coverage.py",
     "tests/test_obligations.py",
     "tests/test_checker_types.py",
