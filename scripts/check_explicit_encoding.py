@@ -147,11 +147,17 @@ _WRONG_ENC = (
 
 
 def _subprocess_is_text(call: ast.Call) -> bool:
-    """True iff a subprocess call decodes its captured output as text via the
-    locale codec — i.e. ``text=True`` or ``universal_newlines=True`` is set.
-    Without either it returns ``bytes`` (and ``bytes.decode()`` defaults to
-    UTF-8, so there is no locale hazard)."""
+    """True iff a subprocess call decodes its captured output as text.
+
+    Per the ``subprocess`` docs, text mode is enabled by ``text=True`` /
+    ``universal_newlines=True`` **or** by passing ``encoding=`` / ``errors=``
+    (either forces text mode on its own — e.g.
+    ``subprocess.run(cmd, encoding="latin-1")`` decodes as text without any
+    ``text=`` argument).  Without any of these the call returns ``bytes`` (and
+    ``bytes.decode()`` defaults to UTF-8, so there is no locale hazard)."""
     for kw in call.keywords:
+        if kw.arg in ("encoding", "errors"):
+            return True
         if kw.arg in ("text", "universal_newlines"):
             v = kw.value
             if isinstance(v, ast.Constant) and v.value is True:
@@ -222,8 +228,9 @@ def _classify_call(node: ast.Call, f: ast.expr) -> tuple[str | None, str | None]
         if enc_kw is not None:
             return name, (None if _is_utf8_literal(enc_kw.value)
                           else _WRONG_ENC.format(call=name))
-        return name, (f'{name}(..., text=True) without encoding="utf-8" — '
-                      "decodes with the locale codec (cp1252 on Windows)")
+        return name, (f'{name}(...) is a text-mode capture without '
+                      'encoding="utf-8" — decodes with the locale codec '
+                      "(cp1252 on Windows)")
 
     # --- tempfile text-mode factories (default binary) ---
     tf_name = (f.attr if isinstance(f, ast.Attribute)

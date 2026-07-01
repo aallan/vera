@@ -153,6 +153,9 @@ def test_dot_open_method_is_out_of_scope(mod: object) -> None:
     "subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)",
     "subprocess.run(cmd, capture_output=True, universal_newlines=True)",
     'subprocess.run(cmd, text=True, encoding="latin-1")',  # wrong codec
+    # encoding= / errors= force text mode on their own (no text=True needed):
+    'subprocess.run(cmd, capture_output=True, encoding="latin-1")',  # wrong codec
+    "subprocess.run(cmd, capture_output=True, errors='replace')",  # text, no enc
 ])
 def test_subprocess_text_without_utf8_is_flagged(mod: object, src: str) -> None:
     assert len(mod.check_source(src, "<t>.py")) == 1
@@ -161,6 +164,7 @@ def test_subprocess_text_without_utf8_is_flagged(mod: object, src: str) -> None:
 @pytest.mark.parametrize("src", [
     'subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")',
     'subprocess.check_output(cmd, text=True, encoding="utf-8")',
+    'subprocess.run(cmd, capture_output=True, encoding="utf-8")',  # enc= alone
     "subprocess.run(cmd, capture_output=True)",   # bytes mode — no locale decode
     "subprocess.check_output(cmd)",               # bytes mode
     "subprocess.run(cmd, check=True)",            # no capture at all
