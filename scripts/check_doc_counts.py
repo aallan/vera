@@ -161,6 +161,7 @@ def main() -> int:
         [str(pytest_bin), "--co", "-q", "-o", "addopts="],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=str(root),
         timeout=30,
     )

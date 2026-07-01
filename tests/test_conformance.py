@@ -43,6 +43,7 @@ def _vera(*args: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-m", "vera.cli", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

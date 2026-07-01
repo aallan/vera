@@ -161,7 +161,7 @@ def main() -> int:
         text = Path(args.results).read_text(encoding="utf-8")
     else:
         text = subprocess.run(
-            ["mutmut", "results"], capture_output=True, text=True, check=True
+            ["mutmut", "results"], capture_output=True, text=True, encoding="utf-8", check=True
         ).stdout
 
     survived: Counter[str] = Counter()

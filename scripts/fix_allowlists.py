@@ -62,7 +62,7 @@ def git_show(path: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", "show", f"HEAD:{path}"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", check=True,
             cwd=str(ROOT),
         )
         return result.stdout

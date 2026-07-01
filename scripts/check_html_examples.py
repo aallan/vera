@@ -112,6 +112,7 @@ def try_check(content: str, root: Path) -> str | None:
             [sys.executable, "-m", "vera.cli", "check", f.name],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(root),
             timeout=30,
         )
@@ -137,6 +138,7 @@ def try_verify(content: str, root: Path) -> str | None:
             [sys.executable, "-m", "vera.cli", "verify", f.name],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=str(root),
             timeout=60,
         )

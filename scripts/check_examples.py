@@ -20,6 +20,7 @@ def main() -> int:
             [sys.executable, "-m", "vera.cli", "check", f],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if "OK:" not in result.stdout:
             failed.append(("check", f))
@@ -33,6 +34,7 @@ def main() -> int:
             [sys.executable, "-m", "vera.cli", "verify", f],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if "OK:" not in result.stdout:
             failed.append(("verify", f))

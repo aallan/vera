@@ -125,8 +125,76 @@ def _open_mode_is_binary(call: ast.Call) -> bool | None:
     return None  # non-literal mode -> can't tell
 
 
+SUBPROCESS_FUNCS = ("run", "Popen", "check_output")
+_WRONG_ENC = (
+    '{call}(...) passes a non-UTF-8 or non-literal encoding=; the repo rule is '
+    'encoding="utf-8" (use it, or `# encoding-exempt: <reason>` for a '
+    "deliberate codec)")
+
+
+def _subprocess_is_text(call: ast.Call) -> bool:
+    """True iff a subprocess call decodes its captured output as text via the
+    locale codec — i.e. ``text=True`` or ``universal_newlines=True`` is set.
+    Without either it returns ``bytes`` (and ``bytes.decode()`` defaults to
+    UTF-8, so there is no locale hazard)."""
+    for kw in call.keywords:
+        if kw.arg in ("text", "universal_newlines"):
+            v = kw.value
+            if isinstance(v, ast.Constant) and v.value is True:
+                return True
+    return False
+
+
+def _classify_call(node: ast.Call, f: ast.expr) -> tuple[str | None, str | None]:
+    """Classify a call for the encoding gate.
+
+    Returns ``(call_name, why)``: ``(None, None)`` when out of scope,
+    ``(name, None)`` when in scope and compliant, and ``(name, why)`` when in
+    scope and violating.  Covers text-mode file I/O (``open`` / ``read_text`` /
+    ``write_text``) and locale-decoding subprocess captures
+    (``subprocess.run`` / ``Popen`` / ``check_output`` with ``text=True``)."""
+    # --- text-mode file I/O ---
+    if isinstance(f, ast.Name) and f.id == "open":
+        binary = _open_mode_is_binary(node)
+        if binary is True:
+            return None, None  # binary open -> encoding irrelevant
+        enc_kw = _encoding_kw(node)
+        if enc_kw is not None:
+            return "open", (None if _is_utf8_literal(enc_kw.value)
+                            else _WRONG_ENC.format(call="open"))
+        if binary is None:
+            return "open", ('open(...) has a non-literal mode and no '
+                            'encoding=; pass encoding="utf-8" for text mode, '
+                            'or open in binary')
+        return "open", 'text-mode open(...) without explicit encoding="utf-8"'
+
+    if isinstance(f, ast.Attribute) and f.attr in TEXT_METHODS:
+        enc_kw = _encoding_kw(node)
+        if enc_kw is not None:
+            return f.attr, (None if _is_utf8_literal(enc_kw.value)
+                            else _WRONG_ENC.format(call=f.attr))
+        return f.attr, (f'text-mode {f.attr}(...) without explicit '
+                        'encoding="utf-8"')
+
+    # --- subprocess text capture ---
+    if (isinstance(f, ast.Attribute) and f.attr in SUBPROCESS_FUNCS
+            and isinstance(f.value, ast.Name) and f.value.id == "subprocess"):
+        if not _subprocess_is_text(node):
+            return None, None  # bytes mode -> no locale decode
+        name = f"subprocess.{f.attr}"
+        enc_kw = _encoding_kw(node)
+        if enc_kw is not None:
+            return name, (None if _is_utf8_literal(enc_kw.value)
+                          else _WRONG_ENC.format(call=name))
+        return name, (f'{name}(..., text=True) without encoding="utf-8" — '
+                      "decodes with the locale codec (cp1252 on Windows)")
+
+    return None, None
+
+
 def check_source(source: str, filename: str) -> list[Violation]:
-    """Return every bare text-mode open/read_text/write_text in one source."""
+    """Return every locale-dependent text-mode file / subprocess call in one
+    source (see :func:`_classify_call` for the covered forms)."""
     tree = ast.parse(source, filename=filename)
     src_lines = source.splitlines()
     optout = _optout_lines(source)
@@ -135,23 +203,9 @@ def check_source(source: str, filename: str) -> list[Violation]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        f = node.func
-
-        non_literal_mode = False
-        if isinstance(f, ast.Name) and f.id == "open":
-            binary = _open_mode_is_binary(node)
-            if binary is True:
-                continue  # binary open -> encoding is irrelevant
-            non_literal_mode = binary is None
-            call_name = "open"
-        elif isinstance(f, ast.Attribute) and f.attr in TEXT_METHODS:
-            call_name = f.attr
-        else:
-            continue
-
-        enc_kw = _encoding_kw(node)
-        if enc_kw is not None and _is_utf8_literal(enc_kw.value):
-            continue  # explicit UTF-8 — good
+        call_name, why = _classify_call(node, node.func)
+        if call_name is None or why is None:
+            continue  # out of scope, or in scope and compliant
 
         snippet = (src_lines[node.lineno - 1]
                    if 0 <= node.lineno - 1 < len(src_lines) else None)
@@ -170,16 +224,6 @@ def check_source(source: str, filename: str) -> list[Violation]:
                     "`# encoding-exempt` marker without a reason", snippet))
             continue
 
-        if enc_kw is not None:
-            why = (f'{call_name}(...) passes a non-UTF-8 or non-literal '
-                   'encoding=; the repo rule is encoding="utf-8" (use it, or '
-                   '`# encoding-exempt: <reason>` for a deliberate codec)')
-        elif non_literal_mode:
-            why = ('open(...) has a non-literal mode and no encoding=; pass '
-                   'encoding="utf-8" for text mode, or open in binary')
-        else:
-            why = (f'text-mode {call_name}(...) without explicit '
-                   f'encoding="utf-8"')
         violations.append(Violation(filename, node.lineno, call_name, why,
                                     snippet))
     return violations

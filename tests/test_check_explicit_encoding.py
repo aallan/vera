@@ -143,6 +143,33 @@ def test_dot_open_method_is_out_of_scope(mod: object) -> None:
 
 
 # ---------------------------------------------------------------------------
+# subprocess text captures (text=True / universal_newlines) decode with the
+# locale codec, so they need an explicit encoding="utf-8" too (#645 AC3).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    "subprocess.run(cmd, capture_output=True, text=True)",
+    "subprocess.check_output(cmd, text=True)",
+    "subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)",
+    "subprocess.run(cmd, capture_output=True, universal_newlines=True)",
+    'subprocess.run(cmd, text=True, encoding="latin-1")',  # wrong codec
+])
+def test_subprocess_text_without_utf8_is_flagged(mod: object, src: str) -> None:
+    assert len(mod.check_source(src, "<t>.py")) == 1
+
+
+@pytest.mark.parametrize("src", [
+    'subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")',
+    'subprocess.check_output(cmd, text=True, encoding="utf-8")',
+    "subprocess.run(cmd, capture_output=True)",   # bytes mode — no locale decode
+    "subprocess.check_output(cmd)",               # bytes mode
+    "subprocess.run(cmd, check=True)",            # no capture at all
+])
+def test_subprocess_bytes_or_utf8_is_ok(mod: object, src: str) -> None:
+    assert mod.check_source(src, "<t>.py") == []
+
+
+# ---------------------------------------------------------------------------
 # The repository itself is clean (the production assertion).
 # ---------------------------------------------------------------------------
 

@@ -2558,6 +2558,7 @@ class TestRuntimePackageImportHygiene421:
                 [sys.executable, "-c", f"import vera.runtime.{mod}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             assert result.returncode == 0, (
                 f"cold `import vera.runtime.{mod}` failed (circular import "

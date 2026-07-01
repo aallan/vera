@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,530 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,540 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,6 @@ The infrastructure that catches the next regression before a user does, plus the
 
 | Issue | What |
 |---|---|
-| [#832](https://github.com/aallan/vera/issues/832) | Route CLI stdout/stderr + subprocess text I/O through UTF-8 so the `PYTHONUTF8=1` CI backstop can be dropped (AC3 split out of #645, whose file-I/O audit + gate landed in v0.0.190). |
 | [#657](https://github.com/aallan/vera/issues/657) | Convert `INVARIANT_DEFENSIVE` sites and audit `PROPAGATE` cleanup (follow-up to the #626 error-handling taxonomy). |
 | [#419](https://github.com/aallan/vera/issues/419) | Split `tests/test_codegen.py` (21,093 lines — the largest file in the tree, and the codegen oracle for the mutation sweep) into feature-focused test files.  Promoted from Tier 3. |
 | [#420](https://github.com/aallan/vera/issues/420) | Split `tests/test_checker.py` (6,347 lines) into phase-focused test files.  Promoted from "Not doing now". |
