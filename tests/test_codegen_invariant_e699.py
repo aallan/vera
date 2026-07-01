@@ -74,16 +74,40 @@ def test_codegen_invariant_error_surfaces_as_e699(monkeypatch) -> None:
     )
 
 
+def _find_anon_fn(node):
+    """Return the first `ast.AnonFn` reachable from `node` (generic AST walk)."""
+    import dataclasses
+
+    from vera import ast as _ast
+
+    if isinstance(node, _ast.AnonFn):
+        return node
+    if dataclasses.is_dataclass(node):
+        for fld in dataclasses.fields(node):
+            found = _find_anon_fn(getattr(node, fld.name))
+            if found is not None:
+                return found
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            found = _find_anon_fn(item)
+            if found is not None:
+                return found
+    return None
+
+
 def test_closure_body_invariant_error_surfaces_as_e699(monkeypatch) -> None:
-    """A CodegenInvariantError raised while lifting a closure body propagates
-    through `_lift_pending_closures` (which rolls back `_next_closure_id`) to
+    """A CodegenInvariantError raised while translating a closure *body*
+    propagates through the real `_compile_lifted_closure` and
+    `_lift_pending_closures` (which rolls back `_next_closure_id`) to
     `_compile_fn`, surfacing `[E699]` (#657 review).
 
-    Patching `_compile_lifted_closure` — not `_lift_pending_closures` — drives
-    the *real* worklist, its `_next_closure_id` rollback, and the `_compile_fn`
-    handler, so it also guards against the local-swallow regression CR flagged
-    (a re-added `except CodegenInvariantError` inside `_compile_lifted_closure`
-    would keep this from ever reaching `_compile_fn`).
+    The failure is injected at a *callee* of `_compile_lifted_closure`
+    (`translate_block`), keyed by AST-node identity to fire only on the closure
+    body — so the real `_compile_lifted_closure` runs end-to-end.  A regression
+    that re-added a local `except CodegenInvariantError` inside
+    `_compile_lifted_closure` would swallow this and fail the test (patching
+    `_compile_lifted_closure` wholesale, as an earlier draft did, could not
+    catch that).
 
     We assert `[E699]` is produced; we do NOT assert "no `[E602]`" because a
     full compile of a closure program emits incidental `[E602]`/`[E604]`
@@ -93,7 +117,7 @@ def test_closure_body_invariant_error_surfaces_as_e699(monkeypatch) -> None:
     branch in `_compile_fn` — is verified by inspection and the `# #657` handler
     comments.
     """
-    from vera.codegen.closures import ClosureLiftingMixin
+    from vera.wasm import WasmContext
 
     closure_prog = (
         "type IntToInt = fn(Int -> Int) effects(pure);\n"
@@ -104,11 +128,29 @@ def test_closure_body_invariant_error_surfaces_as_e699(monkeypatch) -> None:
         "}\n"
     )
 
-    def _boom(self, *args, **kwargs):
-        raise CodegenInvariantError("forced closure-body invariant (#657 test)", None)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(closure_prog)
+        path = f.name
+    try:
+        program = transform(parse_file(path))
+        anon = _find_anon_fn(program)
+        assert anon is not None, "test program must contain a closure"
+        closure_body = anon.body
 
-    monkeypatch.setattr(ClosureLiftingMixin, "_compile_lifted_closure", _boom)
-    result = _compile_source(closure_prog)
+        original_translate_block = WasmContext.translate_block
+
+        def _boom(self, block, env):
+            if block is closure_body:
+                raise CodegenInvariantError(
+                    "forced closure-body invariant (#657 test)", None)
+            return original_translate_block(self, block, env)
+
+        monkeypatch.setattr(WasmContext, "translate_block", _boom)
+        result = compile(program, source=closure_prog, file=path)
+    finally:
+        Path(path).unlink()
 
     codes = [d.error_code for d in result.diagnostics]
     assert "E699" in codes, f"expected [E699] from closure-body invariant; got {codes}"
