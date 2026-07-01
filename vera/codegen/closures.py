@@ -405,25 +405,13 @@ class ClosureLiftingMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:  # pragma: no cover — the INVARIANT_DEFENSIVE raises in this method (#657 Track 2) guard type-check-impossible states, so no test input reaches them; this handler is their catch-side contract.
-            # Closure-body invariant violation — codegen bug.
-            # Surfaced as [E699] at severity="error" so `vera compile`
-            # exits non-zero.  Symmetric with the parent-boundary
-            # handler in `vera/codegen/functions.py::_compile_fn`.
-            #
-            # Harvest interpolation failures before the [E699] for the
-            # same reason the CodegenSkip handler above does — symmetry
-            # insurance against future raise sites that fire mid-
-            # interpolation-translation.
-            self._harvest_interp_inference_failures(ctx)
-            self._error(
-                inv.node if inv.node is not None else anon_fn,
-                f"Internal compiler error in closure body: {inv.msg}",
-                rationale="This is a codegen invariant violation. "
-                "Please file a bug report with the offending program.",
-                error_code="E699",
-            )
-            return None
+        # #657: a CodegenInvariantError from the closure body is NOT caught
+        # here — it propagates to `_compile_fn`'s handler around
+        # `_lift_pending_closures`, which surfaces a single [E699] for the whole
+        # function.  Catching it here (the previous behaviour) emitted [E699]
+        # AND returned None, so the enclosing fn then also emitted a spurious
+        # [E602] "closure skipped" — mixing the compiler-bug and user-skip
+        # signals.  See vera/codegen/functions.py and tests/test_codegen_invariant_e699.py.
 
         if body_instrs is None:
             # #630 Tier 2 — closure-body parallel of the harvest in

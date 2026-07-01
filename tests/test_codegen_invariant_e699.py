@@ -65,3 +65,40 @@ def test_codegen_invariant_error_surfaces_as_e699(monkeypatch) -> None:
     )
     assert e699[0].severity == "error"
     assert "Internal compiler error" in e699[0].description
+    # The invariant must surface as [E699] and NOT also as the old
+    # unsupported-construct [E602] — mixing the two is the regression this
+    # attribution work prevents (#657 review).
+    assert not any(d.error_code == "E602" for d in result.diagnostics), (
+        "expected the invariant to surface as [E699], not also as [E602]; got "
+        f"{[d.error_code for d in result.diagnostics]}"
+    )
+
+
+def test_closure_lifting_invariant_error_surfaces_as_e699(monkeypatch) -> None:
+    """A CodegenInvariantError from closure lifting propagates to `_compile_fn`
+    and surfaces as `[E699]` (#657 review).
+
+    Previously `_compile_lifted_closure` caught the invariant, emitted `[E699]`
+    *and* returned None — so `_compile_fn` then also emitted its "closure
+    skipped" `[E602]`, mixing the compiler-bug and user-skip signals.  The
+    invariant now propagates to `_compile_fn`, which reports `[E699]` for the
+    function and skips the `[E602]` branch.  This test pins the new
+    `_compile_fn` handler around `_lift_pending_closures`.
+
+    (We assert `[E699]` is produced rather than "no `[E602]`": patching
+    `_lift_pending_closures` at the class level makes *every* function's
+    closure-lifting raise, so unrelated functions cascade to `[E602]`/`[E604]`
+    when their pending closures never lift — noise that isn't the behaviour
+    under test.  The single-signal property is verified by inspection and the
+    `# #657` comments at the raise/handler sites.)
+    """
+    from vera.codegen.closures import ClosureLiftingMixin
+
+    def _boom(self, *args, **kwargs):
+        raise CodegenInvariantError("forced closure invariant (#657 test)", None)
+
+    monkeypatch.setattr(ClosureLiftingMixin, "_lift_pending_closures", _boom)
+    result = _compile_source(_PROG)
+
+    codes = [d.error_code for d in result.diagnostics]
+    assert "E699" in codes, f"expected [E699] from closure-lift invariant; got {codes}"

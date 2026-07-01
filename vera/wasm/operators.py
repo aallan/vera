@@ -692,9 +692,9 @@ class OperatorsMixin:
 
         # Translate predicate body with counter as binding
         pred = expr.predicate
-        if not pred.params:
+        if len(pred.params) != 1:
             raise CodegenInvariantError(  # pragma: no cover
-                "quantifier predicate has no parameters", expr)
+                "quantifier predicate must have exactly one parameter", expr)
         param_te = pred.params[0]
         if not isinstance(param_te, ast.NamedType):
             raise CodegenInvariantError(  # pragma: no cover
