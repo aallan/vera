@@ -12,7 +12,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## The roadmap
 
-Tier 0 — close every silent failure — is done: no known case remains where Vera accepts a program and quietly does something weaker than it promised (see [HISTORY.md](HISTORY.md)).  Tier 1 — safety net and runtime robustness — is done too: the mutation sweep hardened the soundness core, the execution runtime was decomposed into testable modules, and the oversized test oracles were split into feature-focused files (see [HISTORY.md](HISTORY.md)).  The two remaining tiers are worked roughly top to bottom; small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a higher one.
+Tier 0 which closed every silent failure is done: no known case remains where Vera accepts a program and quietly does something weaker than it promised. Tier 1 which was around building a safety net and runtime robustness is done: the mutation sweep hardened the soundness core, the execution runtime was decomposed into testable modules, and the oversized test oracles were split into feature-focused files. See [HISTORY.md](HISTORY.md) for more details.  The two remaining tiers are worked roughly top to bottom; small lower-tier items ride along when convenient, but nothing in a lower tier justifies delaying a higher one.
 
 ### Tier 2 — Single source of truth
 
