@@ -430,7 +430,7 @@ A hole is a development aid, not a runtime value:
 
 For example, a hole can stand in for an unwritten sub-expression:
 
-```
+```vera
 public fn scale(@Int -> @Int)
   requires(true)
   ensures(true)
