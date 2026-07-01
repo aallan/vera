@@ -170,6 +170,44 @@ def test_subprocess_bytes_or_utf8_is_ok(mod: object, src: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scope discovery is pinned independently of the clean-repo assertion below.
+# `test_repository_has_no_bare_text_calls` only checks the files
+# `iter_scope_files()` returns, so it would stay green if discovery silently
+# stopped reaching a root (e.g. `SCOPE_DIRS` lost `tests`, or `rglob` broke) —
+# fewer files checked still reads as "clean".  These pin the enumerator itself
+# so such a regression fails loudly (#645 CR).
+# ---------------------------------------------------------------------------
+
+def test_iter_scope_files_reaches_every_scope_root(mod: object) -> None:
+    files = mod.iter_scope_files()
+    roots_hit = {p.relative_to(mod.ROOT).parts[0] for p in files}
+    assert set(mod.SCOPE_DIRS) <= roots_hit, (
+        f"iter_scope_files() must reach every scope root {mod.SCOPE_DIRS}; "
+        f"reached {sorted(roots_hit)}")
+    # A known real file under each scope root must be discovered — a stronger
+    # guard than a count against discovery that returns a whole root as empty.
+    found = {p.resolve() for p in files}
+    sentinels = [
+        mod.ROOT / "vera" / "cli.py",
+        mod.ROOT / "scripts" / "check_explicit_encoding.py",
+        Path(__file__).resolve(),  # tests/ — this very file
+    ]
+    missing = [s for s in sentinels if s.resolve() not in found]
+    assert not missing, f"iter_scope_files() missed in-scope files: {missing}"
+
+
+def test_in_scope_accepts_scope_roots_and_rejects_outsiders(mod: object) -> None:
+    # Accept a real .py under each scope root (the `main FILE ...` filter path).
+    assert mod._in_scope(mod.ROOT / "vera" / "cli.py")
+    assert mod._in_scope(mod.ROOT / "scripts" / "check_explicit_encoding.py")
+    assert mod._in_scope(Path(__file__))
+    # Reject: a non-scope top-level dir, a non-.py file, a path outside ROOT.
+    assert not mod._in_scope(mod.ROOT / "docs" / "foo.py")
+    assert not mod._in_scope(mod.ROOT / "README.md")
+    assert not mod._in_scope(mod.ROOT.parent / "outside_the_repo.py")
+
+
+# ---------------------------------------------------------------------------
 # The repository itself is clean (the production assertion).
 # ---------------------------------------------------------------------------
 
