@@ -17,6 +17,21 @@ import wasmtime
 from vera.runtime.text import safe_utf8_decode
 
 
+def _slice_and_decode(
+    memory: wasmtime.Memory, context: Any, ptr: int, length: int,
+) -> str:
+    """Slice ``length`` bytes at ``ptr`` from ``memory`` and safe-decode them.
+
+    Shared body of :func:`_read_wasm_string` and :func:`_read_string_export`:
+    resolve the ``data_ptr`` for the given wasmtime ``context`` (a live
+    ``Caller`` mid-call, or the ``Store`` post-run) and route the slice through
+    :func:`safe_utf8_decode`, so a corrupt region surfaces as U+FFFD rather than
+    a ``UnicodeDecodeError`` escaping the trampoline (#589 / #592).  Each caller
+    keeps its own pre-checks (bounds / negative length) before calling this.
+    """
+    buf = memory.data_ptr(context)
+    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
+
 def _read_wasm_string(
     caller: wasmtime.Caller, ptr: int, length: int,
 ) -> str:
@@ -32,8 +47,7 @@ def _read_wasm_string(
     """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-    buf = memory.data_ptr(caller)
-    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
+    return _slice_and_decode(memory, caller, ptr, length)
 
 def _read_string_export(
     memory: wasmtime.Memory,
@@ -59,8 +73,7 @@ def _read_string_export(
     mem_size = memory.data_len(store)
     if not (0 <= ptr and ptr + length <= mem_size):
         return None
-    buf = memory.data_ptr(store)
-    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
+    return _slice_and_decode(memory, store, ptr, length)
 
 def _write_bytes(
     caller: wasmtime.Caller, offset: int, data: bytes,
