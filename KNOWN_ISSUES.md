@@ -69,7 +69,7 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | File | Lines | Refactoring | Issue |
 |------|-------|-------------|-------|
 | `tests/test_codegen.py` | 21,093 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types). More than doubled since the issue was filed; roadmap Tier 1, after the mutation sweep. | [#419](https://github.com/aallan/vera/issues/419) |
-| `tests/test_checker.py` | 6,347 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors). Roadmap Tier 1, after the test_codegen split. | [#420](https://github.com/aallan/vera/issues/420) |
+
 ## Test coverage gaps
 
 Internal test-quality items that don't affect correctness today but would make the suite more durable to refactoring.
@@ -78,6 +78,7 @@ Internal test-quality items that don't affect correctness today but would make t
 |-----|-------|
 | Five of the six UTF-8 decode sites are pinned only by structural source-greps — a refactor that centralises the decodes would break the greps even with preserved behaviour. End-to-end tests per site (parametrizing the existing `host_print` test over an import-name/signature/payload tuple) would survive it. | [#592](https://github.com/aallan/vera/issues/592) |
 | Text-mode `open()`/`read_text()`/`write_text()` calls without explicit `encoding='utf-8'` remain at roughly 30 sites, relying on CI's `PYTHONUTF8=1` backstop. The durable fix is explicit encoding everywhere plus a pre-commit check, after which the CI variable can be dropped. | [#645](https://github.com/aallan/vera/issues/645) |
+| `tests/test_checker_modules.py` triplicates a per-class `_resolved()` helper across `TestCrossModuleTyping`/`TestVisibilityEnforcement`/`TestModuleCallParsed`; the third copy has drifted on `file_path` (`Path("/fake")` vs the others' `Path(f"/fake/{'/'.join(path)}.vera")`). Harmless today, but consolidating means changing that value, so it was kept out of the byte-identical #420 split. | [#835](https://github.com/aallan/vera/issues/835) |
 
 ## CI workarounds
 
