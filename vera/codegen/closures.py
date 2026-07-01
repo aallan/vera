@@ -91,10 +91,22 @@ class ClosureLiftingMixin:
         while worklist:
             anon_fn, captures, closure_id = worklist.popleft()
             inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
-            lifted_wat = self._compile_lifted_closure(
-                closure_id, anon_fn, captures,
-                collect_pending=inner_pending,
-            )
+            try:
+                lifted_wat = self._compile_lifted_closure(
+                    closure_id, anon_fn, captures,
+                    collect_pending=inner_pending,
+                )
+            except CodegenInvariantError:
+                # #657: a closure-body invariant (codegen bug) aborts the
+                # worklist mid-way.  Restore `_next_closure_id` — mirroring the
+                # `any_failed` rollback below — so the consumed range is recycled
+                # and subsequent top-level fns keep their closure_id ↔
+                # table_index correspondence, then re-raise so `_compile_fn`
+                # surfaces a single [E699].  (Local buffers are discarded with
+                # the stack frame; module-level state is committed only on the
+                # all-success path below, so nothing else needs rolling back.)
+                self._next_closure_id = prev_next_closure_id
+                raise
             if lifted_wat is None:
                 # Closure body failed — diagnostics already emitted by
                 # `_compile_lifted_closure`'s harvest.  Record the
@@ -258,8 +270,9 @@ class ClosureLiftingMixin:
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:  # pragma: no cover — Unit closure param
                 continue  # Unit param, skip
-            if wt == "unsupported":  # pragma: no cover — defensive
-                return None
+            if wt == "unsupported":  # pragma: no cover — type-check rejects this
+                raise CodegenInvariantError(
+                    "closure parameter has unsupported WASM type", anon_fn)
             if wt == "i32_pair":
                 # String/Array params need two consecutive i32 slots (ptr, len).
                 # The pair convention uses ptr_idx and ptr_idx+1 implicitly, so
@@ -366,8 +379,9 @@ class ClosureLiftingMixin:
 
         # Return type
         ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
-        if ret_wt == "unsupported":  # pragma: no cover — defensive
-            return None
+        if ret_wt == "unsupported":  # pragma: no cover — type-check rejects this
+            raise CodegenInvariantError(
+                "closure return type has unsupported WASM type", anon_fn)
         if ret_wt == "i32_pair":
             result_part = " (result i32 i32)"
         elif ret_wt:
@@ -403,25 +417,13 @@ class ClosureLiftingMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
-            # Closure-body invariant violation — codegen bug.
-            # Surfaced as [E699] at severity="error" so `vera compile`
-            # exits non-zero.  Symmetric with the parent-boundary
-            # handler in `vera/codegen/functions.py::_compile_fn`.
-            #
-            # Harvest interpolation failures before the [E699] for the
-            # same reason the CodegenSkip handler above does — symmetry
-            # insurance against future raise sites that fire mid-
-            # interpolation-translation.
-            self._harvest_interp_inference_failures(ctx)
-            self._error(
-                inv.node if inv.node is not None else anon_fn,
-                f"Internal compiler error in closure body: {inv.msg}",
-                rationale="This is a codegen invariant violation. "
-                "Please file a bug report with the offending program.",
-                error_code="E699",
-            )
-            return None
+        # #657: a CodegenInvariantError from the closure body is NOT caught
+        # here — it propagates to `_compile_fn`'s handler around
+        # `_lift_pending_closures`, which surfaces a single [E699] for the whole
+        # function.  Catching it here (the previous behaviour) emitted [E699]
+        # AND returned None, so the enclosing fn then also emitted a spurious
+        # [E602] "closure skipped" — mixing the compiler-bug and user-skip
+        # signals.  See vera/codegen/functions.py and tests/test_codegen_invariant_e699.py.
 
         if body_instrs is None:
             # #630 Tier 2 — closure-body parallel of the harvest in

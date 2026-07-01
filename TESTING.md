@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,557 across 52 files (~63,000 lines of test code; 5,509 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,559 across 53 files (~63,000 lines of test code; 5,511 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -72,6 +72,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_contracts.py` | 32 | 570 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,320 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 50 | 1,618 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
+| `test_codegen_invariant_e699.py` | 2 | 156 | `CodegenInvariantError` raised in a translator surfaces as a structured `[E699]` "internal compiler error" at the `_compile_fn` boundary, not a raw traceback (#657 Track 2) |
 | `test_codegen_modules.py` | 33 | 1,151 | Cross-module guard rail, cross-module codegen, module-qualified call resolution bypassing a local shadow incl. intra-module siblings, where-fn helpers both directions, unit- and pair-returning calls in statement position, and the @Nat-parameter guard mirrored onto shadowed targets (#814 §8.5.3), name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 244 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_execute_characterization.py` | 22 | 467 | Characterization harness pinning `execute()`'s observable contract ahead of the #421 runtime decomposition (#734): every `ExecuteResult` field (`value` int/float/str/heap-pointer/None, `stdout`, `state`, `exit_code`, `stderr`) crossed with the three completion modes — normal return, WASM trap (raises `WasmTrapError` with a classified `kind`, output-before-trap preserved), and interrupt/exit (`IO.exit(n)` → `exit_code` n with `value` None, Ctrl-C → 130) — plus the positional-constructor compatibility shape and `capture_stderr` True-vs-default. **Mutation-validated**: every cell confirmed to flip RED when its target return path in `api.py` is deliberately broken (9 mutations, 0 green-for-the-wrong-reason tests) |

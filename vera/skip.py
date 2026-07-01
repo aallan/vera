@@ -50,6 +50,40 @@ as:
   tracked in #657.
 
 See #657 for the full per-site audit table and the cleanup tracks.
+
+Reachable None via the [E615] channel — DO NOT "clean up" every PROPAGATE
+--------------------------------------------------------------------------
+
+A tempting-but-WRONG simplification: "post-#658 every leaf raises, so every
+``result = self.translate_expr(...); if result is None: return None`` forward is
+dead — replace it with ``assert``/``raise``."  This is false.
+
+``translate_expr`` / ``translate_block`` still return ``None`` *reachably* via
+the #630 string-interpolation channel: when interpolation inference fails,
+``_translate_interpolated_string`` records the failing segment to
+``ctx._interp_inference_failures`` and returns ``None``.  That ``None``
+propagates up through every enclosing translator and is turned into a loud
+``[E615]`` (plus the ``[E602]`` function-drop) at the ``_compile_fn`` boundary,
+which harvests the failure list.  So a forward of ``translate_expr`` /
+``translate_block`` is **load-bearing PROPAGATE, not dead** — converting it to
+``assert``/``raise`` turns a graceful ``[E615]`` function-drop into a crash
+(caught empirically by ``TestE615LoudInterpolationFallthrough630`` when a #657
+pass over-eagerly asserted such a forward in ``calls.py``).
+
+Rule of thumb for the #657 Track-1/Track-2 audit:
+
+* A ``return None`` that FORWARDS a ``translate_expr`` / ``translate_block``
+  result (``if <x> is None: return None``) is **reachable** (via [E615]) and
+  must be **preserved** — regardless of any ``# pragma: no cover`` on it.
+* Only NON-forwarding guards — dispatch fall-throughs, shape guards on
+  type-check-impossible states, and ``Optional`` lookup/inference helpers that
+  do not forward a translator — are candidates for ``CodegenInvariantError``
+  (INVARIANT_DEFENSIVE) or removal.
+
+The #657 audit's INVARIANT_DEFENSIVE count over-counted precisely because it
+tagged five ``operators.py`` operand/body forwards as INVARIANT when they are
+in fact reachable-via-[E615] PROPAGATE; those stay ``return None`` (see the
+``# #657 / #630 [E615]`` comments there).
 """
 
 from __future__ import annotations

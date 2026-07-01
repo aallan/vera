@@ -331,7 +331,7 @@ class FunctionCompilationMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
+        except CodegenInvariantError as inv:  # #657: reachable — operators.py / closures.py raise this for type-check-impossible states; covered by tests/test_codegen_invariant_e699.py.
             # #626 Layer 3 — compiler bug, not a user error.  Surface
             # as [E699] at severity="error" so `vera compile` exits
             # non-zero — these should never fire in production; if
@@ -418,7 +418,28 @@ class FunctionCompilationMixin:
         # E602 noting that the parent is being dropped *because* of
         # the closure failure, so the user can correlate the cause
         # diagnostic with the effect.
-        closure_failed = self._lift_pending_closures(ctx)
+        try:
+            closure_failed = self._lift_pending_closures(ctx)
+        except CodegenInvariantError as inv:  # #657: a closure-body invariant
+            # violation (a codegen bug) propagates out of
+            # `_compile_lifted_closure` to here and surfaces as ONE [E699] for
+            # the whole function — NOT the [E602] "closure skipped" warning
+            # below, which is reserved for a user-facing unsupported-construct
+            # skip.  Swallowing it in the closure helper (its previous
+            # behaviour) mixed the compiler-bug and user-skip signals: the
+            # helper emitted [E699] AND returned None, so this path then also
+            # emitted [E602].  Covered by tests/test_codegen_invariant_e699.py.
+            self._harvest_interp_inference_failures(ctx)
+            self._error(
+                inv.node if inv.node is not None else decl,
+                f"Internal compiler error while compiling '{decl.name}': "
+                f"{inv.msg}",
+                rationale="This is a codegen invariant violation — the type "
+                "checker should have rejected the input before it reached this "
+                "point.  Please file a bug report with the offending program.",
+                error_code="E699",
+            )
+            return None
         if closure_failed:
             self._warning(
                 decl,

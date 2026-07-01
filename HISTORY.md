@@ -415,6 +415,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.188 | 30 Jun | Every diagnostic is gated for spec-accurate `rationale` and `spec_ref` metadata, plus a `fix` for errors ([#682](https://github.com/aallan/vera/issues/682)). |
 | v0.0.189 | 1 Jul | The UTF-8 "safe decode" invariant is centralised behind one `safe_utf8_decode` helper, replacing six brittle source-grep tests with behavioural coverage ([#592](https://github.com/aallan/vera/issues/592)). |
 | v0.0.190 | 1 Jul | Text I/O (files and `subprocess` captures) is UTF-8 regardless of host locale, gated in pre-commit/CI, letting the `PYTHONUTF8` backstop be removed ([#645](https://github.com/aallan/vera/issues/645)). |
+| v0.0.191 | 1 Jul | Type-check-impossible codegen guards raise `CodegenInvariantError` (`[E699]`) instead of silently returning None ([#657](https://github.com/aallan/vera/issues/657)). |
 
 ---
 
@@ -433,4 +434,4 @@ Six releases, chosen for the capability each one unlocked rather than even spaci
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | 90% | 96% | 95% | 95% |
 
-Total: **1,700+ commits, 189 tagged releases, 90 active development days.**
+Total: **1,700+ commits, 191 tagged releases, 90 active development days.**

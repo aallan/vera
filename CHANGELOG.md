@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.191] - 2026-07-01
+
+### Changed
+
+- **Codegen type-check-impossible guards now raise `CodegenInvariantError` (`[E699]`)** ([#657](https://github.com/aallan/vera/issues/657), follow-up to [#626](https://github.com/aallan/vera/issues/626)).  The #626 audit classified every `return None` in `vera/codegen/**` and `vera/wasm/**`; #658 converted the 104 user-actionable SILENT_SKIP sites to `CodegenSkip` (`[E602]`).  This converts the genuine **INVARIANT_DEFENSIVE** guards — non-forwarding dispatch fall-throughs and shape guards on states the type checker has already rejected — to `raise CodegenInvariantError`, surfaced at the `_compile_fn` boundary as an `[E699]` "internal compiler error, please file a bug" (severity `error`) instead of a silent skip or a mis-attributed `[E602]`.  21 sites: 2 in `codegen/closures.py`, 19 in `wasm/operators.py`; pinned by `tests/test_codegen_invariant_e699.py`.  Behaviour-preserving — the converted paths are `# pragma: no cover` (type-check-impossible).  A closure-body invariant now *propagates* to `_compile_fn` for a single `[E699]` (rather than being caught in `_compile_lifted_closure`, which emitted `[E699]` **and** returned None so the enclosing function also got a spurious `[E602]` "closure skipped"); and the quantifier-predicate guard is tightened to require exactly one parameter (so a malformed multi-parameter predicate raises rather than silently using the first).
+- **Corrected the #626 audit's PROPAGATE premise** ([#657](https://github.com/aallan/vera/issues/657)).  The audit assumed #658 made every codegen leaf *raise*, leaving the PROPAGATE `if x is None: return None` forwards dead.  That is false for the #630 `[E615]` string-interpolation channel: `_translate_interpolated_string` records failing segments and returns `None`, which propagates up and is dropped loudly as `[E615]` at the `_compile_fn` boundary.  So `translate_expr` / `translate_block` still return `None` *reachably*, and forwards of them are **load-bearing PROPAGATE, preserved** — not removed (satisfying the issue's "preserved (still reachable)" criterion).  Five `operators.py` sites the audit had tagged INVARIANT were in fact such forwards and are kept as `return None`; the `inference.py` defensive sites are kept as `Optional`-by-contract.  The invariant is now documented in `vera/skip.py` ("Reachable None via the [E615] channel") and at every preserved forward, so a future cleanup pass can't repeat the mistake (which the test suite caught as an `AssertionError` in `TestE615LoudInterpolationFallthrough630`).
+
 ## [0.0.190] - 2026-07-01
 
 ### Changed
@@ -2701,7 +2708,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.190...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.191...HEAD
+[0.0.191]: https://github.com/aallan/vera/compare/v0.0.190...v0.0.191
 [0.0.190]: https://github.com/aallan/vera/compare/v0.0.189...v0.0.190
 [0.0.189]: https://github.com/aallan/vera/compare/v0.0.188...v0.0.189
 [0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
