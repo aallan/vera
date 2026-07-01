@@ -11,10 +11,14 @@ and the WAT/GC assertion helpers further down).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 import wasmtime
 
 from vera.codegen import (
+    CodeGenerator,
     compile,
     CompileResult,
     execute,
@@ -31,7 +35,10 @@ from vera.transform import transform
 
 def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
-    # Write to a temp source and parse
+    # Write to a temp source and parse.  delete=False + manual unlink is
+    # the Windows-safe pattern (an open NamedTemporaryFile can't be
+    # reopened there); the finally guarantees no temp-file leak even
+    # when parsing or compilation raises.
     import tempfile
 
     with tempfile.NamedTemporaryFile(
@@ -41,9 +48,12 @@ def _compile(source: str) -> CompileResult:
         f.flush()
         path = f.name
 
-    tree = parse_file(path)
-    ast = transform(tree)
-    return compile(ast, source=source, file=path)
+    try:
+        tree = parse_file(path)
+        ast = transform(tree)
+        return compile(ast, source=source, file=path)
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def _compile_ok(source: str) -> CompileResult:
@@ -138,10 +148,9 @@ def _run_state(
 # =====================================================================
 
 
-def _compile_with_generator(source: str):
+def _compile_with_generator(source: str) -> tuple[CompileResult, CodeGenerator]:
     """Compile and return both result and CodeGenerator for metadata inspection."""
     import tempfile
-    from vera.codegen import CodeGenerator
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False, encoding="utf-8"
@@ -150,11 +159,14 @@ def _compile_with_generator(source: str):
         f.flush()
         path = f.name
 
-    tree = parse_file(path)
-    program = transform(tree)
-    gen = CodeGenerator(source=source, file=path)
-    result = gen.compile_program(program)
-    return result, gen
+    try:
+        tree = parse_file(path)
+        program = transform(tree)
+        gen = CodeGenerator(source=source, file=path)
+        result = gen.compile_program(program)
+        return result, gen
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 _INLINE_BUILTIN_NAMES = (
@@ -212,7 +224,7 @@ def _assert_no_host_imports_for_inline_builtins(wat: str) -> None:
 
 
 def _assert_chain_reclaims(
-    chain,  # (int) -> str: builds the chain source for a given size
+    chain: Callable[[int], str],  # builds the chain source for a given size
     small_n: int,
     large_n: int,
     small_val: int,

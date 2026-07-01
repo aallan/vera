@@ -94,6 +94,30 @@ class TestRefactoringCounts:
         assert len(errors) == 1
         assert ">10% drift" in errors[0]
 
+    def test_empty_section_with_sentinel_passes(self, tmp_path: Path) -> None:
+        """The #419 empty-state convention: once the last oversized file is
+        split, the table is replaced by this exact sentence and the gate
+        accepts the rowless section."""
+        doc = (
+            "## Refactoring needed\n\n"
+            "No files currently need decomposition.\n"
+            "\n## Next section\n"
+        )
+        assert _MOD.check_refactoring_counts(doc, tmp_path) == []
+
+    def test_empty_section_without_sentinel_fails(self, tmp_path: Path) -> None:
+        """The sentinel carve-out must not mask a malformed table: a rowless
+        section with any OTHER wording (e.g. a reworded sentence, or a table
+        whose rows no longer parse) still trips the gate."""
+        doc = (
+            "## Refactoring needed\n\n"
+            "Nothing needs decomposing right now.\n"
+            "\n## Next section\n"
+        )
+        errors = _MOD.check_refactoring_counts(doc, tmp_path)
+        assert len(errors) == 1
+        assert "no `file` | count rows" in errors[0]
+
     def test_missing_file_fails(self, tmp_path: Path) -> None:
         errors = _MOD.check_refactoring_counts(
             _refactoring_doc("gone.py", 1000), tmp_path
