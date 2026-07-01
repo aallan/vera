@@ -428,5 +428,21 @@ A hole is a development aid, not a runtime value:
 - `vera compile` / `vera run` **reject** a program that still contains a hole
   (`E614`) — a hole has no runtime behaviour, so it can never be executed.
 
+For example, a hole can stand in for an unwritten sub-expression:
+
+```
+public fn scale(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + ?
+}
+```
+
+Here `?` is the second operand of `+`, so it is inferred to have type `@Int`.
+`vera check` accepts this function (reporting `W001`); `vera compile` rejects it
+(`E614`) until the hole is filled in.
+
 Replace each `?` with a concrete expression of the inferred type before
 compiling.

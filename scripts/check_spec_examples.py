@@ -358,7 +358,11 @@ def try_check(content: str) -> str | None:
     try:
         tree = parse(content, file="<spec>")
         program = transform(tree)
-        errors = typecheck(program, source=content, file="<spec>")
+        diags = typecheck(program, source=content, file="<spec>")
+        # Warnings (e.g. W001 for a typed hole) are not check failures — the
+        # CLI `vera check` exits 0 on them, and try_verify already filters to
+        # error severity.  Only error-severity diagnostics fail the check stage.
+        errors = [d for d in diags if d.severity == "error"]
         if errors:
             return errors[0].description[:200]
         return None
@@ -376,9 +380,12 @@ def try_verify(content: str) -> str | None:
     try:
         tree = parse(content, file="<spec>")
         program = transform(tree)
-        errors = typecheck(program, source=content, file="<spec>")
-        if errors:
-            return errors[0].description[:200]
+        diags = typecheck(program, source=content, file="<spec>")
+        # Same warning-filter as try_check: a W001 typed-hole warning is not a
+        # type error and must not fail the verify stage's type-check sub-step.
+        type_errors = [d for d in diags if d.severity == "error"]
+        if type_errors:
+            return type_errors[0].description[:200]
         result = verify(program, source=content, file="<spec>")
         errs = [d for d in result.diagnostics if d.severity == "error"]
         if errs:
