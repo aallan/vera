@@ -30,7 +30,7 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import pytest
 
@@ -1832,123 +1832,142 @@ class TestHostPrintInvalidUtf8589:
     is the WasmTrapError contract from #516 / #522 / #547 applied to the
     UTF-8-decode paths.
 
-    Tests here are primarily structural assertions on the source: each
-    affected decode site (four in ``vera/codegen/api.py``, one in
-    ``vera/wasm/markdown.py``) must use ``errors="replace"``.  These
-    catch a regression that drops the flag from any of the production
-    sites.  Plus one end-to-end test using a synthetic WAT module that
-    imports ``vera.print`` and calls it with raw invalid UTF-8 bytes —
-    that test pins the wasmtime-trampoline contract (a Python
-    ``UnicodeDecodeError`` escapes a host import as a "python exception"
-    cause iff the host decode is strict).  It mirrors the production
-    code rather than wiring up the real ``host_print`` so the production
-    regression is caught by the structural tests, not this one.
+    The decode invariant now lives in ONE place —
+    ``vera.runtime.text.safe_utf8_decode`` (#592) — so a single unit test pins
+    it for all six former sites (``host_print`` / ``host_stderr`` /
+    ``host_contract_fail`` / the String-return extractor in
+    ``vera/codegen/api.py``, plus ``_read_wasm_string`` and markdown
+    ``_read_string``).  Two end-to-end tests wire the *real* standalone readers
+    through a synthetic WAT module and assert no Python ``UnicodeDecodeError``
+    escapes the trampoline (a strict decode would); a third pins the same
+    contract for ``host_print``.  This centralisation retired the six per-site
+    structural source-grep tests that predated it.
     """
 
-    def _file_body_after(
-        self, file_path: str, marker: str, *, span: int = 1500,
-    ) -> str:
-        from pathlib import Path
-        repo_root = Path(__file__).parent.parent
-        src = (repo_root / file_path).read_text()
-        idx = src.index(marker)
-        return src[idx:idx + span]
-
-    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
-        return self._file_body_after("vera/codegen/api.py", marker, span=span)
-
-    def test_host_print_uses_errors_replace(self) -> None:
-        """host_print decodes with errors='replace' so invalid UTF-8
-        bytes from a corrupt String surface as U+FFFD instead of a
-        raw Python exception escaping through wasmtime's trampoline.
-
-        Anchors on ``def host_print(`` rather than a nearby comment so
-        the test isn't fragile to comment refactoring.
+    def test_safe_utf8_decode_maps_invalid_bytes_to_replacement(
+        self,
+    ) -> None:
+        """The SSOT helper (#592) is the single home for the #589
+        invariant: invalid bytes become U+FFFD, never a
+        ``UnicodeDecodeError``.  All six former decode sites route
+        through it, so this one test pins the behaviour for every site;
+        the two end-to-end tests below confirm the wiring at the two
+        standalone readers, and the host_print test pins the
+        wasmtime-trampoline contract.
         """
-        body = self._api_body_after("def host_print(")
-        assert 'data.decode("utf-8", errors="replace")' in body, (
-            "host_print must decode with errors='replace' so invalid "
-            "UTF-8 bytes don't escape as a Python UnicodeDecodeError "
-            "through wasmtime's trampoline (#589)."
+        from vera.runtime.text import safe_utf8_decode
+
+        # Invalid byte (0xc1 — never a valid UTF-8 lead byte) → U+FFFD,
+        # with the valid bytes on either side preserved.
+        result = safe_utf8_decode(b"hello \xc1 world")
+        assert "hello " in result
+        assert " world" in result
+        assert "�" in result, (
+            f"Expected U+FFFD where 0xc1 was; got {result!r}"
         )
 
-    def test_host_stderr_uses_errors_replace(self) -> None:
-        """host_stderr decodes with errors='replace' for the same
-        reason as host_print — IO.stderr must never crash Python.
+        # Valid inputs pass through unchanged (incl. multi-byte UTF-8);
+        # empty input is a no-op.
+        assert safe_utf8_decode(b"plain ascii") == "plain ascii"
+        assert safe_utf8_decode("café".encode()) == "café"
+        assert safe_utf8_decode(b"") == ""
+
+    def _run_reader_over_invalid_bytes(
+        self, reader: Callable[..., str],
+    ) -> list[str]:
+        """Drive a real ``(caller, ptr, length) -> str`` WASM-memory
+        reader over a linear-memory region seeded with invalid UTF-8
+        bytes, via a synthetic wasmtime module.
+
+        Mirrors ``test_invalid_utf8_through_host_print_does_not_raise``
+        but wires the *production* reader (not a copy of it) behind a
+        tiny void ``probe`` host import, so the test survives any
+        refactor of the reader's internals.  Returns the list of strings
+        the reader produced (one per ``probe`` call); the caller asserts
+        on U+FFFD content.  If the reader ever decodes strictly the
+        ``UnicodeDecodeError`` escapes the trampoline and ``run_export``
+        raises — exactly the regression this pins.
         """
-        body = self._api_body_after("def host_stderr(")
-        assert 'data.decode("utf-8", errors="replace")' in body, (
-            "host_stderr must decode with errors='replace' (#589)."
+        import wasmtime
+
+        invalid_bytes = b"hello \xc1 world"
+        wat_bytes = "".join(f"\\{b:02x}" for b in invalid_bytes)
+        wat = (
+            "(module\n"
+            '  (import "probe" "read" (func $read (param i32 i32)))\n'
+            '  (memory (export "memory") 1)\n'
+            f'  (data (i32.const 0) "{wat_bytes}")\n'
+            '  (func (export "run")\n'
+            "    i32.const 0\n"
+            f"    i32.const {len(invalid_bytes)}\n"
+            "    call $read\n"
+            "  )\n"
+            ")\n"
         )
 
-    def test_host_contract_fail_uses_errors_replace(self) -> None:
-        """host_contract_fail decodes with errors='replace' so a corrupt
-        contract-violation message itself doesn't mask the underlying
-        violation with a Python traceback.
+        results: list[str] = []
+
+        def probe(
+            caller: wasmtime.Caller, ptr: int, length: int,
+        ) -> None:
+            results.append(reader(caller, ptr, length))
+
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        read_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+        linker.define_func(
+            "probe", "read", read_type, probe, access_caller=True,
+        )
+
+        module = wasmtime.Module(engine, wat)
+        instance = linker.instantiate(store, module)
+        run_export = instance.exports(store)["run"]
+        assert isinstance(run_export, wasmtime.Func)
+        # Must not raise: a strict decode inside `reader` would surface
+        # here as a UnicodeDecodeError escaping wasmtime's trampoline.
+        run_export(store)
+        return results
+
+    def test_read_wasm_string_replaces_invalid_bytes_end_to_end(
+        self,
+    ) -> None:
+        """The real ``vera/runtime/heap.py::_read_wasm_string`` — the
+        reader behind the read_file / get_env / String-argument paths —
+        decodes a corrupt (ptr, len) region to U+FFFD rather than letting
+        a Python ``UnicodeDecodeError`` escape wasmtime's trampoline
+        (#589).  Wires the production function, so dropping the safe
+        decode (or the SSOT helper going strict) turns this RED.
         """
-        body = self._api_body_after("def host_contract_fail(")
-        assert 'data.decode("utf-8", errors="replace")' in body, (
-            "host_contract_fail must decode with errors='replace' (#589)."
+        from vera.runtime.heap import _read_wasm_string
+
+        results = self._run_reader_over_invalid_bytes(_read_wasm_string)
+        assert len(results) == 1
+        assert "hello " in results[0]
+        assert " world" in results[0]
+        assert "�" in results[0], (
+            f"Expected U+FFFD where 0xc1 was; got {results[0]!r}"
         )
 
-    def test_read_wasm_string_uses_errors_replace(self) -> None:
-        """_read_wasm_string (used by read_file path / get_env / etc.)
-        decodes with errors='replace' so any corrupt-bytes input surfaces
-        as U+FFFD downstream rather than crashing Python.
-
-        Asserts on the literal `.decode("utf-8", errors="replace")`
-        call form rather than just the substring `errors="replace"` —
-        the latter is also present in the function's docstring (where
-        the `errors="replace"` strategy is explained in prose), so a
-        substring check would pass spuriously even if the actual call
-        was reverted to strict-mode `.decode("utf-8")`.
+    def test_markdown_read_string_replaces_invalid_bytes_end_to_end(
+        self,
+    ) -> None:
+        """The real ``vera/wasm/markdown.py::_read_string`` — invoked
+        from every Markdown host import (host_md_render /
+        host_md_has_heading / host_md_extract_text /
+        host_md_count_blocks) — has the same contract as
+        _read_wasm_string and is pinned the same way (#589).
         """
-        body = self._file_body_after(
-            "vera/runtime/heap.py",
-            '"""Read a UTF-8 string from WASM memory.',
-        )
-        assert '.decode("utf-8", errors="replace")' in body, (
-            "_read_wasm_string must decode with errors='replace' (#589)."
-        )
+        from vera.wasm.markdown import _read_string
 
-    def test_markdown_read_string_uses_errors_replace(self) -> None:
-        """vera/wasm/markdown.py::_read_string is the fifth UTF-8 decode
-        site — invoked from host_md_render / host_md_has_heading /
-        host_md_extract_text / host_md_count_blocks for every Markdown
-        host import.  Same failure mode as the four api.py sites: a
-        corrupt String passed to md_render would have escaped as a
-        Python UnicodeDecodeError through wasmtime's trampoline.  Pins
-        the fix at the markdown.py site too (#589).
-
-        Asserts on the literal `.decode("utf-8", errors="replace")`
-        call form rather than just the substring `errors="replace"`
-        for the same reason as the `_read_wasm_string` test above —
-        the docstring explains the strategy in prose so a substring
-        check would spuriously pass even if the call was reverted.
-        """
-        body = self._file_body_after(
-            "vera/wasm/markdown.py",
-            "def _read_string(",
-        )
-        assert '.decode("utf-8", errors="replace")' in body, (
-            "vera/wasm/markdown.py::_read_string must decode with "
-            "errors='replace' for parity with the four api.py sites (#589)."
-        )
-
-    def test_extract_string_uses_errors_replace(self) -> None:
-        """The String-return decoder in execute() (api.py around
-        line 3260) was previously try/except → pointer fallback, which
-        silently mutated the return type from str to int when bytes
-        weren't valid UTF-8.  That fallback was a worse silent failure
-        than visible U+FFFD chars (downstream CLI printer printed an
-        integer where a string was expected).  Post-fix: errors='replace'
-        keeps the value typed as str (#589).
-        """
-        body = self._api_body_after("# Extract return value", span=2200)
-        assert 'raw_bytes.decode("utf-8", errors="replace")' in body, (
-            "_extract_string path must use errors='replace' instead of "
-            "the old try/except → pointer fallback (#589 — silently "
-            "mutating str → int is worse than U+FFFD)."
+        results = self._run_reader_over_invalid_bytes(_read_string)
+        assert len(results) == 1
+        assert "hello " in results[0]
+        assert " world" in results[0]
+        assert "�" in results[0], (
+            f"Expected U+FFFD where 0xc1 was; got {results[0]!r}"
         )
 
     def test_invalid_utf8_through_host_print_does_not_raise(self) -> None:

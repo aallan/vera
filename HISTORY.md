@@ -413,6 +413,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.186 | 29 Jun | `@Nat` → `@Int` widening is now sound: a value above i64.MAX no longer reinterprets to a negative `@Int` ([#813](https://github.com/aallan/vera/issues/813)). |
 | v0.0.187 | 30 Jun | Integer-overflow runtime traps now carry a precise `overflow` trap kind instead of the generic `unreachable` ([#808](https://github.com/aallan/vera/issues/808)). |
 | v0.0.188 | 30 Jun | The no-silent-failures discipline reaches the diagnostics layer: every diagnostic is gated for complete, spec-accurate metadata, with 54 checker sites backfilled and 30-plus stale spec references corrected ([#682](https://github.com/aallan/vera/issues/682)). |
+| v0.0.189 | 1 Jul | The UTF-8 "safe decode" invariant is centralised into one `safe_utf8_decode` helper that all six former decode sites route through, replacing six brittle source-grep tests with a unit test plus two wire-real end-to-end tests ([#592](https://github.com/aallan/vera/issues/592)). |
 
 ---
 
@@ -420,15 +421,15 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 
 Six releases, chosen for the capability each one unlocked rather than even spacing.
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.187 (30 Jun) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.188 (30 Jun) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|
 | Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign |
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,461 |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,505 |
 | Examples | 13 | 15 | 18 | 30 | 35 | 35 |
 | Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 |
 | Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 |
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 |
-| Code coverage | — | — | 90% | 96% | 95% | 91% |
+| Code coverage | — | — | 90% | 96% | 95% | 95% |
 
 Total: **1,700+ commits, 187 tagged releases, 90 active development days.**

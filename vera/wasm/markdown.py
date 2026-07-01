@@ -55,6 +55,7 @@ from vera.markdown import (
     MdText,
     MdThematicBreak,
 )
+from vera.runtime.text import safe_utf8_decode
 
 # Type aliases for the helper functions passed from api.py
 AllocFn = Callable[["wasmtime.Caller", int], int]
@@ -497,7 +498,7 @@ def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     buf = memory.data_ptr(caller)
-    return bytes(buf[ptr:ptr + length]).decode("utf-8", errors="replace")
+    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
 
 
 def _read_string_pair(caller: wasmtime.Caller, offset: int) -> str:

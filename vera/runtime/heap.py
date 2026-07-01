@@ -14,6 +14,7 @@ from typing import Any
 
 import wasmtime
 
+from vera.runtime.text import safe_utf8_decode
 
 
 def _read_wasm_string(
@@ -32,7 +33,7 @@ def _read_wasm_string(
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     buf = memory.data_ptr(caller)
-    return bytes(buf[ptr:ptr + length]).decode("utf-8", errors="replace")
+    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
 
 def _write_bytes(
     caller: wasmtime.Caller, offset: int, data: bytes,

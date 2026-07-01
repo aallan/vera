@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.189] - 2026-07-01
+
+### Changed
+
+- **The UTF-8 "safe decode" invariant now lives in one helper** ([#592](https://github.com/aallan/vera/issues/592)).  Six sites decoded WASM-memory bytes with `errors="replace"` so a corrupt String `(ptr, len)` pair from an upstream codegen bug surfaces as U+FFFD rather than a raw Python `UnicodeDecodeError` escaping wasmtime's trampoline as a "python exception" cause — the [#516](https://github.com/aallan/vera/issues/516) / [#522](https://github.com/aallan/vera/issues/522) / [#589](https://github.com/aallan/vera/issues/589) contract that a user-level program never produces a Python traceback.  The invariant was re-implemented at all six (`host_print` / `host_stderr` / `host_contract_fail` / the String-return extractor in `vera/codegen/api.py`, `_read_wasm_string` in `vera/runtime/heap.py`, and `_read_string` in `vera/wasm/markdown.py`) and guarded by six *structural source-grep* tests plus one end-to-end test covering only `host_print` — so five of the six sites had no behavioural coverage, and the greps would break under exactly the refactor the issue proposed.  All six now route through a new `vera.runtime.text.safe_utf8_decode`, so the `errors="replace"` flag has one home instead of six copies to keep in sync (the [ROADMAP Tier-2 single-source-of-truth](ROADMAP.md) theme, same class as the [#828](https://github.com/aallan/vera/issues/828) error-code registry).  The six structural greps are replaced by one helper unit test plus two end-to-end tests that wire the **production** `_read_wasm_string` / markdown `_read_string` through a synthetic-WAT `probe` host import over a memory region seeded with invalid UTF-8 — a strict-decode regression now surfaces as a `UnicodeDecodeError` escaping the trampoline, caught at one point rather than needing a grep per site; the `host_print` end-to-end test is retained to pin the trampoline contract independently.  Behaviour-preserving.  (The sibling [#591](https://github.com/aallan/vera/issues/591) network-response decode sites in `http.py` / inference are a separate family with their own test class and adopt the helper as a fast-follow.)
+
 ## [0.0.188] - 2026-06-30
 
 ### Added
@@ -2689,7 +2695,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.188...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.189...HEAD
+[0.0.189]: https://github.com/aallan/vera/compare/v0.0.188...v0.0.189
 [0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
 [0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187
 [0.0.186]: https://github.com/aallan/vera/compare/v0.0.185...v0.0.186

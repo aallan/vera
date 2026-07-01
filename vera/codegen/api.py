@@ -42,6 +42,7 @@ from vera.runtime.random import register_random
 from vera.runtime.regex import register_regex
 from vera.runtime.set import register_set
 from vera.runtime.state import register_state
+from vera.runtime.text import safe_utf8_decode
 from vera.runtime.traps import (
     WasmTrapError as WasmTrapError,  # re-export: part of execute()'s contract
 )
@@ -327,7 +328,7 @@ def execute(
         # cause (#589).  A user-level program must never produce a Python
         # traceback regardless of what the program does — the WasmTrapError
         # contract from #516/#522/#547 holds here too.
-        text = data.decode("utf-8", errors="replace")
+        text = safe_utf8_decode(data)
         # Always capture into output_buf so ExecuteResult.stdout and
         # WasmTrapError.stdout reflect every byte the program printed
         # (the trap-preservation contract from #522 must hold even
@@ -488,7 +489,7 @@ def execute(
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
         # `errors="replace"` for the same reason as `host_print` (#589).
-        text = data.decode("utf-8", errors="replace")
+        text = safe_utf8_decode(data)
         if stderr_buf is not None:
             stderr_buf.write(text)
         else:
@@ -750,7 +751,7 @@ def execute(
         # `errors="replace"` so a corrupt violation message itself
         # doesn't crash with a `UnicodeDecodeError` and mask the
         # underlying contract violation that triggered the trap (#589).
-        last_violation.append(data.decode("utf-8", errors="replace"))
+        last_violation.append(safe_utf8_decode(data))
 
     contract_fail_type = wasmtime.FuncType(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
@@ -1194,7 +1195,7 @@ def execute(
                     # footgun than visible U+FFFD chars.  Now invalid
                     # bytes surface as replacement characters in the
                     # decoded string and ``value`` stays a ``str``.
-                    value = raw_bytes.decode("utf-8", errors="replace")
+                    value = safe_utf8_decode(raw_bytes)
                 else:  # pragma: no cover — out-of-bounds defensive path
                     value = ptr
             else:  # pragma: no cover — module without memory export
