@@ -35,6 +35,33 @@ def _read_wasm_string(
     buf = memory.data_ptr(caller)
     return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
 
+def _read_string_export(
+    memory: wasmtime.Memory,
+    store: wasmtime.Store,
+    ptr: int,
+    length: int,
+) -> str | None:
+    """Read a String ``(ptr, len)`` from a module's exported memory after a run.
+
+    Post-execution sibling of :func:`_read_wasm_string`: the return value of a
+    String-typed ``main`` is a ``(ptr, len)`` pair into the exported ``memory``,
+    read via the ``store`` (there is no live ``caller`` once the call has
+    returned).  Returns the safe-decoded string, or ``None`` when ``(ptr, len)``
+    is out of bounds or ``length`` is negative -- the caller then falls back to
+    surfacing the raw pointer.  Decoding goes through :func:`safe_utf8_decode`,
+    so corrupt return bytes surface as U+FFFD rather than a ``UnicodeDecodeError``
+    escaping wasmtime's trampoline (#589 / #592); ``errors="replace"`` also keeps
+    the value typed ``str`` instead of the old try/except -> pointer fallback
+    that silently mutated ``str`` into ``int`` on invalid UTF-8.
+    """
+    if length < 0:
+        return None
+    mem_size = memory.data_len(store)
+    if not (0 <= ptr and ptr + length <= mem_size):
+        return None
+    buf = memory.data_ptr(store)
+    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
+
 def _write_bytes(
     caller: wasmtime.Caller, offset: int, data: bytes,
 ) -> None:

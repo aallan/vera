@@ -29,6 +29,7 @@ from vera.runtime.heap import (
     _alloc_result_ok_string,
     _alloc_result_ok_unit,
     _alloc_string,
+    _read_string_export,
     _read_wasm_string,
 )
 from vera.runtime.html import register_html
@@ -42,7 +43,6 @@ from vera.runtime.random import register_random
 from vera.runtime.regex import register_regex
 from vera.runtime.set import register_set
 from vera.runtime.state import register_state
-from vera.runtime.text import safe_utf8_decode
 from vera.runtime.traps import (
     WasmTrapError as WasmTrapError,  # re-export: part of execute()'s contract
 )
@@ -317,18 +317,14 @@ def execute(
 
     # Host function: vera.print(ptr: i32, len: i32) -> ()
     def host_print(caller: wasmtime.Caller, ptr: int, length: int) -> None:
-        memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-        buf = memory.data_ptr(store)
-        data = bytes(buf[ptr:ptr + length])
-        # `errors="replace"` so an upstream codegen bug producing a
-        # corrupt String (ptr, len) pair surfaces as U+FFFD characters
-        # in the user's output rather than a raw Python `UnicodeDecodeError`
-        # escaping through wasmtime's trampoline as a "python exception"
-        # cause (#589).  A user-level program must never produce a Python
-        # traceback regardless of what the program does — the WasmTrapError
-        # contract from #516/#522/#547 holds here too.
-        text = safe_utf8_decode(data)
+        # `_read_wasm_string` decodes via `safe_utf8_decode` (errors="replace"),
+        # so an upstream codegen bug producing a corrupt String (ptr, len) pair
+        # surfaces as U+FFFD in the user's output rather than a raw Python
+        # `UnicodeDecodeError` escaping wasmtime's trampoline as a "python
+        # exception" cause (#589 / #592).  A user-level program must never
+        # produce a Python traceback regardless of what it does — the
+        # WasmTrapError contract from #516/#522/#547 holds here too.
+        text = _read_wasm_string(caller, ptr, length)
         # Always capture into output_buf so ExecuteResult.stdout and
         # WasmTrapError.stdout reflect every byte the program printed
         # (the trap-preservation contract from #522 must hold even
@@ -484,12 +480,9 @@ def execute(
     def host_stderr(
         caller: wasmtime.Caller, ptr: int, length: int,
     ) -> None:
-        memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-        buf = memory.data_ptr(store)
-        data = bytes(buf[ptr:ptr + length])
-        # `errors="replace"` for the same reason as `host_print` (#589).
-        text = safe_utf8_decode(data)
+        # Safe-decoded via `_read_wasm_string` for the same reason as
+        # `host_print` — IO.stderr must never crash Python (#589 / #592).
+        text = _read_wasm_string(caller, ptr, length)
         if stderr_buf is not None:
             stderr_buf.write(text)
         else:
@@ -743,15 +736,11 @@ def execute(
     def host_contract_fail(
         caller: wasmtime.Caller, ptr: int, length: int,
     ) -> None:
-        memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-        buf = memory.data_ptr(store)
-        data = bytes(buf[ptr:ptr + length])
         last_violation.clear()
-        # `errors="replace"` so a corrupt violation message itself
-        # doesn't crash with a `UnicodeDecodeError` and mask the
-        # underlying contract violation that triggered the trap (#589).
-        last_violation.append(safe_utf8_decode(data))
+        # Safe-decoded via `_read_wasm_string` so a corrupt violation message
+        # itself doesn't crash with a `UnicodeDecodeError` and mask the
+        # underlying contract violation that triggered the trap (#589 / #592).
+        last_violation.append(_read_wasm_string(caller, ptr, length))
 
     contract_fail_type = wasmtime.FuncType(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
@@ -1181,21 +1170,19 @@ def execute(
         ):
             ptr, length = raw_result[0], raw_result[1]
             memory_export = instance.exports(store).get("memory")
-            if isinstance(memory_export, wasmtime.Memory) and length >= 0:
-                buf = memory_export.data_ptr(store)
-                mem_size = memory_export.data_len(store)
-                if 0 <= ptr and ptr + length <= mem_size:
-                    raw_bytes = bytes(buf[ptr:ptr + length])
-                    # `errors="replace"` rather than the previous
-                    # try/except → pointer-fallback pattern (#589).  The
-                    # old fallback silently mutated the return type from
-                    # ``str`` to ``int`` when bytes weren't valid UTF-8,
-                    # so a downstream consumer (CLI printer) printed an
-                    # integer where a string was expected — a worse
-                    # footgun than visible U+FFFD chars.  Now invalid
-                    # bytes surface as replacement characters in the
-                    # decoded string and ``value`` stays a ``str``.
-                    value = safe_utf8_decode(raw_bytes)
+            if isinstance(memory_export, wasmtime.Memory):
+                # `_read_string_export` decodes via `safe_utf8_decode`
+                # (errors="replace") rather than the previous try/except →
+                # pointer-fallback pattern (#589 / #592): the old fallback
+                # silently mutated the return type from ``str`` to ``int`` on
+                # invalid UTF-8, so a downstream consumer (CLI printer) printed
+                # an integer where a string was expected — a worse footgun than
+                # visible U+FFFD chars.  It returns ``None`` only when
+                # ``(ptr, len)`` is out of bounds, in which case we fall back to
+                # surfacing the raw pointer.
+                decoded = _read_string_export(memory_export, store, ptr, length)
+                if decoded is not None:
+                    value = decoded
                 else:  # pragma: no cover — out-of-bounds defensive path
                     value = ptr
             else:  # pragma: no cover — module without memory export

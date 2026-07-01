@@ -1833,14 +1833,21 @@ class TestHostPrintInvalidUtf8589:
     UTF-8-decode paths.
 
     The decode invariant now lives in ONE place —
-    ``vera.runtime.text.safe_utf8_decode`` (#592) — so a single unit test pins
-    it for all six former sites (``host_print`` / ``host_stderr`` /
-    ``host_contract_fail`` / the String-return extractor in
-    ``vera/codegen/api.py``, plus ``_read_wasm_string`` and markdown
-    ``_read_string``).  Two end-to-end tests wire the *real* standalone readers
-    through a synthetic WAT module and assert no Python ``UnicodeDecodeError``
-    escapes the trampoline (a strict decode would); a third pins the same
-    contract for ``host_print``.  This centralisation retired the six per-site
+    ``vera.runtime.text.safe_utf8_decode`` (#592).  Only the three WASM-memory
+    string readers call it directly — ``_read_wasm_string`` and
+    ``_read_string_export`` (``vera/runtime/heap.py``) and markdown
+    ``_read_string`` — and the host imports that decode user Strings
+    (``host_print`` / ``host_stderr`` / ``host_contract_fail``) plus the
+    String-return extractor now *delegate* to those readers instead of decoding
+    inline, so no ``.decode(...)`` call survives outside the readers.  The unit
+    test pins the helper; three end-to-end tests wire the *real* readers through
+    a synthetic WAT module and assert no Python ``UnicodeDecodeError`` escapes
+    the trampoline (a strict decode would) — which transitively covers the host
+    imports / extractor that route through them.  A fourth end-to-end test keeps
+    a mirrored ``host_print`` closure to pin the wasmtime-trampoline fact itself
+    (that a strict host decode escapes as a "python exception" cause); it does
+    not exercise production code, since ``host_print`` now delegates to
+    ``_read_wasm_string``.  This centralisation retired the six per-site
     structural source-grep tests that predated it.
     """
 
@@ -1849,11 +1856,11 @@ class TestHostPrintInvalidUtf8589:
     ) -> None:
         """The SSOT helper (#592) is the single home for the #589
         invariant: invalid bytes become U+FFFD, never a
-        ``UnicodeDecodeError``.  All six former decode sites route
-        through it, so this one test pins the behaviour for every site;
-        the two end-to-end tests below confirm the wiring at the two
-        standalone readers, and the host_print test pins the
-        wasmtime-trampoline contract.
+        ``UnicodeDecodeError``.  This pins the *helper's* behaviour; the
+        three end-to-end tests below confirm each real reader
+        (``_read_wasm_string`` / ``_read_string_export`` / markdown
+        ``_read_string``) actually routes through it, and the host_print
+        test pins the wasmtime-trampoline fact itself.
         """
         from vera.runtime.text import safe_utf8_decode
 
@@ -1970,6 +1977,51 @@ class TestHostPrintInvalidUtf8589:
             f"Expected U+FFFD where 0xc1 was; got {results[0]!r}"
         )
 
+    def test_read_string_export_replaces_invalid_bytes_end_to_end(
+        self,
+    ) -> None:
+        """The real ``vera/runtime/heap.py::_read_string_export`` — the
+        post-run reader behind the String-typed return-value path in
+        ``execute()`` — decodes a corrupt (ptr, len) region from a
+        module's *exported* memory to U+FFFD rather than raising
+        (#589 / #592), and returns ``None`` on an out-of-bounds /
+        negative-length pair so the caller falls back to the raw pointer.
+        Wires the production function against a real exported memory, so a
+        strict decode (or the SSOT helper going strict) turns this RED.
+        """
+        import wasmtime
+
+        from vera.runtime.heap import _read_string_export
+
+        invalid_bytes = b"hello \xc1 world"
+        wat_bytes = "".join(f"\\{b:02x}" for b in invalid_bytes)
+        wat = (
+            "(module\n"
+            '  (memory (export "memory") 1)\n'
+            f'  (data (i32.const 0) "{wat_bytes}")\n'
+            ")\n"
+        )
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        module = wasmtime.Module(engine, wat)
+        instance = wasmtime.Instance(store, module, [])
+        memory = instance.exports(store)["memory"]
+        assert isinstance(memory, wasmtime.Memory)
+
+        # In-bounds invalid bytes → safe-decoded str with U+FFFD.
+        decoded = _read_string_export(memory, store, 0, len(invalid_bytes))
+        assert decoded is not None
+        assert "hello " in decoded
+        assert " world" in decoded
+        assert "�" in decoded, (
+            f"Expected U+FFFD where 0xc1 was; got {decoded!r}"
+        )
+
+        # Out-of-bounds / negative length → None (caller uses ptr fallback).
+        mem_size = memory.data_len(store)
+        assert _read_string_export(memory, store, mem_size + 100, 4) is None
+        assert _read_string_export(memory, store, 0, -1) is None
+
     def test_invalid_utf8_through_host_print_does_not_raise(self) -> None:
         """End-to-end: synthesise a wasmtime instance that imports vera.print
         and call it with raw invalid UTF-8 bytes.  Pre-fix, the
@@ -1977,6 +2029,15 @@ class TestHostPrintInvalidUtf8589:
         exception" cause and the user's CLI saw a Python traceback.
         Post-fix, the host import returns cleanly (or wraps as a
         WasmTrapError); the test asserts no Python exception escapes.
+
+        This wires a *mirrored* host_print closure (a strict-vs-replace
+        copy), NOT the production one — production ``host_print`` now
+        delegates to ``_read_wasm_string`` (covered by
+        ``test_read_wasm_string_replaces_invalid_bytes_end_to_end``).  Its
+        job is to pin the environmental fact that a strict Python decode
+        inside a host import escapes wasmtime's trampoline at all — the
+        premise the whole #589 fix rests on — independently of the
+        production code path.
         """
         import wasmtime
 
