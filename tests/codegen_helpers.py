@@ -15,7 +15,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-import wasmtime
 
 from vera.codegen import (
     CodeGenerator,
@@ -24,6 +23,7 @@ from vera.codegen import (
     execute,
     ExecuteResult,
 )
+from vera.codegen.api import WasmTrapError
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -35,25 +35,23 @@ from vera.transform import transform
 
 def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
-    # Write to a temp source and parse.  delete=False + manual unlink is
-    # the Windows-safe pattern (an open NamedTemporaryFile can't be
-    # reopened there); the finally guarantees no temp-file leak even
-    # when parsing or compilation raises.
+    # Write to a temp source and parse.  delete=False + close-then-read
+    # is the Windows-safe pattern (an open NamedTemporaryFile can't be
+    # reopened there); the try/finally encloses everything from creation,
+    # so the temp file is unlinked even when the write itself raises.
     import tempfile
 
-    with tempfile.NamedTemporaryFile(
+    f = tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-
+    )
     try:
-        tree = parse_file(path)
+        with f:
+            f.write(source)
+        tree = parse_file(f.name)
         ast = transform(tree)
-        return compile(ast, source=source, file=path)
+        return compile(ast, source=source, file=f.name)
     finally:
-        Path(path).unlink(missing_ok=True)
+        Path(f.name).unlink(missing_ok=True)
 
 
 def _compile_ok(source: str) -> CompileResult:
@@ -107,9 +105,13 @@ def _run_io(
 def _run_trap(
     source: str, fn: str | None = None, args: list[int] | None = None
 ) -> None:
-    """Compile, execute, and assert a WASM trap."""
+    """Compile, execute, and assert a WASM trap.
+
+    ``execute()`` normalises every WASM trap to ``WasmTrapError`` (a
+    ``RuntimeError`` subclass), so asserting the specific type rejects
+    unrelated failures the old broad tuple would have accepted."""
     result = _compile_ok(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+    with pytest.raises(WasmTrapError):
         execute(result, fn_name=fn, args=args)
 
 
@@ -162,21 +164,19 @@ def _compile_with_generator(source: str) -> tuple[CompileResult, CodeGenerator]:
     """Compile and return both result and CodeGenerator for metadata inspection."""
     import tempfile
 
-    with tempfile.NamedTemporaryFile(
+    f = tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(source)
-        f.flush()
-        path = f.name
-
+    )
     try:
-        tree = parse_file(path)
+        with f:
+            f.write(source)
+        tree = parse_file(f.name)
         program = transform(tree)
-        gen = CodeGenerator(source=source, file=path)
+        gen = CodeGenerator(source=source, file=f.name)
         result = gen.compile_program(program)
         return result, gen
     finally:
-        Path(path).unlink(missing_ok=True)
+        Path(f.name).unlink(missing_ok=True)
 
 
 _INLINE_BUILTIN_NAMES = (
