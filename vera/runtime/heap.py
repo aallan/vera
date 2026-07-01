@@ -29,8 +29,11 @@ def _slice_and_decode(
     resolve the ``data_ptr`` for the given wasmtime ``context`` (a live
     ``Caller`` mid-call, or the ``Store`` post-run) and route the slice through
     :func:`safe_utf8_decode`, so a corrupt region surfaces as U+FFFD rather than
-    a ``UnicodeDecodeError`` escaping the trampoline (#589 / #592).  Each caller
-    keeps its own pre-checks (bounds / negative length) before calling this.
+    a ``UnicodeDecodeError`` escaping the trampoline (#589 / #592).  The decode
+    is the only shared concern; ``(ptr, length)`` validation is the caller's:
+    :func:`_read_string_export` bounds-checks and rejects a negative ``length``
+    before calling, while :func:`_read_wasm_string` passes ``ptr``/``length``
+    straight through (after asserting the memory type).
     """
     buf = memory.data_ptr(context)
     return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
