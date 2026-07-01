@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.189] - 2026-07-01
+
+### Changed
+
+- **The UTF-8 "safe decode" invariant now lives in one helper** ([#592](https://github.com/aallan/vera/issues/592)).  Six sites decoded WASM-memory bytes with `errors="replace"` so a corrupt String `(ptr, len)` pair from an upstream codegen bug surfaces as U+FFFD rather than a raw Python `UnicodeDecodeError` escaping wasmtime's trampoline as a "python exception" cause — the [#516](https://github.com/aallan/vera/issues/516) / [#522](https://github.com/aallan/vera/issues/522) / [#589](https://github.com/aallan/vera/issues/589) contract that a user-level program never produces a Python traceback.  The invariant was re-implemented at all six (`host_print` / `host_stderr` / `host_contract_fail` / the String-return extractor in `vera/codegen/api.py`, `_read_wasm_string` in `vera/runtime/heap.py`, and `_read_string` in `vera/wasm/markdown.py`) and guarded by six *structural source-grep* tests plus one end-to-end test covering only `host_print` — so five of the six sites had no behavioural coverage, and the greps would break under exactly the refactor the issue proposed.  The `errors="replace"` decode now lives in one place — a new `vera.runtime.text.safe_utf8_decode` (the [ROADMAP Tier-2 single-source-of-truth](ROADMAP.md) theme, same class as the [#828](https://github.com/aallan/vera/issues/828) error-code registry) — reached only through a shared `_slice_and_decode` helper (`vera/runtime/heap.py`) that the three WASM-memory string readers (`_read_wasm_string` and a new `_read_string_export` there, and markdown `_read_string`) delegate to.  The `host_print` / `host_stderr` / `host_contract_fail` host imports and the String-return extractor route through those readers instead of decoding inline, so no `bytes(...).decode(...)` call survives outside `_slice_and_decode` (a net simplification of `execute()` — the closures no longer re-implement the memory read).  The six structural greps are replaced by one helper unit test plus **three** end-to-end tests that wire the **production** readers (`_read_wasm_string`, `_read_string_export`, markdown `_read_string`) over a memory region seeded with invalid UTF-8, so a strict-decode regression surfaces as a `UnicodeDecodeError` escaping the trampoline — caught at one point per reader rather than needing a grep per call site, and transitively covering the host imports / extractor that route through them; the `host_print` end-to-end test is retained to pin the trampoline fact itself, independently of the production path.  Behaviour-preserving.  (The network-response decode sites in `http.py` / `inference.py` are a separate, already-resolved family — [#591](https://github.com/aallan/vera/issues/591), closed — with deliberate per-site handling (`errors="replace"` for `Http.get` / `Http.post`; intentionally *strict* for `Inference.complete`, so a non-UTF-8 LLM response fails as a structured `Result::Err` rather than silently gaining U+FFFD), pinned by their own `TestNetworkResponseUtf8Hygiene591` class; they are outside this WASM-memory helper's scope by design.)
+
 ## [0.0.188] - 2026-06-30
 
 ### Added
@@ -2689,7 +2695,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.188...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.189...HEAD
+[0.0.189]: https://github.com/aallan/vera/compare/v0.0.188...v0.0.189
 [0.0.188]: https://github.com/aallan/vera/compare/v0.0.187...v0.0.188
 [0.0.187]: https://github.com/aallan/vera/compare/v0.0.186...v0.0.187
 [0.0.186]: https://github.com/aallan/vera/compare/v0.0.185...v0.0.186

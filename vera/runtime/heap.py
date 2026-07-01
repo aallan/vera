@@ -14,7 +14,29 @@ from typing import Any
 
 import wasmtime
 
+from vera.runtime.text import safe_utf8_decode
 
+
+def _slice_and_decode(
+    memory: wasmtime.Memory,
+    context: wasmtime.Store | wasmtime.Caller,
+    ptr: int,
+    length: int,
+) -> str:
+    """Slice ``length`` bytes at ``ptr`` from ``memory`` and safe-decode them.
+
+    Shared body of :func:`_read_wasm_string` and :func:`_read_string_export`:
+    resolve the ``data_ptr`` for the given wasmtime ``context`` (a live
+    ``Caller`` mid-call, or the ``Store`` post-run) and route the slice through
+    :func:`safe_utf8_decode`, so a corrupt region surfaces as U+FFFD rather than
+    a ``UnicodeDecodeError`` escaping the trampoline (#589 / #592).  The decode
+    is the only shared concern; ``(ptr, length)`` validation is the caller's:
+    :func:`_read_string_export` bounds-checks and rejects a negative ``length``
+    before calling, while :func:`_read_wasm_string` passes ``ptr``/``length``
+    straight through (after asserting the memory type).
+    """
+    buf = memory.data_ptr(context)
+    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
 
 def _read_wasm_string(
     caller: wasmtime.Caller, ptr: int, length: int,
@@ -31,8 +53,33 @@ def _read_wasm_string(
     """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-    buf = memory.data_ptr(caller)
-    return bytes(buf[ptr:ptr + length]).decode("utf-8", errors="replace")
+    return _slice_and_decode(memory, caller, ptr, length)
+
+def _read_string_export(
+    memory: wasmtime.Memory,
+    store: wasmtime.Store,
+    ptr: int,
+    length: int,
+) -> str | None:
+    """Read a String ``(ptr, len)`` from a module's exported memory after a run.
+
+    Post-execution sibling of :func:`_read_wasm_string`: the return value of a
+    String-typed ``main`` is a ``(ptr, len)`` pair into the exported ``memory``,
+    read via the ``store`` (there is no live ``caller`` once the call has
+    returned).  Returns the safe-decoded string, or ``None`` when ``(ptr, len)``
+    is out of bounds or ``length`` is negative -- the caller then falls back to
+    surfacing the raw pointer.  Decoding goes through :func:`safe_utf8_decode`,
+    so corrupt return bytes surface as U+FFFD rather than a ``UnicodeDecodeError``
+    escaping wasmtime's trampoline (#589 / #592); ``errors="replace"`` also keeps
+    the value typed ``str`` instead of the old try/except -> pointer fallback
+    that silently mutated ``str`` into ``int`` on invalid UTF-8.
+    """
+    if length < 0:
+        return None
+    mem_size = memory.data_len(store)
+    if not (0 <= ptr and ptr + length <= mem_size):
+        return None
+    return _slice_and_decode(memory, store, ptr, length)
 
 def _write_bytes(
     caller: wasmtime.Caller, offset: int, data: bytes,
