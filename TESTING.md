@@ -61,7 +61,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_checker_patterns.py` | 59 | 936 | Pattern matching, match-arm typing, exhaustiveness, pattern/match coverage, bidirectional inference, typed holes (#420 split) |
 | `test_checker_functions.py` | 68 | 705 | Function signatures, slot references, result refs, calls, control flow, higher-order, where-blocks, expression diagnostics, IO operations, string interpolation (#420 split) |
 | `test_checker_effects.py` | 50 | 761 | Effect declarations, abilities, effect subtyping, async effect, handler typing (#420 split) |
-| `test_checker_modules.py` | 45 | 1,002 | Module-call diagnostics, cross-module typing, visibility enforcement, builtin redefinition, parsed module calls (#420 split) |
+| `test_checker_modules.py` | 45 | 975 | Module-call diagnostics, cross-module typing, visibility enforcement, builtin redefinition, parsed module calls (#420 split) |
 | `test_checker_errors.py` | 47 | 663 | Error codes, resolution-coverage diagnostics, contracts, error accumulation (#420 split) |
 | `test_checker_builtins_collections.py` | 97 | 848 | Map / Set / Decimal / Json / Html / Http / Inference built-in type-checking (#420 split) |
 | `test_checker_builtins_strings.py` | 122 | 945 | String / numeric / type-conversion / float-predicate / string-search / markdown / regex built-in type-checking, removed-legacy-name regression (#420 split) |
