@@ -41,7 +41,7 @@ def _compile(source: str) -> CompileResult:
     import tempfile
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()
@@ -1611,7 +1611,7 @@ def _compile_with_generator(source: str):
     from vera.codegen import CodeGenerator
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".vera", delete=False
+        mode="w", suffix=".vera", delete=False, encoding="utf-8"
     ) as f:
         f.write(source)
         f.flush()
@@ -19403,7 +19403,7 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()
@@ -19477,7 +19477,7 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()
@@ -19534,7 +19534,7 @@ public fn is_positive_or_false(@Decimal -> @Bool)
 """
         import tempfile
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False,
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(src)
             f.flush()

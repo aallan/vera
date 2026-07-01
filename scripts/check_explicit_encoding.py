@@ -10,9 +10,19 @@ with ``PYTHONUTF8=1``; the durable fix (#645) is an explicit
 ``encoding="utf-8"`` at every text-mode call site, enforced here so the
 convention cannot rot (and so the CI backstop can be removed).
 
-Scope (per #645): builtin ``open(...)``, ``X.read_text(...)`` and
-``X.write_text(...)`` under ``vera/``, ``scripts/``, ``tests/``.  The
-``encoding=`` must be a UTF-8 *string literal* (``"utf-8"`` / ``"UTF-8"`` /
+Scope (per #645), under ``vera/``, ``scripts/``, ``tests/``:
+
+- builtin ``open(...)``, ``X.read_text(...)`` and ``X.write_text(...)``;
+- ``subprocess.run`` / ``Popen`` / ``check_output(..., text=True)`` captures,
+  which decode the child's output with the locale codec;
+- ``tempfile.NamedTemporaryFile`` / ``TemporaryFile`` / ``SpooledTemporaryFile``
+  opened in *text* mode (``mode="w"`` etc.).  These default to *binary*
+  (``"w+b"``), so only an explicit text mode is in scope — but a text one is a
+  locale-encoded write just like ``open(..., "w")`` (this is how test helpers
+  stage ``.vera`` source containing ``→`` / ``—``; the miss that reddened the
+  Windows matrix when ``PYTHONUTF8`` was dropped).
+
+The ``encoding=`` must be a UTF-8 *string literal* (``"utf-8"`` / ``"UTF-8"`` /
 ``"utf8"``); a non-literal (``encoding=enc``) or a different codec
 (``encoding="latin-1"``) is rejected — the repo rule is UTF-8, and a deliberate
 non-UTF-8 site uses ``# encoding-exempt: <reason>``.
@@ -126,6 +136,10 @@ def _open_mode_is_binary(call: ast.Call) -> bool | None:
 
 
 SUBPROCESS_FUNCS = ("run", "Popen", "check_output")
+# tempfile factories that accept mode= / encoding=; all default to BINARY
+# ("w+b"), unlike open() (default "r").  Only an explicit text mode is in scope.
+TEMPFILE_TEXT_FUNCS = ("NamedTemporaryFile", "TemporaryFile",
+                       "SpooledTemporaryFile")
 _WRONG_ENC = (
     '{call}(...) passes a non-UTF-8 or non-literal encoding=; the repo rule is '
     'encoding="utf-8" (use it, or `# encoding-exempt: <reason>` for a '
@@ -143,6 +157,28 @@ def _subprocess_is_text(call: ast.Call) -> bool:
             if isinstance(v, ast.Constant) and v.value is True:
                 return True
     return False
+
+
+def _tempfile_is_text(call: ast.Call) -> bool | None:
+    """For a ``tempfile.NamedTemporaryFile`` / ``TemporaryFile`` /
+    ``SpooledTemporaryFile`` call return True if text-mode, False if binary,
+    None if the mode is a non-literal we cannot resolve statically.
+
+    ``mode`` is the 1st positional argument or the ``mode=`` keyword; absent, it
+    defaults to ``"w+b"`` (binary) — the opposite of ``open()``'s ``"r"``."""
+    mode_node: ast.expr | None = None
+    if call.args:
+        mode_node = call.args[0]
+    else:
+        for kw in call.keywords:
+            if kw.arg == "mode":
+                mode_node = kw.value
+                break
+    if mode_node is None:
+        return False  # default "w+b" -> binary
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+        return "b" not in mode_node.value
+    return None  # non-literal mode -> can't tell
 
 
 def _classify_call(node: ast.Call, f: ast.expr) -> tuple[str | None, str | None]:
@@ -188,6 +224,24 @@ def _classify_call(node: ast.Call, f: ast.expr) -> tuple[str | None, str | None]
                           else _WRONG_ENC.format(call=name))
         return name, (f'{name}(..., text=True) without encoding="utf-8" — '
                       "decodes with the locale codec (cp1252 on Windows)")
+
+    # --- tempfile text-mode factories (default binary) ---
+    tf_name = (f.attr if isinstance(f, ast.Attribute)
+               else f.id if isinstance(f, ast.Name) else None)
+    if tf_name in TEMPFILE_TEXT_FUNCS:
+        text = _tempfile_is_text(node)
+        if text is False:
+            return None, None  # binary temp file -> encoding irrelevant
+        enc_kw = _encoding_kw(node)
+        if enc_kw is not None:
+            return tf_name, (None if _is_utf8_literal(enc_kw.value)
+                             else _WRONG_ENC.format(call=tf_name))
+        if text is None:
+            return tf_name, (f'{tf_name}(...) has a non-literal mode and no '
+                             'encoding=; pass encoding="utf-8" for text mode, '
+                             'or open in binary')
+        return tf_name, (f'text-mode {tf_name}(...) without explicit '
+                         'encoding="utf-8"')
 
     return None, None
 

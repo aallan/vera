@@ -947,7 +947,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.1 + @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -967,7 +967,7 @@ public fn magnitude(@Int -> @Int)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -987,7 +987,7 @@ public fn positive(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1013,7 +1013,7 @@ private fn simple(-> @Int)
 { 42 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1033,7 +1033,7 @@ public fn id(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1055,7 +1055,7 @@ public fn double(@Float64 -> @Float64)
 { @Float64.0 + @Float64.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1077,7 +1077,7 @@ public fn greet(@String -> @Unit)
 { IO.print(@String.0) }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1099,7 +1099,7 @@ public fn identity(@Bool -> @Bool)
 { @Bool.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1121,7 +1121,7 @@ public fn id(@Int -> @Int)
 { @Int.0 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1147,7 +1147,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1169,7 +1169,7 @@ public fn add(@Int, @Int -> @Int)
 { @Int.0 + @Int.1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1190,7 +1190,7 @@ private fn helper(@Int -> @Int)
 { @Int.0 + 1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1212,7 +1212,7 @@ private fn helper(@Int -> @Int)
 { @Int.0 + 1 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -1237,7 +1237,7 @@ public fn main(-> @Int)
 { 42 }
 """
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             path = f.name
@@ -3097,7 +3097,7 @@ class TestTypedArgParsingDirect:
         from vera.parser import parse_file
         from vera.transform import transform
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vera", delete=False
+            mode="w", suffix=".vera", delete=False, encoding="utf-8"
         ) as f:
             f.write(source)
             f.flush()

@@ -170,6 +170,37 @@ def test_subprocess_bytes_or_utf8_is_ok(mod: object, src: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# tempfile.NamedTemporaryFile / TemporaryFile / SpooledTemporaryFile default to
+# BINARY ("w+b"), but an explicit text mode is a locale-encoded write just like
+# open(..., "w") — the idiom test helpers use to stage `.vera` source, and the
+# blind spot that reddened the Windows matrix when PYTHONUTF8 was dropped (#645).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("src", [
+    'tempfile.NamedTemporaryFile(mode="w", suffix=".vera", delete=False)',
+    'tempfile.NamedTemporaryFile("w")',              # positional text mode
+    'tempfile.NamedTemporaryFile(mode="w+", delete=False)',
+    'NamedTemporaryFile(mode="a")',                  # bare (from-imported) name
+    'tempfile.TemporaryFile(mode="w")',
+    'tempfile.SpooledTemporaryFile(mode="wt")',
+    'tempfile.NamedTemporaryFile(mode="w", encoding="latin-1")',  # wrong codec
+])
+def test_tempfile_text_mode_without_utf8_is_flagged(mod: object, src: str) -> None:
+    assert len(mod.check_source(src, "<t>.py")) == 1
+
+
+@pytest.mark.parametrize("src", [
+    "tempfile.NamedTemporaryFile()",                 # default "w+b" -> binary
+    'tempfile.NamedTemporaryFile(mode="wb")',
+    'tempfile.NamedTemporaryFile(mode="w+b", delete=False)',
+    'tempfile.NamedTemporaryFile(mode="w", suffix=".vera", encoding="utf-8")',
+    'tempfile.TemporaryFile(mode="w", encoding="utf-8")',
+])
+def test_tempfile_binary_or_utf8_is_ok(mod: object, src: str) -> None:
+    assert mod.check_source(src, "<t>.py") == []
+
+
+# ---------------------------------------------------------------------------
 # Scope discovery is pinned independently of the clean-repo assertion below.
 # `test_repository_has_no_bare_text_calls` only checks the files
 # `iter_scope_files()` returns, so it would stay green if discovery silently
