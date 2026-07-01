@@ -10,13 +10,15 @@ never produces a Python traceback regardless of what it does.
 
 Every site that decodes WASM-memory bytes to ``str`` routes through
 :func:`safe_utf8_decode`, so the ``errors="replace"`` invariant has one home
-rather than a copy per site.  The direct callers are the three WASM-memory
-string readers -- ``_read_wasm_string`` and ``_read_string_export`` in
-``vera/runtime/heap.py`` and ``_read_string`` in ``vera/wasm/markdown.py``.  The
-host imports that decode user-supplied Strings (``host_print`` / ``host_stderr``
-/ ``host_contract_fail``) and the String-return extractor in
-``vera/codegen/api.py`` now delegate to those readers instead of decoding
-inline, so no ``.decode(...)`` call escapes the readers.
+rather than a copy per site.  Its **sole direct caller** is
+``_slice_and_decode`` in ``vera/runtime/heap.py``, which resolves the
+``data_ptr`` and slices the region.  The three WASM-memory string readers --
+``_read_wasm_string`` and ``_read_string_export`` in ``vera/runtime/heap.py``
+and ``_read_string`` in ``vera/wasm/markdown.py`` -- all delegate to it, as do
+the host imports that decode user-supplied Strings (``host_print`` /
+``host_stderr`` / ``host_contract_fail``) and the String-return extractor in
+``vera/codegen/api.py`` (which route through the readers).  So no
+``bytes(...).decode(...)`` call survives outside ``_slice_and_decode``.
 """
 
 from __future__ import annotations

@@ -55,7 +55,7 @@ from vera.markdown import (
     MdText,
     MdThematicBreak,
 )
-from vera.runtime.text import safe_utf8_decode
+from vera.runtime.heap import _slice_and_decode
 
 # Type aliases for the helper functions passed from api.py
 AllocFn = Callable[["wasmtime.Caller", int], int]
@@ -482,23 +482,22 @@ def _read_i64(caller: wasmtime.Caller, offset: int) -> int:
 def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     """Read a UTF-8 string from WASM memory.
 
-    Uses ``errors="replace"`` for the same reason as
-    ``_read_wasm_string`` in ``vera/codegen/api.py`` (#589): a corrupt
-    String ``(ptr, len)`` pair from an upstream codegen bug must
-    surface as U+FFFD characters rather than a raw
-    ``UnicodeDecodeError`` escaping through wasmtime's trampoline as a
-    "python exception" cause.  This helper is invoked from the four
-    Markdown host imports (``host_md_render`` / ``host_md_has_heading``
-    / ``host_md_extract_text`` / ``host_md_count_blocks``) which all
-    decode user-supplied String arguments — exactly the same surface
-    as ``IO.print``.
+    Delegates the slice-and-decode to
+    ``vera.runtime.heap._slice_and_decode`` (#592), so ``errors="replace"``
+    surfaces a corrupt String ``(ptr, len)`` pair from an upstream codegen bug
+    as U+FFFD characters rather than a raw ``UnicodeDecodeError`` escaping
+    through wasmtime's trampoline as a "python exception" cause (#589 -- the same
+    single decode home as ``_read_wasm_string`` in ``vera/runtime/heap.py``).
+    Invoked from the four Markdown host imports (``host_md_render`` /
+    ``host_md_has_heading`` / ``host_md_extract_text`` /
+    ``host_md_count_blocks``) which all decode user-supplied String arguments --
+    exactly the same surface as ``IO.print``.
     """
     if length == 0:
         return ""  # pragma: no cover
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-    buf = memory.data_ptr(caller)
-    return safe_utf8_decode(bytes(buf[ptr:ptr + length]))
+    return _slice_and_decode(memory, caller, ptr, length)
 
 
 def _read_string_pair(caller: wasmtime.Caller, offset: int) -> str:

@@ -1833,13 +1833,14 @@ class TestHostPrintInvalidUtf8589:
     UTF-8-decode paths.
 
     The decode invariant now lives in ONE place —
-    ``vera.runtime.text.safe_utf8_decode`` (#592).  Only the three WASM-memory
-    string readers call it directly — ``_read_wasm_string`` and
-    ``_read_string_export`` (``vera/runtime/heap.py``) and markdown
-    ``_read_string`` — and the host imports that decode user Strings
-    (``host_print`` / ``host_stderr`` / ``host_contract_fail``) plus the
-    String-return extractor now *delegate* to those readers instead of decoding
-    inline, so no ``.decode(...)`` call survives outside the readers.  The unit
+    ``vera.runtime.text.safe_utf8_decode`` (#592) — whose sole direct caller is
+    the shared ``_slice_and_decode`` helper (``vera/runtime/heap.py``).  The
+    three WASM-memory string readers — ``_read_wasm_string`` and
+    ``_read_string_export`` there and markdown ``_read_string`` — all delegate to
+    it, as do the host imports that decode user Strings (``host_print`` /
+    ``host_stderr`` / ``host_contract_fail``) plus the String-return extractor
+    (which route through the readers), so no ``.decode(...)`` call survives
+    outside ``_slice_and_decode``.  The unit
     test pins the helper; three end-to-end tests wire the *real* readers through
     a synthetic WAT module and assert no Python ``UnicodeDecodeError`` escapes
     the trampoline (a strict decode would) — which transitively covers the host
