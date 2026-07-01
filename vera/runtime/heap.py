@@ -18,7 +18,10 @@ from vera.runtime.text import safe_utf8_decode
 
 
 def _slice_and_decode(
-    memory: wasmtime.Memory, context: Any, ptr: int, length: int,
+    memory: wasmtime.Memory,
+    context: wasmtime.Store | wasmtime.Caller,
+    ptr: int,
+    length: int,
 ) -> str:
     """Slice ``length`` bytes at ``ptr`` from ``memory`` and safe-decode them.
 
