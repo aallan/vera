@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv
 
 
@@ -32,11 +33,13 @@ class OperatorsMixin:
                 if isinstance(ta, ast.NamedType):
                     arg_names.append(ta.name)
                 else:
-                    return None  # pragma: no cover
+                    raise CodegenInvariantError(  # pragma: no cover
+                        "slot reference type argument is not a NamedType", ref)
             type_name = f"{ref.type_name}<{', '.join(arg_names)}>"
         local_idx = env.resolve(type_name, ref.index)
         if local_idx is None:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "slot reference resolved to no local (dangling @T.n)", ref)
         # Pair types (String, Array<T>) push (ptr, len) — two locals
         if self._is_pair_type_name(type_name):
             return [f"local.get {local_idx}", f"local.get {local_idx + 1}"]
@@ -67,7 +70,8 @@ class OperatorsMixin:
                     span=expr.span,
                 )
                 return self._translate_call(desugared, env)
-            return None  # pragma: no cover — non-FnCall RHS unsupported
+            raise CodegenInvariantError(  # pragma: no cover
+                "pipe RHS is neither FnCall nor ModuleCall", expr)
 
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
@@ -83,7 +87,8 @@ class OperatorsMixin:
                 if op == ast.BinOp.MOD:
                     return self._translate_f64_mod(left, right)
                 if op not in self._ARITH_OPS_F64:  # pragma: no cover
-                    return None  # unsupported float op
+                    raise CodegenInvariantError(  # pragma: no cover
+                        "unsupported f64 arithmetic operator", expr)
                 return left + right + [self._ARITH_OPS_F64[op]]
             # @Nat subtraction underflow guard (#520) — mirrors the
             # static obligation emitted in vera/verifier.py.  When the
@@ -162,7 +167,8 @@ class OperatorsMixin:
         if op == ast.BinOp.IMPLIES:
             return left + ["i32.eqz"] + right + ["i32.or"]
 
-        return None  # pragma: no cover
+        raise CodegenInvariantError(  # pragma: no cover
+            "binary operator dispatch fell through", expr)
 
     # -----------------------------------------------------------------
     # ADT structural equality
@@ -188,7 +194,8 @@ class OperatorsMixin:
             if parent_adt == adt_name and ctor_name in self._ctor_layouts:
                 adt_ctors.append((ctor_name, self._ctor_layouts[ctor_name]))
         if not adt_ctors:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "ADT equality on a type with no constructors")
         adt_ctors.sort(key=lambda x: x[1].tag)
 
         # Store operands in temp locals
@@ -243,7 +250,8 @@ class OperatorsMixin:
                     load_op = self._adt_field_load(wasm_type)
                     eq_op = self._adt_field_eq(wasm_type)
                     if load_op is None or eq_op is None:
-                        return None  # pragma: no cover — unsupported field type
+                        raise CodegenInvariantError(  # pragma: no cover
+                            "ADT field has no load/eq op for auto-derived equality")
                     instrs.append(f"{fpad}local.get {tmp_l}")
                     instrs.append(f"{fpad}{load_op} offset={offset}")
                     instrs.append(f"{fpad}local.get {tmp_r}")
@@ -405,7 +413,8 @@ class OperatorsMixin:
             if self._infer_expr_wasm_type(expr.operand) == "f64":
                 return operand + ["f64.neg"]
             return ["i64.const 0"] + operand + ["i64.sub"]
-        return None  # pragma: no cover
+        raise CodegenInvariantError(  # pragma: no cover
+            "unary operator dispatch fell through", expr)
 
     # -----------------------------------------------------------------
     # Control flow
@@ -571,7 +580,8 @@ class OperatorsMixin:
         """Translate @T.result to local.get of the result temp."""
         if self._result_local is not None:
             return [f"local.get {self._result_local}"]
-        return None  # pragma: no cover
+        raise CodegenInvariantError(  # pragma: no cover
+            "@T.result reference with no result local bound")
 
     # -----------------------------------------------------------------
     # Assert and assume
@@ -658,10 +668,12 @@ class OperatorsMixin:
         # Translate predicate body with counter as binding
         pred = expr.predicate
         if not pred.params:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "quantifier predicate has no parameters", expr)
         param_te = pred.params[0]
         if not isinstance(param_te, ast.NamedType):
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "quantifier predicate parameter is not a NamedType", expr)
         param_type_name = param_te.name
         counter_local = self.alloc_local("i64")
         limit_local = self.alloc_local("i64")
@@ -743,20 +755,24 @@ class OperatorsMixin:
         """Translate old(State<T>) → local.get of saved pre-execution state."""
         type_name = self._extract_state_type_name(expr.effect_ref)
         if type_name is None:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "old(State<T>) effect ref has no extractable type name", expr)
         local_idx = self.get_old_state_local(type_name)
         if local_idx is None:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "old(State<T>) has no saved pre-execution state local", expr)
         return [f"local.get {local_idx}"]
 
     def _translate_new_expr(self, expr: ast.NewExpr) -> list[str] | None:
         """Translate new(State<T>) → call state_get to read current value."""
         type_name = self._extract_state_type_name(expr.effect_ref)
         if type_name is None:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "new(State<T>) effect ref has no extractable type name", expr)
         # Look up the state getter import
         if "get" not in self._effect_ops:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "new(State<T>) has no 'get' effect op registered", expr)
         call_target, _is_void = self._effect_ops["get"]
         return [f"call {call_target}"]
 
@@ -766,15 +782,19 @@ class OperatorsMixin:
     ) -> str | None:
         """Extract the type name from a State<T> effect reference."""
         if not isinstance(effect_ref, ast.EffectRef):
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "State type ref is not an EffectRef", effect_ref)
         if effect_ref.name != "State":
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "State type ref name is not 'State'", effect_ref)
         if not effect_ref.type_args or len(effect_ref.type_args) != 1:
-            return None  # pragma: no cover
+            raise CodegenInvariantError(  # pragma: no cover
+                "State<T> must have exactly one type argument", effect_ref)
         arg = effect_ref.type_args[0]
         if isinstance(arg, ast.NamedType):
             return arg.name
-        return None  # pragma: no cover
+        raise CodegenInvariantError(  # pragma: no cover
+            "State<T> type argument is not a NamedType", effect_ref)
 
     # -----------------------------------------------------------------
     # @Nat subtraction underflow guard (#520)
