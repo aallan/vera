@@ -28,6 +28,16 @@ ABS_VALUE = str(EXAMPLES_DIR / "absolute_value.vera")
 # =====================================================================
 
 
+# A warnings-only program: the unresolved bare call draws an E200
+# warning (not an error), exercising the warning channel end-to-end.
+# Shared by test_warning_only_source and test_json_with_warnings.
+_UNRESOLVED_CALL_SRC = """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ no_such_fn(1) }
+"""
+
+
 def _bad_vera(tmp_path: Path, content: str) -> str:
     """Write a bad .vera file and return its path.
 
@@ -230,11 +240,7 @@ class TestCmdCheck:
         Used closures.vera until #854 made its `apply_fn` call
         warning-free; a genuinely-unresolved call keeps exercising the
         warning path (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, """\
-public fn main(@Unit -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ no_such_fn(1) }
-""")
+        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
         rc = cmd_check(path)
         assert rc == 0
         captured = capsys.readouterr()
@@ -298,11 +304,7 @@ public fn main(@Unit -> @Int)
         Used closures.vera until #854 made its `apply_fn` call
         warning-free; a genuinely-unresolved call keeps exercising the
         warnings channel (E200 is a warning, not an error)."""
-        path = _bad_vera(tmp_path, """\
-public fn main(@Unit -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ no_such_fn(1) }
-""")
+        path = _bad_vera(tmp_path, _UNRESOLVED_CALL_SRC)
         rc = cmd_check(path, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
