@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.194] - 2026-07-02
+
+### Fixed
+
+- **GC use-after-free: pair-typed `let` bindings (`String` / `Array<T>`) were never shadow-rooted**.  The plain-`let` pair branch in `translate_block` (`vera/wasm/context.py`) stored the (ptr, len) pair into WASM locals without pushing the pointer onto the GC shadow stack — the last unrooted sibling of the [#705](https://github.com/aallan/vera/issues/705) scalar-i32 let fix and the [#707](https://github.com/aallan/vera/pull/707) let-destruct pair fix (whose review comment had already named this gap class).  Unobservable for Vera-side producers — an array literal or string builtin shadow-pushes its own freshly-allocated block at the alloc site, and that push survives to the function epilogue, masking the missing let root — but a **host-import** pair (`IO.args` → `Array<String>`, `IO.read_line` → `String`) is rooted only host-side during construction (`_ShadowGuard`, popped on return), so the first Vera-side allocation after the `let` could collect the block while the locals still pointed at it: the free list overwrites the payload's first words and reads through the binding see reclaimed bytes (`IO.print` of an `IO.args` element after a `nat_to_string` call printed `2::++2@` instead of `2:aa+bb`; `string_join` over the swept backing chased overwritten element pointers).  Found stress-testing [#237](https://github.com/aallan/vera/issues/237) under `VERA_EAGER_GC=1`; no WASI code involved, and reachable under ordinary collection pressure.  Pair lets are now rooted unconditionally — static and null pointers are ignored by the conservative scan's heap range check, so the push is harmless for non-heap values.  New targeted eager-GC tests pin the fix (args / read_line reproducers) and confirm the neighbouring host-import ADT paths (`IO.read_file` → `Result<String, String>`, `IO.get_env` → `Option<String>`) were already rooted by the #705/#707-era fixes.
+
 ## [0.0.193] - 2026-07-02
 
 ### Added
@@ -2728,7 +2734,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.193...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.194...HEAD
+[0.0.194]: https://github.com/aallan/vera/compare/v0.0.193...v0.0.194
 [0.0.193]: https://github.com/aallan/vera/compare/v0.0.192...v0.0.193
 [0.0.192]: https://github.com/aallan/vera/compare/v0.0.191...v0.0.192
 [0.0.191]: https://github.com/aallan/vera/compare/v0.0.190...v0.0.191

@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,615 across 89 files (~63,000 lines of test code; 5,567 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,620 across 89 files (~63,000 lines of test code; 5,571 passed + 26 stress, 23 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 104 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 36, all validated through `vera check` + `vera verify` |
@@ -102,7 +102,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_nat_guards.py` | 39 | 1,048 | **`@Nat` runtime guards**: subtraction underflow (#520) and binding-site narrowing (#552 let site; #747 tuple-destructure / match-bind / ADT sub-pattern / ctor-field / call-arg sites — `i64.lt_s; unreachable` net, `@Int` targets exempt) (#419 split) |
 | `test_codegen_translator_fixes.py` | 27 | 528 | WASM call-translator regression fixes (#475): string/array slice clamps, char-code bounds, URL/base64/parse edge cases, map-array-value rejection (#419 split) |
 | `test_codegen_gc_alloc.py` | 39 | 895 | Layout helpers, bump allocator, GC core (#515), shadow-stack overflow, multi-page grow (#487), worklist overflow (#348) (#419 split) |
-| `test_codegen_gc_rooting.py` | 27 | 1,285 | Opaque-handle param rooting (#347, #490), host-walker GC rooting (#692), Map host-store reachability (#695), ADT-builder rooting (#743) (#419 split); plus the #841 Future-handle battery (`TestFutureHandleGCRooting841`) — eager-GC survival across an intervening alloc, the operand-stack window (`both(async(A), async(B))` with get/post-distinguished Err text), Phase-2c reclamation of fire-and-forget futures via `host_store_sizes["future"]`, and repeated-await memoization |
+| `test_codegen_gc_rooting.py` | 32 | 1,442 | Opaque-handle param rooting (#347, #490), host-walker GC rooting (#692), Map host-store reachability (#695), ADT-builder rooting (#743) (#419 split); plus the #841 Future-handle battery (`TestFutureHandleGCRooting841`) — eager-GC survival across an intervening alloc, the operand-stack window (`both(async(A), async(B))` with get/post-distinguished Err text), Phase-2c reclamation of fire-and-forget futures via `host_store_sizes["future"]`, and repeated-await memoization; and host-import pair-let rooting (`TestHostImportPairLetRooting`) — `IO.args` / `IO.read_line` pairs surviving an intervening alloc under eager GC, with `IO.read_file` / `IO.get_env` ADT-path confirmation |
 | `test_codegen_gc_reclamation.py` | 21 | 706 | Transient Map/Set/Decimal reclamation (#573; scale trio marked `stress`, #738), bucket occupancy (#706), SameValueZero keys (#743) (#419 split) |
 | `test_codegen_contracts.py` | 32 | 570 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,320 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |

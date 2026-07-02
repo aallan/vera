@@ -593,6 +593,18 @@ class WasmContext(
                     instructions.extend(val_instrs)
                     instructions.append(f"local.set {len_idx}")
                     instructions.append(f"local.set {ptr_idx}")
+                    # Pair-let sibling of the #705 scalar rooting below
+                    # and the #707 let-destruct pair fix: a host-import
+                    # pair (``IO.args`` → Array<String>, ``IO.read_line``
+                    # → String) is rooted only host-side during
+                    # construction, so without this push the next alloc
+                    # sweeps the block while the (ptr, len) locals still
+                    # point at it.  Vera-side producers masked the gap by
+                    # shadow-pushing their own ``dst`` at the alloc site.
+                    # Static / null ptrs fail the scan's heap range check,
+                    # so pushing unconditionally is harmless.
+                    self.needs_alloc = True
+                    instructions.extend(gc_shadow_push(ptr_idx))
                     current_env = current_env.push(type_name, ptr_idx)
                     continue
                 wat_t = self._slot_name_to_wasm_type(type_name)
