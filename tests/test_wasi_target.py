@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -1740,7 +1741,13 @@ class _WasmtimeServe:
 
     def __exit__(self, *exc: object) -> None:
         self._proc.terminate()
-        self._proc.wait(timeout=10)
+        try:
+            self._proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            # SIGTERM ignored — force-kill rather than leaking the
+            # serve process and masking the test's real assertion.
+            self._proc.kill()
+            self._proc.wait(timeout=10)
 
 
 def _serve_request(
@@ -2051,3 +2058,16 @@ class TestCliServerWorld:
         rc = cmd_compile(str(src), target="wasi-p2", world="server")
         assert rc == 1
         assert "handle" in capsys.readouterr().err
+
+    def test_run_world_without_wasi_p2_is_a_usage_error(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`vera run --world server` with the DEFAULT target must give
+        the same usage error cmd_compile gives — not a message implying
+        the user asked for wasi-p2 (review round 1, PR #850)."""
+        from vera.cli import cmd_run
+
+        rc = cmd_run(str(self.HANDLER_SRC), world="server")
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "requires --target wasi-p2" in err

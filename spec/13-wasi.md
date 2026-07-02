@@ -183,7 +183,8 @@ family, are rejected by the family gate.
 
 **Server-world surface.**  Alongside the in-guest String maps, the
 handler may use `IO.print` / `IO.stderr` (routed to the serve host's
-console) and the pure language.  `IO.read_line` / `read_char` /
+console), `IO.time` / `IO.sleep`, the `Random` family, and the pure
+language.  `IO.read_line` / `read_char` /
 `read_file` / `write_file` / `get_env` / `args` / `exit` are rejected
 with a diagnostic: the wasi:http proxy world provides no stdin,
 filesystem, or environment (verified by negative probe — the imports

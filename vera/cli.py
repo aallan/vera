@@ -760,6 +760,26 @@ def cmd_run(
         # component lifts a single entry (main), so --fn is a clean
         # diagnostic here rather than a missing-export crash; the
         # emitter's family gate likewise surfaces as a diagnostic.
+        if world != "cli" and target != "wasi-p2":
+            # Same usage error cmd_compile gives — the user didn't ask
+            # for the wasi-p2 target, so don't imply they did.
+            msg = (
+                f"--world {world} requires --target wasi-p2 "
+                f"(the core and browser targets have no world concept)"
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [{
+                        "severity": "error",
+                        "description": msg,
+                        "location": {"line": 0, "column": 0},
+                    }],
+                }, indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
+            return 1
         if world == "server":
             # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
             # and no resource-definition API, so a server-world
