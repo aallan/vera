@@ -254,6 +254,7 @@ In the else branch after the let:
 
 ### Example 8: Higher-Order Functions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn map_array<A,B>(...) — needs forall" -->
 ```
 private fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
@@ -269,6 +270,7 @@ Here `@Array<A>.0` refers to the first argument and `@Fn<A, B>.0` is a shorthand
 
 ### Example 9: ADT Construction and Matching
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn list_head<T>(...) — needs forall" -->
 ```
 private data List<T> {
   Cons(T, List<T>),
@@ -359,6 +361,7 @@ private fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
 
 Type aliases are **not transparent** for reference resolution. This is a critical rule:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn(@PosInt, @Int -> @Int) — no name" -->
 ```
 type PosInt = { @Int | @Int.0 > 0 };
 

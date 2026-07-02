@@ -276,6 +276,31 @@ def test_sitemap_lastmod_refreshes_when_structure_changes(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# vera:skip fence annotations (#538) must not leak into generated site assets
+# ---------------------------------------------------------------------------
+
+
+def test_skill_md_asset_strips_vera_skip_annotations():
+    """SKILL.md carries inline <!-- vera:skip-... --> fence annotations for
+    the doc gates; the on-domain copy must not include them."""
+    # Precondition: the source actually contains annotations (otherwise this
+    # test could pass vacuously with the strip deleted).
+    source = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "vera:skip-" in source
+    assert "vera:skip" not in _mod.build_skill_md()
+
+
+def test_llms_full_txt_strips_vera_skip_annotations():
+    """llms-full.txt inlines SKILL.md and FAQ.md; annotations must be
+    stripped there too."""
+    # Precondition: at least one inlined source actually carries annotations
+    # (otherwise this test could pass vacuously with the strip deleted).
+    skill = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "vera:skip-" in skill
+    assert "vera:skip" not in _mod.build_llms_full_txt("0.0.0")
+
+
+# ---------------------------------------------------------------------------
 # check_site_assets.sitemap_stale_reason — the CI-gating staleness branch
 # ---------------------------------------------------------------------------
 

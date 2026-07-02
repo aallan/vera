@@ -6,13 +6,13 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,873 across 93 files (~79,000 lines of test code; 5,804 passed + 26 stress, 43 skipped) |
+| **Tests** | 5,898 across 94 files (~79,000 lines of test code; 5,829 passed + 26 stress, 43 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 106 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 37, all validated through `vera check` + `vera verify` |
-| **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
-| **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
-| **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
+| **Spec code blocks** | 188 parseable blocks from 14 spec chapters: 92 parse, 86 type-check, 85 verify (the rest carry inline `vera:skip` annotations, #538) |
+| **README code blocks** | 3 Vera blocks (3 validated, 0 annotated) |
+| **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 annotated snippet) |
 | **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
 | **Contract verification** | 256 of 280 contracts (91.4%) verified statically (Tier 1) |
 | **CI matrix** | 12 combinations (Python 3.11/3.12/3.13 × ubuntu-latest/macos-15/macos-26/windows-latest) + browser parity (Node.js 22) + wheel-availability preflight |
@@ -48,7 +48,6 @@ python scripts/check_faq_examples.py                 # FAQ.md code blocks
 python scripts/check_html_examples.py               # docs/index.html code blocks
 python scripts/check_version_sync.py                 # version consistency
 python scripts/check_wheel_availability.py           # pre-flight: every runtime dep has wheels for all supported platforms (#691 backstop)
-python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 ```
 
 ## Test Files
@@ -136,14 +135,15 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_checker_apply_fn.py` | 18 | 454 | #854 — `apply_fn` as a checker special form: zero-warning pins (API + CLI `--json` + closures.vera), E201 arity / E202 type / non-function-first-arg errors, E122/E125 effect-row enforcement for applied fn values, E151 redefinition rejection, variadic two-param application, prelude combinator regression pins |
 | `test_prelude_diagnostics.py` | 8 | 263 | #851 — prelude combinator skip-warnings: unreferenced-prelude E602/E604 suppression (zero-warning minimal compile, API + CLI `--json`), `<prelude>` origin attribution for referenced-but-skipped combinators (text + `to_dict`), transitive reference scan, and user-fn warning locations pinned unchanged |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
-| `test_html.py` | 4 | 189 | HTML landing page code samples: parse, check, verify |
+| `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify (vera:skip-annotation aware, #538) |
 | `test_float64_fp.py` | 9 | 204 | #797 — `@Float64` contracts via Z3's IEEE-754 FloatingPoint sort: unsound relational / reflexive contracts (rounding at 2^53, `NaN`, `Inf`) flip from proved to violated/Tier-3, NaN-guarded contracts still verify at Tier 1, `==`/`!=` use IEEE `fpEQ`/`fpNEQ` (incl. `+0.0 == -0.0`), `%` matches codegen truncated remainder (not `fp.rem`; NaN-by-zero + large-magnitude edges), and `float_is_nan` / `float_is_infinite` / `nan()` / `infinity()` translate to FP predicates / constants. Also guards mixed `@Float64`/`@Int` ordering as a clean E142 (not a Z3 crash). Test-first: each fails on the pre-fix Real-sort verifier |
 | `test_float64_builtins_807.py` | 81 | 491 | #807 — Tier-1 modeling of the modelable `@Float64` builtins. `float_clamp` modeled unconditionally as faithful WASM `f64.min(f64.max(v,lo),hi)` (the NaN-propagation soundness guard distinguishes it from a naive `z3.fpMin`/`fpMax`); `int_to_float` / `float_to_int` concrete-gated (symbolic args defer to Tier 3 — Z3's symbolic FP↔Real reasoning returns spurious counterexamples); `float_to_int` domain obligation (E529) for concrete NaN/Inf/out-of-range args. Verify-vs-run differentials confirm each model agrees with wasmtime bit-for-bit (±0, ±inf, NaN, ties, lo>hi, the 2^53 rounding boundary, i64 max, and the trap cases) |
-| `test_build_site.py` | 23 | 316 | Site-asset tooling — `_abs_links` rewriting (relative links, fenced-block immunity incl. inline backticks and tilde fences, http/https/fragment pass-through, Vera effect syntax not mis-parsed), `build_site` `<lastmod>` stability (preserve/refresh keyed on URL-structure change), and `check_site_assets` sitemap staleness (missing / date-only-clean / structural-stale) |
+| `test_build_site.py` | 25 | 341 | Site-asset tooling — `_abs_links` rewriting (relative links, fenced-block immunity incl. inline backticks and tilde fences, http/https/fragment pass-through, Vera effect syntax not mis-parsed), `build_site` `<lastmod>` stability (preserve/refresh keyed on URL-structure change), `check_site_assets` sitemap staleness (missing / date-only-clean / structural-stale), and the #538 leak guard (vera:skip fence annotations stripped from generated `docs/SKILL.md` / `docs/llms-full.txt`, with a non-vacuous precondition that the source carries annotations) |
 | `test_check_changelog_updated.py` | 68 | 711 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths, and `GIT_*`-env hermeticity of the temp-repo fixtures (regression for the pre-commit-hook env leak) |
 | `test_check_doc_counts.py` | 17 | 174 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows, the #419 empty-section sentinel + its cannot-mask-a-malformed-table dual) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
 | `test_check_explicit_encoding.py` | 54 | 254 | `check_explicit_encoding.py` gate (#645): flags text-mode `open()` / `read_text()` / `write_text()` **and** `subprocess.run/Popen/check_output(..., text=True)` captures missing an `encoding="utf-8"` literal (rejects non-literal / non-UTF-8 values), skips binary/bytes-mode calls, honours the `# encoding-exempt` opt-out, and asserts the shipped repo is clean |
 | `test_check_limitations_sync.py` | 5 | 77 | `check_limitations_sync.py` section extraction: table-rows-only issue harvesting, prose-link exemption, bounding at the next second-level heading, `None` for absent or sub-level headings so renamed sections fail loudly |
+| `test_doc_annotations.py` | 23 | 340 | `scripts/doc_annotations.py` — the inline `vera:skip-<stage>` fence-annotation reader and shared `run_parse_only_gate` used by the doc-block gates ([#538](https://github.com/aallan/vera/issues/538)): markdown/HTML scanning (annotation attached to the following fence / `<pre>`, stacked directives), hard problems (malformed, dangling incl. EOF, duplicate-stage, unknown-stage, unterminated fence / unclosed `<pre>`; prose mentions without comment syntax are fine), the gate round-trip semantics via `evaluate_block` (unannotated failure fails, annotated failure skips, annotated PASS is a stale annotation, skip-check still runs parse first and stops the pipeline), unsupported-stage detection for parse-only gates, and `strip_annotations` (annotation lines removed, other HTML comments survive) |
 | `test_doc_builtin_shadowing.py` | 8 | 107 | `check_doc_builtin_shadowing.py` gate ([#819](https://github.com/aallan/vera/issues/819)): reject-set membership (opaque built-ins in, overridable combinators out), top-level + `where`-block `fn <builtin>` definitions flagged, non-built-in / overridable / prose-mention ignored, and the shipped docs are currently clean |
 | `test_runtime_traps.py` | 69 | 2,760 | Runtime trap categorisation (#516 Stage 1), stdout/stderr-on-trap preservation (#522), `IO.print` live tee (#543), and trap source backtrace (#516 Stage 2): `_classify_trap` per-`kind` mapping (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`), `WasmTrapError` shape + `RuntimeError` substitutability, end-to-end `cmd_run` text + JSON envelopes including `trap_kind`, captured `stdout`, captured `stderr`, JSON-mode "no stderr leak" invariant, cross-stream code-order regression using merged `redirect_stdout`/`redirect_stderr`, the v0.0.123 tee suite (live streaming, write-count + order preservation, JSON-mode tee suppression, trap preservation invariant under tee, per-write flush count, default-execute silence), and the v0.0.124 source-mapping suite — `_resolve_trap_frames` unit tests covering user-fn / built-in / built-in-prefix / monomorphized base-name fallback / unknown-name / no-frames-attribute / leaf-first ordering preservation; end-to-end `cmd_run` text-mode + JSON-mode backtrace including the **leaf-first** ordering invariant; contract-violation backtrace in both text and JSON modes; direct `execute()` `WasmTrapError.frames` attachment; **suppression marker** for collapsed leading runtime-helper frames (mocked `vera.codegen.execute` with synthetic `is_builtin=True` leaf frames so the collapse logic is testable deterministically); source-map population for top-level fns + lifted closures (with span-value assertion against the closure literal's exact line range); and the no-builtin-leakage regression that pins built-in helpers (`alloc` / `gc_collect` / `contract_fail`) NOT being registered in `fn_source_map`; plus the v0.0.125 Stage 3 suite (`#547`) — text-mode `Fix:` block surfacing with position-ordering invariant (Fix appears after the source backtrace), text-mode block suppression for `contract_violation` (no empty header noise), JSON-mode `fix` field always-present (schema stability) including the empty-string case, `_TRAP_FIX_PARAGRAPHS` table-completeness assertion (every kind in the taxonomy has a Fix paragraph entry), and the column-wrap invariant (~76 chars max per line, two-space indent under the `Fix:` heading); plus the UTF-8 hardening suite **`TestHostPrintInvalidUtf8589`** (`#589` / `#592`) — after `#592` centralised the `errors="replace"` invariant into the single `vera.runtime.text.safe_utf8_decode` helper — reached only through a shared `_slice_and_decode` helper (`vera/runtime/heap.py`) that the three WASM-memory string readers (`_read_wasm_string` and `_read_string_export` there, and `vera/wasm/markdown.py::_read_string`) delegate to, with the `host_print` / `host_stderr` / `host_contract_fail` host imports and the String-return extractor in `execute()` routing through those readers rather than decoding inline: one helper unit test pinning the invariant once (invalid bytes → U+FFFD, valid + empty pass through), three wire-real end-to-end tests that drive the **production** readers (`_read_wasm_string` / markdown `_read_string` behind a synthetic-WAT `probe` host import; `_read_string_export` against a real exported memory, also covering its out-of-bounds → `None` pointer-fallback) over a region seeded with invalid UTF-8 — so a strict-decode regression surfaces as a `UnicodeDecodeError` escaping wasmtime's trampoline, and the host imports / extractor are transitively covered — and one synthetic-WAT end-to-end test that imports `vera.print` and calls it with raw invalid UTF-8 bytes to pin the wasmtime-trampoline fact independently (a Python `UnicodeDecodeError` inside a host import escapes as a "python exception" cause iff the host decode is strict); the six pre-`#592` structural source-grep assertions were retired by the centralisation; plus the Ctrl-C-during-host-import suite **`TestHostSleepKeyboardInterrupt`** ([#595](https://github.com/aallan/vera/issues/595) / [#599](https://github.com/aallan/vera/issues/599)) — after the v0.0.160 relocation to a single `except KeyboardInterrupt` handler in `execute()` (enabled by `wasmtime>=45.0.0`'s `except BaseException` trampoline fix): one structural assertion that the four per-host-import `raise _VeraExit(130)` guards are gone and the centralized handler maps to `exit_code=130`, plus four end-to-end tests that compile real Vera programs calling `IO.sleep(...)`, `IO.read_char(())`, a mocked fused `await` ([#841](https://github.com/aallan/vera/issues/841) — `Future.result()` patched to interrupt), and a live in-flight fused `await` (no mocking — `_thread.interrupt_main()` fired only once the server confirms the request arrived, handler then released so the executor teardown has a real worker to wait out; post-[#848](https://github.com/aallan/vera/issues/848) the progress print precedes the `async(...)`, so program order makes its stdout assertion deterministic), raise `KeyboardInterrupt` from inside the blocking call, and assert the program exits with `ExecuteResult.exit_code == 130` (pre-interrupt stdout preserved) instead of a raw Python traceback escaping wasmtime's trampoline |
 | `test_serve.py` | 8 | 189 | #305 `vera serve` driver end-to-end: GET/POST echo round-trips (method/path/headers/body cross the host↔guest boundary via `build_request_adt` / `decode_response_adt`), handler status propagation, runtime contract violation → 500 with `trap_kind` JSON, `State<Int>` isolation across requests (instance-per-request pinned), and clean `make_server` validation errors (missing / wrong-signature `handle`), and an eager-GC round-trip pinning the Request builder's shadow-rooting; all on ephemeral ports |
@@ -586,7 +586,7 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Twenty-two scripts in `scripts/` validate cross-cutting concerns beyond unit tests (two of them — `build_site.py` and `fix_allowlists.py` — generate or repair rather than check):
+Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tests (one of them — `build_site.py` — generates rather than checks; the doc-block gates share the fence-annotation reader `scripts/doc_annotations.py`, a helper module rather than a gate):
 
 | Script | What it validates |
 |--------|-------------------|
@@ -611,21 +611,20 @@ Twenty-two scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 | `check_wheel_availability.py` | Every runtime dependency ships wheels for all supported platforms |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
 | `build_site.py` | Regenerates the AI-readable site assets that `check_site_assets.py` verifies |
-| `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
 
 ### Spec validation pipeline
 
-`check_spec_examples.py` pushes spec code blocks through three compiler stages, with allowlists at each level:
+`check_spec_examples.py` pushes spec code blocks through three compiler stages. A block that intentionally fails a stage carries an inline annotation on the line before its fence — `<!-- vera:skip-parse category="..." reason="..." -->` (or `vera:skip-check` / `vera:skip-verify`; see `scripts/doc_annotations.py` and [#538](https://github.com/aallan/vera/issues/538)):
 
-| Stage | Pass | Allowlisted | Categories |
-|-------|-----:|------------:|------------|
-| **Parse** | 81 | 67 | FUTURE (9), FRAGMENT (58) |
-| **Type-check** | 67 | 14 | INCOMPLETE (13), FUTURE (1) |
-| **Verify** | 66 | 1 | ILLUSTRATIVE (1) |
+| Stage | Pass | Annotated | Categories |
+|-------|-----:|----------:|------------|
+| **Parse** | 92 | 96 | FRAGMENT (83), FUTURE (13) |
+| **Type-check** | 86 | 6 | INCOMPLETE (5), ILLUSTRATIVE (1) |
+| **Verify** | 85 | 1 | ILLUSTRATIVE (1) |
 
-Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal or the `fix_allowlists.py` script auto-fixes the line numbers. The INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
+Annotations travel with their fence through spec edits, so there are no line numbers to maintain (this replaced the line-number-keyed allowlist dicts and `fix_allowlists.py` — [#538](https://github.com/aallan/vera/issues/538)/[#606](https://github.com/aallan/vera/issues/606)). Stale-detection is built in: the gate still runs the exempted stage, and an annotated block that passes it fails the gate until the annotation is removed — when a feature lands, the skip surface shrinks. The INCOMPLETE check entries reference functions or types not defined in the block (e.g. `is_sorted` in a data invariant); the ILLUSTRATIVE entries demonstrate syntax with contracts that are intentionally imprecise. The same annotation mechanism (parse stage only) covers SKILL.md, FAQ.md, README.md, and EXAMPLES.md; `check_html_examples.py` reads it from HTML comments before `<pre>` blocks in docs/index.html. `build_site.py` strips the annotations from generated site assets.
 
 ## JSON Output Stability
 
@@ -678,7 +677,7 @@ Per `spec/00-introduction.md` §0.5.8: fields MAY be added (consumers MUST toler
 
 ## Pre-commit Hooks
 
-Every push is checked by 31 configured hooks across two stages: 29 are configured at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) are configured at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:
+Every push is checked by 30 configured hooks across two stages: 28 are configured at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) are configured at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:
 
 | Hook | What it does |
 |------|-------------|
@@ -692,7 +691,6 @@ Every push is checked by 31 configured hooks across two stages: 29 are configure
 | `ruff check .` | Lint Python with ruff (default `F` + `E` rules) |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
 | `check_conformance.py` | All 104 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |

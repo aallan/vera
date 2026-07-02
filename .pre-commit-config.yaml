@@ -42,13 +42,6 @@ repos:
         types: [python]
         pass_filenames: false
 
-      - id: fix-allowlists
-        name: fix allowlists
-        entry: .venv/bin/python scripts/fix_allowlists.py --fix
-        language: system
-        pass_filenames: false
-        files: '(README\.md$|EXAMPLES\.md$|FAQ\.md$|SKILL\.md$|spec/.*\.md$)'
-
       - id: conformance-suite
         name: conformance suite
         entry: .venv/bin/python scripts/check_conformance.py
@@ -70,40 +63,43 @@ repos:
         pass_filenames: false
         files: '(examples/README\.md$|examples/.*\.vera$)'
 
+      # The five doc-block gates below read the inline vera:skip fence
+      # annotations via scripts/doc_annotations.py (#538), so an edit to
+      # that shared module (or the gate script itself) re-runs the gate.
       - id: readme-examples
         name: readme examples
         entry: .venv/bin/python scripts/check_readme_examples.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_readme_examples|doc_annotations)\.py$)'
 
       - id: examples-doc
         name: examples doc
         entry: .venv/bin/python scripts/check_examples_doc.py
         language: system
         pass_filenames: false
-        files: '(EXAMPLES\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(EXAMPLES\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_examples_doc|doc_annotations)\.py$)'
 
       - id: skill-examples
         name: skill examples
         entry: .venv/bin/python scripts/check_skill_examples.py
         language: system
         pass_filenames: false
-        files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_skill_examples|doc_annotations)\.py$)'
 
       - id: faq-examples
         name: faq examples
         entry: .venv/bin/python scripts/check_faq_examples.py
         language: system
         pass_filenames: false
-        files: '(FAQ\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(FAQ\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_faq_examples|doc_annotations)\.py$)'
 
       - id: html-examples
         name: html examples
         entry: .venv/bin/python scripts/check_html_examples.py
         language: system
         pass_filenames: false
-        files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$)'
+        files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_html_examples|doc_annotations)\.py$)'
 
       # #819 — fails when a doc example *defines* a function named after an
       # opaque built-in (which `vera check` rejects with E151).  The other doc
@@ -194,7 +190,7 @@ repos:
         entry: .venv/bin/python scripts/build_site.py
         language: system
         pass_filenames: false
-        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/build_site\.py$)'
+        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|LSP_SERVER\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/(build_site|doc_annotations)\.py$)'
 
       - id: browser-parity
         name: browser parity

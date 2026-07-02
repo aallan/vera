@@ -133,6 +133,7 @@ This introduces two bindings: one `Int` and one `String`.
 
 ### 4.7.2 Let with Type Alias
 
+<!-- vera:skip-parse category="FRAGMENT" reason="type alias + let @PosInt = 42" -->
 ```
 type PosInt = { @Int | @Int.0 > 0 };
 let @PosInt = 42;

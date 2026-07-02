@@ -120,6 +120,7 @@ private fn checked_nat(@Int -> @Result<Nat, String>)
 
 ### 9.3.3 UrlParts
 
+<!-- vera:skip-check category="INCOMPLETE" reason="data UrlParts (no visibility keyword)" -->
 ```
 data UrlParts {
   UrlParts(String, String, String, String, String)
@@ -135,6 +136,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
+<!-- vera:skip-check category="INCOMPLETE" reason="data Future<T> (no visibility keyword)" -->
 ```
 data Future<T> { Future(T) }
 ```
@@ -492,6 +494,7 @@ The `<Async>` effect enables asynchronous computation via `async(expr)` and `awa
 
 **Built-in functions:**
 
+<!-- vera:skip-parse category="FRAGMENT" reason="async/await signatures (no body)" -->
 ```
 fn async<T>(@T.0 -> @Future<T>) effects(<Async>)
 fn await<T>(@Future<T>.0 -> @T) effects(<Async>)
@@ -584,6 +587,7 @@ public fn handle(@Request -> @Response)
 
 **Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
 
+<!-- vera:skip-check category="ILLUSTRATIVE" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }
@@ -604,6 +608,7 @@ Built-in functions are always in scope as the single canonical definition of eac
 
 ### 9.6.1 array\_length
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_length signature (no body)" -->
 ```
 public forall<T> fn array_length(@Array<T> -> @Int)
   requires(true)
@@ -624,6 +629,7 @@ For the compilation of `array_length`, see Chapter 11, Section 11.12.
 
 ### 9.6.2 array\_append
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_append signature (no body)" -->
 ```
 public forall<T> fn array_append(@Array<T>, @T -> @Array<T>)
   requires(true)
@@ -642,6 +648,7 @@ This expression evaluates to `4`.
 
 ### 9.6.3 array\_range
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_range signature (no body)" -->
 ```vera
 public fn array_range(@Int, @Int -> @Array<Int>)
   requires(true)
@@ -660,6 +667,7 @@ array_range(10, 3)      -- [] (empty, start > end)
 
 ### 9.6.4 array\_concat
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_concat signature (no body)" -->
 ```vera
 public forall<T> fn array_concat(@Array<T>, @Array<T> -> @Array<T>)
   requires(true)
@@ -678,6 +686,7 @@ array_concat([], [])                   -- [] (empty)
 
 ### 9.6.5 array\_slice
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_slice signature (no body)" -->
 ```vera
 public forall<T> fn array_slice(@Array<T>, @Int, @Int -> @Array<T>)
   requires(true)
@@ -696,6 +705,7 @@ array_slice([10, 20, 30], 2, 1)          -- [] (start >= end)
 
 ### 9.6.6 array\_map
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_map signature (no body)" -->
 ```vera
 public forall<A, B> fn array_map(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
@@ -712,6 +722,7 @@ array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 10 })
 
 ### 9.6.7 array\_filter
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_filter signature (no body)" -->
 ```vera
 public forall<T> fn array_filter(@Array<T>, fn(T -> Bool) effects(pure) -> @Array<T>)
   requires(true)
@@ -728,6 +739,7 @@ array_filter([1, 2, 3, 4, 5, 6], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 })
 
 ### 9.6.8 array\_fold
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_fold signature (no body)" -->
 ```vera
 public forall<T, U> fn array_fold(@Array<T>, @U, fn(U, T -> U) effects(pure) -> @U)
   requires(true)
@@ -748,6 +760,7 @@ Vera provides eight built-in numeric functions for common mathematical operation
 
 #### abs
 
+<!-- vera:skip-parse category="FRAGMENT" reason="abs signature (no body)" -->
 ```
 public fn abs(@Int -> @Nat)
   requires(true)
@@ -765,6 +778,7 @@ This expression evaluates to `42`.
 
 #### min
 
+<!-- vera:skip-parse category="FRAGMENT" reason="min signature (no body)" -->
 ```
 public fn min(@Int, @Int -> @Int)
   requires(true)
@@ -782,6 +796,7 @@ This expression evaluates to `3`.
 
 #### max
 
+<!-- vera:skip-parse category="FRAGMENT" reason="max signature (no body)" -->
 ```
 public fn max(@Int, @Int -> @Int)
   requires(true)
@@ -799,6 +814,7 @@ This expression evaluates to `7`.
 
 #### floor
 
+<!-- vera:skip-parse category="FRAGMENT" reason="floor signature (no body)" -->
 ```
 public fn floor(@Float64 -> @Int)
   requires(true)
@@ -816,6 +832,7 @@ This expression evaluates to `3`.
 
 #### ceil
 
+<!-- vera:skip-parse category="FRAGMENT" reason="ceil signature (no body)" -->
 ```
 public fn ceil(@Float64 -> @Int)
   requires(true)
@@ -833,6 +850,7 @@ This expression evaluates to `4`.
 
 #### round
 
+<!-- vera:skip-parse category="FRAGMENT" reason="round signature (no body)" -->
 ```
 public fn round(@Float64 -> @Int)
   requires(true)
@@ -850,6 +868,7 @@ This expression evaluates to `4`.
 
 #### sqrt
 
+<!-- vera:skip-parse category="FRAGMENT" reason="sqrt signature (no body)" -->
 ```
 public fn sqrt(@Float64 -> @Float64)
   requires(true)
@@ -867,6 +886,7 @@ This expression evaluates to `2.0`.
 
 #### pow
 
+<!-- vera:skip-parse category="FRAGMENT" reason="pow signature (no body)" -->
 ```
 public fn pow(@Float64, @Int -> @Float64)
   requires(true)
@@ -923,6 +943,7 @@ Vera has no implicit numeric conversions. The following built-in functions provi
 
 #### Widening conversions (always succeed)
 
+<!-- vera:skip-parse category="FRAGMENT" reason="int_to_float signature (no body)" -->
 ```
 public fn int_to_float(@Int -> @Float64)
   requires(true)
@@ -938,6 +959,7 @@ int_to_float(42)
 
 This expression evaluates to `42.0`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="nat_to_int signature (no body)" -->
 ```
 public fn nat_to_int(@Nat -> @Int)
   requires(true)
@@ -953,6 +975,7 @@ nat_to_int(abs(42))
 
 This expression evaluates to `42`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="byte_to_int signature (no body)" -->
 ```
 public fn byte_to_int(@Byte -> @Int)
   requires(true)
@@ -968,6 +991,7 @@ byte_to_int(@Byte.0)
 
 #### Narrowing conversions (may fail)
 
+<!-- vera:skip-parse category="FRAGMENT" reason="float_to_int signature (no body)" -->
 ```
 public fn float_to_int(@Float64 -> @Int)
   requires(true)
@@ -983,6 +1007,7 @@ float_to_int(3.9)
 
 This expression evaluates to `3` (truncation toward zero, not rounding).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="int_to_nat signature (no body)" -->
 ```
 public fn int_to_nat(@Int -> @Option<Nat>)
   requires(true)
@@ -1001,6 +1026,7 @@ match int_to_nat(42) {
 
 This expression evaluates to `42`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="int_to_byte signature (no body)" -->
 ```
 public fn int_to_byte(@Int -> @Option<Byte>)
   requires(true)
@@ -1025,6 +1051,7 @@ Vera provides built-in functions for testing and constructing IEEE 754 special f
 
 #### Predicates
 
+<!-- vera:skip-parse category="FRAGMENT" reason="float_is_nan signature (no body)" -->
 ```
 public fn float_is_nan(@Float64 -> @Bool)
   requires(true)
@@ -1042,6 +1069,7 @@ public fn test_is_nan(@Unit -> @Int)
 
 This expression evaluates to `1`.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="float_is_infinite signature (no body)" -->
 ```
 public fn float_is_infinite(@Float64 -> @Bool)
   requires(true)
@@ -1061,6 +1089,7 @@ This expression evaluates to `1`.
 
 #### Constants
 
+<!-- vera:skip-parse category="FRAGMENT" reason="nan signature (no body)" -->
 ```
 public fn nan(-> @Float64)
   requires(true)
@@ -1076,6 +1105,7 @@ public fn test_nan(@Unit -> @Float64)
 { nan() }
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="infinity signature (no body)" -->
 ```vera
 public fn infinity(-> @Float64)
   requires(true)
@@ -1097,6 +1127,7 @@ String search functions test for the presence or position of substrings. All are
 
 #### string_contains
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_contains signature (no body)" -->
 ```vera
 public fn string_contains(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -1112,6 +1143,7 @@ string_contains("hello", "")             -- true
 
 #### string_starts_with
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_starts_with signature (no body)" -->
 ```vera
 public fn string_starts_with(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -1127,6 +1159,7 @@ string_starts_with("hello", "")             -- true
 
 #### string_ends_with
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_ends_with signature (no body)" -->
 ```vera
 public fn string_ends_with(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -1142,6 +1175,7 @@ string_ends_with("hello", "")             -- true
 
 #### string_index_of
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_index_of signature (no body)" -->
 ```vera
 public fn string_index_of(@String, @String -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
@@ -1163,6 +1197,7 @@ String transformation functions produce new strings by modifying characters or s
 
 #### string\_strip
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_strip signature (no body)" -->
 ```
 public fn string_strip(@String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1179,6 +1214,7 @@ string_strip("  ")           -- "" (empty)
 
 #### string\_char\_code
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_char_code signature (no body)" -->
 ```
 public fn string_char_code(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -1194,6 +1230,7 @@ string_char_code("ABC", 2)   -- 67 (ASCII 'C')
 
 #### string_upper
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_upper signature (no body)" -->
 ```vera
 public fn string_upper(@String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1209,6 +1246,7 @@ string_upper("123")      -- "123"
 
 #### string_lower
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_lower signature (no body)" -->
 ```vera
 public fn string_lower(@String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1224,6 +1262,7 @@ string_lower("123")      -- "123"
 
 #### string_replace
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_replace signature (no body)" -->
 ```vera
 public fn string_replace(@String, @String, @String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1240,6 +1279,7 @@ string_replace("hello", "", "x")                -- "hello"
 
 #### string_split
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_split signature (no body)" -->
 ```vera
 public fn string_split(@String, @String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
@@ -1255,6 +1295,7 @@ string_split("a,,b", ",")      -- Array with 3 elements: "a", "", "b"
 
 #### string_join
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_join signature (no body)" -->
 ```vera
 public fn string_join(@Array<String>, @String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1269,6 +1310,7 @@ string_join(string_split("hello", ","), "-")  -- "hello"
 
 #### string_from_char_code
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_from_char_code signature (no body)" -->
 ```vera
 public fn string_from_char_code(@Nat -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1284,6 +1326,7 @@ string_concat(string_from_char_code(72), string_from_char_code(105))  -- "Hi"
 
 #### string_repeat
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_repeat signature (no body)" -->
 ```vera
 public fn string_repeat(@String, @Nat -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1312,6 +1355,7 @@ On success, the `Ok` variant contains the parsed value. On failure, the `Err` va
 
 #### parse_nat
 
+<!-- vera:skip-parse category="FRAGMENT" reason="parse_nat signature (no body)" -->
 ```vera
 public fn parse_nat(@String -> @Result<Nat, String>)
   requires(true) ensures(true) effects(pure)
@@ -1334,6 +1378,7 @@ parse_nat("  ")        -- Err("empty string")
 
 #### parse_int
 
+<!-- vera:skip-parse category="FRAGMENT" reason="parse_int signature (no body)" -->
 ```vera
 public fn parse_int(@String -> @Result<Int, String>)
   requires(true) ensures(true) effects(pure)
@@ -1357,6 +1402,7 @@ parse_int("")          -- Err("empty string")
 
 #### parse_float64
 
+<!-- vera:skip-parse category="FRAGMENT" reason="parse_float64 signature (no body)" -->
 ```vera
 public fn parse_float64(@String -> @Result<Float64, String>)
   requires(true) ensures(true) effects(pure)
@@ -1379,6 +1425,7 @@ parse_float64("")          -- Err("empty string")
 
 #### parse_bool
 
+<!-- vera:skip-parse category="FRAGMENT" reason="parse_bool signature (no body)" -->
 ```vera
 public fn parse_bool(@String -> @Result<Bool, String>)
   requires(true) ensures(true) effects(pure)
@@ -1402,6 +1449,7 @@ parse_bool("")             -- Err("expected true or false")
 
 #### base64\_encode
 
+<!-- vera:skip-parse category="FRAGMENT" reason="base64_encode signature (no body)" -->
 ```
 public fn base64_encode(@String -> @String)
   requires(true)
@@ -1421,6 +1469,7 @@ base64_encode("")                 -- ""
 
 #### base64\_decode
 
+<!-- vera:skip-parse category="FRAGMENT" reason="base64_decode signature (no body)" -->
 ```
 public fn base64_decode(@String -> @Result<String, String>)
   requires(true)
@@ -1448,6 +1497,7 @@ base64_decode("QQ!!")                  -- Err("invalid base64")
 
 #### url\_encode
 
+<!-- vera:skip-parse category="FRAGMENT" reason="url_encode signature (no body)" -->
 ```
 public fn url_encode(@String -> @String)
   requires(true)
@@ -1467,6 +1517,7 @@ url_encode("")                  -- ""
 
 #### url\_decode
 
+<!-- vera:skip-parse category="FRAGMENT" reason="url_decode signature (no body)" -->
 ```
 public fn url_decode(@String -> @Result<String, String>)
   requires(true)
@@ -1493,6 +1544,7 @@ url_decode("%4")                   -- Err("invalid percent-encoding")
 
 The `UrlParts` ADT is defined in §9.3.3 and injected by the standard prelude (§9.1.2).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="url_parse signature (no body)" -->
 ```
 public fn url_parse(@String -> @Result<UrlParts, String>)
   requires(true)
@@ -1513,6 +1565,7 @@ url_parse("no-scheme")
   -- Err("missing scheme")
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="url_join signature (no body)" -->
 ```
 public fn url_join(@UrlParts -> @String)
   requires(true)
@@ -1533,6 +1586,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 > **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` was implemented in v0.0.101 ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
+<!-- vera:skip-parse category="FRAGMENT" reason="similarity signature (no body)" -->
 ```
 public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
   requires(array_length(@Array<Float64>.0) == array_length(@Array<Float64>.1))
@@ -1550,6 +1604,7 @@ Four pure functions for pattern matching on strings using regular expressions. A
 
 #### regex\_match
 
+<!-- vera:skip-parse category="FRAGMENT" reason="regex_match signature (no body)" -->
 ```
 public fn regex_match(@String, @String -> @Result<Bool, String>)
   requires(true)
@@ -1566,6 +1621,7 @@ let @Result<Bool, String> = regex_match("hello123", "\\d+");
 
 #### regex\_find
 
+<!-- vera:skip-parse category="FRAGMENT" reason="regex_find signature (no body)" -->
 ```
 public fn regex_find(@String, @String -> @Result<Option<String>, String>)
   requires(true)
@@ -1582,6 +1638,7 @@ let @Result<Option<String>, String> = regex_find("abc123def", "\\d+");
 
 #### regex\_find\_all
 
+<!-- vera:skip-parse category="FRAGMENT" reason="regex_find_all signature (no body)" -->
 ```
 public fn regex_find_all(@String, @String -> @Result<Array<String>, String>)
   requires(true)
@@ -1598,6 +1655,7 @@ let @Result<Array<String>, String> = regex_find_all("a1b2c3", "\\d");
 
 #### regex\_replace
 
+<!-- vera:skip-parse category="FRAGMENT" reason="regex_replace signature (no body)" -->
 ```
 public fn regex_replace(@String, @String, @String -> @Result<String, String>)
   requires(true)
@@ -1618,6 +1676,7 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 
 Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type — `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are tracked separately and implemented in a future release.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_mapi signature (no body)" -->
 ```vera
 public forall<A, B> fn array_mapi(@Array<A>, fn(A, Nat -> B) effects(pure) -> @Array<B>)
   requires(true) ensures(true) effects(pure)
@@ -1632,6 +1691,7 @@ array_mapi([10, 20, 30], fn(@Int, @Nat -> @Int) effects(pure) {
 -- [10, 21, 32]
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_reverse signature (no body)" -->
 ```vera
 public forall<T> fn array_reverse(@Array<T> -> @Array<T>)
   requires(true) ensures(true) effects(pure)
@@ -1643,6 +1703,7 @@ public forall<T> fn array_reverse(@Array<T> -> @Array<T>)
 array_reverse([1, 2, 3, 4, 5])  -- [5, 4, 3, 2, 1]
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_find signature (no body)" -->
 ```vera
 public forall<T> fn array_find(@Array<T>, fn(T -> Bool) effects(pure) -> @Option<T>)
   requires(true) ensures(true) effects(pure)
@@ -1655,6 +1716,7 @@ array_find([1, 3, 5, 7, 9], fn(@Int -> @Bool) effects(pure) { @Int.0 > 4 })
 -- Some(5)
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_any + array_all signatures (no body)" -->
 ```vera
 public forall<T> fn array_any(@Array<T>, fn(T -> Bool) effects(pure) -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -1671,6 +1733,7 @@ array_all([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })  -- true
 array_all([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 })  -- false
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_flatten signature (no body)" -->
 ```vera
 public forall<T> fn array_flatten(@Array<Array<T>> -> @Array<T>)
   requires(true) ensures(true) effects(pure)
@@ -1683,6 +1746,7 @@ array_flatten([[1, 2], [3, 4], [5, 6]])  -- [1, 2, 3, 4, 5, 6]
 array_flatten([[1, 2], [], [3]])         -- [1, 2, 3]
 ```
 
+<!-- vera:skip-parse category="FRAGMENT" reason="array_sort_by signature (no body)" -->
 ```vera
 public forall<T> fn array_sort_by(@Array<T>, fn(T, T -> Ordering) effects(pure) -> @Array<T>)
   requires(true) ensures(true) effects(pure)
@@ -1716,6 +1780,7 @@ All operations use **ASCII byte semantics**: classifiers test the first byte of 
 
 #### String splits — bridges to the array combinators
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_chars/lines/words signatures (no bodies)" -->
 ```vera
 public fn string_chars(@String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
@@ -1745,6 +1810,7 @@ All three return a fresh `@Array<String>` whose elements are each independently 
 
 #### String transformations
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_reverse/trim_start/trim_end signatures (no body, #470)" -->
 ```vera
 public fn string_reverse(@String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1768,6 +1834,7 @@ string_trim_end("  hi  ")     -- "  hi"
 
 #### Padding
 
+<!-- vera:skip-parse category="FRAGMENT" reason="string_pad_start/pad_end signatures (no body, #470)" -->
 ```vera
 public fn string_pad_start(@String, @Nat, @String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1791,6 +1858,7 @@ string_pad_start("hello", 3, "*") -- "hello"
 
 #### Case conversion
 
+<!-- vera:skip-parse category="FRAGMENT" reason="char_to_upper/char_to_lower signatures (no body, #471)" -->
 ```vera
 public fn char_to_upper(@String -> @String)
   requires(true) ensures(true) effects(pure)
@@ -1812,6 +1880,7 @@ For whole-string ASCII case conversion, see `string_upper` / `string_lower` in �
 
 #### Character classifiers
 
+<!-- vera:skip-parse category="FRAGMENT" reason="is_digit/alpha/... signatures (no body, #471)" -->
 ```vera
 public fn is_digit(@String -> @Bool)         requires(true) ensures(true) effects(pure)
 public fn is_alpha(@String -> @Bool)         requires(true) ensures(true) effects(pure)
@@ -1853,6 +1922,7 @@ Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functi
 
 #### Layer 1 — type-coercion accessors
 
+<!-- vera:skip-parse category="FRAGMENT" reason="json_as_* Layer-1 signatures (no body, #366)" -->
 ```vera
 public fn json_as_string(@Json -> @Option<String>)
   requires(true) ensures(true) effects(pure)
@@ -1888,6 +1958,7 @@ json_as_int(JNumber(infinity()))           -- None       -- infinity guard
 
 #### Layer 2 — compound field accessors
 
+<!-- vera:skip-parse category="FRAGMENT" reason="json_get_* Layer-2 signatures (no body, #366)" -->
 ```vera
 public fn json_get_string(@Json, @String -> @Option<String>)
   requires(true) ensures(true) effects(pure)
@@ -2107,6 +2178,7 @@ public data MdBlock {
 
 **Parse and render operations:**
 
+<!-- vera:skip-parse category="FUTURE" reason="md_parse signature (no body)" -->
 ```
 public fn md_parse(@String -> @Result<MdBlock, String>)
   requires(true)
@@ -2116,6 +2188,7 @@ public fn md_parse(@String -> @Result<MdBlock, String>)
 
 Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure — it transforms one value to another with no side effects.
 
+<!-- vera:skip-parse category="FUTURE" reason="md_render" -->
 ```
 public fn md_render(@MdBlock -> @String)
   requires(true)
@@ -2127,6 +2200,7 @@ Renders an `MdBlock` to a canonical Markdown string. Always succeeds. The round-
 
 **Accessor functions for contracts:**
 
+<!-- vera:skip-parse category="FUTURE" reason="md_has_heading" -->
 ```
 public fn md_has_heading(@MdBlock, @Nat -> @Bool)
   requires(@Nat.0 >= 1 && @Nat.0 <= 6)
@@ -2136,6 +2210,7 @@ public fn md_has_heading(@MdBlock, @Nat -> @Bool)
 
 Returns `true` if the document contains a heading of the given level.
 
+<!-- vera:skip-parse category="FUTURE" reason="md_has_code_block" -->
 ```
 public fn md_has_code_block(@MdBlock, @String -> @Bool)
   requires(true)
@@ -2145,6 +2220,7 @@ public fn md_has_code_block(@MdBlock, @String -> @Bool)
 
 Returns `true` if the document contains a code block with the given language tag.
 
+<!-- vera:skip-parse category="FUTURE" reason="md_extract_code_blocks" -->
 ```
 public fn md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
   requires(true)
@@ -2169,6 +2245,7 @@ These predicates call pure functions, placing them in Tier 2 (extended, function
 
 Document conversion (PDF, Word, HTML, etc. to Markdown) is not part of the language specification. Vera provides the types; conversion uses the `IO` effect with host bindings that delegate to external tools:
 
+<!-- vera:skip-parse category="FUTURE" reason="convert_to_markdown" -->
 ```
 public fn convert_to_markdown(@String -> @Result<MdBlock, String>)
   requires(true)
@@ -2218,6 +2295,7 @@ public data HtmlNode {
 
 **Parse and serialize operations:**
 
+<!-- vera:skip-parse category="FUTURE" reason="html_parse" -->
 ```
 public fn html_parse(@String -> @Result<HtmlNode, String>)
   requires(true)
@@ -2227,6 +2305,7 @@ public fn html_parse(@String -> @Result<HtmlNode, String>)
 
 Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
 
+<!-- vera:skip-parse category="FUTURE" reason="html_to_string" -->
 ```
 public fn html_to_string(@HtmlNode -> @String)
   requires(true)
@@ -2238,6 +2317,7 @@ Serializes an `HtmlNode` tree back to an HTML string.
 
 **Query and extraction operations:**
 
+<!-- vera:skip-parse category="FUTURE" reason="html_query" -->
 ```
 public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
   requires(true)
@@ -2247,6 +2327,7 @@ public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
 
 Queries the tree using a simple CSS selector subset. Returns all matching elements. Supported selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`).
 
+<!-- vera:skip-parse category="FUTURE" reason="html_text" -->
 ```
 public fn html_text(@HtmlNode -> @String)
   requires(true)
@@ -2256,6 +2337,7 @@ public fn html_text(@HtmlNode -> @String)
 
 Extracts all text content from the node and its descendants, recursively concatenated. Comments are excluded.
 
+<!-- vera:skip-parse category="FUTURE" reason="html_attr" -->
 ```
 public fn html_attr(@HtmlNode, @String -> @Option<String>)
   requires(true)

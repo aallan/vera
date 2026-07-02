@@ -115,6 +115,7 @@ Effect operations are resolved by the effect declared in the function's effect r
 
 If two effects in scope define an operation with the same name, the call is ambiguous and MUST be qualified:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="effect Logger + anonymous fn body" -->
 ```
 effect Logger {
   op put(String -> Unit);
@@ -202,6 +203,21 @@ The result is `10`. The `handle` expression's type is the type of the handled bo
 **Exception handler:**
 
 ```
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+private fn parse_or_throw(@String -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  match parse_int(@String.0) {
+    Ok(@Int) -> @Int.0,
+    Err(@String) -> throw(@String.0)
+  }
+}
+
 private fn safe_parse(@String -> @Option<Int>)
   requires(true)
   ensures(true)
@@ -210,17 +226,18 @@ private fn safe_parse(@String -> @Option<Int>)
   handle[Exn<String>] {
     throw(@String) -> { None }    -- do NOT resume; return None
   } in {
-    Some(parse_int(@String.0))    -- parse_int has effects(<Exn<String>>)
+    Some(parse_or_throw(@String.0))
   }
 }
 ```
 
-If `parse_int` throws, the handler catches it and returns `None`. If it succeeds, the body evaluates to `Some(result)`.
+The built-in `parse_int` is a pure function returning `Result<Int, String>` (Chapter 9); `parse_or_throw` converts its `Err` case into a `throw`. If `parse_or_throw` throws, the handler catches it and returns `None`. If parsing succeeds, the body evaluates to `Some(result)`.
 
 Note: when the handler does not call `resume`, the handled body is abandoned. The handler body's expression (`None`) becomes the value of the entire `handle` expression.
 
 **Choice handler (non-determinism):**
 
+<!-- vera:skip-parse category="FUTURE" reason="handle[Choice] multi-shot resume + array_concat" -->
 ```
 private fn all_choices(@Unit -> @Array<Bool>)
   requires(true)
@@ -248,6 +265,7 @@ This demonstrates that `resume` is a first-class continuation: it can be called 
 
 Functions can be polymorphic over effects:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn(A -> B) in param position" -->
 ```
 private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
@@ -255,18 +273,19 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
   effects(<E>)
 {
   match @Option<A>.0 {
-    Some(@A) -> Some(@Fn.0(@A.0)),
+    Some(@A) -> Some(apply_fn(@Fn.0, @A.0)),
     None -> None,
   }
 }
 ```
 
-The effect variable `E` is unified at each call site. If the passed function is `pure`, then `option_map` is `pure`. If it has `effects(<IO>)`, then `option_map` has `effects(<IO>)`.
+Stored function values are applied with `apply_fn` (Section 11.10.5). The effect variable `E` is unified at each call site. If the passed function is `pure`, then `option_map` is `pure`. If it has `effects(<IO>)`, then `option_map` has `effects(<IO>)`.
 
 ### 7.6.1 Effect Row Variables
 
 Effect row variables can appear alongside concrete effects:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn(Unit -> A) in param position" -->
 ```
 private forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
   requires(true)
@@ -274,7 +293,7 @@ private forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
   effects(<IO, E>)
 {
   IO.print("Starting computation");
-  let @A = @Fn.0(());
+  let @A = apply_fn(@Fn.0, ());
   IO.print("Finished computation");
   @A.0
 }
@@ -318,6 +337,7 @@ Exception effect. The `throw` operation never resumes (its return type is `Never
 
 ### 7.7.3 `Diverge`
 
+<!-- vera:skip-parse category="FRAGMENT" reason="effect Diverge {} — no operations" -->
 ```
 effect Diverge {}
 ```
@@ -346,6 +366,7 @@ Like `IO`, `Random` is built-in — no `effect Random { ... }` declaration is ne
 
 ### 7.7.5 `HttpServer`
 
+<!-- vera:skip-parse category="FRAGMENT" reason="effect HttpServer {} — no operations (#305)" -->
 ```
 effect HttpServer {}
 ```
@@ -354,6 +375,7 @@ The `HttpServer` effect has no operations — it is a marker (#305, since v0.0.1
 
 ### 7.7.6 `Async`
 
+<!-- vera:skip-parse category="FRAGMENT" reason="effect Async {} — no operations" -->
 ```
 effect Async {}
 ```

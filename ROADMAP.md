@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,873 tests, 106 conformance programs, 37 examples, 14 spec chapters.
+5,898 tests, 106 conformance programs, 37 examples, 14 spec chapters.
 
 ## The roadmap
 
@@ -25,7 +25,6 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | [#829](https://github.com/aallan/vera/issues/829) | Extend `TestErrorDisplaySync` to the two unguarded `E001` `spec_ref` mirrors (`AGENTS.md` + the `build_site.py` generator): the example lives in six places, only four are test-guarded, and #826 drifted the ungated pair.  Deeper option: single-source the example so nothing can drift. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
-| [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
 
 ### Tier 3 — Usability and polish

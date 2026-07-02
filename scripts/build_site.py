@@ -23,6 +23,12 @@ from datetime import date
 from functools import cache
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# The doc gates' inline <!-- vera:skip-... --> fence annotations (#538) are
+# repo-tooling metadata: strip them from every generated site asset.
+from doc_annotations import strip_annotations  # noqa: E402  (scripts/ is not a package)
+
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 SITE = "https://veralang.dev"
@@ -223,7 +229,7 @@ def build_llms_full_txt(version: str) -> str:
         parts.append(f"\n{'=' * 72}")
         parts.append(f"# {title}")
         parts.append(f"{'=' * 72}\n")
-        parts.append(_abs_links(content.strip()))
+        parts.append(_abs_links(strip_annotations(content).strip()))
         parts.append("")
 
     # Header
@@ -655,9 +661,12 @@ def build_skill_md() -> str:
     generated artefact that makes the language reference available at
     veralang.dev/SKILL.md — same domain as the website, cacheable, stable.
     Relative links are rewritten to absolute GitHub blob URLs because this
-    file is consumed outside the repository context.
+    file is consumed outside the repository context, and the doc gates'
+    vera:skip fence annotations (#538) are stripped for the same reason.
     """
-    return _abs_links((ROOT / "SKILL.md").read_text(encoding="utf-8"))
+    return _abs_links(
+        strip_annotations((ROOT / "SKILL.md").read_text(encoding="utf-8"))
+    )
 
 
 # ── main ────────────────────────────────────────────────────────────

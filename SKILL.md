@@ -157,6 +157,7 @@ Common codes you'll encounter:
 
 Every function has this exact structure. No part is optional except `decreases` and `where`. Visibility (`public` or `private`) is mandatory on every top-level `fn` and `data` declaration.
 
+<!-- vera:skip-parse category="MISMATCH" reason="Function signature template with @ParamType placeholders" -->
 ```vera
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition_expression)
@@ -194,6 +195,7 @@ At every call site the arity must match the declaration: `a()` calls the nullary
 
 Functions passed as arguments or stored in `let` bindings use the type form `Fn(T -> U) effects(...)`. To invoke such a stored value, use `apply_fn`:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Type alias (Fn type) in apply_fn docs, bare declaration" -->
 ```vera
 type IntToInt = Fn(Int -> Int) effects(pure)
 
@@ -412,6 +414,7 @@ array, useful when processing diagnostics programmatically.
 
 ### Composite types
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Composite type examples, bare type expressions" -->
 ```vera
 @Array<Int>                              -- array of ints
 @Array<Option<Int>>                      -- array of ADT (compound element type)
@@ -431,6 +434,7 @@ Fn(Int -> Int) effects(pure)              -- function type
 
 Write `[1, 2, 3]` for a populated array and `[]` for an empty one. The element type is inferred from the elements when present, and from the surrounding type annotation when the literal is empty:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Array literal examples, bare let bindings (#513)" -->
 ```vera
 let @Array<Int> = [1, 2, 3];              -- populated: elements determine type
 let @Array<Bool> = [true, false];          -- populated, any element type
@@ -447,6 +451,7 @@ Empty arrays **must** appear in a position with a known type — a `let` binding
 
 Tuples are constructed with the `Tuple(...)` constructor and destructured with the same shape inside `match`:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Tuple construction + destructuring example, bare let + match" -->
 ```vera
 let @Tuple<Int, String> = Tuple(42, "hello");
 match @Tuple<Int, String>.0 {
@@ -536,6 +541,7 @@ Match must be exhaustive.
 
 ## Conditional Expressions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="If/else expression example" -->
 ```vera
 if @Bool.0 then {
   expr1
@@ -550,6 +556,7 @@ Both branches are mandatory. Braces are mandatory. Each branch is always multi-l
 
 Blocks contain statements followed by a final expression:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Block expression example" -->
 ```vera
 {
   let @Int = @Int.0 + 1;
@@ -604,6 +611,7 @@ public fn safe_div(@Int, @Int -> @Option<Int>)
 
 Check this, read the `W001` fix hints, then fill in the holes:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Typed hole fill-in example, bare if/else expression" -->
 ```vera
   if @Int.0 != 0 then {
     Some(@Int.1 / @Int.0)
@@ -649,6 +657,7 @@ For pure recursive functions that need termination proofs, add a `decreases` cla
 
 Anonymous functions are written `fn(@ParamType1, @ParamType2 -> @ReturnType) effects(effect_row) { body_expression }`. They are first-class values and can be passed to higher-order built-ins (`array_map`, `array_filter`, `array_fold`, `array_any`, `array_find`, `array_sort_by`, …) or stored in `let` bindings.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Closure example, bare let bindings with array_map (#513)" -->
 ```vera
 let @Array<Int> = [1, 2, 3, 4, 5];
 let @Array<Int> = array_map(
@@ -699,6 +708,7 @@ Use `vera check --explain-slots file.vera` if you need the resolved index table 
 
 Capturing a `String` or `Array<T>` works the same way as capturing any other outer binding — the closure-struct layout serialises both halves of the (ptr, len) pair, so `array_length` / `string_length` / element-access all see the captured value correctly inside the closure body.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Pair-type capture example (post-#535), bare let-in-closure" -->
 ```vera
 -- Capture an outer Array<Int> and read its length inside the closure.
 let @Array<Int> = [10, 20, 30];        -- captured (outer) @Array<Int>.0 = this
@@ -771,6 +781,7 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 
 The standard prelude provides `Option<T>` and `Result<T, E>` along with combinator functions that are always available:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Option/Result combinator usage examples, bare calls" -->
 ```vera
 -- Option: unwrap with default
 option_unwrap_or(Some(42), 0)           -- returns 42
@@ -799,6 +810,7 @@ These are generic functions that follow the `domain_verb` naming convention. The
 
 ### Array operations
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Array built-in examples, bare calls" -->
 ```vera
 array_length(@Array<Int>.0)             -- returns Nat (the array length, flows to either Nat or Int positions)
 array_append(@Array<Int>.0, @Int.0)     -- returns Array<Int> (new array with element appended)
@@ -829,6 +841,7 @@ array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) 
 
 `Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`). Values can be any type. All operations are pure — insert and remove return new maps.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Map built-in examples, bare calls" -->
 ```vera
 map_insert(map_new(), "hello", 42)                  -- returns Map<String, Nat>
 map_insert(@Map<String, Nat>.0, "world", 7)         -- returns Map<String, Nat> (new map with entry added)
@@ -846,6 +859,7 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 `Set<T>` is an unordered collection of unique elements. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`). All operations are pure — add and remove return new sets.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Set built-in examples, bare calls" -->
 ```vera
 set_add(set_add(set_new(), "hello"), "world")       -- returns Set<String>
 set_contains(@Set<String>.0, "hello")               -- returns Bool (true)
@@ -860,6 +874,7 @@ set_to_array(@Set<String>.0)                        -- returns Array<String>
 
 `Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. It is an opaque type (i32 handle) backed by the runtime's decimal implementation. All operations are pure.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Decimal built-in examples, bare calls" -->
 ```vera
 decimal_from_int(42)                                -- returns Decimal (exact conversion)
 decimal_from_float(3.14)                            -- returns Decimal (via str conversion)
@@ -883,6 +898,7 @@ decimal_to_float(@Decimal.0)                        -- returns Float64 (potentia
 
 The `Json` type has six constructors: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)`. It is provided by the standard prelude — no `data` declaration needed.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="JSON parse/stringify/get examples, bare calls" -->
 ```vera
 json_parse("{\"name\":\"Vera\"}")               -- returns Result<Json, String>
 json_stringify(@Json.0)                          -- returns String (JSON text)
@@ -896,6 +912,7 @@ json_type(@Json.0)                               -- returns String ("null"/"bool
 
 Pattern match on `Json` constructors to extract values:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="JSON match expression example, bare expression" -->
 ```vera
 match json_parse("{\"x\":42}") {
   Err(@String) -> Err(@String.0),
@@ -913,6 +930,7 @@ match json_parse("{\"x\":42}") {
 
 For the common case of "unwrap `Option<Json>` and match on a specific constructor", use the typed accessors instead of the two-level match above:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="JSON typed accessor examples (#366), bare calls" -->
 ```vera
 -- Layer 1: Json -> Option<T>.  Some when the constructor matches.
 json_as_string(@Json.0)   -- Option<String>
@@ -932,6 +950,7 @@ json_get_array(@Json.0, "tags")    -- Option<Array<Json>>
 
 The Layer-2 accessors return `None` both when the field is missing AND when the field is present but of the wrong type — exactly what 90% of real API-consuming code wants. The example above collapses to:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="JSON Layer-2 compound accessor example, bare match" -->
 ```vera
 match json_parse("{\"x\":42}") {
   Err(@String) -> Err(@String.0),
@@ -944,6 +963,7 @@ match json_parse("{\"x\":42}") {
 
 ### String operations
 
+<!-- vera:skip-parse category="FRAGMENT" reason="String built-in examples, bare calls" -->
 ```vera
 string_length(@String.0)                -- returns Nat
 string_concat(@String.0, @String.1)     -- returns String
@@ -988,6 +1008,7 @@ string_strip(@String.0)                 -- returns String (trim whitespace)
 
 #### String interpolation
 
+<!-- vera:skip-parse category="FRAGMENT" reason="String interpolation examples, bare expressions" -->
 ```vera
 "hello \(@String.0)"               -- embeds a String value
 "x = \(@Int.0)"                    -- auto-converts Int to String
@@ -1000,6 +1021,7 @@ Expressions inside `\(...)` are auto-converted to String for types: Int, Nat, Bo
 
 #### String search
 
+<!-- vera:skip-parse category="FRAGMENT" reason="String search built-in examples, bare calls" -->
 ```vera
 string_contains(@String.0, @String.1)  -- returns Bool (substring test)
 string_starts_with(@String.0, @String.1) -- returns Bool (prefix test)
@@ -1011,6 +1033,7 @@ string_index_of(@String.0, @String.1)    -- returns Option<Nat> (first occurrenc
 
 #### String transformation
 
+<!-- vera:skip-parse category="FRAGMENT" reason="String transformation built-in examples, bare calls" -->
 ```vera
 string_upper(@String.0)                         -- returns String (ASCII uppercase)
 string_lower(@String.0)                         -- returns String (ASCII lowercase)
@@ -1023,6 +1046,7 @@ string_join(@Array<String>.0, @String.0)        -- returns String (join with sep
 
 #### String utilities and character classification
 
+<!-- vera:skip-parse category="FRAGMENT" reason="String utility / classifier signatures (#470, #471), bare calls" -->
 ```vera
 -- Splits (bridge to the array combinators)
 string_chars(@String.0)                            -- returns Array<String> (one byte each)
@@ -1059,6 +1083,7 @@ String functions use the heap allocator (`$alloc`). Memory is managed automatica
 
 ### Markdown operations
 
+<!-- vera:skip-parse category="FRAGMENT" reason="md_parse / md_render signatures, bare calls" -->
 ```vera
 md_parse(@String.0)                     -- returns Result<MdBlock, String>
 md_render(@MdBlock.0)                   -- returns String
@@ -1095,6 +1120,7 @@ All Markdown functions are pure and available without imports. Pattern match on 
 
 `HtmlNode` is a built-in ADT for parsing and querying HTML documents. Parse HTML strings, query elements with CSS selectors, and extract text content. All operations are pure.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="HTML built-in examples (html_parse/html_query/etc.), bare calls" -->
 ```vera
 html_parse(@String.0)                    -- returns Result<HtmlNode, String> (parse HTML)
 html_to_string(@HtmlNode.0)             -- returns String (serialize to HTML)
@@ -1111,6 +1137,7 @@ html_attr(@HtmlNode.0, @String.0)       -- returns Option<String> (get attribute
 - `HtmlText(String)` — text content
 - `HtmlComment(String)` — HTML comment
 
+<!-- vera:skip-parse category="FRAGMENT" reason="HTML constructor match expression, bare expression" -->
 ```vera
 let @Result<HtmlNode, String> = html_parse("<div><a href=\"url\">link</a></div>");
 match @Result<HtmlNode, String>.0 {
@@ -1126,6 +1153,7 @@ All HTML functions are pure and available without imports. Pattern match on `Htm
 
 ### Regular expressions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Regex built-in examples, bare calls" -->
 ```vera
 regex_match(@String.0, @String.1)                -- returns Result<Bool, String>
 regex_find(@String.0, @String.1)                 -- returns Result<Option<String>, String>
@@ -1137,6 +1165,7 @@ All four regex functions take the input string as the first argument and the reg
 
 `regex_match` tests whether the pattern matches anywhere in the input (substring match, not full-string). `regex_find` returns the first matching substring wrapped in `Option`. `regex_find_all` returns all non-overlapping matches as an `Array<String>` — always returns full match strings (group 0), even when the pattern contains capture groups. `regex_replace` replaces only the **first** match.
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Regex Result matching example, bare expression" -->
 ```vera
 let @Result<Bool, String> = regex_match("hello123", "\\d+");
 match @Result<Bool, String>.0 {
@@ -1149,6 +1178,7 @@ All regex functions are pure and implemented as host imports (Python `re` / Java
 
 ### Numeric operations
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Numeric built-in examples, bare calls" -->
 ```vera
 abs(@Int.0)                         -- returns Nat (absolute value)
 min(@Int.0, @Int.1)                 -- returns Int (smaller of two)
@@ -1164,6 +1194,7 @@ pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 
 ### Logarithmic, trigonometric, and numeric utility functions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Math built-in examples (log/trig/constants/clamp), bare calls" -->
 ```vera
 log(@Float64.0)                     -- natural logarithm (base e)
 log2(@Float64.0)                    -- base-2 logarithm
@@ -1186,6 +1217,7 @@ All log and trig functions follow IEEE 754 semantics: `NaN` for out-of-domain in
 
 ### Type conversions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Type conversions, bare calls" -->
 ```vera
 int_to_float(@Int.0)                -- returns Float64 (int to float)
 float_to_int(@Float64.0)           -- returns Int (truncation toward zero)
@@ -1201,6 +1233,7 @@ Vera has no implicit numeric conversions — use these functions to convert betw
 
 ### Float64 predicates
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Float64 predicate and constant examples, bare calls" -->
 ```vera
 float_is_nan(@Float64.0)           -- returns Bool (true if NaN)
 float_is_infinite(@Float64.0)      -- returns Bool (true if ±infinity)
@@ -1230,6 +1263,7 @@ private fn greet(@String -> @String)
 
 Conditions that must hold when the function is called:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Requires clause example, not full function" -->
 ```vera
 private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -1239,6 +1273,7 @@ private fn safe_divide(@Int, @Int -> @Int)
 
 Conditions guaranteed when the function returns. Use `@T.result` to refer to the return value:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Ensures clause example, not full function" -->
 ```vera
   ensures(@Int.result == @Int.0 / @Int.1)
 ```
@@ -1269,6 +1304,7 @@ For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
 **Start with scaffolding, then strengthen.** A function with placeholder contracts type-checks
 and compiles:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Contracts scaffolding template" -->
 ```vera
 requires(true) ensures(true)
 ```
@@ -1289,6 +1325,7 @@ Fill in real contracts *after* the body type-checks cleanly. Strengthen in this 
 
 ### Quantified expressions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Quantified expression examples, bare calls" -->
 ```vera
 -- For all indices in [0, bound):
 forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
@@ -1307,6 +1344,7 @@ Vera is pure by default. All side effects must be declared.
 
 ### Declaring effects on functions
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Effect declarations list" -->
 ```vera
 effects(pure)                    -- no effects
 effects(<IO>)                    -- performs IO
@@ -1440,6 +1478,7 @@ The handler catches the exception and returns a fallback value. The `throw` hand
 
 The `Async` effect enables asynchronous computation with `Future<T>`:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Async effect row declarations, bare clauses" -->
 ```vera
 effects(<Async>)                 -- async computation
 effects(<IO, Async>)             -- async with IO
@@ -1503,6 +1542,7 @@ The `Http` effect enables network I/O. It is built-in — no `effect Http { ... 
 | `Http.get` | `String -> Result<String, String>` | HTTP GET request |
 | `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON; sends `Content-Type: application/json`) |
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Http effect declarations list" -->
 ```vera
 effects(<Http>)                  -- network access
 effects(<Http, IO>)              -- network + IO
@@ -1534,6 +1574,7 @@ The `Inference` effect makes LLM calls explicit in the type system. It is built-
 |-----------|-----------|-------------|
 | `Inference.complete` | `String -> Result<String, String>` | Send a prompt, return `Ok(completion)` or `Err(message)` |
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Inference effect declarations list" -->
 ```vera
 effects(<Inference>)             -- LLM access
 effects(<Inference, IO>)         -- LLM + console output
@@ -1626,6 +1667,7 @@ private fn run_counter(@Unit -> @Int)
 ```
 
 Handler syntax:
+<!-- vera:skip-parse category="FRAGMENT" reason="Handler with-clause pseudocode, bare expression" -->
 ```vera
 handle[EffectName<TypeArgs>](@StateType = initial_value) {
   operation(@ParamType) -> { handler_body },
@@ -1638,6 +1680,7 @@ handle[EffectName<TypeArgs>](@StateType = initial_value) {
 
 Use `resume(value)` in a handler clause to continue the handled computation with the given return value. Optionally update handler state with a `with` clause:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Handler with-clause, bare put arm expression" -->
 ```vera
 put(@Int) -> { resume(()) } with @Int = @Int.0
 ```
@@ -1648,6 +1691,7 @@ The `with @T = expr` clause updates the handler's state when resuming. The type 
 
 When two effects have operations with the same name, qualify the call:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Qualified effect calls (State.put, Logger.put)" -->
 ```vera
 State.put(42);
 Logger.put("message");
@@ -1852,6 +1896,7 @@ The full set of escape sequences Vera's lexer accepts:
 
 `\v` / `\f` / `\x..` / `\a` / `\b` are **not** recognised — Vera's rule is "one canonical form per value". For ASCII control bytes outside the simple-escape set (e.g. ESC 0x1B, VT 0x0B, FF 0x0C), either use the unicode escape (`"\u{1B}"`, `"\u{0B}"`, `"\u{0C}"`) or call `string_from_char_code(N)` at runtime:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="ANSI cursor-home via string_from_char_code (#513)" -->
 ```vera
 -- ANSI cursor-home sequence (ESC [ H):
 let @String = string_concat(string_from_char_code(27), "[H");
@@ -1865,6 +1910,7 @@ See: spec Chapter 8 for the full module system specification.
 
 ## Comments
 
+<!-- vera:skip-parse category="FRAGMENT" reason="Comment syntax example" -->
 ```vera
 -- line comment
 
@@ -1944,6 +1990,7 @@ where {
 ### Missing contract block
 
 WRONG:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: missing contracts" -->
 ```vera
 private fn add(@Int, @Int -> @Int) {
   @Int.0 + @Int.1
@@ -1964,6 +2011,7 @@ private fn add(@Int, @Int -> @Int)
 ### Missing effects clause
 
 WRONG:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: missing effects clause (with contracts)" -->
 ```vera
 private fn add(@Int, @Int -> @Int)
   requires(true)
@@ -2011,11 +2059,13 @@ private fn add(@Int, @Int -> @Int)
 ### Missing index on slot reference
 
 WRONG:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: bare @Int + @Int without indices" -->
 ```vera
 @Int + @Int
 ```
 
 CORRECT:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct: indexed slot arithmetic" -->
 ```vera
 @Int.0 + @Int.1
 ```
@@ -2106,6 +2156,7 @@ private fn f(@Int -> @Int)
 ### Non-exhaustive match
 
 WRONG:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: non-exhaustive match (missing arm)" -->
 ```vera
 match @Option<Int>.0 {
   Some(@Int) -> @Int.0
@@ -2113,6 +2164,7 @@ match @Option<Int>.0 {
 ```
 
 CORRECT:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct: match with Option arms (bare)" -->
 ```vera
 match @Option<Int>.0 {
   Some(@Int) -> @Int.0,
@@ -2123,11 +2175,13 @@ match @Option<Int>.0 {
 ### Missing braces on if/else branches
 
 WRONG:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: missing braces on if/else branches" -->
 ```vera
 if @Bool.0 then 1 else 0
 ```
 
 CORRECT:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct: if/else with braces (common mistakes)" -->
 ```vera
 if @Bool.0 then {
   1
@@ -2139,11 +2193,13 @@ if @Bool.0 then {
 ### Trying to use import aliasing
 
 WRONG — Vera does not support renaming imports:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: import aliasing not supported" -->
 ```vera
 import vera.math(magnitude as math_magnitude);
 ```
 
 CORRECT — use selective import and qualified calls for readability:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct: import syntax example" -->
 ```vera
 import vera.math(magnitude);
 vera.math::magnitude(-5)
@@ -2154,6 +2210,7 @@ Note: if two imported modules define the same name, the compiler reports a colli
 ### Trying to use wildcard exclusion
 
 WRONG — Vera does not support `hiding` syntax:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: import hiding not supported" -->
 ```vera
 import vera.math hiding(larger);
 ```
@@ -2173,6 +2230,7 @@ string"""
 ```
 
 CORRECT — use escape sequences:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct escape sequence examples, bare strings" -->
 ```vera
 "path\\to\\file"
 "line one\nline two"
@@ -2181,12 +2239,14 @@ CORRECT — use escape sequences:
 ### Standalone `map_new()` / `set_new()` without type context
 
 WRONG — type inference cannot resolve the key/value or element types:
+<!-- vera:skip-parse category="FRAGMENT" reason="Wrong: standalone map_new/set_new without type context" -->
 ```vera
 let @Map = map_new();
 let @Set = set_new();
 ```
 
 CORRECT — nest inside an operation so types can be inferred, or provide explicit type annotation:
+<!-- vera:skip-parse category="FRAGMENT" reason="Correct: map_new/set_new with type context" -->
 ```vera
 let @Map<String, Int> = map_new();
 map_insert(map_new(), "key", 42)
