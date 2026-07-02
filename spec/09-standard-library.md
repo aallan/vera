@@ -484,7 +484,7 @@ private fn fetch_both(@String, @String -> @Tuple<Result<String, String>, Result<
 }
 ```
 
-> **Note:** This async composition example demonstrates future syntax. True concurrent execution requires the `<Async>` effect and WASI 0.3 ([#237](https://github.com/aallan/vera/issues/237)). Currently, `async(expr)` evaluates eagerly (sequentially).
+> **Note:** As of #841 the reference implementation executes this shape concurrently: `async(Http.get(url))` submits the request to a host worker thread at the `async(...)` point, and `await` blocks for the response. See §9.5.4 for exactly which shapes are concurrent.
 
 ### 9.5.4 Async
 
@@ -516,9 +516,11 @@ Key design points:
 - `await(@Future<T>.n)` unwraps the future, yielding the result of type `T`.
 - The `<Async>` effect must be declared, making concurrency explicit and trackable.
 - `Async` is a marker effect with no operations — `async` and `await` are built-in generic functions that require `effects(<Async>)`.
-- `Future<T>` is WASM-transparent: it has the same runtime representation as `T`, with no overhead.
-- The reference implementation evaluates `async(expr)` eagerly (sequential execution). True concurrent scheduling will be available when WASI 0.3 support is added ([#237](https://github.com/aallan/vera/issues/237)).
-- Custom scheduling strategies (thread pool, event loop) can be provided via `handle[Async]` handlers (see [#270](https://github.com/aallan/vera/issues/270)).
+- `Future<T>` is WASM-transparent: an eagerly-evaluated future has the same runtime representation as `T`, with no overhead.  (A concurrently-evaluated future is an opaque pending handle with the same WASM value type; `await` resolves it.)
+- **Concurrency (#841):** an implementation MAY evaluate `async(e)` concurrently when `e`'s effect row is commutative — value semantics are unchanged, and all other effects retain program order.  The reference implementation evaluates `async(Http.get(...))` and `async(Http.post(...))` (with call-free argument expressions) concurrently: the request is issued on a host worker thread at the `async(...)` point (so request *issuance* keeps program order), and `await` blocks for the response.  Every other shape evaluates eagerly (sequential execution); the checker warns (`W002`) when the argument's effect row is not within the commutative whitelist (`{Http, Async}`), documenting exactly where eager evaluation is semantically forced rather than merely unoptimized.
+- The concurrent lowering keys the `await` handle-check on the literal type `Future<Result<String, String>>`; an alias for that type does not participate (an alias-typed slot's future still resolves, loudly, via the wrapper tag — never silently).
+- The browser runtime evaluates all futures eagerly — spec-conformant under the MAY above, with identical values; only request timing differs (documented in §12).
+- True multi-await suspension and custom scheduling strategies (thread pool, event loop) via `handle[Async]` handlers remain future work ([#406](https://github.com/aallan/vera/issues/406), [#270](https://github.com/aallan/vera/issues/270)).
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.
 
 ### 9.5.5 Inference

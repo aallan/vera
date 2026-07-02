@@ -109,6 +109,8 @@ public fn hello(-> @Unit)
 
 Effect operations are resolved by the effect declared in the function's effect row. If `get` appears in a function with `effects(<State<Int>>)`, it refers to the `get` operation of `State<Int>`.
 
+**Effect ordering.** Effect operations execute in program order.  The one sanctioned relaxation is `async(e)` (§9.5.4): when `e`'s effect row is commutative — its operations' completions cannot be observably reordered against any other effect in the program — an implementation MAY overlap `e`'s execution with subsequent computation, resolving at the corresponding `await`.  Effects outside that whitelist retain strict program order; the checker warns (`W002`) where this forces eager evaluation, so verified sequential semantics remain literally true for every Tier-1 claim.
+
 ### 7.4.1 Ambiguous Operations
 
 If two effects in scope define an operation with the same name, the call is ambiguous and MUST be qualified:

@@ -629,8 +629,9 @@ The browser runtime provides browser-appropriate implementations of IO operation
 | `IO.sleep` | Busy-waits on `performance.now()` (main-thread blocking) | `time.sleep(ms / 1000.0)` |
 | `IO.time` | `Date.now()` as BigInt | `int(time.time() * 1000)` |
 | `IO.stderr` | Appends to internal buffer, flushed via `getStderr()` | Writes to `sys.stderr` or capture buffer |
+| `async(Http.get/post(...))` (#841) | Eager: the request fires synchronously (XHR) at the `async(...)` point; `await` returns the buffered outcome | Concurrent: the request runs on a host worker thread; `await` blocks for it |
 
-All non-IO operations (State, contracts, Markdown) produce identical results in both runtimes. This is enforced by mandatory parity tests.
+All non-IO operations (State, contracts, Markdown) produce identical results in both runtimes; for fused async the *values* are identical and only request timing differs (spec-conformant — §9.5.4 says an implementation MAY evaluate concurrently). This is enforced by mandatory parity tests.
 
 ### 12.9.4 Memory Protocol
 

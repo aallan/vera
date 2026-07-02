@@ -145,6 +145,14 @@ class AssemblyMixin:
         if self._json_ops_used or self._html_ops_used:
             self._needs_wrap_table = True
 
+        # #841: fused-async Future wrappers register with the wrap table
+        # so Phase 2c reclaims an unawaited future's host store entry.
+        # Await-only modules (possible when every fused async lives in
+        # another compilation) never allocate wrappers, so they don't
+        # flip the flag.
+        if self._async_ops_used & {"async_http_get", "async_http_post"}:
+            self._needs_wrap_table = True
+
         # #573: emit ``host_decref_handle`` import after the
         # gating blocks above have all run.  Phase 2c of
         # ``$gc_collect`` calls this for each unmarked wrapper.
@@ -219,6 +227,31 @@ class AssemblyMixin:
                 "(func $vera.http_post (param i32 i32 i32 i32) (result i32)))"
             )
         if self._http_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
+        # #841: fused-async host imports.
+        #   async_http_get(url_ptr, url_len) -> i32 raw Future handle
+        #   async_http_post(url_ptr, url_len, body_ptr, body_len) -> i32
+        #   async_await(handle) -> i32 Result ptr (blocks on the guest
+        #   thread; the host builds the Result ADT via the exported alloc)
+        if "async_http_get" in self._async_ops_used:
+            parts.append(
+                '  (import "vera" "async_http_get" '
+                "(func $vera.async_http_get (param i32 i32) (result i32)))"
+            )
+        if "async_http_post" in self._async_ops_used:
+            parts.append(
+                '  (import "vera" "async_http_post" '
+                "(func $vera.async_http_post "
+                "(param i32 i32 i32 i32) (result i32)))"
+            )
+        if "async_await" in self._async_ops_used:
+            parts.append(
+                '  (import "vera" "async_await" '
+                "(func $vera.async_await (param i32) (result i32)))"
+            )
+        if self._async_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
 
@@ -467,6 +500,7 @@ class AssemblyMixin:
             or self._json_ops_used
             or self._html_ops_used
             or self._http_ops_used
+            or self._async_ops_used
             or self._inference_ops_used
             or self._needs_alloc
         ):

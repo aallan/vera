@@ -2167,25 +2167,27 @@ class TestNetworkResponseUtf8Hygiene591:
         return src[idx:idx + span]
 
     def test_http_get_uses_errors_replace(self) -> None:
-        """``host_http_get`` decodes the response body with
-        ``errors="replace"`` so a remote server's invalid UTF-8
+        """``fetch_get`` (the pure half shared by ``host_http_get``
+        and the #841 fused-async worker) decodes the response body
+        with ``errors="replace"`` so a remote server's invalid UTF-8
         produces U+FFFD substitutions in the OK-branch string rather
         than a ``UnicodeDecodeError`` message leaking into the
         Err-branch string.
         """
         body = self._file_body_after(
-            "vera/runtime/http.py", "def host_http_get(", span=2500,
+            "vera/runtime/http.py", "def fetch_get(", span=2500,
         )
         assert 'resp.read().decode("utf-8", errors="replace")' in body, (
-            "host_http_get must decode the response body with "
+            "fetch_get must decode the response body with "
             "errors='replace' so non-UTF-8 bytes from a misconfigured "
             "remote server don't surface as Python error noise in "
             "the Result::Err string (#591)."
         )
 
     def test_http_post_uses_errors_replace(self) -> None:
-        """``host_http_post`` decodes the response body with
-        ``errors="replace"`` for the same reason as ``host_http_get``.
+        """``fetch_post`` (the pure half shared by ``host_http_post``
+        and the #841 fused-async worker) decodes the response body
+        with ``errors="replace"`` for the same reason as ``fetch_get``.
 
         Asserts on the **contiguous decode expression** rather than
         the bare substring ``errors="replace"`` (which also appears
@@ -2195,7 +2197,7 @@ class TestNetworkResponseUtf8Hygiene591:
         CodeRabbit-flagged pre-fix vulnerability on PR #649.
         """
         body = self._file_body_after(
-            "vera/runtime/http.py", "def host_http_post(", span=2500,
+            "vera/runtime/http.py", "def fetch_post(", span=2500,
         )
         # Use regex with DOTALL-like matching so the multi-line
         # form (decode call wrapped across two source lines) still
@@ -2209,7 +2211,7 @@ class TestNetworkResponseUtf8Hygiene591:
             body,
         )
         assert m, (
-            "host_http_post must decode the response body with "
+            "fetch_post must decode the response body with "
             "errors='replace' as part of the same resp.read().decode(...) "
             "expression — a bare `errors=\"replace\"` substring in a "
             "comment does not satisfy this (#591)."
@@ -2453,6 +2455,59 @@ public fn main(@Unit -> @Unit)
             "during sleep must propagate to the exit-130 handler without "
             "letting the program continue."
         )
+
+    def test_async_await_keyboard_interrupt_end_to_end(self) -> None:
+        """#841 sibling for the third blocking host import: a Ctrl-C
+        arriving while ``vera.async_await`` blocks on
+        ``Future.result()`` must ride the wasmtime>=45 BaseException
+        trampoline to the centralized ``execute()`` handler and exit
+        cleanly with code 130 — with the executor torn down by the
+        invocation ``finally`` (no hang waiting on worker threads,
+        pinned here by the test completing at all)."""
+        from unittest.mock import patch
+
+        from vera.codegen import compile as compile_program, execute
+        from vera.parser import parse_to_ast
+
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get("ftp://ki.invalid/x"));
+  IO.print("before await");
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  IO.print("after await")
+}
+"""
+        program = parse_to_ast(source)
+        result = compile_program(program, source=source)
+        assert result.ok, (
+            f"compile failed: "
+            f"{[d.description for d in result.diagnostics]}"
+        )
+
+        # Patch Future.result to raise KeyboardInterrupt — simulates
+        # Ctrl-C the moment the await blocks (the production
+        # host_async_await closure deliberately does not catch it).
+        from concurrent.futures import Future as _Future
+
+        with patch.object(
+            _Future, "result", side_effect=KeyboardInterrupt,
+        ):
+            try:
+                exec_result = execute(result)
+            except KeyboardInterrupt:  # pragma: no cover
+                raise AssertionError(
+                    "KeyboardInterrupt escaped execute() — a Ctrl-C "
+                    "during a blocked await must map to exit_code=130 "
+                    "(#841, same contract as IO.sleep #595/#599)."
+                ) from None
+
+        assert exec_result.exit_code == 130, (
+            f"expected exit_code=130 (SIGINT), got {exec_result.exit_code}"
+        )
+        assert "before await" in exec_result.stdout
+        assert "after await" not in exec_result.stdout
 
     def test_host_read_char_keyboard_interrupt_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch,

@@ -101,7 +101,8 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_containers.py` | 627 | | Map, Set, Decimal (opaque-handle types) | |
 | ` ├ calls_encoding.py` | 2,047 | | Base64 and URL encoding/decoding/parsing | |
 | ` ├ calls_handlers.py` | 379 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
-| ` ├ calls_markup.py` | 315 | | JSON, HTML, Markdown, Regex, async/await (host-import wrappers) | |
+| ` ├ calls_markup.py` | 394 | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
+| ` ├ async_fusion.py` | 177 | | #841 fusion predicates — the single source of truth shared by the `_scan_io_ops` import pre-scan and the `WasmContext` async/await lowering | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
 | ` ├ calls_math.py` | 457 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
 | ` ├ calls_parsing.py` | 970 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
 | ` ├ calls_strings.py` | 3,890 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
@@ -133,11 +134,11 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
 | `  assembly.py` | 856 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 310 | | Compilability checks, state handler scanning | |
-| `runtime/` | 3,540 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
+| `runtime/` | 3,840 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
 | `  traps.py` | 475 | | `WasmTrapError`, `_classify_trap`, source-backtrace resolution | |
 | `  heap.py` | 1,021 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
 | `  collections.py` | 16 | | `_VAL_WASM_TYPES` value-type dispatch table (shared by Map/Set) | |
-| `  <effect>.py` ×12 | 2,006 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, inference, state | |
+| `  <effect>.py` ×13 | 2,144 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state | |
 | `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |

@@ -445,6 +445,32 @@ public fn main(-> @Unit)
         # Just verify the Node runtime doesn't crash.
         assert node["error"] is None
 
+    def test_fused_async_await_err_path(self, tmp_path: Path) -> None:
+        """#841: the fused async/await imports (`async_http_get` /
+        `async_await`) are defined by the browser runtime and the eager
+        buffered-outcome path works end-to-end.  Node has no
+        XMLHttpRequest, so the fetch buffers the "Unsupported runtime"
+        Err and await surfaces it — value-level: the program takes the
+        Err arm (the native runtime's Err *text* differs by design;
+        browser Http is documented-divergent)."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get("http://example.invalid/x"));
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> IO.print("OK"),
+    Err(@String) -> IO.print("ERR")
+  };
+  ()
+}
+"""
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["error"] is None
+        assert node["stdout"] == "ERR"
+
     def test_random_int_in_range(self, tmp_path: Path) -> None:
         """Random.random_int(low, high) is in inclusive range under Math.random.
 

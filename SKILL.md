@@ -1452,7 +1452,23 @@ private fn compute(@Int, @Int -> @Int)
 }
 ```
 
-`async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it. In the reference implementation, evaluation is eager/sequential — `Future<T>` has the same WASM representation as `T` with no runtime overhead.
+`async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it.
+
+**Concurrency (#841):** `async(Http.get(url))` and `async(Http.post(url, body))` — with call-free argument expressions — run **concurrently** in the native runtime: the request is issued on a worker thread at the `async(...)` point, and `await` blocks for the response. Fire several, then await them in any order to overlap network latency:
+
+```vera
+public fn fan_out(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get(@String.1));
+  let @Future<Result<String, String>> = async(Http.get(@String.0));
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  true
+}
+```
+
+Every other `async` shape evaluates eagerly (sequential) — `Future<T>` is then just `T`'s representation with no overhead. The checker warns (`W002`) when the argument's effect row falls outside the commutative whitelist `{Http, Async}` (e.g. an `IO`-effectful call), marking where eager evaluation is semantically required. The browser runtime is always eager (identical values, request fires at the `async` point).
 
 ### Http effect
 

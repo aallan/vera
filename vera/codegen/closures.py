@@ -244,6 +244,9 @@ class ClosureLiftingMixin:
         # not just the WAT type — same propagation as the per-function
         # ctx in `functions.py`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #841: Future<Result<String, String>>-returning fn names, so an
+        # await inside a closure body gets the fused-handle check too.
+        ctx.set_future_ret_fns(self._future_ret_fns)
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier, inside closure bodies too.
         ctx.set_expr_semantic_types(self._expr_semantic_types)
@@ -455,6 +458,10 @@ class ClosureLiftingMixin:
         self._decimal_imports.update(ctx._decimal_imports)
         self._json_ops_used.update(ctx._json_ops_used)
         self._html_ops_used.update(ctx._html_ops_used)
+        # #841: fused async/await inside a lifted closure body registers
+        # its host imports on the closure ctx (the _scan_io_ops AnonFn
+        # branch also covers these — same belt-and-braces as #808).
+        self._async_ops_used.update(ctx._async_ops_used)
         # #808: a #798 integer-overflow guard inside a lifted closure body sets
         # this on the closure ctx; OR it into the module ``self`` so
         # ``_assemble_module`` emits the ``vera.overflow_trap`` import (same

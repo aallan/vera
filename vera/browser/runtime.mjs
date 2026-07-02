@@ -1260,6 +1260,10 @@ function buildImportObject(module) {
   imports.vera.host_decref_handle = (kind, handle) => {
     if (kind === 3) {
       decimalStore.delete(handle);
+    } else if (kind === 4) {
+      // #841: fused-async Future whose wrapper became unreachable
+      // without being awaited — evict the buffered outcome.
+      futureStore.delete(handle);
     }
     // Map (1) / Set (2) are bucket-as-truth — no store entry to evict.
     // Unknown kinds: silent no-op.
@@ -2160,6 +2164,77 @@ function buildImportObject(module) {
       } catch (e) {
         return allocResultErrString(e.message || 'HTTP request failed');
       }
+    };
+  }
+
+  // ── Fused-async host imports (#841) ────────────────────────────
+  // The browser runtime stays EAGER (spec-conformant: §9.5.4 says an
+  // implementation MAY evaluate concurrently; value semantics are
+  // identical either way).  The request fires synchronously at the
+  // async(...) point — preserving program order for request issuance,
+  // exactly like the eager identity lowering — but only the raw
+  // (isOk, payload) strings are buffered JS-side; the Result ADT is
+  // built at await time on demand.  Buffering the strings rather than
+  // an eagerly-built ADT pointer matters for GC: a guest heap pointer
+  // held only in a JS map is invisible to the conservative scan and
+  // would be swept (#570/#692 class); JS strings live host-side.
+  const futureStore = new Map();
+  let nextFutureHandle = 1;
+
+  const syncFetch = (method, url, body) => {
+    try {
+      if (typeof XMLHttpRequest === "undefined") {
+        return [false,
+          "Unsupported runtime: synchronous HTTP requires XMLHttpRequest (browser only)"];
+      }
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, url, false);
+      if (method === 'POST') {
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.send(body);
+      } else {
+        xhr.send();
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        return [true, xhr.responseText];
+      }
+      return [false, `HTTP ${xhr.status}: ${xhr.statusText}`];
+    } catch (e) {
+      return [false, e.message || 'HTTP request failed'];
+    }
+  };
+
+  if (needed.has("async_http_get")) {
+    imports.vera.async_http_get = (urlPtr, urlLen) => {
+      const url = readString(urlPtr, urlLen);
+      const handle = nextFutureHandle++;
+      futureStore.set(handle, syncFetch('GET', url));
+      return handle;
+    };
+  }
+
+  if (needed.has("async_http_post")) {
+    imports.vera.async_http_post = (urlPtr, urlLen, bodyPtr, bodyLen) => {
+      const url = readString(urlPtr, urlLen);
+      const body = readString(bodyPtr, bodyLen);
+      const handle = nextFutureHandle++;
+      futureStore.set(handle, syncFetch('POST', url, body));
+      return handle;
+    };
+  }
+
+  if (needed.has("async_await")) {
+    imports.vera.async_await = (handle) => {
+      const outcome = futureStore.get(handle);
+      if (outcome === undefined) {
+        // Mirrors the native defensive branch: a live wrapper implies
+        // a live store entry; surface a value-level Err, not a crash.
+        return allocResultErrString(
+          "await: future was already reclaimed (#841 invariant violation — please report)");
+      }
+      const [isOk, payload] = outcome;
+      return isOk ? allocResultOkString(payload)
+                  : allocResultErrString(payload);
     };
   }
 
