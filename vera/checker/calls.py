@@ -16,10 +16,12 @@ from vera.environment import (
 from vera.types import (
     AdtType,
     ConcreteEffectRow,
+    FunctionType,
     PureEffectRow,
     Type,
     TypeVar,
     UnknownType,
+    base_type,
     contains_typevar,
     is_effect_subtype,
     is_subtype,
@@ -43,6 +45,16 @@ class CallsMixin:
     def _check_call_with_args(self, name: str, args: tuple[ast.Expr, ...],
                               node: ast.Node) -> Type | None:
         """Check a call to function `name` with given arguments."""
+        # apply_fn is a checker special form (#854): it is variadic and
+        # effect-polymorphic — its arity, argument types, result type,
+        # and effect row all come from the applied value's fn type — so
+        # it cannot be a fixed-signature registry built-in.  Intercept
+        # before any lookup: codegen translates the name unconditionally
+        # to call_indirect (vera/wasm/calls.py), and E151 rejects user
+        # redefinitions, so this is the name's single canonical meaning.
+        if name == "apply_fn":
+            return self._check_apply_fn(args, node)
+
         # Look up function
         fn_info = self.env.lookup_function(name)
         if fn_info:
@@ -207,6 +219,171 @@ class CallsMixin:
                 )
 
         return return_type
+
+    def _check_apply_fn(self, args: tuple[ast.Expr, ...],
+                        node: ast.Node) -> Type | None:
+        """Check the apply_fn special form: apply_fn(f, a0, ..., an) (#854).
+
+        Types the call structurally against ``f``'s ``FunctionType`` —
+        mirroring :meth:`_check_fn_call_with_info` for a callee whose
+        "signature" is the applied value's fn type: arity (E201),
+        argument subtyping with bidirectional re-synthesis (E202), and
+        the fn type's effect row joining the caller's used effects and
+        being checked against the caller's declared row (E122 via
+        ``_effect_ops_used`` / E125 here), exactly as a named call with
+        that row would.  The call's result is ``f``'s return type.
+
+        A bare-``TypeVar`` first argument (a ``forall``-var-typed value
+        with no structural fn type) is unpicked here — the remaining
+        arguments are still synthesised for errors within them and the
+        call types as ``UnknownType`` (permissive, like other
+        unresolvable-generic sites).
+        """
+        if not args:
+            self._error(
+                node,
+                "apply_fn expects a function value as its first "
+                "argument, got no arguments.",
+                rationale="apply_fn applies a stored function value: its "
+                          "first argument is the function to apply and the "
+                          "remaining arguments are passed to it, so a bare "
+                          "apply_fn() has nothing to apply.",
+                fix="Pass a function value first, then its arguments, "
+                    "e.g. apply_fn(@IntToInt.0, 5).",
+                spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
+                error_code="E201",
+            )
+            return UnknownType()
+
+        fn_arg, rest = args[0], args[1:]
+        fn_ty_raw = self._synth_expr(fn_arg)
+
+        # Error recovery / unresolvable-generic first argument: synth
+        # the remaining arguments (to surface errors inside them) and
+        # give up on structural checking.
+        fn_ty = base_type(fn_ty_raw) if fn_ty_raw is not None else None
+        if fn_ty is None or isinstance(fn_ty, (UnknownType, TypeVar)):
+            for arg in rest:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        if not isinstance(fn_ty, FunctionType):
+            self._error(
+                fn_arg,
+                f"Argument 0 of 'apply_fn' has type "
+                f"{pretty_type(fn_ty_raw or fn_ty)}, expected a function "
+                f"value (a fn(...) type).",
+                rationale="apply_fn invokes a stored function value via "
+                          "call_indirect; a non-function first argument "
+                          "has no signature to call.",
+                fix="Pass a value of a fn type — a parameter or let "
+                    "binding declared with a fn(...) effects(...) type, "
+                    "e.g. apply_fn(@IntToInt.0, 5).",
+                spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
+                error_code="E202",
+            )
+            for arg in rest:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # Synth applied args against the fn type's formals — bidirectional
+        # where the formal is concrete, mirroring plain non-generic calls
+        # (this also records the #747 narrowing target for each argument).
+        arg_types: list[Type | None] = []
+        for i, arg in enumerate(rest):
+            exp: Type | None = None
+            if i < len(fn_ty.params):
+                pt = fn_ty.params[i]
+                if not contains_typevar(pt):
+                    exp = pt
+            arg_types.append(self._synth_expr(arg, expected=exp))
+
+        # Arity: every argument after the function value maps to one
+        # parameter of the applied fn type.
+        if len(rest) != len(fn_ty.params):
+            self._error(
+                node,
+                f"apply_fn: function value of type {pretty_type(fn_ty)} "
+                f"expects {len(fn_ty.params)} argument(s), "
+                f"got {len(rest)}.",
+                rationale="apply_fn passes every argument after the "
+                          "function value to it; the count must match the "
+                          "applied function type's parameters.",
+                fix=f"Call apply_fn with the function value plus exactly "
+                    f"{len(fn_ty.params)} argument(s) matching "
+                    f"{pretty_type(fn_ty)}.",
+                spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
+                error_code="E201",
+            )
+            return fn_ty.return_type
+
+        # Check each applied argument (same discipline as named calls:
+        # skip unresolved, re-synth for bidirectional coercion).
+        for i, (arg_ty, param_ty) in enumerate(zip(arg_types,
+                                                   fn_ty.params)):
+            if arg_ty is None or isinstance(arg_ty, UnknownType):
+                continue
+            if isinstance(param_ty, (TypeVar, UnknownType)):
+                continue
+            # Re-synth if arg still has unresolved TypeVars (bidirectional)
+            if contains_typevar(arg_ty) and not contains_typevar(param_ty):
+                arg_ty = self._synth_expr(rest[i], expected=param_ty)
+                if arg_ty is None or isinstance(arg_ty, UnknownType):
+                    continue
+                arg_types[i] = arg_ty
+            # Re-synth with expected type when subtype check would fail —
+            # enables bidirectional coercion (e.g. IntLit → Byte).
+            if (not is_subtype(arg_ty, param_ty)
+                    and not contains_typevar(param_ty)):
+                re = self._synth_expr(rest[i], expected=param_ty)
+                if re is not None and not isinstance(re, UnknownType):
+                    if is_subtype(re, param_ty):
+                        arg_ty = re
+                        arg_types[i] = re
+            if not is_subtype(arg_ty, param_ty):
+                self._error(
+                    rest[i],
+                    f"Argument {i + 1} of 'apply_fn' has type "
+                    f"{pretty_type(arg_ty)}, expected "
+                    f"{pretty_type(param_ty)}.",
+                    rationale="Each argument after the function value must "
+                              "be a subtype of the corresponding parameter "
+                              "of the applied function type.",
+                    fix=f"Pass a value of type {pretty_type(param_ty)}, "
+                        f"or convert the current value (e.g. "
+                        f"int_to_nat(...), int_to_float(...)) to "
+                        f"{pretty_type(param_ty)}.",
+                    spec_ref='Chapter 11, Section 11.10.5 "Closure Invocation (apply_fn)"',
+                    error_code="E202",
+                )
+
+        # The applied row joins the caller's used effects and must be
+        # permitted by the caller's declared row — exactly as a named
+        # call with this row (E122 via _effect_ops_used; E125 here).
+        if isinstance(fn_ty.effect, ConcreteEffectRow):
+            for ei in fn_ty.effect.effects:
+                self._effect_ops_used.add(ei.name)
+        if self.env.current_effect_row is not None:
+            if not is_effect_subtype(fn_ty.effect,
+                                     self.env.current_effect_row):
+                self._error(
+                    node,
+                    f"apply_fn: applied function value requires "
+                    f"{pretty_effect(fn_ty.effect)} but call site only "
+                    f"allows "
+                    f"{pretty_effect(self.env.current_effect_row)}.",
+                    rationale="Applying a function value performs its "
+                              "type's declared effects; the call site must "
+                              "permit all of them (subeffecting), exactly "
+                              "as for a named function call.",
+                    fix="Add the missing effects to the calling "
+                        "function's effects clause, or apply a function "
+                        "value whose type is pure.",
+                    spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
+                    error_code="E125",
+                )
+
+        return fn_ty.return_type
 
     # Effects whose operations are value-confluent — reordering their
     # completions cannot change any observable output — so async() may run

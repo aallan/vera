@@ -429,6 +429,7 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 | v0.0.193 | 2 Jul | `<HttpServer>`: total contract-checked handlers served over HTTP by `vera serve` with instance-per-request isolation ([#305](https://github.com/aallan/vera/issues/305)). |
 | v0.0.194 | 2 Jul | Experimental WASI Preview 2 target: `--target wasi-p2` emits a binary component that runs IO+Random programs under any stock wasip2 host ([#237](https://github.com/aallan/vera/issues/237)). |
 | v0.0.195 | 2 Jul | The `wasi:http` serve backend: `--world server` packages a verified `handle(Request -> Response)` program as an incoming-handler component that stock `wasmtime serve` runs unmodified (spec §13.7). |
+| v0.0.196 | 2 Jul | Post-sprint consolidation: prelude skip-warnings silenced with `<prelude>` attribution ([#851](https://github.com/aallan/vera/issues/851)), `apply_fn` typed as a checker special form (spurious E200 gone, misuse now check-time errors), and a docs/site/examples sweep surfacing HttpServer + WASI. |
 
 ---
 

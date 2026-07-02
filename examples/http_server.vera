@@ -7,6 +7,11 @@
 -- Run:   vera serve examples/http_server.vera
 -- Then:  curl -i http://127.0.0.1:8000/
 --        curl -i -X POST --data 'hello' http://127.0.0.1:8000/echo
+--
+-- Or, package the same handle(Request -> Response) as a wasi:http component
+-- and serve it under a stock host (v0.0.195):
+--   vera compile --target wasi-p2 --world server examples/http_server.vera
+--   wasmtime serve examples/http_server.wasm
 private fn status_of(@String -> @Int)
   requires(true)
   ensures(@Int.result == 200 || @Int.result == 404)

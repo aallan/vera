@@ -446,7 +446,7 @@ i32.load offset=0                      ;; load func_table_idx
 call_indirect (type $closure_sig_N)    ;; indirect call
 ```
 
-`apply_fn` is a compiler built-in, not a user-defined function. The checker issues a warning about it being unresolved, but the code generator recognizes it and emits the appropriate `call_indirect` sequence.
+`apply_fn` is a compiler built-in, not a user-defined function. The checker types it as a special form: the first argument must be function-typed, the remaining arguments are checked against that function type's parameters (E201/E202), the result is the function type's return type, and the applied function's effect row is checked against the caller's declared effects (E122/E125). The code generator recognizes it and emits the appropriate `call_indirect` sequence; redefining `apply_fn` is rejected like any built-in (E151).
 
 ## 11.11 Effect Handler Compilation
 

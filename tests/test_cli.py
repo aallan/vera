@@ -222,15 +222,35 @@ class TestCmdCheck:
         out = capsys.readouterr().out
         assert "OK:" in out
 
-    def test_warning_only_example(
-        self, capsys: pytest.CaptureFixture[str]
+    def test_warning_only_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """closures.vera produces warnings but no errors."""
-        rc = cmd_check(CLOSURES)
+        """A warnings-only program exits 0 with the warning on stderr.
+
+        Used closures.vera until #854 made its `apply_fn` call
+        warning-free; a genuinely-unresolved call keeps exercising the
+        warning path (E200 is a warning, not an error)."""
+        path = _bad_vera(tmp_path, """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ no_such_fn(1) }
+""")
+        rc = cmd_check(path)
         assert rc == 0
         captured = capsys.readouterr()
         assert "OK:" in captured.out
         assert "warning" in captured.err.lower()
+
+    def test_closures_example_clean(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """closures.vera checks with no warnings — its apply_fn call
+        drew a spurious E200 before #854."""
+        rc = cmd_check(CLOSURES)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "OK:" in captured.out
+        assert captured.err == ""
 
     def test_type_error(
         self,
@@ -271,10 +291,19 @@ class TestCmdCheck:
         assert data["diagnostics"] == []
 
     def test_json_with_warnings(
-        self, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Warnings-only file has ok: true with warnings in JSON."""
-        rc = cmd_check(CLOSURES, as_json=True)
+        """Warnings-only file has ok: true with warnings in JSON.
+
+        Used closures.vera until #854 made its `apply_fn` call
+        warning-free; a genuinely-unresolved call keeps exercising the
+        warnings channel (E200 is a warning, not an error)."""
+        path = _bad_vera(tmp_path, """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ no_such_fn(1) }
+""")
+        rc = cmd_check(path, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is True

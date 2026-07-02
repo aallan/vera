@@ -21,6 +21,16 @@ import re
 from vera import ast
 
 
+# #851 — synthetic origin filename for prelude-injected declarations.
+# Injected FnDecls carry spans that index into the concatenated prelude
+# source buffer (returned by :func:`inject_prelude`), NOT into the
+# user's file.  Diagnostics about prelude declarations must cite this
+# synthetic file and resolve source lines against that buffer, so a
+# prelude line number is never rendered against user source (#851's
+# misattribution defect).
+PRELUDE_FILE = "<prelude>"
+
+
 # =====================================================================
 # Prelude Vera source
 # =====================================================================
@@ -637,6 +647,47 @@ def _node_mentions(node: object, names: frozenset[str]) -> bool:
     return False
 
 
+def mentioned_fn_names(node: object, targets: frozenset[str]) -> set[str]:
+    """Collect which of ``targets`` appear as call targets in a subtree.
+
+    Recursively walks the AST node's dataclass fields (same traversal
+    as :func:`_node_mentions`) and records every ``FnCall`` /
+    ``QualifiedCall`` / ``ModuleCall`` whose callee name is in
+    ``targets``.  Used by codegen's #851 reachability pass to decide
+    which prelude-injected functions a program actually references —
+    named functions can only be referenced by calls in Vera (there is
+    no bare-name function-value syntax), so call targets are the
+    complete reference surface.  ``QualifiedCall`` / ``ModuleCall``
+    targets resolve to effect ops / module functions rather than
+    prelude combinators, but including them keeps the scan a safe
+    over-approximation (a false "referenced" keeps a warning; it never
+    hides one).
+    """
+    found: set[str] = set()
+    _collect_mentioned_fn_names(node, targets, found)
+    return found
+
+
+def _collect_mentioned_fn_names(
+    node: object, targets: frozenset[str], found: set[str],
+) -> None:
+    """Recursive worker for :func:`mentioned_fn_names`."""
+    if isinstance(node, (ast.FnCall, ast.QualifiedCall, ast.ModuleCall)):
+        if node.name in targets:
+            found.add(node.name)
+    if hasattr(node, "__dataclass_fields__"):
+        for field_name in node.__dataclass_fields__:
+            val = getattr(node, field_name, None)
+            if val is None:
+                continue
+            if isinstance(val, (list, tuple)):
+                for item in val:
+                    if hasattr(item, "__dataclass_fields__"):
+                        _collect_mentioned_fn_names(item, targets, found)
+            elif hasattr(val, "__dataclass_fields__"):
+                _collect_mentioned_fn_names(val, targets, found)
+
+
 def _user_defined_data_names(program: ast.Program) -> set[str]:
     """Collect all user-defined data type names."""
     names: set[str] = set()
@@ -664,10 +715,16 @@ def _parse_source(source: str) -> ast.Program:
 # Public API
 # =====================================================================
 
-def inject_prelude(program: ast.Program) -> None:
+def inject_prelude(program: ast.Program) -> str:
     """Inject prelude ADTs, combinators, and array operations.
 
     Mutates ``program.declarations`` by prepending prelude declarations.
+    Returns the concatenated prelude source buffer that the injected
+    declarations' spans index into, so diagnostics about prelude code
+    can quote the actual prelude line under the synthetic
+    :data:`PRELUDE_FILE` origin instead of misattributing the span's
+    line number to the user's file (#851).
+
     The prelude provides:
 
     - ``data Option<T>``, ``data Result<T, E>``, ``data Ordering``,
@@ -836,7 +893,7 @@ def inject_prelude(program: ast.Program) -> None:
         ))
 
     if not new_decls:  # pragma: no cover
-        return
+        return full_source
 
     # Prepend to declarations so user defs shadow during registration.
     # Program is a frozen dataclass, so we use object.__setattr__.
@@ -845,3 +902,4 @@ def inject_prelude(program: ast.Program) -> None:
         "declarations",
         tuple(new_decls) + program.declarations,
     )
+    return full_source

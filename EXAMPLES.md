@@ -169,6 +169,24 @@ public fn main(@Unit -> @Unit)
 
 > [`examples/async_futures.vera`](examples/async_futures.vera) — run with `vera run examples/async_futures.vera`
 
+The scalar `async(@Int.0)` above evaluates **eagerly**: `Future<T>` is just `T`'s representation with no runtime overhead, and `await` unwraps it in place. But async is not always eager. Since #841, a direct whitelisted Http call under `async` — `async(Http.get(url))` or `async(Http.post(url, body))` with a call-free argument — runs **concurrently** in the native runtime: each request is issued on a host worker thread at the `async(...)` point, so firing several then awaiting them overlaps the round-trips. Every other shape stays eager, and the browser runtime is always eager (spec-conformant).
+
+```vera
+private fn fetch_both(@String, @String -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get(@String.1));
+  let @Future<Result<String, String>> = async(Http.get(@String.0));
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  true
+}
+```
+
+> [`examples/async_http_fanout.vera`](examples/async_http_fanout.vera) — run with `vera run examples/async_http_fanout.vera` (requires network). It folds the two `Result` outcomes into a status code whose `0..3` range `vera verify` discharges statically.
+
 ## Recursion as iteration
 
 Vera has no `for` or `while` loops — iteration is always recursion. The `loop` function calls itself with `@Nat.0 + 1` until it reaches the bound. This is the standard Vera pattern for counted iteration.

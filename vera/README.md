@@ -91,26 +91,26 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 1,026 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 1,005 | Verify | Contract verification | `verify()` |
-| `wasm/` | 16,521 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
-| ` ├ context.py` | 468 | | Composed WasmContext, expression dispatcher, block translation | |
-| ` ├ helpers.py` | 296 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
-| ` ├ inference.py` | 1,055 | | Type inference, slot/type utilities, operator tables | |
-| ` ├ operators.py` | 712 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
-| ` ├ calls.py` | 572 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
-| ` ├ calls_arrays.py` | 2,291 | | `array_length` / `append` / `range` / `concat` / `slice` / `map` / `filter` / `fold` / `mapi` / `reverse` / `find` / `any` / `all` / `flatten` / `sort_by` | |
-| ` ├ calls_containers.py` | 627 | | Map, Set, Decimal (opaque-handle types) | |
-| ` ├ calls_encoding.py` | 2,047 | | Base64 and URL encoding/decoding/parsing | |
-| ` ├ calls_handlers.py` | 379 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
-| ` ├ calls_markup.py` | 394 | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
-| ` ├ async_fusion.py` | 177 | | #841 fusion predicates — the single source of truth shared by the `_scan_io_ops` import pre-scan and the `WasmContext` async/await lowering | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
-| ` ├ calls_math.py` | 457 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
-| ` ├ calls_parsing.py` | 970 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
-| ` ├ calls_strings.py` | 3,890 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
-| ` ├ closures.py` | 254 | | Closures, anonymous functions, free variable analysis | |
-| ` ├ data.py` | 739 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
-| ` ├ markdown.py` | 537 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
-| ` ├ json_serde.py` | 209 | | WASM memory marshalling for Json ADT | |
-| ` └ html_serde.py` | 191 | | WASM memory marshalling for HtmlNode ADT | |
+| `wasm/` | 20,716 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| ` ├ context.py` | 829 | | Composed WasmContext, expression dispatcher, block translation | |
+| ` ├ helpers.py` | 421 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
+| ` ├ inference.py` | 1,747 | | Type inference, slot/type utilities, operator tables | |
+| ` ├ operators.py` | 1,581 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
+| ` ├ calls.py` | 847 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
+| ` ├ calls_arrays.py` | 2,535 | | `array_length` / `append` / `range` / `concat` / `slice` / `map` / `filter` / `fold` / `mapi` / `reverse` / `find` / `any` / `all` / `flatten` / `sort_by` | |
+| ` ├ calls_containers.py` | 1,127 | | Map, Set, Decimal (opaque-handle types) | |
+| ` ├ calls_encoding.py` | 2,210 | | Base64 and URL encoding/decoding/parsing | |
+| ` ├ calls_handlers.py` | 406 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
+| ` ├ calls_markup.py` | 396 | | JSON, HTML, Markdown, Regex, async/await (#841: fused concurrent lowering for `async(Http.get/post)`, identity otherwise) | |
+| ` ├ async_fusion.py` | 218 | | #841 fusion predicates — the single source of truth shared by the `_scan_io_ops` import pre-scan and the `WasmContext` async/await lowering | `fused_async_target()`, `await_needs_check()`, `compute_future_ret_fns()` |
+| ` ├ calls_math.py` | 635 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
+| ` ├ calls_parsing.py` | 1,035 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
+| ` ├ calls_strings.py` | 4,067 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
+| ` ├ closures.py` | 516 | | Closures, anonymous functions, free variable analysis | |
+| ` ├ data.py` | 969 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ markdown.py` | 651 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
+| ` ├ json_serde.py` | 265 | | WASM memory marshalling for Json ADT | |
+| ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 651 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
 | `obligations/` | 637 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
 | `  core.py` | 109 | | ProofObligation record: identity (content_key) + discharge outcome | |
@@ -122,34 +122,39 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  features.py` | 292 | | Diagnostics + tier hints, hover, slot goto, hole completion | |
 | `  extensions.py` | 146 | | vera/speculativeEdit proof-delta | |
 | `  server.py` | 169 | | pygls wiring, single-session serialisation | |
-| `codegen/` | 6,618 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 1,182 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
-| `  memory.py` | 67 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
-| `  core.py` | 711 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
-| `  modules.py` | 392 | | Cross-module registration + call detection (C7e) | |
-| `  registration.py` | 258 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 1,020 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
-| `  functions.py` | 286 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
-| `  closures.py` | 272 | | Closure lifting, GC instrumentation | |
-| `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 856 | | WAT module assembly, `$alloc`, `$gc_collect` | |
-| `  compilability.py` | 310 | | Compilability checks, state handler scanning | |
-| `runtime/` | 3,840 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
-| `  traps.py` | 475 | | `WasmTrapError`, `_classify_trap`, source-backtrace resolution | |
-| `  heap.py` | 1,021 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
+| `codegen/` | 12,991 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 1,306 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
+| `  memory.py` | 77 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
+| `  core.py` | 1,354 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
+| `  modules.py` | 620 | | Cross-module registration + call detection (C7e) | |
+| `  registration.py` | 371 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 326 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  functions.py` | 687 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `  tail_position.py` | 106 | | Tail-position analysis for the function body compiler | |
+| `  closures.py` | 622 | | Closure lifting, GC instrumentation | |
+| `  contracts.py` | 768 | | Runtime pre/postconditions, old state snapshots | |
+| `  assembly.py` | 1,406 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  compilability.py` | 529 | | Compilability checks, state handler scanning | |
+| `  wasi.py` | 4,819 | | WASI Preview 2 component/adapter emitter — `--target wasi-p2` / `--world server` (#237, #853) | |
+| `runtime/` | 4,310 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
+| `  traps.py` | 493 | | `WasmTrapError`, `_classify_trap`, source-backtrace resolution | |
+| `  heap.py` | 1,197 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
 | `  collections.py` | 16 | | `_VAL_WASM_TYPES` value-type dispatch table (shared by Map/Set) | |
-| `  <effect>.py` ×13 | 2,144 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state | |
+| `  text.py` | 34 | | `safe_utf8_decode` — the single lossy-decode site (#592) | |
+| `  <effect>.py` ×13 | 2,207 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state | |
+| `  wasi_host.py` | 213 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853) | |
+| `  server.py` | 150 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
 | `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
-| `browser/` | 2,258 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
+| `browser/` | 2,993 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
-| ` ├ runtime.mjs` | 2,035 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
-| ` └ harness.mjs` | 104 | | Node.js test harness for parity testing | |
+| ` ├ runtime.mjs` | 2,750 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
+| ` └ harness.mjs` | 106 | | Node.js test harness for parity testing | |
 | `cli.py` | 1,006 | All | CLI commands | `main()` |
 | `registration.py` | 59 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~32,000 lines of Python + 342 lines of grammar + 2,121 lines of JavaScript.
+Total: ~65,000 lines of Python + 343 lines of grammar + 2,856 lines of JavaScript.
 
 ## Parsing
 
@@ -500,7 +505,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen/` (6,618 lines across 11 modules), `wasm/` (16,521 lines across 18 modules, split into domain mixins — see the module table above)
+**Files:** `codegen/` (12,991 lines across 13 modules), `wasm/` (20,716 lines across 19 modules, split into domain mixins — see the module table above)
 
 ### Compilation pipeline
 
@@ -692,7 +697,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (12
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 5,442 tests across 50 files — compiler-internals unit tests plus a **conformance suite** (103 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (35 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing spans a **pytest suite** of 5,856 tests across 92 files — compiler-internals unit tests plus a **conformance suite** (106 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (37 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
@@ -712,7 +717,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No float array host-alloc** | Host functions cannot return `Array<Float64>`; `_alloc_result_ok_float_array` helper not yet implemented | [#373](https://github.com/aallan/vera/issues/373) |
 | **Inference: no token/temperature controls** | `max_tokens` hardcoded to 1024 for Anthropic; no temperature override | [#370](https://github.com/aallan/vera/issues/370) |
 | **Inference: no user handlers** | `handle[Inference]` blocks not supported; host-backed only in this release | [#372](https://github.com/aallan/vera/issues/372) |
-| **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
+| **Partial WASI support** | The experimental `--target wasi-p2` routes IO/clocks/random through standard component interfaces and `--world server` serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2, and the default `wasm` target still uses ad-hoc `vera.*` host imports | [#853](https://github.com/aallan/vera/issues/853) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
 | **Browser target: `IO.sleep` freezes the tab** | Busy-waits the main thread instead of yielding to the event loop; the JSPI-based suspend/resume fix needs no language change | [#609](https://github.com/aallan/vera/issues/609) |
 | **Browser target: ANSI escapes render as literal text** | No escape-sequence interpretation in `runtime.mjs`; a minimal ANSI-subset interpreter closes it without a language change | [#610](https://github.com/aallan/vera/issues/610) |

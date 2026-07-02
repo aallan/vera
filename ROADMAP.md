@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,808 tests, 104 conformance programs, 36 examples, 14 spec chapters.
+5,856 tests, 106 conformance programs, 37 examples, 14 spec chapters.
 
 ## The roadmap
 
@@ -60,7 +60,7 @@ Deliberate trade-offs, recorded so they aren't re-litigated by accident.
 Not milestone-gated; advanced alongside whatever tier is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the benchmark suite is its own thread, no longer inside Milestone 1.  Compiler-side: [#225](https://github.com/aallan/vera/issues/225) (pass@k, more models, more tiers).
-- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry.
+- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties, [#540](https://github.com/aallan/vera/issues/540) cross-doc anchor validation, [#672](https://github.com/aallan/vera/issues/672) canonical WAT formatter, [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry, [#852](https://github.com/aallan/vera/issues/852) scheduled `check_limitations_sync.py --check-states` run to catch closed-issue drift in limitation tables.
 - **Spec and doc audits** — [#653](https://github.com/aallan/vera/issues/653) §0.2/§0.3 design-principle violations, [#519](https://github.com/aallan/vera/issues/519) SKILL.md gap inventory.
 
 ## Milestones — beyond the roadmap
@@ -105,7 +105,7 @@ The longer arcs.  Each pulls forward when the tiers above empty out, not before.
 
 **Verification depth** — [#427](https://github.com/aallan/vera/issues/427) Tier 2 verification (Z3 with `assert`/lemma hints), validated differentially against the per-monomorphization results from [#732](https://github.com/aallan/vera/issues/732); [#439](https://github.com/aallan/vera/issues/439) lifting effect-handler bodies out of Tier 3 (research-grade; approach 3 in the issue depends on #427); [#686](https://github.com/aallan/vera/issues/686) `data invariant(...)` clauses (blocked; refinement types are the working alternative).
 
-**Concurrency and streaming** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (builds on the v0.0.194 WASI 0.2 target; gated on wasmtime-py exposing component async), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for effect-eligible but shape-unfusable `async` arguments, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin + input concurrency (wait on a key and a clock at once).
+**Concurrency and streaming** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (builds on the v0.0.194 WASI 0.2 target; gated on wasmtime-py exposing component async — wasmtime's C API already ships the entrypoints, `wasmtime_component_func_call_async` and `add_wasi_http_async`, so Python-side wasi:http hosting and component async arrive together when the bindings land), [#853](https://github.com/aallan/vera/issues/853) extend the wasi-p2 target beyond IO+Random (Http via `wasi:http` outgoing-handler, streaming filesystem, sockets), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for effect-eligible but shape-unfusable `async` arguments, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin + input concurrency (wait on a key and a clock at once).
 
 **Ecosystem** — [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#294](https://github.com/aallan/vera/issues/294) effect row variable unification, [#785](https://github.com/aallan/vera/issues/785) GitHits MCP for dependency-reference retrieval (bookmark — trial when the dependency-facing package work lands).
 

@@ -25,6 +25,17 @@ class FunctionCompilationMixin:
         Returns the WAT function string, or None if not compilable
         (with a warning diagnostic).
         """
+        # #851 — diagnostics emitted while compiling a prelude-injected
+        # function (or a mono clone of one — the mangler's `base$Types`
+        # names strip back to a prelude base) must resolve their spans
+        # against the prelude buffer, not the user's file.  Every
+        # `_compile_fn` entry overwrites the flag, so it is always
+        # current for the function whose diagnostics are being emitted;
+        # the Pass-2 loops in `compile_program` reset it when done.
+        self._in_prelude_fn = (
+            decl.name.split("$")[0] in self._prelude_fn_names
+        )
+
         # Check if function is compilable
         if not self._is_compilable(decl):
             return None

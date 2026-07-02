@@ -109,11 +109,12 @@ class TestClassifyTrap:
         )
         assert kind == "stack_exhausted"
         assert "stack" in description.lower()
-        # Fix paragraph references #517 (the open TCO issue) so an
-        # agent reading the Fix knows this is a known limitation
-        # rather than a bug they should report.  When #517 ships,
-        # this paragraph should be rewritten to reference
-        # `return_call` as a supported feature.
+        # Fix paragraph references #517 as the issue that SHIPPED
+        # `return_call` tail-call optimization (v0.0.126), so
+        # iteration-shaped recursion runs in constant stack space.
+        # An agent still hitting this trap is told the recursion
+        # isn't actually in tail position (a non-trivial runtime
+        # postcondition is the one documented exception).
         assert "#517" in fix
         assert "return_call" in fix
 

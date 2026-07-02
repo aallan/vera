@@ -31,7 +31,14 @@ def _builtin_reject_names() -> frozenset[str]:
     from vera.environment import TypeEnv
     from vera.prelude import overridable_builtin_names
 
-    return frozenset(TypeEnv().functions) - overridable_builtin_names()
+    # #854: apply_fn is a checker special form (variadic and
+    # effect-polymorphic — see CallsMixin._check_apply_fn), not a
+    # registry row, so it is absent from TypeEnv().functions; add it
+    # explicitly.  Codegen unconditionally translates the name to
+    # call_indirect (vera/wasm/calls.py), so a user redefinition is the
+    # same checker↔codegen desync #815 guards against.
+    return (frozenset(TypeEnv().functions)
+            | {"apply_fn"}) - overridable_builtin_names()
 
 
 def _strip_rejected_where_fns(decl: ast.FnDecl) -> ast.FnDecl:

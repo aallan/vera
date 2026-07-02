@@ -18,6 +18,8 @@ Evaluated both on `vera/obligations/` (Phase 0 spike, 2026-06-22):
 
 The ~90× speed gap (coverage-guided selection) is decisive for a slow Z3/WASM suite, and the copy-based model is safer for multi-day runs. mutmut also sidesteps the stale-`.pyc` hazard of an in-place bespoke driver.
 
+That hazard is real whenever you mutate by hand instead: when validating a test by breaking the code it targets (see TESTING.md), purge `__pycache__` before re-running — a stale `.pyc` can serve the unmutated bytecode and false-green the mutant (this bit a hand-run oracle test during the v0.0.195 work; the kill was only confirmed RED after the purge).
+
 ## Install
 
 ```bash

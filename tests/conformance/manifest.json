@@ -609,6 +609,34 @@
     ]
   },
   {
+    "id": "ch05_apply_fn_arity",
+    "file": "ch05_apply_fn_arity.vera",
+    "chapter": 5,
+    "title": "apply_fn arity is checked (#854)",
+    "level": "check",
+    "spec_ref": "Section 11.10.5",
+    "expected_error": "E201",
+    "features": [
+      "apply_fn",
+      "function_type",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch05_apply_fn_typing",
+    "file": "ch05_apply_fn_typing.vera",
+    "chapter": 5,
+    "title": "apply_fn typing as a checker special form (#854)",
+    "level": "verify",
+    "spec_ref": "Section 11.10.5",
+    "features": [
+      "apply_fn",
+      "higher_order",
+      "function_type",
+      "variadic_apply"
+    ]
+  },
+  {
     "id": "ch06_requires",
     "file": "ch06_requires.vera",
     "chapter": 6,
@@ -1205,8 +1233,8 @@
     ]
   },
   {
-    "id": "ch10_float_predicates",
-    "file": "ch10_float_predicates.vera",
+    "id": "ch09_float_predicates",
+    "file": "ch09_float_predicates.vera",
     "chapter": 9,
     "title": "Float64 predicate and constant functions",
     "level": "run",

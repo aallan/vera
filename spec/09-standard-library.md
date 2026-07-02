@@ -139,7 +139,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 data Future<T> { Future(T) }
 ```
 
-`Future<T>` represents the result of an asynchronous computation. It is WASM-transparent: it has the same runtime representation as `T`, with no overhead.
+`Future<T>` represents the result of an asynchronous computation. An eagerly-evaluated future is WASM-transparent — it has the same runtime representation as `T`, with no overhead; a concurrently-evaluated future is an opaque pending handle with the same WASM value type (see §9.5.4).
 
 Constructors:
 - `Future(@T)` — wraps a value.
@@ -466,9 +466,9 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 - Browser runtime uses deprecated synchronous XMLHttpRequest ([#355](https://github.com/aallan/vera/issues/355)).
 - No PUT, PATCH, DELETE methods ([#356](https://github.com/aallan/vera/issues/356)).
 
-**Async composition (future work):**
+**Async composition:**
 
-When the `<Async>` effect is available, Http naturally composes with it for concurrent requests:
+Http composes with the `<Async>` effect for concurrent requests:
 
 ```
 private fn fetch_both(@String, @String -> @Tuple<Result<String, String>, Result<String, String>>)
