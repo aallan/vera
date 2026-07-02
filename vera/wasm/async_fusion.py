@@ -147,7 +147,7 @@ def compute_future_ret_fns(
 def compute_future_ret_module_fns(
     module_fn_ret_type_exprs: dict[tuple[tuple[str, ...], str], ast.TypeExpr],
 ) -> frozenset[tuple[tuple[str, ...], str]]:
-    '''(module path, name) pairs returning ``Future<Result<String, String>>``.
+    """(module path, name) pairs returning ``Future<Result<String, String>>``.
 
     The qualified companion to :func:`compute_future_ret_fns`: a
     module-qualified ``await(m::grab(...))`` must classify by the
@@ -155,7 +155,7 @@ def compute_future_ret_module_fns(
     local ``grab`` with a different future shape would otherwise
     misclassify the qualified call in both directions (PR #842 review
     round 2, confirmed with a name-collision repro).
-    '''
+    """
     pairs: set[tuple[tuple[str, ...], str]] = set()
     for key, ret in module_fn_ret_type_exprs.items():
         if isinstance(ret, ast.NamedType) and _is_future_result_string_type(
