@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,595 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,614 tests, 104 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -85,7 +85,7 @@ The longer arcs.  Each pulls forward when the tiers above empty out, not before.
 
 **Http hardening** — [#351](https://github.com/aallan/vera/issues/351) custom headers, [#352](https://github.com/aallan/vera/issues/352) status codes, [#353](https://github.com/aallan/vera/issues/353) timeouts, [#355](https://github.com/aallan/vera/issues/355) replace sync XHR in the browser runtime, [#356](https://github.com/aallan/vera/issues/356) PUT/PATCH/DELETE.
 
-**Server effects** — [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance → [#305](https://github.com/aallan/vera/issues/305) `<HttpServer>` effect → [#306](https://github.com/aallan/vera/issues/306) `<McpServer>` effect (**the flagship use case**), plus [#239](https://github.com/aallan/vera/issues/239) resource limits (fuel, memory, timeout) for untrusted inputs.
+**Server effects** — [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance → [#306](https://github.com/aallan/vera/issues/306) `<McpServer>` effect (the `<HttpServer>` effect shipped in v0.0.193) (**the flagship use case**), plus [#239](https://github.com/aallan/vera/issues/239) resource limits (fuel, memory, timeout) for untrusted inputs.
 
 **Server-adjacent** — [#233](https://github.com/aallan/vera/issues/233) date/time, [#235](https://github.com/aallan/vera/issues/235) SHA-256/HMAC, [#229](https://github.com/aallan/vera/issues/229) database effect (parameterised queries only; [#309](https://github.com/aallan/vera/issues/309) tracks contract-verified SQL), [#236](https://github.com/aallan/vera/issues/236) CSV.
 

@@ -342,7 +342,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 271 T1 / 92 T3 / 363 total (current).
+        """All examples together: 277 T1 / 92 T3 / 369 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -510,9 +510,14 @@ private fn sum(@List<Int> -> @Int)
         # each call `nat_to_int(@Nat.x)` on an unbounded @Nat: +4 T3, +4 total:
         # 271/88/359 -> 271/92/363.  (Site 2a — a literal-arm heterogeneous
         # if/match — adds no corpus obligation: no example has that shape.)
-        assert t1 == 271, f"Expected 271 T1, got {t1}"
+        #
+        # #305 (v0.0.193): examples/http_server.vera joins the corpus —
+        # its status_of range postcondition and the trivial handler /
+        # body_for contracts all discharge statically: +6 T1, +6 total:
+        # 271/92/363 -> 277/92/369.
+        assert t1 == 277, f"Expected 277 T1, got {t1}"
         assert t3 == 92, f"Expected 92 T3, got {t3}"
-        assert total == 363, f"Expected 363 total, got {total}"
+        assert total == 369, f"Expected 369 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

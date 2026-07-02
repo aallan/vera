@@ -1,6 +1,6 @@
 # Vera Examples
 
-35 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+36 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -49,6 +49,7 @@ vera run examples/factorial.vera --fn factorial -- 10
 | `file_io.vera` | `vera run examples/file_io.vera` | File read/write with error handling |
 | `async_futures.vera` | `vera run examples/async_futures.vera` | Async effect, Future type, concurrent composition |
 | `http.vera` | `vera run examples/http.vera` | Http.get, JSON parsing, network I/O (requires network) |
+| `http_server.vera` | `vera serve examples/http_server.vera` | <HttpServer> verified request handler: Request/Response ADTs, Tier-1 status-range contract (serve, then curl it) |
 | `read_char.vera` | `vera run examples/read_char.vera` | IO.read_char, single-character input (reads stdin) |
 | `inference.vera` | `vera run examples/inference.vera` | Inference.complete LLM calls as a typed effect (requires an API key) |
 

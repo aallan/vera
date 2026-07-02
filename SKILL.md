@@ -1309,6 +1309,7 @@ effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
 effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
+effects(<HttpServer>)            -- HTTP request handler (vera serve)
 effects(<Random>)                -- non-deterministic (random number generation)
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
@@ -1469,6 +1470,23 @@ public fn fan_out(@String, @String -> @Bool)
 ```
 
 Every other `async` shape evaluates eagerly (sequential) — `Future<T>` is then just `T`'s representation with no overhead. The checker warns (`W002`) when the argument's effect row falls outside the commutative whitelist `{Http, Async}` (e.g. an `IO`-effectful call), marking where eager evaluation is semantically required. The browser runtime is always eager (identical values, request fires at the `async` point).
+
+### HttpServer effect
+
+`HttpServer` is a marker effect (no operations) for **verified HTTP request handling** (#305). Define a total handler and serve it with `vera serve prog.vera [--port N]` — the accept loop lives in the host, so no `Diverge` is involved and every contract on the handler is an ordinary obligation. `Request` / `Response` are built-in prelude ADTs:
+
+```vera
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+```
+
+Request fields: method, path, headers (`Map<String, String>`), body — in the match arm above the String bindings are method (`@String.2`, oldest), path (`@String.1`), body (`@String.0`, most recent). Response fields: status (`Int`), headers, body. Each request runs on a fresh instance (State cannot leak between requests); a runtime contract violation answers 500 with the trap diagnostic. Native-only (no browser serving).
 
 ### Http effect
 

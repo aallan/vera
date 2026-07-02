@@ -565,6 +565,39 @@ private fn classify(@String -> @Result<String, String>)
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
 - User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release ([#372](https://github.com/aallan/vera/issues/372))
 
+### 9.5.6 HttpServer
+
+The `HttpServer` effect (a marker, §7.7.5 — no operations) enables **verified HTTP request handling** (#305, since v0.0.193).  A server program defines a total, contract-checked handler:
+
+```vera
+public fn handle(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+```
+
+**Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
+
+```
+data Request { Request(String, String, Map<String, String>, String) }
+data Response { Response(Int, Map<String, String>, String) }
+```
+
+`Request` fields are method, path, headers, body; `Response` fields are status, headers, body.
+
+**Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation — `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions — no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
+
+- Routing is ordinary pattern matching on the request fields.
+- Per-request effects compose in the row: `effects(<HttpServer, State<Int>>)`.
+- Request handling is sequential in v1; concurrent handling is future work (#406).
+- Native-only: the serve driver is part of the reference (wasmtime) runtime; the browser runtime does not serve HTTP (documented divergence, §12).
+
 ## 9.6 Built-in Functions
 
 Built-in functions are always in scope as the single canonical definition of each operation. A user or module function whose name matches a built-in is a compile error (**E151**): there is one canonical form, so a second definition is redundant, and for the verifier-modelled built-ins it is silently unsound — the verifier would reason with the built-in's idealized model while code generation runs the user's body, letting a postcondition be *proved* against the built-in yet *violated at runtime*. Call the built-in directly (no import is needed) or choose a distinct name for genuinely different behaviour. The Option/Result/Json/Html combinators listed in the standard prelude (Section 9.1.2) are the exception: they are ordinary Vera functions the prelude injects, so a same-named user definition soundly replaces them.

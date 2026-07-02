@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.193] - 2026-07-02
+
+### Added
+
+- **`<HttpServer>` — verified HTTP request handling, served by `vera serve`** ([#305](https://github.com/aallan/vera/issues/305)).  A server program defines a **total, contract-checked** handler — `public fn handle(@Request -> @Response) effects(<HttpServer>)` — and `vera serve prog.vera [--port N]` hosts the accept loop: the loop lives in the host, so handlers need no `Diverge`, are termination-checked like any function, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation (the new `examples/http_server.vera` proves a status-range postcondition at Tier 1).  `HttpServer` is a built-in marker effect (no operations; spec §7.7.5); `Request` (method, path, headers, body) and `Response` (status, headers, body) are prelude ADTs injected when referenced (headers are `Map<String, String>`; user definitions shadow).  **Per-request isolation**: each request runs on a fresh module instance (fresh `execute()` — instantiation measured at ~0.02 ms in the Stage-0 spike), so `State<T>` cannot leak between requests (pinned by test).  A runtime **contract violation (or any trap) inside a handler answers 500** with the trap diagnostic as a JSON body (`trap_kind`, message, frames — the `vera run --json` envelope shape); the connection is always answered.  Host marshalling is layout-driven: `CompileResult.adt_layouts` exports the constructor layouts this compilation computed, `build_request_adt` shadow-roots every intermediate allocation (#570/#692 discipline), `decode_response_adt` reads the returned ADT, and both fail loudly on an unexpected layout shape; a new `InstanceCaller` adapts a (Store, Instance) pair to the caller protocol the heap helpers already use.  Handler `IO.print` goes to the server console; request handling is sequential in v1 (concurrency: #406); native-only (the browser runtime does not serve HTTP — documented divergence, spec §12.9.3).  Also fixed en route: Pass-1 function signatures that reference prelude ADTs in params/return were computed before prelude registration and recorded `unsupported` in `fn_param_types` — a post-injection pass now re-registers exactly those.  New: `tests/conformance/ch09_http_server.vera` (level `verify` — needs no network, unlike `ch09_http`), `examples/http_server.vera`, spec §9.5.6, and a `TOOLCHAIN.md` serve recipe.
+
 ## [0.0.192] - 2026-07-02
 
 ### Added
@@ -2722,7 +2728,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.192...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.193...HEAD
+[0.0.193]: https://github.com/aallan/vera/compare/v0.0.192...v0.0.193
 [0.0.192]: https://github.com/aallan/vera/compare/v0.0.191...v0.0.192
 [0.0.191]: https://github.com/aallan/vera/compare/v0.0.190...v0.0.191
 [0.0.190]: https://github.com/aallan/vera/compare/v0.0.189...v0.0.190

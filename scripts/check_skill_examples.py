@@ -90,37 +90,38 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
 
     # Effect declarations and handlers
     1304: ("FRAGMENT", "Effect declarations list"),
-    1436: ("FRAGMENT", "Async effect row declarations, bare clauses"),
-    1482: ("FRAGMENT", "Http effect declarations list"),
-    1513: ("FRAGMENT", "Inference effect declarations list"),
-    1605: ("FRAGMENT", "Handler with-clause pseudocode, bare expression"),
-    1617: ("FRAGMENT", "Handler with-clause, bare put arm expression"),
-    1627: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
+    1437: ("FRAGMENT", "Async effect row declarations, bare clauses"),
+    1500: ("FRAGMENT", "Http effect declarations list"),
+    1531: ("FRAGMENT", "Inference effect declarations list"),
+    1623: ("FRAGMENT", "Handler with-clause pseudocode, bare expression"),
+    1635: ("FRAGMENT", "Handler with-clause, bare put arm expression"),
+    1645: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
 
     # Escape sequences and string construction
-    1831: ("FRAGMENT", "ANSI cursor-home via string_from_char_code (#513)"),
-    1844: ("FRAGMENT", "Comment syntax example"),
+    1849: ("FRAGMENT", "ANSI cursor-home via string_from_char_code (#513)"),
+    1862: ("FRAGMENT", "Comment syntax example"),
 
     # Common mistakes section — intentionally wrong code
-    1923: ("FRAGMENT", "Wrong: missing contracts"),
-    1943: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
+    1941: ("FRAGMENT", "Wrong: missing contracts"),
+    1961: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
     # Note: line 1905 is the CORRECT add-with-effects full function (parses OK,
     # not allowlisted).  The "Wrong: bare @Int + @Int without indices" entry
     # used to be parked here by mistake; the bare-add code is actually at 1942.
-    1990: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
+    2008: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
+    2013: ("FRAGMENT", "Correct: indexed slot arithmetic"),
     1995: ("FRAGMENT", "Correct: bare @Int + @Int (common mistakes)"),
-    2085: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
-    2092: ("FRAGMENT", "Correct: match with Option arms (bare)"),
-    2102: ("FRAGMENT", "Wrong: missing braces on if/else branches"),
-    2107: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
+    2103: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
+    2110: ("FRAGMENT", "Correct: match with Option arms (bare)"),
+    2120: ("FRAGMENT", "Wrong: missing braces on if/else branches"),
+    2125: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
 
     # Import syntax — intentionally unsupported
-    2118: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    2123: ("FRAGMENT", "Correct: import syntax example"),
-    2133: ("FRAGMENT", "Wrong: import hiding not supported"),
-    2152: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
-    2160: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
-    2166: ("FRAGMENT", "Correct: map_new/set_new with type context"),
+    2136: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    2141: ("FRAGMENT", "Correct: import syntax example"),
+    2151: ("FRAGMENT", "Wrong: import hiding not supported"),
+    2170: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
+    2178: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
+    2184: ("FRAGMENT", "Correct: map_new/set_new with type context"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

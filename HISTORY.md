@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the ongoing soundness campaign (Stage 15), across 90 active development days.
+How the Vera compiler was built, from initial commit through the ongoing server-effects sprint (Stage 16), across 92 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -426,6 +426,7 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.0.192 | 2 Jul | Concurrent `<Async>`: `async(Http.get/post)` runs on a host worker thread, `await` blocks for it, `W002` marks the eager remainder ([#841](https://github.com/aallan/vera/issues/841)); rides with the #420/#419/#839 test-oracle splits. |
+| v0.0.193 | 2 Jul | `<HttpServer>`: total contract-checked handlers served over HTTP by `vera serve` with instance-per-request isolation ([#305](https://github.com/aallan/vera/issues/305)). |
 
 ---
 
@@ -433,15 +434,15 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 
 Six releases, chosen for the capability each one unlocked rather than even spacing.
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.189 (1 Jul) |
-|--------|:---:|:---:|:---:|:---:|:---:|:---:|
-| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign |
-| Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,503 |
-| Examples | 13 | 15 | 18 | 30 | 35 | 35 |
-| Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 |
-| Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 |
-| Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 |
-| Code coverage | — | — | 90% | 96% | 95% | 95% |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect |
+| Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,614 |
+| Examples | 13 | 15 | 18 | 30 | 35 | 35 | 36 |
+| Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 |
+| Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 |
+| Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 |
+| Code coverage | — | — | 90% | 96% | 95% | 95% | 95% |
 
-Total: **1,700+ commits, 191 tagged releases, 90 active development days.**
+Total: **1,800+ commits, 193 tagged releases, 92 active development days.**

@@ -344,6 +344,14 @@ The `Random` effect models non-deterministic value generation. Functions that dr
 
 Like `IO`, `Random` is built-in — no `effect Random { ... }` declaration is needed. Random results are unconstrained in Z3 (no useful axioms beyond the explicit range bound on `random_int`); contracts that depend on specific random values fall to runtime checking. Operations are host-backed (see Chapter 12, Section 12.4.5). No determinism / seeding API is offered yet — handler-based seeding via `handle[Random]` is future work.
 
+### 7.7.5 `HttpServer`
+
+```
+effect HttpServer {}
+```
+
+The `HttpServer` effect has no operations — it is a marker (#305, since v0.0.193).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
+
 ## 7.8 Effect Subtyping
 
 A function with fewer effects can be used where more effects are expected:

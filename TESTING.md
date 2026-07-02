@@ -6,10 +6,10 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,595 across 89 files (~63,000 lines of test code; 5,534 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,614 across 89 files (~63,000 lines of test code; 5,566 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
-| **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
-| **Example programs** | 35, all validated through `vera check` + `vera verify` |
+| **Conformance programs** | 104 programs across 9 spec chapters, validating every language feature |
+| **Example programs** | 36, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
@@ -39,8 +39,8 @@ VERA_EAGER_GC=1 pytest tests/test_codegen_closures.py::TestClosureReturnShadowPu
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (103 programs, see manifest.json)
-python scripts/check_examples.py                     # 35 example programs
+python scripts/check_conformance.py                  # conformance suite (104 programs, see manifest.json)
+python scripts/check_examples.py                     # 36 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_skill_examples.py               # SKILL.md code blocks
@@ -55,8 +55,8 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 129 | 973 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 128 | 1,122 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
+| `test_parser.py` | 130 | 973 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 129 | 1,122 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker_types.py` | 84 | 923 | Primitive types, literals, binary/unary ops, generics, constructors, refinement types, arrays, tuples, return/match-arm types, byte-arithmetic + integer-literal-range rejection (#420 split) |
 | `test_checker_patterns.py` | 59 | 936 | Pattern matching, match-arm typing, exhaustiveness, pattern/match coverage, bidirectional inference, typed holes (#420 split) |
 | `test_checker_functions.py` | 68 | 705 | Function signatures, slot references, result refs, calls, control flow, higher-order, where-blocks, expression diagnostics, IO operations, string interpolation (#420 split) |
@@ -65,12 +65,12 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_checker_errors.py` | 47 | 663 | Error codes, resolution-coverage diagnostics, contracts, error accumulation (#420 split) |
 | `test_checker_builtins_collections.py` | 97 | 848 | Map / Set / Decimal / Json / Html / Http / Inference built-in type-checking (#420 split) |
 | `test_checker_builtins_strings.py` | 122 | 945 | String / numeric / type-conversion / float-predicate / string-search / markdown / regex built-in type-checking, removed-legacy-name regression (#420 split) |
-| `test_obligations.py` | 298 | 1087 | Reified proof obligations + warm `VerificationSession` (#222 Phase A): full-corpus differential oracle (warm session == cold `verify()` on diagnostics, summary, and obligation stream, plus warm-twice determinism, across all 35 examples and every verify/run-level conformance program), summary↔obligation tier-bookkeeping consistency, per-kind unit tests (requires / ensures / decreases / nat_sub / call_pre statuses, counterexamples, error codes), content-key stability + same-text-two-sites span disambiguation, session solver reuse, type-error short-circuit, ADT-registry resync between programs; plus the Phase B incremental suite — identical-source full replay, callee-body-edit replays callers while callee-contract-edit invalidates them, span-shift and ADT-edit conservative invalidation, cross-program isolation, timeout-status never cached (monkeypatched solver), FIFO eviction bound; plus the #727 dedup pin — a violating call in a let RHS records exactly one E501 diagnostic and one call_pre obligation |
-| `test_verifier_contracts.py` | 86 | 827 | Z3 verification over the example corpus, trivial/ensures/if-else/let/multi-clause contracts, counterexamples, tier classification, arithmetic, verification summaries, Diverge effect, edge cases, string-length + string-predicate verification (#839 split) |
+| `test_obligations.py` | 302 | 1087 | Reified proof obligations + warm `VerificationSession` (#222 Phase A): full-corpus differential oracle (warm session == cold `verify()` on diagnostics, summary, and obligation stream, plus warm-twice determinism, across all 36 examples and every verify/run-level conformance program), summary↔obligation tier-bookkeeping consistency, per-kind unit tests (requires / ensures / decreases / nat_sub / call_pre statuses, counterexamples, error codes), content-key stability + same-text-two-sites span disambiguation, session solver reuse, type-error short-circuit, ADT-registry resync between programs; plus the Phase B incremental suite — identical-source full replay, callee-body-edit replays callers while callee-contract-edit invalidates them, span-shift and ADT-edit conservative invalidation, cross-program isolation, timeout-status never cached (monkeypatched solver), FIFO eviction bound; plus the #727 dedup pin — a violating call in a let RHS records exactly one E501 diagnostic and one call_pre obligation |
+| `test_verifier_contracts.py` | 87 | 827 | Z3 verification over the example corpus, trivial/ensures/if-else/let/multi-clause contracts, counterexamples, tier classification, arithmetic, verification summaries, Diverge effect, edge cases, string-length + string-predicate verification (#839 split) |
 | `test_verifier_nat_obligations.py` | 62 | 1,291 | **`@Nat` subtraction underflow obligation** (#520 — Path-A discharge via requires/path-conditions/path-aware Z3 refutation, pure-literal exclusion, Int-Int and Nat-Int exemptions) and **`@Nat` binding-site narrowing obligation** (#552/#747/#749 — Tier-1 `value >= 0` at let/call-arg/effect-op-arg/ctor-field/match-bind/destructure narrowing, codegen-guarded `tier3_runtime` classification, the `E504` unguarded-residual warning, walker-recursion pins, `_narrows_into_nat` verifier/codegen soundness parity) (#839 split) |
 | `test_verifier_primitive_ops.py` | 39 | 658 | **Primitive-operation safety obligations** (#680) — division/modulo by-zero `E526` and array-index-bounds `E527`, the in-bounds/out-of-bounds two-check with float-exemption, honest Tier-3 for opaque lengths, off-by-one and lower-bound pins, De Bruijn-correct fix hints (#839 split) |
 | `test_verifier_calls_modules.py` | 44 | 962 | Call-site preconditions (incl. branch-aware), pipe-operator verification, cross-module contracts (#839 split) |
-| `test_verifier_adt_decreases.py` | 20 | 615 | Match/ADT verification, decreases measures (incl. ADT decreases), mutual recursion (#839 split) |
+| `test_verifier_adt_decreases.py` | 20 | 620 | Match/ADT verification, decreases measures (incl. ADT decreases), mutual recursion (#839 split) |
 | `test_verifier_refinements.py` | 62 | 1,462 | Refined Bool/String/Float64 param sorts, **refinement-predicate translation + verification** (#746 — Tier-1 discharge at narrowing/return positions, E505 with counterexample, E506 Tier-3 for untranslatable predicates, the R3 already-refined exemption, refined-ADT-sub-pattern arm-fact carry into `@Nat` narrowings and call preconditions, alias-base refined returns, refined returns from match arms) (#839 split) |
 | `test_verifier_shadow_audits.py` | 71 | 1,372 | **Per-monomorphization generic verification** (#732 — per-instantiation body verification, collapsed-type-var De Bruijn reindex soundness, one-diagnostic dedup, decreases-only discovery, Tier-3 `E520` residual) and the **#680 shadow/projection audit battery** — 57 differential tests pinning the safe→verified / opaque→Tier-3 / unsafe→loud trichotomy across compound shadows, destructure De Bruijn alignment, opaque match scrutinees, and intra-block scoping; **mutation-validated** (every test flips RED when its target machinery is broken) (#839 split) |
 | `test_verifier_mutation_obligations.py` | 38 | 883 | #387 mutation-hardening: obligation-record completeness and projection-helper pins (#839 split) |
@@ -78,7 +78,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_soundness_392.py` | 36 | 584 | #392 audit batches 1–2 — verifier soundness/completeness fixes: signed div/mod truncate toward zero (#799), body `assert(P)` carries a Tier-1 obligation (#800), divisions in contract predicates carry a `div_zero` obligation (#801), and the #804 assume-half of #800's `assert` rule — a prior `assert`/`assume` discharges later obligations (including a later call's precondition) + the postcondition at Tier 1, removing false E501/E503/E500/E505.  Test-first: each fails on the pre-fix verifier |
 | `test_int_overflow.py` | 6 | 143 | #798 — `@Int`/`@Nat` arithmetic-overflow obligations (part of the #392 `smt.py` soundness audit): `+`/`-`/`*` on `@Int`/`@Nat` now emit an `int_overflow` obligation (the analog of `nat_sub`/`div_zero`) rather than modelling the operands as Z3's unbounded integers, so a `ensures(@Int.result > @Int.0)` over `@Int.0 + 1` no longer proves a contract the i64/u64 runtime violates under two's-complement wraparound. Unbounded operands leave the obligation undischarged (Tier-3, runtime-guarded); operand bounds that prove the result stays in range discharge it at Tier 1. Test-first: each fails on the pre-fix verifier (no `int_overflow` obligation emitted) |
 | `test_int_overflow_codegen.py` | 62 | 716 | #798 Stage 3 — runtime overflow-trap codegen: the codegen emits a guard at *exactly* the `@Int`/`@Nat` `+`/`-`/`*` sites the verifier obligates, so `vera run`/`vera compile` programs trap on overflow instead of silently wrapping at the i64/u64 boundary. #808 wired the guard to the `vera.overflow_trap` host import, so the trap now classifies `kind="overflow"` (carrying the overflow Fix paragraph) rather than the generic `unreachable`; `TestOverflowTrapKind808` pins that, with controls proving the #520 `nat_sub` underflow and #813 `@Nat`→`@Int` widen guards still classify `unreachable`. Test-first: every `*_traps` test fails on the pre-Stage-3 codegen (the op wraps silently → no trap → `execute` returns a value); every `*_no_trap` test passes before and after (safe arithmetic unchanged) |
-| `test_int_overflow_differential.py` | 150 | 364 | #798 Stage 3 verifier↔codegen classification differential (cross-component soundness rule): the codegen overflow guard must fire at exactly the sites the verifier obligates *and* classify each site's operand type (`@Int` i64 vs `@Nat` u64) identically — else a Tier-1-clean program traps spuriously or a wrapping op slips through unguarded. Over a corpus exercising all five operand combos plus the literal-left ambiguity (which the pre-fix codegen mis-classified as `@Nat`), asserts the verifier's per-site gated classification equals the codegen's site for site, both sides driven by the same `ast.span_key` |
+| `test_int_overflow_differential.py` | 152 | 364 | #798 Stage 3 verifier↔codegen classification differential (cross-component soundness rule): the codegen overflow guard must fire at exactly the sites the verifier obligates *and* classify each site's operand type (`@Int` i64 vs `@Nat` u64) identically — else a Tier-1-clean program traps spuriously or a wrapping op slips through unguarded. Over a corpus exercising all five operand combos plus the literal-left ambiguity (which the pre-fix codegen mis-classified as `@Nat`), asserts the verifier's per-site gated classification equals the codegen's site for site, both sides driven by the same `ast.span_key` |
 | `test_nat_int_widening.py` | 26 | 446 | #813 — `@Nat -> @Int` widening coercion obligation (dual of #552 `nat_bind`, part of the #392 soundness audit): a `@Nat` in (i64.MAX, u64.MAX] reinterprets when widened (u64.MAX → -1), so a `nat_to_int_coerce` obligation that the value is `<= i64.MAX` now fires at the return position — provably-in-range → Tier-1, provably-out-of-range (`@Nat.0 >= 2**63`) → loud E530, unbounded → honest Tier-3 (runtime-guarded), with an `@Int -> @Int` control that must not fire. Written test-first (the unbounded case fails on the pre-fix verifier, which proved `ensures(@Int.result >= 0)` yet `widen(u64.MAX)` returns -1). The #813 follow-up adds the explicit `nat_to_int` built-in and heterogeneous `if`/`match` arms with a non-negative-literal alternative |
 | `test_int_widening_codegen.py` | 27 | 340 | #813 Stage 3 — runtime `@Nat -> @Int` widening-trap codegen: the codegen emits a guard at *exactly* the `@Nat -> @Int` coercion sites the verifier obligates (return, `let`, call argument), so `vera run`/`vera compile` programs trap when a `@Nat` above i64.MAX would reinterpret to a negative `@Int` instead of silently returning the wrong value. The trap is a bare `unreachable` (shares `_emit_negative_i64_guard` with the #552 nat-bind guard), classified `kind="unreachable"` today (a dedicated widening trap kind is a follow-up). Test-first: every `*_traps` test fails on the pre-Stage-3 codegen (`widen(u64.MAX)` returns -1, no trap); every `*_no_trap` test passes before and after (safe/bounded widen unchanged) |
 | `test_int_widening_differential.py` | 19 | 244 | #813 verifier↔codegen behavioural differential (cross-component soundness rule): at every `@Nat -> @Int` coercion site the verifier's `nat_to_int_coerce` classification must AGREE with the runtime — a `tier3` (codegen-guarded) site MUST trap on a `@Nat` above i64.MAX (return / `let` / call-arg / constructor field / ADT sub-pattern / match-bind), while a `tier3_unguarded` (E531) site must NOT trap (the tuple / array / generic-ADT component coercions codegen cannot guard).  Runs BOTH sides on one corpus so the "runtime-guarded" claim is checked against the actual trap — catching a verifier deferral codegen never guards (unsound silent -1) or a spurious trap |
@@ -117,8 +117,8 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_stress.py` | 16 | 553 | Scale-dependent regression tests (#596) — `@pytest.mark.stress`, skipped by default.  9 logical tests × eager-GC lane parametrisation = 16 test instances.  10K `array_map`, 5K nested-array `array_map`, 1K-deep tail recursion with allocating arg, 1M-deep tail recursion with allocating arg (#549 GC-aware TCO), 20×20 nested array-fold-of-array-fold, 100K `array_fold`, 10K String allocations, 1K `State<Int>` get/put cycles, 10K `IO.print` calls.  Pins #570 / #515 / #593 / #549 / #487 / #348 / #573 regression coverage |
 | `test_string_length_soundness.py` | 15 | 278 | #802 — string_length code-point vs UTF-8 byte soundness: a non-literal `string_length` defers to Tier 3 (the issue's `"é"` probe no longer proves `== 1` at Tier 1), a string-literal length is modeled at its exact UTF-8 byte count (`== 2` for `"é"`), and the boolean predicates `string_contains` / `string_starts_with` / `string_ends_with` stay Tier 1 (sound under UTF-8 self-synchronization), while a predicate over an astral (> U+2FFFF) or lone-surrogate literal defers to Tier 3 (z3.StringVal cannot model those code points) |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
-| `test_formatter.py` | 124 | 1,074 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 242 | 3,582 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch |
+| `test_formatter.py` | 126 | 1,074 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
+| `test_cli.py` | 245 | 3,630 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch |
 | `test_introspect.py` | 38 | 192 | `vera builtins/effects/errors --json` registry introspection (#539): the `{schema, items}` envelope, count-equals-registry differential per registry, error-phase derivation, effect/ability `kind` tagging, the parameterised `Exn<T>` effect, and best-effort `since` attribution with full-coverage guards |
 | `test_resolver.py` | 20 | 594 | Module resolution, path lookup, parse caching, circular import detection, the E011/E012/E013 diagnostic contract, and internal-error isolation (a compiler bug is not masked as E013) |
 | `test_types.py` | 73 | 388 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
@@ -130,7 +130,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_markdown.py` | 59 | 393 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_lsp.py` | 94 | 1211 | LSP transport + coordinate layer (#222 Phase C) and language features (#222 Phase D): parametrized code-point↔UTF-16 goldens incl. astral-plane fixtures and surrogate-pair snapping, Span (1-based, exclusive-end) and SourceLocation (0-based col) → LSP Range conversions, point→token-range widening, DocumentStore open/change/close + index invalidation, an in-process handler-drive test, and one stdio end-to-end round-trip against the real `vera lsp` subprocess (initialize → didOpen → shutdown → exit) pinning serverInfo + textDocumentSync capabilities; plus the Phase D feature suite — parse-error single-diagnostic path, type-error verification short-circuit, tier=3 in E520 diagnostic data, per-function tier Hint synthesis (and its suppression for functions with violated obligations), smallest-enclosing-span hover, De Bruijn slot goto (most-recent-parameter jump, out-of-range None, off-slot None), and typed-hole completion (inside/after hole, away-from-hole None); plus the Phase E speculativeEdit suite — identical-text all-unchanged, breaking edit surfaces newly_undischarged (violated nat_sub) with canonical state untouched, strengthening edit surfaces newly_discharged, parse/type errors report ok:false, deleted functions report removed, proof_delta purity; plus the Phase F1 proposeEdit suite — the apply gate (clean and strengthening edits apply, breaking and non-compiling edits refuse), force overriding both gates with the delta still reported, wiring against a structural fake server (apply round-trip with exact full-document replacement range, refuse touches no canonical state, unopened-URI clamp sentinel), and full-document-range goldens (trailing-newline virtual line, UTF-16 end column); plus the Phase F2 strengthenContract suite — splice goldens (first-clause-only replacement with byte-identical remainder, ensures variant, unknown-fn None), the call-site audit pin (tightened precondition refused with newly_undischarged call_pre items, canonical state untouched), provable-ensures strengthening applies, and the three splice-target refusal paths (no analysis, unparseable document, unknown function); plus the Phase F3 addEffect suite — transitive-caller closure goldens (diamond in declaration order, leaf, unknown-fn None, recursion appears once), effect-row rewrite goldens (pure to singleton set, source-preserving append, already-present None, base-name identity blocking State<Int> next to State<Bool>), diamond propagation applying one multi-site candidate with the bystander untouched, mixed append/replace rows with already-satisfied callers skipped, the fully-satisfied no-op shape, and the two refusal paths; plus the #728 instruction-contract suite — the LSP message carries description, rationale, and the Fix: paragraph (also pinning single E501 emission at the LSP surface), and a bare diagnostic maps to the description alone |
 | `test_browser.py` | 108 | 2,190 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 515 | 124 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 103 programs |
+| `test_conformance.py` | 520 | 124 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 104 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 189 | HTML landing page code samples: parse, check, verify |
@@ -171,7 +171,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
 | `check` | Parses and type-checks cleanly | 7 |
-| `verify` | Type-checks and all contracts verified by Z3 | 8 |
+| `verify` | Type-checks and all contracts verified by Z3 | 9 |
 | `run` | Compiles to WASM and executes correctly | 88 |
 
 Almost all programs are at the `run` level — they compile and execute, producing correct results. Seven programs (`ch03_typed_holes`, `ch07_cross_module_contracts_lib`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_http`, `ch09_inference`) are at the `check` level. Three of them — `ch08_circular_import`, `ch08_visibility_private`, and `ch09_builtin_redefinition` — are **negative tests** that assert a specific diagnostic (E011, E150, and E151 respectively) via the manifest's `expected_error` field; `ch09_http` and `ch09_inference` are environment-gated (network / API key). Eight programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
@@ -222,7 +222,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 103 programs total, organized by spec chapter
+├── ...                        # 104 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
@@ -314,7 +314,7 @@ The lowest-coverage files of any size are `vera/lsp/server.py` at 64% (pygls fea
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 35 example programs:
+Across all 36 example programs:
 
 | Metric | Value |
 |--------|-------|
@@ -352,7 +352,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen_*, test_checker_* | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen_*, test_verifier_* | ch02_refinement_types | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker_* | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker_*, test_codegen_* | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker_*, test_codegen_* | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 36 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen_*, test_checker_* | ch04_arithmetic, ch04_comparison, ch04_boolean_ops, ch04_int_overflow | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen_*, test_checker_* | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
 | Ch 4: Expressions | String and array builtins | test_codegen_* | ch04_string_builtins, ch04_array_ops | string_ops |
@@ -413,7 +413,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 35 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 36 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -580,8 +580,8 @@ Twenty-two scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 103 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
-| `check_examples.py` | All 35 `.vera` examples pass `vera check` + `vera verify` |
+| `check_conformance.py` | All 104 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
+| `check_examples.py` | All 36 `.vera` examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
@@ -683,8 +683,8 @@ Every push is checked by 31 configured hooks across two stages: 29 are configure
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
-| `check_conformance.py` | All 103 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
-| `check_examples.py` | All 35 examples pass `vera check` + `vera verify` |
+| `check_conformance.py` | All 104 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
+| `check_examples.py` | All 36 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |
