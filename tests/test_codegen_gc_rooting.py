@@ -10,6 +10,7 @@ import pytest
 
 from vera.codegen import (
     compile,
+    execute,
 )
 
 from tests.codegen_helpers import (
@@ -1135,3 +1136,150 @@ public fn main(-> @Int)
 """
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run(src) == 300
+
+class TestFutureHandleGCRooting841:
+    """#841: the fused-async Future wrapper (kind 4) follows the full
+    #573/#578 opaque-handle GC contract — shadow-rooted at the async
+    site so eager GC can't sweep a pending future before its await,
+    and reclaimed via Phase 2c ``host_decref_handle(4, handle)`` when
+    a fire-and-forget future's wrapper becomes unreachable.
+
+    All fixtures use ``ftp://`` URLs: the fetch halves reject non-
+    HTTP(S) schemes locally (#789), so the worker resolves to Err
+    instantly and no test ever touches the network.
+    """
+
+    def test_future_wrapper_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pending future stays awaitable across an intervening
+        allocation under eager GC — the kind-4 wrapper is shadow-
+        pushed at the async site, so the string_concat sweep can't
+        evict its host store entry (#570/#692 UAF class)."""
+        src = """
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get("ftp://blocked.invalid/a"));
+  let @String = string_concat("force", "gc");
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 1
+
+    def test_unawaited_future_store_reclaimed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fire-and-forget futures are reclaimed by Phase 2c.
+
+        Each ``fire_and_forget`` frame allocates a kind-4 wrapper and
+        returns without awaiting; the wrap-time shadow push clears at
+        the frame's epilogue, so under eager GC the next iteration's
+        allocation sweeps the previous wrapper and fires
+        ``host_decref_handle(4, handle)`` — evicting (and cancelling)
+        the store entry.  Pre-#841-decref this store would end at
+        200 entries; post-fix it ends near zero (a couple of trailing
+        entries whose sweep hasn't run are allowed)."""
+        src = """
+public fn fire_and_forget(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get("ftp://reclaim.invalid/x"));
+  1
+}
+
+public fn spin(@Int -> @Int)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  if @Int.0 <= 0 then { 0 } else {
+    let @Int = fire_and_forget(());
+    spin(@Int.1 - 1)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ spin(200) }
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.value == 0
+        store_size = exec_result.host_store_sizes.get("future", 0)
+        assert store_size <= 2, (
+            f"#841 regression: _future_store has {store_size} entries "
+            f"after 200 fire-and-forget futures.  Phase 2c should fire "
+            f"host_decref_handle(kind=4) for each unreachable wrapper; "
+            f"a large residue means the kind-4 eviction (or the wrap-"
+            f"table registration) is broken."
+        )
+
+    def test_future_wrapper_survives_operand_stack_window(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The wrap-site shadow push protects the operand-stack window:
+        in ``both(async(A), async(B))`` the first wrapper sits on the
+        operand stack while the second async's wrapper allocation runs
+        — under eager GC that alloc collects, and an unrooted first
+        wrapper is swept + Phase-2c-decref'd (its address is then
+        typically reused for the second wrapper, aliasing the two
+        futures).  The get/post pair makes the failure observable
+        without a network: each future's Err text names its own op, so
+        an aliased or reclaimed first future answers "Http.post:" or
+        "already reclaimed" instead of "Http.get:".  This is the same
+        #570/#692 operand-stack hazard the Decimal wrap push closes."""
+        src = """
+public fn both(@Future<Result<String, String>>, @Future<Result<String, String>> -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.1 {
+    Err(@String) -> if string_contains(@String.0, "Http.get:") then {
+      match @Result<String, String>.0 {
+        Err(@String) -> string_contains(@String.0, "Http.post:"),
+        Ok(@String) -> false
+      }
+    } else { false },
+    Ok(@String) -> false
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  both(
+    async(Http.get("ftp://a.invalid/1")),
+    async(Http.post("ftp://b.invalid/2", "{}"))
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 1
+
+    def test_repeated_await_of_same_future(self) -> None:
+        """Awaiting the same future twice returns the same value both
+        times (Future.result() memoizes; each await rebuilds a fresh
+        Result ADT) — matching eager-await semantics."""
+        src = """
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get("ftp://twice.invalid/x"));
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> match @Result<String, String>.1 {
+      Ok(@String) -> false,
+      Err(@String) -> @String.0 == @String.1
+    }
+  }
+}
+"""
+        assert _run(src) == 1

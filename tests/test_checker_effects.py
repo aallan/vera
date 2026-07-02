@@ -645,6 +645,72 @@ private fn f(-> @Unit)
 """)
 
 
+class TestAsyncConcurrencyWhitelist841:
+    """#841: async(e) is concurrency-eligible only when e's effect row is
+    within the commutative whitelist ({Http} in v1).  Anything else evaluates
+    eagerly and the checker says so with a W002 warning — never silently."""
+
+    def test_async_over_http_no_warning(self) -> None:
+        """async(Http.get(...)) is whitelisted — no eager-evaluation warning."""
+        warnings = _warnings("""
+private fn f(@String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(Http.get(@String.0)) }
+""")
+        assert not any(w.error_code == "W002" for w in warnings), warnings
+
+    def test_async_pure_no_warning(self) -> None:
+        """async(pure expr) is trivially commutative — no warning."""
+        warnings = _warnings("""
+private fn f(-> @Future<Int>)
+  requires(true) ensures(true) effects(<Async>)
+{ async(42) }
+""")
+        assert not any(w.error_code == "W002" for w in warnings), warnings
+
+    def test_async_over_io_warns_eager(self) -> None:
+        """async over an IO-effect argument evaluates eagerly — W002."""
+        warnings = _warnings("""
+private fn f(-> @Future<Unit>)
+  requires(true) ensures(true) effects(<IO, Async>)
+{ async(IO.print("hi")) }
+""")
+        w002 = [w for w in warnings if w.error_code == "W002"]
+        assert w002, f"expected W002, got: {[ (w.error_code, w.description) for w in warnings ]}"
+        assert "eagerly" in w002[0].description.lower()
+
+    def test_async_over_effectful_fn_call_warns_eager(self) -> None:
+        """async over a call to a user function whose row is outside the
+        whitelist ({IO} here) warns — the rule sees through fn calls."""
+        warnings = _warnings("""
+private fn log_and_get(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("side effect");
+  7
+}
+
+private fn f(-> @Future<Int>)
+  requires(true) ensures(true) effects(<IO, Async>)
+{ async(log_and_get()) }
+""")
+        w002 = [w for w in warnings if w.error_code == "W002"]
+        assert w002, f"expected W002, got: {[ (w.error_code, w.description) for w in warnings ]}"
+
+    def test_async_over_http_via_fn_call_no_warning(self) -> None:
+        """A user function whose row is exactly {Http} stays whitelisted."""
+        warnings = _warnings("""
+private fn fetch(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.get(@String.0) }
+
+private fn f(@String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(fetch(@String.0)) }
+""")
+        assert not any(w.error_code == "W002" for w in warnings), warnings
+
+
 # =====================================================================
 # Coverage: control.py — handler type-checking
 # =====================================================================

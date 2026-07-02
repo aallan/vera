@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING
 import wasmtime
 
 from vera import ast
+from vera.runtime.async_http import register_async
 from vera.runtime.decimal import register_decimal
 from vera.runtime.heap import (
     _alloc_array_of_strings,
@@ -80,6 +82,7 @@ class CompileResult:
     json_ops_used: set[str] = field(default_factory=set)
     html_ops_used: set[str] = field(default_factory=set)
     http_ops_used: set[str] = field(default_factory=set)
+    async_ops_used: set[str] = field(default_factory=set)  # #841
     inference_ops_used: set[str] = field(default_factory=set)
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
@@ -801,10 +804,16 @@ def execute(
     # register_decimal populates it when Decimal ops are actually used.
     _decimal_store: dict[int, PyDecimal] = {}
 
+    # #841: the future store mirrors the Decimal pattern — created
+    # up-front so host_decref_handle can close over it; register_async
+    # populates it when fused-async ops are actually used.
+    _future_store: dict[int, "Future[tuple[bool, str]]"] = {}
+
     _decref_used = (
         result.map_ops_used or result.set_ops_used
         or result.decimal_ops_used
         or result.json_ops_used or result.html_ops_used
+        or result.async_ops_used
     )
     if _decref_used:
         def host_decref_handle(
@@ -816,6 +825,14 @@ def execute(
             # Phase 2c never fires for them.  Other kinds: silent no-op.
             if kind == 3 and result.decimal_ops_used:
                 _decimal_store.pop(handle, None)
+            # #841: Future (kind=4) — an unawaited future whose wrapper
+            # became unreachable.  Cancel it if it hasn't started (a
+            # running fetch just completes into a dropped Future) and
+            # evict the store entry.
+            elif kind == 4 and result.async_ops_used:
+                fut = _future_store.pop(handle, None)
+                if fut is not None:
+                    fut.cancel()
 
         linker.define_func(
             "vera", "host_decref_handle",
@@ -892,6 +909,19 @@ def execute(
     # -----------------------------------------------------------------
     if result.http_ops_used:
         register_http(linker, result.http_ops_used)
+
+    # -----------------------------------------------------------------
+    # Fused-async host functions (#841)
+    # -----------------------------------------------------------------
+    _async_executor: ThreadPoolExecutor | None = None
+    if result.async_ops_used:
+        _async_executor = ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="vera-async",
+        )
+        register_async(
+            linker, result.async_ops_used,
+            _future_store, _host_store_refs, _async_executor,
+        )
 
     # -----------------------------------------------------------------
     # Inference effect host functions
@@ -1037,7 +1067,18 @@ def execute(
         raise RuntimeError(msg)
 
     try:
-        raw_result = func(store, *call_args)
+        try:
+            raw_result = func(store, *call_args)
+        finally:
+            # #841: tear the worker pool down on every exit path.
+            # Pending (never-started) futures are cancelled; in-flight
+            # requests are waited out (bounded by _HTTP_TIMEOUT) —
+            # matching eager semantics, where the program could not
+            # have ended before its issued requests completed.  A
+            # KeyboardInterrupt re-raises after the shutdown, landing
+            # in the exit-130 handler below.
+            if _async_executor is not None:
+                _async_executor.shutdown(wait=True, cancel_futures=True)
     except _VeraExit as exit_exc:
         # IO.exit(code) — return captured output with exit code.
         # #573: include host_store_sizes here too so the field is

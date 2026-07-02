@@ -417,6 +417,16 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.190 | 1 Jul | Text I/O (files and `subprocess` captures) is UTF-8 regardless of host locale, gated in pre-commit/CI, letting the `PYTHONUTF8` backstop be removed ([#645](https://github.com/aallan/vera/issues/645)). |
 | v0.0.191 | 1 Jul | Type-check-impossible codegen guards raise `CodegenInvariantError` (`[E699]`) instead of silently returning None ([#657](https://github.com/aallan/vera/issues/657)). |
 
+## Stage 16: The server-effects sprint (2 July onwards)
+
+*From concurrent `<Async>` to a served `<HttpServer>` — the road to WASI.*
+
+Demo-first: each stage ships a working capability, cut as its own release, on the way to Vera programs serving verified HTTP.  Groundwork recorded in [`WASI.md`](WASI.md) (the executed toolchain spike: component-text instantiation, host threading, `wasmtime serve`).
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.0.192 | 2 Jul | Concurrent `<Async>`: `async(Http.get/post)` runs on a host worker thread, `await` blocks for it, `W002` marks the eager remainder ([#841](https://github.com/aallan/vera/issues/841)); rides with the #420/#419/#839 test-oracle splits. |
+
 ---
 
 ## By the numbers

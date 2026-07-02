@@ -25,6 +25,10 @@ from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.wasm import StringPool
+from vera.wasm.async_fusion import (
+    compute_future_ret_fns,
+    compute_future_ret_module_fns,
+)
 from vera.wasm.inference import substitute_type_vars
 
 from vera.codegen.modules import CrossModuleMixin
@@ -139,6 +143,22 @@ class CodeGenerator(
         self._json_ops_used: set[str] = set()  # Json host-import builtins
         self._html_ops_used: set[str] = set()  # Html host-import builtins
         self._http_ops_used: set[str] = set()  # Http host-import builtins
+        # #841: fused-async host-import builtins (async_http_get /
+        # async_http_post / async_await)
+        self._async_ops_used: set[str] = set()
+        # #841: fns declared to return Future<Result<String, String>>,
+        # shared by the _scan_io_ops pre-scan and the WasmContext await
+        # lowering (computed in compile() from the program decls).
+        self._future_ret_fns: frozenset[str] = frozenset()
+        # #841 round 2: (module path, name) → return TypeExpr for every
+        # imported module fn (harvested in modules.py), and the derived
+        # qualified future-return set for ModuleCall awaits.
+        self._module_fn_ret_type_exprs: dict[
+            tuple[tuple[str, ...], str], ast.TypeExpr
+        ] = {}
+        self._future_ret_module_fns: frozenset[
+            tuple[tuple[str, ...], str]
+        ] = frozenset()
         self._inference_ops_used: set[str] = set()  # Inference host-import builtins
         self._random_ops_used: set[str] = set()  # Random host-import builtins (#465)
         self._math_ops_used: set[str] = set()  # Math host-import builtins (#467)
@@ -430,6 +450,7 @@ class CodeGenerator(
                 json_ops_used=set(),
                 html_ops_used=set(),
                 http_ops_used=set(),
+                async_ops_used=set(),
                 inference_ops_used=set(),
                 random_ops_used=set(),
                 math_ops_used=set(),
@@ -440,6 +461,20 @@ class CodeGenerator(
 
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)
+
+        # #841: Future<Result<String, String>>-returning fn names — one
+        # derivation feeds both import-emission passes (pre-scan +
+        # WasmContext) so they agree on which awaits need the
+        # fused-handle check.  Derived from the return-type registry
+        # (local Pass-1 registrations + the Pass-0 cross-module #628
+        # harvest), not the local declarations, so imported and
+        # module-qualified calls classify too.
+        self._future_ret_fns = compute_future_ret_fns(
+            self._fn_ret_type_exprs,
+        )
+        self._future_ret_module_fns = compute_future_ret_module_fns(
+            self._module_fn_ret_type_exprs,
+        )
 
         # Pass 1.2: inject prelude ADTs and combinator implementations
         # Prelude functions are registered as builtins in the type checker
@@ -520,6 +555,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
+                async_ops_used=set(self._async_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
                 random_ops_used=set(self._random_ops_used),
                 math_ops_used=set(self._math_ops_used),
@@ -739,6 +775,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
+                async_ops_used=set(self._async_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
                 random_ops_used=set(self._random_ops_used),
                 math_ops_used=set(self._math_ops_used),
@@ -774,6 +811,7 @@ class CodeGenerator(
             json_ops_used=set(self._json_ops_used),
             html_ops_used=set(self._html_ops_used),
             http_ops_used=set(self._http_ops_used),
+            async_ops_used=set(self._async_ops_used),
             inference_ops_used=set(self._inference_ops_used),
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
@@ -825,6 +863,14 @@ class CodeGenerator(
                 return "i32_pair"
             if name in ("Map", "Set", "Decimal"):
                 return "i32"  # opaque host handle
+            # Future<T> is transparent — same representation as T
+            # (#841: a fused Future<Result<String, String>> is a
+            # wrapper pointer, which is repr-compatible with the
+            # Result pointer; value-typed futures are their value).
+            # Pre-#841 there was no case here, so a function
+            # *returning* a Future was E605-skipped.
+            if name == "Future" and te.type_args and len(te.type_args) == 1:
+                return self._type_expr_to_wasm_type(te.type_args[0])
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"

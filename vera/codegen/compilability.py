@@ -8,6 +8,7 @@ for State handler expressions.
 from __future__ import annotations
 
 from vera import ast
+from vera.wasm.async_fusion import await_needs_check, fused_async_target
 
 
 class CompilabilityMixin:
@@ -300,6 +301,32 @@ class CompilabilityMixin:
                     self._scan_io_ops(stmt.expr)
             self._scan_io_ops(node.expr)
         elif isinstance(node, ast.FnCall):
+            # #841: fused-async interception — must agree exactly with
+            # the WasmContext translation (shared predicates in
+            # vera/wasm/async_fusion.py).  A fused async(Http.get(...))
+            # registers the async_http_* import INSTEAD of the sync
+            # http_* the QualifiedCall branch would register when the
+            # walk reached the inner call; an await that needs the
+            # fused-handle runtime check additionally registers
+            # async_await (its argument is still scanned normally).
+            fused = fused_async_target(node)
+            if fused is not None:
+                self._async_ops_used.add(fused)
+                inner = node.args[0]
+                assert isinstance(inner, ast.QualifiedCall)  # noqa: S101
+                for arg in inner.args:
+                    self._scan_io_ops(arg)
+                return
+            if (
+                node.name == "await"
+                and len(node.args) == 1
+                and await_needs_check(
+                    node.args[0],
+                    self._future_ret_fns,
+                    self._future_ret_module_fns,
+                )
+            ):
+                self._async_ops_used.add("async_await")
             if node.name in self._MD_BUILTINS:
                 self._md_ops_used.add(node.name)
             if node.name in self._REGEX_BUILTINS:

@@ -1149,3 +1149,92 @@ public fn main(-> @Int)
         assert len(errors) >= 1
         desc = errors[0].description
         assert "alpha" in desc and "beta" in desc
+
+
+class TestCrossModuleFusedAwait841:
+    """#841: an await of a cross-module call returning
+    Future<Result<String, String>> must get the fused-handle runtime
+    check.  Pre-fix, ``compute_future_ret_fns`` scanned only the local
+    program (missing imported fns for the FnCall arm) and
+    ``await_needs_check`` had no ModuleCall arm — so the await lowered
+    to identity, the kind-4 wrapper flowed into the match's
+    unconditional last arm, and the future was silently never awaited
+    (PR #842 review, critical finding)."""
+
+    FETCHER_MODULE = """\
+public fn grab(@String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(Http.get(@String.0)) }
+"""
+
+    _MAIN_TEMPLATE = """\
+import fetcher(grab);
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{{
+  let @Result<String, String> = await({call});
+  match @Result<String, String>.0 {{
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }}
+}}
+"""
+
+    def _run_await_of(self, call: str) -> None:
+        fetcher = TestCrossModuleCodegen._resolved(
+            ("fetcher",), self.FETCHER_MODULE,
+        )
+        source = self._MAIN_TEMPLATE.format(call=call)
+        result = TestCrossModuleCodegen._compile_mod(source, [fetcher])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, [e.description for e in errors]
+        assert '(import "vera" "async_await"' in result.wat, (
+            "await of a cross-module future must import async_await")
+        exec_result = execute(result)
+        assert exec_result.value == 1, (
+            "the awaited Err must carry the real fetch outcome — a raw "
+            "wrapper smuggled into the match reads a zero-length string "
+            "and returns 0")
+
+    def test_await_of_unqualified_imported_call(self) -> None:
+        """`await(grab(...))` — FnCall arm via the cross-module
+        return-type registry."""
+        self._run_await_of('grab("ftp://blocked.invalid/x")')
+
+    def test_await_of_qualified_module_call(self) -> None:
+        """`await(fetcher::grab(...))` — the ModuleCall arm."""
+        self._run_await_of('fetcher::grab("ftp://blocked.invalid/x")')
+
+    def test_qualified_await_not_confused_by_colliding_local(self) -> None:
+        """PR #842 review round 2: `await(fetcher::grab(...))` classifies
+        by the RESOLVED module target, not the bare name — a local
+        `grab` returning a different Future shape (here Future<Int>)
+        must not make the qualified await lower to identity (bare-name
+        registry follows local-shadows-import) or vice versa."""
+        fetcher = TestCrossModuleCodegen._resolved(
+            ("fetcher",), self.FETCHER_MODULE,
+        )
+        source = """\
+import fetcher(grab);
+
+private fn grab(@Int -> @Future<Int>)
+  requires(true) ensures(true) effects(<Async>)
+{ async(@Int.0 + 1) }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(fetcher::grab("ftp://collide.invalid/x"));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        result = TestCrossModuleCodegen._compile_mod(source, [fetcher])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, [e.description for e in errors]
+        assert '(import "vera" "async_await"' in result.wat
+        exec_result = execute(result)
+        assert exec_result.value == 1

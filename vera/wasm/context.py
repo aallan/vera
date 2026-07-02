@@ -146,6 +146,20 @@ class WasmContext(
         self._html_ops_used: set[str] = set()
         # Http host-import tracking (propagated to codegen core)
         self._http_ops_used: set[str] = set()
+        # #841: fused-async host-import tracking (async_http_get /
+        # async_http_post / async_await; propagated to codegen core)
+        self._async_ops_used: set[str] = set()
+        # #841: names of functions whose declared return type is
+        # exactly Future<Result<String, String>> — the await lowering
+        # consults this to decide whether a directly-awaited call
+        # result needs the fused-handle runtime check.  Computed once
+        # in vera/codegen/core.py (compute_future_ret_fns) and shared
+        # with the compilability pre-scan; set via set_future_ret_fns.
+        self._future_ret_fns: frozenset[str] = frozenset()
+        # #841 round 2: qualified companion for ModuleCall awaits.
+        self._future_ret_module_fns: frozenset[
+            tuple[tuple[str, ...], str]
+        ] = frozenset()
         # Inference host-import tracking (propagated to codegen core)
         self._inference_ops_used: set[str] = set()
         # Random host-import tracking (propagated to codegen core, #465)
@@ -273,6 +287,15 @@ class WasmContext(
     ) -> None:
         """Set function return WASM types for FnCall type inference."""
         self._fn_ret_types = ret_types
+
+    def set_future_ret_fns(
+        self,
+        names: frozenset[str],
+        module_fns: frozenset[tuple[tuple[str, ...], str]] = frozenset(),
+    ) -> None:
+        """Set the Future<Result<String, String>>-returning fn sets (#841)."""
+        self._future_ret_fns = names
+        self._future_ret_module_fns = module_fns
 
     def set_module_qualified_targets(
         self, targets: dict[tuple[tuple[str, ...], str], str],

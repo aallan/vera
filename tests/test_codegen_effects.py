@@ -1262,3 +1262,153 @@ public fn main(@Unit -> @Int)
 }
 """
         assert _run(src) == -1
+
+# =====================================================================
+# Concurrent <Async> (#841) — fused lowering + host-threaded futures
+# =====================================================================
+
+class TestConcurrentAsync841:
+    """#841: async(Http.get/post(...)) fuses into a single host import that
+    starts the request on a host worker thread and returns a Future as a
+    #578-tagged handle wrapper; await blocks on the handle.  Everything
+    else stays eager (checker-warned, spec-conformant)."""
+
+    def test_async_http_get_fuses_to_task_import(self) -> None:
+        """The direct-call shape imports vera.async_http_get (not http_get)
+        and the await site imports vera.async_await."""
+        result = _compile_ok("""
+public fn fetch(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.get(@String.0));
+  await(@Future<Result<String, String>>.0)
+}
+""")
+        assert '(import "vera" "async_http_get"' in result.wat, result.wat[:800]
+        assert '(import "vera" "async_await"' in result.wat
+        # the fused path must NOT also route through the sync import
+        assert '(import "vera" "http_get"' not in result.wat
+
+    def test_async_http_post_fuses_to_task_import(self) -> None:
+        result = _compile_ok("""
+public fn send(@String, @String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = async(Http.post(@String.1, @String.0));
+  await(@Future<Result<String, String>>.0)
+}
+""")
+        assert '(import "vera" "async_http_post"' in result.wat
+
+    def test_async_pure_stays_eager_no_task_imports(self) -> None:
+        """Non-fused shapes keep the identity lowering — no task imports."""
+        result = _compile_ok("""
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(41 + 1);
+  await(@Future<Int>.0)
+}
+""")
+        assert "async_http_get" not in result.wat
+        assert "async_await" not in result.wat
+
+    def test_fused_future_wrapper_is_gc_registered(self) -> None:
+        """The pending-future wrapper follows the #578/#573 pattern:
+        register_wrapper with the Future kind (4) and a shadow push, so an
+        unawaited future is reclaimed by Phase 2c like a Decimal handle."""
+        result = _compile_ok("""
+public fn fire(@String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(Http.get(@String.0)) }
+""")
+        wat = result.wat
+        assert "call $register_wrapper" in wat
+        import re
+        assert re.search(r"i32\.const 4\s*\n\s*local\.get \d+\s*\n\s*call \$register_wrapper", wat), (
+            "expected register_wrapper with kind 4 for the Future wrapper")
+
+    def test_await_of_generic_fn_with_concrete_future_return(self) -> None:
+        """PR #842 review round 2 pin: a generic fn with a CONCRETE
+        Future<Result<String, String>> return classifies at the await
+        site via its template name — classification runs on the
+        pre-monomorphization AST (the call-site mangling to wrap$Int
+        happens later, during translation), so the clone names never
+        need to be in the future-return registry.  Pinned so a future
+        move to AST-level mono rewriting fails here instead of
+        silently smuggling a wrapper."""
+        source = """
+public forall<T> fn wrap(@T, @String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(Http.get(@String.0)) }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(wrap(1, "ftp://mono.invalid/x"));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        result = _compile_ok(source)
+        assert '(import "vera" "async_await"' in result.wat
+        assert _run(source) == 1
+
+    def test_two_async_gets_overlap_deterministically(self) -> None:
+        """Two fused gets actually overlap: the server holds request A until
+        request B arrives (3s bound).  Eager evaluation answers SEQUENTIAL
+        (A times out waiting before B is ever issued); concurrent answers
+        CONCURRENT for both.  Server-side ordering — no wall-clock."""
+        import http.server
+        import threading
+
+        arrived_b = threading.Event()
+        log: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib API name)
+                log.append(self.path)
+                if self.path == "/a":
+                    ok = arrived_b.wait(timeout=3.0)
+                    body = b"CONCURRENT" if ok else b"SEQUENTIAL"
+                else:
+                    arrived_b.set()
+                    body = b"CONCURRENT"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_io(f"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{{
+  let @Future<Result<String, String>> = async(Http.get("http://127.0.0.1:{port}/a"));
+  let @Future<Result<String, String>> = async(Http.get("http://127.0.0.1:{port}/b"));
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  match @Result<String, String>.0 {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print("ERR-A")
+  }};
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.0 {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print("ERR-B")
+  }};
+  ()
+}}
+""")
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert out == "CONCURRENTCONCURRENT", (out, log)

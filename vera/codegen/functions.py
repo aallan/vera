@@ -91,6 +91,12 @@ class FunctionCompilationMixin:
         # resolve the element type of `f()[i]` when `f` returns
         # `Array<T>`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #841: Future<Result<String, String>>-returning fn names, for the
+        # await lowering's directly-awaited-call check (computed once in
+        # core.py, shared with the _scan_io_ops pre-scan).
+        ctx.set_future_ret_fns(
+            self._future_ret_fns, self._future_ret_module_fns,
+        )
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier (kept in lockstep with the verifier).
         ctx.set_expr_semantic_types(self._expr_semantic_types)
@@ -486,6 +492,7 @@ class FunctionCompilationMixin:
         self._json_ops_used.update(ctx._json_ops_used)
         self._html_ops_used.update(ctx._html_ops_used)
         self._http_ops_used.update(ctx._http_ops_used)
+        self._async_ops_used.update(ctx._async_ops_used)
         self._inference_ops_used.update(ctx._inference_ops_used)
         self._random_ops_used.update(ctx._random_ops_used)
         self._math_ops_used.update(ctx._math_ops_used)

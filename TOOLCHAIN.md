@@ -266,6 +266,7 @@ and [error-code table](spec/), and `vera errors --json` for the live catalogue.
 
 - [LSP_SERVER.md](LSP_SERVER.md) — the language server and proof-delta methods
 - [DESIGN.md](DESIGN.md) — why the toolchain is shaped this way
+- [WASI.md](WASI.md) — the WASI/component toolchain facts under the server-effects sprint
 - [DE_BRUIJN.md](DE_BRUIJN.md) — the `@T.n` slot model `--explain-slots` reports
 - [SKILL.md](SKILL.md) — writing Vera: syntax, contracts, effects, common mistakes
 - [README.md](README.md) — install, the command list, and the project overview

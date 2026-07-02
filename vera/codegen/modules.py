@@ -123,6 +123,15 @@ class CrossModuleMixin:
             # decl was rejected before we reach this loop).
             for fn_name, ret_te in temp._fn_ret_type_exprs.items():
                 self._fn_ret_type_exprs.setdefault(fn_name, ret_te)
+                # #841 (PR #842 review round 2): also key by (module
+                # path, name) so a module-qualified await classifies by
+                # the RESOLVED target's return type.  The bare-name
+                # registry above follows local-shadows-import (#814)
+                # for unqualified calls, but `m::grab` must not be
+                # classified by a colliding local `grab`.
+                self._module_fn_ret_type_exprs[
+                    (mod.path, fn_name)
+                ] = ret_te
 
             # Harvest per-parameter concrete-@Nat flags (#747, CR #756).
             # Without this an imported function `f(@Nat -> …)` loses its

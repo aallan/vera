@@ -2,16 +2,20 @@
 
 Handles: JSON (parse, stringify), HTML (parse, to_string, query, text),
 Markdown (parse, render, has_heading, has_code_block, extract_code_blocks),
-Regex (match, find, find_all, replace), and async/await (identity ops).
+Regex (match, find, find_all, replace), and async/await (#841: fused
+concurrent lowering for ``async(Http.get/post(...))``, identity
+otherwise).
 
 All operations are thin wrappers around host imports — the parsing and
-rendering logic lives in the Python runtime (api.py) and JS runtime
-(runtime.mjs).
+rendering logic lives in the Python runtime (api.py + runtime/) and JS
+runtime (runtime.mjs).
 """
 
 from __future__ import annotations
 
 from vera import ast
+from vera.wasm.async_fusion import await_needs_check, fused_async_arg_target
+from vera.wasm.calls_containers import _FUTURE_HANDLE_TAG, _WRAP_KIND_FUTURE
 from vera.wasm.helpers import WasmSlotEnv
 
 
@@ -296,24 +300,97 @@ class CallsMarkupMixin:
         ins.append("call $vera.regex_replace")
         return ins
 
-    # ---- Async builtins -----------------------------------------------
+    # ---- Async builtins (#841) ----------------------------------------
 
     def _translate_async(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate async(expr) → Future<T> (identity, eager evaluation).
+        """Translate async(expr) → Future<T>.
 
-        The reference implementation evaluates async(expr) eagerly.
-        Future<T> is WASM-transparent — same representation as T.
-        True concurrency will be available via WASI 0.3 (#237).
+        Two lowerings, decided by ``fused_async_arg_target`` (shared
+        with the ``_scan_io_ops`` import pre-scan — see
+        ``vera/wasm/async_fusion.py`` for why the predicate must not
+        be re-derived here):
+
+        * Fused — ``async(Http.get/post(...))`` with call-free request
+          args becomes one ``vera.async_http_*`` host import that
+          submits the request to a host worker thread and returns the
+          Future as a #578-tagged handle wrapper (kind 4), registered
+          with the wrap table so an unawaited future is reclaimed via
+          ``host_decref_handle`` like a Decimal handle.
+        * Eager (identity) — every other shape.  Future<T> is
+          WASM-transparent, so the value IS the future.  The checker's
+          W002 warns on the non-commutative eager cases.
         """
-        return self.translate_expr(arg, env)
+        target = fused_async_arg_target(arg)
+        if target is None:
+            return self.translate_expr(arg, env)
+        assert isinstance(arg, ast.QualifiedCall)  # noqa: S101 — mypy narrowing; fused_async_arg_target guarantees the shape
+        instructions: list[str] = []
+        for http_arg in arg.args:
+            arg_instrs = self.translate_expr(http_arg, env)
+            if arg_instrs is None:
+                return None
+            instructions.extend(arg_instrs)
+        self._async_ops_used.add(target)
+        self.needs_alloc = True
+        instructions.append(f"call $vera.{target}")
+        # Wrap the returned raw handle exactly like a Decimal handle
+        # (#573/#578 pattern): tag word, bit-31-tagged handle,
+        # register_wrapper, shadow push.
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        instructions.append(f"local.set {handle_tmp}")
+        instructions.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_FUTURE, handle_tmp, wrapper_tmp,
+            ),
+        )
+        return instructions
 
     def _translate_await(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate await(future) → T (identity unwrap).
+        """Translate await(future) → T.
 
-        Future<T> is WASM-transparent, so await is a no-op.
+        For shapes that can carry a fused future (``await_needs_check``
+        — statically typed Future<Result<String, String>>, the only
+        type fused futures inhabit), emit a runtime probe of the
+        value's first word: the fused wrapper's tag (0xFEEDC004) can
+        never collide with an eager Result pointer's constructor tag,
+        and both are valid heap pointers, so the load is always safe.
+        Fused → unwrap the bit-31-tagged handle and block on
+        ``vera.async_await`` (the host resolves the worker's result and
+        builds the Result ADT on the guest thread); eager → the value
+        already IS the result.
+
+        Everything else keeps the identity lowering — value-typed
+        futures (e.g. Future<Int>, an i64) can never hold a fused
+        handle.
         """
-        return self.translate_expr(arg, env)
+        if not await_needs_check(
+            arg, self._future_ret_fns, self._future_ret_module_fns,
+        ):
+            return self.translate_expr(arg, env)
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self._async_ops_used.add("async_await")
+        self.needs_alloc = True
+        value_tmp = self.alloc_local("i32")
+        return [
+            *arg_instrs,
+            f"local.tee {value_tmp}",
+            "i32.load offset=0",
+            f"i32.const {_FUTURE_HANDLE_TAG}",
+            "i32.eq",
+            "if (result i32)",
+            f"local.get {value_tmp}",
+            "i32.load offset=4",
+            "i32.const 0x7FFFFFFF",
+            "i32.and",
+            "call $vera.async_await",
+            "else",
+            f"local.get {value_tmp}",
+            "end",
+        ]

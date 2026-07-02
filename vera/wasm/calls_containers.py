@@ -30,6 +30,7 @@ from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 _WRAP_KIND_MAP = 1
 _WRAP_KIND_SET = 2
 _WRAP_KIND_DECIMAL = 3
+_WRAP_KIND_FUTURE = 4  # #841: fused-async pending future
 
 # #573: wrapper-ADT tag values stored at wrapper body offset 0.  Not
 # strictly required for correctness — the side table is the source
@@ -40,11 +41,18 @@ _WRAP_KIND_DECIMAL = 3
 _MAP_HANDLE_TAG = 0xFEEDC001
 _SET_HANDLE_TAG = 0xFEEDC002
 _DECIMAL_HANDLE_TAG = 0xFEEDC003
+# #841: unlike the other tags, the Future tag is also load-bearing for
+# discrimination — the await lowering in ``calls_markup.py`` probes a
+# Future<Result<String, String>> value's first word against this tag to
+# distinguish a fused handle wrapper from an eagerly-evaluated Result
+# pointer (whose first word is a small constructor tag).
+_FUTURE_HANDLE_TAG = 0xFEEDC004
 
 _KIND_TO_TAG: dict[int, int] = {
     _WRAP_KIND_MAP: _MAP_HANDLE_TAG,
     _WRAP_KIND_SET: _SET_HANDLE_TAG,
     _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
+    _WRAP_KIND_FUTURE: _FUTURE_HANDLE_TAG,
 }
 
 # Wrapper ADT body size.  Layout depends on the type:
@@ -126,9 +134,10 @@ class CallsContainersMixin:
             "i32.const 0x80000000",
             "i32.or",
             "i32.store offset=4",
-            # Write 0 at +8 (bucket_ptr).  This helper is Decimal-only
-            # post-#706, and Decimal keeps bucket_ptr at 0 (value-typed,
-            # nothing for the GC scan to anchor).
+            # Write 0 at +8 (bucket_ptr).  No wrap kind uses a bucket
+            # here: Decimal is value-typed and the #841 Future handle
+            # indexes a host-side store — nothing for the GC scan to
+            # anchor.
             f"local.get {wrapper_temp}",
             "i32.const 0",
             "i32.store offset=8",
@@ -153,19 +162,22 @@ class CallsContainersMixin:
         # grow unbounded across iterations of an enclosing
         # ``array_fold``.
         seq.extend(gc_shadow_push(wrapper_temp))
-        # #706: this helper is now Decimal-only, and Decimal needs no
-        # bucket (``PyDecimal`` is value-typed).  The
-        # ``attach_bucket_to_wrapper`` call is retained as a vestigial
-        # tripwire: its host-side dispatcher asserts kind=3, so if a
-        # future change ever routes a Map / Set wrapper back through
-        # this path the mismatch fails loudly instead of silently
-        # leaving the bucket unpopulated.
-        seq.extend([
-            f"local.get {wrapper_temp}",
-            f"i32.const {kind}",
-            f"local.get {handle_temp}",
-            "call $vera.attach_bucket_to_wrapper",
-        ])
+        # #706: no wrap kind needs a bucket any more (``PyDecimal`` is
+        # value-typed; #841 Future handles index a host-side future
+        # store).  The ``attach_bucket_to_wrapper`` call is retained as
+        # a vestigial tripwire: its host-side dispatcher asserts kind=3,
+        # so if a future change ever routes a Map / Set wrapper back
+        # through this path the mismatch fails loudly instead of
+        # silently leaving the bucket unpopulated.  #841 Future wrappers
+        # skip the call by design (they were never part of the #695
+        # bucket scheme, and emitting it would trip the kind=3 assert).
+        if kind != _WRAP_KIND_FUTURE:
+            seq.extend([
+                f"local.get {wrapper_temp}",
+                f"i32.const {kind}",
+                f"local.get {handle_temp}",
+                "call $vera.attach_bucket_to_wrapper",
+            ])
         # Leave the wrapper pointer on the stack as the call result.
         seq.append(f"local.get {wrapper_temp}")
         return seq
