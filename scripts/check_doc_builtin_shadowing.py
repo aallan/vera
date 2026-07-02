@@ -69,7 +69,10 @@ def find_shadowing_defs(
 
 
 # Trees that are generated, vendored, or artefacts — not authored doc surfaces.
-_SKIP_DIRS = {".venv", "docs", "mutants", ".git", "node_modules", "site"}
+# ``.claude`` holds session tooling state (agent worktrees carry full repo
+# copies, so without this the scanner re-flags every spec chapter through
+# ``.claude/worktrees/<name>/spec/...`` whenever a worktree exists).
+_SKIP_DIRS = {".venv", "docs", "mutants", ".git", ".claude", "node_modules", "site"}
 
 
 def doc_files(root: Path) -> list[Path]:

@@ -2529,9 +2529,26 @@ public fn main(@Unit -> @Unit)
         stdout (flaked twice on macos-26 runners, PR #846).  Prompt
         (non-blocking) issuance at the ``async`` point is pinned
         separately by the #841 request-ordering and operand-stack
-        tests, so nothing is lost by the reorder."""
+        tests, so nothing is lost by the reorder.
+
+        #848 round 2 (PR #849): server ARRIVAL is produced by the
+        executor WORKER thread and says nothing about where the MAIN
+        thread is — ``interrupt_main()`` only sets a pending SIGINT
+        flag, and firing it before the main thread parks in the
+        interruptible ``Future.result()`` wait let the flag
+        materialize outside ``execute()``'s protected region on slow
+        runners (an xdist worker crash on two macOS jobs; a completed
+        run with ``exit_code=None`` on ubuntu — 3/12 jobs at PR #849's
+        merge head).  The interrupter therefore also polls
+        ``sys._current_frames()`` until the main thread's stack shows
+        it blocked inside ``host_async_await`` → ``Future.result``
+        before firing, with a bounded deadline so the test can never
+        hang; the handler release stays after the interrupt so
+        ``shutdown(wait=True)`` still has a live worker to wait out."""
         import http.server
+        import sys
         import threading
+        import time
         import _thread
 
         from vera.codegen import compile as compile_program, execute
@@ -2560,8 +2577,30 @@ public fn main(@Unit -> @Unit)
         )
         server_thread.start()
 
+        main_ident = threading.main_thread().ident
+
+        def _main_blocked_in_await() -> bool:
+            # The one place a pending SIGINT is guaranteed to be
+            # intercepted by execute(): the main thread parked in
+            # Future.result() inside the host_async_await import.
+            frame = sys._current_frames().get(main_ident)
+            names = set()
+            while frame is not None:
+                names.add(frame.f_code.co_name)
+                frame = frame.f_back
+            return "host_async_await" in names and "result" in names
+
         def interrupt_when_in_flight() -> None:
             if arrived.wait(timeout=10.0):
+                deadline = time.monotonic() + 10.0
+                while (
+                    time.monotonic() < deadline
+                    and not _main_blocked_in_await()
+                ):
+                    time.sleep(0.005)
+                # Deadline fallback: fire anyway so the test cannot
+                # hang; a miss reproduces at worst the old flake, not
+                # a deadlock.
                 _thread.interrupt_main()
             # Release the handler either way so shutdown(wait=True)
             # in execute()'s finally can complete.

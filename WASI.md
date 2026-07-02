@@ -44,8 +44,13 @@ stage).
 
 ## Where the loose ends live
 
-- Frame-resolution degradation through components (check 5) → design input for the
-  WASI-target stage (#237 PR), alongside the stdout-capture wiring (check 3).
+- Frame-resolution degradation through components (check 5) → **resolved in the
+  #237 target**: the runner classifies trap kinds from the backtrace text +
+  the WASI stderr channel (`vera/runtime/wasi_host.py`); structured frames stay
+  core-path-only (spec §13.6).  The stdout-capture wiring (check 3) landed as
+  `WasiConfig.stdout_custom` → `ExecuteResult.stdout` in the same runner.
 - The `wasmtime serve` deployment path (check 7) → the `wasi:http` serve-backend
   stage after #237; the pure-Python `vera serve` driver (#305) does not depend on it.
-- Spike keeper-scripts → CI smoke tests land with the WASI-target stage, not before.
+- Spike keeper-scripts → landed as `tests/test_wasi_target.py` with the #237
+  target: component parse + live `add_wasip2` instantiation + execution
+  semantics + the dual-target conformance differential + a stock-CLI smoke test.
