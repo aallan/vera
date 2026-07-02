@@ -2517,8 +2517,19 @@ public fn main(@Unit -> @Unit)
         handler is released immediately after, so the invocation
         `finally`'s `shutdown(wait=True)` has a live worker to wait out.
         The test completing at all pins that teardown doesn't hang; the
-        assertions pin the exit-130 mapping.  Event-gated — no
-        wall-clock ordering assumptions."""
+        assertions pin the exit-130 mapping.
+
+        #848: the print comes BEFORE the ``async(...)`` — that program
+        order is the happens-before making the stdout assertion
+        deterministic (buffer write → request issuance → arrival →
+        interrupt; the interrupt can never precede the print).  The
+        original shape printed between ``async`` and ``await``, which
+        races the worker thread's request against the guest reaching
+        the print — a lost race yields the correct exit 130 with empty
+        stdout (flaked twice on macos-26 runners, PR #846).  Prompt
+        (non-blocking) issuance at the ``async`` point is pinned
+        separately by the #841 request-ordering and operand-stack
+        tests, so nothing is lost by the reorder."""
         import http.server
         import threading
         import _thread
@@ -2562,8 +2573,8 @@ public fn main(@Unit -> @Unit)
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO, Http, Async>)
 {{
-  let @Future<Result<String, String>> = async(Http.get("http://127.0.0.1:{port}/hang"));
   IO.print("before await");
+  let @Future<Result<String, String>> = async(Http.get("http://127.0.0.1:{port}/hang"));
   let @Result<String, String> = await(@Future<Result<String, String>>.0);
   IO.print("after await")
 }}
@@ -2591,8 +2602,11 @@ public fn main(@Unit -> @Unit)
         assert exec_result.exit_code == 130, (
             f"expected exit_code=130 (SIGINT), got {exec_result.exit_code}"
         )
-        assert "before await" in exec_result.stdout
-        assert "after await" not in exec_result.stdout
+        # Deterministic post-#848: the print happens-before the request
+        # can be issued (program order), and the await can never
+        # complete — the handler is held until the interrupt is
+        # already pending in the main thread.
+        assert exec_result.stdout == "before await"
 
     def test_host_read_char_keyboard_interrupt_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch,

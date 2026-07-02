@@ -5,6 +5,7 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -1283,3 +1284,160 @@ public fn main(@Unit -> @Bool)
 }
 """
         assert _run(src) == 1
+
+
+class TestHostImportPairLetRooting846:
+    """#847 (fixed by #846): the plain-``let`` **pair-type** branch
+    (String / Array<T> → (ptr, len) locals) in ``translate_block``
+    never shadow-pushed its pointer local — the last unrooted sibling
+    of the #705 scalar-i32 let fix and the #707 let-destruct pair fix
+    (whose comment in ``vera/wasm/data.py`` already flagged this exact
+    gap class).
+
+    The hole is only observable for pairs a host import returns
+    (``IO.args`` → Array<String>, ``IO.read_line`` → String): every
+    Vera-side pair producer (array literal, string builtin) shadow-
+    pushes its freshly-allocated ``dst`` during construction, and that
+    push survives until the function epilogue, accidentally rooting the
+    let.  A host import roots the block only host-side (``_ShadowGuard``
+    in ``vera/runtime/heap.py``, popped on return), so after the
+    ``local.set`` pair the block is invisible to the conservative scan.
+    The next Vera-side alloc (``nat_to_string`` below) collects it, the
+    free list overwrites the payload's first words, and reads through
+    the still-live locals see corruption — pre-fix the args reproducer
+    printed ``2::++2@`` instead of ``2:aa+bb``.  Found stress-testing
+    #237 under ``VERA_EAGER_GC=1``; no WASI code involved.
+
+    ``VERA_EAGER_GC`` is read at COMPILE time (``AssemblyMixin.
+    _emit_alloc``), so ``monkeypatch.setenv`` before ``_compile_ok``
+    bakes a collect into every ``$alloc``.
+    """
+
+    def test_eager_gc_io_args_let_survives_intervening_alloc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Primary reproducer: ``let @Array<String> = IO.args(())``
+        followed by an allocating call.  Pre-fix the backing array is
+        swept during ``nat_to_string``'s alloc — the free-list next-
+        pointer lands in element 0's (ptr, len) slot and both element
+        reads print reclaimed bytes."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = IO.args(());
+  IO.print(nat_to_string(array_length(@Array<String>.0)));
+  IO.print(":");
+  IO.print(@Array<String>.0[0]);
+  IO.print("+");
+  IO.print(@Array<String>.0[1])
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="main", cli_args=["aa", "bb"])
+        assert exec_result.stdout == "2:aa+bb"
+
+    def test_eager_gc_io_args_string_join_after_intervening_alloc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``string_join`` over the swept backing array chases element
+        (ptr, len) pairs that the free list has overwritten — pre-fix
+        this printed separator-glued garbage like ``+\\x05+\\x1d@``."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = IO.args(());
+  IO.print(nat_to_string(array_length(@Array<String>.0)));
+  IO.print(string_join(@Array<String>.0, "+"))
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="main", cli_args=["aa", "bb"])
+        assert exec_result.stdout == "2aa+bb"
+
+    def test_eager_gc_read_line_let_survives_intervening_alloc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """String sibling of the args reproducer: ``IO.read_line``
+        returns a host-allocated (ptr, len) pair let-bound through the
+        same unrooted branch.  ``string_length`` reads only the len
+        local, so the corruption window is purely ``nat_to_string``'s
+        digit-string alloc sweeping the line's payload bytes."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(nat_to_string(string_length(@String.0)));
+  IO.print(":");
+  IO.print(@String.0)
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="main", stdin="hello\n")
+        assert exec_result.stdout == "5:hello"
+
+    def test_eager_gc_read_file_result_payload_survives_intervening_alloc(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Confirmation test for the neighbouring *rooted* paths: a
+        ``Result<String, String>`` from ``IO.read_file`` is a scalar-i32
+        ADT let (rooted by #705), and the ``Ok(@String)`` match-arm
+        extraction is pair-rooted by the #707-era match/destructure
+        fixes.  Green before and after the pair-let fix — pins the
+        host-import ADT path the #237 stress testing already exercised."""
+        target = tmp_path / "payload.txt"
+        target.write_text("abc", encoding="utf-8")
+        src = f"""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  let @Result<String, String> = IO.read_file("{target.as_posix()}");
+  match @Result<String, String>.0 {{
+    Ok(@String) -> {{
+      IO.print(nat_to_string(string_length(@String.0)));
+      IO.print(":");
+      IO.print(@String.0)
+    }},
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "3:abc"
+
+    def test_eager_gc_get_env_option_payload_survives_intervening_alloc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Confirmation test, ``Option<String>`` shape: ``IO.get_env``
+        allocates Some(String) host-side; the ADT let is #705-rooted and
+        the ``Some(@String)`` payload extraction is match-arm rooted.
+        Green before and after the pair-let fix."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<String> = IO.get_env("VERA_ROOTING_PROBE");
+  match @Option<String>.0 {
+    Some(@String) -> {
+      IO.print(nat_to_string(string_length(@String.0)));
+      IO.print(":");
+      IO.print(@String.0)
+    },
+    None -> IO.print("unset")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(src)
+        exec_result = execute(
+            result, fn_name="main",
+            env_vars={"VERA_ROOTING_PROBE": "wombat"},
+        )
+        assert exec_result.stdout == "6:wombat"
