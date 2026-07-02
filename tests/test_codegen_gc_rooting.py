@@ -1286,8 +1286,8 @@ public fn main(@Unit -> @Bool)
         assert _run(src) == 1
 
 
-class TestHostImportPairLetRooting:
-    """The plain-``let`` **pair-type** branch (String / Array<T> →
+class TestHostImportPairLetRooting846:
+    """#846: the plain-``let`` **pair-type** branch (String / Array<T> →
     (ptr, len) locals) in ``translate_block`` never shadow-pushed its
     pointer local — the last unrooted sibling of the #705 scalar-i32
     let fix and the #707 let-destruct pair fix (whose comment in

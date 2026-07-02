@@ -593,8 +593,8 @@ class WasmContext(
                     instructions.extend(val_instrs)
                     instructions.append(f"local.set {len_idx}")
                     instructions.append(f"local.set {ptr_idx}")
-                    # Pair-let sibling of the #705 scalar rooting below
-                    # and the #707 let-destruct pair fix: a host-import
+                    # #846: pair-let sibling of the #705 scalar rooting
+                    # below and the #707 let-destruct pair fix: a host-import
                     # pair (``IO.args`` → Array<String>, ``IO.read_line``
                     # → String) is rooted only host-side during
                     # construction, so without this push the next alloc
