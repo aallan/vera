@@ -11,6 +11,11 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # #848: don't let one failed combo cancel the other 11 — a single
+      # flaky test cancelled two otherwise-green matrices on PR #846.
+      # Full per-run results also make real cross-platform breakage
+      # (one OS red, others green) legible at a glance.
+      fail-fast: false
       matrix:
         # Explicit macOS pins (not `macos-latest`) so we don't silently
         # migrate when GitHub flips the `-latest` alias.  See README §Supported
