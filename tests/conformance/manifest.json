@@ -141,6 +141,19 @@
     ]
   },
   {
+    "id": "ch02_byte_refinement",
+    "file": "ch02_byte_refinement.vera",
+    "chapter": 2,
+    "title": "Refinement types over @Byte",
+    "level": "run",
+    "spec_ref": "Section 2.4",
+    "features": [
+      "refinement_type",
+      "type_alias",
+      "byte"
+    ]
+  },
+  {
     "id": "ch02_generics",
     "file": "ch02_generics.vera",
     "chapter": 2,

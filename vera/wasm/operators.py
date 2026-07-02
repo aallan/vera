@@ -87,6 +87,23 @@ class OperatorsMixin:
         op = expr.op
         ltype = self._infer_expr_wasm_type(expr.left)
 
+        # #766: a binary op over a `@Byte` operand must lower entirely at i32.
+        # `@Byte` is represented as i32 (spec §11 — Byte uses i32 unsigned
+        # comparison ops), but int literals emit `i64.const` and the default
+        # arithmetic/comparison tables emit i64 ops, so a Byte slot compared or
+        # combined with an int literal (which only occurs inside a refinement
+        # predicate — ordinary code rejects `@Byte < 10` at the checker) yields
+        # an i32-value/i64-op mismatch wasmtime rejects at instantiation.
+        # Detected before the i64 arithmetic/comparison branches and re-lowered
+        # at i32 (unsigned for comparison and division/mod, matching Byte's
+        # 0..255 semantics).
+        if (op in self._ARITH_OPS or op in self._CMP_OPS) and (
+                self._is_byte_expr(expr.left)
+                or self._is_byte_expr(expr.right)):
+            byte_result = self._translate_byte_binop(expr, env)
+            if byte_result is not None:
+                return byte_result
+
         # Arithmetic
         if op in self._ARITH_OPS:
             if ltype == "f64":
@@ -175,6 +192,97 @@ class OperatorsMixin:
 
         raise CodegenInvariantError(  # pragma: no cover
             "binary operator dispatch fell through", expr)
+
+    # -----------------------------------------------------------------
+    # Byte binary operators (#766)
+    # -----------------------------------------------------------------
+
+    # Arithmetic over Byte (i32): division / remainder are UNSIGNED (0..255).
+    _ARITH_OPS_I32_BYTE: dict[ast.BinOp, str] = {
+        ast.BinOp.ADD: "i32.add",
+        ast.BinOp.SUB: "i32.sub",
+        ast.BinOp.MUL: "i32.mul",
+        ast.BinOp.DIV: "i32.div_u",
+        ast.BinOp.MOD: "i32.rem_u",
+    }
+
+    def _is_byte_expr(self, expr: ast.Expr) -> bool:
+        """Whether *expr* is a `@Byte` value at runtime (an i32 in 0..255).
+
+        True for a Byte-typed slot ref (directly or through an alias, e.g.
+        `type SmallByte = { @Byte | ... }`), for arithmetic over Byte
+        operands (`@Byte.0 + 1`), whose i32 result stays a Byte, and for a
+        call to a user fn whose DECLARED return type resolves to `@Byte`
+        (`ident(@Byte.0)` in a refinement predicate; #766 review follow-up).
+        An int *literal* alone is NOT a Byte — it is width-coerced to the
+        companion Byte operand by :py:meth:`_translate_byte_operand` — so
+        `10 < 20` without a Byte operand is unaffected (#766)."""
+        if isinstance(expr, ast.SlotRef):
+            return self._resolve_base_type_name(expr.type_name) == "Byte"
+        if isinstance(expr, ast.ResultRef):
+            return expr.type_name == "Byte"
+        if isinstance(expr, ast.BinaryExpr) and expr.op in self._ARITH_OPS:
+            return (self._is_byte_expr(expr.left)
+                    or self._is_byte_expr(expr.right))
+        if isinstance(expr, ast.UnaryExpr) and expr.op == ast.UnaryOp.NEG:
+            return self._is_byte_expr(expr.operand)
+        if isinstance(expr, ast.FnCall):
+            # Byte-ness of a call operand comes from the callee's DECLARED
+            # Vera return type, NOT its WASM return width: `Byte` and `Bool`
+            # are both i32, and the `_infer_vera_type` fallback below maps an
+            # i32 return to "Bool" unconditionally — collapsing the two and
+            # leaving a `@Byte`-returning call's result compared at i64 (the
+            # same #766 width mismatch in a different operand shape).  The
+            # `_fn_ret_type_exprs` registry holds the un-canonical declared
+            # TypeExpr per user fn; `_canonical_named_type` resolves alias
+            # chains and refinement wrappers (`-> @MyByte` where `type MyByte
+            # = Byte`).  No builtin returns a bare `@Byte` (`byte_to_int` →
+            # Int, `int_to_byte` → Option<Byte>), so a registry miss is
+            # correctly non-Byte.
+            ret_te = self._fn_ret_type_exprs.get(expr.name)
+            if ret_te is not None:
+                canonical = self._canonical_named_type(ret_te)
+                return canonical is not None and canonical.name == "Byte"
+            return False
+        return self._resolve_base_type_name(
+            self._infer_vera_type(expr) or "") == "Byte"
+
+    def _translate_byte_operand(
+        self, expr: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate *expr* as an i32 operand of a Byte binary op (#766).
+
+        An int literal emits `i32.const` (not the default `i64.const`) so it
+        matches the i32 Byte value it is compared with / combined into; a nested
+        Byte arithmetic sub-expression recurses through
+        :py:meth:`_translate_byte_binop`; everything else (a Byte slot ref) is
+        translated normally, already yielding an i32."""
+        if isinstance(expr, ast.IntLit):
+            return [f"i32.const {expr.value}"]
+        if isinstance(expr, ast.BinaryExpr) and expr.op in self._ARITH_OPS:
+            return self._translate_byte_binop(expr, env)
+        return self.translate_expr(expr, env)
+
+    def _translate_byte_binop(
+        self, expr: ast.BinaryExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Lower a Byte arithmetic / comparison binary op entirely at i32 (#766).
+
+        Both operands are lowered to i32 via :py:meth:`_translate_byte_operand`
+        (int literals coerced to `i32.const`), and the op is emitted as its i32
+        form — unsigned for comparison and for division / remainder, matching
+        Byte's unsigned 0..255 semantics (spec §11).  Returns None only if an
+        operand fails to translate (propagating the reachable [E615] None)."""
+        left = self._translate_byte_operand(expr.left, env)
+        right = self._translate_byte_operand(expr.right, env)
+        if left is None or right is None:
+            return None  # pragma: no cover
+        op = expr.op
+        if op in self._ARITH_OPS:
+            return left + right + [self._ARITH_OPS_I32_BYTE[op]]
+        # Comparison: i64 signed table → i32 unsigned.
+        i32_op = self._CMP_OPS[op].replace("i64.", "i32.").replace("_s", "_u")
+        return left + right + [i32_op]
 
     # -----------------------------------------------------------------
     # ADT structural equality

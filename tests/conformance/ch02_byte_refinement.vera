@@ -1,0 +1,57 @@
+-- Conformance: refinement types over @Byte (Chapter 2)
+-- Tests: a `{ @Byte | P }` refinement compiles to a VALID runtime guard and
+-- runs (#766).  @Byte is represented as i32; the boundary guard must lower the
+-- predicate (`@Byte.0 < 10`) entirely at i32 (spec §11 — Byte uses i32
+-- unsigned comparison ops) and conjoin the implicit `0 <= @Byte.0 <= 255`
+-- range, so the module instantiates and a satisfying value flows through both
+-- the parameter and return guards.  Before the fix the guard emitted an i64
+-- comparison against the i32 Byte, an operand-width mismatch that made the
+-- module fail to instantiate at `vera run`.  `SmallVia`'s predicate routes the
+-- Byte through a `@Byte`-returning FUNCTION CALL (`ident(@Byte.0) < 10`) —
+-- the operand shape where Byte-ness must come from the callee's declared
+-- return type, not its i32 WASM width (which `Bool` shares).
+type SmallByte = { @Byte | @Byte.0 < 10 };
+
+type SmallVia = { @Byte | ident(@Byte.0) < 10 };
+
+public fn ident(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+public fn id_small(@SmallByte -> @SmallByte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @SmallByte.0
+}
+
+public fn id_via(@SmallVia -> @SmallVia)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @SmallVia.0
+}
+
+public fn mk_byte(-> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  7
+}
+
+public fn main(@Unit -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Byte = mk_byte();
+  let @Byte = id_small(@Byte.0);
+  id_via(@Byte.0)
+}
