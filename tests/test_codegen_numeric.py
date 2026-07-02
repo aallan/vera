@@ -483,10 +483,12 @@ public fn main(-> @Float64)
 
         Mirrors the browser-side ``test_domain_edges_nan`` parity check
         so the two runtimes can be compared directly.  The Python host
-        wrapper in ``vera/codegen/api.py::_math_unary_host`` catches
-        ``math.log``'s ``ValueError`` and returns ``float("nan")``;
-        without that translation this test would trap with a host-
-        callback error and fail loudly rather than producing NaN.
+        wrapper in ``vera/runtime/math.py::_math_unary_host`` catches
+        ``math.log``'s ``ValueError`` and returns ``float("nan")``
+        (except at the log-family zero pole — see
+        ``test_log_pole_neg_infinity``); without that translation this
+        test would trap with a host-callback error and fail loudly
+        rather than producing NaN.
         """
         import math as _math
 
@@ -496,6 +498,44 @@ public fn main(-> @Float64)
             ("acos(2.0)",  "acos"),
         ]
         for expr, _op in cases:
+            source = f"""\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{{ {expr} }}
+"""
+            result = _compile_ok(source)
+            v = execute(result, fn_name="main").value
+            assert _math.isnan(v), f"{expr}: expected NaN, got {v}"
+
+    def test_log_pole_neg_infinity(self) -> None:
+        """log/log2/log10 at the zero pole return -inf, not NaN (#790).
+
+        IEEE 754 and JS ``Math.log`` distinguish the pole
+        (``log(0) = -Infinity``) from genuine domain errors
+        (``log(-1) = NaN``).  Python's ``math.log(0.0)`` raises
+        ``ValueError`` for BOTH, so a wrapper that folds every
+        ``ValueError`` into NaN silently diverges from the browser
+        runtime at the pole — that was bug #790.  ``-0.0`` is also
+        the pole (JS gives -Infinity for it), so it is pinned too.
+        """
+        import math as _math
+
+        for expr in (
+            "log(0.0)", "log2(0.0)", "log10(0.0)",
+            "log(-0.0)", "log2(-0.0)", "log10(-0.0)",
+        ):
+            source = f"""\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{{ {expr} }}
+"""
+            result = _compile_ok(source)
+            v = execute(result, fn_name="main").value
+            assert v == float("-inf"), f"{expr}: expected -inf, got {v}"
+
+        # Genuine domain errors must STAY NaN — the pole carve-out
+        # must not leak to negative inputs.
+        for expr in ("log(-1.0)", "log2(-1.0)", "log10(-1.0)"):
             source = f"""\
 public fn main(-> @Float64)
   requires(true) ensures(true) effects(pure)

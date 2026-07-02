@@ -745,6 +745,67 @@ public fn main(-> @Unit)
         node = _run_node(wasm_path)
         assert node["stdout"] == "true,true,true"
 
+    def test_log_pole_parity(self, tmp_path: Path) -> None:
+        """log/log2/log10 at the zero pole are -Infinity in BOTH runtimes (#790).
+
+        IEEE 754 and JS ``Math.log(0)`` give -Infinity at the pole,
+        while genuine domain errors (``log(-1)``) give NaN.  Python's
+        ``math.log(0.0)`` raises ``ValueError`` for both, and the
+        wasmtime host wrapper used to fold every ``ValueError`` into
+        NaN — so ``log(0.0)`` was NaN natively but -Infinity in the
+        browser, a silent cross-runtime divergence (#790).
+
+        This is a true differential: the same wasm runs under both
+        runtimes and the stdout must be identical AND equal to the
+        IEEE-correct answer (equality alone would pass if both
+        runtimes were wrong the same way).  The pole is detected via
+        ``float_is_infinite(x) && x < 0.0`` rather than
+        ``float_to_string`` so the check cannot depend on how each
+        runtime renders infinities.  ``-0.0`` is also the pole (JS
+        ``Math.log(-0)`` is -Infinity), so all three ops are pinned
+        at ``-0.0`` too — spec 9.6.10 claims it for both runtimes.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(float_is_infinite(log(0.0)) && log(0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_infinite(log2(0.0)) && log2(0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_infinite(log10(0.0)) && log10(0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_infinite(log(-0.0)) && log(-0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_infinite(log2(-0.0)) && log2(-0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_infinite(log10(-0.0)) && log10(-0.0) < 0.0));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_nan(log(-1.0))));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_nan(log2(-1.0))));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_nan(log10(-1.0))))
+}
+'''
+        vera_file = tmp_path / "log_pole.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        py_result = _run_python(result)
+        node = _run_node(wasm_path)
+
+        assert node["stdout"] == py_result.stdout, (
+            f"log pole parity mismatch:\n"
+            f"  Python: {py_result.stdout!r}\n"
+            f"  Node:   {node['stdout']!r}"
+        )
+        # Poles at 0.0 and -0.0 -> -Infinity (six trues), negatives
+        # -> NaN (three trues).
+        assert node["stdout"] == (
+            "true,true,true,true,true,true,true,true,true"
+        )
+
 
 # =====================================================================
 # TestBrowserState — State<T> host bindings
