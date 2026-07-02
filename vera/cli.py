@@ -344,6 +344,23 @@ def cmd_compile(
     from vera.codegen import compile as codegen_compile
     from vera.resolver import ModuleResolver
 
+    # Pure flag validation — needs nothing from the program, so it
+    # fires before any parse/compile work (CR review, PR #850).
+    if world != "cli" and target != "wasi-p2":
+        msg = (
+            f"--world {world} requires --target wasi-p2 "
+            f"(the core and browser targets have no world concept)"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "file": path,
+                              "diagnostics": [{"severity": "error",
+                                               "description": msg,
+                                               "location": {"line": 0, "column": 0}}],
+                              "warnings": []}, indent=2))
+            return 1
+        print(f"Error: {msg}", file=sys.stderr)
+        return 1
+
     try:
         p, source, tree = _load_and_parse(path)
         ast = transform(tree)
@@ -399,28 +416,6 @@ def cmd_compile(
                 return 1
             for e in errors:
                 print(e.format(), file=sys.stderr)
-            return 1
-
-        # --world only means something on the wasi-p2 target (Stage D:
-        # world="server" exports wasi:http/incoming-handler).
-        if world != "cli" and target != "wasi-p2":
-            msg = (
-                f"--world {world} requires --target wasi-p2 "
-                f"(the core and browser targets have no world concept)"
-            )
-            if as_json:
-                print(json.dumps({
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                    "warnings": [w.to_dict() for w in all_warnings],
-                }, indent=2))
-                return 1
-            print(f"Error: {msg}", file=sys.stderr)
             return 1
 
         # --target wasi-p2 (#237): emit the component BEFORE any success
@@ -617,6 +612,23 @@ def cmd_run(
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.ast import FnDecl
+
+    # Pure flag validation — same early exit cmd_compile gives
+    # (CR review, PR #850).
+    if world != "cli" and target != "wasi-p2":
+        msg = (
+            f"--world {world} requires --target wasi-p2 "
+            f"(the core and browser targets have no world concept)"
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "file": path,
+                              "diagnostics": [{"severity": "error",
+                                               "description": msg,
+                                               "location": {"line": 0, "column": 0}}]},
+                             indent=2))
+            return 1
+        print(f"Error: {msg}", file=sys.stderr)
+        return 1
     from vera.checker import typecheck_with_artifacts
     from vera.codegen import compile as codegen_compile, execute
     from vera.resolver import ModuleResolver
@@ -760,26 +772,6 @@ def cmd_run(
         # component lifts a single entry (main), so --fn is a clean
         # diagnostic here rather than a missing-export crash; the
         # emitter's family gate likewise surfaces as a diagnostic.
-        if world != "cli" and target != "wasi-p2":
-            # Same usage error cmd_compile gives — the user didn't ask
-            # for the wasi-p2 target, so don't imply they did.
-            msg = (
-                f"--world {world} requires --target wasi-p2 "
-                f"(the core and browser targets have no world concept)"
-            )
-            if as_json:
-                print(json.dumps({
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                }, indent=2))
-                return 1
-            print(f"Error: {msg}", file=sys.stderr)
-            return 1
         if world == "server":
             # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
             # and no resource-definition API, so a server-world

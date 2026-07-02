@@ -2071,3 +2071,39 @@ class TestCliServerWorld:
         assert rc == 1
         err = capsys.readouterr().err
         assert "requires --target wasi-p2" in err
+
+    def test_time_sleep_random_execute_under_serve(
+        self, tmp_path: Path,
+    ) -> None:
+        """The clock/random adapters EXECUTE under stock wasmtime serve
+        — not just parse (CR review round 1, PR #850).  Pins that the
+        proxy world actually provides wall-clock, monotonic-clock/poll,
+        and random at request time."""
+        wat = _emit_server("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, IO, Random>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) -> {
+      IO.sleep(1);
+      Response(
+        200,
+        map_new(),
+        string_concat(
+          nat_to_string(IO.time(())),
+          string_concat("|", int_to_string(Random.random_int(1, 6)))
+        )
+      )
+    }
+  }
+}
+""")
+        before_ms = int(time.time() * 1000)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, body = _serve_request(srv.port, "GET", "/", [], "")
+        after_ms = int(time.time() * 1000)
+        assert status == 200
+        time_part, rand_part = body.split("|")
+        # Cross-clock slack as in the cli-world time test.
+        assert before_ms - 100 <= int(time_part) <= after_ms + 100
+        assert 1 <= int(rand_part) <= 6
