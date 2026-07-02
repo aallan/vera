@@ -20,6 +20,13 @@ The compilation target is a standalone WASM module containing:
 - Imported host functions (for IO and State\<T\> operations)
 - An optional data section (for string literals)
 
+This core module is the canonical compilation target and the default
+(`--target wasm`). Two alternative targets package it for other hosts
+without changing its emission: `--target browser` wraps it in a
+self-contained JS bundle (Section 12.9), and the experimental
+`--target wasi-p2` wraps it in a WebAssembly component whose host
+imports are implemented over WASI 0.2 interfaces (Chapter 13).
+
 ## 11.2 Type Mapping
 
 Vera types map to WASM value types as follows:

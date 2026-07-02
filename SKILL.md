@@ -52,6 +52,7 @@ vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --json file.vera             # Compile with JSON diagnostics
 vera compile --target browser file.vera   # Compile + emit browser bundle (wasm + JS + html)
+vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (experimental, IO+Random)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42         # Call function f with Int argument
 vera run file.vera --fn f -- 3.14       # Call function f with Float64 argument
@@ -107,6 +108,10 @@ The recommended pattern for browser-targeted Vera programs is to **expose pure u
 - [#610](https://github.com/aallan/vera/issues/610) — interpret a minimal ANSI escape subset in the browser runtime so terminal-style programs (clear-screen, cursor-home, colour) render unchanged.
 
 Until those land, terminal Vera programs (animation via `IO.sleep` + cursor control via ANSI) need either a terminal target or a deliberate browser-shaped variant.  The design point ("pure core, effects at the boundary") is unchanged; the boundary just differs between targets.
+
+### WASI Preview 2 compilation (experimental)
+
+`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async) is rejected with a diagnostic naming the family.  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](spec/13-wasi.md).
 
 To run the WASM directly in Node.js:
 

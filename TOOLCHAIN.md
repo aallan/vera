@@ -154,6 +154,19 @@ wrong — *runs* wrong), the WAT is the ground truth of what was emitted.
 `--target browser` produces a self-contained bundle that runs the same WASM in
 the browser runtime.
 
+```bash
+vera compile --target wasi-p2 file.vera    # emit a WASI Preview 2 component (experimental)
+vera run --target wasi-p2 file.vera        # execute it under the built-in wasip2 host
+wasmtime run file.wasm                     # ...or under stock wasmtime, no flags, no Vera bindings
+```
+
+`--target wasi-p2` covers the IO and Random host families; any other family is
+rejected with a diagnostic naming it. `vera run --target wasi-p2` is the parity
+check that the artifact behaves like the core target (same stdout/stderr, same
+trap kinds) before handing it to an external host. Divergences inherent to
+WASI 0.2 — exit codes collapse to 0/1, no structured trap frames — are in
+spec chapter 13.
+
 ---
 
 ## Recipe: serve verified HTTP handlers

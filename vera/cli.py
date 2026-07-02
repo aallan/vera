@@ -12,9 +12,11 @@ Usage:
     vera compile   --wat <file.vera>        Print WAT text to stdout
     vera compile   -o out.wasm <file.vera>  Specify output path
     vera compile   --target browser <file>  Emit browser bundle (wasm + JS + HTML)
+    vera compile   --target wasi-p2 <file>  Emit WASI Preview 2 component (experimental)
     vera run       <file.vera>              Compile and execute
     vera run       --fn name <file.vera>    Execute a specific function
     vera run       <file.vera> -- 5 10      Pass arguments to the function
+    vera run       --target wasi-p2 <file>  Execute under the built-in WASI 0.2 host
     vera ast       <file.vera>              Parse and print the AST
     vera ast       --json <file.vera>       Parse and print the AST as JSON
     vera test      <file.vera>              Test contracts via Z3-guided inputs
@@ -397,6 +399,33 @@ def cmd_compile(
                 print(e.format(), file=sys.stderr)
             return 1
 
+        # --target wasi-p2 (#237): emit the component BEFORE any success
+        # envelope — the emitter's family gate raises ValueError for host
+        # families the target does not support, and that must surface as
+        # a clean diagnostic (never a silent fallback to the core target).
+        component_wat: str | None = None
+        if target == "wasi-p2":
+            from vera.codegen.wasi import emit_wasi_component
+
+            try:
+                component_wat = emit_wasi_component(result)
+            except ValueError as exc:
+                msg = f"--target wasi-p2: {exc}"
+                if as_json:
+                    print(json.dumps({
+                        "ok": False,
+                        "file": path,
+                        "diagnostics": [{
+                            "severity": "error",
+                            "description": msg,
+                            "location": {"line": 0, "column": 0},
+                        }],
+                        "warnings": [w.to_dict() for w in all_warnings],
+                    }, indent=2))
+                    return 1
+                print(f"Error: {msg}", file=sys.stderr)
+                return 1
+
         if as_json:
             result_dict = {
                 "ok": True,
@@ -414,7 +443,19 @@ def cmd_compile(
 
         # Output mode: --wat prints WAT text, otherwise write .wasm binary
         if wat:
-            print(result.wat)
+            print(component_wat if component_wat is not None else result.wat)
+            return 0
+
+        # Write the wasi-p2 component binary.  wasmtime's wat2wasm
+        # accepts component text (probed live against wasmtime-py 45),
+        # so the artifact is a genuine binary component that stock
+        # `wasmtime run` executes with no Vera host bindings.
+        if component_wat is not None:
+            import wasmtime
+
+            out_path = Path(output) if output else p.with_suffix(".wasm")
+            out_path.write_bytes(wasmtime.wat2wasm(component_wat))
+            print(f"Compiled (WASI Preview 2 component): {out_path}")
             return 0
 
         # --target browser: emit a self-contained browser bundle
@@ -541,6 +582,7 @@ def cmd_run(
     fn_name: str | None = None,
     fn_args: list[int | float] | None = None,
     raw_fn_args: list[str] | None = None,
+    target: str = "wasm",
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.ast import FnDecl
@@ -682,32 +724,85 @@ def cmd_run(
             print(f"Error: {msg}", file=sys.stderr)
             return 1
 
-        # Execute — pass CLI args as strings for IO.args
-        str_args = (
-            raw_fn_args if raw_fn_args
-            else ([str(a) for a in fn_args] if fn_args else [])
-        )
-        # capture_stderr=True so IO.stderr writes are buffered into
-        # exec_result.stderr (and into WasmTrapError.stderr on the trap
-        # path). Without it, host_stderr falls through to live writes on
-        # sys.stderr — which works for the success path but leaves the
-        # WasmTrapError handler's exc.stderr / JSON envelope's "stderr"
-        # field permanently empty.  Mirrors the always-capture treatment
-        # of stdout (host_print is unconditional).
-        #
-        # tee_stdout (#543): in text mode, mirror IO.print writes live
-        # to sys.stdout so animations, progress bars, and any program
-        # using ANSI escape sequences (cursor home, clear screen, etc.)
-        # render as they happen instead of buffering until exit and
-        # then flushing in a single burst at terminal-redraw speed.
-        # JSON mode keeps the live mirror off — the transcript is
-        # packed into the JSON envelope and a live write would corrupt
-        # the output for downstream consumers parsing our stdout.
-        exec_result = execute(
-            result, fn_name=fn_name, args=fn_args, raw_args=raw_fn_args,
-            cli_args=str_args, capture_stderr=True,
-            tee_stdout=not as_json,
-        )
+        # --target wasi-p2 (#237): execute as a component under the
+        # built-in wasip2 host instead of the vera.* bindings.  The
+        # component lifts a single entry (main), so --fn is a clean
+        # diagnostic here rather than a missing-export crash; the
+        # emitter's family gate likewise surfaces as a diagnostic.
+        if target == "wasi-p2":
+            if fn_name is not None and fn_name != "main":
+                msg = (
+                    f"--target wasi-p2 runs 'main' only (the component "
+                    f"lifts a single entry); --fn {fn_name} is not "
+                    f"available.  Use the default target for --fn."
+                )
+                if as_json:
+                    print(json.dumps({
+                        "ok": False,
+                        "file": path,
+                        "diagnostics": [{
+                            "severity": "error",
+                            "description": msg,
+                            "location": {"line": 0, "column": 0},
+                        }],
+                    }, indent=2))
+                    return 1
+                print(f"Error: {msg}", file=sys.stderr)
+                return 1
+            from vera.runtime.wasi_host import execute_wasi_p2
+
+            try:
+                exec_result = execute_wasi_p2(
+                    result,
+                    cli_args=raw_fn_args or [],
+                    argv0=p.name,
+                    tee_stdout=not as_json,
+                )
+            except ValueError as exc:
+                msg = f"--target wasi-p2: {exc}"
+                if as_json:
+                    print(json.dumps({
+                        "ok": False,
+                        "file": path,
+                        "diagnostics": [{
+                            "severity": "error",
+                            "description": msg,
+                            "location": {"line": 0, "column": 0},
+                        }],
+                    }, indent=2))
+                    return 1
+                print(f"Error: {msg}", file=sys.stderr)
+                return 1
+            # Falls through to the shared reporting tail below — the
+            # ExecuteResult contract (value/stdout/stderr/exit_code)
+            # is target-independent by design.
+        else:
+            # Execute — pass CLI args as strings for IO.args
+            str_args = (
+                raw_fn_args if raw_fn_args
+                else ([str(a) for a in fn_args] if fn_args else [])
+            )
+            # capture_stderr=True so IO.stderr writes are buffered into
+            # exec_result.stderr (and into WasmTrapError.stderr on the trap
+            # path). Without it, host_stderr falls through to live writes on
+            # sys.stderr — which works for the success path but leaves the
+            # WasmTrapError handler's exc.stderr / JSON envelope's "stderr"
+            # field permanently empty.  Mirrors the always-capture treatment
+            # of stdout (host_print is unconditional).
+            #
+            # tee_stdout (#543): in text mode, mirror IO.print writes live
+            # to sys.stdout so animations, progress bars, and any program
+            # using ANSI escape sequences (cursor home, clear screen, etc.)
+            # render as they happen instead of buffering until exit and
+            # then flushing in a single burst at terminal-redraw speed.
+            # JSON mode keeps the live mirror off — the transcript is
+            # packed into the JSON envelope and a live write would corrupt
+            # the output for downstream consumers parsing our stdout.
+            exec_result = execute(
+                result, fn_name=fn_name, args=fn_args, raw_args=raw_fn_args,
+                cli_args=str_args, capture_stderr=True,
+                tee_stdout=not as_json,
+            )
 
         if as_json:
             result_dict = {
@@ -1220,7 +1315,9 @@ Commands:
     test [--json]        Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
     compile --target browser  Emit browser bundle (wasm + JS + HTML)
+    compile --target wasi-p2  Emit a WASI Preview 2 component (experimental)
     run [--fn name]      Compile and execute a .vera file
+    run --target wasi-p2  Execute under the built-in WASI 0.2 host
     ast [--json]         Parse a .vera file and print the AST
     fmt [--write|--check] Format a .vera file to canonical form
     lsp                  Serve the Language Server Protocol over stdio
@@ -1236,7 +1333,7 @@ Options:
     --fn <name>          Function to execute or test
     --trials <n>         Number of test trials (default: 100, for vera test)
     -o <path>            Output path for .wasm binary (or directory for --target browser)
-    --target <t>         Compilation target: wasm (default) or browser
+    --target <t>         Compilation target: wasm (default), browser, or wasi-p2
     --write              Format in place (vera fmt)
     --check              Check if already canonical (vera fmt)
     --explain-slots      Print slot-resolution tables after a successful check
@@ -1420,8 +1517,11 @@ def main() -> None:
         target_idx = args.index("--target")
         if target_idx + 1 < len(args):
             target = args[target_idx + 1]
-            if target not in ("wasm", "browser"):
-                msg = f"Invalid --target value: {target} (expected 'wasm' or 'browser')"
+            if target not in ("wasm", "browser", "wasi-p2"):
+                msg = (
+                    f"Invalid --target value: {target} "
+                    f"(expected 'wasm', 'browser', or 'wasi-p2')"
+                )
                 if use_json:
                     print(json.dumps({"ok": False, "file": "",
                                       "diagnostics": [{"severity": "error",
@@ -1491,7 +1591,7 @@ def main() -> None:
     elif command == "run":
         sys.exit(cmd_run(
             filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args,
-            raw_fn_args=raw_fn_args,
+            raw_fn_args=raw_fn_args, target=target,
         ))
     elif command == "ast":
         sys.exit(cmd_ast(filepath, as_json=use_json))

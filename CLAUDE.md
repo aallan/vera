@@ -31,8 +31,10 @@ vera verify --quiet file.vera     # Verify, suppress success output
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
+vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (experimental, IO+Random; #237)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera run --target wasi-p2 file.vera  # Execute under the built-in WASI 0.2 host (spec/13-wasi.md)
 vera serve file.vera              # Serve handle(Request -> Response) over HTTP (#305)
 vera serve --port 8080 file.vera  # Serve on a specific port (default 8000)
 vera test file.vera               # Contract-driven testing via Z3 + WASM
@@ -83,7 +85,7 @@ See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchai
 
 ## Project layout
 
-- `spec/` — Language specification (Chapters 0-12)
+- `spec/` — Language specification (Chapters 0-13)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 36 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
