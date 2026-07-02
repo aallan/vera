@@ -18,8 +18,15 @@ def register_math(linker: wasmtime.Linker, ops_used: set[str]) -> None:
     )
     from typing import Callable
 
+    # The log family has a *pole* at zero: IEEE 754 and JS
+    # `Math.log(0)` give -Infinity there, distinct from genuine
+    # domain errors (`log(-1)` -> NaN).  Python's `math.log(0.0)`
+    # raises `ValueError` for BOTH cases, so the wrapper below must
+    # tell them apart or the two runtimes silently diverge (#790).
+    _log_pole_ops = frozenset({"log", "log2", "log10"})
+
     def _math_unary_host(
-        py_fn: Callable[[float], float],
+        op_name: str, py_fn: Callable[[float], float],
     ) -> Callable[[wasmtime.Caller, float], float]:
         """Wrap a `math.*` function as a wasmtime host callback.
 
@@ -33,12 +40,17 @@ def register_math(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         cases, so we translate the exception into NaN to keep
         the two WASM runtimes observationally equivalent and
         let Vera programs detect the condition via
-        `float_is_nan(...)` instead of trapping.
+        `float_is_nan(...)` instead of trapping.  The one
+        exception is the log-family zero pole (`log(0.0)`,
+        including `-0.0`), where IEEE 754 / JS give -Infinity,
+        not NaN — see `_log_pole_ops` above (#790).
         """
         def host(_caller: wasmtime.Caller, x: float) -> float:
             try:
                 return py_fn(x)
             except ValueError:
+                if op_name in _log_pole_ops and x == 0.0:
+                    return float("-inf")
                 return float("nan")
         return host
 
@@ -57,7 +69,7 @@ def register_math(linker: wasmtime.Linker, ops_used: set[str]) -> None:
         if op_name in ops_used:
             linker.define_func(
                 "vera", op_name, _f64_unary,
-                _math_unary_host(py_fn), access_caller=True,
+                _math_unary_host(op_name, py_fn), access_caller=True,
             )
 
     if "atan2" in ops_used:

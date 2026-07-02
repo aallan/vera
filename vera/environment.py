@@ -1690,11 +1690,13 @@ class TypeEnv:
         # Logarithmic functions (#467).  All three go through host
         # imports (`vera.log` / `vera.log2` / `vera.log10`) because
         # WASM has no native logarithm instructions.  Return `NaN`
-        # for inputs <= 0 — JavaScript's `Math.log` returns NaN
-        # natively, and the Python host wrapper translates
-        # `math.log`'s `ValueError` ("math domain error") to NaN
-        # (see `vera/codegen/api.py::_math_unary_host`), so both
-        # runtimes expose the same IEEE 754 behaviour to Vera code.
+        # for negative inputs and `-Infinity` at the zero pole —
+        # JavaScript's `Math.log` does both natively, and the Python
+        # host wrapper translates `math.log`'s `ValueError` ("math
+        # domain error") to NaN except at the pole, where it returns
+        # `-inf` (see `vera/runtime/math.py::_math_unary_host`, #790),
+        # so both runtimes expose the same IEEE 754 behaviour to
+        # Vera code.
         for _log_name in ("log", "log2", "log10"):
             self.functions[_log_name] = FunctionInfo(
                 name=_log_name,

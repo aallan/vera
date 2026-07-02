@@ -884,7 +884,7 @@ This expression evaluates to `1024.0`.
 
 ### 9.6.10 Logarithmic, Trigonometric, and Numeric Utility Functions
 
-Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure and (where applicable) defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow.
+Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure and (where applicable) defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow. The logarithms' zero pole is not a domain error: `log(0.0)`, `log2(0.0)`, and `log10(0.0)` (including `-0.0`) return `-Infinity`, matching IEEE 754 and JS `Math.log` in both runtimes (#790).
 
 Most log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
 
