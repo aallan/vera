@@ -293,6 +293,10 @@ def test_skill_md_asset_strips_vera_skip_annotations():
 def test_llms_full_txt_strips_vera_skip_annotations():
     """llms-full.txt inlines SKILL.md and FAQ.md; annotations must be
     stripped there too."""
+    # Precondition: at least one inlined source actually carries annotations
+    # (otherwise this test could pass vacuously with the strip deleted).
+    skill = (_SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "vera:skip-" in skill
     assert "vera:skip" not in _mod.build_llms_full_txt("0.0.0")
 
 
