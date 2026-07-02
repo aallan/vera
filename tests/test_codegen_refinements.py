@@ -793,6 +793,128 @@ public fn f(@PosF -> @Float64)
         _run_refine_trap(src, fn="f", args=[-1.5])
         assert _run_float(src, fn="f", args=[2.5]) == 2.5
 
+    def test_byte_base_param_guard_traps_on_violation(self) -> None:
+        """A `{ @Byte | P }` parameter guard fires at the boundary (#766).
+
+        `@Byte` is represented as `i32`, but a comparison predicate over it
+        (`@Byte.0 < 10`) must lower entirely at `i32` (spec §11 — Byte uses
+        `i32` unsigned comparison ops), not `i64`, so the generated module is
+        valid and the guard traps on a violating value while a satisfying value
+        flows through.  Before the fix the guard emitted an `i64` comparison
+        against the `i32` Byte, an operand-width mismatch wasmtime rejects at
+        instantiation."""
+        src = """
+type SmallByte = { @Byte | @Byte.0 < 10 };
+public fn f(@SmallByte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @SmallByte.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[200])  # 200 violates `< 10`
+        assert _run(src, fn="f", args=[5]) == 5     # 5 satisfies it
+
+    def test_byte_base_param_guard_equality_predicate(self) -> None:
+        """A Byte refinement with an equality predicate (`@Byte.0 == 5`) lowers
+        at `i32` too — the `i64.eq`-against-`i32` mismatch was part of the same
+        #766 width bug — so the guard traps on a mismatch and passes the exact
+        value."""
+        src = """
+type Five = { @Byte | @Byte.0 == 5 };
+public fn f(@Five -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Five.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[6])
+        assert _run(src, fn="f", args=[5]) == 5
+
+    def test_byte_base_param_guard_conjunction_predicate(self) -> None:
+        """A Byte refinement with a compound predicate (`@Byte.0 > 2 &&
+        @Byte.0 < 10`) lowers every comparison at `i32`, so a value inside the
+        range passes and one outside traps (#766)."""
+        src = """
+type Mid = { @Byte | @Byte.0 > 2 && @Byte.0 < 10 };
+public fn f(@Mid -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Mid.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[1])   # 1 fails `> 2`
+        _run_refine_trap(src, fn="f", args=[42])  # 42 fails `< 10`
+        assert _run(src, fn="f", args=[7]) == 7
+
+    def test_byte_base_param_guard_arithmetic_predicate(self) -> None:
+        """A Byte refinement whose predicate does arithmetic on the Byte
+        (`@Byte.0 + 1 < 10`) lowers the `+` and `<` at `i32` — the arithmetic
+        emission site had the same `i64`-on-`i32` width bug as the comparison
+        site (#766) — so it compiles to valid WASM and the guard fires."""
+        src = """
+type UnderTen = { @Byte | @Byte.0 + 1 < 10 };
+public fn f(@UnderTen -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @UnderTen.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[50])  # 50 + 1 = 51, not < 10
+        assert _run(src, fn="f", args=[8]) == 8   # 8 + 1 = 9 < 10
+
+    def test_byte_base_param_guard_fncall_predicate(self) -> None:
+        """A Byte refinement whose predicate calls a `@Byte`-returning USER
+        FUNCTION (`ident(@Byte.0) < 10`) lowers the comparison at `i32` too
+        (#766 review follow-up).  Byte-ness of a call operand comes from the
+        callee's DECLARED Vera return type (the `_fn_ret_type_exprs`
+        registry), not its WASM return width — an i32 return is shared with
+        `Bool`, and inferring from the width collapsed the two, leaving the
+        call result compared with `i64.lt_s` (the same width mismatch as the
+        slot-ref shape)."""
+        src = """
+type SmallVia = { @Byte | ident(@Byte.0) < 10 };
+public fn ident(@Byte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+public fn f(@SmallVia -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @SmallVia.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[42])  # ident(42) = 42, not < 10
+        assert _run(src, fn="f", args=[3]) == 3   # ident(3) = 3 < 10
+
+    def test_byte_base_param_guard_aliased_return_fncall_predicate(self) -> None:
+        """The declared-return Byte detection follows an ALIAS chain: a
+        predicate calling a fn declared `-> @MyByte` where `type MyByte =
+        Byte` lowers at `i32` exactly like a literal `-> @Byte` declaration
+        (the registry holds the un-canonical declared TypeExpr, so the
+        canonicalisation walker must resolve it)."""
+        src = """
+type MyByte = Byte;
+type SmallVia = { @Byte | pick(@Byte.0) < 10 };
+public fn pick(@Byte -> @MyByte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+public fn f(@SmallVia -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @SmallVia.0 }
+"""
+        _run_refine_trap(src, fn="f", args=[42])
+        assert _run(src, fn="f", args=[3]) == 3
+
+    def test_byte_base_param_guard_conjoins_range_invariant(self) -> None:
+        """A `{ @Byte | P }` guard conjoins the implicit `0 <= @Byte.0 <= 255`
+        Byte range the way the `@Nat` guard conjoins `>= 0` (#766, the deferred
+        PR #763 range-conjoin point).  A value SATISFYING P but outside the Byte
+        range (`300` for `@Byte.0 > 5`) crosses the WASM boundary as an unbounded
+        `i32`, so without the conjoin it would launder past the guard; the
+        conjoined `<= 255` rejects it.  The trap message names the range check to
+        prove it is conjoined, not merely that the program trapped."""
+        src = """
+type BigByte = { @Byte | @Byte.0 > 5 };
+public fn f(@BigByte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @BigByte.0 }
+"""
+        result = _compile_ok(src)
+        # 300 satisfies `> 5` but not `<= 255`: the guard message proves the
+        # Byte range invariant is conjoined into the lowered check.
+        with pytest.raises(RuntimeError, match=r"@Byte\.0 <= 255"):
+            execute(result, fn_name="f", args=[300])
+        assert _run(src, fn="f", args=[7]) == 7
+
     def test_nested_refinement_base_rejected_e600(self) -> None:
         """A refinement whose base resolves to ANOTHER refinement —
         `type Tiny = { @Pos | @Pos.0 < 10 }` over `type Pos = { @Int | @Int.0 >

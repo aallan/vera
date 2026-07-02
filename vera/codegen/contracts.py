@@ -126,6 +126,38 @@ class ContractsMixin:
                         ),
                         right=predicate,
                     )
+                if (isinstance(base_node, ast.NamedType)
+                        and base_node.name == "Byte"):
+                    # Conjoin the `@Byte` base's implicit `0 <= @Byte.0 <= 255`
+                    # range the way `@Nat` conjoins `>= 0` above (#766, the
+                    # deferred PR #763 range-conjoin point).  A `@Byte` crosses
+                    # a public / FFI boundary as an unbounded i32, so a value
+                    # SATISFYING P but outside 0..255 (e.g. `300` for `@Byte.0
+                    # > 5`) would otherwise launder past the guard.  The
+                    # synthetic refs use the binder key `name` (`@SmallByte.0`
+                    # through an alias, `@Byte.0` directly) — the key the
+                    # predicate uses and the guard pushes the value under, NOT a
+                    # literal `@Byte.0` which wouldn't resolve for an alias.
+                    # The literal bounds are Byte-typed slot comparisons, so
+                    # `_translate_byte_binop` (#766) lowers them at i32 too.
+                    slot = ast.SlotRef(type_name=name, type_args=None, index=0)
+                    predicate = ast.BinaryExpr(
+                        op=ast.BinOp.AND,
+                        left=ast.BinaryExpr(
+                            op=ast.BinOp.AND,
+                            left=ast.BinaryExpr(
+                                op=ast.BinOp.GE,
+                                left=slot,
+                                right=ast.IntLit(value=0),
+                            ),
+                            right=ast.BinaryExpr(
+                                op=ast.BinOp.LE,
+                                left=slot,
+                                right=ast.IntLit(value=255),
+                            ),
+                        ),
+                        right=predicate,
+                    )
                 return (predicate, name)
         return None
 
