@@ -10,6 +10,7 @@ functions.  Extracted from `execute()` in `vera/codegen/api.py` (#421).
 from __future__ import annotations
 
 import struct
+from typing import cast
 from typing import Any
 
 import wasmtime
@@ -1066,3 +1067,131 @@ def _alloc_array_of_f64(
     for i, v in enumerate(values):
         _write_f64(caller, ptr + i * 8, v)
     return (ptr, count)
+
+
+# =====================================================================
+# #305 — HttpServer handler marshalling (Request build / Response read)
+# =====================================================================
+
+class InstanceCaller:
+    """Adapt a (Store, Instance) pair to the ``caller`` protocol.
+
+    The heap helpers above take a ``wasmtime.Caller`` and use exactly
+    two of its capabilities: export lookup (``caller["memory"]``) and
+    being passed back to wasmtime calls as the store context
+    (``memory.write(caller, ...)``, ``alloc_fn(caller, size)``).  The
+    #305 serve driver runs OUTSIDE any host import — there is no
+    Caller — so this adapter provides the same protocol from a plain
+    instantiated module: ``__getitem__`` resolves exports and
+    ``__getattr__`` delegates everything else to the wrapped Store
+    (wasmtime accepts the delegating object wherever it needs a store
+    context).
+    """
+
+    def __init__(
+        self, store: wasmtime.Store, instance: wasmtime.Instance,
+    ) -> None:
+        self._store = store
+        self._instance_exports = instance.exports(store)
+
+    def __getitem__(self, name: str) -> object:
+        return self._instance_exports[name]
+
+    def __getattr__(self, attr: str) -> object:
+        return getattr(self._store, attr)
+
+
+def build_request_adt(
+    caller: wasmtime.Caller,
+    layout: object,
+    method: str,
+    path: str,
+    headers: dict[str, str],
+    body: str,
+) -> int:
+    """Build a prelude ``Request(method, path, headers, body)`` ADT.
+
+    ``layout`` is the compiled module's ``ConstructorLayout`` for the
+    ``Request`` constructor (field order: method ``i32_pair``, path
+    ``i32_pair``, headers ``Map<String, String>`` wrapper ``i32``,
+    body ``i32_pair``).  Offsets come from the layout — never
+    hardcoded — so a future layout-algorithm change cannot desync the
+    driver from the guest.
+
+    Every intermediate allocation is shadow-rooted (#570/#692 class):
+    the string allocations, the Map wrapper, and the ADT body itself
+    each get a ``guard.push`` so a GC triggered by a later allocation
+    in the sequence cannot sweep an earlier one.  The guard's exit
+    restores ``gc_sp``; the returned pointer is then rooted by the
+    handler function's own GC prologue when passed as its parameter
+    (no allocation happens in between).
+    """
+    field_offsets = layout.field_offsets  # type: ignore[attr-defined]
+    total_size = layout.total_size  # type: ignore[attr-defined]
+    tag = layout.tag  # type: ignore[attr-defined]
+    (m_off, m_ty), (p_off, p_ty), (h_off, h_ty), (b_off, b_ty) = (
+        field_offsets
+    )
+    if (m_ty, p_ty, h_ty, b_ty) != ("i32_pair", "i32_pair", "i32", "i32_pair"):
+        raise ValueError(
+            f"#305: unexpected Request layout {field_offsets!r}; the "
+            "prelude Request shape and this builder must move together"
+        )
+    with _ShadowGuard(caller) as guard:
+        m_ptr, m_len = _alloc_string(caller, method)
+        if m_ptr:
+            guard.push(m_ptr)
+        p_ptr, p_len = _alloc_string(caller, path)
+        if p_ptr:
+            guard.push(p_ptr)
+        # dict[str, str] is fine at runtime; the helper's parameter is
+        # dict[object, object] (invariant), hence the cast.
+        h_ptr = _alloc_map_wrapper(
+            caller, cast("dict[object, object]", dict(headers)),
+        )
+        guard.push(h_ptr)
+        b_ptr, b_len = _alloc_string(caller, body)
+        if b_ptr:
+            guard.push(b_ptr)
+        adt_ptr = _call_alloc(caller, total_size)
+        guard.push(adt_ptr)
+        _write_i32(caller, adt_ptr + 0, tag)
+        _write_i32(caller, adt_ptr + m_off, m_ptr)
+        _write_i32(caller, adt_ptr + m_off + 4, m_len)
+        _write_i32(caller, adt_ptr + p_off, p_ptr)
+        _write_i32(caller, adt_ptr + p_off + 4, p_len)
+        _write_i32(caller, adt_ptr + h_off, h_ptr)
+        _write_i32(caller, adt_ptr + b_off, b_ptr)
+        _write_i32(caller, adt_ptr + b_off + 4, b_len)
+    return adt_ptr
+
+
+def decode_response_adt(
+    caller: wasmtime.Caller, layout: object, response_ptr: int,
+) -> dict[str, object]:
+    """Decode a prelude ``Response(status, headers, body)`` ADT.
+
+    Read-only (guest execution has finished; nothing allocates), so no
+    rooting is needed.  Returns ``{"status": int, "headers":
+    dict[str, str], "body": str}``.
+    """
+    field_offsets = layout.field_offsets  # type: ignore[attr-defined]
+    (s_off, s_ty), (h_off, h_ty), (b_off, b_ty) = field_offsets
+    if (s_ty, h_ty, b_ty) != ("i64", "i32", "i32_pair"):
+        raise ValueError(
+            f"#305: unexpected Response layout {field_offsets!r}; the "
+            "prelude Response shape and this decoder must move together"
+        )
+    status_bytes = _read_bytes_at(caller, response_ptr + s_off, 8)
+    status = struct.unpack("<q", status_bytes)[0]
+    headers_ptr = _read_i32_at(caller, response_ptr + h_off)
+    headers: dict[str, str] = {}
+    if headers_ptr:
+        headers = {
+            str(k): str(v)
+            for k, v in _decode_attrs(caller, headers_ptr).items()
+        }
+    body_ptr = _read_i32_at(caller, response_ptr + b_off)
+    body_len = _read_i32_at(caller, response_ptr + b_off + 4)
+    body = _read_wasm_string(caller, body_ptr, body_len)
+    return {"status": status, "headers": headers, "body": body}

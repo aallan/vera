@@ -24,6 +24,7 @@ from vera import ast
 from vera.runtime.async_http import register_async
 from vera.runtime.decimal import register_decimal
 from vera.runtime.heap import (
+    InstanceCaller,
     _alloc_array_of_strings,
     _alloc_option_none,
     _alloc_option_some_string,
@@ -33,7 +34,12 @@ from vera.runtime.heap import (
     _alloc_string,
     _read_string_export,
     _read_wasm_string,
+    build_request_adt,
+    decode_response_adt,
 )
+from typing import cast
+
+from vera.codegen.memory import ConstructorLayout
 from vera.runtime.html import register_html
 from vera.runtime.http import register_http
 from vera.runtime.inference import register_inference
@@ -98,6 +104,12 @@ class CompileResult:
     # are deliberately *not* in this set — the (ptr, len) representation
     # is the same shape but the bytes-at-ptr aren't UTF-8.
     fn_string_returns: set[str] = field(default_factory=set)
+    # #305: constructor layouts by ADT name, exported so the `vera
+    # serve` driver can marshal the prelude Request/Response ADTs with
+    # the exact offsets this compilation computed (never hardcoded).
+    adt_layouts: dict[str, dict[str, "ConstructorLayout"]] = field(
+        default_factory=dict,
+    )
     # #516 Stage 2 — runtime-trap source mapping.  Maps WAT function
     # name (without leading `$`) → (file, start_line, end_line).
     # Populated by CodeGenerator during _register_fn (top-level) and
@@ -161,6 +173,10 @@ class ExecuteResult:
     # gone; any survivors that were live at exit are still
     # counted).  Empty when no host stores were used.
     host_store_sizes: dict[str, int] = field(default_factory=dict)
+    # #305: decoded Response ADT for a `vera serve` handler call —
+    # {"status": int, "headers": dict[str, str], "body": str}.
+    # None for ordinary (non-http_request) executions.
+    http_response: dict[str, object] | None = None
     # #706: the exported ``$heap_ptr`` bump frontier (monotonic
     # high-water mark of bytes ever allocated) read after the program
     # returns.  Map / Set are now bucket-as-truth — their transient
@@ -215,6 +231,16 @@ def compile(
     return gen.compile_program(program)
 
 
+@dataclass
+class HttpRequestData:
+    """One HTTP request for a `vera serve` handler call (#305)."""
+
+    method: str
+    path: str
+    headers: dict[str, str]
+    body: str
+
+
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
@@ -226,6 +252,7 @@ def execute(
     env_vars: dict[str, str] | None = None,
     capture_stderr: bool = False,
     tee_stdout: bool = False,
+    http_request: "HttpRequestData | None" = None,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -1047,6 +1074,26 @@ def execute(
     func_type = func.type(store)
     expected = len(func_type.params)
     given = len(call_args)
+    if http_request is not None:
+        # #305: build the prelude Request ADT in guest memory and call
+        # the handler with its pointer.  The layout comes from THIS
+        # compilation (result.adt_layouts) — offsets are never
+        # hardcoded.  All intermediate allocations are shadow-rooted
+        # inside build_request_adt; the returned pointer is rooted by
+        # the handler's own GC prologue on entry.
+        req_layout = result.adt_layouts["Request"]["Request"]
+        # InstanceCaller implements the exact caller protocol the heap
+        # helpers use (export lookup + store-context delegation); the
+        # cast is the contained alternative to retyping every helper.
+        ic = cast("wasmtime.Caller", InstanceCaller(store, instance))
+        request_ptr = build_request_adt(
+            ic, req_layout,
+            http_request.method, http_request.path,
+            http_request.headers, http_request.body,
+        )
+        call_args = [request_ptr]
+        given = 1
+
     if given != expected:
         exports_str = ", ".join(result.exports)
         msg = (
@@ -1237,6 +1284,17 @@ def execute(
     else:
         value = int(raw_result)
 
+    http_response: dict[str, object] | None = None
+    if http_request is not None:
+        # #305: decode the handler's Response ADT (read-only — guest
+        # execution has finished, nothing allocates during the read).
+        resp_layout = result.adt_layouts["Response"]["Response"]
+        assert isinstance(raw_result, int)  # noqa: S101 — handler returns i32 ptr
+        http_response = decode_response_adt(
+            cast("wasmtime.Caller", InstanceCaller(store, instance)),
+            resp_layout, raw_result,
+        )
+
     return ExecuteResult(
         value=value,
         stdout=output_buf.getvalue(),
@@ -1244,4 +1302,5 @@ def execute(
         state={k: v[-1] for k, v in state_store.items()},
         host_store_sizes={k: len(v) for k, v in _host_store_refs.items()},
         peak_heap_bytes=_peak_heap_bytes(),
+        http_response=http_response,
     )
