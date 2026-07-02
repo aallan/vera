@@ -204,7 +204,8 @@ def main() -> int:
                 elif outcome.status == "skipped":
                     skipped_annotated[outcome.stage] += 1
                 elif outcome.status == "stale":
-                    assert outcome.annotation is not None
+                    if outcome.annotation is None:
+                        raise RuntimeError("stale outcome missing its annotation")
                     stale.append(
                         (
                             filename,

@@ -162,7 +162,8 @@ def main() -> int:
         elif last.status == "skipped":
             annotated += 1
         elif last.status == "stale":
-            assert last.annotation is not None
+            if last.annotation is None:
+                raise RuntimeError("stale outcome missing its annotation")
             stale.append(
                 (block.line, last.stage, last.annotation.category,
                  last.annotation.reason)

@@ -344,7 +344,8 @@ def run_parse_only_gate(
         elif outcome.status == "skipped":
             skipped_annotated += 1
         elif outcome.status == "stale":
-            assert outcome.annotation is not None
+            if outcome.annotation is None:
+                raise RuntimeError("stale outcome missing its annotation")
             stale.append(
                 (block.line, outcome.annotation.category, outcome.annotation.reason)
             )
