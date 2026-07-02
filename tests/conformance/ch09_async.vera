@@ -33,13 +33,16 @@ public fn test_async_multiple(@Unit -> @Int)
 }
 
 private fn async_helper(@Int -> @Int)
-  requires(@Int.0 >= 0)
+  requires(true)
   ensures(true)
   effects(<Async>)
 {
-  -- `async` infers Future<Nat> from the Nat-typed `@Int.0 * 2`, so the
-  -- @Int argument narrows into a @Nat formal (#747); the precondition
-  -- discharges it.
+  -- `@Int.0 * 2` types as Int (#755), so `async` infers Future<Int> and no
+  -- non-negativity precondition is needed.  Dropping the old
+  -- requires(@Int.0 >= 0) workaround was cleanup, NOT a regression pin —
+  -- this program passes with or without the #755 fix (the let annotation
+  -- accepts Future<Nat> via the binding-site narrowing relaxation); the fix
+  -- is pinned by tests/test_checker_int_nat.py + the overflow differential.
   let @Future<Int> = async(@Int.0 * 2);
   await(@Future<Int>.0)
 }

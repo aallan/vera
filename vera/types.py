@@ -273,6 +273,41 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     return False
 
 
+def numeric_join(left: Type, right: Type) -> Type | None:
+    """Least upper bound of two numeric bases under the *formal* lattice.
+
+    Used to type mixed arithmetic (``left <op> right``).  The result is the
+    LUB of the two operand types under the only formal primitive subtyping
+    rule among numerics — ``Nat <: Int`` (``Nat`` is ``{ @Int | @Int.0 >= 0 }``,
+    a refinement subtype of ``Int``; spec §2.2.1, §2.8 rule 3).  Concretely:
+
+    - identical bases            → that base (``Int⊔Int=Int``, ``Nat⊔Nat=Nat``)
+    - ``Int`` mixed with ``Nat`` → ``Int``  (the formal LUB, either operand order)
+    - anything else (e.g. ``Int``/``Float64``) → ``None`` (incompatible)
+
+    Returns ``None`` when the two are not both numeric or have no common
+    numeric supertype, so the caller can emit the type-mismatch diagnostic.
+
+    This deliberately does **not** consult :func:`is_subtype`, whose
+    ``Int <: Nat`` clause is a verifier-mediated narrowing *relaxation* (spec
+    §2.8 rule 5 implementation note), not a formal widening.  Relying on that
+    bidirectionality typed ``Int <op> Nat`` as ``Nat`` (#755) — dishonestly
+    asserting non-negativity with no verifier obligation, against §0.2.2
+    ("no implicit behaviour").
+    """
+    lb = base_type(left)
+    rb = base_type(right)
+    if lb not in NUMERIC_TYPES or rb not in NUMERIC_TYPES:
+        return None
+    if types_equal(lb, rb):
+        return lb
+    # The only cross-type numeric pair with a formal LUB is {Int, Nat} → Int
+    # (Nat <: Int).  Float64 is incomparable to both.
+    if {lb, rb} == {INT, NAT}:
+        return INT
+    return None
+
+
 def is_effect_subtype(sub: EffectRowType, sup: EffectRowType) -> bool:
     """Check if effect row *sub* <: *sup* (subeffecting).
 

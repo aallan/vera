@@ -28,6 +28,7 @@ from vera.types import (
     contains_typevar,
     base_type,
     is_subtype,
+    numeric_join,
     pretty_type,
     types_equal,
 )
@@ -403,11 +404,16 @@ class ExpressionsMixin:
                     error_code="E140",
                 )
                 return UnknownType()
-            # Allow Nat+Int => Int, etc. Result is the more general type.
-            if is_subtype(left_base, right_base):
-                return right_base
-            if is_subtype(right_base, left_base):
-                return left_base
+            # Mixed numeric arithmetic joins to the *formal* least-upper-bound:
+            # Nat <op> Int (either order) => Int, since only Nat <: Int is a
+            # formal subtyping rule (Nat = { @Int | @Int.0 >= 0 }; spec §2.2.1).
+            # Do NOT use the bidirectional is_subtype here — its Int <: Nat clause
+            # is a verifier-mediated narrowing relaxation, and treating it as a
+            # widening typed `Int <op> Nat` as Nat (#755), dishonestly asserting
+            # non-negativity with no verifier obligation (§0.2.2).
+            joined = numeric_join(left_base, right_base)
+            if joined is not None:
+                return joined
             self._error(
                 expr,
                 f"Operator '{op.value}' requires matching numeric types, "
