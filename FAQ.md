@@ -79,6 +79,7 @@ Vera has four built-in abilities:
 
 You use them in generic signatures with `where` clauses:
 
+<!-- vera:skip-parse category="SNIPPET" reason="Abilities example with ellipsis body" -->
 ```vera
 public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   requires(true)

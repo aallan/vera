@@ -78,8 +78,6 @@ python scripts/check_licenses.py      # Verify all package licenses are MIT-comp
 python scripts/check_wheel_availability.py # Verify every runtime dep has wheels for all supported platforms (README §Supported platforms)
 python scripts/check_limitations_sync.py              # Verify limitation tables are in sync
 python scripts/check_limitations_sync.py --check-states # Also verify issues are still open via GitHub API
-python scripts/fix_allowlists.py      # Preview stale allowlist line numbers
-python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 ```
 
 See [`TOOLCHAIN.md`](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.

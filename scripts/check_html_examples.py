@@ -11,62 +11,28 @@ Strategy (mirrors check_readme_examples.py with multi-stage validation):
   2. Strip HTML tags and decode entities to recover plain Vera source.
   3. Skip non-Vera blocks (error diagnostics, shell commands).
   4. Parse, type-check, and verify each Vera block.
-  5. Report failures.  Maintain an allowlist for known-unparseable blocks.
+  5. Report failures.
+
+A block that intentionally fails a stage carries an inline
+`<!-- vera:skip-<stage> category="..." reason="..." -->` annotation on the
+line immediately before its <pre> tag (#538; see scripts/doc_annotations.py).
+The gate still runs the exempted stage: an annotated block that passes it is
+a STALE annotation and fails the gate.  All current blocks pass all stages —
+no block is annotated today.
 """
 
-import html
-import re
 import subprocess
 import sys
 import tempfile
+import re
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# -- Allowlist: blocks that are intentionally unparseable. -------------------
-#
-# Each entry is (start_line_of_pre_tag, category, reason).
-# Currently empty — all blocks should pass all stages.
-
-ALLOWLIST: dict[int, tuple[str, str]] = {}
-
-
-def extract_code_blocks(path: Path) -> list[tuple[int, str]]:
-    """Extract <pre> blocks from <div class="code-block"> containers.
-
-    Returns list of (line_number, plain_text_content) tuples.
-    line_number is the 1-based line of the <pre> tag.
-    """
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    blocks: list[tuple[int, str]] = []
-
-    i = 0
-    while i < len(lines):
-        # Look for a <pre> tag inside a code-block div
-        if "<pre>" in lines[i] or "<pre " in lines[i]:
-            start_line = i + 1  # 1-based
-            # Collect everything from this line through the closing </pre>
-            pre_lines: list[str] = []
-            while i < len(lines):
-                pre_lines.append(lines[i])
-                if "</pre>" in lines[i]:
-                    break
-                i += 1
-            raw_html = "\n".join(pre_lines)
-
-            # Extract content between <pre> and </pre>
-            m = re.search(r"<pre[^>]*>(.*?)</pre>", raw_html, re.DOTALL)
-            if m:
-                content = m.group(1)
-                # Strip all HTML tags
-                content = re.sub(r"<[^>]+>", "", content)
-                # Decode HTML entities
-                content = html.unescape(content)
-                blocks.append((start_line, content.strip()))
-        i += 1
-
-    return blocks
-
+from doc_annotations import (  # noqa: E402  (scripts/ is not a package)
+    evaluate_block,
+    scan_html,
+)
 
 _TOP_LEVEL_RE = re.compile(
     r"\A\s*(?:--.*\n\s*)*"           # optional leading comments
@@ -158,81 +124,80 @@ def main() -> int:
         print("ERROR: docs/index.html not found.", file=sys.stderr)
         return 1
 
-    blocks = extract_code_blocks(index_html)
+    blocks, problems = scan_html(index_html)
+
+    stage_runners = [
+        ("parse", try_parse),
+        ("check", lambda content: try_check(content, root)),
+        ("verify", lambda content: try_verify(content, root)),
+    ]
 
     total_blocks = 0
     vera_blocks = 0
     skipped_non_vera = 0
-    skipped_allowlist = 0
+    annotated = 0
     passed = 0
     failures: list[tuple[int, str, str]] = []  # (line, stage, error)
+    stale: list[tuple[int, str, str, str]] = []  # (line, stage, cat, reason)
 
-    # Track which allowlist entries are used
-    used_allowlist: set[int] = set()
-
-    for line_no, content in blocks:
+    for block in blocks:
         total_blocks += 1
 
         # Only test blocks that look like Vera source
-        if not is_vera_block(content):
+        if not is_vera_block(block.content):
+            if block.annotations:
+                problems.append(
+                    f"line {block.line}: vera:skip annotation on a block "
+                    f"the non-Vera heuristic already skips — remove it"
+                )
             skipped_non_vera += 1
             continue
 
         vera_blocks += 1
 
-        # Check allowlist
-        if line_no in ALLOWLIST:
-            used_allowlist.add(line_no)
-            skipped_allowlist += 1
-            continue
-
-        # Stage 1: Parse
-        error = try_parse(content)
-        if error is not None:
-            failures.append((line_no, "parse", error))
-            continue
-
-        # Stage 2: Type-check
-        error = try_check(content, root)
-        if error is not None:
-            failures.append((line_no, "check", error))
-            continue
-
-        # Stage 3: Verify contracts
-        error = try_verify(content, root)
-        if error is not None:
-            failures.append((line_no, "verify", error))
-            continue
-
-        passed += 1
-
-    # Check for stale allowlist entries
-    stale_allowlist: list[tuple[int, str, str]] = []
-    for line_no, (category, reason) in ALLOWLIST.items():
-        if line_no not in used_allowlist:
-            stale_allowlist.append((line_no, category, reason))
+        outcomes = evaluate_block(block, stage_runners)
+        last = outcomes[-1]
+        if last.status == "failed":
+            failures.append((block.line, last.stage, last.error or ""))
+        elif last.status == "skipped":
+            annotated += 1
+        elif last.status == "stale":
+            assert last.annotation is not None
+            stale.append(
+                (block.line, last.stage, last.annotation.category,
+                 last.annotation.reason)
+            )
+        else:
+            passed += 1
 
     # Report
     print(f"HTML code blocks: {total_blocks} total")
     print(f"  Skipped (non-Vera): {skipped_non_vera}")
     print(f"  Vera blocks: {vera_blocks}")
     print(f"    Passed (parse+check+verify): {passed}")
-    print(f"    Allowlisted: {skipped_allowlist}")
+    print(f"    Annotated (vera:skip): {annotated}")
     print(f"    FAILED: {len(failures)}")
 
     exit_code = 0
 
-    if stale_allowlist:
-        print("\nSTALE ALLOWLIST ENTRIES:", file=sys.stderr)
-        for line_no, category, reason in stale_allowlist:
-            print(
-                f"  docs/index.html line {line_no} [{category}]: {reason}",
-                file=sys.stderr,
-            )
+    if problems:
+        print("\nANNOTATION PROBLEMS:", file=sys.stderr)
+        for problem in problems:
+            print(f"  docs/index.html {problem}", file=sys.stderr)
+        exit_code = 1
+
+    if stale:
         print(
-            "\nRun: python scripts/fix_allowlists.py --fix",
+            "\nSTALE ANNOTATIONS (block passes the exempted stage — "
+            "remove the annotation):",
             file=sys.stderr,
         )
+        for line_no, stage, category, reason in stale:
+            print(
+                f"  docs/index.html line {line_no} "
+                f"[vera:skip-{stage} {category}]: {reason}",
+                file=sys.stderr,
+            )
         exit_code = 1
 
     if failures:
@@ -245,11 +210,12 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "If a block is intentionally invalid, add it to the ALLOWLIST",
+            "If a block is intentionally invalid, annotate it with "
+            '<!-- vera:skip-<stage> category="..." reason="..." --> on the',
             file=sys.stderr,
         )
         print(
-            "in scripts/check_html_examples.py with the appropriate category.",
+            "line before its <pre> tag (see scripts/doc_annotations.py).",
             file=sys.stderr,
         )
         exit_code = 1

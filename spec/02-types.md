@@ -139,6 +139,7 @@ Rules:
 
 An ADT may declare an invariant that all values must satisfy:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted in SortedList invariant" -->
 ```
 private data SortedList<T>
   invariant(is_sorted(@SortedList<T>.0))
@@ -266,6 +267,7 @@ The guard is *defense in depth* for the unverified path: a `vera verify`-clean p
 
 Functions and data types may be parameterised by type variables:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="forall<A,B> fn swap uses Tuple" -->
 ```
 private forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
   requires(true)
@@ -286,6 +288,7 @@ Type variables:
 
 Type variables may be constrained using ability constraints:
 
+<!-- vera:skip-parse category="FUTURE" reason="forall<T where Ord<T>> fn sort" -->
 ```
 private forall<T where Ord<T>> fn sort(@Array<T> -> @Array<T>)
 ```

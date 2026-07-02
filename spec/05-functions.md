@@ -16,6 +16,7 @@ All components are mandatory. There are no defaults, no shortcuts, and no omissi
 
 The canonical form of a function declaration:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn function_name(@ParamType1 ...)" -->
 ```
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition)
@@ -46,6 +47,7 @@ public fn absolute_value(@Int -> @Nat)
 
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
+<!-- vera:skip-verify category="ILLUSTRATIVE" reason="safe_divide with imprecise ensures" -->
 ```
 public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -208,6 +210,7 @@ Anonymous functions:
 
 Anonymous functions capture bindings from enclosing scopes by reference. The captured bindings are immutable (since all bindings in Vera are immutable):
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn make_adder returns fn(...) inline" -->
 ```
 private fn make_adder(@Int -> fn(Int -> Int) effects(pure))
   requires(true)
@@ -321,6 +324,7 @@ Type variables are introduced by `forall<...>` and are scoped to the entire func
 
 Functions can be polymorphic over effects:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="fn(A -> B) in param position" -->
 ```
 private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
@@ -328,13 +332,13 @@ private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
   effects(<E>)
 {
   match @Option<A>.0 {
-    Some(@A) -> Some(@Fn.0(@A.0)),
+    Some(@A) -> Some(apply_fn(@Fn.0, @A.0)),
     None -> None,
   }
 }
 ```
 
-The effect variable `E` means: "whatever effects the function argument has, this function also has."
+The stored function value is applied with `apply_fn` (Section 11.10.5). The effect variable `E` means: "whatever effects the function argument has, this function also has."
 
 ## 5.10 Function Type Summary
 

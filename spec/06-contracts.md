@@ -51,6 +51,7 @@ The special reference `@T.result` (where `T` is the return type) refers to the f
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
+<!-- vera:skip-check category="INCOMPLETE" reason="is_sorted_impl in SortedArray" -->
 ```
 private data SortedArray
   invariant(is_sorted_impl(@SortedArray.0))
@@ -349,6 +350,7 @@ After this point, the verifier knows that `@Nat.0 + @Nat.1 > @Nat.0`.
 
 When a function type is used as a parameter, the caller can rely on the contracts of the concrete function passed:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="type SafeDiv = fn(...) + fn apply_div" -->
 ```
 type SafeDiv = fn(Int, { @Int | @Int.0 != 0 } -> Int) effects(pure);
 

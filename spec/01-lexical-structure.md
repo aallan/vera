@@ -42,6 +42,7 @@ fn(@Int /* width */, @Int /* height */ -> @Int)
 
 The following identifiers are reserved keywords and MUST NOT be used as type names or function names:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="'fn  let  if  then ...'" -->
 ```
 fn          let         if          then        else
 match       data        type        module      import

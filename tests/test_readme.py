@@ -2,74 +2,74 @@
 
 Mirrors scripts/check_readme_examples.py but integrates with pytest for
 the regular test suite. Every ```vera code block in README.md must parse
-successfully (or be in the allowlist).
+successfully, or carry an inline `<!-- vera:skip-parse ... -->` annotation
+on the line before its fence (#538; see scripts/doc_annotations.py).
+Annotated blocks are still parsed: one that parses fine is a stale
+annotation and fails the test.
 """
 
 from __future__ import annotations
 
-import re
+import importlib.util
 from pathlib import Path
 
 from vera.parser import parse
 
 README = Path(__file__).parent.parent / "README.md"
 
-# -- Allowlist: README blocks that are intentionally unparseable. ----------
-# Must stay in sync with scripts/check_readme_examples.py.
-# Each key is the 1-based line number of the opening ```vera fence.
-ALLOWLIST: dict[int, str] = {
-    # No blocks currently require allowlisting — all three vera blocks parse.
-}
+# scripts/ is not a package: load the shared annotation module by file path
+# (same pattern as tests/test_build_site.py).
+_DOC_ANNOTATIONS = Path(__file__).parent.parent / "scripts" / "doc_annotations.py"
+_spec = importlib.util.spec_from_file_location("doc_annotations", _DOC_ANNOTATIONS)
+assert _spec is not None and _spec.loader is not None
+doc_annotations = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(doc_annotations)
 
 
-def _extract_vera_blocks(path: Path) -> list[tuple[int, str]]:
-    """Extract all ```vera blocks from a Markdown file.
+def _try_parse(content: str) -> str | None:
+    try:
+        parse(content, file="<readme>")
+        return None
+    except Exception as exc:
+        return str(exc).split("\n")[0][:200]
 
-    Returns list of (line_number, content) tuples.
-    """
-    lines = path.read_text(encoding="utf-8").splitlines()
-    blocks: list[tuple[int, str]] = []
-    i = 0
-    while i < len(lines):
-        m = re.match(r"^```vera$", lines[i])
-        if m:
-            start_line = i + 1  # 1-based
-            content_lines: list[str] = []
-            i += 1
-            while i < len(lines) and not re.match(r"^```$", lines[i]):
-                content_lines.append(lines[i])
-                i += 1
-            blocks.append((start_line, "\n".join(content_lines)))
-        i += 1
-    return blocks
+
+def _vera_blocks() -> list:
+    blocks, problems = doc_annotations.scan_markdown(README)
+    assert problems == [], f"annotation problems in README.md: {problems}"
+    return [b for b in blocks if b.lang.lower() == "vera"]
 
 
 class TestReadmeCodeSamples:
     """Every ```vera code block in README.md should parse."""
 
     def test_all_vera_blocks_parse(self) -> None:
-        """Extract all vera blocks and verify each one parses."""
-        blocks = _extract_vera_blocks(README)
+        """Extract all vera blocks and verify each one parses (or is
+        honestly annotated — a stale annotation fails too)."""
+        blocks = _vera_blocks()
         assert len(blocks) > 0, "No vera blocks found in README.md"
 
         failures: list[tuple[int, str]] = []
-        for line_no, content in blocks:
-            if line_no in ALLOWLIST:
-                continue
-            try:
-                parse(content, file="<readme>")
-            except Exception as exc:
-                failures.append((line_no, str(exc).split("\n")[0][:200]))
+        for block in blocks:
+            outcome = doc_annotations.evaluate_block(
+                block, [("parse", _try_parse)]
+            )[-1]
+            if outcome.status == "failed":
+                failures.append((block.line, outcome.error or ""))
+            elif outcome.status == "stale":
+                failures.append(
+                    (block.line, "STALE vera:skip-parse annotation — block parses")
+                )
 
         if failures:
-            msg_parts = [f"{len(failures)} README code block(s) failed to parse:"]
+            msg_parts = [f"{len(failures)} README code block(s) failed:"]
             for line_no, error in failures:
                 msg_parts.append(f"  line {line_no}: {error}")
             raise AssertionError("\n".join(msg_parts))
 
     def test_vera_block_count(self) -> None:
         """README should have the expected number of Vera code blocks."""
-        blocks = _extract_vera_blocks(README)
+        blocks = _vera_blocks()
         # Currently: safe_divide (intro), safe_divide (contracts section),
         # research_topic (effects section).
         # The error display block uses a plain ``` fence (not ```vera) by design.
