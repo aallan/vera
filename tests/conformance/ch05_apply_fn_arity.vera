@@ -1,0 +1,24 @@
+-- Conformance: apply_fn arity is checked (Chapter 5, #854)
+-- Tests: E201 — since #854 apply_fn is a checker special form, applying a
+-- fn(Int -> Int) value with zero value arguments is a wrong-argument-count
+-- error at check time (previously apply_fn was unresolved and this slipped
+-- through with only an E200 warning). The applied fn type expects one
+-- argument; passing none must fail check with E201.
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn make_double(@Unit -> @IntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = make_double(());
+  apply_fn(@IntToInt.0)
+}

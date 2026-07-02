@@ -139,7 +139,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 data Future<T> { Future(T) }
 ```
 
-`Future<T>` represents the result of an asynchronous computation. It is WASM-transparent: it has the same runtime representation as `T`, with no overhead.
+`Future<T>` represents the result of an asynchronous computation. An eagerly-evaluated future is WASM-transparent — it has the same runtime representation as `T`, with no overhead; a concurrently-evaluated future is an opaque pending handle with the same WASM value type (see §9.5.4).
 
 Constructors:
 - `Future(@T)` — wraps a value.
@@ -466,9 +466,9 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 - Browser runtime uses deprecated synchronous XMLHttpRequest ([#355](https://github.com/aallan/vera/issues/355)).
 - No PUT, PATCH, DELETE methods ([#356](https://github.com/aallan/vera/issues/356)).
 
-**Async composition (future work):**
+**Async composition:**
 
-When the `<Async>` effect is available, Http naturally composes with it for concurrent requests:
+Http composes with the `<Async>` effect for concurrent requests:
 
 ```
 private fn fetch_both(@String, @String -> @Tuple<Result<String, String>, Result<String, String>>)
@@ -518,7 +518,7 @@ Key design points:
 - `Async` is a marker effect with no operations — `async` and `await` are built-in generic functions that require `effects(<Async>)`.
 - `Future<T>` is WASM-transparent: an eagerly-evaluated future has the same runtime representation as `T`, with no overhead.  (A concurrently-evaluated future is an opaque pending handle with the same WASM value type; `await` resolves it.)
 - **Concurrency (#841):** an implementation MAY evaluate `async(e)` concurrently when `e`'s effect row is commutative — value semantics are unchanged, and all other effects retain program order.  The reference implementation evaluates `async(Http.get(...))` and `async(Http.post(...))` (with call-free argument expressions) concurrently: the request is issued on a host worker thread at the `async(...)` point (so request *issuance* keeps program order), and `await` blocks for the response.  Every other shape evaluates eagerly (sequential execution); the checker warns (`W002`) when the argument's effect row is not within the commutative whitelist (`{Http, Async}`), documenting exactly where eager evaluation is semantically forced rather than merely unoptimized.
-- The concurrent lowering keys the `await` handle-check on the literal type `Future<Result<String, String>>`, covering slots, parameters, direct compositions, and calls (bare, imported, or module-qualified) whose declared return is that type.  An alias for that type does not participate — today an alias-typed `let` has no WASM representation, so the function is skipped (`[E602]`) before any await could mis-lower.  An indirectly-called closure returning this future type is the one shape the classification cannot see; it is tracked as a known limitation.
+- The concurrent lowering keys the `await` handle-check on the literal type `Future<Result<String, String>>`, covering slots, parameters, direct compositions, and calls (bare, imported, or module-qualified) whose declared return is that type.  An alias for that type does not participate — the lowering's classification does not resolve type aliases (aliases are transparent everywhere else), so a function whose future is bound through an alias-typed `let` is skipped (`[E602]`) before any await could mis-lower.  An indirectly-called closure returning this future type is the one shape the classification cannot see; it is tracked as a known limitation.
 - The browser runtime evaluates all futures eagerly — spec-conformant under the MAY above, with identical values; only request timing differs (documented in §12).
 - True multi-await suspension and custom scheduling strategies (thread pool, event loop) via `handle[Async]` handlers remain future work ([#406](https://github.com/aallan/vera/issues/406), [#270](https://github.com/aallan/vera/issues/270)).
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.

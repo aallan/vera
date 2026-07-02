@@ -48,7 +48,7 @@ Things Vera cannot do yet, as distinct from defects in what it claims to do.
 | There is no date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic. Milestone 2 server-adjacent work. | [#233](https://github.com/aallan/vera/issues/233) |
 | There are no cryptographic primitives — no hashing, no HMAC. Milestone 2 work, needed for API-authentication patterns like webhook signatures. | [#235](https://github.com/aallan/vera/issues/235) |
 | There is no CSV parsing or generation. Milestone 2 server-adjacent work; JSON is the workaround interchange format today. | [#236](https://github.com/aallan/vera/issues/236) |
-| The wasmtime integration predates WASI 0.2 — filesystem, networking, and clock access don't follow the component interfaces. Compliance is the prerequisite for the Milestone 2 server-effect chain. | [#237](https://github.com/aallan/vera/issues/237) |
+| The experimental `--target wasi-p2` (v0.0.194) routes IO, clocks, and random through standard component interfaces and `--world server` (v0.0.195) serves `wasi:http`, but the surface is IO + Random only — Http and every other host family are rejected under wasi-p2 with a diagnostic, and the default `wasm` target still uses ad-hoc `vera.*` host imports. Extending the wasi-p2 target to `wasi:http` outbound, streaming filesystem, and sockets is Milestone 2 server-effect work. | [#853](https://github.com/aallan/vera/issues/853) |
 | WASM execution has no configurable fuel, memory, or timeout limits, so pathological computation runs unbounded. Milestone 2 work, essential for server workloads on untrusted input. | [#239](https://github.com/aallan/vera/issues/239) |
 | `Http.get`/`Http.post` send fixed headers — callers cannot add custom ones such as `Authorization`. Milestone 2 Http-hardening work. | [#351](https://github.com/aallan/vera/issues/351) |
 | Http responses surface only the body — status codes are not accessible, so callers cannot distinguish a 404 from a 500. Milestone 2 Http-hardening work. | [#352](https://github.com/aallan/vera/issues/352) |
@@ -71,10 +71,7 @@ No files currently need decomposition.
 
 Internal test-quality items that don't affect correctness today but would make the suite more durable to refactoring.
 
-| Gap | Issue |
-|-----|-------|
-| Five of the six UTF-8 decode sites are pinned only by structural source-greps — a refactor that centralises the decodes would break the greps even with preserved behaviour. End-to-end tests per site (parametrizing the existing `host_print` test over an import-name/signature/payload tuple) would survive it. | [#592](https://github.com/aallan/vera/issues/592) |
-| Text-mode `open()`/`read_text()`/`write_text()` calls without explicit `encoding='utf-8'` remain at roughly 30 sites, relying on CI's `PYTHONUTF8=1` backstop. The durable fix is explicit encoding everywhere plus a pre-commit check, after which the CI variable can be dropped. | [#645](https://github.com/aallan/vera/issues/645) |
+No known test coverage gaps.
 
 ## CI workarounds
 

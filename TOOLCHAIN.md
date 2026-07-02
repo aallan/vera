@@ -177,6 +177,8 @@ wasmtime serve file.wasm                                 # stock wasmtime hosts 
 one handler, two deployment paths.  `vera run` cannot host it (no
 wasi:http in wasmtime-py); the error says so and points here.
 
+Under `wasmtime serve`, handler `IO.print` output is line-buffered by the host: a print with no trailing newline is held until the next newline (and lost on shutdown if none arrives), so terminate each log line with `\n`. The native `vera serve` driver below does not buffer this way.
+
 ---
 
 ## Recipe: serve verified HTTP handlers

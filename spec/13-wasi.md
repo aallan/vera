@@ -194,7 +194,11 @@ do not link under stock `wasmtime serve`).
 request and response bodies are buffered, not streamed; request
 headers share the fixed arena (roughly 63 KiB combined); a response
 status outside 0–65535 or a forbidden header answers 500 rather than
-trapping the server.
+trapping the server.  Handler `IO.print` output is line-buffered by
+the `wasmtime serve` host — a print whose content has no trailing
+newline is held until a subsequent newline is written (and is lost on
+shutdown if none ever is), so end each log line with `\n`.  (The
+native `vera serve` driver does not buffer this way.)
 
 `vera run` cannot execute a server-world artifact (wasmtime-py's
 built-in host has no wasi:http support); it fails with a message

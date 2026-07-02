@@ -34,7 +34,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
 | Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$alloc`, `$gc_collect`, shadow stack); no host GC; models focus on logic |
-| Target | WebAssembly (native + browser) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle |
+| Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits an experimental WASI Preview 2 component for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
 | Compiler | Python reference implementation | Correctness over performance; clean separation of phases; see [vera/README.md](vera/README.md) |
 | Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar is shared between spec and implementation; no ambiguity |
 | Diagnostics | LLM-instruction format; `--json` for machine use; stable error codes E001–E702 | Every diagnostic names the problem, explains why, and gives a concrete fix; codes are stable for tooling |
@@ -76,7 +76,7 @@ Built-in effects:
 | `Http` | `get`, `post` | Network requests; returns `Result<String, String>` |
 | `State<T>` | `get`, `put` | Typed mutable state; scope controlled by `handle[State<T>]` |
 | `Exn<T>` | `throw` | Typed exceptions; `throw` never resumes (`Never` return type); handling is via `handle[Exn<T>]` syntax |
-| `Async` | `async`, `await` | `Future<T>` is zero-overhead at compile time; true concurrency deferred to WASI 0.3 |
+| `Async` | `async`, `await` | `Future<T>` is zero-overhead at compile time; `async(Http.get/post(...))` runs concurrently on a host worker thread (v0.0.192), all other shapes evaluate eagerly |
 | `Inference` | `complete` | LLM calls; `String → Result<String, String>`; provider selected by env var |
 
 User-defined effects follow the same pattern. Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.

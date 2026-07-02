@@ -342,7 +342,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 277 T1 / 92 T3 / 369 total (current).
+        """All examples together: 281 T1 / 94 T3 / 375 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -515,9 +515,15 @@ private fn sum(@List<Int> -> @Int)
         # its status_of range postcondition and the trivial handler /
         # body_for contracts all discharge statically: +6 T1, +6 total:
         # 271/92/363 -> 277/92/369.
-        assert t1 == 277, f"Expected 277 T1, got {t1}"
-        assert t3 == 92, f"Expected 92 T3, got {t3}"
-        assert total == 369, f"Expected 369 total, got {total}"
+        #
+        # v0.0.196 doc sweep: examples/async_http_fanout.vera (the #841
+        # concurrent-async showcase) joins the corpus — summarise's 0..3
+        # range postcondition proves statically (+4 T1) while fetch_both's
+        # effectful postcondition falls to runtime (+2 T3), +6 total:
+        # 277/92/369 -> 281/94/375.
+        assert t1 == 281, f"Expected 281 T1, got {t1}"
+        assert t3 == 94, f"Expected 94 T3, got {t3}"
+        assert total == 375, f"Expected 375 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

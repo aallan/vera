@@ -1,9 +1,13 @@
 -- Async effect with Future<T>
 --
 -- The Async effect enables async(expr) and await(future) operations.
--- In the reference implementation, async(expr) evaluates eagerly and
--- wraps the result in Future<T>; await(future) unwraps it.
--- Future<T> is WASM-transparent — no runtime overhead.
+-- For the non-whitelisted shapes used here — async(expr) wrapping a scalar
+-- like async(@Int.0) — async evaluates eagerly and wraps the result in
+-- Future<T>; await(future) unwraps it, and Future<T> is WASM-transparent
+-- with no runtime overhead. A direct whitelisted Http call under async,
+-- async(Http.get/post(...)), instead runs concurrently on a host worker
+-- thread in the native runtime since v0.0.192 (#841) — see
+-- examples/async_http_fanout.vera for that fan-out pattern.
 effect IO {
   op print(String -> Unit);
 }

@@ -1,0 +1,51 @@
+-- Concurrent async HTTP fan-out with the <Async> + <Http> effects (#841).
+-- Two async(Http.get(url)) calls are started back-to-back, then awaited,
+-- so the two requests overlap on host worker threads instead of running
+-- one after the other. Concurrency applies ONLY to a direct, whitelisted
+-- Http call under async(...) — async(Http.get/post(...)) with a call-free
+-- argument — in the native runtime; every other async shape stays eager,
+-- and the browser runtime is always eager (spec-conformant). The pure
+-- summarise helper folds the two Result outcomes into a small status code
+-- whose 0..3 range vera verify discharges statically (Tier 1).
+--
+-- Run:   vera run examples/async_http_fanout.vera   # requires network
+private fn summarise(@Result<String, String>, @Result<String, String> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0 && @Int.result <= 3)
+  effects(pure)
+{
+  -- @Result<..>.1 = first response, @Result<..>.0 = second response.
+  -- Encode which fetches succeeded: 0 = both failed, 1 = only first,
+  -- 2 = only second, 3 = both succeeded.
+  match @Result<String, String>.1 {
+    Ok(@String) -> match @Result<String, String>.0 { Ok(@String) -> 3, Err(@String) -> 1 },
+    Err(@String) -> match @Result<String, String>.0 { Ok(@String) -> 2, Err(@String) -> 0 }
+  }
+}
+
+-- Fire both GETs concurrently, then await both. Because each async wraps a
+-- direct Http.get with a call-free argument, the native runtime issues the
+-- requests on worker threads at the async(...) point and await blocks for
+-- the response — the two round-trips overlap.
+private fn fetch_both(@String, @String -> @Int)
+  requires(string_length(@String.0) > 0 && string_length(@String.1) > 0)
+  ensures(@Int.result >= 0 && @Int.result <= 3)
+  effects(<Http, Async>)
+{
+  -- @String.1 = first url, @String.0 = second url.
+  let @Future<Result<String, String>> = async(Http.get(@String.1));
+  let @Future<Result<String, String>> = async(Http.get(@String.0));
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  summarise(@Result<String, String>.1, @Result<String, String>.0)
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<Http, Async, IO>)
+{
+  let @Int = fetch_both("https://jsonplaceholder.typicode.com/posts/1", "https://jsonplaceholder.typicode.com/posts/2");
+  IO.print("fan-out status = \(@Int.0)");
+  ()
+}

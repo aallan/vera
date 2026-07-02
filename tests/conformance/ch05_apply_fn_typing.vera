@@ -1,0 +1,64 @@
+-- Conformance: apply_fn typing as a checker special form (Chapter 5, #854)
+-- Tests: closure, higher_order, function_type, apply_fn — apply_fn on a
+-- fn-typed parameter via a type alias, a variadic (two-arg) application of a
+-- two-parameter fn type, and an application whose result feeds another
+-- expression. Since #854 apply_fn is a checker special form: it is typed
+-- structurally against the applied value's fn type (arity, argument
+-- subtyping, and the fn type's effect row), so these calls type and verify
+-- with no E200 warning.
+type IntToInt = fn(Int -> Int) effects(pure);
+
+type IntIntToInt = fn(Int, Int -> Int) effects(pure);
+
+-- Single-parameter application on a fn-typed parameter.
+private fn apply_one(@IntToInt, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntToInt.0, @Int.0)
+}
+
+-- Variadic application: a two-parameter fn type applied with two args.
+-- De Bruijn: @Int.1 is the first parameter, @Int.0 is the second.
+private fn apply_two(@IntIntToInt, @Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntIntToInt.0, @Int.1, @Int.0)
+}
+
+-- A function value that subtracts: non-commutative, so slot order matters.
+-- @Int.1 is the first parameter, @Int.0 is the second: first minus second.
+private fn make_sub(@Unit -> @IntIntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int, @Int -> @Int) effects(pure) { @Int.1 - @Int.0 }
+}
+
+private fn make_double(@Unit -> @IntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Single-arg application: double(21) = 42.
+  let @IntToInt = make_double(());
+  let @Int = apply_one(@IntToInt.0, 21);
+  -- Two-arg application: sub(50, 8) = 42 (first minus second).
+  let @IntIntToInt = make_sub(());
+  let @Int = apply_two(@IntIntToInt.0, 50, 8);
+  -- Result of an application feeds another expression: double(21) - sub(50, 8)
+  -- = 42 - 42 = 0. @Int.1 is the first result, @Int.0 the second.
+  @Int.1 - @Int.0
+}

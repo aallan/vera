@@ -179,6 +179,7 @@ Throughout this specification:
 | 10 | Formal Grammar |
 | 11 | Compilation Model |
 | 12 | Runtime and Execution |
+| 13 | WASI Preview 2 Target |
 
 ## 0.8 Design Notes (Future Features)
 

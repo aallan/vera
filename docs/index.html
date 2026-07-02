@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Vera — A language designed for machines to write</title>
-  <meta name="description" content="Vera is a programming language designed for large language models to write. Mandatory contracts, algebraic effects, typed slot references, and compilation to WebAssembly — runs at the command line or in the browser.">
+  <meta name="description" content="Vera is a programming language designed for large language models to write. Mandatory contracts, algebraic effects, typed slot references, and compilation to WebAssembly — runs at the command line, in the browser, or as a portable WASI component.">
   <meta property="og:title" content="Vera — A language designed for machines to write">
-  <meta property="og:description" content="A programming language where verification is a first-class citizen. Mandatory contracts, algebraic effects, typed slot references. Compiles to WebAssembly — runs at the CLI or in any browser.">
+  <meta property="og:description" content="A programming language where verification is a first-class citizen. Mandatory contracts, algebraic effects, typed slot references. Compiles to WebAssembly — runs at the CLI, in any browser, or as a portable WASI component.">
   <meta property="og:image" content="https://veralang.dev/vera-hero.jpg">
   <meta property="og:url" content="https://veralang.dev">
   <meta property="og:type" content="website">
@@ -268,7 +268,7 @@
         <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
       </div>
       <p class="version">
-        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.195">0.0.195</a></span>
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.196">0.0.196</a></span>
         <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
       </p>
     </div>
@@ -484,7 +484,7 @@
       <div class="ref-grid ref-grid--flow">
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
         <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
-        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
+        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
         <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
         <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
@@ -492,6 +492,8 @@
         <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
         <div class="ref-item"><div class="title">Async / Future&lt;T&gt;</div><div class="desc">Futures carry an <code>&lt;Async&gt;</code> effect and compose with the rest of the effect system.</div></div>
+        <div class="ref-item"><div class="title">Verified HTTP handlers</div><div class="desc">An <code>&lt;HttpServer&gt;</code> effect marks a total <code>handle(Request -&gt; Response)</code>. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. <code>vera serve</code> runs it.</div></div>
+        <div class="ref-item"><div class="title">WASI 0.2 components</div><div class="desc"><code>vera compile --target wasi-p2</code> emits a component any stock wasip2 host runs (experimental; IO and Random surface). <code>--world server</code> packages a handler as a <code>wasi:http</code> component for <code>wasmtime serve</code>.</div></div>
       </div>
     </div>
   </section>
@@ -501,7 +503,7 @@
     <div class="col col-wide">
       <div class="eyebrow"><span class="slot">@section.05</span> · runtime</div>
       <h2>Runs Everywhere</h2>
-      <p class="lead" style="max-width:58ch">Vera compiles to WebAssembly. The same <code>.wasm</code> runs at the command line via <a href="https://wasmtime.dev/">wasmtime</a> or in any browser with a self-contained JS runtime.</p>
+      <p class="lead" style="max-width:58ch">Vera compiles to WebAssembly. The same <code>.wasm</code> runs at the command line via <a href="https://wasmtime.dev/">wasmtime</a>, in any browser with a self-contained JS runtime, or as a portable WASI 0.2 component under any stock wasip2 host.</p>
 
       <div class="twocol" style="margin-top:1.75rem">
         <div>
@@ -526,6 +528,18 @@ Browser bundle: examples/hello_world_browser/
   index.html</pre>
           </div>
           <p>Self-contained &mdash; no bundler. Serve with any HTTP server (<code>python&nbsp;-m&nbsp;http.server</code>). <code>IO.print</code> writes to the page; all other operations work identically to the CLI. Parity tests enforce this on every PR. <em>Note: <code>Inference.complete</code> errors in the browser &mdash; use a server-side proxy via <code>Http</code>.</em></p>
+        </div>
+        <div>
+          <h3>WASI components</h3>
+          <div class="code-block">
+<pre><span class="cm">$ vera compile --target wasi-p2 --world server \
+    examples/http_server.vera</span>
+WASI Preview 2 server component: http_server.wasm
+
+<span class="cm">$ wasmtime serve http_server.wasm</span>
+Serving HTTP on http://0.0.0.0:8080/</pre>
+          </div>
+          <p><code>--target wasi-p2</code> emits a WASI 0.2 component any stock wasip2 host runs &mdash; <code>wasmtime run module.wasm</code> needs no flags and no Vera bindings <em>(experimental; the IO and Random surface)</em>. <code>--world server</code> packages a <code>handle(Request&nbsp;-&gt;&nbsp;Response)</code> program as a <code>wasi:http</code> component that <code>wasmtime serve</code> runs unmodified.</p>
         </div>
       </div>
     </div>
@@ -631,7 +645,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 13-chapter specification. A 104-program conformance suite and 36 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
+        A complete compiler with 164 built-in functions, eight algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 106-program conformance suite and 37 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>

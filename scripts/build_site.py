@@ -76,8 +76,8 @@ Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent \
 Contracts are mandatory — every function must declare `requires(...)`, \
 `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts \
 statically where possible; remaining contracts become runtime assertions. \
-All side effects (IO, Http, State, Exceptions, Async, Inference, Random) are \
-tracked in the type system via algebraic effects.
+All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, \
+Random) are tracked in the type system via algebraic effects.
 
 Current version: {version}. The reference compiler is written in Python. \
 Install with `pip install -e .` from the repository.
@@ -123,7 +123,7 @@ closures, generics, and mutual recursion.
 - [Chapter 6: Contracts]({RAW}/spec/06-contracts.md): Preconditions, \
 postconditions, termination measures, and quantifiers.
 - [Chapter 7: Effects]({RAW}/spec/07-effects.md): Algebraic effects, \
-handlers, IO, Http, State, Exceptions, Async, Inference, and Random.
+handlers, IO, Http, HttpServer, State, Exceptions, Async, Inference, and Random.
 - [Chapter 8: Modules]({RAW}/spec/08-modules.md): Module system, imports, \
 and visibility.
 - [Chapter 9: Standard Library]({RAW}/spec/09-standard-library.md): All \
@@ -135,6 +135,9 @@ in Lark notation.
 model and WebAssembly code generation.
 - [Chapter 12: Runtime]({RAW}/spec/12-runtime.md): Runtime execution, \
 memory management, and GC.
+- [Chapter 13: WASI Preview 2 Target]({RAW}/spec/13-wasi.md): The \
+`wasi-p2` compilation target — experimental WASI 0.2 components, the \
+`--world server` wasi:http backend, and the divergences from the core runtime.
 
 ## Examples
 
@@ -237,7 +240,7 @@ def build_llms_full_txt(version: str) -> str:
         "This file contains the core Vera language documentation — "
         "language reference, agent instructions, FAQ, error codes, and "
         f"formal grammar — compiled into a single document. Version {version}. "
-        "For the full documentation index including the 13-chapter "
+        "For the full documentation index including the 14-chapter "
         "specification and supplementary docs, see llms.txt."
     )
     parts.append("")
@@ -532,17 +535,19 @@ Full source and data: [{REPO}-bench]({REPO}-bench).
 
 - **No variable names** — Typed [De Bruijn indices]({RAW}/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.
 - **Full contracts** — Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM — no manual test cases.
-- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference, Random — declared, typed, and handled explicitly. Pure by default.
+- **Algebraic effects** — IO, Http, HttpServer, State, Exceptions, Async, Inference, Random — declared, typed, and handled explicitly. Pure by default.
 - **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
 - **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), guided with hints, runtime fallback for the rest.
 - **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
 - **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.
 - **Typed stdlib** — JSON, HTML, Markdown, HTTP, Regex, Decimal — built-in ADTs with parse/query/serialize.
 - **Async / Future<T>** — Futures carry an `<Async>` effect and compose with the rest of the effect system.
+- **Verified HTTP handlers** — An `<HttpServer>` effect marks a total `handle(Request -> Response)`. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. `vera serve` runs it.
+- **WASI 0.2 components** — `vera compile --target wasi-p2` emits a component any stock wasip2 host runs (experimental; IO and Random surface). `--world server` packages a handler as a `wasi:http` component for `wasmtime serve`.
 
 ## Runs Everywhere
 
-Vera compiles to WebAssembly. The same `.wasm` runs at the command line via [wasmtime](https://wasmtime.dev/) or in any browser with a self-contained JS runtime.
+Vera compiles to WebAssembly. The same `.wasm` runs at the command line via [wasmtime](https://wasmtime.dev/), in any browser with a self-contained JS runtime, or as a portable WASI 0.2 component under any stock wasip2 host.
 
 ### Command line
 
@@ -567,6 +572,18 @@ Browser bundle: examples/hello_world_browser/
 ```
 
 Self-contained — no bundler. Serve with any HTTP server (`python -m http.server`). `IO.print` writes to the page; all other operations work identically to the CLI. Parity tests enforce this on every PR. *Note: `Inference.complete` errors in the browser — use a server-side proxy via `Http`.*
+
+### WASI components
+
+```bash
+$ vera compile --target wasi-p2 --world server examples/http_server.vera
+WASI Preview 2 server component: http_server.wasm
+
+$ wasmtime serve http_server.wasm
+Serving HTTP on http://0.0.0.0:8080/
+```
+
+`--target wasi-p2` emits a WASI 0.2 component any stock wasip2 host runs — `wasmtime run module.wasm` needs no flags and no Vera bindings (experimental; the IO and Random surface). `--world server` packages a `handle(Request -> Response)` program as a `wasi:http` component that `wasmtime serve` runs unmodified.
 
 ## Get Started
 
@@ -609,7 +626,7 @@ For other models: point them at [`SKILL.md`]({SITE}/SKILL.md) via system prompt,
 
 ## Status
 
-Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
+Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, eight algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 14-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
 
 ## Links
 

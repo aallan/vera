@@ -23,6 +23,7 @@ EXAMPLE_FILES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
 # Self-contained examples (no unresolved external references)
 CLEAN_EXAMPLES = [
     "absolute_value.vera",
+    "closures.vera",
     "effect_handler.vera",
     "factorial.vera",
     "generics.vera",
@@ -36,10 +37,9 @@ CLEAN_EXAMPLES = [
     "safe_divide.vera",
 ]
 
-# Examples with unresolved external references (warnings expected)
-WARN_EXAMPLES = [
-    "closures.vera",
-]
+# The former WARN_EXAMPLES list ("unresolved external references,
+# warnings expected") was removed with #854: closures.vera was its sole
+# entry, and apply_fn is now checker-registered, so no example warns.
 
 
 def _check(source: str) -> list[Diagnostic]:

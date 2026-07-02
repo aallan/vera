@@ -24,6 +24,7 @@ from vera import ast
 from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
+from vera.prelude import PRELUDE_FILE, mentioned_fn_names
 from vera.wasm import StringPool
 from vera.wasm.async_fusion import (
     compute_future_ret_fns,
@@ -244,6 +245,22 @@ class CodeGenerator(
         # backtrace.
         self._prelude_fn_names: set[str] = set()
 
+        # #851 — the concatenated prelude source buffer that injected
+        # declarations' spans index into.  Captured from
+        # `inject_prelude()` in Pass 1.2 so `_warning` / `_error` can
+        # quote the *prelude's* source line for prelude-origin
+        # diagnostics instead of resolving the span's line number
+        # against the user's file (which rendered unrelated user code
+        # under the caret, or nothing when out of range).
+        self._prelude_source: str = ""
+        # #851 — True while `_compile_fn` is compiling a prelude-
+        # injected function (or a mono clone of one), so diagnostics
+        # anchored to *body* nodes (whose spans also index the prelude
+        # buffer) resolve against the prelude origin too.  Set at
+        # `_compile_fn` entry; every entry overwrites it, and the
+        # Pass-2 loops reset it to False when they finish.
+        self._in_prelude_fn: bool = False
+
         # Cross-module state (C7e)
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
@@ -284,6 +301,45 @@ class CodeGenerator(
     # Diagnostics
     # -----------------------------------------------------------------
 
+    def _is_prelude_origin(self, node: ast.Node) -> bool:
+        """True when a diagnostic node belongs to prelude-injected code.
+
+        #851 — prelude declarations (and their mono clones, whose
+        mangled ``base$Types`` names strip back to a prelude base) carry
+        spans indexing the synthetic prelude buffer, not the user's
+        file.  Body nodes inside a prelude function are recognised via
+        the `_in_prelude_fn` flag `_compile_fn` maintains.
+        """
+        if isinstance(node, ast.FnDecl):
+            if node.name.split("$")[0] in self._prelude_fn_names:
+                return True
+        return self._in_prelude_fn
+
+    def _diag_location(
+        self, node: ast.Node,
+    ) -> tuple[SourceLocation, str]:
+        """Resolve a diagnostic node to (location, source_line).
+
+        User-origin nodes resolve against the user's file and source
+        text as before.  Prelude-origin nodes resolve against the
+        synthetic ``<prelude>`` file and the prelude source buffer, so
+        a prelude span can never render user source (#851).
+        """
+        if self._is_prelude_origin(node):
+            loc = SourceLocation(file=PRELUDE_FILE)
+            source = self._prelude_source
+        else:
+            loc = SourceLocation(file=self.file)
+            source = self.source
+        if node.span:
+            loc.line = node.span.line
+            loc.column = node.span.column
+        lines = source.splitlines()
+        source_line = (
+            lines[loc.line - 1] if 1 <= loc.line <= len(lines) else ""
+        )
+        return loc, source_line
+
     def _warning(
         self,
         node: ast.Node,
@@ -293,14 +349,11 @@ class CodeGenerator(
         error_code: str = "",
     ) -> None:
         """Record a compilation warning (function skipped)."""
-        loc = SourceLocation(file=self.file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
+        loc, source_line = self._diag_location(node)
         self.diagnostics.append(Diagnostic(
             description=description,
             location=loc,
-            source_line=self._get_source_line(loc.line),
+            source_line=source_line,
             rationale=rationale,
             severity="warning",
             error_code=error_code,
@@ -326,14 +379,11 @@ class CodeGenerator(
         `vera/skip.py::CodegenInvariantError` for the raise
         contract.
         """
-        loc = SourceLocation(file=self.file)
-        if node.span:
-            loc.line = node.span.line
-            loc.column = node.span.column
+        loc, source_line = self._diag_location(node)
         self.diagnostics.append(Diagnostic(
             description=description,
             location=loc,
-            source_line=self._get_source_line(loc.line),
+            source_line=source_line,
             rationale=rationale,
             severity="error",
             error_code=error_code,
@@ -345,6 +395,45 @@ class CodeGenerator(
         if 1 <= line <= len(lines):
             return lines[line - 1]
         return ""
+
+    def _referenced_prelude_fns(self, program: ast.Program) -> set[str]:
+        """Prelude-injected function names the program references (#851).
+
+        A transitive call-target scan: the roots are every non-prelude
+        declaration (all user decls — including generic ones the mono
+        collector never scans — plus imported module fns and their
+        Pass-2.6 shadowed variants); a prelude fn is referenced when a
+        root (or the body of an already-referenced prelude fn, e.g.
+        ``json_get_string`` calling ``json_get``) names it as a call
+        target.  Feeds the unreferenced-prelude warning suppression in
+        ``compile_program``.
+        """
+        targets = frozenset(self._prelude_fn_names)
+        if not targets:
+            return set()  # pragma: no cover — guarded by the caller
+        prelude_decls: dict[str, ast.FnDecl] = {}
+        roots: list[object] = []
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.name in targets:
+                prelude_decls[decl.name] = decl
+            else:
+                roots.append(decl)
+        roots.extend(idecl for _path, idecl in self._imported_fn_decls)
+        roots.extend(idecl for _p, _m, idecl in self._shadowed_module_fns)
+        referenced: set[str] = set()
+        work = roots
+        while work:
+            node = work.pop()
+            for name in mentioned_fn_names(node, targets):
+                if name not in referenced:
+                    referenced.add(name)
+                    # Transitive: a referenced prelude fn's own body
+                    # can reference further prelude fns.
+                    called = prelude_decls.get(name)
+                    if called is not None:
+                        work.append(called)
+        return referenced
 
     def _harvest_interp_inference_failures(
         self,
@@ -484,7 +573,10 @@ class CodeGenerator(
         existing_fns = set(self._fn_sigs.keys())
         existing_adts = set(self._adt_layouts.keys())
         from vera.prelude import inject_prelude
-        inject_prelude(program)
+        # #851 — keep the synthetic prelude buffer: injected decls'
+        # spans index into it, and `_diag_location` quotes it (under
+        # the `<prelude>` origin) for prelude-origin diagnostics.
+        self._prelude_source = inject_prelude(program)
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
@@ -675,6 +767,10 @@ class CodeGenerator(
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
 
+        # #851 — all function compilation is done; any diagnostic
+        # emitted from here on is module-level, not prelude-origin.
+        self._in_prelude_fn = False
+
         # #604 / #655 — suppress spurious template-only warnings.
         #
         # Generic ``forall<T>`` function templates can NEVER be compiled
@@ -758,6 +854,53 @@ class CodeGenerator(
                             continue
                     kept.append(d)
                 self.diagnostics = kept
+
+        # #851 — suppress skip-warnings for prelude-injected functions
+        # the program never references.
+        #
+        # The generic Option/Result combinators the prelude injects
+        # (`option_unwrap_or`, `option_map`, …) can never compile as
+        # templates (forall params / nested binding patterns), so Pass
+        # 2 warned and skipped them on EVERY compile — five warnings of
+        # pure noise about code the user didn't write and doesn't call.
+        # A skip-warning for prelude code is only an honest signal when
+        # the program actually references the skipped function; then it
+        # survives (attributed to `<prelude>` via `_diag_location`) as
+        # the pre-runtime explanation for why the call can't be served.
+        #
+        # "Referenced" is a transitive call-target scan rooted at every
+        # non-prelude declaration (user decls incl. generics the mono
+        # collector never visits, plus imported module fns) — see
+        # `_referenced_prelude_fns`.  It over-approximates reachability
+        # (a call inside dead user code still counts), which is the
+        # safe direction: a false "referenced" keeps a warning, never
+        # hides one.  User-origin unsupported functions are untouched —
+        # only names in `_prelude_fn_names` (which excludes user-
+        # shadowed combinators, skipped at injection) are eligible.
+        #
+        # This filter runs AFTER the #604 mono-compiled suppression
+        # above: that pass drops template warnings for combinators the
+        # program calls *successfully*; this one drops the rest of the
+        # prelude set the program never mentions.  Between them, a
+        # program that calls `option_map` end-to-end compiles with zero
+        # warnings, and one that references it without a compilable
+        # instantiation keeps exactly the option_map warning.
+        if self._prelude_fn_names:
+            referenced = self._referenced_prelude_fns(program)
+            unreferenced = self._prelude_fn_names - referenced
+            if unreferenced:
+                suppressible_codes = {"E602", "E604", "E605"}
+                self.diagnostics = [
+                    d for d in self.diagnostics
+                    if not (
+                        d.severity == "warning"
+                        and d.error_code in suppressible_codes
+                        and any(
+                            d.description.startswith(f"Function '{name}' ")
+                            for name in unreferenced
+                        )
+                    )
+                ]
 
         # If any exported function takes String/Array (i32_pair) params, ensure
         # the heap allocator is compiled in so CLI callers can allocate args.

@@ -352,6 +352,14 @@ effect HttpServer {}
 
 The `HttpServer` effect has no operations — it is a marker (#305, since v0.0.193).  Declaring `effects(<HttpServer>)` marks a function as an HTTP request handler: a **total**, contract-checked function `handle(Request -> Response)` (§9.5.6).  The accept loop lives in the host `vera serve` driver, not in the program, so handlers do not need `Diverge` — termination-checked request handling is a feature, and per-request effects (`State<T>`, `Exn<E>`) compose inside the handler's row as usual.
 
+### 7.7.6 `Async`
+
+```
+effect Async {}
+```
+
+The `Async` effect has no operations — it is a marker. Declaring `effects(<Async>)` enables the built-in generic functions `async(expr)` and `await(future)`, making concurrency explicit and trackable in the effect row. See Chapter 9, Section 9.5.4 for the operation signatures, the `Future<T>` type, and the concurrency semantics (#841).
+
 ## 7.8 Effect Subtyping
 
 A function with fewer effects can be used where more effects are expected:

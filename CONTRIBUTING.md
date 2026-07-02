@@ -230,7 +230,8 @@ The `main` branch has the following protections enabled:
 
 - **Pull request required.** All changes to `main` must go through a pull request. No direct pushes.
 - **CI must pass.** The test, typecheck, and lint jobs must all pass before merging.
-- **Review required.** At least one approving review is needed.
+- **No admin bypass.** `enforce_admins` is enabled — the protections apply to the maintainer too, so nothing lands without a passing PR.
+- **Review.** No approving-review count is currently required (CI is the gate); stale reviews are dismissed on new pushes, and every PR gets an automated CodeRabbit review.
 - **No force pushes.** History on `main` is immutable.
 
 If you are a maintainer setting up branch protection on a fork, configure these rules in **Settings > Branches > Branch protection rules** for the `main` branch.

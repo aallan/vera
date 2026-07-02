@@ -56,31 +56,15 @@ from pathlib import Path
 # every compile that touches the prelude to fail the gate — by
 # design.  The allowlist is meant to shrink over time.
 ALLOWED_SKIPS: dict[str, tuple[str, int, str]] = {
-    # ----- Prelude combinators tracked by #604 -----
-    "option_unwrap_or": (
-        "E604", 604,
-        "Bare type-var @T param on generic prelude decl.  Mono "
-        "clones (option_unwrap_or$<T>) work end-to-end.",
-    ),
-    "result_unwrap_or": (
-        "E604", 604,
-        "Same shape as option_unwrap_or — bare type-var @T param. "
-        "Mono clones work end-to-end.",
-    ),
-    "option_map": (
-        "E602", 604,
-        "apply_fn-in-match-arm body.  Mono clones currently "
-        "produce wrong type-arg suffix and trap at runtime — "
-        "real bug, see #604 investigation comment.",
-    ),
-    "option_and_then": (
-        "E602", 604,
-        "Same shape as option_map — apply_fn-in-match-arm body.",
-    ),
-    "result_map": (
-        "E602", 604,
-        "Same shape as option_map — apply_fn-in-match-arm body.",
-    ),
+    # NOTE: the 5 prelude-combinator entries tracked by #604
+    # (option_unwrap_or, result_unwrap_or, option_map, option_and_then,
+    # result_map) were removed with the #851 fix: unreferenced prelude
+    # combinators no longer emit E602/E604 skip-warnings at all (a
+    # reachability scan suppresses them), and a referenced-but-
+    # uncompilable combinator now warns with a `<prelude>` origin — so
+    # no scanned example or conformance program produces these skips.
+    # If one of these names reappears here, the #851 suppression has
+    # regressed; fix that rather than re-adding the entry.
 
     # NOTE: 5 user-code generic entries from #655 Shape A (identity,
     # const, is_some, are_equal, cmp_sign) were removed when the

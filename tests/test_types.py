@@ -267,7 +267,7 @@ class TestIsEffectSubtype:
         assert not is_effect_subtype(io, state)
 
     def test_row_var_permissive(self) -> None:
-        """Open row variable on sub side is permissive (deferred to #55)."""
+        """Open row variable on the sub side is permissive (current behavior)."""
         open_row = ConcreteEffectRow(
             frozenset({EffectInstance("IO", ())}), row_var="E")
         io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))

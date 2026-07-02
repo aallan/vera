@@ -1,6 +1,6 @@
 # Vera Examples
 
-36 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+37 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -15,6 +15,8 @@ Examples without `main` export named functions — use `--fn` to call them:
 ```bash
 vera run examples/factorial.vera --fn factorial -- 10
 ```
+
+Examples that use only the IO and Random host families (e.g. `hello_world.vera`, `fizzbuzz.vera`) compile to a stock-runnable WASI Preview 2 component — `vera compile --target wasi-p2 examples/hello_world.vera` emits a `.wasm` any `wasmtime run` executes with no flags and no Vera bindings (experimental; #237).
 
 ## Example Index
 
@@ -47,9 +49,10 @@ vera run examples/factorial.vera --fn factorial -- 10
 | `effect_handler.vera` | `vera run examples/effect_handler.vera` | State, Exn effects, handler blocks, resume |
 | `io_operations.vera` | `vera run examples/io_operations.vera` | IO.print, IO.read_file, IO.write_file, IO.exit |
 | `file_io.vera` | `vera run examples/file_io.vera` | File read/write with error handling |
-| `async_futures.vera` | `vera run examples/async_futures.vera` | Async effect, Future type, concurrent composition |
+| `async_futures.vera` | `vera run examples/async_futures.vera` | Async effect, Future type, eager async/await composition (these scalar wraps stay eager) |
+| `async_http_fanout.vera` | `vera run examples/async_http_fanout.vera` | Concurrent async fan-out: two `async(Http.get)` calls overlap on host worker threads then await (#841), Tier-1 status-range contract, network I/O (requires network) |
 | `http.vera` | `vera run examples/http.vera` | Http.get, JSON parsing, network I/O (requires network) |
-| `http_server.vera` | `vera serve examples/http_server.vera` | <HttpServer> verified request handler: Request/Response ADTs, Tier-1 status-range contract (serve, then curl it) |
+| `http_server.vera` | `vera serve examples/http_server.vera` | <HttpServer> verified request handler: Request/Response ADTs, Tier-1 status-range contract (serve, then curl it); also compiles to a `wasi:http` component with `vera compile --target wasi-p2 --world server` for `wasmtime serve` |
 | `read_char.vera` | `vera run examples/read_char.vera` | IO.read_char, single-character input (reads stdin) |
 | `inference.vera` | `vera run examples/inference.vera` | Inference.complete LLM calls as a typed effect (requires an API key) |
 
