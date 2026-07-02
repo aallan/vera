@@ -136,6 +136,101 @@ function gcRooted(ptr, fn) {
   }
 }
 
+// PR #707 review: JS-side shadow-stack push/pop using
+// the exported ``$gc_sp`` / ``$gc_stack_limit`` mutable globals
+// (added in v0.0.158 / #692 for host-side rooting).  Needed
+// because the JS multi-alloc patterns (``allocMapWrapper``, the
+// markdown tree builders, and any future caller) have the same
+// root-discipline problem as the CLI ``_ShadowGuard``: a
+// freshly-allocated wrapper held only in a JS local is invisible
+// to the conservative GC scan, so a sub-alloc that fires
+// ``$gc_collect`` can reclaim it.  The wrap-table region (below
+// ``gc_heap_start``) is NOT walked by the mark phase, so
+// ``register_wrapper`` alone isn't enough — explicit shadow-stack
+// rooting is required.
+//
+// #744: hoisted from the ``buildImportObject`` closure to module
+// scope so the top-level markdown builders (``writeMdInline`` /
+// ``writeMdBlock`` and their array helpers) can use the same
+// primitives as ``writeJson`` / ``writeHtml``.  They only touch
+// the module-level ``wasm`` binding, so behavior is unchanged for
+// the closure-scoped callers.
+//
+// ``gcShadowPush`` reads $gc_sp, writes the value, advances $gc_sp.
+// ``gcShadowPop`` decrements $gc_sp.  Stack-discipline must be
+// strict — callers MUST pair push with pop on every exit path
+// (try/finally), or run under ``gcGuard`` which restores $gc_sp
+// wholesale on exit.
+// PR #707 review (silent-failure-hunter C1): symmetric with the
+// CLI-side ``_ShadowGuard`` discipline — raise rather than silently
+// degrade.  A caller reaching this point (allocMapWrapper, the
+// markdown builders, et al.) requires the value to be rooted across
+// an allocation window; if ``$gc_sp`` / ``$gc_stack_limit`` are
+// missing the module was compiled without GC support but is still
+// trying to build multi-alloc values — that's a build-config bug
+// and should surface immediately, not as a downstream UAF.
+function gcShadowPush(value) {
+  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+    throw new Error(
+      '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
+      'module was built without GC support — multi-alloc host builders ' +
+      '(Map / Set / markdown) cannot root intermediates.  Recompile ' +
+      'with GC enabled (any of map_ops_used / set_ops_used / ' +
+      'decimal_ops_used / md_ops_used / wrap-table-needing types).'
+    );
+  }
+  const sp = wasm.gc_sp.value;
+  if (sp >= wasm.gc_stack_limit.value) {
+    throw new Error('GC shadow stack overflow in browser runtime');
+  }
+  writeI32(sp, value | 0);
+  wasm.gc_sp.value = sp + 4;
+}
+function gcShadowPop() {
+  // Symmetric guard with gcShadowPush — see comment above.  Both
+  // checked against the same export-pair invariant (gc_sp and
+  // gc_stack_limit travel together) so the pop won't underflow if
+  // a future module ever exports one but not the other.
+  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+    throw new Error(
+      '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
+      '$gc_stack_limit exports — push/pop must be balanced under ' +
+      'the same export-pair invariant'
+    );
+  }
+  wasm.gc_sp.value -= 4;
+}
+
+// #708 (PR #707): JS-side parallel of the CLI
+// ``_ShadowGuard`` context manager added in v0.0.158 for #692.
+// ``writeJson`` / ``writeHtml`` / ``writeMdBlock`` (#744) are
+// multi-alloc walkers — they build a tree of heap blocks via
+// repeated ``alloc()`` and JS-local pointer holding.  Without
+// explicit shadow-stack rooting, intermediates (e.g. JArray's
+// ``arrPtr`` between its allocation and the writes into it) are
+// reclaimed by EAGER_GC and the resulting tree has dangling
+// pointers — observed empirically as ``json_array_length``
+// returning 0 instead of the JArray length.
+//
+// ``gcGuard`` saves ``$gc_sp`` at entry and restores it on exit
+// (success OR exception), atomically popping every push made
+// within the callback.  Equivalent to ``_ShadowGuard.__enter__/
+// __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
+// the guard pops them all at the end without per-push bookkeeping.
+function gcGuard(fn) {
+  if (!wasm || !wasm.gc_sp) {
+    // Module without GC infrastructure — just call.  This is fine
+    // because such modules can't fire $gc_collect either.
+    return fn();
+  }
+  const savedSp = wasm.gc_sp.value;
+  try {
+    return fn();
+  } finally {
+    wasm.gc_sp.value = savedSp;
+  }
+}
+
 /**
  * SameValueZero equality (the semantics native JS Map/Set use): like
  * ===, but NaN equals NaN.  Used for Float64 Map-key / Set-element
@@ -747,10 +842,29 @@ function extractCodeBlocks(block, lang) {
 // MdBlock tags:  0=MdParagraph, 1=MdHeading, 2=MdCodeBlock, 3=MdBlockQuote,
 //                4=MdList, 5=MdThematicBreak, 6=MdTable, 7=MdDocument
 
+// #744 GC-rooting discipline (the #692 / #708 sibling that was
+// missed): these builders are multi-alloc walkers, so every
+// intermediate heap pointer held only in a JS local must be pushed
+// onto the WASM shadow stack (``gcShadowPush``) before any
+// subsequent ``alloc()`` that could fire ``$gc_collect``.  The
+// convention mirrors the CLI ``vera/wasm/markdown.py`` exactly:
+// **allocate fields first, root them, allocate the body last** —
+// that way the body's own pointer is never held in a JS local
+// across another alloc, so the body never needs rooting.  Array
+// helpers push their backing buffer before recursing into
+// children; element pointers are stored into the (rooted) backing
+// immediately on return, making them reachable via the
+// conservative scan without a per-element push.  Pushes are NOT
+// popped here — the entry point (``hostMdParse``) runs the whole
+// walk under ``gcGuard``, which restores ``$gc_sp`` wholesale.
+// The returned root pointer is NOT pushed — the caller roots it
+// before its next alloc (see ``hostMdParse``).
+
 function writeInlineArray(inlines) {
   const count = inlines.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 4);
+  gcShadowPush(backingPtr);
   for (let i = 0; i < count; i++) {
     const ptr = writeMdInline(inlines[i]);
     writeI32(backingPtr + i * 4, ptr);
@@ -761,41 +875,45 @@ function writeInlineArray(inlines) {
 function writeMdInline(node) {
   switch (node.tag) {
     case 'MdText': {  // tag=0, String at +4/+8, total=16
-      const ptr = alloc(12);
       const [sPtr, sLen] = allocString(node.text);
+      if (sPtr !== 0) gcShadowPush(sPtr);
+      const ptr = alloc(12);
       writeI32(ptr, 0);
       writeI32(ptr + 4, sPtr);
       writeI32(ptr + 8, sLen);
       return ptr;
     }
     case 'MdCode': {  // tag=1, String at +4/+8, total=16
-      const ptr = alloc(12);
       const [sPtr, sLen] = allocString(node.text);
+      if (sPtr !== 0) gcShadowPush(sPtr);
+      const ptr = alloc(12);
       writeI32(ptr, 1);
       writeI32(ptr + 4, sPtr);
       writeI32(ptr + 8, sLen);
       return ptr;
     }
     case 'MdEmph': {  // tag=2, Array at +4/+8, total=16
-      const ptr = alloc(12);
+      // ``writeInlineArray`` already roots its backing buffer.
       const [aPtr, aLen] = writeInlineArray(node.children);
+      const ptr = alloc(12);
       writeI32(ptr, 2);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
       return ptr;
     }
     case 'MdStrong': {  // tag=3, Array at +4/+8, total=16
-      const ptr = alloc(12);
       const [aPtr, aLen] = writeInlineArray(node.children);
+      const ptr = alloc(12);
       writeI32(ptr, 3);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
       return ptr;
     }
     case 'MdLink': {  // tag=4, Array at +4/+8, String at +12/+16, total=24
-      const ptr = alloc(20);
       const [aPtr, aLen] = writeInlineArray(node.children);
       const [sPtr, sLen] = allocString(node.url);
+      if (sPtr !== 0) gcShadowPush(sPtr);
+      const ptr = alloc(20);
       writeI32(ptr, 4);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
@@ -804,9 +922,11 @@ function writeMdInline(node) {
       return ptr;
     }
     case 'MdImage': {  // tag=5, String at +4/+8, String at +12/+16, total=24
-      const ptr = alloc(20);
       const [s1Ptr, s1Len] = allocString(node.alt);
+      if (s1Ptr !== 0) gcShadowPush(s1Ptr);
       const [s2Ptr, s2Len] = allocString(node.url);
+      if (s2Ptr !== 0) gcShadowPush(s2Ptr);
+      const ptr = alloc(20);
       writeI32(ptr, 5);
       writeI32(ptr + 4, s1Ptr);
       writeI32(ptr + 8, s1Len);
@@ -823,6 +943,7 @@ function writeBlockArray(blocks) {
   const count = blocks.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 4);
+  gcShadowPush(backingPtr);
   for (let i = 0; i < count; i++) {
     const ptr = writeMdBlock(blocks[i]);
     writeI32(backingPtr + i * 4, ptr);
@@ -833,26 +954,29 @@ function writeBlockArray(blocks) {
 function writeMdBlock(node) {
   switch (node.tag) {
     case 'MdParagraph': {  // tag=0, Array<MdInline> at +4/+8, total=16
-      const ptr = alloc(12);
+      // ``writeInlineArray`` already roots its backing buffer.
       const [aPtr, aLen] = writeInlineArray(node.children);
+      const ptr = alloc(12);
       writeI32(ptr, 0);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
       return ptr;
     }
     case 'MdHeading': {  // tag=1, Nat(i64) at +8, Array at +16/+20, total=24
+      const [aPtr, aLen] = writeInlineArray(node.children);
       const ptr = alloc(24);
       writeI32(ptr, 1);
       writeI64(ptr + 8, node.level);
-      const [aPtr, aLen] = writeInlineArray(node.children);
       writeI32(ptr + 16, aPtr);
       writeI32(ptr + 20, aLen);
       return ptr;
     }
     case 'MdCodeBlock': {  // tag=2, String at +4/+8, String at +12/+16, total=24
-      const ptr = alloc(20);
       const [s1Ptr, s1Len] = allocString(node.lang);
+      if (s1Ptr !== 0) gcShadowPush(s1Ptr);
       const [s2Ptr, s2Len] = allocString(node.code);
+      if (s2Ptr !== 0) gcShadowPush(s2Ptr);
+      const ptr = alloc(20);
       writeI32(ptr, 2);
       writeI32(ptr + 4, s1Ptr);
       writeI32(ptr + 8, s1Len);
@@ -861,29 +985,33 @@ function writeMdBlock(node) {
       return ptr;
     }
     case 'MdBlockQuote': {  // tag=3, Array<MdBlock> at +4/+8, total=16
-      const ptr = alloc(12);
+      // ``writeBlockArray`` already roots its backing buffer.
       const [aPtr, aLen] = writeBlockArray(node.children);
+      const ptr = alloc(12);
       writeI32(ptr, 3);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
       return ptr;
     }
     case 'MdList': {  // tag=4, Bool(i32) at +4, Array<Array<MdBlock>> at +8/+12, total=16
-      const ptr = alloc(16);
-      writeI32(ptr, 4);
-      writeI32(ptr + 4, node.ordered ? 1 : 0);
-      // Each item is Array<MdBlock> — we need Array<Array<MdBlock>>
+      // Each item is Array<MdBlock> — we need Array<Array<MdBlock>>.
+      // Root the outer backing before recursing; each inner array's
+      // (ptr, len) pair is stored into the rooted backing immediately.
       const count = node.items.length;
       let backingPtr = 0;
       if (count > 0) {
         // Each element is an i32_pair (ptr, len) = 8 bytes
         backingPtr = alloc(count * 8);
+        gcShadowPush(backingPtr);
         for (let i = 0; i < count; i++) {
           const [itemPtr, itemLen] = writeBlockArray(node.items[i]);
           writeI32(backingPtr + i * 8, itemPtr);
           writeI32(backingPtr + i * 8 + 4, itemLen);
         }
       }
+      const ptr = alloc(16);
+      writeI32(ptr, 4);
+      writeI32(ptr + 4, node.ordered ? 1 : 0);
       writeI32(ptr + 8, backingPtr);
       writeI32(ptr + 12, count);
       return ptr;
@@ -894,14 +1022,15 @@ function writeMdBlock(node) {
       return ptr;
     }
     case 'MdTable': {  // tag=6, Array<Array<Array<MdInline>>> at +4/+8, total=16
-      const ptr = alloc(12);
-      writeI32(ptr, 6);
-      // rows: Array<Array<Array<MdInline>>>
+      // rows: Array<Array<Array<MdInline>>> — root the outer backing
+      // AND each row's cell backing so all three levels of nesting
+      // stay reachable during the inline-array recursion.
       const rowCount = node.rows.length;
       let rowsPtr = 0;
       if (rowCount > 0) {
         // Each row is Array<Array<MdInline>> — i32_pair (ptr, len) = 8 bytes
         rowsPtr = alloc(rowCount * 8);
+        gcShadowPush(rowsPtr);
         for (let ri = 0; ri < rowCount; ri++) {
           const row = node.rows[ri];
           const cellCount = row.length;
@@ -909,6 +1038,7 @@ function writeMdBlock(node) {
           if (cellCount > 0) {
             // Each cell is Array<MdInline> — i32_pair = 8 bytes
             cellsPtr = alloc(cellCount * 8);
+            gcShadowPush(cellsPtr);
             for (let ci = 0; ci < cellCount; ci++) {
               const [cPtr, cLen] = writeInlineArray(row[ci]);
               writeI32(cellsPtr + ci * 8, cPtr);
@@ -919,13 +1049,15 @@ function writeMdBlock(node) {
           writeI32(rowsPtr + ri * 8 + 4, cellCount);
         }
       }
+      const ptr = alloc(12);
+      writeI32(ptr, 6);
       writeI32(ptr + 4, rowsPtr);
       writeI32(ptr + 8, rowCount);
       return ptr;
     }
     case 'MdDocument': {  // tag=7, Array<MdBlock> at +4/+8, total=16
-      const ptr = alloc(12);
       const [aPtr, aLen] = writeBlockArray(node.children);
+      const ptr = alloc(12);
       writeI32(ptr, 7);
       writeI32(ptr + 4, aPtr);
       writeI32(ptr + 8, aLen);
@@ -1030,8 +1162,16 @@ function hostMdParse(ptr, len) {
   const text = readString(ptr, len);
   try {
     const doc = parseMarkdown(text);
-    const blockPtr = writeMdBlock(doc);
-    return allocResultOkI32(blockPtr);
+    // #744: same gcGuard discipline as the json_parse / html_parse
+    // bindings — the whole tree walk runs under one guard (every
+    // ``gcShadowPush`` made by the builders is popped wholesale on
+    // exit), and the returned root is pushed before
+    // ``allocResultOkI32``'s alloc can fire GC.
+    return gcGuard(() => {
+      const blockPtr = writeMdBlock(doc);
+      gcShadowPush(blockPtr);
+      return allocResultOkI32(blockPtr);
+    });
   } catch (e) {
     return allocResultErrString(e.message || String(e));
   }
@@ -1515,91 +1655,6 @@ function buildImportObject(module) {
     }
     wasm.register_wrapper(ptr, kind, rawHandle);
     return ptr;
-  }
-
-  // PR #707 review: JS-side shadow-stack push/pop using
-  // the exported ``$gc_sp`` / ``$gc_stack_limit`` mutable globals
-  // (added in v0.0.158 / #692 for host-side rooting).  Needed
-  // because the JS multi-alloc patterns (``allocMapWrapper`` and
-  // any future caller) have the same root-discipline problem as
-  // the CLI ``_ShadowGuard``: a freshly-allocated wrapper held
-  // only in a JS local is invisible to the conservative GC scan,
-  // so a sub-alloc that fires ``$gc_collect`` can reclaim it.
-  // The wrap-table region (below ``gc_heap_start``) is NOT walked
-  // by the mark phase, so ``register_wrapper`` alone isn't enough
-  // — explicit shadow-stack rooting is required.
-  //
-  // ``gcShadowPush`` reads $gc_sp, writes the value, advances $gc_sp.
-  // ``gcShadowPop`` decrements $gc_sp.  Stack-discipline must be
-  // strict — callers MUST pair push with pop on every exit path
-  // (use the try/finally pattern below).
-  // PR #707 review (silent-failure-hunter C1): symmetric with the
-  // CLI-side ``_ShadowGuard`` discipline — raise rather than silently
-  // degrade.  A caller reaching this point (allocMapWrapper et al.)
-  // requires the wrapper to be rooted across the bucket-attach
-  // window; if ``$gc_sp`` / ``$gc_stack_limit`` are missing the
-  // module was compiled without GC support but is still trying to
-  // build Map / Set values — that's a build-config bug and should
-  // surface immediately, not as a downstream UAF.
-  function gcShadowPush(value) {
-    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
-      throw new Error(
-        '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
-        'module was built without GC support — Map / Set wrappers ' +
-        'cannot be rooted across the attach window.  Recompile with ' +
-        'GC enabled (any of map_ops_used / set_ops_used / ' +
-        'decimal_ops_used / wrap-table-needing types).'
-      );
-    }
-    const sp = wasm.gc_sp.value;
-    if (sp >= wasm.gc_stack_limit.value) {
-      throw new Error('GC shadow stack overflow in browser runtime');
-    }
-    writeI32(sp, value | 0);
-    wasm.gc_sp.value = sp + 4;
-  }
-  function gcShadowPop() {
-    // Symmetric guard with gcShadowPush — see comment above.  Both
-    // checked against the same export-pair invariant (gc_sp and
-    // gc_stack_limit travel together) so the pop won't underflow if
-    // a future module ever exports one but not the other.
-    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
-      throw new Error(
-        '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
-        '$gc_stack_limit exports — push/pop must be balanced under ' +
-        'the same export-pair invariant'
-      );
-    }
-    wasm.gc_sp.value -= 4;
-  }
-
-  // #708 (PR #707): JS-side parallel of the CLI
-  // ``_ShadowGuard`` context manager added in v0.0.158 for #692.
-  // ``writeJson`` / ``writeHtml`` are multi-alloc walkers — they
-  // build a tree of heap blocks via repeated ``alloc()`` and JS-
-  // local pointer holding.  Without explicit shadow-stack rooting,
-  // intermediates (e.g. JArray's ``arrPtr`` between its allocation
-  // and the writes into it) are reclaimed by EAGER_GC and the
-  // resulting tree has dangling pointers — observed empirically as
-  // ``json_array_length`` returning 0 instead of the JArray length.
-  //
-  // ``gcGuard`` saves ``$gc_sp`` at entry and restores it on exit
-  // (success OR exception), atomically popping every push made
-  // within the callback.  Equivalent to ``_ShadowGuard.__enter__/
-  // __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
-  // the guard pops them all at the end without per-push bookkeeping.
-  function gcGuard(fn) {
-    if (!wasm || !wasm.gc_sp) {
-      // Module without GC infrastructure — just call.  This is fine
-      // because such modules can't fire $gc_collect either.
-      return fn();
-    }
-    const savedSp = wasm.gc_sp.value;
-    try {
-      return fn();
-    } finally {
-      wasm.gc_sp.value = savedSp;
-    }
   }
 
   // allocMapWrapper(d) — used by writeJson / writeHtml to build the
