@@ -2249,3 +2249,112 @@ public fn main(-> @Unit)
 }
 """
         assert self._eager_stdout(src, monkeypatch, tmp_path) == "200"
+
+
+class TestBrowserMdBuilderRooting744:
+    """Browser-runtime parallel of ``test_codegen_gc_rooting.py``'s
+    ``TestHostWalkerGCRooting692.test_md_parse_200_headings`` — pins the
+    #744 fix: the JS-side markdown tree builders (``writeMdInline`` /
+    ``writeInlineArray`` / ``writeMdBlock`` / ``writeBlockArray`` in
+    ``vera/browser/runtime.mjs``) must root intermediate WASM heap
+    pointers on the shadow stack, mirroring the ``writeJson`` /
+    ``writeHtml`` ``gcGuard`` + ``gcShadowPush`` discipline (#692 /
+    #708) and the CLI ``vera/wasm/markdown.py`` fields-first-then-body
+    convention (which was already hardened; the browser mirror was the
+    missed sibling).
+
+    Pre-fix, every ``writeMd*`` branch allocated the node body FIRST
+    and held it in a JS local across the child / string allocations,
+    and the array helpers held their backing buffers unrooted across
+    the per-element recursion.  With ``VERA_EAGER_GC=1`` (codegen
+    injects a forced ``$gc_collect`` on every ``$alloc``) the
+    unreferenced body / backing block is swept and reused mid-build,
+    corrupting the tree — observed as ``readMdBlock`` throwing
+    ``Unknown MdBlock tag`` or the walk trapping out-of-bounds.
+    """
+
+    def _eager_gc_node(
+        self, src: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> str:
+        """Compile with ``VERA_EAGER_GC=1``, run under Node, return stdout."""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        wasm_path, _ = _compile_vera(src, tmp_path)
+        result = _run_node(wasm_path)
+        assert not result.get("error"), (
+            f"Node harness reported error during VERA_EAGER_GC run: "
+            f"{result.get('error')!r}"
+        )
+        return result.get("stdout", "").strip()
+
+    def _eager_gc_parity(
+        self, src: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> tuple[str, str]:
+        """Compile ONCE with ``VERA_EAGER_GC=1``, run the same wasm bytes
+        under Python/wasmtime (hardened CLI markdown builders) and Node
+        (browser runtime), returning both stdouts.  A divergence isolates
+        the browser-runtime builders — the module bytes are identical.
+        """
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        src_path = tmp_path / "md744.vera"
+        src_path.write_text(src, encoding="utf-8")
+        wasm_path, result = _compile_file(src_path, tmp_path)
+        py_result = _run_python(result)
+        node_result = _run_node(wasm_path)
+        assert not node_result.get("error"), (
+            f"Node harness reported error during VERA_EAGER_GC run: "
+            f"{node_result.get('error')!r}"
+        )
+        return py_result.stdout, node_result.get("stdout", "")
+
+    def test_eager_gc_md_all_node_types_parity(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Round-trip a document exercising EVERY MdInline / MdBlock
+        writer branch (text, code span, emph, strong, link, image;
+        heading, paragraph, code block, blockquote, unordered + ordered
+        list, thematic break, table, document) under eager GC and
+        assert browser stdout matches the CLI byte-for-byte."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = "# Title *emph* **strong** `code`\\n\\nPara [link](https://x.example/) and ![alt](img.png) tail\\n\\n> quoted *deep* text\\n\\n- alpha\\n- beta\\n\\n1. one\\n2. two\\n\\n---\\n\\n| h1 | h2 |\\n| --- | --- |\\n| *c1* | c2 |\\n\\n```py\\ncode_here()\\n```\\n";
+  match md_parse(@String.0) {
+    Ok(@MdBlock) -> IO.print(md_render(@MdBlock.0)),
+    Err(@String) -> IO.print(string_concat("parse_err:", @String.0))
+  }
+}
+"""
+        py_out, node_out = self._eager_gc_parity(src, monkeypatch, tmp_path)
+        assert "Title" in py_out  # sanity: the CLI round-trip really ran
+        assert node_out == py_out, (
+            f"Markdown eager-GC round-trip diverged:\n"
+            f"  Python: {py_out!r}\n"
+            f"  Node:   {node_out!r}"
+        )
+
+    def test_eager_gc_md_extract_code_blocks_volume(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """60 heading + paragraph + fenced-code units built under eager
+        GC, then a full-tree read-back via ``md_extract_code_blocks``
+        — the count is exact (pre-fix: corrupted tree / trap)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_repeat("# heading\\n\\npara text\\n\\n```py\\ncode_here()\\n```\\n\\n", 60);
+  match md_parse(@String.0) {
+    Ok(@MdBlock) -> {
+      let @Array<String> = md_extract_code_blocks(@MdBlock.0, "py");
+      IO.print(int_to_string(array_length(@Array<String>.0)))
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert self._eager_gc_node(src, monkeypatch, tmp_path) == "60"
