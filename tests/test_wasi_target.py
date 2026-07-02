@@ -22,6 +22,7 @@ default ``--target wasm`` emission is untouched by the wasi machinery.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -1325,3 +1326,728 @@ public fn main(-> @Unit)
         # "a\rb" is 3 bytes of content — the lone \r separator is NOT
         # a terminator on this target (spec §13.6).
         assert out == "3"
+
+
+# =====================================================================
+# Server world (Stage D): wasi:http/incoming-handler@0.2.0
+# =====================================================================
+
+HTTP_SERVER_EXAMPLE = (
+    Path(__file__).parent.parent / "examples" / "http_server.vera"
+).read_text(encoding="utf-8")
+
+# Differential handler: echoes method|path|<x-probe header lookup>|body
+# — every field the serve wrapper marshals feeds the response, so the
+# host-vs-served differential can see any marshalling drift.
+DIFF_HANDLER = """\
+private fn probe_of(@Map<String, String> -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match map_get(@Map<String, String>.0, "x-probe") {
+    Some(@String) -> @String.0,
+    None -> "absent"
+  }
+}
+
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200,
+        map_insert(map_new(), "content-type", "text/plain"),
+        string_concat(@String.2, string_concat("|",
+          string_concat(@String.1, string_concat("|",
+            string_concat(probe_of(@Map<String, String>.0),
+              string_concat("|", @String.0)))))))
+  }
+}
+"""
+
+# Map-order/battery handler: insert a,b,g; update b in place; remove a;
+# emits keys|values|size|contains — pins position-preserving update,
+# survivor order, and the whole §3.2 op family in one body.  The
+# response headers map is EMPTY (exercises 0-entry from-list).
+MAP_ORDER_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  let @Map<String, String> = map_insert(map_insert(map_insert(map_new(), "alpha", "1"), "beta", "2"), "gamma", "3");
+  let @Map<String, String> = map_remove(map_insert(@Map<String, String>.0, "beta", "9"), "alpha");
+  Response(200, map_new(),
+    string_concat(string_join(map_keys(@Map<String, String>.0), ","),
+      string_concat("|", string_concat(string_join(map_values(@Map<String, String>.0), ","),
+        string_concat("|", string_concat(nat_to_string(map_size(@Map<String, String>.0)),
+          string_concat("|", bool_to_string(map_contains(@Map<String, String>.0, "gamma")))))))))
+}
+"""
+
+TRAP_HANDLER = """\
+private fn checked(@Int -> @Int)
+  requires(@Int.0 > 10) ensures(true) effects(pure)
+{
+  @Int.0
+}
+
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  Response(checked(1), map_new(), "unreachable-body")
+}
+"""
+
+FORBIDDEN_HEADER_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  Response(200, map_insert(map_new(), "connection", "close"), "nope")
+}
+"""
+
+BAD_STATUS_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  Response(70000, map_new(), "nope")
+}
+"""
+
+PRINT_HANDLER = """\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, IO>)
+{
+  IO.print("served one request\\n");
+  Response(200, map_new(), "printed")
+}
+"""
+
+
+def _emit_server(source: str) -> str:
+    return emit_wasi_component(_compile_ok(source), world="server")
+
+
+class TestServerWorldEmission:
+    """Hermetic pins: the server-world text parses as a component
+    (wasmtime-py runs full component validation, compiling both core
+    modules) and carries exactly the incoming-handler entry surface."""
+
+    def test_http_server_example_parses_as_component(self) -> None:
+        Component(_ENGINE, _emit_server(HTTP_SERVER_EXAMPLE))
+
+    def test_map_get_handler_parses_as_component(self) -> None:
+        Component(_ENGINE, _emit_server(DIFF_HANDLER))
+
+    def test_full_map_op_battery_parses_as_component(self) -> None:
+        """keys/values/size/contains/remove all at once (slots 16-25)."""
+        Component(_ENGINE, _emit_server(MAP_ORDER_HANDLER))
+
+    def test_io_print_handler_parses_as_component(self) -> None:
+        Component(_ENGINE, _emit_server(PRINT_HANDLER))
+
+    def test_time_sleep_random_handler_parses_as_component(self) -> None:
+        """The rest of the allowed IO/Random family in one handler —
+        pins the clocks/poll/random interface closure in the server
+        assembly (all proxy-world-linkable, design §1.3)."""
+        Component(_ENGINE, _emit_server("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, IO, Random>)
+{
+  IO.sleep(1);
+  let @Nat = IO.time(());
+  let @Int = Random.random_int(1, 6);
+  IO.stderr("diag\\n");
+  Response(200, map_new(), nat_to_string(@Nat.0))
+}
+"""))
+
+    def test_incoming_handler_is_the_only_entry_export(self) -> None:
+        wat = _emit_server(HTTP_SERVER_EXAMPLE)
+        assert '(export "wasi:http/incoming-handler@0.2.0"' in wat
+        assert "wasi:cli/run" not in wat
+        assert '(export "main"' not in wat
+        assert "__wasi_run" not in wat
+
+    def test_lift_is_from_the_adapter(self) -> None:
+        """The serve wrapper lives in the ADAPTER (design §1.2) — the
+        incoming-handler lift must take the adapter's export, so the
+        wasi:http lowers stay direct imports (never dispatch-table)."""
+        wat = _emit_server(HTTP_SERVER_EXAMPLE)
+        assert '(canon lift (core func $adapter "handle"))' in wat
+
+    def test_dispatch_table_is_32_slots(self) -> None:
+        """Map family lands at slots 16+; the table must grow from the
+        cli world's 16 (design §1.3)."""
+        wat = _emit_server(HTTP_SERVER_EXAMPLE)
+        assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
+
+    def test_every_wasi_version_is_0_2_0(self) -> None:
+        wat = _emit_server(MAP_ORDER_HANDLER)
+        versions = set(re.findall(r"wasi:[a-z/-]+@(\d+\.\d+\.\d+)", wat))
+        assert versions == {"0.2.0"}
+
+    def test_map_wrapper_tag_matches_the_heap_constant(self) -> None:
+        """The emitter pins the #706 wrapper tag word without importing
+        the (wasmtime-loading) heap module — this is the drift check."""
+        from vera.codegen.wasi import _MAP_WRAPPER_TAG
+        from vera.runtime.heap import _MAP_HANDLE_TAG
+
+        assert _MAP_WRAPPER_TAG == _MAP_HANDLE_TAG
+
+    def test_emit_does_not_mutate_compile_result(self) -> None:
+        result = _compile_ok(HTTP_SERVER_EXAMPLE)
+        before_wat = result.wat
+        before_bytes = result.wasm_bytes
+        emit_wasi_component(result, world="server")
+        assert result.wat == before_wat
+        assert result.wasm_bytes == before_bytes
+
+
+class TestServerWorldGate:
+    """#305 handler validation + the server family gate: every
+    rejection is a clean diagnostic naming the offender — never a
+    silent fallback or a broken component."""
+
+    def test_unknown_world_is_rejected(self) -> None:
+        result = _compile_ok(HELLO)
+        with pytest.raises(ValueError, match="unknown wasi-p2 world"):
+            emit_wasi_component(result, world="bogus")
+
+    def test_missing_handle_is_rejected(self) -> None:
+        result = _compile_ok(HELLO)
+        with pytest.raises(
+            ValueError,
+            match=r"--target wasi-p2 --world server.*'handle'",
+        ):
+            emit_wasi_component(result, world="server")
+
+    def test_wrong_signature_handle_is_rejected(self) -> None:
+        result = _compile_ok("""\
+public fn handle(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0
+}
+""")
+        with pytest.raises(ValueError, match="Request"):
+            emit_wasi_component(result, world="server")
+
+    def test_file_io_handler_is_rejected_naming_read_file(self) -> None:
+        result = _compile_ok("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, IO>)
+{
+  match IO.read_file("x.txt") {
+    Ok(@String) -> Response(200, map_new(), @String.0),
+    Err(@String) -> Response(500, map_new(), @String.0)
+  }
+}
+""")
+        with pytest.raises(ValueError, match=r"IO\.read_file"):
+            emit_wasi_component(result, world="server")
+
+    def test_get_env_handler_is_rejected_naming_get_env(self) -> None:
+        result = _compile_ok("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, IO>)
+{
+  match IO.get_env("HOME") {
+    Some(@String) -> Response(200, map_new(), @String.0),
+    None -> Response(404, map_new(), "none")
+  }
+}
+""")
+        with pytest.raises(ValueError, match=r"IO\.get_env"):
+            emit_wasi_component(result, world="server")
+
+    def test_non_string_map_is_rejected_naming_the_instantiation(
+        self,
+    ) -> None:
+        result = _compile_ok("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 1, 2);
+  Response(200, map_new(), nat_to_string(map_size(@Map<Int, Int>.0)))
+}
+""")
+        with pytest.raises(
+            ValueError, match=r"map_insert\$ki_vi.*|Map<String, String>",
+        ) as exc:
+            emit_wasi_component(result, world="server")
+        assert "map_insert$ki_vi" in str(exc.value)
+        assert "Map<String, String>" in str(exc.value)
+
+    def test_math_handler_is_rejected_naming_math(self) -> None:
+        result = _compile_ok("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  Response(200, map_new(), float_to_string(sin(1.0)))
+}
+""")
+        with pytest.raises(ValueError, match="math"):
+            emit_wasi_component(result, world="server")
+
+    def test_http_client_handler_is_rejected_naming_http(self) -> None:
+        result = _compile_ok("""\
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, Http>)
+{
+  match Http.get("http://example.invalid/") {
+    Ok(@String) -> Response(200, map_new(), @String.0),
+    Err(@String) -> Response(502, map_new(), @String.0)
+  }
+}
+""")
+        with pytest.raises(ValueError, match="http"):
+            emit_wasi_component(result, world="server")
+
+
+class TestCliWorldPin:
+    """The server world must not leak into cli emission: the default
+    world is cli, its text is world-argument-invariant, and it carries
+    none of the server machinery.  (The full Stage-C suite above runs
+    through the same default path — this class pins the seams.)"""
+
+    def test_default_world_equals_explicit_cli(self) -> None:
+        result = _compile_ok(KITCHEN_SINK)
+        assert emit_wasi_component(result) == emit_wasi_component(
+            result, world="cli",
+        )
+
+    def test_cli_emission_carries_no_server_machinery(self) -> None:
+        wat = emit_wasi_component(_compile_ok(KITCHEN_SINK))
+        assert '(table $wasi_tbl (export "wasi_tbl") 16 16 funcref)' in wat
+        assert "wasi:http" not in wat
+        assert "serve_handle" not in wat
+        assert "$op_map_" not in wat
+        assert '(export "wasi:cli/run@0.2.0"' in wat
+
+    def test_cli_world_still_rejects_map_programs(self) -> None:
+        result = _compile_ok(HTTP_SERVER_EXAMPLE)
+        with pytest.raises(ValueError, match="map"):
+            emit_wasi_component(result)
+
+
+class TestServerLayoutTripwire:
+    """The serve wrapper takes Request/Response offsets from
+    ``adt_layouts`` at emit time with the same shape guard as
+    ``build_request_adt`` — a moved prelude shape must fail loudly,
+    never emit a desynced wrapper."""
+
+    def test_doctored_request_layout_is_rejected(self) -> None:
+        import dataclasses
+
+        result = _compile_ok(HTTP_SERVER_EXAMPLE)
+        real = result.adt_layouts["Request"]["Request"]
+        doctored = dataclasses.replace(
+            real,
+            field_offsets=(
+                (4, "i32_pair"), (12, "i32_pair"), (20, "i64"),
+                (28, "i32_pair"),
+            ),
+        )
+        layouts = dict(result.adt_layouts)
+        layouts["Request"] = {"Request": doctored}
+        bad = dataclasses.replace(result, adt_layouts=layouts)
+        with pytest.raises(ValueError, match="Request layout"):
+            emit_wasi_component(bad, world="server")
+
+    def test_doctored_response_layout_is_rejected(self) -> None:
+        import dataclasses
+
+        result = _compile_ok(HTTP_SERVER_EXAMPLE)
+        real = result.adt_layouts["Response"]["Response"]
+        doctored = dataclasses.replace(
+            real,
+            field_offsets=((8, "i32"), (12, "i32"), (16, "i32_pair")),
+        )
+        layouts = dict(result.adt_layouts)
+        layouts["Response"] = {"Response": doctored}
+        bad = dataclasses.replace(result, adt_layouts=layouts)
+        with pytest.raises(ValueError, match="Response layout"):
+            emit_wasi_component(bad, world="server")
+
+
+# =====================================================================
+# Server world live smoke (dev-only: needs the wasmtime CLI on PATH)
+# =====================================================================
+
+_SERVE_ADDR_RE = re.compile(r"http://127\.0\.0\.1:(\d+)/")
+
+
+class _WasmtimeServe:
+    """Context manager: `wasmtime serve` a component text on an
+    ephemeral port (``--addr 127.0.0.1:0``; the bound port is parsed
+    from the "Serving HTTP on ..." banner — no bare sleeps, a
+    deadline-polled reader thread collects the merged log for
+    assertions)."""
+
+    def __init__(self, component_text: str, tmp_path: Path,
+                 name: str = "component.wat") -> None:
+        import subprocess
+        import threading
+
+        wat_file = tmp_path / name
+        wat_file.write_text(component_text, encoding="utf-8")
+        self._proc = subprocess.Popen(
+            ["wasmtime", "serve", "--addr", "127.0.0.1:0", str(wat_file)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8",
+        )
+        self._lines: list[str] = []
+        self._reader = threading.Thread(target=self._drain, daemon=True)
+        self._reader.start()
+        try:
+            self.port = self._wait_port()
+        except Exception:
+            self._proc.terminate()
+            raise
+
+    def _drain(self) -> None:
+        assert self._proc.stdout is not None
+        for line in self._proc.stdout:
+            self._lines.append(line)
+
+    def _wait_port(self) -> int:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            for line in list(self._lines):
+                m = _SERVE_ADDR_RE.search(line)
+                if m:
+                    return int(m.group(1))
+            if self._proc.poll() is not None:
+                raise RuntimeError(f"wasmtime serve exited:\n{self.log()}")
+            time.sleep(0.05)
+        raise RuntimeError(f"wasmtime serve never bound:\n{self.log()}")
+
+    def log(self) -> str:
+        return "".join(self._lines)
+
+    def settled_log(self) -> str:
+        """Log after a short deadline-poll for the async writer."""
+        deadline = time.monotonic() + 2
+        seen = len(self._lines)
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            if len(self._lines) == seen:
+                break
+            seen = len(self._lines)
+        return self.log()
+
+    def __enter__(self) -> "_WasmtimeServe":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._proc.terminate()
+        self._proc.wait(timeout=10)
+
+
+def _serve_request(
+    port: int, method: str, path: str,
+    headers: list[tuple[str, str]], body: str,
+) -> tuple[int, dict[str, str], str]:
+    """One HTTP request via http.client (duplicate headers supported —
+    urllib's add_header dedups, which would mask the later-wins test)."""
+    import http.client
+
+    deadline = time.monotonic() + 10
+    while True:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+        try:
+            conn.putrequest(
+                method, path, skip_host=True, skip_accept_encoding=True,
+            )
+            conn.putheader("Host", f"127.0.0.1:{port}")
+            for key, value in headers:
+                conn.putheader(key, value)
+            data = body.encode("utf-8")
+            conn.putheader("Content-Length", str(len(data)))
+            conn.endheaders()
+            if data:
+                conn.send(data)
+            resp = conn.getresponse()
+            return (
+                resp.status,
+                {k.lower(): v for k, v in resp.getheaders()},
+                resp.read().decode("utf-8"),
+            )
+        except ConnectionRefusedError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+        finally:
+            conn.close()
+
+
+def _host_response(
+    result: CompileResult, method: str, path: str,
+    headers: list[tuple[str, str]], body: str,
+) -> dict[str, object]:
+    """The #305 host path for the differential.  Header list -> dict
+    with the driver's semantics (lower-cased keys, later value wins —
+    exactly what ``dict(self.headers.items())`` does in server.py)."""
+    from vera.codegen.api import HttpRequestData, execute
+
+    merged: dict[str, str] = {}
+    for key, value in headers:
+        merged[key.lower()] = value
+    er = execute(
+        result, fn_name="handle",
+        http_request=HttpRequestData(
+            method=method, path=path, headers=merged, body=body,
+        ),
+    )
+    resp = er.http_response
+    assert resp is not None
+    return resp
+
+
+@pytest.mark.skipif(
+    shutil.which("wasmtime") is None,
+    reason="stock wasmtime CLI not installed (dev-only smoke test)",
+)
+class TestWasmtimeServeSmoke:
+    """The Stage-D honesty bar: the emitted artifact serves HTTP under
+    STOCK `wasmtime serve` with no flags and no Vera bindings, and the
+    served behavior matches the #305 host driver (the differential
+    that catches host-map vs in-guest-map semantic drift, which green
+    unit suites cannot)."""
+
+    def test_http_server_example_round_trips(
+        self, tmp_path: Path,
+    ) -> None:
+        wat = _emit_server(HTTP_SERVER_EXAMPLE)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, headers, body = _serve_request(
+                srv.port, "GET", "/", [], "",
+            )
+            assert (status, body) == (200, "hello from vera")
+            assert headers.get("content-type") == "text/plain"
+            status, _, body = _serve_request(
+                srv.port, "POST", "/echo", [], "ping-pong",
+            )
+            assert (status, body) == (200, "ping-pong")
+            status, headers, body = _serve_request(
+                srv.port, "GET", "/nope", [], "",
+            )
+            assert (status, body) == (404, "not found")
+            assert headers.get("content-type") == "text/plain"
+
+    def test_header_matrix_differential(self, tmp_path: Path) -> None:
+        """Same handler, host-backed core execution vs the served
+        component, over methods x paths x header shapes (mixed-case,
+        absent, DUPLICATE later-wins, multi) x body sizes — status,
+        handler-set headers, and body must agree."""
+        result = _compile_ok(DIFF_HANDLER)
+        matrix: list[tuple[str, str, list[tuple[str, str]], str]] = [
+            ("GET", "/", [], ""),
+            ("GET", "/x?q=1", [("X-Probe", "MixedCase")], ""),
+            ("POST", "/echo",
+             [("x-probe", "first"), ("X-PROBE", "second")], "hello"),
+            ("PUT", "/p", [("x-probe", "v"), ("x-other", "y")],
+             "b" * 4096),
+            ("DELETE", "/d", [], "tiny"),
+            ("PATCH", "/many",
+             [(f"x-h{i:02d}", f"v{i}") for i in range(40)]
+             + [("X-Probe", "needle")], "x"),
+        ]
+        wat = emit_wasi_component(result, world="server")
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            for method, path, headers, body in matrix:
+                s_status, s_headers, s_body = _serve_request(
+                    srv.port, method, path, headers, body,
+                )
+                host = _host_response(result, method, path, headers, body)
+                assert s_status == host["status"], (method, path)
+                assert s_body == host["body"], (method, path)
+                for key, value in host["headers"].items():  # type: ignore[union-attr]
+                    assert s_headers.get(key.lower()) == value, (
+                        method, path, key,
+                    )
+
+    def test_map_order_differential(self, tmp_path: Path) -> None:
+        """Position-preserving update + survivor order + size +
+        contains: the served in-guest map ops must agree with the
+        host-backed ops byte-for-byte (keys/values join order is the
+        observable)."""
+        result = _compile_ok(MAP_ORDER_HANDLER)
+        wat = emit_wasi_component(result, world="server")
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            s_status, _, s_body = _serve_request(
+                srv.port, "GET", "/", [], "",
+            )
+        host = _host_response(result, "GET", "/", [], "")
+        assert (s_status, s_body) == (host["status"], host["body"])
+        # And pin the actual semantics, not just agreement: update in
+        # place (beta first, value 9), alpha removed, gamma appended.
+        assert s_body == "beta,gamma|9,3|2|true"
+
+    def test_io_print_reaches_the_serve_console(
+        self, tmp_path: Path,
+    ) -> None:
+        wat = _emit_server(PRINT_HANDLER)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, body = _serve_request(srv.port, "GET", "/", [], "")
+            assert (status, body) == (200, "printed")
+            log = srv.settled_log()
+        assert "stdout [0] :: served one request" in log
+
+    def test_contract_violation_maps_to_500_with_diagnostics(
+        self, tmp_path: Path,
+    ) -> None:
+        wat = _emit_server(TRAP_HANDLER)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, _ = _serve_request(srv.port, "GET", "/", [], "")
+            assert status == 500
+            log = srv.settled_log()
+        # wasmtime's own 500 + symbolized backtrace naming the guest
+        # frames, and the violation text via the stderr channel.
+        assert "worker failed" in log
+        assert "Main!handle" in log
+        assert "requires" in log
+
+    def test_forbidden_response_header_is_a_graceful_500(
+        self, tmp_path: Path,
+    ) -> None:
+        """from-list errs on `connection` -> the wrapper answers via
+        outparam.set(err(internal-error)) — a 500 WITHOUT a guest trap
+        (no `worker failed` backtrace in the serve log)."""
+        wat = _emit_server(FORBIDDEN_HEADER_HANDLER)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, _ = _serve_request(srv.port, "GET", "/", [], "")
+            assert status == 500
+            log = srv.settled_log()
+        assert "worker failed" not in log
+
+    def test_out_of_range_status_is_a_graceful_500(
+        self, tmp_path: Path,
+    ) -> None:
+        """Status 70000 exceeds u16 — the wrapper pre-checks (the
+        set-status lift would trap) and takes the same graceful path."""
+        wat = _emit_server(BAD_STATUS_HANDLER)
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, _ = _serve_request(srv.port, "GET", "/", [], "")
+            assert status == 500
+            log = srv.settled_log()
+        assert "worker failed" not in log
+
+    def test_big_body_gc_stress_round_trip(self, tmp_path: Path) -> None:
+        """1 MiB POST /echo (+50 headers): the ~2 MiB of transient
+        guest allocations force collections through the serve
+        wrapper's copy-out — a missing root corrupts or traps."""
+        wat = _emit_server(HTTP_SERVER_EXAMPLE)
+        big = ("0123456789abcdef" * 65536)[:1048576]
+        headers = [(f"x-h{i:02d}", "v" * 40) for i in range(50)]
+        with _WasmtimeServe(wat, tmp_path) as srv:
+            status, _, body = _serve_request(
+                srv.port, "POST", "/echo", headers, big,
+            )
+        assert status == 200
+        assert body == big
+
+    def test_request_build_rooting_is_load_bearing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Mutation-validation of the delicate WAT (TESTING.md rule):
+        with an eager-GC build (collect on every alloc), stripping the
+        method-string shadow_push from the emitted wrapper must break
+        the round-trip — proving the fixture actually exercises the
+        rooting discipline rather than passing by luck."""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        result = _compile_ok(DIFF_HANDLER)
+        monkeypatch.delenv("VERA_EAGER_GC")
+        wat = emit_wasi_component(result, world="server")
+        marker = "    local.get $mp\n    call $shadow_push ;; root: method\n"
+        assert marker in wat
+        expected = (200, "GET|/probe|marker|payload")
+        with _WasmtimeServe(wat, tmp_path, "rooted.wat") as srv:
+            status, _, body = _serve_request(
+                srv.port, "GET", "/probe", [("X-Probe", "marker")],
+                "payload",
+            )
+            assert (status, body) == expected, "eager-GC baseline broke"
+        mutated = wat.replace(marker, "", 1)
+        assert mutated != wat
+        with _WasmtimeServe(mutated, tmp_path, "unrooted.wat") as srv:
+            status, _, body = _serve_request(
+                srv.port, "GET", "/probe", [("X-Probe", "marker")],
+                "payload",
+            )
+        assert (status, body) != expected, (
+            "dropping the method root did not break the round-trip — "
+            "the GC-stress fixture no longer exercises rooting"
+        )
+
+
+# =====================================================================
+# CLI integration: `--world server` (Stage D)
+# =====================================================================
+
+class TestCliServerWorld:
+    """`vera compile --target wasi-p2 --world server` writes a binary
+    component exporting wasi:http/incoming-handler; `vera run` rejects
+    server-world artifacts (wasmtime-py cannot host wasi:http) with a
+    pointer to `wasmtime serve`."""
+
+    HANDLER_SRC = (Path(__file__).parent.parent
+                   / "examples" / "http_server.vera")
+
+    def test_compile_writes_server_component(self, tmp_path: Path) -> None:
+        from vera.cli import cmd_compile
+
+        out = tmp_path / "server.wasm"
+        rc = cmd_compile(
+            str(self.HANDLER_SRC), target="wasi-p2", world="server",
+            output=str(out),
+        )
+        assert rc == 0
+        Component(_ENGINE, out.read_bytes())
+
+    def test_wat_prints_incoming_handler_export(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from vera.cli import cmd_compile
+
+        rc = cmd_compile(
+            str(self.HANDLER_SRC), target="wasi-p2", world="server",
+            wat=True,
+        )
+        assert rc == 0
+        printed = capsys.readouterr().out
+        assert printed.lstrip().startswith("(component")
+        assert "wasi:http/incoming-handler@0.2.0" in printed
+
+    def test_run_rejects_server_world(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from vera.cli import cmd_run
+
+        rc = cmd_run(
+            str(self.HANDLER_SRC), target="wasi-p2", world="server",
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "wasmtime serve" in err
+
+    def test_world_requires_wasi_p2_target(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from vera.cli import cmd_compile
+
+        rc = cmd_compile(
+            str(self.HANDLER_SRC), target="wasm", world="server",
+        )
+        assert rc == 1
+        assert "wasi-p2" in capsys.readouterr().err
+
+    def test_missing_handler_is_a_clean_diagnostic(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from vera.cli import cmd_compile
+
+        src = tmp_path / "nohandle.vera"
+        src.write_text(HELLO, encoding="utf-8")
+        rc = cmd_compile(str(src), target="wasi-p2", world="server")
+        assert rc == 1
+        assert "handle" in capsys.readouterr().err

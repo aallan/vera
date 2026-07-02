@@ -168,6 +168,7 @@ vera run file.vera --fn f -- 42           # call function f with argument 42
 vera compile --target browser file.vera   # emit browser bundle
 vera compile --target wasi-p2 file.vera   # emit a WASI Preview 2 component (experimental)
 vera run --target wasi-p2 file.vera       # execute under the built-in WASI 0.2 host
+vera compile --target wasi-p2 --world server file.vera  # wasi:http server component for wasmtime serve
 vera test file.vera                       # contract-driven testing via Z3 + WASM
 vera fmt file.vera                        # format to canonical form
 vera verify --json file.vera              # JSON diagnostics for agent feedback loops
@@ -181,7 +182,7 @@ vera errors --json                       # list the diagnostic error-code regist
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes for the pure-language surface (arithmetic, ADTs, pattern matching, closures, contracts, effects-as-host-imports, etc.).  The IO surface is the documented exception: terminal Vera programs that rely on `IO.sleep` for animation pacing or ANSI escape codes for cursor control compile cleanly to `--target browser` but render the escapes as literal text and freeze the tab while sleeping — the browser target expects Vera to be the pure simulation core and JavaScript to drive timing and rendering ([SKILL.md §Browser compilation](SKILL.md#browser-compilation) has the recommended pattern).
 
-`vera compile --target wasi-p2` emits an **experimental WASI Preview 2 target (IO and Random surface)**: a binary WebAssembly component whose host imports are implemented over WASI 0.2 interfaces, runnable by any stock wasip2 host (`wasmtime run` needs no flags and no Vera bindings). Programs using host families beyond IO/Random are rejected with a diagnostic naming the family — never silently compiled against the core target. See [spec chapter 13](spec/13-wasi.md) for the architecture, the supported surface, and the documented divergences (WASI 0.2's ok/err-only exit codes, no structured trap frames across the component boundary).
+`vera compile --target wasi-p2` emits an **experimental WASI Preview 2 target (IO and Random surface)**: a binary WebAssembly component whose host imports are implemented over WASI 0.2 interfaces, runnable by any stock wasip2 host (`wasmtime run` needs no flags and no Vera bindings). Programs using host families beyond IO/Random are rejected with a diagnostic naming the family — never silently compiled against the core target. See [spec chapter 13](spec/13-wasi.md) for the architecture, the supported surface, and the documented divergences (WASI 0.2's ok/err-only exit codes, no structured trap frames across the component boundary). With `--world server`, the same contract-verified `handle(Request -> Response)` program `vera serve` hosts natively compiles to a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs unmodified — verified HTTP handlers as a portable deployment artifact.
 
 ### Editor support
 
@@ -219,7 +220,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.194 — 1,800+ commits, 194 releases, 5,768 tests, 91% code coverage, 104 conformance programs, 36 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.195 — 1,800+ commits, 195 releases, 5,806 tests, 91% code coverage, 104 conformance programs, 36 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 

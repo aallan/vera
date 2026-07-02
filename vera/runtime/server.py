@@ -25,7 +25,9 @@ from vera.codegen.api import CompileResult, HttpRequestData, execute
 from vera.runtime.traps import WasmTrapError
 
 
-def _validate_handler(result: CompileResult) -> None:
+def validate_handler(
+    result: CompileResult, *, context: str = "vera serve",
+) -> None:
     """Fail loudly unless the program has a servable handler.
 
     The contract: a public ``handle`` export taking exactly the prelude
@@ -33,10 +35,15 @@ def _validate_handler(result: CompileResult) -> None:
     as the type check — the prelude injects Request/Response only when
     the program mentions them, so their absence means ``handle`` (if
     any) has some other signature.
+
+    Shared between this #305 host driver and the wasi-p2 server-world
+    emitter (``vera/codegen/wasi.py``) so the two serving surfaces
+    cannot drift; ``context`` prefixes the diagnostics with the surface
+    that rejected the program.
     """
     if "handle" not in result.exports:
         raise ValueError(
-            "vera serve: the program must export a public "
+            f"{context}: the program must export a public "
             "'handle' function (public fn handle(@Request -> @Response) "
             "effects(<HttpServer>))"
         )
@@ -46,9 +53,14 @@ def _validate_handler(result: CompileResult) -> None:
         or result.fn_param_types.get("handle") != ["i32"]
     ):
         raise ValueError(
-            "vera serve: 'handle' must take exactly one @Request "
+            f"{context}: 'handle' must take exactly one @Request "
             "parameter and return @Response"
         )
+
+
+def _validate_handler(result: CompileResult) -> None:
+    """#305 driver entry — ``validate_handler`` with the serve context."""
+    validate_handler(result, context="vera serve")
 
 
 def make_server(

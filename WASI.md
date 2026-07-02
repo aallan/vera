@@ -49,8 +49,13 @@ stage).
   the WASI stderr channel (`vera/runtime/wasi_host.py`); structured frames stay
   core-path-only (spec §13.6).  The stdout-capture wiring (check 3) landed as
   `WasiConfig.stdout_custom` → `ExecuteResult.stdout` in the same runner.
-- The `wasmtime serve` deployment path (check 7) → the `wasi:http` serve-backend
-  stage after #237; the pure-Python `vera serve` driver (#305) does not depend on it.
+- The `wasmtime serve` deployment path (check 7) → **landed as `--world server`**
+  (spec §13.7).  Two check-7 findings were superseded during the Stage-D design
+  study: the `$Libc` two-module realloc dodge is unnecessary (the Stage-C
+  MAIN-owns-memory topology already sequences realloc before the lowers), and
+  `[static]incoming-body.finish` is not required (plain `resource.drop` of the
+  incoming body is accepted).  The pure-Python `vera serve` driver (#305) remains
+  independent.
 - Spike keeper-scripts → landed as `tests/test_wasi_target.py` with the #237
   target: component parse + live `add_wasip2` instantiation + execution
   semantics + the dual-target conformance differential + a stock-CLI smoke test.

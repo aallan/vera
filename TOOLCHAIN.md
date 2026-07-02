@@ -167,6 +167,16 @@ trap kinds) before handing it to an external host. Divergences inherent to
 WASI 0.2 — exit codes collapse to 0/1, no structured trap frames — are in
 spec chapter 13.
 
+```bash
+vera compile --target wasi-p2 --world server file.vera   # wasi:http server component
+wasmtime serve file.wasm                                 # stock wasmtime hosts the handler
+```
+
+`--world server` packages the same `handle(Request -> Response)` program
+`vera serve` runs natively as a `wasi:http/incoming-handler` component —
+one handler, two deployment paths.  `vera run` cannot host it (no
+wasi:http in wasmtime-py); the error says so and points here.
+
 ---
 
 ## Recipe: serve verified HTTP handlers

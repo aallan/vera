@@ -7,15 +7,26 @@ emitted artifact runs under any wasip2 host (stock ``wasmtime run``,
 wasmtime-py ``component.Linker.add_wasip2()``) with no Vera-specific host
 bindings.
 
+Two worlds share this machinery (the ``world=`` parameter):
+
+- ``"cli"`` (default): exports ``wasi:cli/run@0.2.0`` around ``main`` —
+  the shipped #237 behavior, byte-identical to before the server world
+  existed (pinned by tests).
+- ``"server"`` (Stage D): exports ``wasi:http/incoming-handler@0.2.0``
+  around the program's public ``handle(Request -> Response)`` so the
+  artifact serves HTTP under stock ``wasmtime serve`` with no flags —
+  see the Server world section below.
+
 Topology (from the #237 design study, adapted — see PR notes):
 
     MAIN     — the ordinary Vera core module, post-processed textually:
                each ``(import "vera" "op" ...)`` becomes a same-named
-               ``call_indirect`` shim through a 16-slot funcref dispatch
-               table that MAIN itself defines and exports (defined after
-               the closure table, so closure call sites keep table 0);
-               plus a GC-exempt scratch arena, ``cabi_realloc``, and the
-               ``__wasi_run`` entry wrapper.
+               ``call_indirect`` shim through a 16-slot (cli) / 32-slot
+               (server) funcref dispatch table that MAIN itself defines
+               and exports (defined after the closure table, so closure
+               call sites keep table 0); plus a GC-exempt scratch arena,
+               ``cabi_realloc``, and (cli world) the ``__wasi_run``
+               entry wrapper.
     LOWERS   — ``canon lower`` of the WASI imports against MAIN's
                memory + realloc (which therefore must come first).
     ADAPTER  — implements every op with the exact ``vera.*`` core
@@ -50,6 +61,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from vera.codegen.api import CompileResult
+    from vera.codegen.memory import ConstructorLayout
 
 
 # =====================================================================
@@ -630,9 +642,13 @@ class _Layout:
     statics: dict[str, tuple[int, int]]
     errtab: int                      # 0 when no filesystem ops
     main_results: tuple[str, ...]    # core result types of $main
+    #: Retptr-slab offset table.  The cli world uses the module-level
+    #: ``_SLAB``; the server world substitutes ``_SERVER_SLAB`` (the
+    #: §2.2 request/response slots) without disturbing cli offsets.
+    slab_table: dict[str, int] = field(default_factory=lambda: _SLAB)
 
     def slab(self, key: str) -> int:
-        return self.arena_base + _SLAB[key]
+        return self.arena_base + self.slab_table[key]
 
 
 def _build_statics(
@@ -698,36 +714,27 @@ def _build_statics(
 # MAIN-module transformation
 # =====================================================================
 
-def _transform_main(
-    wat: str, used: dict[str, str],
-) -> tuple[list[str], _Layout]:
-    """Post-process the compiled core module for the component.
-
-    Replaces every ``(import "vera" ...)`` with a same-named
-    ``call_indirect`` shim, defines + exports the dispatch table,
-    inserts the GC-exempt arena (shifting ``gc_heap_start`` /
-    ``heap_ptr`` up when the GC runtime is present), raises the memory
-    min so the arena is addressable at instantiation, and appends
-    ``cabi_realloc`` + the ``__wasi_run`` wrapper.
-
-    Returns the module *fields* (no outer ``(module`` / ``)``) and the
-    computed layout.
-    """
+def _module_body(wat: str) -> list[str]:
+    """Strip the outer ``(module`` / ``)`` lines, validating the shape."""
     lines = wat.split("\n")
     if lines[0] != "(module" or lines[-1] != ")":
         raise RuntimeError(
             "unexpected core-module WAT shape from the Vera code "
             "generator; the wasi-p2 post-processor needs updating"
         )
-    body = lines[1:-1]
+    return lines[1:-1]
 
-    # Reserved-identifier collision check.  Scan only non-data lines
-    # (a data segment's payload is a string literal — a Vera program
-    # printing "$wasi_tbl" is not a collision), and require an
-    # identifier boundary after each exact marker so a LONGER
-    # identifier like `$wasi_tblish` is not a collision either
-    # (CR review, PR #849).  `$wasi_sig_` is the one deliberate
-    # prefix family (the shim type names `$wasi_sig_<op>`).
+
+def _check_reserved_idents(body: list[str]) -> None:
+    """Reserved-identifier collision check (shared by both worlds).
+
+    Scan only non-data lines (a data segment's payload is a string
+    literal — a Vera program printing "$wasi_tbl" is not a collision),
+    and require an identifier boundary after each exact marker so a
+    LONGER identifier like `$wasi_tblish` is not a collision either
+    (CR review, PR #849).  `$wasi_sig_` is the one deliberate prefix
+    family (the shim type names `$wasi_sig_<op>`).
+    """
     ident_lines = "\n".join(
         line for line in body if not line.lstrip().startswith("(data")
     )
@@ -747,6 +754,25 @@ def _transform_main(
                 f"program defines the reserved identifier {marker!r}; "
                 "--target wasi-p2 cannot compile it"
             )
+
+
+def _transform_main(
+    wat: str, used: dict[str, str],
+) -> tuple[list[str], _Layout]:
+    """Post-process the compiled core module for the component.
+
+    Replaces every ``(import "vera" ...)`` with a same-named
+    ``call_indirect`` shim, defines + exports the dispatch table,
+    inserts the GC-exempt arena (shifting ``gc_heap_start`` /
+    ``heap_ptr`` up when the GC runtime is present), raises the memory
+    min so the arena is addressable at instantiation, and appends
+    ``cabi_realloc`` + the ``__wasi_run`` wrapper.
+
+    Returns the module *fields* (no outer ``(module`` / ``)``) and the
+    computed layout.
+    """
+    body = _module_body(wat)
+    _check_reserved_idents(body)
 
     kept: list[str] = []
     mem_idx = -1
@@ -854,7 +880,7 @@ def _transform_main(
     )
     out.append(_emit_cabi_realloc(arena_end))
     for name in sorted(used, key=lambda n: _OPS[n].slot):
-        out.append(_emit_shim(name))
+        out.append(_emit_shim(name, _OPS[name]))
     out.append(_emit_wasi_run(len(main_results)))
     return out, layout
 
@@ -909,7 +935,7 @@ def _emit_cabi_realloc(arena_end: int) -> str:
     )
 
 
-def _emit_shim(name: str) -> str:
+def _emit_shim(name: str, spec: _OpSpec) -> str:
     """Same-named ``call_indirect`` shim replacing a ``vera.*`` import.
 
     The shim keeps the ``$vera.<op>`` identifier so every call site in
@@ -917,7 +943,6 @@ def _emit_shim(name: str) -> str:
     reference keeps closure ``call_indirect`` sites (implicit table 0)
     unaffected.
     """
-    spec = _OPS[name]
     sig = _expected_sig(spec)
     forwards = "".join(
         f"    local.get {i}\n"
@@ -1004,6 +1029,70 @@ def _adapter_fields(used: set[str], lay: _Layout) -> list[str]:
     return fields
 
 
+#: Adapter helper bodies shared VERBATIM by both worlds (any drift
+#: would silently fork the GC-rooting discipline between them).
+_SHADOW_PUSH_FN = (
+    "  (func $shadow_push (param $v i32)\n"
+    "    global.get $gc_sp\n"
+    "    global.get $gc_stack_limit\n"
+    "    i32.ge_u\n"
+    "    if\n"
+    "      unreachable\n"
+    "    end\n"
+    "    global.get $gc_sp\n"
+    "    local.get $v\n"
+    "    i32.store\n"
+    "    global.get $gc_sp\n"
+    "    i32.const 4\n"
+    "    i32.add\n"
+    "    global.set $gc_sp\n"
+    "  )"
+)
+_SHADOW_POP_FN = (
+    "  (func $shadow_pop_n (param $n i32)\n"
+    "    global.get $gc_sp\n"
+    "    local.get $n\n"
+    "    i32.const 4\n"
+    "    i32.mul\n"
+    "    i32.sub\n"
+    "    global.set $gc_sp\n"
+    "  )"
+)
+_BYTES_EQ_FN = (
+    "  (func $bytes_eq (param $a i32) (param $b i32) "
+    "(param $n i32) (result i32)\n"
+    "    (local $i i32)\n"
+    "    block $ne\n"
+    "    loop $cmp\n"
+    "      local.get $i\n"
+    "      local.get $n\n"
+    "      i32.ge_u\n"
+    "      if\n"
+    "        i32.const 1\n"
+    "        return\n"
+    "      end\n"
+    "      local.get $a\n"
+    "      local.get $i\n"
+    "      i32.add\n"
+    "      i32.load8_u\n"
+    "      local.get $b\n"
+    "      local.get $i\n"
+    "      i32.add\n"
+    "      i32.load8_u\n"
+    "      i32.ne\n"
+    "      br_if $ne\n"
+    "      local.get $i\n"
+    "      i32.const 1\n"
+    "      i32.add\n"
+    "      local.set $i\n"
+    "      br $cmp\n"
+    "    end\n"
+    "    end\n"
+    "    i32.const 0\n"
+    "  )"
+)
+
+
 def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
     """Shared adapter helpers, gated by the ops that need them."""
     out: list[str] = []
@@ -1023,33 +1112,8 @@ def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
         # Mirrors helpers.gc_shadow_push / _ShadowGuard in
         # vera/runtime/heap.py: root GC pointers held only in adapter
         # locals across a subsequent $alloc (#593 class).
-        out.append(
-            "  (func $shadow_push (param $v i32)\n"
-            "    global.get $gc_sp\n"
-            "    global.get $gc_stack_limit\n"
-            "    i32.ge_u\n"
-            "    if\n"
-            "      unreachable\n"
-            "    end\n"
-            "    global.get $gc_sp\n"
-            "    local.get $v\n"
-            "    i32.store\n"
-            "    global.get $gc_sp\n"
-            "    i32.const 4\n"
-            "    i32.add\n"
-            "    global.set $gc_sp\n"
-            "  )"
-        )
-        out.append(
-            "  (func $shadow_pop_n (param $n i32)\n"
-            "    global.get $gc_sp\n"
-            "    local.get $n\n"
-            "    i32.const 4\n"
-            "    i32.mul\n"
-            "    i32.sub\n"
-            "    global.set $gc_sp\n"
-            "  )"
-        )
+        out.append(_SHADOW_PUSH_FN)
+        out.append(_SHADOW_POP_FN)
         # 12-byte {tag, ptr, len} Result/Option payload ADT, matching
         # vera/runtime/heap.py layouts.  The payload pointer is rooted
         # across the struct alloc; rooting a GC-exempt pointer (arena
@@ -1106,39 +1170,7 @@ def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
     if used & {"read_line", "read_char"}:
         out.append(_read_byte(lay))
     if "get_env" in used:
-        out.append(
-            "  (func $bytes_eq (param $a i32) (param $b i32) "
-            "(param $n i32) (result i32)\n"
-            "    (local $i i32)\n"
-            "    block $ne\n"
-            "    loop $cmp\n"
-            "      local.get $i\n"
-            "      local.get $n\n"
-            "      i32.ge_u\n"
-            "      if\n"
-            "        i32.const 1\n"
-            "        return\n"
-            "      end\n"
-            "      local.get $a\n"
-            "      local.get $i\n"
-            "      i32.add\n"
-            "      i32.load8_u\n"
-            "      local.get $b\n"
-            "      local.get $i\n"
-            "      i32.add\n"
-            "      i32.load8_u\n"
-            "      i32.ne\n"
-            "      br_if $ne\n"
-            "      local.get $i\n"
-            "      i32.const 1\n"
-            "      i32.add\n"
-            "      local.set $i\n"
-            "      br $cmp\n"
-            "    end\n"
-            "    end\n"
-            "    i32.const 0\n"
-            "  )"
-        )
+        out.append(_BYTES_EQ_FN)
     if fs:
         out.append(_get_preopen(lay))
         out.append(_strip_path())
@@ -2500,22 +2532,36 @@ def _assemble_component(
 # Public API
 # =====================================================================
 
-def emit_wasi_component(result: CompileResult) -> str:
+def emit_wasi_component(result: CompileResult, world: str = "cli") -> str:
     """Emit a WASI Preview 2 component (text format) for ``result``.
 
-    The component exports ``wasi:cli/run@0.2.0`` (stock ``wasmtime
-    run`` compatible) and, when ``main`` returns a scalar (or Unit), a
-    plain lifted ``main`` for the Python runner.
+    ``world`` selects the entry-point surface:
+
+    - ``"cli"`` (default, the shipped #237 behavior): the component
+      exports ``wasi:cli/run@0.2.0`` (stock ``wasmtime run``
+      compatible) and, when ``main`` returns a scalar (or Unit), a
+      plain lifted ``main`` for the Python runner.
+    - ``"server"`` (Stage D): the component exports
+      ``wasi:http/incoming-handler@0.2.0`` around the program's public
+      ``handle(Request -> Response)`` and runs under stock
+      ``wasmtime serve`` unmodified.
 
     Raises ``ValueError`` with a clean diagnostic when the program
-    uses a host family the target does not support (anything beyond
-    IO + Random), when there is no zero-parameter ``main``, or when a
-    reserved identifier collides.  Never silently falls back.
+    uses a host family the selected world does not support, when the
+    required entry point is missing (zero-parameter ``main`` for cli,
+    #305-shaped ``handle`` for server), or when a reserved identifier
+    collides.  Never silently falls back.
     """
+    if world not in ("cli", "server"):
+        raise ValueError(
+            f"unknown wasi-p2 world {world!r}; expected 'cli' or 'server'"
+        )
     if not result.ok:
         raise ValueError(
             "cannot emit a wasi-p2 component from a failed compilation"
         )
+    if world == "server":
+        return _emit_server_component(result)
     _gate_families(result)
 
     used: dict[str, str] = {}
@@ -2541,3 +2587,2233 @@ def emit_wasi_component(result: CompileResult) -> str:
 
     main_fields, layout = _transform_main(result.wat, used)
     return _assemble_component(main_fields, set(used), layout)
+
+
+# =====================================================================
+# Server world (Stage D, #305/#237): wasi:http/incoming-handler@0.2.0
+# =====================================================================
+#
+# The server world wraps the program's verified public
+# ``handle(Request -> Response)`` in an adapter-resident serve wrapper
+# that marshals wasi:http resources into the prelude Request ADT and
+# drives the response half from the returned Response ADT.  Every
+# import spelling, flattened core signature, and retptr layout below
+# was validated live against wasmtime-py 45 (Component parse) and
+# wasmtime CLI 46 (`wasmtime serve` + HTTP round-trips) by the Stage-D
+# design study, including a full compiled-handler echo prototype.
+#
+# Topology: identical to the cli world (MAIN owns memory/GC/arena/
+# cabi_realloc; adapter plants dispatch-table ops), extended with:
+#   - the String-keyed Map ops emulated IN-GUEST in the adapter
+#     (post-#706 Maps are guest-memory bucket arrays — no host store),
+#   - the serve wrapper ``$serve_handle`` in the adapter, importing
+#     the wasi:http lowers directly (never through the dispatch
+#     table) plus MAIN's exported ``handle``/``alloc``/GC globals,
+#   - a 32-slot dispatch table (map family at slots 16+),
+#   - the wrap-table region accepted (map programs carry it), arena
+#     placed above it exactly as the cli world places it above the
+#     GC statics.
+
+#: Map wrapper tag word — must equal ``vera.runtime.heap._MAP_HANDLE_TAG``
+#: (pinned by a drift test in tests/test_wasi_target.py; not imported
+#: here to keep this module free of runtime deps).
+_MAP_WRAPPER_TAG = 0xFEEDC001
+
+_SERVER_TABLE_SIZE = 32
+
+#: Server retptr slab (design §2.2).  Distinct from the cli ``_SLAB``
+#: so cli offsets stay byte-identical; "bwf"/"now" keys let the shared
+#: Stage-C op emitters (print/stderr/time/...) work unchanged.
+_SERVER_SLAB: dict[str, int] = {
+    "mth": 0,        # 12 B — method variant result
+    "path": 16,      # 12 B — path-with-query option
+    "ents": 32,      # 8 B  — entries list header
+    "consume": 40,   # 8 B  — consume result
+    "stream": 48,    # 8 B  — incoming-body.stream result
+    "bread": 56,     # 12 B — blocking-read result
+    "flist": 72,     # 8 B  — from-list result
+    "finish": 80,    # 40 B — outgoing-body.finish result (8-aligned)
+    "bwf": 120,      # 12 B — blocking-write-and-flush result
+    "rb": 136,       # 8 B  — outgoing-response.body / outgoing-body.write
+    "now": 144,      # 16 B — wall-clock datetime record (8-aligned)
+}
+_SERVER_SLAB_SIZE = 160
+
+_METHOD_NAMES: tuple[str, ...] = (
+    "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS",
+    "TRACE", "PATCH",
+)
+
+#: wasi:http error-code variant case index of ``internal-error`` (the
+#: 39-case variant in ``_HTTP_TYPES_IFACE`` below; 0-based).
+_ERRCODE_INTERNAL_ERROR = 38
+
+#: In-guest Map ops (String/String only) + the two wrapper stubs.
+#: Slots extend the cli table (0-15); pure guest code — no WASI
+#: interfaces, lowers, or drops.
+_MAP_OPS: dict[str, _OpSpec] = {
+    "map_new": _op(16, "", "i32", needs_alloc=True),
+    "map_insert$ks_vs": _op(17, "i32 i32 i32 i32 i32", "i32",
+                            needs_alloc=True),
+    "map_get$ks_vs": _op(18, "i32 i32 i32", "i32", needs_alloc=True),
+    "map_contains$ks": _op(19, "i32 i32 i32", "i32"),
+    "map_size": _op(20, "i32", "i64"),
+    "map_remove$ks": _op(21, "i32 i32 i32", "i32", needs_alloc=True),
+    "map_keys$ks": _op(22, "i32", "i32 i32", needs_alloc=True),
+    "map_values$vs": _op(23, "i32", "i32 i32", needs_alloc=True),
+    "host_decref_handle": _op(24, "i32 i32", ""),
+    "attach_bucket_to_wrapper": _op(25, "i32 i32 i32", ""),
+}
+
+#: Stage-C ops the server world keeps (proxy-world-linkable; design
+#: §1.3 verdict table).
+_SERVER_IO_OPS = frozenset({
+    "print", "stderr", "time", "sleep",
+    "random_int", "random_float", "random_bool",
+    "contract_fail", "overflow_trap",
+})
+
+#: Stage-C ops the server world REJECTS, with the family/reason named
+#: in the diagnostic (design §1.3: filesystem/environment/exit are not
+#: in the wasmtime-serve proxy world; stdin links but is a closed
+#: stream — degenerate in a request handler).
+_SERVER_REJECTED_OPS: dict[str, str] = {
+    "read_line": "IO.read_line (stdin is a closed stream under"
+                 " wasmtime serve)",
+    "read_char": "IO.read_char (stdin is a closed stream under"
+                 " wasmtime serve)",
+    "read_file": "IO.read_file (wasi:filesystem is not in the"
+                 " wasmtime serve proxy world)",
+    "write_file": "IO.write_file (wasi:filesystem is not in the"
+                  " wasmtime serve proxy world)",
+    "args": "IO.args (wasi:cli/environment is not in the wasmtime"
+            " serve proxy world)",
+    "get_env": "IO.get_env (wasi:cli/environment is not in the"
+               " wasmtime serve proxy world)",
+    "exit": "IO.exit (wasi:cli/exit is not in the wasmtime serve"
+            " proxy world)",
+}
+
+#: Generalized ``vera.*`` import matcher for the server world: accepts
+#: BOTH the compact param form (``(param i32 i32)``, the IO family)
+#: and the per-param form with ``$``-suffixed names
+#: (``map_insert$ks_vs (param i32) (param i32) ...``, the map family).
+_SERVER_IMPORT_RE = re.compile(
+    r'^  \(import "vera" "([A-Za-z0-9_$]+)" \(func \$\S+'
+    r'((?:\s\(param(?: (?:i32|i64|f32|f64))+\))*)'
+    # Multivalue results are spelled as REPEATED single-type groups
+    # ("(result i32) (result i32)", e.g. map_keys$ks) — hence * here.
+    r'((?:\s\(result(?: (?:i32|i64|f32|f64))+\))*)\)\)$'
+)
+_CORE_TYPE_RE = re.compile(r"i32|i64|f32|f64")
+
+
+# ---------------------------------------------------------------------
+# Server family gate + handler validation
+# ---------------------------------------------------------------------
+
+def _map_op_is_string_string(op: str) -> bool:
+    """True for ``$ks``/``$vs``-only instantiation suffixes."""
+    suffix = op.split("$", 1)[1]
+    return all(
+        (tok == "ks") if tok.startswith("k") else (tok == "vs")
+        for tok in suffix.split("_")
+    )
+
+
+def _gate_families_server(result: CompileResult) -> None:
+    """Server-world family gate (design §3.1/§5.1).
+
+    Same shape as the cli gate but Map<String, String> is allowed
+    (in-guest emulation); any other Map instantiation is rejected
+    naming the offending op.  Never a silent fallback.
+    """
+    offending: list[str] = []
+    for family, attr in _UNSUPPORTED_FAMILIES:
+        if family == "map":
+            continue
+        ops = getattr(result, attr)
+        if ops:
+            offending.append(f"{family} ({', '.join(sorted(ops))})")
+    if result.state_types:
+        types = ", ".join(sorted(t for t, _ in result.state_types))
+        offending.append(f"state ({types})")
+    if offending:
+        raise ValueError(
+            "--target wasi-p2 --world server does not support the "
+            f"following host famil{'ies' if len(offending) > 1 else 'y'}: "
+            f"{'; '.join(offending)}. Supported families: IO (print, "
+            "stderr, time, sleep), Random, Map<String, String>."
+        )
+    bad_maps = sorted(
+        op for op in result.map_ops_used
+        if "$" in op and not _map_op_is_string_string(op)
+    )
+    if bad_maps:
+        raise ValueError(
+            "--target wasi-p2 --world server supports Map host ops "
+            "only at the Map<String, String> instantiation "
+            f"(map_*$ks_vs); unsupported instantiation"
+            f"{'s' if len(bad_maps) > 1 else ''}: {', '.join(bad_maps)}"
+        )
+
+
+def _server_adt_layouts(
+    result: CompileResult,
+) -> tuple[ConstructorLayout, ConstructorLayout]:
+    """Fetch + shape-check the Request/Response constructor layouts.
+
+    Same tripwires as ``build_request_adt`` / ``decode_response_adt``
+    (vera/runtime/heap.py): if the prelude shapes move, the emitter
+    must fail loudly, not emit a desynced wrapper.
+    """
+    req = result.adt_layouts["Request"]["Request"]
+    req_shape = tuple(ty for _, ty in req.field_offsets)
+    if req_shape != ("i32_pair", "i32_pair", "i32", "i32_pair"):
+        raise ValueError(
+            f"unexpected Request layout {req.field_offsets!r}; the "
+            "prelude Request shape and the wasi-p2 server wrapper "
+            "must move together"
+        )
+    resp = result.adt_layouts["Response"]["Response"]
+    resp_shape = tuple(ty for _, ty in resp.field_offsets)
+    if resp_shape != ("i64", "i32", "i32_pair"):
+        raise ValueError(
+            f"unexpected Response layout {resp.field_offsets!r}; the "
+            "prelude Response shape and the wasi-p2 server wrapper "
+            "must move together"
+        )
+    return req, resp
+
+
+def _parse_server_imports(wat: str) -> dict[str, _OpSpec]:
+    """Collect + validate the ``vera.*`` imports for the server world.
+
+    Returns ``{op name: spec}``.  Rejected ops raise ``ValueError``
+    naming the op and its family; unknown ops or signature mismatches
+    raise (the op tables and vera/codegen/assembly.py are out of sync).
+    """
+    used: dict[str, _OpSpec] = {}
+    for line in wat.split("\n"):
+        m = _SERVER_IMPORT_RE.match(line)
+        if not m:
+            if line.startswith('  (import "vera"'):
+                raise RuntimeError(
+                    f"unrecognized vera host import in WAT: {line.strip()} "
+                    "— the wasi-p2 emitter op table is out of sync with "
+                    "vera/codegen/assembly.py"
+                )
+            continue
+        name = m.group(1)
+        params = " ".join(_CORE_TYPE_RE.findall(m.group(2)))
+        results = " ".join(_CORE_TYPE_RE.findall(m.group(3)))
+        if name in _SERVER_REJECTED_OPS:
+            raise ValueError(
+                "--target wasi-p2 --world server does not support "
+                f"{_SERVER_REJECTED_OPS[name]}. Supported ops: IO.print, "
+                "IO.stderr, IO.time, IO.sleep, Random, and "
+                "Map<String, String>."
+            )
+        spec = _MAP_OPS.get(name)
+        if spec is None and name in _SERVER_IO_OPS:
+            spec = _OPS[name]
+        if spec is None:
+            raise ValueError(
+                "--target wasi-p2 --world server does not support the "
+                f"host import '{name}'"
+            )
+        if (params, results) != (spec.params, spec.results):
+            raise RuntimeError(
+                f"host import '{name}' signature "
+                f"{(params, results)!r} does not match the wasi-p2 "
+                f"server op table ({(spec.params, spec.results)!r}); "
+                "vera/codegen/assembly.py and vera/codegen/wasi.py "
+                "are out of sync"
+            )
+        used[name] = spec
+    return used
+
+
+# ---------------------------------------------------------------------
+# Server MAIN transformation
+# ---------------------------------------------------------------------
+
+def _build_server_statics(arena_base: int) -> tuple[list[str], int, int]:
+    """Method-name blob + the "/" fallback path, immortal in the arena.
+
+    Returns (data-segment lines, statics base address, bump_start).
+    """
+    blob = "".join(_METHOD_NAMES) + "/"
+    base = arena_base + _SERVER_SLAB_SIZE
+    bump_start = (base + len(blob) + 7) & ~7
+    return [f'  (data (i32.const {base}) "{blob}")'], base, bump_start
+
+
+def _transform_main_server(
+    wat: str, used: dict[str, _OpSpec],
+) -> tuple[list[str], _Layout]:
+    """Post-process the compiled core module for the server world.
+
+    Differences from the cli ``_transform_main`` (design §1.4): no
+    ``main`` requirement and no ``__wasi_run`` (the entry is the
+    exported ``handle``, already validated on the CompileResult); the
+    wrap-table region is ACCEPTED (map programs carry it — arena
+    placement is unchanged, ``align8(gc_heap_start)`` sits above the
+    wrap region); the dispatch table is 32 slots; the extended import
+    grammar (``$``-suffixed names, per-param decls) is handled by the
+    caller's ``_parse_server_imports``; memory min gets +1 page of
+    GC-heap headroom past the arena (live-validated by the prototype).
+    """
+    body = _module_body(wat)
+    _check_reserved_idents(body)
+
+    kept: list[str] = []
+    mem_idx = -1
+    mem_min = 0
+    heap_ptr_idx = -1
+    gc_start_idx = -1
+    gc_start_val = -1
+    for line in body:
+        if _SERVER_IMPORT_RE.match(line):
+            continue  # replaced by shims below
+        if line.startswith('  (import "vera"'):
+            raise RuntimeError(
+                f"unrecognized vera host import in WAT: {line.strip()} "
+                "— the wasi-p2 emitter op table is out of sync with "
+                "vera/codegen/assembly.py"
+            )
+        m = _MEMORY_RE.match(line)
+        if m:
+            mem_idx = len(kept)
+            mem_min = int(m.group(1))
+        m = _HEAP_PTR_RE.match(line)
+        if m:
+            heap_ptr_idx = len(kept)
+        m = _GC_HEAP_START_RE.match(line)
+        if m:
+            gc_start_idx = len(kept)
+            gc_start_val = int(m.group(1))
+        kept.append(line)
+
+    if gc_start_idx < 0 or heap_ptr_idx < 0 or mem_idx < 0:
+        raise RuntimeError(
+            "--target wasi-p2 --world server requires the GC runtime "
+            "(a handle(Request -> Response) program always allocates); "
+            "the compiled module lacks it — the emitter and the code "
+            "generator are out of sync"
+        )
+
+    arena_base = (gc_start_val + 7) & ~7
+    new_start = arena_base + _ARENA_SIZE
+    arena_end = new_start
+    kept[heap_ptr_idx] = (
+        f'  (global $heap_ptr (export "heap_ptr") '
+        f"(mut i32) (i32.const {new_start}))"
+    )
+    kept[gc_start_idx] = (
+        f"  (global $gc_heap_start i32 (i32.const {new_start}))"
+    )
+    pages = (arena_end + 65535) // 65536 + 1
+    kept[mem_idx] = (
+        f'  (memory (export "memory") {max(mem_min, pages)})'
+    )
+
+    _segments, statics_base, bump_start = _build_server_statics(arena_base)
+    layout = _Layout(
+        arena_base=arena_base,
+        bump_start=bump_start,
+        arena_end=arena_end,
+        has_alloc=True,
+        statics={"mtab": (statics_base, 0)},
+        errtab=0,
+        main_results=(),
+        slab_table=_SERVER_SLAB,
+    )
+
+    out = list(kept)
+    out.append(
+        f'  (table $wasi_tbl (export "wasi_tbl") '
+        f"{_SERVER_TABLE_SIZE} {_SERVER_TABLE_SIZE} funcref)"
+    )
+    out.append(
+        f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
+        f"(mut i32) (i32.const {bump_start}))"
+    )
+    out.append(_emit_cabi_realloc(arena_end))
+    for name in sorted(used, key=lambda n: used[n].slot):
+        out.append(_emit_shim(name, used[name]))
+    return out, layout
+
+
+# ---------------------------------------------------------------------
+# Server adapter: in-guest Map ops (String/String, bucket-as-truth #706)
+# ---------------------------------------------------------------------
+#
+# Semantics mirrored from vera/runtime/map.py + vera/runtime/heap.py:
+# byte-wise key equality (SameValueZero == bytewise for Strings),
+# position-preserving update (existing key keeps its slot order, new
+# key appends — Python-dict parity, observable via map_keys), copy-on-
+# write (fresh wrapper + bucket per insert/remove), capacity = the
+# smallest power of two >= max(8, 2*count) (``_bkt_capacity``), and
+# new buckets SHARING the immutable key/value string bytes of the
+# source (the host ``_encode_raw`` precedent; the conservative GC
+# traces bucket words, so shared strings stay live via the new
+# bucket).
+#
+# GC discipline (#593 class, mirroring the host callbacks which read
+# everything into Python BEFORE allocating): each op shadow-pushes its
+# raw pointer arguments at entry (rooting a string-pool/null pointer
+# is harmless — the scan range-checks), pushes the new wrapper across
+# the bucket alloc, links bucket into wrapper+8 immediately after the
+# bucket alloc, then does pure memory writes; pops on exit.  Compiled
+# callers do NOT root their arguments across the call — the host path
+# never needed them to.
+
+def _op_ident(name: str) -> str:
+    """Adapter function identifier for op ``name`` (strips ``$kX_vX``)."""
+    return "$op_" + name.split("$")[0]
+
+
+def _mk_wrapper() -> str:
+    """12-byte Map wrapper {tag, vestigial 0, bucket_ptr 0}."""
+    return (
+        "  (func $mk_wrapper (result i32)\n"
+        "    (local $w i32)\n"
+        "    i32.const 12\n"
+        "    call $alloc\n"
+        "    local.set $w\n"
+        "    local.get $w\n"
+        f"    i32.const {_MAP_WRAPPER_TAG}\n"
+        "    i32.store\n"
+        "    local.get $w\n"
+        "    i32.const 0\n"
+        "    i32.store offset=4\n"
+        "    local.get $w\n"
+        "    i32.const 0\n"
+        "    i32.store offset=8\n"
+        "    local.get $w\n"
+        "  )"
+    )
+
+
+def _bkt_find() -> str:
+    """(bucket, key ptr, key len) -> occupied slot ptr, or 0."""
+    return (
+        "  (func $bkt_find (param $b i32) (param $kp i32) "
+        "(param $kl i32) (result i32)\n"
+        "    (local $cap i32)\n"
+        "    (local $i i32)\n"
+        "    (local $slot i32)\n"
+        "    local.get $b\n"
+        "    i32.eqz\n"
+        "    if\n"
+        "      i32.const 0\n"
+        "      return\n"
+        "    end\n"
+        "    local.get $b\n"
+        "    i32.load\n"
+        "    local.set $cap\n"
+        "    block $done\n"
+        "    loop $scan\n"
+        "      local.get $i\n"
+        "      local.get $cap\n"
+        "      i32.ge_u\n"
+        "      br_if $done\n"
+        "      local.get $b\n"
+        "      i32.const 8\n"
+        "      i32.add\n"
+        "      local.get $i\n"
+        "      i32.const 20\n"
+        "      i32.mul\n"
+        "      i32.add\n"
+        "      local.set $slot\n"
+        "      local.get $slot\n"
+        "      i32.load\n"
+        "      if\n"
+        "        local.get $slot\n"
+        "        i32.load offset=8\n"
+        "        local.get $kl\n"
+        "        i32.eq\n"
+        "        if\n"
+        "          local.get $slot\n"
+        "          i32.load offset=4\n"
+        "          local.get $kp\n"
+        "          local.get $kl\n"
+        "          call $bytes_eq\n"
+        "          if\n"
+        "            local.get $slot\n"
+        "            return\n"
+        "          end\n"
+        "        end\n"
+        "      end\n"
+        "      local.get $i\n"
+        "      i32.const 1\n"
+        "      i32.add\n"
+        "      local.set $i\n"
+        "      br $scan\n"
+        "    end\n"
+        "    end\n"
+        "    i32.const 0\n"
+        "  )"
+    )
+
+
+def _bkt_cap() -> str:
+    """Capacity for N entries: pow2 >= max(8, 2*N) (``_bkt_capacity``)."""
+    return (
+        "  (func $bkt_cap (param $n i32) (result i32)\n"
+        "    (local $cap i32)\n"
+        "    i32.const 8\n"
+        "    local.set $cap\n"
+        "    loop $grow\n"
+        "      local.get $cap\n"
+        "      local.get $n\n"
+        "      i32.const 1\n"
+        "      i32.shl\n"
+        "      i32.lt_u\n"
+        "      if\n"
+        "        local.get $cap\n"
+        "        i32.const 1\n"
+        "        i32.shl\n"
+        "        local.set $cap\n"
+        "        br $grow\n"
+        "      end\n"
+        "    end\n"
+        "    local.get $cap\n"
+        "  )"
+    )
+
+
+def _op_map_new(lay: _Layout) -> str:
+    return (
+        "  (func $op_map_new (result i32)\n"
+        "    call $mk_wrapper\n"
+        "  )"
+    )
+
+
+def _op_map_insert(lay: _Layout) -> str:
+    # Position-preserving copy: occupied slots are copied in slot
+    # order; the matched slot gets the new value in place; a new key
+    # appends after the copy.
+    return (
+        "  (func $op_map_insert (param $wp i32) (param $kp i32) "
+        "(param $kl i32) (param $vp i32) (param $vl i32) (result i32)\n"
+        "    (local $ob i32)\n"
+        "    (local $ocap i32)\n"
+        "    (local $ocnt i32)\n"
+        "    (local $found i32)\n"
+        "    (local $w i32)\n"
+        "    (local $b i32)\n"
+        "    (local $cap i32)\n"
+        "    (local $ncnt i32)\n"
+        "    (local $i i32)\n"
+        "    (local $j i32)\n"
+        "    (local $slot i32)\n"
+        "    (local $dst i32)\n"
+        "    local.get $wp\n"
+        "    call $shadow_push\n"
+        "    local.get $kp\n"
+        "    call $shadow_push\n"
+        "    local.get $vp\n"
+        "    call $shadow_push\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.set $ob\n"
+        "    local.get $ob\n"
+        "    if\n"
+        "      local.get $ob\n"
+        "      i32.load\n"
+        "      local.set $ocap\n"
+        "      local.get $ob\n"
+        "      i32.load offset=4\n"
+        "      local.set $ocnt\n"
+        "    end\n"
+        "    local.get $ob\n"
+        "    local.get $kp\n"
+        "    local.get $kl\n"
+        "    call $bkt_find\n"
+        "    local.set $found\n"
+        "    local.get $ocnt\n"
+        "    local.get $found\n"
+        "    i32.eqz\n"
+        "    i32.add\n"
+        "    local.set $ncnt\n"
+        "    local.get $ncnt\n"
+        "    call $bkt_cap\n"
+        "    local.set $cap\n"
+        "    call $mk_wrapper\n"
+        "    local.set $w\n"
+        "    local.get $w\n"
+        "    call $shadow_push\n"
+        "    local.get $cap\n"
+        "    i32.const 20\n"
+        "    i32.mul\n"
+        "    i32.const 8\n"
+        "    i32.add\n"
+        "    call $alloc\n"
+        "    local.set $b\n"
+        "    local.get $b\n"
+        "    i32.const 0\n"
+        "    local.get $cap\n"
+        "    i32.const 20\n"
+        "    i32.mul\n"
+        "    i32.const 8\n"
+        "    i32.add\n"
+        "    memory.fill\n"
+        "    local.get $b\n"
+        "    local.get $cap\n"
+        "    i32.store\n"
+        "    local.get $w\n"
+        "    local.get $b\n"
+        "    i32.store offset=8\n"
+        "    block $copied\n"
+        "    loop $cp\n"
+        "      local.get $i\n"
+        "      local.get $ocap\n"
+        "      i32.ge_u\n"
+        "      br_if $copied\n"
+        "      local.get $ob\n"
+        "      i32.const 8\n"
+        "      i32.add\n"
+        "      local.get $i\n"
+        "      i32.const 20\n"
+        "      i32.mul\n"
+        "      i32.add\n"
+        "      local.set $slot\n"
+        "      local.get $slot\n"
+        "      i32.load\n"
+        "      if\n"
+        "        local.get $b\n"
+        "        i32.const 8\n"
+        "        i32.add\n"
+        "        local.get $j\n"
+        "        i32.const 20\n"
+        "        i32.mul\n"
+        "        i32.add\n"
+        "        local.set $dst\n"
+        "        local.get $dst\n"
+        "        local.get $slot\n"
+        "        i32.const 20\n"
+        "        memory.copy\n"
+        "        local.get $slot\n"
+        "        local.get $found\n"
+        "        i32.eq\n"
+        "        if\n"
+        "          local.get $dst\n"
+        "          local.get $vp\n"
+        "          i32.store offset=12\n"
+        "          local.get $dst\n"
+        "          local.get $vl\n"
+        "          i32.store offset=16\n"
+        "        end\n"
+        "        local.get $j\n"
+        "        i32.const 1\n"
+        "        i32.add\n"
+        "        local.set $j\n"
+        "      end\n"
+        "      local.get $i\n"
+        "      i32.const 1\n"
+        "      i32.add\n"
+        "      local.set $i\n"
+        "      br $cp\n"
+        "    end\n"
+        "    end\n"
+        "    local.get $found\n"
+        "    i32.eqz\n"
+        "    if\n"
+        "      local.get $b\n"
+        "      i32.const 8\n"
+        "      i32.add\n"
+        "      local.get $j\n"
+        "      i32.const 20\n"
+        "      i32.mul\n"
+        "      i32.add\n"
+        "      local.set $dst\n"
+        "      local.get $dst\n"
+        "      i32.const 1\n"
+        "      i32.store\n"
+        "      local.get $dst\n"
+        "      local.get $kp\n"
+        "      i32.store offset=4\n"
+        "      local.get $dst\n"
+        "      local.get $kl\n"
+        "      i32.store offset=8\n"
+        "      local.get $dst\n"
+        "      local.get $vp\n"
+        "      i32.store offset=12\n"
+        "      local.get $dst\n"
+        "      local.get $vl\n"
+        "      i32.store offset=16\n"
+        "    end\n"
+        "    local.get $b\n"
+        "    local.get $ncnt\n"
+        "    i32.store offset=4\n"
+        "    i32.const 4\n"
+        "    call $shadow_pop_n\n"
+        "    local.get $w\n"
+        "  )"
+    )
+
+
+def _op_map_get(lay: _Layout) -> str:
+    # Option<String>: Some = 12 B {1, ptr, len}; None = 4 B {0}.
+    # The Option shares the bucket's value bytes (immutable strings);
+    # wp is rooted across the Option alloc so the bucket stays live.
+    return (
+        "  (func $op_map_get (param $wp i32) (param $kp i32) "
+        "(param $kl i32) (result i32)\n"
+        "    (local $slot i32)\n"
+        "    (local $adt i32)\n"
+        "    local.get $wp\n"
+        "    call $shadow_push\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.get $kp\n"
+        "    local.get $kl\n"
+        "    call $bkt_find\n"
+        "    local.set $slot\n"
+        "    local.get $slot\n"
+        "    if\n"
+        "      i32.const 12\n"
+        "      call $alloc\n"
+        "      local.set $adt\n"
+        "      local.get $adt\n"
+        "      i32.const 1\n"
+        "      i32.store\n"
+        "      local.get $adt\n"
+        "      local.get $slot\n"
+        "      i32.load offset=12\n"
+        "      i32.store offset=4\n"
+        "      local.get $adt\n"
+        "      local.get $slot\n"
+        "      i32.load offset=16\n"
+        "      i32.store offset=8\n"
+        "    else\n"
+        "      i32.const 4\n"
+        "      call $alloc\n"
+        "      local.set $adt\n"
+        "      local.get $adt\n"
+        "      i32.const 0\n"
+        "      i32.store\n"
+        "    end\n"
+        "    i32.const 1\n"
+        "    call $shadow_pop_n\n"
+        "    local.get $adt\n"
+        "  )"
+    )
+
+
+def _op_map_contains(lay: _Layout) -> str:
+    return (
+        "  (func $op_map_contains (param $wp i32) (param $kp i32) "
+        "(param $kl i32) (result i32)\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.get $kp\n"
+        "    local.get $kl\n"
+        "    call $bkt_find\n"
+        "    i32.const 0\n"
+        "    i32.ne\n"
+        "  )"
+    )
+
+
+def _op_map_size(lay: _Layout) -> str:
+    return (
+        "  (func $op_map_size (param $wp i32) (result i64)\n"
+        "    (local $b i32)\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.tee $b\n"
+        "    if (result i64)\n"
+        "      local.get $b\n"
+        "      i32.load offset=4\n"
+        "      i64.extend_i32_u\n"
+        "    else\n"
+        "      i64.const 0\n"
+        "    end\n"
+        "  )"
+    )
+
+
+def _op_map_remove(lay: _Layout) -> str:
+    # Structural rebuild minus the matched slot (host ``map_remove``
+    # parity: survivors keep slot order; capacity resized for the new
+    # count).
+    return (
+        "  (func $op_map_remove (param $wp i32) (param $kp i32) "
+        "(param $kl i32) (result i32)\n"
+        "    (local $ob i32)\n"
+        "    (local $ocap i32)\n"
+        "    (local $ocnt i32)\n"
+        "    (local $found i32)\n"
+        "    (local $w i32)\n"
+        "    (local $b i32)\n"
+        "    (local $cap i32)\n"
+        "    (local $ncnt i32)\n"
+        "    (local $i i32)\n"
+        "    (local $j i32)\n"
+        "    (local $slot i32)\n"
+        "    local.get $wp\n"
+        "    call $shadow_push\n"
+        "    local.get $kp\n"
+        "    call $shadow_push\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.set $ob\n"
+        "    local.get $ob\n"
+        "    if\n"
+        "      local.get $ob\n"
+        "      i32.load\n"
+        "      local.set $ocap\n"
+        "      local.get $ob\n"
+        "      i32.load offset=4\n"
+        "      local.set $ocnt\n"
+        "    end\n"
+        "    local.get $ob\n"
+        "    local.get $kp\n"
+        "    local.get $kl\n"
+        "    call $bkt_find\n"
+        "    local.set $found\n"
+        "    local.get $ocnt\n"
+        "    local.get $found\n"
+        "    i32.const 0\n"
+        "    i32.ne\n"
+        "    i32.sub\n"
+        "    local.set $ncnt\n"
+        "    local.get $ncnt\n"
+        "    call $bkt_cap\n"
+        "    local.set $cap\n"
+        "    call $mk_wrapper\n"
+        "    local.set $w\n"
+        "    local.get $w\n"
+        "    call $shadow_push\n"
+        "    local.get $cap\n"
+        "    i32.const 20\n"
+        "    i32.mul\n"
+        "    i32.const 8\n"
+        "    i32.add\n"
+        "    call $alloc\n"
+        "    local.set $b\n"
+        "    local.get $b\n"
+        "    i32.const 0\n"
+        "    local.get $cap\n"
+        "    i32.const 20\n"
+        "    i32.mul\n"
+        "    i32.const 8\n"
+        "    i32.add\n"
+        "    memory.fill\n"
+        "    local.get $b\n"
+        "    local.get $cap\n"
+        "    i32.store\n"
+        "    local.get $w\n"
+        "    local.get $b\n"
+        "    i32.store offset=8\n"
+        "    block $copied\n"
+        "    loop $cp\n"
+        "      local.get $i\n"
+        "      local.get $ocap\n"
+        "      i32.ge_u\n"
+        "      br_if $copied\n"
+        "      local.get $ob\n"
+        "      i32.const 8\n"
+        "      i32.add\n"
+        "      local.get $i\n"
+        "      i32.const 20\n"
+        "      i32.mul\n"
+        "      i32.add\n"
+        "      local.set $slot\n"
+        "      local.get $slot\n"
+        "      i32.load\n"
+        "      if\n"
+        "        local.get $slot\n"
+        "        local.get $found\n"
+        "        i32.ne\n"
+        "        if\n"
+        "          local.get $b\n"
+        "          i32.const 8\n"
+        "          i32.add\n"
+        "          local.get $j\n"
+        "          i32.const 20\n"
+        "          i32.mul\n"
+        "          i32.add\n"
+        "          local.get $slot\n"
+        "          i32.const 20\n"
+        "          memory.copy\n"
+        "          local.get $j\n"
+        "          i32.const 1\n"
+        "          i32.add\n"
+        "          local.set $j\n"
+        "        end\n"
+        "      end\n"
+        "      local.get $i\n"
+        "      i32.const 1\n"
+        "      i32.add\n"
+        "      local.set $i\n"
+        "      br $cp\n"
+        "    end\n"
+        "    end\n"
+        "    local.get $b\n"
+        "    local.get $ncnt\n"
+        "    i32.store offset=4\n"
+        "    i32.const 3\n"
+        "    call $shadow_pop_n\n"
+        "    local.get $w\n"
+        "  )"
+    )
+
+
+def _map_column_op(fn_name: str, val_offset: int) -> str:
+    """Shared body of map_keys (offset 4) / map_values (offset 12).
+
+    Returns the Array<String> (backing, count) pair; element strings
+    are SHARED with the bucket (immutable), so the only alloc is the
+    backing — wp is rooted across it and the fill loop is alloc-free.
+    """
+    return (
+        f"  (func {fn_name} (param $wp i32) (result i32 i32)\n"
+        "    (local $b i32)\n"
+        "    (local $cap i32)\n"
+        "    (local $cnt i32)\n"
+        "    (local $backing i32)\n"
+        "    (local $i i32)\n"
+        "    (local $j i32)\n"
+        "    (local $slot i32)\n"
+        "    local.get $wp\n"
+        "    i32.load offset=8\n"
+        "    local.set $b\n"
+        "    local.get $b\n"
+        "    if\n"
+        "      local.get $b\n"
+        "      i32.load offset=4\n"
+        "      local.set $cnt\n"
+        "    end\n"
+        "    local.get $cnt\n"
+        "    i32.eqz\n"
+        "    if\n"
+        "      i32.const 0\n"
+        "      i32.const 0\n"
+        "      return\n"
+        "    end\n"
+        "    local.get $b\n"
+        "    i32.load\n"
+        "    local.set $cap\n"
+        "    local.get $wp\n"
+        "    call $shadow_push\n"
+        "    local.get $cnt\n"
+        "    i32.const 3\n"
+        "    i32.shl\n"
+        "    call $alloc\n"
+        "    local.set $backing\n"
+        "    i32.const 1\n"
+        "    call $shadow_pop_n\n"
+        "    block $done\n"
+        "    loop $scan\n"
+        "      local.get $i\n"
+        "      local.get $cap\n"
+        "      i32.ge_u\n"
+        "      br_if $done\n"
+        "      local.get $b\n"
+        "      i32.const 8\n"
+        "      i32.add\n"
+        "      local.get $i\n"
+        "      i32.const 20\n"
+        "      i32.mul\n"
+        "      i32.add\n"
+        "      local.set $slot\n"
+        "      local.get $slot\n"
+        "      i32.load\n"
+        "      if\n"
+        "        local.get $backing\n"
+        "        local.get $j\n"
+        "        i32.const 3\n"
+        "        i32.shl\n"
+        "        i32.add\n"
+        "        local.get $slot\n"
+        f"        i32.load offset={val_offset}\n"
+        "        i32.store\n"
+        "        local.get $backing\n"
+        "        local.get $j\n"
+        "        i32.const 3\n"
+        "        i32.shl\n"
+        "        i32.add\n"
+        "        local.get $slot\n"
+        f"        i32.load offset={val_offset + 4}\n"
+        "        i32.store offset=4\n"
+        "        local.get $j\n"
+        "        i32.const 1\n"
+        "        i32.add\n"
+        "        local.set $j\n"
+        "      end\n"
+        "      local.get $i\n"
+        "      i32.const 1\n"
+        "      i32.add\n"
+        "      local.set $i\n"
+        "      br $scan\n"
+        "    end\n"
+        "    end\n"
+        "    local.get $backing\n"
+        "    local.get $cnt\n"
+        "  )"
+    )
+
+
+def _op_map_keys(lay: _Layout) -> str:
+    return _map_column_op("$op_map_keys", 4)
+
+
+def _op_map_values(lay: _Layout) -> str:
+    return _map_column_op("$op_map_values", 12)
+
+
+def _op_host_decref_handle(lay: _Layout) -> str:
+    # No-op for Map (kind 1) / Set (kind 2); Decimal (kind 3) is
+    # family-gated out of the server world — host parity (#706).
+    return (
+        "  (func $op_host_decref_handle (param $kind i32) "
+        "(param $h i32)\n"
+        "  )"
+    )
+
+
+def _op_attach_bucket_to_wrapper(lay: _Layout) -> str:
+    # #706 tripwire parity: only Decimal (kind=3) may reach this
+    # no-op; a Map/Set wrapper routed back through _emit_wrap_handle
+    # violates the bucket-as-truth invariant -> trap.
+    return (
+        "  (func $op_attach_bucket_to_wrapper (param $w i32) "
+        "(param $kind i32) (param $h i32)\n"
+        "    local.get $kind\n"
+        "    i32.const 3\n"
+        "    i32.ne\n"
+        "    if\n"
+        "      unreachable\n"
+        "    end\n"
+        "  )"
+    )
+
+
+_MAP_OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
+    "map_new": _op_map_new,
+    "map_insert$ks_vs": _op_map_insert,
+    "map_get$ks_vs": _op_map_get,
+    "map_contains$ks": _op_map_contains,
+    "map_size": _op_map_size,
+    "map_remove$ks": _op_map_remove,
+    "map_keys$ks": _op_map_keys,
+    "map_values$vs": _op_map_values,
+    "host_decref_handle": _op_host_decref_handle,
+    "attach_bucket_to_wrapper": _op_attach_bucket_to_wrapper,
+}
+
+
+# ---------------------------------------------------------------------
+# Server adapter: the serve wrapper
+# ---------------------------------------------------------------------
+
+def _method_src(statics_base: int) -> str:
+    """Method discriminant -> (static ptr, len); disc 9 handled by the
+    caller (its string arrives via the arena, not the static table)."""
+    out: list[str] = [
+        "  (func $method_src (param $d i32) (result i32 i32)",
+    ]
+    off = 0
+    for disc, mname in enumerate(_METHOD_NAMES):
+        out.append(
+            "    local.get $d\n"
+            f"    i32.const {disc}\n"
+            "    i32.eq\n"
+            "    if\n"
+            f"      i32.const {statics_base + off}\n"
+            f"      i32.const {len(mname)}\n"
+            "      return\n"
+            "    end"
+        )
+        off += len(mname)
+    out.append("    i32.const 0\n    i32.const 0\n  )")
+    return "\n".join(out)
+
+
+def _respond_err() -> str:
+    """``response-outparam.set(err(internal-error(none)))`` (§4.3).
+
+    Flat args per the validated 9-param lowering: outparam handle,
+    result disc = 1 (err), error-code disc = internal-error, the
+    option<string> payload's none disc, then joined-flat zeros (the
+    i64 slot is position 1 of the joined case payloads).
+    """
+    return (
+        "  (func $respond_err (param $outp i32)\n"
+        "    local.get $outp\n"
+        "    i32.const 1\n"
+        f"    i32.const {_ERRCODE_INTERNAL_ERROR}\n"
+        "    i32.const 0\n"
+        "    i64.const 0\n"
+        "    i32.const 0\n"
+        "    i32.const 0\n"
+        "    i32.const 0\n"
+        "    i32.const 0\n"
+        "    call $l_outparam_set\n"
+        "  )"
+    )
+
+
+def _serve_handle(
+    lay: _Layout,
+    req: ConstructorLayout,
+    resp: ConstructorLayout,
+    statics_base: int,
+) -> str:
+    """The adapter serve wrapper (design §3.2, validated pseudocode).
+
+    Lifted as ``handle(request: own<incoming-request>, response-out:
+    own<response-outparam>)``.  Request/Response field offsets come
+    from ``CompileResult.adt_layouts`` (shape-checked by
+    ``_server_adt_layouts``) — never hardcoded.
+
+    Rooting: mp/pp/w/buf are shadow-pushed across the allocation
+    window and popped together after the Request ADT is built (the
+    ADT itself needs no push — ``handle``'s own GC prologue roots its
+    parameter, and no allocation happens in between).  The
+    ``;; root:`` markers are load-bearing for the mutation-validation
+    test (string surgery strips one and the GC-stress test must go
+    RED).
+
+    No allocations happen after ``vera_handle`` returns (the Response
+    decode is read-only; from-list entries go to the arena), so
+    ``resp`` and everything it references need no rooting — the same
+    argument as host-side ``decode_response_adt``.
+    """
+    s = {k: lay.slab(k) for k in _SERVER_SLAB}
+    slash_ptr = statics_base + sum(len(m) for m in _METHOD_NAMES)
+    (m_off, _), (p_off, _), (h_off, _), (b_off, _) = req.field_offsets
+    (s_off, _), (rh_off, _), (rb_off, _) = resp.field_offsets
+    return f"""  (func $serve_handle (param $req i32) (param $outp i32)
+    (local $mdisc i32)
+    (local $ms i32)
+    (local $ml i32)
+    (local $mp i32)
+    (local $ps i32)
+    (local $pl i32)
+    (local $pp i32)
+    (local $hdrs i32)
+    (local $ents i32)
+    (local $ecnt i32)
+    (local $i i32)
+    (local $e i32)
+    (local $kp0 i32)
+    (local $kl i32)
+    (local $vp0 i32)
+    (local $vl i32)
+    (local $kc i32)
+    (local $vc i32)
+    (local $t i32)
+    (local $ch i32)
+    (local $w i32)
+    (local $b i32)
+    (local $cap i32)
+    (local $cnt i32)
+    (local $slot i32)
+    (local $dup i32)
+    (local $body i32)
+    (local $sh i32)
+    (local $buf i32)
+    (local $bcap i32)
+    (local $bn i32)
+    (local $lptr i32)
+    (local $llen i32)
+    (local $new i32)
+    (local $adt i32)
+    (local $resp i32)
+    (local $status i64)
+    (local $rw i32)
+    (local $rb i32)
+    (local $rcap i32)
+    (local $ep i32)
+    (local $rcnt i32)
+    (local $rfields i32)
+    (local $orsp i32)
+    (local $ob i32)
+    (local $os i32)
+    (local $wp2 i32)
+    (local $wn i32)
+    (local $wleft i32)
+    call $arena_reset
+    ;; ---- method -> GC string ----
+    local.get $req
+    i32.const {s["mth"]}
+    call $l_method
+    i32.const {s["mth"]}
+    i32.load8_u
+    local.set $mdisc
+    local.get $mdisc
+    i32.const 9
+    i32.eq
+    if (result i32 i32)
+      i32.const {s["mth"] + 4}
+      i32.load
+      i32.const {s["mth"] + 8}
+      i32.load
+    else
+      local.get $mdisc
+      call $method_src
+    end
+    local.set $ml
+    local.set $ms
+    i32.const 0
+    local.set $mp
+    local.get $ml
+    if
+      local.get $ml
+      call $alloc
+      local.set $mp
+      local.get $mp
+      local.get $ms
+      local.get $ml
+      memory.copy
+    end
+    local.get $mp
+    call $shadow_push ;; root: method
+    ;; ---- path-with-query -> GC string ----
+    local.get $req
+    i32.const {s["path"]}
+    call $l_pathq
+    i32.const {s["path"]}
+    i32.load8_u
+    if (result i32 i32)
+      i32.const {s["path"] + 4}
+      i32.load
+      i32.const {s["path"] + 8}
+      i32.load
+    else
+      i32.const {slash_ptr}
+      i32.const 1
+    end
+    local.set $pl
+    local.set $ps
+    i32.const 0
+    local.set $pp
+    local.get $pl
+    if
+      local.get $pl
+      call $alloc
+      local.set $pp
+      local.get $pp
+      local.get $ps
+      local.get $pl
+      memory.copy
+    end
+    local.get $pp
+    call $shadow_push ;; root: path
+    ;; ---- headers -> in-guest Map<String, String> ----
+    local.get $req
+    call $l_headers
+    local.set $hdrs
+    local.get $hdrs
+    i32.const {s["ents"]}
+    call $l_entries
+    i32.const {s["ents"]}
+    i32.load
+    local.set $ents
+    i32.const {s["ents"] + 4}
+    i32.load
+    local.set $ecnt
+    call $mk_wrapper
+    local.set $w
+    local.get $w
+    call $shadow_push ;; root: headers
+    local.get $ecnt
+    call $bkt_cap
+    local.set $cap
+    local.get $cap
+    i32.const 20
+    i32.mul
+    i32.const 8
+    i32.add
+    call $alloc
+    local.set $b
+    local.get $b
+    i32.const 0
+    local.get $cap
+    i32.const 20
+    i32.mul
+    i32.const 8
+    i32.add
+    memory.fill
+    local.get $b
+    local.get $cap
+    i32.store
+    local.get $w
+    local.get $b
+    i32.store offset=8
+    i32.const 0
+    local.set $cnt
+    i32.const 0
+    local.set $i
+    block $hdone
+    loop $hdr
+      local.get $i
+      local.get $ecnt
+      i32.ge_u
+      br_if $hdone
+      local.get $ents
+      local.get $i
+      i32.const 4
+      i32.shl
+      i32.add
+      local.set $e
+      local.get $e
+      i32.load
+      local.set $kp0
+      local.get $e
+      i32.load offset=4
+      local.set $kl
+      local.get $e
+      i32.load offset=8
+      local.set $vp0
+      local.get $e
+      i32.load offset=12
+      local.set $vl
+      ;; ASCII-lowercase key copy -> GC (#305 driver parity: k.lower())
+      i32.const 0
+      local.set $kc
+      local.get $kl
+      if
+        local.get $kl
+        call $alloc
+        local.set $kc
+        i32.const 0
+        local.set $t
+        block $lcdone
+        loop $lc
+          local.get $t
+          local.get $kl
+          i32.ge_u
+          br_if $lcdone
+          local.get $kp0
+          local.get $t
+          i32.add
+          i32.load8_u
+          local.set $ch
+          local.get $ch
+          i32.const 65
+          i32.ge_u
+          if
+            local.get $ch
+            i32.const 90
+            i32.le_u
+            if
+              local.get $ch
+              i32.const 32
+              i32.add
+              local.set $ch
+            end
+          end
+          local.get $kc
+          local.get $t
+          i32.add
+          local.get $ch
+          i32.store8
+          local.get $t
+          i32.const 1
+          i32.add
+          local.set $t
+          br $lc
+        end
+        end
+      end
+      ;; dedup: later header wins (#305 dict(headers) parity)
+      local.get $b
+      local.get $kc
+      local.get $kl
+      call $bkt_find
+      local.set $dup
+      local.get $dup
+      if
+        i32.const 0
+        local.set $vc
+        local.get $vl
+        if
+          local.get $vl
+          call $alloc
+          local.set $vc
+          local.get $vc
+          local.get $vp0
+          local.get $vl
+          memory.copy
+        end
+        local.get $dup
+        local.get $vc
+        i32.store offset=12
+        local.get $dup
+        local.get $vl
+        i32.store offset=16
+      else
+        local.get $b
+        i32.const 8
+        i32.add
+        local.get $cnt
+        i32.const 20
+        i32.mul
+        i32.add
+        local.set $slot
+        local.get $slot
+        i32.const 1
+        i32.store
+        local.get $slot
+        local.get $kc
+        i32.store offset=4
+        local.get $slot
+        local.get $kl
+        i32.store offset=8
+        i32.const 0
+        local.set $vc
+        local.get $vl
+        if
+          local.get $vl
+          call $alloc
+          local.set $vc
+          local.get $vc
+          local.get $vp0
+          local.get $vl
+          memory.copy
+        end
+        local.get $slot
+        local.get $vc
+        i32.store offset=12
+        local.get $slot
+        local.get $vl
+        i32.store offset=16
+        local.get $cnt
+        i32.const 1
+        i32.add
+        local.set $cnt
+      end
+      local.get $i
+      i32.const 1
+      i32.add
+      local.set $i
+      br $hdr
+    end
+    end
+    local.get $b
+    local.get $cnt
+    i32.store offset=4
+    ;; ---- body -> GC buffer (grow-by-doubling, 16 KiB chunks) ----
+    local.get $req
+    i32.const {s["consume"]}
+    call $l_consume
+    i32.const {s["consume"]}
+    i32.load8_u
+    if
+      unreachable
+    end
+    i32.const {s["consume"] + 4}
+    i32.load
+    local.set $body
+    local.get $body
+    i32.const {s["stream"]}
+    call $l_bstream
+    i32.const {s["stream"]}
+    i32.load8_u
+    if
+      unreachable
+    end
+    i32.const {s["stream"] + 4}
+    i32.load
+    local.set $sh
+    i32.const 4096
+    call $alloc
+    local.set $buf
+    i32.const 4096
+    local.set $bcap
+    block $beof
+    loop $brd
+      call $arena_reset
+      local.get $sh
+      i64.const 16384
+      i32.const {s["bread"]}
+      call $l_bread
+      i32.const {s["bread"]}
+      i32.load8_u
+      if
+        i32.const {s["bread"]}
+        i32.load8_u offset=4
+        i32.const 1
+        i32.eq
+        br_if $beof
+        i32.const {s["bread"]}
+        i32.load offset=8
+        call $drop_err
+        unreachable
+      end
+      i32.const {s["bread"]}
+      i32.load offset=4
+      local.set $lptr
+      i32.const {s["bread"]}
+      i32.load offset=8
+      local.set $llen
+      local.get $llen
+      i32.eqz
+      br_if $brd
+      block $capok
+      loop $grow
+        local.get $bn
+        local.get $llen
+        i32.add
+        local.get $bcap
+        i32.le_u
+        br_if $capok
+        local.get $buf
+        call $shadow_push ;; root: body-grow
+        local.get $bcap
+        i32.const 1
+        i32.shl
+        call $alloc
+        local.set $new
+        i32.const 1
+        call $shadow_pop_n
+        local.get $new
+        local.get $buf
+        local.get $bn
+        memory.copy
+        local.get $new
+        local.set $buf
+        local.get $bcap
+        i32.const 1
+        i32.shl
+        local.set $bcap
+        br $grow
+      end
+      end
+      local.get $buf
+      local.get $bn
+      i32.add
+      local.get $lptr
+      local.get $llen
+      memory.copy
+      local.get $bn
+      local.get $llen
+      i32.add
+      local.set $bn
+      br $brd
+    end
+    end
+    ;; request-side resources dropped before the handler runs — all
+    ;; request data has been copied out (order invariant, §3.2)
+    local.get $sh
+    call $drop_istream
+    local.get $body
+    call $drop_inbody
+    local.get $hdrs
+    call $drop_fields
+    local.get $req
+    call $drop_inreq
+    local.get $buf
+    call $shadow_push ;; root: body
+    ;; ---- Request ADT (offsets from adt_layouts) ----
+    i32.const {req.total_size}
+    call $alloc
+    local.set $adt
+    local.get $adt
+    i32.const {req.tag}
+    i32.store
+    local.get $adt
+    local.get $mp
+    i32.store offset={m_off}
+    local.get $adt
+    local.get $ml
+    i32.store offset={m_off + 4}
+    local.get $adt
+    local.get $pp
+    i32.store offset={p_off}
+    local.get $adt
+    local.get $pl
+    i32.store offset={p_off + 4}
+    local.get $adt
+    local.get $w
+    i32.store offset={h_off}
+    local.get $adt
+    local.get $buf
+    i32.store offset={b_off}
+    local.get $adt
+    local.get $bn
+    i32.store offset={b_off + 4}
+    i32.const 4
+    call $shadow_pop_n
+    ;; ---- the verified handler ----
+    local.get $adt
+    call $vera_handle
+    local.set $resp
+    ;; ---- decode Response {{status i64, headers i32, body pair}} ----
+    local.get $resp
+    i64.load offset={s_off}
+    local.set $status
+    local.get $resp
+    i32.load offset={rh_off}
+    local.set $rw
+    ;; response headers Map -> from-list entries in the arena
+    call $arena_reset
+    global.get $arena_ptr
+    local.set $ep
+    i32.const 0
+    local.set $rcnt
+    i32.const 0
+    local.set $rb
+    local.get $rw
+    if
+      local.get $rw
+      i32.load offset=8
+      local.set $rb
+    end
+    local.get $rb
+    if
+      local.get $rb
+      i32.load
+      local.set $rcap
+      i32.const 0
+      local.set $i
+      block $rdone
+      loop $rslot
+        local.get $i
+        local.get $rcap
+        i32.ge_u
+        br_if $rdone
+        local.get $rb
+        i32.const 8
+        i32.add
+        local.get $i
+        i32.const 20
+        i32.mul
+        i32.add
+        local.set $slot
+        local.get $slot
+        i32.load
+        if
+          ;; arena bound: a header section past the arena would
+          ;; silently overrun the GC heap — trap instead (same class
+          ;; as the cabi_realloc OOM trap, §4.1)
+          local.get $ep
+          local.get $rcnt
+          i32.const 4
+          i32.shl
+          i32.add
+          i32.const 16
+          i32.add
+          i32.const {lay.arena_end}
+          i32.gt_u
+          if
+            unreachable
+          end
+          local.get $ep
+          local.get $rcnt
+          i32.const 4
+          i32.shl
+          i32.add
+          local.set $e
+          local.get $e
+          local.get $slot
+          i32.load offset=4
+          i32.store
+          local.get $e
+          local.get $slot
+          i32.load offset=8
+          i32.store offset=4
+          local.get $e
+          local.get $slot
+          i32.load offset=12
+          i32.store offset=8
+          local.get $e
+          local.get $slot
+          i32.load offset=16
+          i32.store offset=12
+          local.get $rcnt
+          i32.const 1
+          i32.add
+          local.set $rcnt
+        end
+        local.get $i
+        i32.const 1
+        i32.add
+        local.set $i
+        br $rslot
+      end
+      end
+    end
+    local.get $ep
+    local.get $rcnt
+    i32.const {s["flist"]}
+    call $l_from_list
+    i32.const {s["flist"]}
+    i32.load8_u
+    if
+      ;; forbidden/invalid response header -> graceful 500 (§4.3)
+      local.get $outp
+      call $respond_err
+      return
+    end
+    i32.const {s["flist"] + 4}
+    i32.load
+    local.set $rfields
+    ;; ---- drive the response half ----
+    local.get $rfields
+    call $l_new_resp
+    local.set $orsp
+    ;; status outside u16 would trap in the set-status lift -> pre-
+    ;; check and take the graceful path instead (§4.3)
+    local.get $status
+    i64.const 65535
+    i64.gt_u
+    if
+      local.get $outp
+      call $respond_err
+      return
+    end
+    local.get $orsp
+    local.get $status
+    i32.wrap_i64
+    call $l_set_status
+    if
+      ;; invalid HTTP status -> graceful 500 (§4.3)
+      local.get $outp
+      call $respond_err
+      return
+    end
+    local.get $orsp
+    i32.const {s["rb"]}
+    call $l_resp_body
+    i32.const {s["rb"]}
+    i32.load8_u
+    if
+      unreachable
+    end
+    i32.const {s["rb"] + 4}
+    i32.load
+    local.set $ob
+    ;; borrow-before-transfer: .body() done -> outparam.set(ok)
+    local.get $outp
+    i32.const 0
+    local.get $orsp
+    i32.const 0
+    i64.const 0
+    i32.const 0
+    i32.const 0
+    i32.const 0
+    i32.const 0
+    call $l_outparam_set
+    local.get $ob
+    i32.const {s["rb"]}
+    call $l_body_write
+    i32.const {s["rb"]}
+    i32.load8_u
+    if
+      unreachable
+    end
+    i32.const {s["rb"] + 4}
+    i32.load
+    local.set $os
+    local.get $resp
+    i32.load offset={rb_off}
+    local.set $wp2
+    local.get $resp
+    i32.load offset={rb_off + 4}
+    local.set $wleft
+    block $wdone
+    loop $wchunk
+      local.get $wleft
+      i32.eqz
+      br_if $wdone
+      local.get $wleft
+      i32.const 4096
+      i32.lt_u
+      if (result i32)
+        local.get $wleft
+      else
+        i32.const 4096
+      end
+      local.set $wn
+      local.get $os
+      local.get $wp2
+      local.get $wn
+      i32.const {s["bwf"]}
+      call $l_bwf
+      i32.const {s["bwf"]}
+      i32.load8_u
+      if
+        unreachable
+      end
+      local.get $wp2
+      local.get $wn
+      i32.add
+      local.set $wp2
+      local.get $wleft
+      local.get $wn
+      i32.sub
+      local.set $wleft
+      br $wchunk
+    end
+    end
+    ;; child output-stream dropped before finish (order invariant)
+    local.get $os
+    call $drop_ostream
+    local.get $ob
+    i32.const 0
+    i32.const 0
+    i32.const {s["finish"]}
+    call $l_finish
+  )"""
+
+
+# ---------------------------------------------------------------------
+# Server component assembly
+# ---------------------------------------------------------------------
+
+#: wasi:http/types@0.2.0 import block (design §2.1) — every type,
+#: function spelling, and the full 39-case error-code variant were
+#: validated by the Stage-D echo.wat probe (parse first try + live
+#: serve).  Aliases `$OS`/`$IS` come from the always-present
+#: io/streams import.  The trailing aliases feed the resource drops
+#: and the incoming-handler lift.
+_HTTP_TYPES_IFACE = """\
+  (import "wasi:http/types@0.2.0" (instance $types
+    (alias outer $C $OS (type $os0))
+    (alias outer $C $IS (type $is0))
+    (export "fields" (type $fields (sub resource)))
+    (export "incoming-request" (type $inreq (sub resource)))
+    (export "incoming-body" (type $inbody (sub resource)))
+    (export "response-outparam" (type $outparam (sub resource)))
+    (export "outgoing-response" (type $outresp (sub resource)))
+    (export "outgoing-body" (type $outbody (sub resource)))
+    (type $method' (variant
+      (case "get") (case "head") (case "post") (case "put")
+      (case "delete") (case "connect") (case "options") (case "trace")
+      (case "patch") (case "other" string)))
+    (export "method" (type $method (eq $method')))
+    (type $header-error' (variant
+      (case "invalid-syntax") (case "forbidden") (case "immutable")))
+    (export "header-error" (type $header-error (eq $header-error')))
+    (type $dns-error-payload' (record
+      (field "rcode" (option string))
+      (field "info-code" (option u16))))
+    (export "DNS-error-payload" (type $dns-error-payload (eq $dns-error-payload')))
+    (type $tls-alert-received-payload' (record
+      (field "alert-id" (option u8))
+      (field "alert-message" (option string))))
+    (export "TLS-alert-received-payload" (type $tls-alert-received-payload (eq $tls-alert-received-payload')))
+    (type $field-size-payload' (record
+      (field "field-name" (option string))
+      (field "field-size" (option u32))))
+    (export "field-size-payload" (type $field-size-payload (eq $field-size-payload')))
+    (type $error-code' (variant
+      (case "DNS-timeout")
+      (case "DNS-error" $dns-error-payload)
+      (case "destination-not-found")
+      (case "destination-unavailable")
+      (case "destination-IP-prohibited")
+      (case "destination-IP-unroutable")
+      (case "connection-refused")
+      (case "connection-terminated")
+      (case "connection-timeout")
+      (case "connection-read-timeout")
+      (case "connection-write-timeout")
+      (case "connection-limit-reached")
+      (case "TLS-protocol-error")
+      (case "TLS-certificate-error")
+      (case "TLS-alert-received" $tls-alert-received-payload)
+      (case "HTTP-request-denied")
+      (case "HTTP-request-length-required")
+      (case "HTTP-request-body-size" (option u64))
+      (case "HTTP-request-method-invalid")
+      (case "HTTP-request-URI-invalid")
+      (case "HTTP-request-URI-too-long")
+      (case "HTTP-request-header-section-size" (option u32))
+      (case "HTTP-request-header-size" (option $field-size-payload))
+      (case "HTTP-request-trailer-section-size" (option u32))
+      (case "HTTP-request-trailer-size" $field-size-payload)
+      (case "HTTP-response-incomplete")
+      (case "HTTP-response-header-section-size" (option u32))
+      (case "HTTP-response-header-size" $field-size-payload)
+      (case "HTTP-response-body-size" (option u64))
+      (case "HTTP-response-trailer-section-size" (option u32))
+      (case "HTTP-response-trailer-size" $field-size-payload)
+      (case "HTTP-response-transfer-coding" (option string))
+      (case "HTTP-response-content-coding" (option string))
+      (case "HTTP-response-timeout")
+      (case "HTTP-upgrade-failed")
+      (case "HTTP-protocol-error")
+      (case "loop-detected")
+      (case "configuration-error")
+      (case "internal-error" (option string))))
+    (export "error-code" (type $error-code (eq $error-code')))
+    (export "[method]incoming-request.method" (func
+      (param "self" (borrow $inreq)) (result $method)))
+    (export "[method]incoming-request.path-with-query" (func
+      (param "self" (borrow $inreq)) (result (option string))))
+    (export "[method]incoming-request.headers" (func
+      (param "self" (borrow $inreq)) (result (own $fields))))
+    (export "[method]incoming-request.consume" (func
+      (param "self" (borrow $inreq)) (result (result (own $inbody)))))
+    (export "[method]incoming-body.stream" (func
+      (param "self" (borrow $inbody)) (result (result (own $is0)))))
+    (export "[method]fields.entries" (func
+      (param "self" (borrow $fields))
+      (result (list (tuple string (list u8))))))
+    (export "[static]fields.from-list" (func
+      (param "entries" (list (tuple string (list u8))))
+      (result (result (own $fields) (error $header-error)))))
+    (export "[constructor]outgoing-response" (func
+      (param "headers" (own $fields)) (result (own $outresp))))
+    (export "[method]outgoing-response.set-status-code" (func
+      (param "self" (borrow $outresp)) (param "status-code" u16)
+      (result (result))))
+    (export "[method]outgoing-response.body" (func
+      (param "self" (borrow $outresp)) (result (result (own $outbody)))))
+    (export "[method]outgoing-body.write" (func
+      (param "self" (borrow $outbody)) (result (result (own $os0)))))
+    (export "[static]outgoing-body.finish" (func
+      (param "this" (own $outbody)) (param "trailers" (option (own $fields)))
+      (result (result (error $error-code)))))
+    (export "[static]response-outparam.set" (func
+      (param "param" (own $outparam))
+      (param "response" (result (own $outresp) (error $error-code)))))))
+  (alias export $types "incoming-request" (type $IR))
+  (alias export $types "response-outparam" (type $RO))
+  (alias export $types "incoming-body" (type $IB))
+  (alias export $types "fields" (type $FLDS))"""
+
+#: wasi:http canon lowers (design §2.2 flattening table): key ->
+#: (component-level definition, adapter import decl, with-instance
+#: export line) — same triple shape as ``_LOWERS``.
+_SERVER_LOWERS: dict[str, tuple[str, str, str]] = {
+    "req-method": (
+        '  (core func $l_method (canon lower\n'
+        '    (func $types "[method]incoming-request.method")\n'
+        '    (memory $mem) (realloc $realloc)))',
+        '  (import "wasi" "req-method" (func $l_method (param i32 i32)))',
+        '      (export "req-method" (func $l_method))',
+    ),
+    "req-path": (
+        '  (core func $l_pathq (canon lower\n'
+        '    (func $types "[method]incoming-request.path-with-query")\n'
+        '    (memory $mem) (realloc $realloc)))',
+        '  (import "wasi" "req-path" (func $l_pathq (param i32 i32)))',
+        '      (export "req-path" (func $l_pathq))',
+    ),
+    "req-headers": (
+        '  (core func $l_headers (canon lower\n'
+        '    (func $types "[method]incoming-request.headers")))',
+        '  (import "wasi" "req-headers"'
+        ' (func $l_headers (param i32) (result i32)))',
+        '      (export "req-headers" (func $l_headers))',
+    ),
+    "req-consume": (
+        '  (core func $l_consume (canon lower\n'
+        '    (func $types "[method]incoming-request.consume")\n'
+        '    (memory $mem)))',
+        '  (import "wasi" "req-consume" (func $l_consume (param i32 i32)))',
+        '      (export "req-consume" (func $l_consume))',
+    ),
+    "body-stream": (
+        '  (core func $l_bstream (canon lower\n'
+        '    (func $types "[method]incoming-body.stream")\n'
+        '    (memory $mem)))',
+        '  (import "wasi" "body-stream" (func $l_bstream (param i32 i32)))',
+        '      (export "body-stream" (func $l_bstream))',
+    ),
+    "fields-entries": (
+        '  (core func $l_entries (canon lower\n'
+        '    (func $types "[method]fields.entries")\n'
+        '    (memory $mem) (realloc $realloc)))',
+        '  (import "wasi" "fields-entries"'
+        ' (func $l_entries (param i32 i32)))',
+        '      (export "fields-entries" (func $l_entries))',
+    ),
+    "fields-from-list": (
+        '  (core func $l_from_list (canon lower\n'
+        '    (func $types "[static]fields.from-list")\n'
+        '    (memory $mem)))',
+        '  (import "wasi" "fields-from-list"'
+        ' (func $l_from_list (param i32 i32 i32)))',
+        '      (export "fields-from-list" (func $l_from_list))',
+    ),
+    "new-response": (
+        '  (core func $l_new_resp (canon lower\n'
+        '    (func $types "[constructor]outgoing-response")))',
+        '  (import "wasi" "new-response"'
+        ' (func $l_new_resp (param i32) (result i32)))',
+        '      (export "new-response" (func $l_new_resp))',
+    ),
+    "set-status": (
+        '  (core func $l_set_status (canon lower\n'
+        '    (func $types "[method]outgoing-response.set-status-code")))',
+        '  (import "wasi" "set-status"'
+        ' (func $l_set_status (param i32 i32) (result i32)))',
+        '      (export "set-status" (func $l_set_status))',
+    ),
+    "response-body": (
+        '  (core func $l_resp_body (canon lower\n'
+        '    (func $types "[method]outgoing-response.body")\n'
+        '    (memory $mem)))',
+        '  (import "wasi" "response-body"'
+        ' (func $l_resp_body (param i32 i32)))',
+        '      (export "response-body" (func $l_resp_body))',
+    ),
+    "body-write": (
+        '  (core func $l_body_write (canon lower\n'
+        '    (func $types "[method]outgoing-body.write")\n'
+        '    (memory $mem)))',
+        '  (import "wasi" "body-write"'
+        ' (func $l_body_write (param i32 i32)))',
+        '      (export "body-write" (func $l_body_write))',
+    ),
+    "body-finish": (
+        '  (core func $l_finish (canon lower\n'
+        '    (func $types "[static]outgoing-body.finish")\n'
+        '    (memory $mem) (realloc $realloc)))',
+        '  (import "wasi" "body-finish"'
+        ' (func $l_finish (param i32 i32 i32 i32)))',
+        '      (export "body-finish" (func $l_finish))',
+    ),
+    "outparam-set": (
+        '  (core func $l_outparam_set (canon lower\n'
+        '    (func $types "[static]response-outparam.set")\n'
+        '    (memory $mem) (realloc $realloc)))',
+        '  (import "wasi" "outparam-set" (func $l_outparam_set'
+        ' (param i32 i32 i32 i32 i64 i32 i32 i32 i32)))',
+        '      (export "outparam-set" (func $l_outparam_set))',
+    ),
+}
+_SERVER_LOWER_ORDER: tuple[str, ...] = (
+    "req-method", "req-path", "req-headers", "req-consume",
+    "body-stream", "fields-entries", "fields-from-list", "new-response",
+    "set-status", "response-body", "body-write", "body-finish",
+    "outparam-set",
+)
+
+_SERVER_DROPS: dict[str, tuple[str, str, str]] = {
+    "inreq": (
+        '  (core func $drop_inreq (canon resource.drop $IR))',
+        '  (import "wasi" "drop-inreq" (func $drop_inreq (param i32)))',
+        '      (export "drop-inreq" (func $drop_inreq))',
+    ),
+    "inbody": (
+        '  (core func $drop_inbody (canon resource.drop $IB))',
+        '  (import "wasi" "drop-inbody" (func $drop_inbody (param i32)))',
+        '      (export "drop-inbody" (func $drop_inbody))',
+    ),
+    "fields": (
+        '  (core func $drop_fields (canon resource.drop $FLDS))',
+        '  (import "wasi" "drop-fields" (func $drop_fields (param i32)))',
+        '      (export "drop-fields" (func $drop_fields))',
+    ),
+}
+_SERVER_DROP_ORDER: tuple[str, ...] = ("inreq", "inbody", "fields")
+
+#: Lowers/drops the serve wrapper itself needs regardless of the
+#: program's op set (body read, response write, error drop, stream
+#: drops).
+_SERVER_BASE_LOWERS = frozenset({"bwf", "bread"})
+_SERVER_BASE_DROPS = frozenset({"error", "istream", "ostream"})
+
+
+def _server_helper_funcs(
+    used: dict[str, _OpSpec], lay: _Layout, statics_base: int,
+) -> list[str]:
+    """Adapter helpers for the server world (always-on rooting + map
+    machinery; IO helpers gated by the op set)."""
+    names = set(used)
+    out = [
+        "  (func $arena_reset\n"
+        f"    i32.const {lay.bump_start}\n"
+        "    global.set $arena_ptr\n"
+        "  )",
+        _SHADOW_PUSH_FN,
+        _SHADOW_POP_FN,
+        _BYTES_EQ_FN,
+        _mk_wrapper(),
+        _bkt_find(),
+        _bkt_cap(),
+        _method_src(statics_base),
+        _respond_err(),
+    ]
+    if "print" in names:
+        out.append(_ensure_handle("stdout", "$l_get_stdout"))
+    if names & {"stderr", "contract_fail"}:
+        out.append(_ensure_handle("stderr", "$l_get_stderr"))
+    if names & {"print", "stderr", "contract_fail"}:
+        out.append(_write_or_trap(lay))
+    return out
+
+
+def _server_adapter_fields(
+    used: dict[str, _OpSpec],
+    lay: _Layout,
+    req: ConstructorLayout,
+    resp: ConstructorLayout,
+) -> list[str]:
+    """Emit the server adapter core module's fields."""
+    lowers = sorted(
+        _SERVER_BASE_LOWERS.union(*(s.lowers for s in used.values()))
+        if used else _SERVER_BASE_LOWERS
+    )
+    drops = sorted(
+        _SERVER_BASE_DROPS.union(*(s.drops for s in used.values()))
+        if used else _SERVER_BASE_DROPS
+    )
+
+    fields: list[str] = [
+        '  (import "env" "memory" (memory 1))',
+        f'  (import "env" "tbl" (table {_SERVER_TABLE_SIZE} funcref))',
+        '  (import "env" "arena_ptr" (global $arena_ptr (mut i32)))',
+        '  (import "env" "alloc" (func $alloc (param i32) (result i32)))',
+        '  (import "env" "gc_sp" (global $gc_sp (mut i32)))',
+        '  (import "env" "gc_stack_limit" (global $gc_stack_limit i32))',
+        '  (import "env" "vera_handle"'
+        ' (func $vera_handle (param i32) (result i32)))',
+    ]
+    for key in lowers:
+        fields.append(_LOWERS[key][1])
+    for key in _SERVER_LOWER_ORDER:
+        fields.append(_SERVER_LOWERS[key][1])
+    for key in drops:
+        fields.append(_DROPS[key][1])
+    for key in _SERVER_DROP_ORDER:
+        fields.append(_SERVER_DROPS[key][1])
+
+    names = set(used)
+    if "print" in names:
+        fields.append("  (global $stdout_h (mut i32) (i32.const -1))")
+    if names & {"stderr", "contract_fail"}:
+        fields.append("  (global $stderr_h (mut i32) (i32.const -1))")
+
+    segments, statics_base, _bump = _build_server_statics(lay.arena_base)
+    fields += segments
+    fields += _server_helper_funcs(used, lay, statics_base)
+
+    for name in sorted(used, key=lambda n: used[n].slot):
+        emitter = _MAP_OP_EMITTERS.get(name) or _OP_EMITTERS[name]
+        fields.append(emitter(lay))
+    fields.append(_serve_handle(lay, req, resp, statics_base))
+    for name in sorted(used, key=lambda n: used[n].slot):
+        fields.append(
+            f"  (elem (i32.const {used[name].slot}) "
+            f"func {_op_ident(name)})"
+        )
+    fields.append('  (export "handle" (func $serve_handle))')
+    return fields
+
+
+def _assemble_server_component(
+    main_fields: list[str],
+    used: dict[str, _OpSpec],
+    lay: _Layout,
+    req: ConstructorLayout,
+    resp: ConstructorLayout,
+) -> str:
+    """Assemble the server-world component text (design §1.1)."""
+    ifaces = _iface_closure(
+        {"io/error", "io/streams"}.union(
+            *(s.ifaces for s in used.values()),
+        ) if used else {"io/error", "io/streams"}
+    )
+    lowers = sorted(
+        _SERVER_BASE_LOWERS.union(*(s.lowers for s in used.values()))
+        if used else _SERVER_BASE_LOWERS
+    )
+    drops = sorted(
+        _SERVER_BASE_DROPS.union(*(s.drops for s in used.values()))
+        if used else _SERVER_BASE_DROPS
+    )
+
+    parts: list[str] = ["(component $C"]
+    for iface in ifaces:
+        parts.append(_IFACES[iface])
+    parts.append(_HTTP_TYPES_IFACE)
+
+    parts.append("  (core module $Main")
+    parts.extend("  " + line if line else line for line in main_fields)
+    parts.append("  )")
+    parts.append("  (core instance $main (instantiate $Main))")
+    parts.append('  (alias core export $main "memory" (core memory $mem))')
+    parts.append(
+        '  (alias core export $main "cabi_realloc" (core func $realloc))'
+    )
+    parts.append('  (alias core export $main "wasi_tbl" (core table $tbl))')
+    parts.append(
+        '  (alias core export $main "wasi_arena_ptr" '
+        "(core global $g_arena))"
+    )
+    parts.append('  (alias core export $main "alloc" (core func $f_alloc))')
+    parts.append('  (alias core export $main "gc_sp" (core global $g_sp))')
+    parts.append(
+        '  (alias core export $main "gc_stack_limit" '
+        "(core global $g_lim))"
+    )
+    parts.append('  (alias core export $main "handle" (core func $f_handle))')
+
+    for key in lowers:
+        parts.append(_LOWERS[key][0])
+    for key in _SERVER_LOWER_ORDER:
+        parts.append(_SERVER_LOWERS[key][0])
+    for key in drops:
+        parts.append(_DROPS[key][0])
+    for key in _SERVER_DROP_ORDER:
+        parts.append(_SERVER_DROPS[key][0])
+
+    parts.append("  (core module $Adapter")
+    parts.extend(
+        "  " + line if line else line
+        for line in _server_adapter_fields(used, lay, req, resp)
+    )
+    parts.append("  )")
+    parts.append("  (core instance $adapter (instantiate $Adapter")
+    parts.append('    (with "env" (instance')
+    parts.append('      (export "memory" (memory $mem))')
+    parts.append('      (export "tbl" (table $tbl))')
+    parts.append('      (export "arena_ptr" (global $g_arena))')
+    parts.append('      (export "alloc" (func $f_alloc))')
+    parts.append('      (export "gc_sp" (global $g_sp))')
+    parts.append('      (export "gc_stack_limit" (global $g_lim))')
+    parts.append('      (export "vera_handle" (func $f_handle))')
+    parts.append("    ))")
+    parts.append('    (with "wasi" (instance')
+    for key in lowers:
+        parts.append(_LOWERS[key][2])
+    for key in _SERVER_LOWER_ORDER:
+        parts.append(_SERVER_LOWERS[key][2])
+    for key in drops:
+        parts.append(_DROPS[key][2])
+    for key in _SERVER_DROP_ORDER:
+        parts.append(_SERVER_DROPS[key][2])
+    parts.append("    ))")
+    parts.append("  ))")
+
+    parts.append(
+        '  (func $handle_l (param "request" (own $IR)) '
+        '(param "response-out" (own $RO))\n'
+        '    (canon lift (core func $adapter "handle")))'
+    )
+    parts.append('  (instance $ih (export "handle" (func $handle_l)))')
+    parts.append(
+        '  (export "wasi:http/incoming-handler@0.2.0" (instance $ih))'
+    )
+    parts.append(")")
+    return "\n".join(parts)
+
+
+def _emit_server_component(result: CompileResult) -> str:
+    """Server-world emission pipeline (validate -> gate -> transform ->
+    assemble); see ``emit_wasi_component``."""
+    # Local import: the shared #305 handler validator lives with the
+    # host serve driver (single source of truth for both serving
+    # surfaces); importing it lazily keeps this module free of
+    # wasmtime-loading deps for cli-world emission.
+    from vera.runtime.server import validate_handler
+
+    validate_handler(result, context="--target wasi-p2 --world server")
+    _gate_families_server(result)
+    req, resp = _server_adt_layouts(result)
+    used = _parse_server_imports(result.wat)
+    main_fields, layout = _transform_main_server(result.wat, used)
+    return _assemble_server_component(main_fields, used, layout, req, resp)

@@ -13,6 +13,7 @@ Usage:
     vera compile   -o out.wasm <file.vera>  Specify output path
     vera compile   --target browser <file>  Emit browser bundle (wasm + JS + HTML)
     vera compile   --target wasi-p2 <file>  Emit WASI Preview 2 component (experimental)
+    vera compile   --target wasi-p2 --world server <file>  Emit wasi:http server component (wasmtime serve)
     vera run       <file.vera>              Compile and execute
     vera run       --fn name <file.vera>    Execute a specific function
     vera run       <file.vera> -- 5 10      Pass arguments to the function
@@ -336,6 +337,7 @@ def cmd_compile(
     wat: bool = False,
     output: str | None = None,
     target: str = "wasm",
+    world: str = "cli",
 ) -> int:
     """Parse, type-check, and compile a .vera file to WebAssembly."""
     from vera.checker import typecheck_with_artifacts
@@ -399,6 +401,28 @@ def cmd_compile(
                 print(e.format(), file=sys.stderr)
             return 1
 
+        # --world only means something on the wasi-p2 target (Stage D:
+        # world="server" exports wasi:http/incoming-handler).
+        if world != "cli" and target != "wasi-p2":
+            msg = (
+                f"--world {world} requires --target wasi-p2 "
+                f"(the core and browser targets have no world concept)"
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [{
+                        "severity": "error",
+                        "description": msg,
+                        "location": {"line": 0, "column": 0},
+                    }],
+                    "warnings": [w.to_dict() for w in all_warnings],
+                }, indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
+            return 1
+
         # --target wasi-p2 (#237): emit the component BEFORE any success
         # envelope — the emitter's family gate raises ValueError for host
         # families the target does not support, and that must surface as
@@ -408,7 +432,7 @@ def cmd_compile(
             from vera.codegen.wasi import emit_wasi_component
 
             try:
-                component_wat = emit_wasi_component(result)
+                component_wat = emit_wasi_component(result, world=world)
             except ValueError as exc:
                 msg = f"--target wasi-p2: {exc}"
                 if as_json:
@@ -455,7 +479,13 @@ def cmd_compile(
 
             out_path = Path(output) if output else p.with_suffix(".wasm")
             out_path.write_bytes(wasmtime.wat2wasm(component_wat))
-            print(f"Compiled (WASI Preview 2 component): {out_path}")
+            kind = (
+                "WASI Preview 2 server component (run with: "
+                "wasmtime serve <file>)"
+                if world == "server"
+                else "WASI Preview 2 component"
+            )
+            print(f"Compiled ({kind}): {out_path}")
             return 0
 
         # --target browser: emit a self-contained browser bundle
@@ -583,6 +613,7 @@ def cmd_run(
     fn_args: list[int | float] | None = None,
     raw_fn_args: list[str] | None = None,
     target: str = "wasm",
+    world: str = "cli",
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.ast import FnDecl
@@ -729,6 +760,31 @@ def cmd_run(
         # component lifts a single entry (main), so --fn is a clean
         # diagnostic here rather than a missing-export crash; the
         # emitter's family gate likewise surfaces as a diagnostic.
+        if world == "server":
+            # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
+            # and no resource-definition API, so a server-world
+            # component cannot be executed here at all.
+            msg = (
+                "a server-world component exports "
+                "wasi:http/incoming-handler, which `vera run` cannot "
+                "host.  Compile it and serve with the wasmtime CLI:\n"
+                f"  vera compile --target wasi-p2 --world server {path}\n"
+                "  wasmtime serve <output>.wasm\n"
+                "(or use `vera serve` for the native Python driver)"
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [{
+                        "severity": "error",
+                        "description": msg,
+                        "location": {"line": 0, "column": 0},
+                    }],
+                }, indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
+            return 1
         if target == "wasi-p2":
             if fn_name is not None and fn_name != "main":
                 msg = (
@@ -1316,6 +1372,7 @@ Commands:
     compile [--wat]      Compile a .vera file to WebAssembly
     compile --target browser  Emit browser bundle (wasm + JS + HTML)
     compile --target wasi-p2  Emit a WASI Preview 2 component (experimental)
+    compile --target wasi-p2 --world server  Emit a wasi:http server component (run with wasmtime serve)
     run [--fn name]      Compile and execute a .vera file
     run --target wasi-p2  Execute under the built-in WASI 0.2 host
     ast [--json]         Parse a .vera file and print the AST
@@ -1334,6 +1391,7 @@ Options:
     --trials <n>         Number of test trials (default: 100, for vera test)
     -o <path>            Output path for .wasm binary (or directory for --target browser)
     --target <t>         Compilation target: wasm (default), browser, or wasi-p2
+    --world <w>          wasi-p2 world: cli (default) or server (wasi:http/incoming-handler)
     --write              Format in place (vera fmt)
     --check              Check if already canonical (vera fmt)
     --explain-slots      Print slot-resolution tables after a successful check
@@ -1531,6 +1589,27 @@ def main() -> None:
                     print(f"Error: {msg}", file=sys.stderr)
                 sys.exit(1)
 
+    # Parse --world <world> option (wasi-p2 target only; validated in
+    # cmd_compile/cmd_run so JSON mode gets a proper envelope)
+    world: str = "cli"
+    if "--world" in args:
+        world_idx = args.index("--world")
+        if world_idx + 1 < len(args):
+            world = args[world_idx + 1]
+            if world not in ("cli", "server"):
+                msg = (
+                    f"Invalid --world value: {world} "
+                    f"(expected 'cli' or 'server')"
+                )
+                if use_json:
+                    print(json.dumps({"ok": False, "file": "",
+                                      "diagnostics": [{"severity": "error",
+                                                       "description": msg}]},
+                                     indent=2))
+                else:
+                    print(f"Error: {msg}", file=sys.stderr)
+                sys.exit(1)
+
     # Parse -o <path> option
     output_path: str | None = None
     if "-o" in args:
@@ -1547,7 +1626,7 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--quiet", "--wat", "--write", "--check", "--explain-slots"}
-    skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host"}
+    skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host", "--world"}
     remaining: list[str] = []
     i = 1  # skip command
     while i < len(args):
@@ -1584,14 +1663,14 @@ def main() -> None:
     elif command == "compile":
         sys.exit(cmd_compile(
             filepath, as_json=use_json, wat=use_wat, output=output_path,
-            target=target,
+            target=target, world=world,
         ))
     elif command == "serve":
         sys.exit(cmd_serve(filepath, port=serve_port, host=serve_host))
     elif command == "run":
         sys.exit(cmd_run(
             filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args,
-            raw_fn_args=raw_fn_args, target=target,
+            raw_fn_args=raw_fn_args, target=target, world=world,
         ))
     elif command == "ast":
         sys.exit(cmd_ast(filepath, as_json=use_json))

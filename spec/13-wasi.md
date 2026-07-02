@@ -149,7 +149,58 @@ pinned by tests:
   codepoints, so it sees the `\r` of a CRLF pair that the core host's
   text layer collapses.
 
-## 13.7 Conformance
+## 13.7 The Server World (`--world server`)
+
+`vera compile --target wasi-p2 --world server` packages an
+`<HttpServer>` program (Section 9.5.6) as a component exporting
+`wasi:http/incoming-handler@0.2.0#handle` — the same handler contract
+`vera serve` drives natively runs under stock `wasmtime serve`
+unmodified:
+
+```bash
+vera compile --target wasi-p2 --world server examples/http_server.vera
+wasmtime serve examples/http_server.wasm
+```
+
+The program must export a public `handle(@Request -> @Response)` (the
+Section 9.5.6 validation rules).  A generated adapter wrapper reads
+the incoming request's method, path-with-query, headers, and body
+through the wasi:http interfaces, constructs the `Request` ADT in the
+guest heap (using the compilation's own constructor layouts), calls
+`handle`, decodes the returned `Response`, and drives the
+outgoing-response resource sequence.  Guest traps map to a 500 from
+the host.
+
+**Headers without a host.**  `Request`/`Response` headers are
+`Map<String, String>`, and Map operations are host imports on the
+core target.  A Vera Map's representation is two plain guest-heap
+blocks, so the server world implements the String-keyed Map
+operations **in guest code** with the host's exact semantics
+(position-preserving update, later-insert-wins, capacity growth) —
+handlers use `map_new` / `map_insert` / `map_get` etc. unchanged.
+Non-String Map instantiations, and every other host collection
+family, are rejected by the family gate.
+
+**Server-world surface.**  Alongside the in-guest String maps, the
+handler may use `IO.print` / `IO.stderr` (routed to the serve host's
+console) and the pure language.  `IO.read_line` / `read_char` /
+`read_file` / `write_file` / `get_env` / `args` / `exit` are rejected
+with a diagnostic: the wasi:http proxy world provides no stdin,
+filesystem, or environment (verified by negative probe — the imports
+do not link under stock `wasmtime serve`).
+
+**v1 limits** (each a diagnostic or documented cap, never silent):
+request and response bodies are buffered, not streamed; request
+headers share the fixed arena (roughly 63 KiB combined); a response
+status outside 0–65535 or a forbidden header answers 500 rather than
+trapping the server.
+
+`vera run` cannot execute a server-world artifact (wasmtime-py's
+built-in host has no wasi:http support); it fails with a message
+pointing at `wasmtime serve`.  The native `vera serve` driver
+(Section 9.5.6) remains the Python-side way to run the same handler.
+
+## 13.8 Conformance
 
 The dual-target differential in `tests/test_wasi_target.py` runs every
 deterministic run-level conformance program under both targets and
