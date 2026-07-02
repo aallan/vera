@@ -2072,13 +2072,22 @@ class TestCliServerWorld:
         err = capsys.readouterr().err
         assert "requires --target wasi-p2" in err
 
+    @pytest.mark.skipif(
+        shutil.which("wasmtime") is None,
+        reason="stock wasmtime CLI not installed (dev-only smoke test)",
+    )
     def test_time_sleep_random_execute_under_serve(
         self, tmp_path: Path,
     ) -> None:
         """The clock/random adapters EXECUTE under stock wasmtime serve
         — not just parse (CR review round 1, PR #850).  Pins that the
         proxy world actually provides wall-clock, monotonic-clock/poll,
-        and random at request time."""
+        and random at request time.
+
+        Sits outside the skipif-guarded TestWasmtimeServeSmoke class,
+        so it carries its OWN skipif — the missing guard broke every
+        CI test job at 32aea1c (FileNotFoundError: 'wasmtime'; the
+        runners lack the CLI)."""
         wat = _emit_server("""\
 public fn handle(@Request -> @Response)
   requires(true) ensures(true) effects(<HttpServer, IO, Random>)
