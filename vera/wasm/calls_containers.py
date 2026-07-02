@@ -134,9 +134,10 @@ class CallsContainersMixin:
             "i32.const 0x80000000",
             "i32.or",
             "i32.store offset=4",
-            # Write 0 at +8 (bucket_ptr).  This helper is Decimal-only
-            # post-#706, and Decimal keeps bucket_ptr at 0 (value-typed,
-            # nothing for the GC scan to anchor).
+            # Write 0 at +8 (bucket_ptr).  No wrap kind uses a bucket
+            # here: Decimal is value-typed and the #841 Future handle
+            # indexes a host-side store — nothing for the GC scan to
+            # anchor.
             f"local.get {wrapper_temp}",
             "i32.const 0",
             "i32.store offset=8",

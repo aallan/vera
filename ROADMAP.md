@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,577 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,579 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 

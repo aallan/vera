@@ -453,8 +453,13 @@ class CodeGenerator(
         # #841: Future<Result<String, String>>-returning fn names — one
         # derivation feeds both import-emission passes (pre-scan +
         # WasmContext) so they agree on which awaits need the
-        # fused-handle check.
-        self._future_ret_fns = compute_future_ret_fns(program)
+        # fused-handle check.  Derived from the return-type registry
+        # (local Pass-1 registrations + the Pass-0 cross-module #628
+        # harvest), not the local declarations, so imported and
+        # module-qualified calls classify too.
+        self._future_ret_fns = compute_future_ret_fns(
+            self._fn_ret_type_exprs,
+        )
 
         # Pass 1.2: inject prelude ADTs and combinator implementations
         # Prelude functions are registered as builtins in the type checker
@@ -535,7 +540,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
-            async_ops_used=set(self._async_ops_used),
+                async_ops_used=set(self._async_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
                 random_ops_used=set(self._random_ops_used),
                 math_ops_used=set(self._math_ops_used),
@@ -755,7 +760,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
-            async_ops_used=set(self._async_ops_used),
+                async_ops_used=set(self._async_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
                 random_ops_used=set(self._random_ops_used),
                 math_ops_used=set(self._math_ops_used),

@@ -114,28 +114,33 @@ def _is_future_result_string_type(
     )
 
 
-def compute_future_ret_fns(program: ast.Program) -> frozenset[str]:
+def compute_future_ret_fns(
+    fn_ret_type_exprs: dict[str, ast.TypeExpr],
+) -> frozenset[str]:
     """Names of fns declared to return ``Future<Result<String, String>>``.
 
-    Computed once per program in ``vera/codegen/core.py`` and consumed
+    Derived from the codegen return-type registry
+    (``_fn_ret_type_exprs``), which covers local functions
+    (``registration.py``) AND imported module functions (the #628
+    harvest in ``modules.py``) — so both the unqualified imported-call
+    shape ``await(grab(...))`` and the qualified ``await(m::grab(...))``
+    classify correctly (PR #842 review, critical finding: a
+    local-declarations-only scan missed cross-module futures and the
+    await lowered to identity).  Computed once per program in
+    ``vera/codegen/core.py`` after Pass 0/1 registration and consumed
     by both import-emission passes (the ``_scan_io_ops`` pre-scan and
     the ``WasmContext`` await lowering) so the two agree on which
     directly-awaited call results need the fused-handle runtime check.
     The match is on the literal type expression — an alias like
     ``type MyFut = Future<Result<String, String>>`` does not
-    participate (documented in spec §9.5.4; the wrapper tag keeps a
-    missed check loud rather than silent).
+    participate (see spec §9.5.4 for the documented v1 boundary).
     """
     names: set[str] = set()
-    for tld in program.declarations:
-        decl = tld.decl
-        if not isinstance(decl, ast.FnDecl):
-            continue
-        ret = decl.return_type
+    for fn_name, ret in fn_ret_type_exprs.items():
         if isinstance(ret, ast.NamedType) and _is_future_result_string_type(
             ret.name, ret.type_args,
         ):
-            names.add(decl.name)
+            names.add(fn_name)
     return frozenset(names)
 
 
@@ -146,19 +151,26 @@ def await_needs_check(
 
     Matches every shape that can carry a fused future to an await site:
     a ``Future<Result<String, String>>``-typed slot (let binding or
-    parameter), a directly-composed fused ``async(...)``, a call to a
-    function whose declared return type is that future type
-    (``future_ret_fns``, computed in ``vera/codegen/core.py``), and
-    ``if``/``match``/block compositions of those.  Shapes outside this
-    set keep the identity lowering; a fused wrapper reaching one anyway
-    is caught loudly by the consumer's ``match`` (the wrapper tag
-    0xFEEDC004 matches no constructor → trap), never read silently.
+    parameter), a directly-composed fused ``async(...)``, a call —
+    bare, imported, or module-qualified — to a function whose declared
+    return type is that future type (``future_ret_fns``, computed in
+    ``vera/codegen/core.py`` from the cross-module return-type
+    registry), and ``if``/``match``/block compositions of those.
+    Shapes outside this set keep the identity lowering.  Residual
+    boundary (documented in KNOWN_ISSUES.md): an indirectly-called
+    closure returning this future type is not classifiable here, and a
+    wrapper smuggled past an identity await is NOT trapped — the match
+    lowering's final arm is an unconditional catch-all, so the wrapper
+    would be read as the ADT.  Keep this predicate's coverage in sync
+    with every call shape codegen can produce.
     """
     if isinstance(arg, ast.SlotRef):
         return _is_future_result_string_type(arg.type_name, arg.type_args)
     if isinstance(arg, ast.FnCall):
         if fused_async_target(arg) is not None:
             return True
+        return arg.name in future_ret_fns
+    if isinstance(arg, ast.ModuleCall):
         return arg.name in future_ret_fns
     if isinstance(arg, ast.Block):
         return arg.expr is not None and await_needs_check(
