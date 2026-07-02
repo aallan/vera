@@ -152,6 +152,22 @@ public fn handle(@Request -> @Response)
             "isolation is broken"
         )
 
+    def test_round_trip_under_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The Request builder's shadow-rooting survives eager GC: with
+        VERA_EAGER_GC=1 every allocation collects, so an unrooted
+        method/path/headers/body allocation would be swept mid-build
+        (#570/#692 class) and the echo would return garbage."""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        with _Server(ECHO_HANDLER) as srv:
+            status, headers, body = _request(
+                srv.url("/gc"), method="POST", body=b"rooted:",
+            )
+        assert status == 200
+        assert body == "rooted:POST"
+        assert headers.get("x-echo-path") == "/gc"
+
 
 class TestServeValidation305:
     def test_missing_handler_is_a_clean_error(self) -> None:
