@@ -825,3 +825,63 @@ private fn foo(@Unit -> @Int)
 }
 """, "Handler state initial value")
         assert any(e.error_code == "E331" for e in errs)
+
+
+class TestHttpServerEffect305:
+    """#305: <HttpServer> is a built-in marker effect (no operations —
+    the accept loop lives in the host `vera serve` driver), and
+    Request / Response are built-in prelude ADTs so a handler is an
+    ordinary total, contract-checked function:
+
+        public fn handle(@Request -> @Response) effects(<HttpServer>)
+    """
+
+    def test_httpserver_effect_row_accepted(self) -> None:
+        _check_clean("""
+public fn tick(@Int -> @Int)
+  requires(true) ensures(true) effects(<HttpServer>)
+{ @Int.0 + 1 }
+""")
+
+    def test_request_response_prelude_types(self) -> None:
+        """Request/Response are prelude ADTs: fields destructure by
+        match, Response constructs directly."""
+        _check_clean("""
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+""")
+
+    def test_httpserver_composes_with_state(self) -> None:
+        _check_clean("""
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer, State<Int>>)
+{
+  put(get(()) + 1);
+  Response(200, map_new(), "ok")
+}
+""")
+
+    def test_response_status_contract_verifies(self) -> None:
+        """The headline #305 property: a status-range postcondition on a
+        handler is an ordinary contract."""
+        _check_clean("""
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{ Response(204, map_new(), "") }
+""")
+
+    def test_httpserver_in_effect_registry(self) -> None:
+        """HttpServer is a REGISTERED built-in marker effect (not merely
+        a tolerated unknown row entry) — `vera effects` must list it."""
+        from vera.environment import TypeEnv
+
+        env = TypeEnv()
+        info = env.effects.get("HttpServer")
+        assert info is not None, "HttpServer missing from the effect registry"
+        assert info.operations == {}, "HttpServer must be a marker effect"

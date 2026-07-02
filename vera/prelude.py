@@ -33,6 +33,15 @@ data Ordering { Less, Equal, Greater }
 data UrlParts { UrlParts(String, String, String, String, String) }
 """
 
+# #305 — HttpServer handler types, injected only when the program
+# mentions them (same conditional pattern as Json / HtmlNode: the Map
+# headers field pulls heap/bucket machinery, which must not leak into
+# pure programs' WAT).
+_HTTP_SERVER_DATA = """\
+data Request { Request(String, String, Map<String, String>, String) }
+data Response { Response(Int, Map<String, String>, String) }
+"""
+
 _JSON_DATA = """\
 data Json { JNull, JBool(Bool), JNumber(Float64), JString(String), JArray(Array<Json>), JObject(Map<String, Json>) }
 """
@@ -576,6 +585,16 @@ def _source_mentions_html(program: ast.Program) -> bool:
     return False
 
 
+def _source_mentions_http_server(program: ast.Program) -> bool:
+    """Check if user code references the HttpServer handler types (#305)."""
+    names = frozenset({"Request", "Response", "HttpServer"})
+    for tld in program.declarations:
+        decl = tld.decl
+        if _node_mentions(decl, names):
+            return True
+    return False
+
+
 def _has_standard_html(program: ast.Program) -> bool:
     """Check if user's ``data HtmlNode`` has the expected 3 constructors."""
     _EXPECTED = {"HtmlElement", "HtmlText", "HtmlComment"}
@@ -786,6 +805,13 @@ def inject_prelude(program: ast.Program) -> None:
         )
         if inject_html_combinators and not html_fn_names.issubset(user_names):
             source_parts.append(_HTML_COMBINATORS)
+
+    # HttpServer handler types (#305) — inject only when referenced;
+    # a user-defined data Request / data Response shadows the prelude
+    # (the extraction loop below skips user-defined names).
+    if _source_mentions_http_server(program):
+        if not {"Request", "Response"} <= user_data_names:
+            source_parts.append(_HTTP_SERVER_DATA)
 
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)

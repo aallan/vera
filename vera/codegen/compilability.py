@@ -41,6 +41,11 @@ class CompilabilityMixin:
                         self._needs_memory = True
                     elif eff.name == "Async":
                         pass  # Sequential execution, no host imports
+                    elif eff.name == "HttpServer":
+                        # #305 — marker effect; the accept loop lives in
+                        # the host `vera serve` driver.  The handler
+                        # touches Request/Response heap values.
+                        self._needs_memory = True
                     elif eff.name == "Inference":
                         self._needs_memory = True
                     elif eff.name == "Random":

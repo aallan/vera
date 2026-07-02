@@ -340,6 +340,39 @@ class TypeEnv:
         for c in self.data_types["HtmlNode"].constructors.values():
             self.constructors[c.name] = c
 
+        # Request / Response — HTTP server handler types (#305, §9.5.6).
+        # Single-constructor ADTs so a `vera serve` handler is an
+        # ordinary total function `handle(Request -> Response)` with
+        # ordinary contracts.  Field order is load-bearing for the host
+        # driver's marshalling (vera/runtime/server.py) and pinned by
+        # the built-in ConstructorLayout in codegen/registration.py.
+        self.data_types["Request"] = AdtInfo(
+            name="Request",
+            type_params=(),
+            constructors={
+                "Request": ConstructorInfo(
+                    "Request", "Request", (),
+                    (STRING, STRING, _MAP_STR_STR, STRING),
+                ),
+            },
+        )
+        self.constructors["Request"] = (
+            self.data_types["Request"].constructors["Request"]
+        )
+        self.data_types["Response"] = AdtInfo(
+            name="Response",
+            type_params=(),
+            constructors={
+                "Response": ConstructorInfo(
+                    "Response", "Response", (),
+                    (INT, _MAP_STR_STR, STRING),
+                ),
+            },
+        )
+        self.constructors["Response"] = (
+            self.data_types["Response"].constructors["Response"]
+        )
+
         # State<T> effect with get/put
         self.effects["State"] = EffectInfo(
             name="State",
@@ -424,6 +457,18 @@ class TypeEnv:
         # eagerly (sequential); WASI 0.3 will provide true concurrency.
         self.effects["Async"] = EffectInfo(
             name="Async",
+            type_params=None,
+            operations={},
+        )
+
+        # HttpServer effect — marker for verified HTTP request handling
+        # (#305).  No operations: the accept loop lives in the host
+        # `vera serve` driver, which calls the program's total
+        # `handle(Request -> Response)` function once per request —
+        # handlers need no Diverge and are termination-checked like any
+        # other function.
+        self.effects["HttpServer"] = EffectInfo(
+            name="HttpServer",
             type_params=None,
             operations={},
         )

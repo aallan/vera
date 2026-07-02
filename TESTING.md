@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,582 across 88 files (~63,000 lines of test code; 5,534 passed + 26 stress, 22 skipped) |
+| **Tests** | 5,588 across 88 files (~63,000 lines of test code; 5,534 passed + 26 stress, 22 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 103 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -60,7 +60,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_checker_types.py` | 84 | 923 | Primitive types, literals, binary/unary ops, generics, constructors, refinement types, arrays, tuples, return/match-arm types, byte-arithmetic + integer-literal-range rejection (#420 split) |
 | `test_checker_patterns.py` | 59 | 936 | Pattern matching, match-arm typing, exhaustiveness, pattern/match coverage, bidirectional inference, typed holes (#420 split) |
 | `test_checker_functions.py` | 68 | 705 | Function signatures, slot references, result refs, calls, control flow, higher-order, where-blocks, expression diagnostics, IO operations, string interpolation (#420 split) |
-| `test_checker_effects.py` | 55 | 827 | Effect declarations, abilities, effect subtyping, async effect, handler typing (#420 split) |
+| `test_checker_effects.py` | 60 | 887 | Effect declarations, abilities, effect subtyping, async effect, handler typing (#420 split) |
 | `test_checker_modules.py` | 45 | 975 | Module-call diagnostics, cross-module typing, visibility enforcement, builtin redefinition, parsed module calls (#420 split) |
 | `test_checker_errors.py` | 47 | 663 | Error codes, resolution-coverage diagnostics, contracts, error accumulation (#420 split) |
 | `test_checker_builtins_collections.py` | 97 | 848 | Map / Set / Decimal / Json / Html / Http / Inference built-in type-checking (#420 split) |
@@ -87,7 +87,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_calls.py` | 32 | 1,403 | Statement-position unit calls (#556), **WASM tail-call optimization** (#517 — `return_call` emission, 50K- and 1M-iteration stress, structural `return_call`/plain-`call` boundary assertions, **GC-aware TCO for allocating fns** (#549 — `$gc_sp` restore before each `return_call`), postcondition-fallback regression, analyzer unit tests over tail-transparent constructs), pair-typed closure params + captures (#535) (#419 split) |
 | `test_codegen_infrastructure.py` | 24 | 456 | Module assembly import/memory conditionals, execute error paths, unsupported-construct skips + node-level E602 reasons (#626), built-in shadowing (#154), typed holes, example round-trips (#419 split) |
 | `test_codegen_interpolation.py` | 33 | 1,275 | String interpolation, the E615 loud inference-fallthrough channel (#630) (#419 split) |
-| `test_codegen_effects.py` | 71 | 1,414 | State\<T\> host imports, effect handlers, Exn\<E\> handlers (incl. expression-bodied, #475), Async/Future\<T\>, Random effect (#419 split); plus the #841 concurrent-Async battery (`TestConcurrentAsync841`) — fused `async_http_get`/`async_http_post`/`async_await` import pins, sync-import suppression, pure-shape eager pin (no task imports), kind-4 `register_wrapper` structural pin, a generic-fn-with-concrete-Future-return await classification pin (PR #842 review round 2), and the behavioural two-gets-overlap test (local `ThreadingHTTPServer`, server-side request-log ordering, no wall-clock) |
+| `test_codegen_effects.py` | 72 | 1,435 | State\<T\> host imports, effect handlers, Exn\<E\> handlers (incl. expression-bodied, #475), Async/Future\<T\>, Random effect (#419 split); plus the #841 concurrent-Async battery (`TestConcurrentAsync841`) — fused `async_http_get`/`async_http_post`/`async_await` import pins, sync-import suppression, pure-shape eager pin (no task imports), kind-4 `register_wrapper` structural pin, a generic-fn-with-concrete-Future-return await classification pin (PR #842 review round 2), and the behavioural two-gets-overlap test (local `ThreadingHTTPServer`, server-side request-log ordering, no wall-clock) |
 | `test_codegen_data_types.py` | 67 | 1,339 | ADT metadata + constructors, match expressions (incl. nested patterns), tuples, ADT string fields, generic-monomorphization regressions (#604, #767) (#419 split) |
 | `test_codegen_arrays.py` | 82 | 1,427 | Byte type, array literals / bounds checking / length / range / concat, construction builtins (#209), compound element types (#132), array utilities (#419 split) |
 | `test_codegen_refinements.py` | 57 | 924 | Assert/assume, forall/exists quantifiers (incl. WAT inspection), refinement type aliases, **refinement-predicate runtime guards** (#746 — primitive- and `@Array`-base boundary guards, tuple-component decomposition at the FFI boundary, generic tuple aliases, infinite-alias E617 fail-closed, refinement-over-tuple unwrapping), head-over-refinement shape (#655) (#419 split) |
