@@ -35,6 +35,7 @@ vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (exp
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera run --target wasi-p2 file.vera  # Execute under the built-in WASI 0.2 host (spec/13-wasi.md)
+vera compile --target wasi-p2 --world server file.vera  # wasi:http server component for `wasmtime serve` (spec §13.7)
 vera serve file.vera              # Serve handle(Request -> Response) over HTTP (#305)
 vera serve --port 8080 file.vera  # Serve on a specific port (default 8000)
 vera test file.vera               # Contract-driven testing via Z3 + WASM

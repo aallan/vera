@@ -53,6 +53,7 @@ vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --json file.vera             # Compile with JSON diagnostics
 vera compile --target browser file.vera   # Compile + emit browser bundle (wasm + JS + html)
 vera compile --target wasi-p2 file.vera   # Emit a WASI Preview 2 component (experimental, IO+Random)
+vera compile --target wasi-p2 --world server file.vera  # wasi:http server component (wasmtime serve)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42         # Call function f with Int argument
 vera run file.vera --fn f -- 3.14       # Call function f with Float64 argument
@@ -111,7 +112,7 @@ Until those land, terminal Vera programs (animation via `IO.sleep` + cursor cont
 
 ### WASI Preview 2 compilation (experimental)
 
-`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async) is rejected with a diagnostic naming the family.  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](https://github.com/aallan/vera/blob/main/spec/13-wasi.md).
+`vera compile --target wasi-p2` emits a binary WebAssembly *component* that runs under any stock wasip2 host with no Vera bindings — `wasmtime run file.wasm` just works.  The target covers the **IO and Random host families only**; a program using any other family (Http, Map, Set, Decimal, Json, Html, Md, Regex, Math, Inference, State, Async) is rejected with a diagnostic naming the family.  `vera run --target wasi-p2 file.vera` executes the component under the built-in wasip2 host with the usual output/trap reporting.  Divergences inherent to WASI 0.2 (exit codes collapse to 0/1; no structured trap frames) are documented in [spec chapter 13](https://github.com/aallan/vera/blob/main/spec/13-wasi.md).  `--world server` packages a `handle(Request -> Response)` program (the `<HttpServer>` effect) as a `wasi:http/incoming-handler` component that stock `wasmtime serve` runs — headers work via in-guest String maps; stdin/filesystem/env ops are rejected in that world (spec §13.7).
 
 To run the WASM directly in Node.js:
 

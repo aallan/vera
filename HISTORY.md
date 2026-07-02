@@ -428,6 +428,7 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 | v0.0.192 | 2 Jul | Concurrent `<Async>`: `async(Http.get/post)` runs on a host worker thread, `await` blocks for it, `W002` marks the eager remainder ([#841](https://github.com/aallan/vera/issues/841)); rides with the #420/#419/#839 test-oracle splits. |
 | v0.0.193 | 2 Jul | `<HttpServer>`: total contract-checked handlers served over HTTP by `vera serve` with instance-per-request isolation ([#305](https://github.com/aallan/vera/issues/305)). |
 | v0.0.194 | 2 Jul | Experimental WASI Preview 2 target: `--target wasi-p2` emits a binary component that runs IO+Random programs under any stock wasip2 host ([#237](https://github.com/aallan/vera/issues/237)). |
+| v0.0.195 | 2 Jul | The `wasi:http` serve backend: `--world server` packages a verified `handle(Request -> Response)` program as an incoming-handler component that stock `wasmtime serve` runs unmodified (spec §13.7). |
 
 ---
 
@@ -435,15 +436,15 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 
 Eight releases, chosen for the capability each one unlocked rather than even spacing.
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) | v0.0.194 (2 Jul) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) | v0.0.195 (2 Jul) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect | WASI 0.2 target |
+| Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect | WASI serve backend |
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP + WASI |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,768 |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,808 |
 | Examples | 13 | 15 | 18 | 30 | 35 | 35 | 36 | 36 |
 | Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 | 164 |
 | Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 | 104 |
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 |
 | Code coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% |
 
-Total: **1,800+ commits, 194 tagged releases, 92 active development days.**
+Total: **1,800+ commits, 195 tagged releases, 92 active development days.**
