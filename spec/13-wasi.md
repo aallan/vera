@@ -140,6 +140,14 @@ pinned by tests:
   `os.environ` live.  Observable only if the host environment mutates
   mid-run.
 - **String-returning `main` reports no value** (Section 13.5).
+- **A lone `\r` is not a line terminator for `IO.read_line`.**  The
+  adapter strips `\n` and a `\r` immediately before it (CRLF input —
+  what Windows pipes actually contain — matches the core host, whose
+  Python text layer does the same), but a bare `\r` *separator*
+  (classic-Mac line endings) is returned as content where the core
+  host treats it as a line break.  `IO.read_char` reads raw UTF-8
+  codepoints, so it sees the `\r` of a CRLF pair that the core host's
+  text layer collapses.
 
 ## 13.7 Conformance
 

@@ -1772,7 +1772,13 @@ def _op_args(lay: _Layout) -> str:
 
 def _op_read_line(lay: _Layout) -> str:
     # Grow-by-doubling GC buffer; the old buffer is rooted across the
-    # doubled alloc.  Strips the trailing newline (host parity); EOF
+    # doubled alloc.  Strips the trailing newline AND a trailing \r
+    # before it (host parity: the core path reads stdin through
+    # Python's universal-newlines text layer, so CRLF input never
+    # yields a trailing \r there, on any platform — surfaced by the
+    # windows-latest CI matrix).  A lone \r line *separator* is not
+    # treated as a terminator (that would need cross-call byte
+    # pushback); documented divergence in spec section 13.6.  EOF
     # with no bytes returns the empty string (0,0).
     return (
         "  (func $op_read_line (result i32 i32)\n"
@@ -1834,6 +1840,23 @@ def _op_read_line(lay: _Layout) -> str:
         "      local.set $n\n"
         "      br $rd\n"
         "    end\n"
+        "    end\n"
+        "    local.get $n\n"
+        "    if\n"
+        "      local.get $buf\n"
+        "      local.get $n\n"
+        "      i32.add\n"
+        "      i32.const 1\n"
+        "      i32.sub\n"
+        "      i32.load8_u\n"
+        "      i32.const 13\n"
+        "      i32.eq\n"
+        "      if\n"
+        "        local.get $n\n"
+        "        i32.const 1\n"
+        "        i32.sub\n"
+        "        local.set $n\n"
+        "      end\n"
         "    end\n"
         "    local.get $n\n"
         "    i32.eqz\n"

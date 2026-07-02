@@ -478,7 +478,14 @@ public fn main(-> @Unit)
         before_ms = int(time.time() * 1000)
         _, out, _ = _run_component(result)
         after_ms = int(time.time() * 1000)
-        assert before_ms <= int(out) <= after_ms
+        # The guest samples wasi:clocks/wall-clock, the bracket samples
+        # time.time() — two different clock APIs whose quantization can
+        # disagree by a few ms (a 1 ms overshoot was observed on
+        # windows-latest in PR #849's CI).  The slack still catches the
+        # real failure modes — a wrong unit (s / us / ns are orders of
+        # magnitude off) or a garbage read.
+        clock_skew_ms = 100
+        assert before_ms - clock_skew_ms <= int(out) <= after_ms + clock_skew_ms
 
     def test_random_int_respects_inclusive_bounds(self) -> None:
         result = _compile_ok("""\
@@ -584,16 +591,47 @@ public fn main(-> @Unit)
 }
 """)
         # Windows-safe stdin fixture: delete=False + manual unlink.
+        # Binary mode so the bytes on disk are LF exactly on every
+        # platform (text mode writes \r\n on Windows, which turned
+        # this into an accidental CRLF test — see the dedicated CRLF
+        # test below for that case).
         handle = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8",
+            mode="wb", suffix=".txt", delete=False,
         )
         try:
             with handle:
-                handle.write("first line\nsecond\n")
+                handle.write(b"first line\nsecond\n")
             _, out, _ = _run_component(result, stdin_path=handle.name)
         finally:
             os.unlink(handle.name)
         assert out == "first line|s"
+
+    def test_read_line_strips_crlf_like_the_core_host(self) -> None:
+        """Core-path read_line goes through Python's universal-newlines
+        text layer and never returns a trailing \\r, on any platform —
+        the adapter must match for CRLF input (what Windows pipes and
+        text-mode-written files actually contain).  Surfaced by the
+        windows-latest CI matrix on PR #849."""
+        result = _compile_ok("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0);
+  IO.print("|");
+  IO.print(nat_to_string(string_length(@String.0)))
+}
+""")
+        handle = tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".txt", delete=False,
+        )
+        try:
+            with handle:
+                handle.write(b"crlf line\r\nnext\r\n")
+            _, out, _ = _run_component(result, stdin_path=handle.name)
+        finally:
+            os.unlink(handle.name)
+        assert out == "crlf line|9"
 
     def test_read_char_multibyte_then_eof_then_empty_line(self) -> None:
         """UTF-8 lead-byte decoding, Err("EOF") parity with the host,
