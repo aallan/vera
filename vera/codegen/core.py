@@ -25,7 +25,10 @@ from vera.codegen.api import CompileResult
 from vera.codegen.memory import ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.wasm import StringPool
-from vera.wasm.async_fusion import compute_future_ret_fns
+from vera.wasm.async_fusion import (
+    compute_future_ret_fns,
+    compute_future_ret_module_fns,
+)
 from vera.wasm.inference import substitute_type_vars
 
 from vera.codegen.modules import CrossModuleMixin
@@ -147,6 +150,15 @@ class CodeGenerator(
         # shared by the _scan_io_ops pre-scan and the WasmContext await
         # lowering (computed in compile() from the program decls).
         self._future_ret_fns: frozenset[str] = frozenset()
+        # #841 round 2: (module path, name) → return TypeExpr for every
+        # imported module fn (harvested in modules.py), and the derived
+        # qualified future-return set for ModuleCall awaits.
+        self._module_fn_ret_type_exprs: dict[
+            tuple[tuple[str, ...], str], ast.TypeExpr
+        ] = {}
+        self._future_ret_module_fns: frozenset[
+            tuple[tuple[str, ...], str]
+        ] = frozenset()
         self._inference_ops_used: set[str] = set()  # Inference host-import builtins
         self._random_ops_used: set[str] = set()  # Random host-import builtins (#465)
         self._math_ops_used: set[str] = set()  # Math host-import builtins (#467)
@@ -459,6 +471,9 @@ class CodeGenerator(
         # module-qualified calls classify too.
         self._future_ret_fns = compute_future_ret_fns(
             self._fn_ret_type_exprs,
+        )
+        self._future_ret_module_fns = compute_future_ret_module_fns(
+            self._module_fn_ret_type_exprs,
         )
 
         # Pass 1.2: inject prelude ADTs and combinator implementations

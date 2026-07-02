@@ -1328,6 +1328,34 @@ public fn fire(@String -> @Future<Result<String, String>>)
         assert re.search(r"i32\.const 4\s*\n\s*local\.get \d+\s*\n\s*call \$register_wrapper", wat), (
             "expected register_wrapper with kind 4 for the Future wrapper")
 
+    def test_await_of_generic_fn_with_concrete_future_return(self) -> None:
+        """PR #842 review round 2 pin: a generic fn with a CONCRETE
+        Future<Result<String, String>> return classifies at the await
+        site via its template name — classification runs on the
+        pre-monomorphization AST (the call-site mangling to wrap$Int
+        happens later, during translation), so the clone names never
+        need to be in the future-return registry.  Pinned so a future
+        move to AST-level mono rewriting fails here instead of
+        silently smuggling a wrapper."""
+        source = """
+public forall<T> fn wrap(@T, @String -> @Future<Result<String, String>>)
+  requires(true) ensures(true) effects(<Http, Async>)
+{ async(Http.get(@String.0)) }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(wrap(1, "ftp://mono.invalid/x"));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        result = _compile_ok(source)
+        assert '(import "vera" "async_await"' in result.wat
+        assert _run(source) == 1
+
     def test_two_async_gets_overlap_deterministically(self) -> None:
         """Two fused gets actually overlap: the server holds request A until
         request B arrives (3s bound).  Eager evaluation answers SEQUENTIAL

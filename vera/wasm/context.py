@@ -156,6 +156,10 @@ class WasmContext(
         # in vera/codegen/core.py (compute_future_ret_fns) and shared
         # with the compilability pre-scan; set via set_future_ret_fns.
         self._future_ret_fns: frozenset[str] = frozenset()
+        # #841 round 2: qualified companion for ModuleCall awaits.
+        self._future_ret_module_fns: frozenset[
+            tuple[tuple[str, ...], str]
+        ] = frozenset()
         # Inference host-import tracking (propagated to codegen core)
         self._inference_ops_used: set[str] = set()
         # Random host-import tracking (propagated to codegen core, #465)
@@ -284,9 +288,14 @@ class WasmContext(
         """Set function return WASM types for FnCall type inference."""
         self._fn_ret_types = ret_types
 
-    def set_future_ret_fns(self, names: frozenset[str]) -> None:
-        """Set the Future<Result<String, String>>-returning fn set (#841)."""
+    def set_future_ret_fns(
+        self,
+        names: frozenset[str],
+        module_fns: frozenset[tuple[tuple[str, ...], str]] = frozenset(),
+    ) -> None:
+        """Set the Future<Result<String, String>>-returning fn sets (#841)."""
         self._future_ret_fns = names
+        self._future_ret_module_fns = module_fns
 
     def set_module_qualified_targets(
         self, targets: dict[tuple[tuple[str, ...], str], str],

@@ -94,7 +94,9 @@ class FunctionCompilationMixin:
         # #841: Future<Result<String, String>>-returning fn names, for the
         # await lowering's directly-awaited-call check (computed once in
         # core.py, shared with the _scan_io_ops pre-scan).
-        ctx.set_future_ret_fns(self._future_ret_fns)
+        ctx.set_future_ret_fns(
+            self._future_ret_fns, self._future_ret_module_fns,
+        )
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier (kept in lockstep with the verifier).
         ctx.set_expr_semantic_types(self._expr_semantic_types)

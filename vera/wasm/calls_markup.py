@@ -325,7 +325,7 @@ class CallsMarkupMixin:
         target = fused_async_arg_target(arg)
         if target is None:
             return self.translate_expr(arg, env)
-        assert isinstance(arg, ast.QualifiedCall)  # fused shape
+        assert isinstance(arg, ast.QualifiedCall)  # noqa: S101 — mypy narrowing; fused_async_arg_target guarantees the shape
         instructions: list[str] = []
         for http_arg in arg.args:
             arg_instrs = self.translate_expr(http_arg, env)
@@ -368,7 +368,9 @@ class CallsMarkupMixin:
         futures (e.g. Future<Int>, an i64) can never hold a fused
         handle.
         """
-        if not await_needs_check(arg, self._future_ret_fns):
+        if not await_needs_check(
+            arg, self._future_ret_fns, self._future_ret_module_fns,
+        ):
             return self.translate_expr(arg, env)
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:

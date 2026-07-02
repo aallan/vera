@@ -2509,6 +2509,91 @@ public fn main(@Unit -> @Unit)
         assert "before await" in exec_result.stdout
         assert "after await" not in exec_result.stdout
 
+    def test_async_await_keyboard_interrupt_live_request(self) -> None:
+        """#841 (PR #842 review round 2): Ctrl-C while a REAL request is
+        in flight — no mocking.  The interrupt is raised (via
+        `_thread.interrupt_main()`, the in-process equivalent of Ctrl-C)
+        only after the server confirms the request arrived, and the
+        handler is released immediately after, so the invocation
+        `finally`'s `shutdown(wait=True)` has a live worker to wait out.
+        The test completing at all pins that teardown doesn't hang; the
+        assertions pin the exit-130 mapping.  Event-gated — no
+        wall-clock ordering assumptions."""
+        import http.server
+        import threading
+        import _thread
+
+        from vera.codegen import compile as compile_program, execute
+        from vera.parser import parse_to_ast
+
+        arrived = threading.Event()
+        release = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib API name)
+                arrived.set()
+                release.wait(timeout=10.0)
+                body = b"late"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        server_thread = threading.Thread(
+            target=server.serve_forever, daemon=True,
+        )
+        server_thread.start()
+
+        def interrupt_when_in_flight() -> None:
+            if arrived.wait(timeout=10.0):
+                _thread.interrupt_main()
+            # Release the handler either way so shutdown(wait=True)
+            # in execute()'s finally can complete.
+            release.set()
+
+        interrupter = threading.Thread(target=interrupt_when_in_flight)
+
+        source = f"""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{{
+  let @Future<Result<String, String>> = async(Http.get("http://127.0.0.1:{port}/hang"));
+  IO.print("before await");
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  IO.print("after await")
+}}
+"""
+        program = parse_to_ast(source)
+        result = compile_program(program, source=source)
+        assert result.ok, (
+            f"compile failed: "
+            f"{[d.description for d in result.diagnostics]}"
+        )
+
+        interrupter.start()
+        try:
+            exec_result = execute(result)
+        except KeyboardInterrupt:  # pragma: no cover
+            raise AssertionError(
+                "KeyboardInterrupt escaped execute() during a live "
+                "in-flight fetch — must map to exit_code=130 (#841)."
+            ) from None
+        finally:
+            interrupter.join(timeout=10.0)
+            server.shutdown()
+            server.server_close()
+
+        assert exec_result.exit_code == 130, (
+            f"expected exit_code=130 (SIGINT), got {exec_result.exit_code}"
+        )
+        assert "before await" in exec_result.stdout
+        assert "after await" not in exec_result.stdout
+
     def test_host_read_char_keyboard_interrupt_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

@@ -1205,3 +1205,36 @@ public fn main(@Unit -> @Bool)
     def test_await_of_qualified_module_call(self) -> None:
         """`await(fetcher::grab(...))` — the ModuleCall arm."""
         self._run_await_of('fetcher::grab("ftp://blocked.invalid/x")')
+
+    def test_qualified_await_not_confused_by_colliding_local(self) -> None:
+        """PR #842 review round 2: `await(fetcher::grab(...))` classifies
+        by the RESOLVED module target, not the bare name — a local
+        `grab` returning a different Future shape (here Future<Int>)
+        must not make the qualified await lower to identity (bare-name
+        registry follows local-shadows-import) or vice versa."""
+        fetcher = TestCrossModuleCodegen._resolved(
+            ("fetcher",), self.FETCHER_MODULE,
+        )
+        source = """\
+import fetcher(grab);
+
+private fn grab(@Int -> @Future<Int>)
+  requires(true) ensures(true) effects(<Async>)
+{ async(@Int.0 + 1) }
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(fetcher::grab("ftp://collide.invalid/x"));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        result = TestCrossModuleCodegen._compile_mod(source, [fetcher])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, [e.description for e in errors]
+        assert '(import "vera" "async_await"' in result.wat
+        exec_result = execute(result)
+        assert exec_result.value == 1

@@ -144,8 +144,34 @@ def compute_future_ret_fns(
     return frozenset(names)
 
 
+def compute_future_ret_module_fns(
+    module_fn_ret_type_exprs: dict[tuple[tuple[str, ...], str], ast.TypeExpr],
+) -> frozenset[tuple[tuple[str, ...], str]]:
+    '''(module path, name) pairs returning ``Future<Result<String, String>>``.
+
+    The qualified companion to :func:`compute_future_ret_fns`: a
+    module-qualified ``await(m::grab(...))`` must classify by the
+    resolved target's return type, not by the bare name — a colliding
+    local ``grab`` with a different future shape would otherwise
+    misclassify the qualified call in both directions (PR #842 review
+    round 2, confirmed with a name-collision repro).
+    '''
+    pairs: set[tuple[tuple[str, ...], str]] = set()
+    for key, ret in module_fn_ret_type_exprs.items():
+        if isinstance(ret, ast.NamedType) and _is_future_result_string_type(
+            ret.name, ret.type_args,
+        ):
+            pairs.add(key)
+    return frozenset(pairs)
+
+
 def await_needs_check(
-    arg: ast.Expr, future_ret_fns: frozenset[str] | set[str],
+    arg: ast.Expr,
+    future_ret_fns: frozenset[str] | set[str],
+    future_ret_module_fns: (
+        frozenset[tuple[tuple[str, ...], str]]
+        | set[tuple[tuple[str, ...], str]]
+    ) = frozenset(),
 ) -> bool:
     """True iff ``await(arg)`` must emit the runtime fused-handle check.
 
@@ -171,19 +197,22 @@ def await_needs_check(
             return True
         return arg.name in future_ret_fns
     if isinstance(arg, ast.ModuleCall):
-        return arg.name in future_ret_fns
+        return (tuple(arg.path), arg.name) in future_ret_module_fns
     if isinstance(arg, ast.Block):
         return arg.expr is not None and await_needs_check(
-            arg.expr, future_ret_fns,
+            arg.expr, future_ret_fns, future_ret_module_fns,
         )
     if isinstance(arg, ast.IfExpr):
-        if await_needs_check(arg.then_branch, future_ret_fns):
+        if await_needs_check(
+            arg.then_branch, future_ret_fns, future_ret_module_fns,
+        ):
             return True
         return arg.else_branch is not None and await_needs_check(
-            arg.else_branch, future_ret_fns,
+            arg.else_branch, future_ret_fns, future_ret_module_fns,
         )
     if isinstance(arg, ast.MatchExpr):
         return any(
-            await_needs_check(arm.body, future_ret_fns) for arm in arg.arms
+            await_needs_check(arm.body, future_ret_fns, future_ret_module_fns)
+            for arm in arg.arms
         )
     return False

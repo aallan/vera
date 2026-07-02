@@ -313,14 +313,18 @@ class CompilabilityMixin:
             if fused is not None:
                 self._async_ops_used.add(fused)
                 inner = node.args[0]
-                assert isinstance(inner, ast.QualifiedCall)
+                assert isinstance(inner, ast.QualifiedCall)  # noqa: S101
                 for arg in inner.args:
                     self._scan_io_ops(arg)
                 return
             if (
                 node.name == "await"
                 and len(node.args) == 1
-                and await_needs_check(node.args[0], self._future_ret_fns)
+                and await_needs_check(
+                    node.args[0],
+                    self._future_ret_fns,
+                    self._future_ret_module_fns,
+                )
             ):
                 self._async_ops_used.add("async_await")
             if node.name in self._MD_BUILTINS:

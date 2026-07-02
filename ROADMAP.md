@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-5,579 tests, 103 conformance programs, 35 examples, 13 spec chapters.
+5,582 tests, 103 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -105,7 +105,7 @@ The longer arcs.  Each pulls forward when the tiers above empty out, not before.
 
 **Verification depth** — [#427](https://github.com/aallan/vera/issues/427) Tier 2 verification (Z3 with `assert`/lemma hints), validated differentially against the per-monomorphization results from [#732](https://github.com/aallan/vera/issues/732); [#439](https://github.com/aallan/vera/issues/439) lifting effect-handler bodies out of Tier 3 (research-grade; approach 3 in the issue depends on #427); [#686](https://github.com/aallan/vera/issues/686) `data invariant(...)` clauses (blocked; refinement types are the working alternative).
 
-**Concurrency and streaming** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (depends on #237), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin + input concurrency (wait on a key and a clock at once).
+**Concurrency and streaming** — [#406](https://github.com/aallan/vera/issues/406) WASI 0.3 native async (depends on #237), [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` scheduling strategies, [#228](https://github.com/aallan/vera/issues/228) WebSocket/SSE, [#227](https://github.com/aallan/vera/issues/227) timeout/cancellation effects, [#844](https://github.com/aallan/vera/issues/844) advisory diagnostic for effect-eligible but shape-unfusable `async` arguments, [#770](https://github.com/aallan/vera/issues/770) non-blocking / timed stdin + input concurrency (wait on a key and a clock at once).
 
 **Ecosystem** — [#130](https://github.com/aallan/vera/issues/130) package system and registry, [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package, [#238](https://github.com/aallan/vera/issues/238) Component Model interop, [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#294](https://github.com/aallan/vera/issues/294) effect row variable unification, [#785](https://github.com/aallan/vera/issues/785) GitHits MCP for dependency-reference retrieval (bookmark — trial when the dependency-facing package work lands).
 
