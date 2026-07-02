@@ -1287,11 +1287,12 @@ public fn main(@Unit -> @Bool)
 
 
 class TestHostImportPairLetRooting846:
-    """#846: the plain-``let`` **pair-type** branch (String / Array<T> →
-    (ptr, len) locals) in ``translate_block`` never shadow-pushed its
-    pointer local — the last unrooted sibling of the #705 scalar-i32
-    let fix and the #707 let-destruct pair fix (whose comment in
-    ``vera/wasm/data.py`` already flagged this exact gap class).
+    """#847 (fixed by #846): the plain-``let`` **pair-type** branch
+    (String / Array<T> → (ptr, len) locals) in ``translate_block``
+    never shadow-pushed its pointer local — the last unrooted sibling
+    of the #705 scalar-i32 let fix and the #707 let-destruct pair fix
+    (whose comment in ``vera/wasm/data.py`` already flagged this exact
+    gap class).
 
     The hole is only observable for pairs a host import returns
     (``IO.args`` → Array<String>, ``IO.read_line`` → String): every
