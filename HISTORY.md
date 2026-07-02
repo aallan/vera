@@ -427,7 +427,6 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 |---------|------|-------------|
 | v0.0.192 | 2 Jul | Concurrent `<Async>`: `async(Http.get/post)` runs on a host worker thread, `await` blocks for it, `W002` marks the eager remainder ([#841](https://github.com/aallan/vera/issues/841)); rides with the #420/#419/#839 test-oracle splits. |
 | v0.0.193 | 2 Jul | `<HttpServer>`: total contract-checked handlers served over HTTP by `vera serve` with instance-per-request isolation ([#305](https://github.com/aallan/vera/issues/305)). |
-| v0.0.194 | 2 Jul | **GC rooting**: pair-typed `let`s (`String` / `Array<T>`) are now shadow-rooted, fixing host-import results (`IO.args`, `IO.read_line`) being swept by the next allocation ([#847](https://github.com/aallan/vera/issues/847), found stress-testing #237 under `VERA_EAGER_GC=1`). |
 
 ---
 
