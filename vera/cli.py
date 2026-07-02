@@ -629,6 +629,33 @@ def cmd_run(
             return 1
         print(f"Error: {msg}", file=sys.stderr)
         return 1
+    # A server-world component cannot be executed by vera run at all
+    # — refuse before any parse/compile work (CR review, PR #850).
+    if world == "server":
+        # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
+        # and no resource-definition API, so a server-world
+        # component cannot be executed here at all.
+        msg = (
+            "a server-world component exports "
+            "wasi:http/incoming-handler, which `vera run` cannot "
+            "host.  Compile it and serve with the wasmtime CLI:\n"
+            f"  vera compile --target wasi-p2 --world server {path}\n"
+            "  wasmtime serve <output>.wasm\n"
+            "(or use `vera serve` for the native Python driver)"
+        )
+        if as_json:
+            print(json.dumps({
+                "ok": False,
+                "file": path,
+                "diagnostics": [{
+                    "severity": "error",
+                    "description": msg,
+                    "location": {"line": 0, "column": 0},
+                }],
+            }, indent=2))
+            return 1
+        print(f"Error: {msg}", file=sys.stderr)
+        return 1
     from vera.checker import typecheck_with_artifacts
     from vera.codegen import compile as codegen_compile, execute
     from vera.resolver import ModuleResolver
@@ -772,31 +799,6 @@ def cmd_run(
         # component lifts a single entry (main), so --fn is a clean
         # diagnostic here rather than a missing-export crash; the
         # emitter's family gate likewise surfaces as a diagnostic.
-        if world == "server":
-            # Stage D: wasmtime-py's add_wasip2 host has no wasi:http
-            # and no resource-definition API, so a server-world
-            # component cannot be executed here at all.
-            msg = (
-                "a server-world component exports "
-                "wasi:http/incoming-handler, which `vera run` cannot "
-                "host.  Compile it and serve with the wasmtime CLI:\n"
-                f"  vera compile --target wasi-p2 --world server {path}\n"
-                "  wasmtime serve <output>.wasm\n"
-                "(or use `vera serve` for the native Python driver)"
-            )
-            if as_json:
-                print(json.dumps({
-                    "ok": False,
-                    "file": path,
-                    "diagnostics": [{
-                        "severity": "error",
-                        "description": msg,
-                        "location": {"line": 0, "column": 0},
-                    }],
-                }, indent=2))
-                return 1
-            print(f"Error: {msg}", file=sys.stderr)
-            return 1
         if target == "wasi-p2":
             if fn_name is not None and fn_name != "main":
                 msg = (
@@ -1595,7 +1597,8 @@ def main() -> None:
                 if use_json:
                     print(json.dumps({"ok": False, "file": "",
                                       "diagnostics": [{"severity": "error",
-                                                       "description": msg}]},
+                                                       "description": msg,
+                                                       "location": {"line": 0, "column": 0}}]},
                                      indent=2))
                 else:
                     print(f"Error: {msg}", file=sys.stderr)
@@ -1616,7 +1619,8 @@ def main() -> None:
                 if use_json:
                     print(json.dumps({"ok": False, "file": "",
                                       "diagnostics": [{"severity": "error",
-                                                       "description": msg}]},
+                                                       "description": msg,
+                                                       "location": {"line": 0, "column": 0}}]},
                                      indent=2))
                 else:
                     print(f"Error: {msg}", file=sys.stderr)
