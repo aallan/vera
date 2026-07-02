@@ -156,6 +156,18 @@ the browser runtime.
 
 ---
 
+## Recipe: serve verified HTTP handlers
+
+`vera serve` hosts a program's `handle(Request -> Response)` function over HTTP (#305). The accept loop lives in the host — the handler is a total, contract-checked function; no `Diverge` involved.
+
+```bash
+vera serve examples/http_server.vera              # default port 8000
+vera serve --port 8080 examples/http_server.vera  # explicit port
+curl -i http://127.0.0.1:8080/
+```
+
+Each request runs on a **fresh module instance**, so `State<T>` cannot leak between requests. A runtime contract violation inside the handler answers **500** with the trap diagnostic as JSON (`trap_kind`, message, frames) — the same envelope `vera run --json` uses. Handler `IO.print` output goes to the server console. Ctrl-C stops the server (exit 130). See spec §9.5.6 for the `Request` / `Response` types and semantics.
+
 ## Recipe: inspect a program's structure
 
 ```bash

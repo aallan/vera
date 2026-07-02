@@ -1,0 +1,54 @@
+-- Verified HTTP request handling with the <HttpServer> marker effect (#305).
+-- The handler is a total, contract-checked function: the accept loop lives
+-- in the host driver, so there is no server loop (and no Diverge) here —
+-- `status_of`'s postcondition pins every response status this program can
+-- produce, and `vera verify` discharges it statically.
+--
+-- Run:   vera serve examples/http_server.vera
+-- Then:  curl -i http://127.0.0.1:8000/
+--        curl -i -X POST --data 'hello' http://127.0.0.1:8000/echo
+private fn status_of(@String -> @Int)
+  requires(true)
+  ensures(@Int.result == 200 || @Int.result == 404)
+  effects(pure)
+{
+  if @String.0 == "/" then {
+    200
+  } else {
+    if @String.0 == "/echo" then {
+      200
+    } else {
+      404
+    }
+  }
+}
+
+private fn body_for(@String, @String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @String.1 = path (first param), @String.0 = request body (second).
+  if @String.1 == "/" then {
+    "hello from vera"
+  } else {
+    if @String.1 == "/echo" then {
+      @String.0
+    } else {
+      "not found"
+    }
+  }
+}
+
+-- In the match arm the String bindings are method (@String.2, oldest),
+-- path (@String.1), body (@String.0, most recent); the headers Map binds
+-- its own @Map slot and does not shift the String indices.
+public fn handle(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) -> Response(status_of(@String.1), map_insert(map_new(), "content-type", "text/plain"), body_for(@String.1, @String.0))
+  }
+}

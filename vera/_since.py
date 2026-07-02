@@ -25,6 +25,7 @@ SINCE: dict[str, str] = {
     "Diverge": "0.0.49",
     "Exn": "0.0.62",
     "Http": "0.0.99",
+    "HttpServer": "0.0.193",
     "IO": "0.0.5",
     "Inference": "0.0.101",
     "Random": "0.0.115",

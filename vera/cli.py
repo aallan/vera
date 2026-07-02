@@ -21,6 +21,8 @@ Usage:
     vera test      --json <file.vera>       Test with JSON output
     vera test      --trials 50 <file.vera>  Set trial count (default 100)
     vera test      --fn name <file.vera>    Test a specific function
+    vera serve     <file.vera>              Serve handle(Request -> Response) over HTTP
+    vera serve     --port 8080 <file.vera>  Serve on a specific port (default 8000)
     vera fmt       <file.vera>              Format to canonical form (stdout)
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
@@ -452,6 +454,83 @@ def cmd_compile(
                               "warnings": []}, indent=2))
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
+        return 1
+
+
+def cmd_serve(
+    path: str,
+    *,
+    port: int = 8000,
+    host: str = "127.0.0.1",
+) -> int:
+    """Compile a .vera file and serve its handle(Request -> Response).
+
+    #305: the accept loop lives here in the host — one fresh
+    instantiation per request (isolation), sequential handling (v1).
+    A handler trap (including a runtime contract violation) answers
+    500 with the trap diagnostic.  Ctrl-C stops the server (exit 130,
+    the conventional SIGINT code, consistent with `vera run`).
+    """
+    from vera.checker import typecheck_with_artifacts
+    from vera.codegen import compile as codegen_compile
+    from vera.resolver import ModuleResolver
+    from vera.runtime.server import make_server
+
+    try:
+        p, source, tree = _load_and_parse(path)
+        ast = transform(tree)
+
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+
+        check_diags, artifacts = typecheck_with_artifacts(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
+        type_diags = resolver.errors + check_diags
+        type_errors = [d for d in type_diags if d.severity == "error"]
+        if type_errors:
+            for e in type_errors:
+                print(e.format(), file=sys.stderr)
+            return 1
+
+        result = codegen_compile(
+            ast, source=source, file=str(p), resolved_modules=resolved,
+            expr_semantic_types=artifacts.expr_semantic_types,
+        )
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        if errors:  # pragma: no cover — codegen errors after typecheck pass
+            for e in errors:
+                print(e.format(), file=sys.stderr)
+            return 1
+
+        try:
+            httpd = make_server(result, host=host, port=port)
+        except ValueError as err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+        except OSError as err:
+            print(
+                f"Error: could not bind {host}:{port} — {err}",
+                file=sys.stderr,
+            )
+            return 1
+
+        bound_port = httpd.server_address[1]
+        print(f"Serving {p.name} on http://{host}:{bound_port} "
+              f"(Ctrl-C to stop)")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopped.", file=sys.stderr)
+            return 130
+        finally:
+            httpd.server_close()
+        return 0  # pragma: no cover — serve_forever exits only via signal
+    except FileNotFoundError:
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        return 1
+    except VeraError as e:
+        print(e.diagnostic.format(), file=sys.stderr)
         return 1
 
 
@@ -1305,6 +1384,20 @@ def main() -> None:
 
     # Parse --trials <n> option
     trials: int = 100
+    serve_port = 8000
+    serve_host = "127.0.0.1"
+    if "--port" in args:
+        port_idx = args.index("--port")
+        if port_idx + 1 < len(args):
+            try:
+                serve_port = int(args[port_idx + 1])
+            except ValueError:
+                print("Error: --port requires an integer", file=sys.stderr)
+                sys.exit(1)
+    if "--host" in args:
+        host_idx = args.index("--host")
+        if host_idx + 1 < len(args):
+            serve_host = args[host_idx + 1]
     if "--trials" in args:
         trials_idx = args.index("--trials")
         if trials_idx + 1 < len(args):
@@ -1354,7 +1447,7 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--quiet", "--wat", "--write", "--check", "--explain-slots"}
-    skip_next = {"--fn", "-o", "--trials", "--target"}
+    skip_next = {"--fn", "-o", "--trials", "--target", "--port", "--host"}
     remaining: list[str] = []
     i = 1  # skip command
     while i < len(args):
@@ -1393,6 +1486,8 @@ def main() -> None:
             filepath, as_json=use_json, wat=use_wat, output=output_path,
             target=target,
         ))
+    elif command == "serve":
+        sys.exit(cmd_serve(filepath, port=serve_port, host=serve_host))
     elif command == "run":
         sys.exit(cmd_run(
             filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args,

@@ -1,0 +1,25 @@
+-- Conformance: HttpServer effect (Chapter 9, Section 9.5.6; marker effects Chapter 7, Section 7.7.5)
+-- Level: verify — unlike ch09_http / ch09_inference (level: check, which
+--   need real network / API access), HttpServer needs no external resource:
+--   `vera verify` type-checks and discharges the handler's contracts without
+--   executing it, so the stronger level applies.
+-- Tests: HttpServer marker effect row, Request/Response prelude ADTs
+--   (destructure via match / construct), effect-row composition with State<Int>
+public fn handle(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) -> Response(200, map_new(), @String.0)
+  }
+}
+
+public fn counting_handler(@Request -> @Response)
+  requires(true)
+  ensures(true)
+  effects(<HttpServer, State<Int>>)
+{
+  put(get(()) + 1);
+  Response(200, map_new(), int_to_string(get(())))
+}

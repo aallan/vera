@@ -513,6 +513,25 @@ class CodeGenerator(
                     if decl.type_params:
                         self._type_alias_params[decl.name] = decl.type_params
 
+        # #305: Pass-1 signatures for USER fns whose params/return
+        # reference prelude ADTs (Request/Response/Json/HtmlNode) were
+        # computed before the prelude registered those layouts, so they
+        # recorded "unsupported" — leaving fn_param_types stale even
+        # though the function compiles fine in Pass 2 (the serve
+        # driver's handler validation reads fn_param_types).
+        # Re-register exactly those now that the layouts exist
+        # (_register_fn is overwrite-idempotent).
+        for tld in program.declarations:
+            decl = tld.decl
+            if (
+                isinstance(decl, ast.FnDecl)
+                and decl.name in existing_fns
+                and decl.name in self._fn_sigs
+            ):
+                params, ret = self._fn_sigs[decl.name]
+                if "unsupported" in params or ret == "unsupported":
+                    self._register_fn(decl)
+
         # Pass 1.5: monomorphize generic functions
         mono_decls = self._monomorphize(program)
         for mdecl in mono_decls:
@@ -817,6 +836,10 @@ class CodeGenerator(
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
             fn_string_returns=fn_string_returns,
+            adt_layouts={
+                name: dict(ctors)
+                for name, ctors in self._adt_layouts.items()
+            },
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
         )

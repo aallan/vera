@@ -1412,3 +1412,24 @@ public fn main(@Unit -> @Unit)
             server.shutdown()
             server.server_close()
         assert out == "CONCURRENTCONCURRENT", (out, log)
+
+
+class TestHttpServerCompilability305:
+    """#305: a handler declaring <HttpServer> compiles to WASM (the
+    marker effect is in the compilability whitelist) and exports."""
+
+    def test_handler_with_httpserver_compiles_and_exports(self) -> None:
+        result = _compile_ok("""
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+""")
+        assert "handle" in result.exports, (
+            f"handler not exported; diagnostics: "
+            f"{[d.description for d in result.diagnostics]}"
+        )

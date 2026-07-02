@@ -3580,3 +3580,51 @@ class TestExplainSlots:
         assert "last @Int" in captured.out
         assert "2 from last @Int" in captured.out
         assert "first @Int" in captured.out
+
+
+class TestCmdServe:
+    """#305: `vera serve file.vera [--port N]` — validation-error paths.
+
+    The running-server behaviour (round-trips, contract-violation → 500,
+    isolation) is covered end-to-end in tests/test_serve.py against
+    make_server; these tests pin the CLI surface: compile-pipeline
+    errors and handler validation exit 1 with a clean message before
+    any socket is bound.
+    """
+
+    def test_serve_missing_file(self, capsys) -> None:
+        from vera.cli import cmd_serve
+
+        code = cmd_serve("/nonexistent/prog.vera")
+        assert code == 1
+        assert "not found" in capsys.readouterr().err.lower()
+
+    def test_serve_type_error_exits_before_binding(
+        self, tmp_path, capsys,
+    ) -> None:
+        from vera.cli import cmd_serve
+
+        bad = tmp_path / "bad.vera"
+        bad.write_text(
+            'public fn handle(@Request -> @Response)\n'
+            '  requires(true) ensures(true) effects(<HttpServer>)\n'
+            '{ "not a response" }\n',
+            encoding="utf-8",
+        )
+        code = cmd_serve(str(bad))
+        assert code == 1
+
+    def test_serve_missing_handler_message(self, tmp_path, capsys) -> None:
+        from vera.cli import cmd_serve
+
+        prog = tmp_path / "nohandle.vera"
+        prog.write_text(
+            "public fn main(-> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n",
+            encoding="utf-8",
+        )
+        code = cmd_serve(str(prog))
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "handle" in err

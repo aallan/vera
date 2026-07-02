@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.192. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.193. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -1315,6 +1315,7 @@ effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
 effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
+effects(<HttpServer>)            -- HTTP request handler (vera serve)
 effects(<Random>)                -- non-deterministic (random number generation)
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
@@ -1475,6 +1476,23 @@ public fn fan_out(@String, @String -> @Bool)
 ```
 
 Every other `async` shape evaluates eagerly (sequential) — `Future<T>` is then just `T`'s representation with no overhead. The checker warns (`W002`) when the argument's effect row falls outside the commutative whitelist `{Http, Async}` (e.g. an `IO`-effectful call), marking where eager evaluation is semantically required. The browser runtime is always eager (identical values, request fires at the `async` point).
+
+### HttpServer effect
+
+`HttpServer` is a marker effect (no operations) for **verified HTTP request handling** (#305). Define a total handler and serve it with `vera serve prog.vera [--port N]` — the accept loop lives in the host, so no `Diverge` is involved and every contract on the handler is an ordinary obligation. `Request` / `Response` are built-in prelude ADTs:
+
+```vera
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+```
+
+Request fields: method, path, headers (`Map<String, String>`), body — in the match arm above the String bindings are method (`@String.2`, oldest), path (`@String.1`), body (`@String.0`, most recent). Response fields: status (`Int`), headers, body. Each request runs on a fresh instance (State cannot leak between requests); a runtime contract violation answers 500 with the trap diagnostic. Native-only (no browser serving).
 
 ### Http effect
 
@@ -2373,7 +2391,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 103 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the three negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 104 small programs — often one per language feature — that serve as minimal working examples. Most are self-contained; the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts. Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the three negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2547,8 +2565,8 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 103 conformance programs hold (positives pass; negatives fail with their E-code)
-python scripts/check_examples.py       # All 35 examples must pass
+python scripts/check_conformance.py    # All 104 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_examples.py       # All 36 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
@@ -2557,8 +2575,8 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 103 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) must *fail* `check` with their `expected_error` E-code
-- All 35 examples in `examples/` must pass `vera check` and `vera verify`
+- All 104 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`) must *fail* `check` with their `expected_error` E-code
+- All 36 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
@@ -2981,7 +2999,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (103 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (104 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -3022,7 +3040,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus a 103-program conformance suite
+- Over 3,000 unit tests plus a 104-program conformance suite
 - 35 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
