@@ -1160,21 +1160,26 @@ function readMdBlock(ptr) {
 /** vera.md_parse(ptr, len) → Result<MdBlock, String> heap ptr. */
 function hostMdParse(ptr, len) {
   const text = readString(ptr, len);
+  // Only parseMarkdown failures become Err(String); a failure in the
+  // gcGuard walk below (rooting bug, shadow-stack overflow, builder
+  // invariant) is runtime infrastructure breakage and must trap
+  // loudly, never masquerade as a Markdown parse error.
+  let doc;
   try {
-    const doc = parseMarkdown(text);
-    // #744: same gcGuard discipline as the json_parse / html_parse
-    // bindings — the whole tree walk runs under one guard (every
-    // ``gcShadowPush`` made by the builders is popped wholesale on
-    // exit), and the returned root is pushed before
-    // ``allocResultOkI32``'s alloc can fire GC.
-    return gcGuard(() => {
-      const blockPtr = writeMdBlock(doc);
-      gcShadowPush(blockPtr);
-      return allocResultOkI32(blockPtr);
-    });
+    doc = parseMarkdown(text);
   } catch (e) {
     return allocResultErrString(e.message || String(e));
   }
+  // #744: same gcGuard discipline as the json_parse / html_parse
+  // bindings — the whole tree walk runs under one guard (every
+  // ``gcShadowPush`` made by the builders is popped wholesale on
+  // exit), and the returned root is pushed before
+  // ``allocResultOkI32``'s alloc can fire GC.
+  return gcGuard(() => {
+    const blockPtr = writeMdBlock(doc);
+    gcShadowPush(blockPtr);
+    return allocResultOkI32(blockPtr);
+  });
 }
 
 /** vera.md_render(blockPtr) → [ptr, len] string pair. */
@@ -2147,20 +2152,23 @@ function buildImportObject(module) {
   if (needed.has("json_parse")) {
     imports.vera.json_parse = (ptr, len) => {
       const text = readString(ptr, len);
+      // Same failure-domain split as hostMdParse: only JSON.parse
+      // errors become Err(String); gcGuard-walk failures trap loudly.
+      let parsed;
       try {
-        const parsed = JSON.parse(text);
-        // #708 (PR #707): wrap in gcGuard and push jsonPtr
-        // before allocResultOkI32's alloc can fire GC.  writeJson
-        // has its own internal guard that pops on return — by the
-        // time control returns here, jsonPtr is unrooted again.
-        return gcGuard(() => {
-          const jsonPtr = writeJson(parsed);
-          gcShadowPush(jsonPtr);
-          return allocResultOkI32(jsonPtr);
-        });
+        parsed = JSON.parse(text);
       } catch (e) {
-        return allocResultErrString(String(e.message || e));
+        return allocResultErrString(e.message || String(e));
       }
+      // #708 (PR #707): wrap in gcGuard and push jsonPtr
+      // before allocResultOkI32's alloc can fire GC.  writeJson
+      // has its own internal guard that pops on return — by the
+      // time control returns here, jsonPtr is unrooted again.
+      return gcGuard(() => {
+        const jsonPtr = writeJson(parsed);
+        gcShadowPush(jsonPtr);
+        return allocResultOkI32(jsonPtr);
+      });
     };
   }
 
@@ -2592,8 +2600,11 @@ function buildImportObject(module) {
   if (needed.has("html_parse")) {
     imports.vera.html_parse = (ptr, len) => {
       const text = readString(ptr, len);
+      // Same failure-domain split as hostMdParse: only parsing
+      // (DOMParser + domToHtml) failures become Err(String); a
+      // failure in the gcGuard walk below traps loudly.
+      let root;
       try {
-        let root;
         if (typeof DOMParser !== "undefined") {
           const parser = new DOMParser();
           const doc = parser.parseFromString(text, 'text/html');
@@ -2604,17 +2615,17 @@ function buildImportObject(module) {
           return allocResultErrString(
             "Unsupported runtime: HTML parsing requires DOMParser (browser only)");
         }
-        // #708 (PR #707): same gcGuard discipline as
-        // json_parse — root nodePtr before allocResultOkI32 fires
-        // GC.
-        return gcGuard(() => {
-          const nodePtr = writeHtml(root);
-          gcShadowPush(nodePtr);
-          return allocResultOkI32(nodePtr);
-        });
       } catch (e) {
         return allocResultErrString(String(e.message || 'HTML parse error'));
       }
+      // #708 (PR #707): same gcGuard discipline as
+      // json_parse — root nodePtr before allocResultOkI32 fires
+      // GC.
+      return gcGuard(() => {
+        const nodePtr = writeHtml(root);
+        gcShadowPush(nodePtr);
+        return allocResultOkI32(nodePtr);
+      });
     };
   }
 
