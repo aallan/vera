@@ -1188,6 +1188,28 @@ public fn main(-> @Int)
         with pytest.raises(ValueError, match="reserved identifier"):
             emit_wasi_component(result)
 
+    def test_longer_identifier_sharing_the_prefix_is_accepted(
+        self,
+    ) -> None:
+        """`$wasi_tblish` contains `$wasi_tbl` but is a DIFFERENT
+        identifier — the check requires an identifier boundary after
+        each exact marker (CR review round 2, PR #849)."""
+        result = _compile_ok("""\
+private fn wasi_tblish(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  7
+}
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  wasi_tblish()
+}
+""")
+        value, _, _ = _run_component(result)
+        assert value == 7
+
 
 class TestPreopenDescriptorCache:
     """get-directories returns a fresh OWNED descriptor list per call;
@@ -1246,3 +1268,60 @@ public fn main(-> @Unit)
         (tmp_path / "cached.txt").write_text("payload", encoding="utf-8")
         _, out, _ = _run_component(result, preopen=str(tmp_path))
         assert out == "payload"
+
+
+class TestStdinTailSemantics:
+    """Pins for the read_line tail rules (CR review round 2, PR #849),
+    each verified against the core host's universal-newlines behavior:
+
+    - \\r at EOF: Python's text layer treats it as a line break, so the
+      core path returns the line WITHOUT it — the adapter's
+      unconditional trailing-\\r strip is parity, and gating the strip
+      on a \\n terminator would diverge.
+    - lone \\r as a SEPARATOR: the core path splits there; the adapter
+      keeps it as content — the documented spec §13.6 divergence
+      (matching would need cross-call byte pushback in WAT)."""
+
+    def test_cr_at_eof_is_stripped_like_the_core_host(self) -> None:
+        result = _compile_ok("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0);
+  IO.print("|");
+  IO.print(nat_to_string(string_length(@String.0)))
+}
+""")
+        handle = tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".txt", delete=False,
+        )
+        try:
+            with handle:
+                handle.write(b"abc\r")
+            _, out, _ = _run_component(result, stdin_path=handle.name)
+        finally:
+            os.unlink(handle.name)
+        assert out == "abc|3"
+
+    def test_lone_cr_separator_stays_content_as_documented(self) -> None:
+        result = _compile_ok("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(nat_to_string(string_length(@String.0)))
+}
+""")
+        handle = tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".txt", delete=False,
+        )
+        try:
+            with handle:
+                handle.write(b"a\rb\nrest\n")
+            _, out, _ = _run_component(result, stdin_path=handle.name)
+        finally:
+            os.unlink(handle.name)
+        # "a\rb" is 3 bytes of content — the lone \r separator is NOT
+        # a terminator on this target (spec §13.6).
+        assert out == "3"

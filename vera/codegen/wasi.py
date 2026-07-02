@@ -721,19 +721,28 @@ def _transform_main(
         )
     body = lines[1:-1]
 
-    # Reserved-identifier collision check.  Scan only non-data lines:
-    # a data segment's payload is a string literal, and a Vera program
-    # printing "$wasi_tbl" is not a collision (CR review, PR #849) —
-    # only an actual WAT identifier (e.g. a Vera fn named `wasi_tbl`,
-    # emitted as `$wasi_tbl`) is.
+    # Reserved-identifier collision check.  Scan only non-data lines
+    # (a data segment's payload is a string literal — a Vera program
+    # printing "$wasi_tbl" is not a collision), and require an
+    # identifier boundary after each exact marker so a LONGER
+    # identifier like `$wasi_tblish` is not a collision either
+    # (CR review, PR #849).  `$wasi_sig_` is the one deliberate
+    # prefix family (the shim type names `$wasi_sig_<op>`).
     ident_lines = "\n".join(
         line for line in body if not line.lstrip().startswith("(data")
     )
-    for marker in (
-        "$wasi_tbl", "$wasi_arena_ptr", "$cabi_realloc",
-        "$__wasi_run", "$wasi_sig_",
+    for marker, is_prefix in (
+        ("$wasi_tbl", False), ("$wasi_arena_ptr", False),
+        ("$cabi_realloc", False), ("$__wasi_run", False),
+        ("$wasi_sig_", True),
     ):
-        if marker in ident_lines:
+        pattern = re.escape(marker)
+        if not is_prefix:
+            # WAT identifiers extend through [0-9A-Za-z_$.] in the
+            # names the Vera code generator emits; anything else
+            # (whitespace, parens, quote, end) terminates the id.
+            pattern += r"(?![0-9A-Za-z_$.])"
+        if re.search(pattern, ident_lines):
             raise ValueError(
                 f"program defines the reserved identifier {marker!r}; "
                 "--target wasi-p2 cannot compile it"
