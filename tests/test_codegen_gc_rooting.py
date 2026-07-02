@@ -5,13 +5,19 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 from __future__ import annotations
 
 import re
+import struct
 from pathlib import Path
 
 import pytest
+import wasmtime
 
 from vera.codegen import (
     compile,
     execute,
+)
+from vera.runtime.heap import (
+    InstanceCaller,
+    _ShadowGuard,
 )
 
 from tests.codegen_helpers import (
@@ -1441,3 +1447,129 @@ public fn main(-> @Unit)
             env_vars={"VERA_ROOTING_PROBE": "wombat"},
         )
         assert exec_result.stdout == "6:wombat"
+
+
+# =====================================================================
+# #791: _ShadowGuard.push must reject a partial final slot
+# =====================================================================
+
+
+class TestShadowGuardPushBound791:
+    """Pin the #791 hardening: ``_ShadowGuard.push`` writes a 4-byte
+    slot at ``gc_sp``, so its overflow bound must be slot-complete
+    (reject when ``sp + 4 > limit``), not slot-start (``sp >= limit``).
+    Under the old bound a ``gc_sp`` left with only 1-3 bytes of
+    headroom (``sp == limit - 1/2/3``) passed the check and the push
+    wrote past the shadow-stack window into the adjacent GC worklist
+    region instead of raising the overflow diagnostic.
+
+    The misaligned state is UNREACHABLE via generated WAT today —
+    codegen always advances ``$gc_sp`` in 4-byte steps from a
+    4-aligned window base (``vera/codegen/assembly.py``) — so this is
+    defense-in-depth for the GC trust root against a future
+    hand-written fixture or host path, not a live-bug regression.
+    That is also why these tests construct the state directly on a
+    hand-rolled module (mirroring the real export shapes: mutable
+    ``gc_sp``, immutable ``gc_stack_limit``) rather than compiling a
+    Vera program: no compiled program can produce it.
+    """
+
+    # Shadow-stack window [64, 96) — 8 slots, 4-aligned like the
+    # real layout.  The page beyond `limit` is zero-initialised, so
+    # any spill past the window is observable as non-zero bytes.
+    _STACK_BASE = 64
+    _STACK_LIMIT = 96
+
+    def _make_caller(self) -> InstanceCaller:
+        """Stand up a minimal module with the #692 export triple
+        (`memory`, `gc_sp`, `gc_stack_limit`) that `_ShadowGuard`
+        requires, adapted through the production `InstanceCaller`
+        (the same protocol the #305 serve driver uses)."""
+        wat = (
+            "(module\n"
+            '  (memory (export "memory") 1)\n'
+            f'  (global (export "gc_sp") (mut i32) '
+            f"(i32.const {self._STACK_BASE}))\n"
+            f'  (global (export "gc_stack_limit") i32 '
+            f"(i32.const {self._STACK_LIMIT}))\n"
+            ")\n"
+        )
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        module = wasmtime.Module(engine, wat)
+        instance = wasmtime.Instance(store, module, [])
+        return InstanceCaller(store, instance)
+
+    @pytest.mark.parametrize("headroom", [1, 2, 3])
+    def test_push_rejects_partial_final_slot(self, headroom: int) -> None:
+        """1-3 bytes of headroom cannot fit the 4-byte slot: push must
+        raise the overflow diagnostic and leave memory untouched.
+        Pre-fix (``sp >= limit``) the check passed and the write
+        spilled ``4 - headroom`` bytes past the window."""
+        caller = self._make_caller()
+        sp_global = caller["gc_sp"]
+        assert isinstance(sp_global, wasmtime.Global)
+        sp_global.set_value(caller, self._STACK_LIMIT - headroom)
+        with _ShadowGuard(caller) as guard:  # noqa: SIM117
+            with pytest.raises(
+                RuntimeError, match="host shadow-stack overflow",
+            ):
+                guard.push(0x1234)
+        # No partial write may have leaked: the whole candidate slot
+        # (including the bytes past `limit`) must still be zero.
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)
+        spill = bytes(memory.read(
+            caller,
+            self._STACK_LIMIT - headroom,
+            self._STACK_LIMIT - headroom + 4,
+        ))
+        assert spill == b"\x00" * 4
+
+    def test_push_accepts_exact_final_slot(self) -> None:
+        """``sp == limit - 4`` is the LAST valid slot — the
+        slot-complete bound must still accept it (guards against
+        over-tightening to ``sp + 4 >= limit``), write the pointer
+        little-endian at ``sp``, and advance ``gc_sp`` to ``limit``."""
+        caller = self._make_caller()
+        sp_global = caller["gc_sp"]
+        assert isinstance(sp_global, wasmtime.Global)
+        sp_global.set_value(caller, self._STACK_LIMIT - 4)
+        with _ShadowGuard(caller) as guard:
+            assert guard.push(0x1234) == 0x1234
+            assert sp_global.value(caller) == self._STACK_LIMIT
+            memory = caller["memory"]
+            assert isinstance(memory, wasmtime.Memory)
+            slot = bytes(memory.read(
+                caller, self._STACK_LIMIT - 4, self._STACK_LIMIT,
+            ))
+            assert slot == struct.pack("<I", 0x1234)
+
+    def test_push_rejects_full_window(self) -> None:
+        """``sp == limit`` (zero headroom) was already rejected by the
+        old bound — pin that the boundary behaviour is unchanged."""
+        caller = self._make_caller()
+        sp_global = caller["gc_sp"]
+        assert isinstance(sp_global, wasmtime.Global)
+        sp_global.set_value(caller, self._STACK_LIMIT)
+        with _ShadowGuard(caller) as guard:  # noqa: SIM117
+            with pytest.raises(
+                RuntimeError, match="host shadow-stack overflow",
+            ):
+                guard.push(0x1234)
+
+    def test_push_rejects_negative_sp(self) -> None:
+        """A negative ``gc_sp`` (i32 with bit 31 set) must be rejected
+        outright: ``sp + 4 > limit`` alone is False for a large
+        negative ``sp``, and the pre-fix code would have indexed the
+        ctypes buffer at a negative offset — a write BEFORE the
+        linear-memory base, i.e. host-memory corruption."""
+        caller = self._make_caller()
+        sp_global = caller["gc_sp"]
+        assert isinstance(sp_global, wasmtime.Global)
+        sp_global.set_value(caller, -8)
+        with _ShadowGuard(caller) as guard:  # noqa: SIM117
+            with pytest.raises(
+                RuntimeError, match="host shadow-stack overflow",
+            ):
+                guard.push(0x1234)
