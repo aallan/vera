@@ -500,6 +500,20 @@ public fn main(-> @Int)
         }
         assert seen <= set(range(1, 7)), seen
 
+    def test_random_int_equal_bounds_is_deterministic(self) -> None:
+        """low == high pins inclusivity of BOTH bounds without chance:
+        an exclusive upper bound could only return low-1 or reject
+        forever (CR review, PR #849)."""
+        result = _compile_ok("""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{
+  Random.random_int(4, 4)
+}
+""")
+        value, _, _ = _run_component(result)
+        assert value == 4
+
     def test_random_float_and_bool_shapes(self) -> None:
         result = _compile_ok("""\
 public fn main(-> @Unit)
@@ -1135,3 +1149,100 @@ class TestStockWasmtimeCli:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout == "Hello, WASI!"
+
+
+# =====================================================================
+# CodeRabbit round-1 regressions (PR #849)
+# =====================================================================
+
+class TestReservedMarkerScan:
+    """The reserved-identifier check must inspect WAT identifiers, not
+    data-segment payloads — a program PRINTING "$wasi_tbl" is fine; a
+    program DEFINING a fn named wasi_tbl is a real collision."""
+
+    def test_literal_containing_marker_is_accepted(self) -> None:
+        result = _compile_ok("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("$wasi_tbl is a nice name")
+}
+""")
+        _, out, _ = _run_component(result)
+        assert out == "$wasi_tbl is a nice name"
+
+    def test_identifier_collision_is_still_rejected(self) -> None:
+        result = _compile_ok("""\
+private fn wasi_tbl(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  1
+}
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  wasi_tbl()
+}
+""")
+        with pytest.raises(ValueError, match="reserved identifier"):
+            emit_wasi_component(result)
+
+
+class TestPreopenDescriptorCache:
+    """get-directories returns a fresh OWNED descriptor list per call;
+    the adapter must fetch once and cache, or every IO.read_file /
+    write_file leaks a handle into the instance's resource table."""
+
+    def test_emitted_wat_caches_the_preopen_descriptor(self) -> None:
+        wat = _emit("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_file("x.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+""")
+        assert "(global $preopen_fd (mut i32) (i32.const -2))" in wat
+        # Exactly one fetch site, guarded by the unfetched sentinel.
+        assert wat.count("call $l_get_dirs") == 1
+        assert "global.get $preopen_fd" in wat
+
+    def test_repeated_file_ops_still_work_through_the_cache(
+        self, tmp_path: Path,
+    ) -> None:
+        """60 read_file calls through one instance — every read goes
+        through the cached descriptor and returns the same content."""
+        result = _compile_ok("""\
+private fn read_n(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(<IO>)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    match IO.read_file("cached.txt") {
+      Ok(@String) -> string_length(@String.0),
+      Err(@String) -> 0
+    };
+    read_n(@Nat.0 - 1)
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  read_n(60);
+  match IO.read_file("cached.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(string_concat("ERR:", @String.0))
+  }
+}
+""")
+        (tmp_path / "cached.txt").write_text("payload", encoding="utf-8")
+        _, out, _ = _run_component(result, preopen=str(tmp_path))
+        assert out == "payload"

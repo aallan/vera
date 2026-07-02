@@ -104,12 +104,11 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # Common mistakes section — intentionally wrong code
     1946: ("FRAGMENT", "Wrong: missing contracts"),
     1966: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
-    # Note: line 1905 is the CORRECT add-with-effects full function (parses OK,
-    # not allowlisted).  The "Wrong: bare @Int + @Int without indices" entry
-    # used to be parked here by mistake; the bare-add code is actually at 1942.
+    # Note: the CORRECT add-with-effects full function (line 1953)
+    # parses OK and is deliberately not allowlisted.
+    2000: ("FRAGMENT", "Correct: bare @Int + @Int (common mistakes)"),
     2013: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
     2018: ("FRAGMENT", "Correct: indexed slot arithmetic"),
-    2000: ("FRAGMENT", "Correct: bare @Int + @Int (common mistakes)"),
     2108: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
     2115: ("FRAGMENT", "Correct: match with Option arms (bare)"),
     2125: ("FRAGMENT", "Wrong: missing braces on if/else branches"),

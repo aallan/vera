@@ -721,11 +721,19 @@ def _transform_main(
         )
     body = lines[1:-1]
 
+    # Reserved-identifier collision check.  Scan only non-data lines:
+    # a data segment's payload is a string literal, and a Vera program
+    # printing "$wasi_tbl" is not a collision (CR review, PR #849) —
+    # only an actual WAT identifier (e.g. a Vera fn named `wasi_tbl`,
+    # emitted as `$wasi_tbl`) is.
+    ident_lines = "\n".join(
+        line for line in body if not line.lstrip().startswith("(data")
+    )
     for marker in (
         "$wasi_tbl", "$wasi_arena_ptr", "$cabi_realloc",
         "$__wasi_run", "$wasi_sig_",
     ):
-        if marker in wat:
+        if marker in ident_lines:
             raise ValueError(
                 f"program defines the reserved identifier {marker!r}; "
                 "--target wasi-p2 cannot compile it"
@@ -966,6 +974,13 @@ def _adapter_fields(used: set[str], lay: _Layout) -> list[str]:
         fields.append("  (global $stderr_h (mut i32) (i32.const -1))")
     if used & {"read_line", "read_char"}:
         fields.append("  (global $stdin_h (mut i32) (i32.const -1))")
+    if used & {"read_file", "write_file"}:
+        # -2 = not yet fetched; -1 = fetched, no preopens.  The fetched
+        # descriptor is cached for the process lifetime — get-directories
+        # returns a fresh OWNED descriptor per call, so re-fetching per
+        # file op would leak one handle into the instance's resource
+        # table on every IO.read_file/write_file (CR review, PR #849).
+        fields.append("  (global $preopen_fd (mut i32) (i32.const -2))")
 
     segments, _refs, _errtab, _bump = _build_statics(used, lay.arena_base)
     fields += segments
@@ -1249,16 +1264,30 @@ def _read_byte(lay: _Layout) -> str:
 def _get_preopen(lay: _Layout) -> str:
     """First preopened directory's descriptor handle, or -1.
 
-    v1 uses the first preopen only (the runner preopens CWD at "/");
-    extra preopen handles from the returned list are not dropped —
-    they are process-lifetime resources in the intended single-preopen
-    deployment.  Multi-preopen longest-prefix matching is a tracked
-    follow-up.
+    Fetched ONCE and cached in ``$preopen_fd`` (sentinel -2 =
+    unfetched): every ``get-directories`` call returns a fresh OWNED
+    descriptor list, so fetching per file op would leak one handle
+    into the instance's resource table on every ``IO.read_file`` /
+    ``write_file`` (CR review, PR #849).  The cached descriptor (and
+    any extra preopens in the one fetched list) are process-lifetime
+    resources, same as the cached std stream handles.  v1 uses the
+    first preopen only (the runner preopens CWD at "/"); multi-preopen
+    longest-prefix matching is a tracked follow-up.
+
+    ``$arena_reset`` stays unconditional at the top — callers rely on
+    it as their op-entry arena reset.
     """
     dirs = lay.slab("dirs")
     return (
         "  (func $get_preopen (result i32)\n"
         "    call $arena_reset\n"
+        "    global.get $preopen_fd\n"
+        "    i32.const -2\n"
+        "    i32.ne\n"
+        "    if\n"
+        "      global.get $preopen_fd\n"
+        "      return\n"
+        "    end\n"
         f"    i32.const {dirs}\n"
         "    call $l_get_dirs\n"
         f"    i32.const {dirs}\n"
@@ -1266,11 +1295,15 @@ def _get_preopen(lay: _Layout) -> str:
         "    i32.eqz\n"
         "    if\n"
         "      i32.const -1\n"
+        "      global.set $preopen_fd\n"
+        "      i32.const -1\n"
         "      return\n"
         "    end\n"
         f"    i32.const {dirs}\n"
         "    i32.load\n"
         "    i32.load\n"
+        "    global.set $preopen_fd\n"
+        "    global.get $preopen_fd\n"
         "  )"
     )
 

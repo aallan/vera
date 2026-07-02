@@ -40,10 +40,10 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-from vera.codegen.api import ExecuteResult
+from vera.codegen.api import ExecuteResult, WasmTrapError
 from vera.codegen.wasi import emit_wasi_component
 from vera.runtime.text import safe_utf8_decode
-from vera.runtime.traps import WasmTrapError, _classify_trap
+from vera.runtime.traps import _classify_trap
 
 if TYPE_CHECKING:
     from vera.codegen.api import CompileResult

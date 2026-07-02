@@ -219,7 +219,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.194 — 1,800+ commits, 194 releases, 5,755 tests, 91% code coverage, 104 conformance programs, 36 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.194 — 1,800+ commits, 194 releases, 5,760 tests, 91% code coverage, 104 conformance programs, 36 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 
@@ -247,7 +247,7 @@ vera/
 ├── CONTRIBUTING.md                # Contributor guidelines
 ├── CHANGELOG.md                   # Version history
 ├── LICENSE                        # MIT licence
-├── spec/                          # Language specification (13 chapters)
+├── spec/                          # Language specification (14 chapters)
 ├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               #   Lark LALR(1) grammar
 │   ├── parser.py                  #   Parser module
@@ -265,7 +265,7 @@ vera/
 │   └── cli.py                     #   Command-line interface
 ├── docs/                          # GitHub Pages site (veralang.dev)
 ├── editors/                       # VS Code extension (LSP client + grammar) + TextMate bundle
-├── examples/                      # 35 example Vera programs
+├── examples/                      # 36 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```

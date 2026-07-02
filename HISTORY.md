@@ -439,7 +439,7 @@ Eight releases, chosen for the capability each one unlocked rather than even spa
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Milestone | First release | Runs end-to-end | GC + maturity | Inference effect | Language server | Soundness campaign | HttpServer effect | WASI 0.2 target |
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP | 5 + modules + GC + browser + LSP + WASI |
-| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,755 |
+| Tests | ~50 | ~300 | ~1,400 | 3,095 | 4,342 | 5,559 | 5,615 | 5,760 |
 | Examples | 13 | 15 | 18 | 30 | 35 | 35 | 36 | 36 |
 | Built-in functions | 0 | 0 | ~30 | 122 | 164 | 164 | 164 | 164 |
 | Conformance programs | 0 | 0 | 0 | 64 | 89 | 103 | 104 | 104 |
