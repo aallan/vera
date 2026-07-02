@@ -225,10 +225,21 @@ class _ShadowGuard:
         limit = self._limit_global.value(self._caller)
         assert isinstance(sp, int)  # noqa: S101
         assert isinstance(limit, int)  # noqa: S101
-        if sp >= limit:
+        if sp < 0 or sp + 4 > limit:
             # Same diagnostic shape as the WAT-side overflow path
             # (``unreachable`` in ``gc_shadow_push``) — surface
             # as a host-side error rather than a wasmtime trap.
+            # #791: the bound is slot-complete — the push writes a
+            # 4-byte slot at ``[sp..sp+3]``, so ``sp + 4 > limit``
+            # (not ``sp >= limit``) rejects a misaligned ``gc_sp``
+            # with 1-3 bytes of headroom that would otherwise
+            # partially spill past the window, and ``sp < 0``
+            # rejects a negative pointer that would index the
+            # ctypes buffer BEFORE the linear-memory base.
+            # Unreachable via generated WAT (which advances
+            # ``$gc_sp`` in 4-byte steps from a 4-aligned base) —
+            # defense-in-depth for hand-written fixtures / future
+            # host paths.
             raise RuntimeError(
                 f"#692: host shadow-stack overflow "
                 f"(sp={sp}, limit={limit})",

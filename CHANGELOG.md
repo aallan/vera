@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`_ShadowGuard.push` now rejects a partial shadow-stack slot** ([#791](https://github.com/aallan/vera/issues/791)).  The host-side GC shadow-stack push in `vera/runtime/heap.py` bounds-checked with `sp >= limit` before writing a 4-byte slot, so a misaligned `gc_sp` left with 1–3 bytes of headroom would have written past the window instead of raising the overflow diagnostic; the bound is now slot-complete (`sp < 0 or sp + 4 > limit`), which also rejects a negative `sp` that would have indexed host memory *before* the linear-memory base.  Defense-in-depth hardening of the GC trust root, **not a live bug**: the misaligned state is unreachable today — generated WAT always advances `gc_sp` in 4-byte steps from a 4-aligned window base — so no compiled program's behaviour changes.  New unit tests construct the state directly on a hand-rolled module and pin the three partial-headroom rejections, the exact-final-slot accept boundary, the full-window rejection, and the negative-`sp` rejection (mutation-validated: reverting the bound flips them RED).  The same file's only other window bound (`_read_string_export`) already used the slot-complete form.
+
 ## [0.0.196] - 2026-07-02
 
 ### Added
