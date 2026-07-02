@@ -59,7 +59,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 9 — numeric conversion/predicate signatures (no body)
     # 803, 833 — bare ``` fences (no language tag), heuristic skips them
     ("09-standard-library.md", 941): "FRAGMENT",  # nat_to_int signature (no body)
-    ("09-standard-library.md", 995): "FRAGMENT",  # float_is_nan signature (no body)
     ("09-standard-library.md", 1079): "FRAGMENT",  # infinity signature (no body)
 
     # Chapter 9 — string operation signatures (no body)
@@ -108,7 +107,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1646): "FRAGMENT",  # array_find signature (no body)
     ("09-standard-library.md", 1658): "FRAGMENT",  # array_any + array_all signatures (no body)
     ("09-standard-library.md", 1674): "FRAGMENT",  # array_flatten signature (no body)
-    ("09-standard-library.md", 1653): "FRAGMENT",  # array_sort_by signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -156,6 +154,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
     ("07-effects.md", 321): "FRAGMENT",     # effect Diverge {} — no operations
+    ("07-effects.md", 349): "FRAGMENT",     # effect HttpServer {} — no operations (#305)
 
     # Chapter 9 — Async builtin signatures (no body)
     ("09-standard-library.md", 495): "FRAGMENT",  # async/await signatures (no body)
@@ -199,10 +198,14 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1337): "FRAGMENT",  # parse_int signature (no body)
     ("09-standard-library.md", 1382): "FRAGMENT",  # parse_bool signature (no body)
 
-    ("09-standard-library.md", 1483): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
     ("09-standard-library.md", 2077): "FUTURE",   # md_parse
+    ("09-standard-library.md", 587): "FRAGMENT",   # Request/Response prelude data decls (#305, no visibility)
+    ("09-standard-library.md", 1028): "FRAGMENT",  # float_is_nan signature (no body)
+    ("09-standard-library.md", 1516): "FRAGMENT",  # url_join signature (no body)
+    ("09-standard-library.md", 1719): "FRAGMENT",  # string_chars/lines/words signatures (no bodies)
+    ("09-standard-library.md", 2110): "FUTURE",    # md_parse signature (no body)
     ("09-standard-library.md", 2119): "FUTURE",   # md_render
     ("09-standard-library.md", 2130): "FUTURE",   # md_has_heading
     ("09-standard-library.md", 2139): "FUTURE",   # md_has_code_block
