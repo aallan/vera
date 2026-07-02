@@ -294,13 +294,15 @@ class TestVerifierCodegenOverflowDifferential798:
         assert verifier._overflow_arith_type(site) == "Int"
 
     def test_narrowed_result_classified_at_i64_not_result_type(self) -> None:
-        """An @Int add narrowed into a @Nat slot is i64 arithmetic (#798).
+        """An @Int add returned into a @Nat slot is i64 arithmetic (#798).
 
-        ``@Int.0 + 1`` stored as @Nat resolves the *expression* to @Nat, but the
-        addition runs at i64 (both operands @Int) — classifying on the result
-        would mis-range it to u64 and drop an i64 overflow.  The operands' common
-        type (@Int) is the correct width.  This pins the shape a result-type
-        classifier silently gets wrong.
+        ``@Int.0 + 1`` is an @Int add whose result is *returned* into a @Nat
+        slot.  Since #755, ``Int <op> Nat`` joins to the formal LUB @Int, so the
+        whole-expression type is honestly @Int (not the pre-#755 @Nat) — and the
+        arithmetic width the classifier obligates on (the operands' common type)
+        is @Int either way.  The soundness point the classifier must never break:
+        the add runs at i64, so its overflow obligation is discharged at the i64
+        range, never mis-ranged to u64.
         """
         source = """
 public fn f(@Int -> @Nat)
@@ -316,9 +318,41 @@ public fn f(@Int -> @Nat)
             expr_target_types=arts.expr_target_types,
         )
         site = _binary_sites(program)[0]
-        # Result resolves to @Nat (narrowed); the *arithmetic* width is @Int.
-        assert verifier._overflow_int_type(site) == "Nat"     # the result type
+        # Post-#755 the mixed-join result is the formal LUB @Int (was @Nat), and
+        # the arithmetic width is @Int — both agree on the i64-add classification.
+        assert verifier._overflow_int_type(site) == "Int"     # the result type
         assert verifier._overflow_arith_type(site) == "Int"   # the i64 width
+
+    def test_mixed_operand_classified_at_i64_not_operand_self_type(self) -> None:
+        """A mixed ``@Int + @Nat`` add is i64 arithmetic (#798, #755).
+
+        The right operand ``@Nat.0`` is a u64 value on its own, so a per-operand
+        classifier that read *that* operand's self-type would obligate the site
+        at u64 and drop an i64 overflow.  ``_overflow_arith_type`` combines the
+        operands to the common width @Int (either operand @Int ⇒ i64 add).  This
+        keeps the "don't classify on one operand's self-type" coverage that the
+        sibling narrowed-result case lost once #755 made the mixed-join result
+        honestly @Int.
+        """
+        source = """
+public fn f(@Int, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Nat.0 }
+"""
+        program = parse_to_ast(source)
+        diags, arts = typecheck_with_artifacts(program, source)
+        assert not [d for d in diags if d.severity == "error"]
+        verifier = ContractVerifier(
+            source=source,
+            expr_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
+        )
+        site = _binary_sites(program)[0]
+        # The right operand's self-type is @Nat (u64) — the arithmetic width is
+        # @Int (i64), the common type; classifying on the u64 operand drops an
+        # i64 overflow.
+        assert verifier._overflow_int_type(site.right) == "Nat"  # operand self
+        assert verifier._overflow_arith_type(site) == "Int"      # i64 width
 
 
 class TestCorpusOverflowDifferential798:
