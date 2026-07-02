@@ -436,6 +436,7 @@ def diagnose_lark_error(
 ERROR_CODES: dict[str, str] = {
     # W0xx — Warnings
     "W001": "Typed hole",
+    "W002": "Async argument evaluates eagerly",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
     "E002": "Missing effect clause",

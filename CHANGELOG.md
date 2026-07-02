@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`W002` — async concurrency-eligibility warning** ([#841](https://github.com/aallan/vera/issues/841), first slice).  `async(e)` is only made concurrent when `e`'s effect row stays within the commutative whitelist (`{Http}` in v1; the `Async` marker itself has no operations and cannot order anything).  For any other row the checker now says so — `async(IO.print(...))` warns that it evaluates eagerly at the `async()` site — instead of letting a program imply concurrency it does not get.  The rule resolves effect-op calls to their parent effect and function calls to their declared rows, recursively, and treats anything unresolvable as conservatively non-commutative.  Mutation-validated four ways (rule deleted, whitelist over-permissive, whitelist over-firing, fn-call rows ignored — each flips exactly its discriminating tests RED).
+
 ### Changed
 
 - **Split `tests/test_checker.py` into eight phase-focused test files** ([#420](https://github.com/aallan/vera/issues/420)).  The monolithic 6,752-line, 60-class checker test file is replaced by eight themed files — `test_checker_types.py`, `test_checker_patterns.py`, `test_checker_functions.py`, `test_checker_effects.py`, `test_checker_modules.py`, `test_checker_errors.py`, `test_checker_builtins_collections.py`, `test_checker_builtins_strings.py` — each under 1,200 lines, with the shared header (the `_check` / `_errors` / `_warnings` / `_check_ok` / `_check_clean` / `_check_err` helpers and the `EXAMPLES_DIR` / `EXAMPLE_FILES` / `CLEAN_EXAMPLES` / `WARN_EXAMPLES` constants) extracted to a new `tests/checker_helpers.py` imported by all eight (matching the repo's existing `from tests.<module> import` precedent).  Mechanical and behaviour-preserving: all 572 tests are carried over unchanged and each class moves whole; no test is added, removed, or modified.  (Companion to the [#419](https://github.com/aallan/vera/issues/419) `test_codegen.py` split.)

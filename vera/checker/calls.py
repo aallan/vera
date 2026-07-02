@@ -178,6 +178,14 @@ class CallsMixin:
                 for ei in fn_info.effect.effects:
                     self._effect_ops_used.add(ei.name)
 
+        # #841: concurrency-eligibility warning for async().  The runtime
+        # only makes async(e) concurrent when e's effect row stays within
+        # the commutative whitelist; anything else evaluates eagerly, and
+        # the checker says so rather than letting the program imply
+        # concurrency it does not get.
+        if fn_info.name == "async" and len(args) == 1:
+            self._warn_non_commutative_async(args[0], node)
+
         # Call-site effect check: callee's effects must be permitted
         # by the caller's context (Spec §7.8 subeffecting).
         if self.env.current_effect_row is not None:
@@ -199,6 +207,79 @@ class CallsMixin:
                 )
 
         return return_type
+
+    # Effects whose operations are value-confluent — reordering their
+    # completions cannot change any observable output — so async() may run
+    # them concurrently (#841).  ``Async`` itself is a marker effect with
+    # no operations, so it cannot order anything either.
+    _ASYNC_COMMUTATIVE: frozenset[str] = frozenset({"Http", "Async"})
+
+    def _warn_non_commutative_async(self, arg: ast.Expr,
+                                    node: ast.Node) -> None:
+        """Warn (W002) when async()'s argument performs effects outside
+        the commutative whitelist — such futures evaluate eagerly."""
+        found: set[str] = set()
+        self._collect_expr_effects(arg, found)
+        outside = sorted(found - self._ASYNC_COMMUTATIVE)
+        if outside:
+            self._error(
+                node,
+                f"async argument performs {', '.join(outside)} effects, "
+                f"which are outside the commutative set "
+                f"({', '.join(sorted(self._ASYNC_COMMUTATIVE - {'Async'}))}); "
+                f"it evaluates eagerly (sequentially) at the async() site.",
+                rationale="Concurrent evaluation is only observably "
+                          "equivalent to eager evaluation when the "
+                          "argument's effects commute; for any other "
+                          "effect row the implementation preserves program "
+                          "order by evaluating eagerly, and warns so the "
+                          "program does not imply concurrency it does not "
+                          "get.",
+                fix="Restrict the async argument to commutative effects "
+                    "(e.g. a direct Http.get/Http.post call), or drop the "
+                    "async() wrapper if eager evaluation is intended.",
+                spec_ref='Chapter 9, Section 9.5.4 "Async"',
+                severity="warning",
+                error_code="W002",
+            )
+
+    def _collect_expr_effects(self, node: ast.Node,
+                              acc: set[str]) -> None:
+        """Conservatively collect the effect names an expression may
+        perform: effect-op calls contribute their parent effect, function
+        calls contribute the callee's declared row, and anything that
+        cannot be resolved contributes an opaque marker (never silently
+        commutative)."""
+        import dataclasses as _dc
+
+        if isinstance(node, ast.QualifiedCall):
+            if self.env.lookup_effect(node.qualifier) is not None:
+                acc.add(node.qualifier)
+            else:
+                # Cross-module function call — its row is not resolvable
+                # from this mixin; conservatively non-commutative.
+                acc.add(f"<{node.qualifier}.{node.name}>")
+        elif isinstance(node, ast.FnCall):
+            op_info = self.env.lookup_effect_op(node.name)
+            if op_info is not None:
+                acc.add(op_info.parent_effect)
+            else:
+                fn_info = self.env.lookup_function(node.name)
+                if fn_info is None:
+                    acc.add(f"<{node.name}>")
+                elif isinstance(fn_info.effect, ConcreteEffectRow):
+                    for ei in fn_info.effect.effects:
+                        acc.add(ei.name)
+                elif not isinstance(fn_info.effect, PureEffectRow):
+                    acc.add(f"<{node.name}>")
+        for field in _dc.fields(node):
+            value = getattr(node, field.name)
+            if isinstance(value, ast.Node):
+                self._collect_expr_effects(value, acc)
+            elif isinstance(value, tuple):
+                for item in value:
+                    if isinstance(item, ast.Node):
+                        self._collect_expr_effects(item, acc)
 
     def _check_op_call(self, op_info: OpInfo,
                        args: tuple[ast.Expr, ...],
