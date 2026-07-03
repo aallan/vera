@@ -1238,3 +1238,262 @@ public fn main(@Unit -> @Bool)
         assert '(import "vera" "async_await"' in result.wat
         exec_result = execute(result)
         assert exec_result.value == 1
+
+
+class TestIndirectClosureFusedAwait843:
+    """#843: an inline ``await`` of an INDIRECTLY-called closure (an
+    ``apply_fn`` on a fn-typed slot or an inline ``AnonFn``) whose declared
+    return is ``Future<Result<String, String>>`` must get the fused-handle
+    runtime check.  Pre-fix, ``await_needs_check`` had no ``apply_fn`` arm —
+    the await lowered to identity, the kind-4 fused wrapper flowed into the
+    match's unconditional last arm, the ``Err`` payload came out as a
+    zero-length string, and the request outcome was silently discarded (the
+    #842 failure shape, one call-indirection further out).
+
+    The ceiling classifies the shape correctly by consulting the closure's
+    declared return type (via the type-alias / AnonFn signature), so the
+    program runs correctly rather than merely failing loudly."""
+
+    # A fn-typed slot whose return is the fused future type.
+    _FETCHER_ALIAS = (
+        "type Fetcher = fn(String -> Future<Result<String, String>>) "
+        "effects(<Http, Async>);"
+    )
+
+    _SLOT_SOURCE = (
+        _FETCHER_ALIAS
+        + """
+
+private fn run_fetch(@Fetcher, @String -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(apply_fn(@Fetcher.0, @String.0));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  run_fetch(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+      async(Http.get(@String.0))
+    },
+    "ftp://blocked.invalid/x"
+  )
+}
+"""
+    )
+
+    # The inline-AnonFn form of the same indirect await.
+    _ANON_SOURCE = (
+        _FETCHER_ALIAS
+        + """
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(apply_fn(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+      async(Http.get(@String.0))
+    },
+    "ftp://blocked.invalid/x"
+  ));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+    )
+
+    # A GENERIC fn-type alias instantiated to the fused future type at
+    # the slot (PR #868 panel, critical): the alias's raw return is the
+    # bare type param `T`, so classification must substitute the slot's
+    # bound type args — exactly as `_infer_apply_fn_return_type` does
+    # when it builds the (valid!) call_indirect signature.  Without the
+    # substitution the two consultors diverge: no E616, no WASM trap,
+    # identity await, silent wrong value — check+verify+run all green,
+    # returns 0 where the non-generic equivalent returns 1, and the WAT
+    # has zero `async_await` references instead of the import + call.
+    _GENERIC_ALIAS_SOURCE = """\
+type Producer<T> = fn(String -> T) effects(<Http, Async>);
+
+private fn run_fetch(@Producer<Future<Result<String, String>>>, @String -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(apply_fn(@Producer<Future<Result<String, String>>>.0, @String.0));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  run_fetch(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+      async(Http.get(@String.0))
+    },
+    "ftp://blocked.invalid/x"
+  )
+}
+"""
+
+    # Control: the let-bind workaround (bind to a @Future slot before
+    # awaiting) has always classified via the slot arm.
+    _WORKAROUND_SOURCE = (
+        _FETCHER_ALIAS
+        + """
+
+private fn run_fetch(@Fetcher, @String -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Future<Result<String, String>> = apply_fn(@Fetcher.0, @String.0);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  run_fetch(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+      async(Http.get(@String.0))
+    },
+    "ftp://blocked.invalid/x"
+  )
+}
+"""
+    )
+
+    def _assert_awaited_correctly(self, source: str) -> None:
+        result = _compile_ok(source)
+        assert '(import "vera" "async_await"' in result.wat, (
+            "await of an indirect closure future must import async_await — "
+            "otherwise the fused wrapper is smuggled past an identity await")
+        exec_result = execute(result)
+        assert exec_result.value == 1, (
+            "the awaited Err must carry the real fetch outcome — a raw "
+            "wrapper read as the ADT yields a zero-length string and "
+            "returns 0, silently discarding the request outcome (#843)")
+
+    def test_await_of_apply_fn_slot(self) -> None:
+        """`await(apply_fn(@Fetcher.0, url))` — the fn-typed-slot arm."""
+        self._assert_awaited_correctly(self._SLOT_SOURCE)
+
+    def test_await_of_apply_fn_anon(self) -> None:
+        """`await(apply_fn(fn(...){...}, url))` — the inline-AnonFn arm."""
+        self._assert_awaited_correctly(self._ANON_SOURCE)
+
+    def test_let_bind_workaround_still_correct(self) -> None:
+        """Control: the documented let-bind workaround is unaffected."""
+        self._assert_awaited_correctly(self._WORKAROUND_SOURCE)
+
+    def test_unresolvable_closure_return_fails_loud(self) -> None:
+        """FLOOR: an ``apply_fn`` whose closure comes from a nested
+        ``FnCall`` — a shape whose declared return type is not statically
+        resolvable — must fail LOUDLY ([E616], function skipped) rather
+        than silently mis-lower the await to identity.  This is the
+        soundness backstop: the classification arm returns ``False`` for
+        this shape, but the ``apply_fn`` translation already rejects it,
+        so a fused wrapper can never reach an identity await."""
+        source = (
+            self._FETCHER_ALIAS
+            + """
+
+private fn make_fetcher(@Unit -> @Fetcher)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+    async(Http.get(@String.0))
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(apply_fn(make_fetcher(()), "ftp://blocked.invalid/x"));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+"""
+        )
+        result = _compile(source)
+        codes = {d.error_code for d in result.diagnostics}
+        assert "E616" in codes, (
+            "the unresolvable-closure apply_fn must be rejected loudly by "
+            "[E616], not silently identity-lowered")
+        # main is dropped, so the fused wrapper is never read as an ADT —
+        # no silent zero-length-Err wrong value escapes.
+        assert "$main" not in result.wat
+
+    def test_await_of_apply_fn_generic_alias(self) -> None:
+        """`await(apply_fn(@Producer<Future<Result<String, String>>>.0,
+        url))` — a GENERIC alias instantiated to the fused type must
+        classify via type-arg substitution (PR #868 panel, critical).
+        WAT-level discriminator pinned network-free: pre-fix the WAT has
+        zero `async_await` references (identity await); post-fix it has
+        the import and the tag-probe call."""
+        result = _compile_ok(self._GENERIC_ALIAS_SOURCE)
+        assert '(import "vera" "async_await"' in result.wat, (
+            "generic-alias apply_fn await must import async_await — "
+            "an unsubstituted bare `T` return classifies as None while "
+            "_infer_apply_fn_return_type substitutes and builds a VALID "
+            "call_indirect signature: no E616, no trap, silent wrong value")
+        assert "call $vera.async_await" in result.wat, (
+            "the fused-handle tag probe must be emitted at the await site")
+        exec_result = execute(result)
+        assert exec_result.value == 1, (
+            "the awaited Err must carry the real fetch outcome — identity "
+            "lowering reads the fused wrapper as the ADT and returns 0")
+
+    def test_nested_alias_slot_still_fails_loud(self) -> None:
+        """#867 interaction guard: an alias-of-alias fn-typed slot
+        (`type Fetcher = InnerFetcher;`) stays LOUD after the generic
+        substitution fix.  Neither consultor resolves the alias chain
+        (E616 does not fire — that gap is #867), but
+        `_infer_apply_fn_return_type` falls to its `i64` default while
+        the closure actually returns an i32 fused pointer, so the
+        call_indirect signature mismatch traps at WASM validation —
+        loud, not a silent wrong value.  The substitution added for the
+        generic-alias fix must NOT accidentally resolve this shape into
+        a silent identity-await path.  When #867 lands transitive alias
+        resolution in BOTH consultors, this pin flips and should be
+        updated to assert correct execution instead."""
+        source = """\
+type InnerFetcher = fn(String -> Future<Result<String, String>>) effects(<Http, Async>);
+type Fetcher = InnerFetcher;
+
+private fn run_fetch(@Fetcher, @String -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  let @Result<String, String> = await(apply_fn(@Fetcher.0, @String.0));
+  match @Result<String, String>.0 {
+    Ok(@String) -> false,
+    Err(@String) -> string_contains(@String.0, "refusing non-HTTP(S)")
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(<Http, Async>)
+{
+  run_fetch(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {
+      async(Http.get(@String.0))
+    },
+    "ftp://blocked.invalid/x"
+  )
+}
+"""
+        result = _compile_ok(source)
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result)

@@ -27,6 +27,8 @@ single source of truth; do not re-derive the conditions inline.
 
 from __future__ import annotations
 
+import dataclasses
+
 from vera import ast
 
 # Http op name → (fused import name, expected arity).
@@ -47,8 +49,6 @@ def _expr_is_call_free(node: ast.Node) -> bool:
     """
     if isinstance(node, (ast.FnCall, ast.QualifiedCall, ast.AnonFn)):
         return False
-    import dataclasses
-
     if not dataclasses.is_dataclass(node):
         return True
     for f in dataclasses.fields(node):
@@ -165,6 +165,125 @@ def compute_future_ret_module_fns(
     return frozenset(pairs)
 
 
+def _substitute_type_params(
+    te: ast.TypeExpr,
+    alias_map: dict[str, ast.TypeExpr],
+) -> ast.TypeExpr:
+    """Substitute generic-alias type params bound at the slot into ``te``.
+
+    A bare ``NamedType`` whose name is an alias param (``T``) is replaced
+    by the slot's bound type arg; parameterised ``NamedType``s recurse
+    into their args (``Future<T>`` → ``Future<Result<String, String>>``).
+    Anything else is returned unchanged.  This is the TypeExpr-level twin
+    of the ``alias_map`` substitution ``_infer_apply_fn_return_type``
+    performs through ``_canonical_wasm_type`` — the classification and
+    the ``call_indirect`` signature must consult the SAME resolved type,
+    or a generic alias instantiated to the fused future type classifies
+    as unresolvable while the signature builds fine: no [E616], no trap,
+    identity await, silent wrong value (PR #868 panel, critical).
+    """
+    if isinstance(te, ast.NamedType):
+        if not te.type_args and te.name in alias_map:
+            return alias_map[te.name]
+        if te.type_args:
+            new_args = tuple(
+                _substitute_type_params(a, alias_map) for a in te.type_args
+            )
+            if new_args != te.type_args:
+                return dataclasses.replace(te, type_args=new_args)
+    return te
+
+
+def _apply_fn_closure_ret_type(
+    closure_arg: ast.Expr,
+    type_aliases: dict[str, ast.TypeExpr],
+    type_alias_params: dict[str, tuple[str, ...]],
+) -> ast.TypeExpr | None:
+    """Declared return TypeExpr of the closure an ``apply_fn`` applies.
+
+    Mirrors the two closure-arg shapes ``_infer_apply_fn_return_type``
+    (``vera/wasm/inference.py``) supports for the ``call_indirect``
+    signature — the same shapes the checker types ``apply_fn`` against:
+
+    * a ``SlotRef`` into a ``FnType`` type alias (a let-bound or
+      parameter closure ref), with the slot's bound type args
+      substituted for a generic alias's params (same guard as the
+      inference's ``alias_map`` construction), and
+    * an inline ``AnonFn`` closure literal.
+
+    Returns ``None`` for any other shape, signalling that the declared
+    return type is not statically resolvable here.  The identity-await
+    fallback that follows is safe because each unresolvable shape has
+    its own loud backstop, mirrored from what the ``apply_fn``
+    translation does with it:
+
+    * a **``FnCall``-shaped closure arg** (e.g. ``apply_fn(make_fn(), …)``)
+      is rejected by the translation with ``[E616]`` and the function is
+      skipped;
+    * a **``SlotRef`` through a non-``FnType`` alias** (the alias-of-alias
+      chain, #867) passes the translation but falls to its ``i64``
+      signature default, so the ``call_indirect`` type mismatch traps at
+      WASM validation.
+
+    Either way no fused wrapper silently reaches an identity await
+    (#843 floor).  Keep this shape-coverage — including the substitution
+    guard — byte-equivalent to ``_infer_apply_fn_return_type``.
+    """
+    if isinstance(closure_arg, ast.SlotRef):
+        alias = type_aliases.get(closure_arg.type_name)
+        if isinstance(alias, ast.FnType):
+            ret = alias.return_type
+            alias_params = type_alias_params.get(closure_arg.type_name)
+            if (
+                alias_params
+                and closure_arg.type_args
+                and len(alias_params) == len(closure_arg.type_args)
+            ):
+                ret = _substitute_type_params(
+                    ret, dict(zip(alias_params, closure_arg.type_args)),
+                )
+            return ret
+        return None
+    if isinstance(closure_arg, ast.AnonFn):
+        return closure_arg.return_type
+    return None
+
+
+def apply_fn_awaits_fused_future(
+    arg: ast.Expr,
+    type_aliases: dict[str, ast.TypeExpr],
+    type_alias_params: dict[str, tuple[str, ...]],
+) -> bool:
+    """True iff ``arg`` is ``apply_fn(closure, …)`` whose closure's
+    declared return type is ``Future<Result<String, String>>``.
+
+    This is the #843 indirect-closure arm: the call target is a runtime
+    value (a fn-typed slot or an inline ``AnonFn``), not a name in the
+    return-type registry, so it is classified by the closure's *declared*
+    return type instead — the post-#854 precedent of consulting declared
+    types rather than WASM-width inference.  When the closure's return
+    type is not statically resolvable (a shape ``_apply_fn_closure_ret_type``
+    cannot see through), this returns ``False`` and the await keeps its
+    identity lowering — safe because each such shape fails loudly
+    elsewhere: ``[E616]`` for a ``FnCall``-shaped closure arg, the #867
+    WASM-validation trap for an alias-of-alias slot (see
+    ``_apply_fn_closure_ret_type``).
+    """
+    if not (
+        isinstance(arg, ast.FnCall)
+        and arg.name == "apply_fn"
+        and len(arg.args) >= 2
+    ):
+        return False
+    ret = _apply_fn_closure_ret_type(
+        arg.args[0], type_aliases, type_alias_params,
+    )
+    return (
+        isinstance(ret, ast.NamedType)
+        and _is_future_result_string_type(ret.name, ret.type_args)
+    )
+
+
 def await_needs_check(
     arg: ast.Expr,
     future_ret_fns: frozenset[str] | set[str],
@@ -172,6 +291,8 @@ def await_needs_check(
         frozenset[tuple[tuple[str, ...], str]]
         | set[tuple[tuple[str, ...], str]]
     ) = frozenset(),
+    type_aliases: dict[str, ast.TypeExpr] | None = None,
+    type_alias_params: dict[str, tuple[str, ...]] | None = None,
 ) -> bool:
     """True iff ``await(arg)`` must emit the runtime fused-handle check.
 
@@ -181,38 +302,47 @@ def await_needs_check(
     bare, imported, or module-qualified — to a function whose declared
     return type is that future type (``future_ret_fns``, computed in
     ``vera/codegen/core.py`` from the cross-module return-type
-    registry), and ``if``/``match``/block compositions of those.
-    Shapes outside this set keep the identity lowering.  Residual
-    boundary (documented in KNOWN_ISSUES.md): an indirectly-called
-    closure returning this future type is not classifiable here, and a
-    wrapper smuggled past an identity await is NOT trapped — the match
-    lowering's final arm is an unconditional catch-all, so the wrapper
-    would be read as the ADT.  Keep this predicate's coverage in sync
-    with every call shape codegen can produce.
+    registry), an ``apply_fn`` on a closure whose *declared* return type
+    is that future type (the #843 indirect-closure arm, classified via
+    ``type_aliases`` + ``type_alias_params`` — the latter drives the
+    generic-alias type-arg substitution), and ``if``/``match``/block
+    compositions of those.  Shapes outside this set keep the identity
+    lowering.  Keep this predicate's coverage in sync with every call
+    shape codegen can produce.
     """
+    aliases = type_aliases if type_aliases is not None else {}
+    alias_params = type_alias_params if type_alias_params is not None else {}
     if isinstance(arg, ast.SlotRef):
         return _is_future_result_string_type(arg.type_name, arg.type_args)
     if isinstance(arg, ast.FnCall):
         if fused_async_target(arg) is not None:
             return True
+        if arg.name == "apply_fn":
+            return apply_fn_awaits_fused_future(arg, aliases, alias_params)
         return arg.name in future_ret_fns
     if isinstance(arg, ast.ModuleCall):
         return (tuple(arg.path), arg.name) in future_ret_module_fns
     if isinstance(arg, ast.Block):
         return arg.expr is not None and await_needs_check(
             arg.expr, future_ret_fns, future_ret_module_fns,
+            aliases, alias_params,
         )
     if isinstance(arg, ast.IfExpr):
         if await_needs_check(
             arg.then_branch, future_ret_fns, future_ret_module_fns,
+            aliases, alias_params,
         ):
             return True
         return arg.else_branch is not None and await_needs_check(
             arg.else_branch, future_ret_fns, future_ret_module_fns,
+            aliases, alias_params,
         )
     if isinstance(arg, ast.MatchExpr):
         return any(
-            await_needs_check(arm.body, future_ret_fns, future_ret_module_fns)
+            await_needs_check(
+                arm.body, future_ret_fns, future_ret_module_fns,
+                aliases, alias_params,
+            )
             for arm in arg.arms
         )
     return False
