@@ -225,6 +225,7 @@ class ClosureLiftingMixin:
             ctor_to_adt=ctor_to_adt,
             ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
+            adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
         # #514: share the module-level sig dict and closure-ID counter
         # with the inner ctx so that any new sigs / IDs it registers
@@ -471,6 +472,8 @@ class ClosureLiftingMixin:
         self._needs_overflow_trap = (
             self._needs_overflow_trap or ctx._needs_overflow_trap
         )
+        # #773: structural-Eq helpers generated inside a lifted closure body.
+        self._adt_eq_helpers.update(ctx._adt_eq_helpers)
 
         # Build GC prologue/epilogue (only when closure body allocates).
         # Two-phase prologue: ``gc_prologue`` runs before ``load_instrs``

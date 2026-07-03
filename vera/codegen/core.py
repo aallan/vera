@@ -175,6 +175,10 @@ class CodeGenerator(
         # Maps ADT name → number of type parameters (needed to produce full-length
         # type-arg tuples with None placeholders for unknown positions).
         self._adt_tp_counts: dict[str, int] = {}
+        # #773: ADT name → ordered type-parameter NAMES, for structural-Eq
+        # substitution of params nested inside parameterized field types
+        # (`Cons(T, List<T>)` under a `List<Int>` comparison).
+        self._adt_tp_param_names: dict[str, tuple[str, ...]] = {}
 
         # Type aliases (populated during registration)
         # Maps alias name -> TypeExpr (for resolving function type aliases)
@@ -188,6 +192,11 @@ class CodeGenerator(
         self._closure_sigs: dict[str, str] = {}  # sig_key -> WAT type decl
         self._closure_fns_wat: list[str] = []  # WAT for lifted closures
         self._needs_table: bool = False
+        # #773: generated structural-Eq helper functions, keyed by their
+        # `$eq_<type>` name → WAT text.  Accumulated across every function /
+        # closure body (merged from each WasmContext) and emitted once at
+        # module assembly.
+        self._adt_eq_helpers: dict[str, str] = {}
         # #573: wrap-table flag — see ``WasmContext`` for the long
         # description.  Set in ``_assemble_module`` whenever a
         # host-handle type that has migrated to heap-wrap-as-ADT is

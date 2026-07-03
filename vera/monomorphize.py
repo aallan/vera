@@ -102,6 +102,35 @@ def substitute_type_vars(
     return te
 
 
+def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
+    """Substitute type-parameter NAMES inside a type-name *string* (#773).
+
+    ``substitute_type_param_names("List<T>", {"T": "Int"})`` → ``"List<Int>"``.
+    A string-level wrapper over :func:`substitute_type_vars`: the name is
+    parsed to a :class:`~vera.ast.NamedType`, each bare occurrence of a mapped
+    parameter is replaced by the (parsed) concrete argument, and the result is
+    re-formatted.  Used by structural-Eq derivation to resolve a declared
+    constructor field type like ``List<T>`` or ``Box<T>`` against a concrete
+    instantiation's type arguments — the *bare*-param field case (``T``) is
+    handled positionally by ``_ctor_adt_tp_indices`` upstream; this covers
+    parameters nested inside a parameterized field type (the recursive-ADT
+    tail ``Cons(T, List<T>)`` being the canonical case).
+    """
+    if not mapping or "<" not in name:
+        # A bare name is either unmapped or handled positionally upstream;
+        # only parameterized field types need the deep walk.
+        return mapping.get(name, name)
+    parsed = Monomorphizer._parse_type_name(name)
+    subst: dict[str, ast.TypeExpr] = {
+        param: Monomorphizer._parse_type_name(concrete)
+        for param, concrete in mapping.items()
+    }
+    substituted = substitute_type_vars(parsed, subst)
+    if isinstance(substituted, ast.NamedType):
+        return Monomorphizer._format_type_name(substituted)
+    return name  # pragma: no cover — NamedType in, NamedType out
+
+
 # Builtin function name → Vera return type name.
 # Used by Monomorphizer._infer_fncall_vera_type_simple() to resolve opaque
 # handle types that all share the same WASM representation (i32) but are

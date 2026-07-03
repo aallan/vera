@@ -1798,7 +1798,7 @@ Key rules:
 - Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
 - Ability declarations mirror effect declarations (both use `op`)
 - User-defined abilities are supported with the same syntax
-- ADT auto-derivation: Simple enums automatically satisfy `Eq` — the compiler generates structural equality (tag comparison)
+- ADT auto-derivation: `Eq` is derived **structurally** — a simple enum, or an ADT every field of which is itself `Eq` (an `Eq` primitive including `String` (compared by content), or a nested `Eq` ADT, recursively). A field with no `Eq` semantics (`Array`, `Map`, a host handle) makes the ADT non-derivable.
 - Unsatisfied constraints produce error E613
 
 ## Modules

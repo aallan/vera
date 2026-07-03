@@ -165,11 +165,15 @@ class OperatorsMixin:
                     i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                     i32_op = i32_op.replace("_s", "_u")
                     return left + right + [i32_op]
-                # ADT structural equality (§9.8 auto-derivation)
+                # ADT structural equality (§9.8 auto-derivation).  `lv` may be
+                # parameterized (`Box<String>`); dispatch on the base name but
+                # pass the full name so the generated helper resolves the
+                # concrete field types of *this* instantiation (#773).
+                lv_base = lv.split("<", 1)[0] if lv is not None else None
                 if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
                         and lv is not None
-                        and lv not in ("Bool", "Byte")
-                        and lv in self._adt_type_names):
+                        and lv_base not in ("Bool", "Byte")
+                        and lv_base in self._adt_type_names):
                     adt_eq = self._translate_adt_eq(left, right, lv)
                     if adt_eq is not None:
                         if op == ast.BinOp.NEQ:
@@ -286,118 +290,370 @@ class OperatorsMixin:
 
     # -----------------------------------------------------------------
     # ADT structural equality
+    # ADT structural equality (#773)
     # -----------------------------------------------------------------
+    #
+    # Structural `Eq` auto-derivation (§9.8).  A comparison site emits a `call`
+    # to a generated per-instantiation `$eq_<type>` helper; the helpers compare
+    # two heap pointers structurally, dispatching each field by its *Vera* type
+    # — scalar `.eq`, String content comparison, or recursion into a nested
+    # ADT's own `$eq_` helper.  Generating real functions (rather than inline
+    # expansion) is what lets a recursive ADT (e.g. `List<T>`) derive equality:
+    # the nested-field call is a plain `call`, not an unbounded expansion.
+    #
+    # A field type with no `Eq` semantics (Array / Map / host handle / a
+    # closure) is not derivable.  On the GENERIC constraint path the E613 gate
+    # (`_adt_satisfies_eq`, in `vera/codegen/monomorphize.py`) rejects such an
+    # ADT before codegen, so a non-derivable field reaching helper generation
+    # there is a compiler invariant violation, raised loudly rather than
+    # silently mis-compared by pointer.  A DIRECT `==` comparison has no gate
+    # in front of it: a non-derivable ADT that only ever reaches codegen this
+    # way (e.g. an empty-`field_types` Markdown builtin like `MdText`) hits
+    # the same loud invariant as an E699 instead of a clean E613 — #872 tracks
+    # gating the direct path.
 
     def _translate_adt_eq(
         self, left: list[str], right: list[str], adt_name: str,
     ) -> list[str] | None:
-        """Generate WASM for structural equality of two ADT values.
+        """Emit a structural-equality comparison of two ADT values.
 
-        Compares two heap-allocated ADT pointers structurally:
-        1. Load tags from both pointers (i32.load at offset 0)
-        2. If tags differ → false
-        3. If tags match and the constructor has no fields → true
-        4. If tags match with fields → load and compare each field
-
-        Only handles fields with scalar WASM types (i64, i32, f64).
-        String/Array (i32_pair) fields are not auto-derivable.
+        ``adt_name`` is the comparison site's Vera type name — bare
+        (``"Outer"``) for a concrete ADT or parameterized (``"Box<String>"``)
+        for a generic instantiation.  Requests the matching ``$eq_<type>``
+        helper (generating it, and any nested-ADT helpers, on demand) and
+        returns ``left ++ right ++ [call $eq_<type>]``.
         """
-        # Build list of (ctor_name, layout) for this ADT, sorted by tag
-        adt_ctors: list[tuple[str, object]] = []
-        for ctor_name, parent_adt in self._ctor_to_adt.items():
-            if parent_adt == adt_name and ctor_name in self._ctor_layouts:
-                adt_ctors.append((ctor_name, self._ctor_layouts[ctor_name]))
+        fn_name = self._request_adt_eq_helper(adt_name)
+        if fn_name is None:
+            return None
+        return left + right + [f"call {fn_name}"]
+
+    def _adt_eq_fn_name(self, type_name: str) -> str:
+        """Mangle a Vera type name into its ``$eq_<type>`` helper name.
+
+        Injective over the type-name grammar: ``<`` / ``>`` / ``,`` / space are
+        distinct escapes so ``Box<Int>`` and a bare ADT literally named
+        ``Box_Int`` cannot collide.
+        """
+        mangled = (
+            type_name.replace("_", "__")
+            .replace("<", "_L").replace(">", "_R")
+            .replace(", ", "_C").replace(",", "_C").replace(" ", "_S")
+        )
+        return f"$eq_{mangled}"
+
+    def _request_adt_eq_helper(self, type_name: str) -> str | None:
+        """Ensure a ``$eq_<type>`` helper exists; return its function name.
+
+        Deduped by name and guarded against recursion via ``_adt_eq_pending``
+        so a self-referential ADT emits exactly one helper.
+        """
+        from vera.monomorphize import Monomorphizer
+
+        parsed = Monomorphizer._parse_type_name(type_name)
+        base = parsed.name
+        if base not in self._adt_type_names:
+            return None
+        fn_name = self._adt_eq_fn_name(type_name)
+        if fn_name in self._adt_eq_helpers or fn_name in self._adt_eq_pending:
+            return fn_name
+        self._adt_eq_pending.add(fn_name)
+        body = self._generate_adt_eq_fn(fn_name, base, parsed)
+        if body is None:
+            self._adt_eq_pending.discard(fn_name)
+            return None
+        self._adt_eq_helpers[fn_name] = body
+        return fn_name
+
+    def _generate_adt_eq_fn(
+        self, fn_name: str, base: str, parsed: ast.NamedType,
+    ) -> str | None:
+        """Generate the full WAT text of a ``$eq_<type>`` helper function.
+
+        Signature ``(param $l i32) (param $r i32) (result i32)`` → 1 if the two
+        pointers are structurally equal, else 0.  Field dispatch is by Vera
+        type (see the section comment above).  Nested-ADT fields recurse by
+        requesting (and thereby generating) that ADT's own helper first.
+        """
+        from vera.monomorphize import Monomorphizer
+
+        # Concrete type args for this instantiation, mapped onto the ADT's
+        # type parameters, so a field typed by a type parameter resolves to the
+        # concrete type argument (`Box<String>` → field "T" ↦ "String").
+        type_args = [
+            Monomorphizer._format_type_name(a)
+            for a in (parsed.type_args or ())
+            if isinstance(a, ast.NamedType)
+        ]
+        # Param-NAME → concrete-arg mapping, for params nested inside a
+        # parameterized field type (the recursive tail `Cons(T, List<T>)`
+        # under `List<Int>` needs `List<T>` → `List<Int>`).
+        tp_names = self._adt_tp_param_names.get(base, ())
+        tp_mapping = dict(zip(tp_names, type_args))
+
+        adt_ctors = sorted(
+            (
+                (ctor_name, self._ctor_layouts[ctor_name])
+                for ctor_name, parent in self._ctor_to_adt.items()
+                if parent == base and ctor_name in self._ctor_layouts
+            ),
+            key=lambda x: x[1].tag,
+        )
         if not adt_ctors:
             raise CodegenInvariantError(  # pragma: no cover
                 "ADT equality on a type with no constructors")
-        adt_ctors.sort(key=lambda x: x[1].tag)
 
-        # Store operands in temp locals
-        tmp_l = self.alloc_local("i32")
-        tmp_r = self.alloc_local("i32")
-        instrs: list[str] = (
-            left + [f"local.set {tmp_l}"]
-            + right + [f"local.set {tmp_r}"]
-        )
+        # A "field plan" per constructor: the concrete (offset, field_type)
+        # per field, with type parameters substituted.  Offsets are recomputed
+        # from the concrete field WASM types — the bare layout stores each
+        # generic field as an i32 pointer, but a String instantiation lays the
+        # field out as an i32_pair, exactly as the construction site does.
+        body: list[str] = []
+        # tag mismatch → 0
+        body.append("    local.get 0")
+        body.append("    i32.load")
+        body.append("    local.set $tag")
+        body.append("    local.get $tag")
+        body.append("    local.get 1")
+        body.append("    i32.load")
+        body.append("    i32.eq")
+        body.append("    if (result i32)")
 
-        # Simple enum: all constructors have 0 fields → compare tags
-        if all(len(lay.field_offsets) == 0 for _, lay in adt_ctors):
-            instrs += [
-                f"local.get {tmp_l}", "i32.load",
-                f"local.get {tmp_r}", "i32.load",
-                "i32.eq",
-            ]
-            return instrs
-
-        # General case: compare tags, then dispatch on tag for fields
-        tag_local = self.alloc_local("i32")
-        instrs += [
-            f"local.get {tmp_l}", "i32.load",
-            f"local.set {tag_local}",
-            # Tags must match
-            f"local.get {tag_local}",
-            f"local.get {tmp_r}", "i32.load",
-            "i32.eq",
-            "if (result i32)",
-        ]
-
-        # Inner: dispatch on tag value for constructors that have fields
         ctors_with_fields = [
             (name, lay) for name, lay in adt_ctors if lay.field_offsets
         ]
-
-        if not ctors_with_fields:  # pragma: no cover
-            # All fieldless — tags matching is sufficient
-            instrs.append("  i32.const 1")
+        if not ctors_with_fields:
+            body.append("      i32.const 1")
         else:
-            # Nested if-else chain for each constructor with fields
-            for i, (_cname, layout) in enumerate(ctors_with_fields):
-                pad = "  " * (i + 1)
-                instrs.append(f"{pad}local.get {tag_local}")
-                instrs.append(f"{pad}i32.const {layout.tag}")
-                instrs.append(f"{pad}i32.eq")
-                instrs.append(f"{pad}if (result i32)")
-                # Compare all fields for this constructor
+            for depth, (cname, layout) in enumerate(ctors_with_fields):
+                pad = "  " * (depth + 3)
+                body.append(f"{pad}local.get $tag")
+                body.append(f"{pad}i32.const {layout.tag}")
+                body.append(f"{pad}i32.eq")
+                body.append(f"{pad}if (result i32)")
                 fpad = pad + "  "
-                first_field = True
-                for offset, wasm_type in layout.field_offsets:
-                    load_op = self._adt_field_load(wasm_type)
-                    eq_op = self._adt_field_eq(wasm_type)
-                    if load_op is None or eq_op is None:
+                # Resolve concrete field types (substitute type params).  A
+                # field that is a type PARAMETER (per `_ctor_adt_tp_indices`)
+                # resolves positionally to the matching concrete type argument;
+                # any other field deep-substitutes param NAMES nested inside a
+                # parameterized declared type (`List<T>` → `List<Int>`).
+                tp_idx = self._ctor_adt_tp_indices.get(cname)
+                raw_types = (
+                    layout.field_types
+                    if layout.field_types
+                    else ("<opaque>",) * len(layout.field_offsets)
+                )
+                field_type_names = [
+                    self._resolve_field_type_for_eq(
+                        raw, i, tp_idx, type_args, tp_mapping,
+                    )
+                    for i, raw in enumerate(raw_types)
+                ]
+                # Concrete offsets from concrete WASM types.
+                concrete = self._concrete_field_layout(field_type_names)
+                first = True
+                for (offset, _wt), ftype in zip(concrete, field_type_names):
+                    cmp_instrs = self._emit_field_eq(offset, ftype)
+                    if cmp_instrs is None:
                         raise CodegenInvariantError(  # pragma: no cover
-                            "ADT field has no load/eq op for auto-derived equality")
-                    instrs.append(f"{fpad}local.get {tmp_l}")
-                    instrs.append(f"{fpad}{load_op} offset={offset}")
-                    instrs.append(f"{fpad}local.get {tmp_r}")
-                    instrs.append(f"{fpad}{load_op} offset={offset}")
-                    instrs.append(f"{fpad}{eq_op}")
-                    if not first_field:
-                        instrs.append(f"{fpad}i32.and")
-                    first_field = False
-                instrs.append(f"{pad}else")
-            # Innermost else: fieldless constructor, tags match → true
-            inner_pad = "  " * (len(ctors_with_fields) + 1)
-            instrs.append(f"{inner_pad}i32.const 1")
-            # Close all nested if/else blocks
-            for i in range(len(ctors_with_fields) - 1, -1, -1):
-                pad = "  " * (i + 1)
-                instrs.append(f"{pad}end")
+                            f"ADT field type {ftype!r} of {cname!r} has no Eq "
+                            f"comparison; the E613 gate should have rejected it")
+                    body.extend(fpad + ln for ln in cmp_instrs)
+                    if not first:
+                        body.append(f"{fpad}i32.and")
+                    first = False
+                body.append(f"{pad}else")
+            inner_pad = "  " * (len(ctors_with_fields) + 3)
+            body.append(f"{inner_pad}i32.const 1")
+            for depth in range(len(ctors_with_fields) - 1, -1, -1):
+                pad = "  " * (depth + 3)
+                body.append(f"{pad}end")
 
-        # Close outer tags-match if
-        instrs += ["else", "  i32.const 0", "end"]
-        return instrs
+        body.append("    else")
+        body.append("      i32.const 0")
+        body.append("    end")
+
+        header = (
+            f"  (func {fn_name} (param $l i32) (param $r i32) (result i32)\n"
+            f"    (local $tag i32)\n"
+        )
+        return header + "\n".join(body) + "\n  )"
+
+    def _resolve_field_type_for_eq(
+        self,
+        raw: str,
+        field_index: int,
+        tp_idx: tuple[int | None, ...] | None,
+        type_args: list[str],
+        tp_mapping: dict[str, str],
+    ) -> str:
+        """Resolve a declared field type against the instantiation's type args.
+
+        ``raw`` is the DECLARED field type (``"T"``, ``"String"``,
+        ``"Inner"``, ``"List<T>"``).  If field ``field_index`` is a bare type
+        PARAMETER — per the per-constructor ``_ctor_adt_tp_indices`` table —
+        its position maps into ``type_args`` (``Box<String>`` field-0 ↦
+        ``"String"``).  Otherwise param NAMES nested inside a parameterized
+        declared type are deep-substituted (``List<T>`` ↦ ``List<Int>`` under
+        a ``List<Int>`` comparison); a fully concrete type passes through
+        unchanged.
+        """
+        if tp_idx is not None and field_index < len(tp_idx):
+            pos = tp_idx[field_index]
+            if pos is not None and pos < len(type_args):
+                return type_args[pos]
+        from vera.monomorphize import substitute_type_param_names
+
+        return substitute_type_param_names(raw, tp_mapping)
+
+    def _concrete_field_layout(
+        self, field_type_names: list[str],
+    ) -> list[tuple[int, str]]:
+        """Recompute (offset, wasm_type) per field from concrete Vera types.
+
+        Mirrors the construction site (``_translate_constructor_call``): tag at
+        offset 0 (4 bytes), then each field aligned to its natural alignment.
+        """
+        sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
+        aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
+        offset = 4
+        out: list[tuple[int, str]] = []
+        for ftype in field_type_names:
+            wt = self._eq_field_wasm_type(ftype)
+            align = aligns.get(wt, 8)
+            offset = (offset + align - 1) & ~(align - 1)
+            out.append((offset, wt))
+            offset += sizes.get(wt, 8)
+        return out
 
     @staticmethod
-    def _adt_field_load(wasm_type: str) -> str | None:
-        """WASM load instruction for an ADT field type."""
-        return {"i64": "i64.load", "i32": "i32.load",
-                "f64": "f64.load"}.get(wasm_type)
+    def _eq_field_wasm_type(ftype: str) -> str:
+        """WASM rep of a concrete field type for structural-eq layout."""
+        base = ftype.split("<", 1)[0]
+        if base in ("Int", "Nat"):
+            return "i64"
+        if base == "Float64":
+            return "f64"
+        if base in ("Bool", "Byte", "Unit"):
+            return "i32"
+        if base in ("String", "Array"):
+            return "i32_pair"
+        # ADT pointer (or opaque) → i32
+        return "i32"
+
+    def _emit_field_eq(
+        self, offset: int, ftype: str,
+    ) -> list[str] | None:
+        """Emit the per-field comparison for a helper, leaving i32 on the stack.
+
+        ``$l`` / ``$r`` (locals 0 / 1) are the two struct pointers.  Returns
+        None if the field type has no Eq comparison (should be unreachable —
+        the E613 gate rejects such ADTs).
+        """
+        base = ftype.split("<", 1)[0]
+        # Scalar Eq primitive.
+        if base in ("Int", "Nat"):
+            return [
+                "local.get 0", f"i64.load offset={offset}",
+                "local.get 1", f"i64.load offset={offset}",
+                "i64.eq",
+            ]
+        if base == "Float64":
+            return [
+                "local.get 0", f"f64.load offset={offset}",
+                "local.get 1", f"f64.load offset={offset}",
+                "f64.eq",
+            ]
+        if base in ("Bool", "Byte", "Unit"):
+            return [
+                "local.get 0", f"i32.load offset={offset}",
+                "local.get 1", f"i32.load offset={offset}",
+                "i32.eq",
+            ]
+        # String: content comparison via the $eq_String helper.
+        if base == "String":
+            self._request_string_eq_helper()
+            return [
+                "local.get 0", f"i32.load offset={offset}",
+                "local.get 0", f"i32.load offset={offset + 4}",
+                "local.get 1", f"i32.load offset={offset}",
+                "local.get 1", f"i32.load offset={offset + 4}",
+                "call $eq_String",
+            ]
+        # Nested ADT: recurse into its own helper.
+        if base in self._adt_type_names:
+            nested_fn = self._request_adt_eq_helper(ftype)
+            if nested_fn is None:
+                return None
+            return [
+                "local.get 0", f"i32.load offset={offset}",
+                "local.get 1", f"i32.load offset={offset}",
+                f"call {nested_fn}",
+            ]
+        return None
+
+    def _request_string_eq_helper(self) -> None:
+        """Ensure the standalone ``$eq_String`` content-comparison helper."""
+        fn_name = "$eq_String"
+        if fn_name in self._adt_eq_helpers:
+            return
+        self._adt_eq_helpers[fn_name] = self._emit_string_eq_fn()
 
     @staticmethod
-    def _adt_field_eq(wasm_type: str) -> str | None:
-        """WASM equality instruction for an ADT field type."""
-        return {"i64": "i64.eq", "i32": "i32.eq",
-                "f64": "f64.eq"}.get(wasm_type)
+    def _emit_string_eq_fn() -> str:
+        """Standalone String content-equality helper.
+
+        ``(param $p1 i32)(param $l1 i32)(param $p2 i32)(param $l2 i32)`` → i32.
+        Length check, then a byte-by-byte loop — the same algorithm as the
+        inline ``_translate_string_eq``, hoisted into a reusable function so a
+        String ADT field compares by content, not pointer.
+        """
+        return (
+            "  (func $eq_String "
+            "(param $p1 i32) (param $l1 i32) (param $p2 i32) (param $l2 i32) "
+            "(result i32)\n"
+            "    (local $idx i32)\n"
+            "    local.get $l1\n"
+            "    local.get $l2\n"
+            "    i32.ne\n"
+            "    if (result i32)\n"
+            "      i32.const 0\n"
+            "    else\n"
+            "      i32.const 0\n"
+            "      local.set $idx\n"
+            "      block $done (result i32)\n"
+            "        loop $lp\n"
+            "          local.get $idx\n"
+            "          local.get $l1\n"
+            "          i32.ge_u\n"
+            "          if\n"
+            "            i32.const 1\n"
+            "            br $done\n"
+            "          end\n"
+            "          local.get $p1\n"
+            "          local.get $idx\n"
+            "          i32.add\n"
+            "          i32.load8_u\n"
+            "          local.get $p2\n"
+            "          local.get $idx\n"
+            "          i32.add\n"
+            "          i32.load8_u\n"
+            "          i32.ne\n"
+            "          if\n"
+            "            i32.const 0\n"
+            "            br $done\n"
+            "          end\n"
+            "          local.get $idx\n"
+            "          i32.const 1\n"
+            "          i32.add\n"
+            "          local.set $idx\n"
+            "          br $lp\n"
+            "        end\n"
+            "        i32.const 1\n"
+            "      end\n"
+            "    end\n"
+            "  )"
+        )
 
     # -----------------------------------------------------------------
     # String equality

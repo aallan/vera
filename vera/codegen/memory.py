@@ -29,6 +29,19 @@ class ConstructorLayout:
     # @Nat-typed argument is stored into an @Int field.  Same length / empty
     # conventions as ``nat_fields``.
     int_fields: tuple[bool, ...] = ()
+    # #773: per-field RESOLVED Vera type name (e.g. "Int", "String", "T",
+    # "Inner", "Map<String, Int>"), used by structural ``Eq`` auto-derivation to
+    # dispatch each field to the right comparison (scalar `.eq`, String content
+    # compare, nested-ADT recursion) instead of a scalar-WASM-rep guess.  Type
+    # ALIASES and refinements resolve to their ground type at registration
+    # (``RegistrationMixin._field_vera_type_name``, mirroring the sibling
+    # field resolvers), so an alias-typed field dispatches on what it names.
+    # Type parameters appear as their bare name (`"T"`) and are substituted
+    # with the concrete type argument at the comparison site.  Same length /
+    # empty conventions as ``nat_fields``: user constructors build it parallel
+    # to ``field_offsets``; a built-in layout may leave it ``()`` (consumers
+    # then fall back to the scalar-rep basis for that layout).
+    field_types: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # #759: ``nat_fields`` runs parallel to ``field_offsets``.  User
@@ -46,6 +59,14 @@ class ConstructorLayout:
         if self.int_fields and len(self.int_fields) != len(self.field_offsets):
             raise ValueError(
                 f"int_fields (len {len(self.int_fields)}) must match "
+                f"field_offsets (len {len(self.field_offsets)}) or be empty"
+            )
+        # #773: ``field_types`` runs parallel to ``field_offsets`` for user
+        # constructors; a built-in layout may leave it empty.
+        if (self.field_types
+                and len(self.field_types) != len(self.field_offsets)):
+            raise ValueError(
+                f"field_types (len {len(self.field_types)}) must match "
                 f"field_offsets (len {len(self.field_offsets)}) or be empty"
             )
 

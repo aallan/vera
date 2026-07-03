@@ -1,0 +1,212 @@
+-- Conformance: structural Eq auto-derivation for ADTs (Chapter 9, #773)
+-- Tests: content-based String field equality, nested-ADT structural equality,
+-- Box<T> auto-deriving Eq under an Eq<T> constraint, deep nested-ADT recursion
+-- ================================================================
+-- Helper: constrained generic Eq
+-- ================================================================
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(@T.1, @T.0)
+}
+
+-- ================================================================
+-- String field: content comparison, not pointer identity
+-- ================================================================
+private data Named {
+  MkNamed(String)
+}
+
+-- Test: two Named values built from distinct string_concat allocations
+-- with equal content compare equal
+public fn test_string_field_eq_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Named = MkNamed(string_concat("ab", "cd"));
+  let @Named = MkNamed(string_concat("ab", "cd"));
+  if are_equal(@Named.1, @Named.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: two Named values built from distinct string_concat allocations
+-- with different content compare unequal
+public fn test_string_field_eq_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Named = MkNamed(string_concat("ab", "cd"));
+  let @Named = MkNamed(string_concat("ab", "xy"));
+  if are_equal(@Named.1, @Named.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- Nested ADT field: structural recursion into the inner ADT's equality
+-- ================================================================
+private data Inner {
+  MkInner(Int)
+}
+
+private data Outer {
+  MkOuter(Inner)
+}
+
+-- Test: distinct Inner allocations with equal payload compare equal
+public fn test_nested_adt_eq_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Outer = MkOuter(MkInner(5));
+  let @Outer = MkOuter(MkInner(5));
+  if are_equal(@Outer.1, @Outer.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: distinct Inner allocations with different payload compare unequal
+public fn test_nested_adt_eq_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Outer = MkOuter(MkInner(5));
+  let @Outer = MkOuter(MkInner(6));
+  if are_equal(@Outer.1, @Outer.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- Box<T> under an Eq<T> constraint: generic ADT auto-derives Eq
+-- ================================================================
+private data Box<T> {
+  MkBox(T)
+}
+
+private forall<T where Eq<T>> fn boxes_equal(@Box<T>, @Box<T> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box<T>.1 {
+    MkBox(@T) -> match @Box<T>.0 { MkBox(@T) -> eq(@T.1, @T.0) }
+  }
+}
+
+-- Test: Box<String> derives Eq — distinct string_concat allocations,
+-- equal content, compare equal
+public fn test_box_string_eq_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Box<String> = MkBox(string_concat("a", "b"));
+  let @Box<String> = MkBox(string_concat("a", "b"));
+  if boxes_equal(@Box<String>.1, @Box<String>.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: Box<String> derives Eq — distinct string_concat allocations,
+-- different content, compare unequal
+public fn test_box_string_eq_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Box<String> = MkBox(string_concat("a", "b"));
+  let @Box<String> = MkBox(string_concat("a", "z"));
+  if boxes_equal(@Box<String>.1, @Box<String>.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: Box<String> itself satisfies the Eq<T> constraint (the #773
+-- false-reject shape) — the derived structural equality compares the
+-- String field by content across distinct allocations
+public fn test_box_string_as_eq_instance(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Box<String> = MkBox(string_concat("a", "b"));
+  let @Box<String> = MkBox(string_concat("a", "b"));
+  if are_equal(@Box<String>.1, @Box<String>.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- Two-level nested ADT: recursion depth beyond a single field
+-- ================================================================
+private data Leaf {
+  MkLeaf(Int)
+}
+
+private data Mid {
+  MkMid(Leaf)
+}
+
+private data Top {
+  MkTop(Mid)
+}
+
+-- Test: deeply nested structural equality — equal at every level
+public fn test_deep_nested_eq_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Top = MkTop(MkMid(MkLeaf(7)));
+  let @Top = MkTop(MkMid(MkLeaf(7)));
+  if are_equal(@Top.1, @Top.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: deeply nested structural equality — unequal at the innermost field
+public fn test_deep_nested_eq_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Top = MkTop(MkMid(MkLeaf(7)));
+  let @Top = MkTop(MkMid(MkLeaf(8)));
+  if are_equal(@Top.1, @Top.0) then {
+    1
+  } else {
+    0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
