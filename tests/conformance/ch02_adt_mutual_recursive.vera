@@ -1,0 +1,45 @@
+-- Conformance: mutually-recursive ADTs (Chapter 2)
+-- Tests: two data types that reference each other, structural recursion
+-- across the pair, and Z3 sort construction for a mutually-recursive group
+-- (#881 — a mutual pair once crashed `vera verify` with a raw RecursionError).
+private data Tree {
+  Leaf,
+  Node(Forest)
+}
+
+private data Forest {
+  Empty,
+  More(Tree, Forest)
+}
+
+private fn tree_size(@Tree -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Tree.0)
+  effects(pure)
+{
+  match @Tree.0 {
+    Leaf -> 1,
+    Node(@Forest) -> forest_size(@Forest.0)
+  }
+}
+
+private fn forest_size(@Forest -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Forest.0)
+  effects(pure)
+{
+  match @Forest.0 {
+    Empty -> 0,
+    More(@Tree, @Forest) -> tree_size(@Tree.0) + forest_size(@Forest.0)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  tree_size(Node(More(Leaf, More(Leaf, Empty))))
+}

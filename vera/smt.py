@@ -206,6 +206,19 @@ def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
 
+def _z3_sort_name(key: str) -> str:
+    """Derive a Z3-legal datatype name from a canonical sort key (#881).
+
+    Single choke point for the ``key -> z3.Datatype`` name transformation that
+    was previously inlined at each ``z3.Datatype(...)`` site.  ``<``/``>`` and
+    the ``", "`` type-arg separator are not valid in a Z3 datatype identifier,
+    so ``List<Int>`` becomes ``List_Int`` and ``Pair<A, B>`` becomes
+    ``Pair_A_B``.  Centralised so mutually-recursive group members and tuples
+    name themselves identically.
+    """
+    return key.replace("<", "_").replace(">", "").replace(", ", "_")
+
+
 def _substitute_type(ty: Type, subst: dict[str, Type]) -> Type:
     """Substitute ``TypeVar`` names in *ty* using *subst*."""
     if isinstance(ty, TypeVar):
@@ -417,13 +430,23 @@ class SmtContext:
         self,
         ty: Type,
         *,
-        self_ref_key: str | None = None,
-        self_ref_dt: Any | None = None,
+        builders: dict[str, z3.Datatype] | None = None,
     ) -> z3.SortRef | None:
         """Map a Vera Type to a Z3 sort.
 
         Returns None for unsupported types (Unit, TypeVar, function types).
         String maps to z3.StringSort(); Float64 maps to z3.FPSort(11, 53) (#797).
+
+        *builders* holds the in-progress ``z3.Datatype`` objects for every ADT
+        instantiation currently being constructed together as one mutually-
+        recursive group (#881).  A field whose type is one of those keys
+        resolves to its builder — Z3 stitches the forward reference at
+        ``CreateDatatypes`` time.  The self-recursive case (``Cons(Int, Self)``)
+        is just the singleton-group instance of this; before #881 it was a
+        dedicated ``self_ref_key``/``self_ref_dt`` pair that could not span two
+        types, so a mutual pair (``A`` field ``B``, ``B`` field ``A``) recursed
+        unboundedly into fresh sort creation and raised a raw ``RecursionError``
+        on a check-green program.
         """
         if isinstance(ty, RefinedType):
             # A refinement's Z3 SORT is its base's sort — the predicate
@@ -448,18 +471,86 @@ class SmtContext:
             return None
         if isinstance(ty, AdtType):
             key = _adt_sort_key(ty.name, ty.type_args)
-            # Self-reference during datatype creation
-            if key == self_ref_key and self_ref_dt is not None:
-                return self_ref_dt
+            # In-progress member of the current mutually-recursive group:
+            # hand back its builder so Z3 resolves the forward reference.
+            if builders is not None and key in builders:
+                return builders[key]
             return self._get_or_create_adt_sort(ty.name, ty.type_args)
         return None
+
+    def _collect_adt_group(
+        self, root_name: str, root_args: tuple[Type, ...],
+    ) -> dict[str, tuple[AdtInfo, dict[str, Type]]] | None:
+        """Collect every registered-ADT instantiation reachable from the root
+        via constructor-field types, skipping ones already cached (#881).
+
+        This is the closure that must be handed to ``z3.CreateDatatypes`` as a
+        single group so mutually-recursive datatypes (``A`` references ``B``,
+        ``B`` references ``A``) are declared together.  Returns an insertion-
+        ordered map ``key -> (adt_info, type-param substitution)``, or ``None``
+        if the root itself is not a registered ADT.  Non-ADT and already-cached
+        field types are followed only far enough to discover further registered
+        members; they become concrete sorts (or builders for in-group members)
+        at construction time.
+        """
+        root_info = self._adt_registry.get(root_name)
+        if root_info is None:
+            return None
+        group: dict[str, tuple[AdtInfo, dict[str, Type]]] = {}
+        worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]
+        while worklist:
+            name, args = worklist.pop()
+            key = _adt_sort_key(name, args)
+            if key in group or key in self._z3_sorts:
+                continue
+            info = self._adt_registry.get(name)
+            if info is None:
+                # Not a registered ADT (e.g. Tuple, or a nested type arg):
+                # its own sort is built independently; only its type args may
+                # carry further group members, enqueued below.
+                for a in args:
+                    self._enqueue_adt_types(a, worklist)
+                continue
+            subst: dict[str, Type] = {}
+            if info.type_params:
+                if len(args) != len(info.type_params):  # pragma: no cover
+                    return None
+                subst = dict(zip(info.type_params, args))
+            group[key] = (info, subst)
+            for ctor_info in info.constructors.values():
+                if ctor_info.field_types is None:
+                    continue
+                for ft in ctor_info.field_types:
+                    self._enqueue_adt_types(
+                        _substitute_type(ft, subst), worklist)
+        return group
+
+    @staticmethod
+    def _enqueue_adt_types(
+        ty: Type, worklist: list[tuple[str, tuple[Type, ...]]],
+    ) -> None:
+        """Push every ``AdtType`` occurring in *ty* (itself and nested type
+        args) onto *worklist* for group discovery (#881)."""
+        if isinstance(ty, RefinedType):
+            SmtContext._enqueue_adt_types(ty.base, worklist)
+        elif isinstance(ty, AdtType):
+            worklist.append((ty.name, ty.type_args))
+            for a in ty.type_args:
+                SmtContext._enqueue_adt_types(a, worklist)
 
     def _get_or_create_adt_sort(
         self,
         adt_name: str,
         type_args: tuple[Type, ...],
     ) -> z3.SortRef | None:
-        """Lazily create a Z3 ADT sort for a concrete type instantiation."""
+        """Lazily create a Z3 ADT sort for a concrete type instantiation.
+
+        Datatypes reachable from *adt_name* through constructor fields are
+        declared together via ``z3.CreateDatatypes`` (#881), so a mutually-
+        recursive group (``A`` referencing ``B`` and vice versa) resolves in a
+        single pass instead of recursing unboundedly into fresh sort creation.
+        A self-recursive datatype is the singleton-group case.
+        """
         key = _adt_sort_key(adt_name, type_args)
         if key in self._z3_sorts:
             return self._z3_sorts[key]
@@ -474,38 +565,41 @@ class SmtContext:
                 return self._get_or_create_tuple_sort(key, type_args)
             return None
 
-        # Build type parameter substitution
-        subst: dict[str, Type] = {}
-        if adt_info.type_params:
-            if len(type_args) != len(adt_info.type_params):  # pragma: no cover
-                return None
-            subst = dict(zip(adt_info.type_params, type_args))
+        group = self._collect_adt_group(adt_name, type_args)
+        if group is None:  # pragma: no cover — guarded by adt_info check above
+            return None
 
-        # Create Z3 Datatype
-        z3_name = key.replace("<", "_").replace(">", "").replace(", ", "_")
-        dt = z3.Datatype(z3_name)
-
-        for ctor_name, ctor_info in adt_info.constructors.items():
-            if ctor_info.field_types is None:
-                dt.declare(ctor_name)
-            else:
+        # One builder per group member, all referenceable while resolving
+        # fields so cross-references (mutual or self) stitch at create time.
+        builders: dict[str, z3.Datatype] = {
+            member_key: z3.Datatype(_z3_sort_name(member_key))
+            for member_key in group
+        }
+        for member_key, (info, subst) in group.items():
+            dt = builders[member_key]
+            for ctor_name, ctor_info in info.constructors.items():
+                if ctor_info.field_types is None:
+                    dt.declare(ctor_name)
+                    continue
                 fields: list[tuple[str, Any]] = []
                 for i, ft in enumerate(ctor_info.field_types):
                     concrete = _substitute_type(ft, subst)
-                    field_name = f"{ctor_name}_{i}"
                     z3_sort = self._vera_type_to_z3_sort(
-                        concrete,
-                        self_ref_key=key,
-                        self_ref_dt=dt,
-                    )
+                        concrete, builders=builders)
                     if z3_sort is None:
+                        # A field's sort is unsupported: abandon the whole
+                        # group uncached (matches the pre-#881 single-sort
+                        # None return; a later obligation may retry).
                         return None
-                    fields.append((field_name, z3_sort))
+                    fields.append((f"{ctor_name}_{i}", z3_sort))
                 dt.declare(ctor_name, *fields)
 
-        sort = dt.create()
-        self._z3_sorts[key] = sort
-        return sort
+        ordered_keys = list(group)
+        created = z3.CreateDatatypes(*(builders[k] for k in ordered_keys))
+        # CreateDatatypes returns one sort per builder, in the same order.
+        for member_key, sort in zip(ordered_keys, created):
+            self._z3_sorts[member_key] = sort
+        return self._z3_sorts[key]
 
     def _get_or_create_tuple_sort(
         self, key: str, type_args: tuple[Type, ...],
@@ -518,12 +612,10 @@ class SmtContext:
         accessors — needed for non-literal tuple-destructure narrowing
         obligations.  Cached like any other ADT sort.
         """
-        z3_name = key.replace("<", "_").replace(">", "").replace(", ", "_")
-        dt = z3.Datatype(z3_name)
+        dt = z3.Datatype(_z3_sort_name(key))
         fields: list[tuple[str, Any]] = []
         for i, ft in enumerate(type_args):
-            z3_sort = self._vera_type_to_z3_sort(
-                ft, self_ref_key=key, self_ref_dt=dt)
+            z3_sort = self._vera_type_to_z3_sort(ft, builders={key: dt})
             if z3_sort is None:
                 return None
             fields.append((f"Tuple_{i}", z3_sort))

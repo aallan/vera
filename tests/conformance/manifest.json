@@ -141,6 +141,19 @@
     ]
   },
   {
+    "id": "ch02_adt_mutual_recursive",
+    "file": "ch02_adt_mutual_recursive.vera",
+    "chapter": 2,
+    "title": "Mutually-recursive ADTs",
+    "level": "run",
+    "spec_ref": "Section 2.3",
+    "features": [
+      "adt",
+      "recursive_adt",
+      "decreases"
+    ]
+  },
+  {
     "id": "ch02_refinement_types",
     "file": "ch02_refinement_types.vera",
     "chapter": 2,

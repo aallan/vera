@@ -71,6 +71,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_verifier_primitive_ops.py` | 39 | 658 | **Primitive-operation safety obligations** (#680) — division/modulo by-zero `E526` and array-index-bounds `E527`, the in-bounds/out-of-bounds two-check with float-exemption, honest Tier-3 for opaque lengths, off-by-one and lower-bound pins, De Bruijn-correct fix hints (#839 split) |
 | `test_verifier_calls_modules.py` | 44 | 962 | Call-site preconditions (incl. branch-aware), pipe-operator verification, cross-module contracts (#839 split) |
 | `test_verifier_adt_decreases.py` | 20 | 626 | Match/ADT verification, decreases measures (incl. ADT decreases), mutual recursion (#839 split) |
+| `test_mutual_recursive_sorts_881.py` | 9 | 216 | #881 mutually-recursive `data` declarations — Z3 sort construction for a mutual group (issue repro, 3-cycle, one-base-case pair, Float64-field pair) declared together via `z3.CreateDatatypes` rather than recursing unboundedly into fresh sort creation (the pre-fix raw `RecursionError` on a check-green program); pins non-FP mutual equality as Tier-1 and recursive-FP mutual equality as a loud Tier-3 (#871 interaction), with a mutation-kill that re-raises `RecursionError` when the group construction is reverted |
 | `test_adt_float64_eq_871.py` | 9 | 306 | ADT equality over Float64 fields: per-field fpEQ soundness differentials (NaN, signed zero), multi-constructor recognizer guards, recursive-ADT Tier-3 demotion (#871) |
 | `test_verifier_refinements.py` | 62 | 1,462 | Refined Bool/String/Float64 param sorts, **refinement-predicate translation + verification** (#746 — Tier-1 discharge at narrowing/return positions, E505 with counterexample, E506 Tier-3 for untranslatable predicates, the R3 already-refined exemption, refined-ADT-sub-pattern arm-fact carry into `@Nat` narrowings and call preconditions, alias-base refined returns, refined returns from match arms) (#839 split) |
 | `test_verifier_shadow_audits.py` | 71 | 1,372 | **Per-monomorphization generic verification** (#732 — per-instantiation body verification, collapsed-type-var De Bruijn reindex soundness, one-diagnostic dedup, decreases-only discovery, Tier-3 `E520` residual) and the **#680 shadow/projection audit battery** — 57 differential tests pinning the safe→verified / opaque→Tier-3 / unsafe→loud trichotomy across compound shadows, destructure De Bruijn alignment, opaque match scrutinees, and intra-block scoping; **mutation-validated** (every test flips RED when its target machinery is broken) (#839 split) |
@@ -153,7 +154,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 
 ## Conformance Suite
 
-The conformance suite is a collection of 108 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 109 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -592,7 +593,7 @@ Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 108 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 109 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 `.vera` examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
@@ -693,7 +694,7 @@ Every push is checked by 30 configured hooks across two stages: 28 are configure
 | `ruff check .` | Lint Python with ruff (default `F` + `E` rules) |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_conformance.py` | All 108 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 109 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |
