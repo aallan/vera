@@ -480,23 +480,33 @@ class SmtContext:
 
     def _collect_adt_group(
         self, root_name: str, root_args: tuple[Type, ...],
-    ) -> dict[str, tuple[AdtInfo, dict[str, Type]]] | None:
-        """Collect every registered-ADT instantiation reachable from the root
-        via constructor-field types, skipping ones already cached (#881).
+    ) -> dict[str, list[tuple[str, tuple[Type, ...] | None]]] | None:
+        """Collect every datatype instantiation reachable from the root via
+        constructor-field types, skipping ones already cached (#881).
 
         This is the closure that must be handed to ``z3.CreateDatatypes`` as a
         single group so mutually-recursive datatypes (``A`` references ``B``,
         ``B`` references ``A``) are declared together.  Returns an insertion-
-        ordered map ``key -> (adt_info, type-param substitution)``, or ``None``
-        if the root itself is not a registered ADT.  Non-ADT and already-cached
-        field types are followed only far enough to discover further registered
-        members; they become concrete sorts (or builders for in-group members)
-        at construction time.
+        ordered map ``key -> [(ctor_name, concrete_field_types), ...]``, or
+        ``None`` if the root itself is not a registered ADT.  Each member's
+        field types are already concrete (type params substituted), so
+        construction can resolve them against the shared builder map directly.
+
+        A ``Tuple`` instantiation whose components carry a back-reference to a
+        group member (``data C { MkC(Tuple<C, Int>) }``, or a pair ``A``/``B``
+        cross-referencing through a ``Tuple`` field) is itself a member of the
+        group — modelled as a single-constructor ``Tuple`` datatype whose
+        fields are its concrete components.  Building it *inside* the group
+        rather than via a fresh ``_get_or_create_adt_sort`` call is what lets
+        the back-reference stitch to the in-progress builder; the fresh call
+        re-entered sort creation for the still-uncached member and recursed
+        unboundedly into the same raw ``RecursionError`` #881 exists to
+        eliminate.
         """
         root_info = self._adt_registry.get(root_name)
         if root_info is None:
             return None
-        group: dict[str, tuple[AdtInfo, dict[str, Type]]] = {}
+        group: dict[str, list[tuple[str, tuple[Type, ...] | None]]] = {}
         worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]
         while worklist:
             name, args = worklist.pop()
@@ -505,7 +515,17 @@ class SmtContext:
                 continue
             info = self._adt_registry.get(name)
             if info is None:
-                # Not a registered ADT (e.g. Tuple, or a nested type arg):
+                if name == "Tuple" and args:
+                    # A Tuple reachable through a member's field is itself a
+                    # group member: a single ``Tuple`` constructor whose fields
+                    # are its (already-concrete) components.  Enqueue those
+                    # components so any ADT back-reference they carry joins the
+                    # group and stitches to a shared builder at create time.
+                    group[key] = [("Tuple", args)]
+                    for a in args:
+                        self._enqueue_adt_types(a, worklist)
+                    continue
+                # Any other non-registered type (e.g. a nested type arg):
                 # its own sort is built independently; only its type args may
                 # carry further group members, enqueued below.
                 for a in args:
@@ -516,13 +536,19 @@ class SmtContext:
                 if len(args) != len(info.type_params):  # pragma: no cover
                     return None
                 subst = dict(zip(info.type_params, args))
-            group[key] = (info, subst)
-            for ctor_info in info.constructors.values():
+            ctors: list[tuple[str, tuple[Type, ...] | None]] = []
+            for ctor_name, ctor_info in info.constructors.items():
                 if ctor_info.field_types is None:
+                    ctors.append((ctor_name, None))
                     continue
-                for ft in ctor_info.field_types:
-                    self._enqueue_adt_types(
-                        _substitute_type(ft, subst), worklist)
+                concrete = tuple(
+                    _substitute_type(ft, subst)
+                    for ft in ctor_info.field_types
+                )
+                ctors.append((ctor_name, concrete))
+                for ft in concrete:
+                    self._enqueue_adt_types(ft, worklist)
+            group[key] = ctors
         return group
 
     @staticmethod
@@ -570,22 +596,22 @@ class SmtContext:
             return None
 
         # One builder per group member, all referenceable while resolving
-        # fields so cross-references (mutual or self) stitch at create time.
+        # fields so cross-references (mutual or self, direct or Tuple-mediated)
+        # stitch at create time.
         builders: dict[str, z3.Datatype] = {
             member_key: z3.Datatype(_z3_sort_name(member_key))
             for member_key in group
         }
-        for member_key, (info, subst) in group.items():
+        for member_key, ctors in group.items():
             dt = builders[member_key]
-            for ctor_name, ctor_info in info.constructors.items():
-                if ctor_info.field_types is None:
+            for ctor_name, field_types in ctors:
+                if field_types is None:
                     dt.declare(ctor_name)
                     continue
                 fields: list[tuple[str, Any]] = []
-                for i, ft in enumerate(ctor_info.field_types):
-                    concrete = _substitute_type(ft, subst)
+                for i, ft in enumerate(field_types):
                     z3_sort = self._vera_type_to_z3_sort(
-                        concrete, builders=builders)
+                        ft, builders=builders)
                     if z3_sort is None:
                         # A field's sort is unsupported: abandon the whole
                         # group uncached (matches the pre-#881 single-sort

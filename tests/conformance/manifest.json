@@ -154,6 +154,20 @@
     ]
   },
   {
+    "id": "ch02_adt_tuple_recursive",
+    "file": "ch02_adt_tuple_recursive.vera",
+    "chapter": 2,
+    "title": "Self-recursive ADT with a Tuple-mediated back-reference",
+    "level": "run",
+    "spec_ref": "Section 2.3",
+    "features": [
+      "adt",
+      "recursive_adt",
+      "tuple",
+      "decreases"
+    ]
+  },
+  {
     "id": "ch02_refinement_types",
     "file": "ch02_refinement_types.vera",
     "chapter": 2,

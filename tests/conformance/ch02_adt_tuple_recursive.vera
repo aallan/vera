@@ -1,0 +1,30 @@
+-- Conformance: self-recursive ADT with a Tuple-mediated back-reference
+-- (Chapter 2). Tests: a `data` type whose recursive occurrence of itself
+-- sits inside a `Tuple<Chain, Int>` field, Tuple construction/destructure
+-- nested inside a match arm, and Z3 sort construction for a Tuple-carrying
+-- recursive group (#881 — such a type once crashed `vera verify` with a
+-- raw RecursionError).
+private data Chain {
+  Tip,
+  Link(Tuple<Chain, Int>)
+}
+
+private fn length(@Chain -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Chain.0)
+  effects(pure)
+{
+  match @Chain.0 {
+    Tip -> 0,
+    Link(@Tuple<Chain, Int>) -> match @Tuple<Chain, Int>.0 { Tuple(@Chain, @Int) -> 1 + length(@Chain.0) }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  nat_to_int(length(Link(Tuple(Link(Tuple(Link(Tuple(Tip, 1)), 2)), 3))))
+}

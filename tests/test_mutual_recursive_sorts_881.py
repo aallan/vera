@@ -186,6 +186,91 @@ public fn f(@IntList -> @Bool)
         assert result.summary.tier1_verified >= 1
         assert all(o.status != "violated" for o in result.obligations)
 
+    def test_self_recursive_through_tuple_field(self) -> None:
+        # RED (completeness gap on the #881 branch): the recursive back-edge
+        # runs THROUGH a `Tuple` field (`MkC(Tuple<C, Int>)`).  `_collect_adt_group`
+        # discovered `C` through the Tuple's type args, but the Tuple sort was
+        # built by a FRESH `_get_or_create_adt_sort` call that did not share the
+        # group's builder map, so its `C` component re-entered sort creation for
+        # the still-uncached `C` and recursed unboundedly into the identical raw
+        # RecursionError.  Post-fix the Tuple is a group member and stitches to
+        # the shared builder; the trivial obligation discharges Tier-1.
+        result = _verify("""
+private data C { Stop, MkC(Tuple<C, Int>) }
+
+public fn f(@C -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{
+  true
+}
+""")
+        assert result.summary.tier1_verified >= 1
+        assert all(o.status != "violated" for o in result.obligations)
+
+    def test_mutual_pair_through_tuple_field(self) -> None:
+        # RED: the mutual cross-reference passes through a Tuple field
+        # (`A` carries `Tuple<B, Int>`, `B` carries `A`).  Same Tuple-mediated
+        # RecursionError pre-fix.  Both types keep a base case so the datatype
+        # is well-founded (Z3 rejects a base-case-free cycle — orthogonal to
+        # this fix).
+        result = _verify("""
+private data A { Stop, MkA(Tuple<B, Int>) }
+
+private data B { Halt, MkB(A) }
+
+public fn f(@A -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{
+  true
+}
+""")
+        assert result.summary.tier1_verified >= 1
+        assert all(o.status != "violated" for o in result.obligations)
+
+    def test_non_fp_tuple_mediated_equality_proves_tier1(self) -> None:
+        # Pins the model choice for a Tuple-mediated NON-FP recursive group:
+        # structural datatype `=` matches the runtime, so reflexivity
+        # `@A.0 == @A.0` proves Tier-1 (same as the direct-reference case).
+        result = _verify("""
+private data A { Stop, MkA(Tuple<B, Int>) }
+
+private data B { Halt, MkB(A) }
+
+public fn refl(@A -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{
+  @A.0 == @A.0
+}
+""")
+        ens = _ensures(result)
+        assert ens and all(o.status == "verified" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+
+    def test_fp_tuple_mediated_equality_demotes_to_tier3(self) -> None:
+        # The #871 interaction reached THROUGH a Tuple field: the Float64 sits
+        # inside a recursive cycle (`FA` -> `Tuple<FB, Float64>` -> `FB` ->
+        # `FA`), so equality has no finite expansion and `@FA.0 == @FA.0` must
+        # demote to a loud Tier-3 runtime check — never a false Tier-1 proof
+        # (structural `=` would wrongly prove NaN == NaN).
+        result = _verify("""
+private data FA { Stop, MkFA(Tuple<FB, Float64>) }
+
+private data FB { Halt, MkFB(FA) }
+
+public fn refl(@FA -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{
+  @FA.0 == @FA.0
+}
+""")
+        ens = _ensures(result)
+        assert ens, [(o.kind, o.status) for o in result.obligations]
+        assert all(o.status == "tier3" for o in ens), [
+            (o.kind, o.status) for o in result.obligations
+        ]
+        assert result.summary.tier3_runtime >= 1
+
 
 @pytest.mark.parametrize(
     "source",
@@ -207,10 +292,26 @@ public fn f(@A -> @Bool)
   requires(true) ensures(@Bool.result == true) effects(pure)
 { true }
 """,
+        # Tuple-mediated self-recursion
+        """
+private data C { Stop, MkC(Tuple<C, Int>) }
+public fn f(@C -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{ true }
+""",
+        # Tuple-mediated mutual pair (well-founded)
+        """
+private data A { Stop, MkA(Tuple<B, Int>) }
+private data B { Halt, MkB(A) }
+public fn f(@A -> @Bool)
+  requires(true) ensures(@Bool.result == true) effects(pure)
+{ true }
+""",
     ],
 )
 def test_verify_does_not_raise(source: str) -> None:
-    # Mutation kill: reverting the group construction re-raises RecursionError
-    # here (the discriminating signal is "verify() completes" vs "verify()
-    # raises RecursionError").
+    # Mutation kill: reverting the group construction (direct or Tuple-mediated
+    # member discovery / shared-builder stitch) re-raises RecursionError here
+    # (the discriminating signal is "verify() completes" vs "verify() raises
+    # RecursionError").
     _verify(source)  # must not raise
