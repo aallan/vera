@@ -491,6 +491,95 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 
 
 # ---------------------------------------------------------------------------
+# Direct == gate (PR #870 review): a direct comparison has no generic-
+# constraint gate in front of it, so `_translate_adt_eq` itself must check
+# derivability and reject with a clean E613 — never an E699 invariant, and
+# never a wrong-answer helper.
+# ---------------------------------------------------------------------------
+
+
+def test_direct_eq_map_field_rejected_e613() -> None:
+    """Direct `==` on a Map-field ADT is a clean E613, not an E699."""
+    source = """\
+public data HasMap { MkHasMap(Map<String, Int>) }
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{
+  let @HasMap = MkHasMap(map_new());
+  let @HasMap = MkHasMap(map_new());
+  @HasMap.1 == @HasMap.0
+}
+"""
+    codes = _errors(source)
+    assert "E613" in codes, f"expected E613, got {codes}"
+    assert "E699" not in codes, f"invariant leak on the direct path: {codes}"
+
+
+def test_direct_eq_md_builtin_rejected_e613() -> None:
+    """Direct `==` on an Md builtin (empty field_types) is E613, not E699.
+
+    The #872 shape: `MdText("a") == MdText("a")` passed check and crashed
+    codegen with an invariant; the direct-path gate rejects it cleanly.
+    """
+    source = """\
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{ MdText("a") == MdText("a") }
+"""
+    codes = _errors(source)
+    assert "E613" in codes, f"expected E613, got {codes}"
+    assert "E699" not in codes, f"invariant leak on the direct path: {codes}"
+
+
+def test_tuple_eq_rejected_both_paths() -> None:
+    """Tuple equality rejects on BOTH paths until tuple structural Eq exists.
+
+    `Tuple`'s registered layout is a variadic zero-field placeholder (real
+    layouts are recomputed per construction), so treating it as a fieldless
+    enum generated an ALWAYS-TRUE `$eq_Tuple` — `Tuple(1, 2) == Tuple(3, 4)`
+    returned true through both the Eq-constrained generic and the direct
+    `==` (PR #870 review, Critical).  Both must be a loud E613 instead.
+    """
+    generic = """\
+private forall<T where Eq<T>> fn eq2(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure) { @T.1 == @T.0 }
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(1, 2);
+  let @Tuple<Int, Int> = Tuple(3, 4);
+  eq2(@Tuple<Int, Int>.1, @Tuple<Int, Int>.0)
+}
+"""
+    direct = """\
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(1, 2);
+  let @Tuple<Int, Int> = Tuple(3, 4);
+  @Tuple<Int, Int>.1 == @Tuple<Int, Int>.0
+}
+"""
+    for name, source in (("generic", generic), ("direct", direct)):
+        codes = _errors(source)
+        assert "E613" in codes, f"{name}: expected E613, got {codes}"
+        assert "E699" not in codes, f"{name}: invariant leak: {codes}"
+
+
+def test_direct_eq_bare_ctor_inferred_option_rejected_e613() -> None:
+    """Direct `==` on ctor-inferred builtin Option is E613, not E699.
+
+    `Some(1) == Some(1)` infers the BARE name `Option` (the #772-family
+    type-argument loss), so the field type is unresolvable — the direct-path
+    gate rejects in lockstep with the generic gate.  #772 recovering the
+    type argument flips this to a working comparison.
+    """
+    source = """\
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{ Some(1) == Some(1) }
+"""
+    codes = _errors(source)
+    assert "E613" in codes, f"expected E613, got {codes}"
+    assert "E699" not in codes, f"invariant leak on the direct path: {codes}"
+
+
+# ---------------------------------------------------------------------------
 # Mixed fields: scalar + String + nested ADT in one constructor
 # ---------------------------------------------------------------------------
 
@@ -552,6 +641,8 @@ _DIFFERENTIAL_CASES = [
      "MkW(MkInner(1))", True),
     ("public data W { MkW(Map<String, Int>) }", "MkW(map_new())", False),
     ("public data W { MkW(Array<Int>) }", "MkW([1])", False),
+    # A second opaque host handle (Set), pinning the full rejected-type set.
+    ("public data W { MkW(Set<Int>) }", "MkW(set_new())", False),
     ("public data Bad { MkBad(Map<String, Int>) }\n"
      "public data W { MkW(Bad) }", "MkW(MkBad(map_new()))", False),
 ]

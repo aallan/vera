@@ -307,6 +307,14 @@ class MonomorphizationMixin:
         layouts = self._adt_layouts.get(base)
         if layouts is None:
             return False
+        if base == "Tuple":
+            # Tuple's registered layout is a variadic ZERO-FIELD placeholder
+            # (real layouts are recomputed per construction site), not a
+            # fieldless enum — accepting it here would generate a tag-only
+            # equality that compares no components and returns always-true
+            # (PR #870 review, Critical).  Reject until tuple structural Eq
+            # carries real per-instantiation component metadata.
+            return False
         if type_name in _seen:        # recursive ADT (e.g. List<T>) — break cycle
             return True
         seen = _seen | {type_name}

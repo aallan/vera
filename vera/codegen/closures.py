@@ -227,6 +227,9 @@ class ClosureLiftingMixin:
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
+        # #773 / PR #870 review: direct `==` derivability gate inside closure
+        # bodies — same oracle as the per-function ctx in functions.py.
+        ctx.set_adt_eq_derivable(self._adt_satisfies_eq)
         # #514: share the module-level sig dict and closure-ID counter
         # with the inner ctx so that any new sigs / IDs it registers
         # get module-unique names (avoids ``$closure_sig_0`` /

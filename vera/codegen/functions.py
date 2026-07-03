@@ -7,7 +7,7 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 from vera import ast
-from vera.skip import CodegenInvariantError, CodegenSkip
+from vera.skip import AdtEqNotDerivableError, CodegenInvariantError, CodegenSkip
 from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
@@ -86,6 +86,9 @@ class FunctionCompilationMixin:
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
+        # #773 / PR #870 review: the direct `==` path checks structural-Eq
+        # derivability through the SAME gate the generic constraint path uses.
+        ctx.set_adt_eq_derivable(self._adt_satisfies_eq)
         # Build function return type map for FnCall type inference.
         # Include Unit-returning fns explicitly with None so `_is_void_expr`
         # in vera/wasm/context.py can distinguish "Unit return" (key present,
@@ -349,6 +352,43 @@ class FunctionCompilationMixin:
                 error_code="E602",
             )
             return None
+        except AdtEqNotDerivableError as nde:
+            # #773 / PR #870 review: a direct `==` on an ADT whose Eq is not
+            # structurally derivable — a USER error, not a compiler bug.
+            # Surface the same E613 the generic constraint path emits, with
+            # the comparison's own span.  MUST precede the parent
+            # CodegenInvariantError catch below (subclass).
+            from vera.errors import Diagnostic
+
+            self._harvest_interp_inference_failures(ctx)
+            loc, source_line = self._diag_location(
+                nde.node if nde.node is not None else decl
+            )
+            self.diagnostics.append(Diagnostic(
+                description=(
+                    f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
+                    f"`==` requires both operands to be Eq."
+                ),
+                location=loc,
+                source_line=source_line,
+                rationale=(
+                    "Structural Eq derivation requires every constructor "
+                    "field to be itself Eq; this type has a field with no "
+                    "Eq semantics (or an unresolved type argument), so no "
+                    "equality can be generated."
+                ),
+                fix=(
+                    f"Compare Eq-derivable values instead. An ADT derives Eq "
+                    f"structurally when every constructor field is itself Eq "
+                    f"— restructure '{nde.type_name}' so its fields are Eq "
+                    f"primitives or Eq ADTs (Array/Map/handle fields are "
+                    f"not Eq)."
+                ),
+                spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                severity="error",
+                error_code="E613",
+            ))
+            return None
         except CodegenInvariantError as inv:  # #657: reachable — operators.py / closures.py raise this for type-check-impossible states; covered by tests/test_codegen_invariant_e699.py.
             # #626 Layer 3 — compiler bug, not a user error.  Surface
             # as [E699] at severity="error" so `vera compile` exits
@@ -438,6 +478,42 @@ class FunctionCompilationMixin:
         # diagnostic with the effect.
         try:
             closure_failed = self._lift_pending_closures(ctx)
+        except AdtEqNotDerivableError as nde:
+            # #773 / PR #870 review: a direct `==` on a non-Eq-derivable ADT
+            # inside a CLOSURE body — same clean E613 as the function-body
+            # catch above (a user error, not a compiler bug).  MUST precede
+            # the parent CodegenInvariantError catch below (subclass).
+            from vera.errors import Diagnostic
+
+            self._harvest_interp_inference_failures(ctx)
+            loc, source_line = self._diag_location(
+                nde.node if nde.node is not None else decl
+            )
+            self.diagnostics.append(Diagnostic(
+                description=(
+                    f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
+                    f"`==` requires both operands to be Eq."
+                ),
+                location=loc,
+                source_line=source_line,
+                rationale=(
+                    "Structural Eq derivation requires every constructor "
+                    "field to be itself Eq; this type has a field with no "
+                    "Eq semantics (or an unresolved type argument), so no "
+                    "equality can be generated."
+                ),
+                fix=(
+                    f"Compare Eq-derivable values instead. An ADT derives Eq "
+                    f"structurally when every constructor field is itself Eq "
+                    f"— restructure '{nde.type_name}' so its fields are Eq "
+                    f"primitives or Eq ADTs (Array/Map/handle fields are "
+                    f"not Eq)."
+                ),
+                spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                severity="error",
+                error_code="E613",
+            ))
+            return None
         except CodegenInvariantError as inv:  # #657: a closure-body invariant
             # violation (a codegen bug) propagates out of
             # `_compile_lifted_closure` to here and surfaces as ONE [E699] for

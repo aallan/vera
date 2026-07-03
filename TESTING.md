@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 5,963 across 95 files (~79,000 lines of test code; 5,894 passed + 26 stress, 43 skipped) |
+| **Tests** | 5,968 across 95 files (~79,000 lines of test code; 5,899 passed + 26 stress, 43 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 108 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 37, all validated through `vera check` + `vera verify` |
@@ -89,7 +89,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_codegen_interpolation.py` | 33 | 1,275 | String interpolation, the E615 loud inference-fallthrough channel (#630) (#419 split) |
 | `test_codegen_effects.py` | 73 | 1,493 | State\<T\> host imports, effect handlers, Exn\<E\> handlers (incl. expression-bodied, #475), Async/Future\<T\>, Random effect (#419 split); plus the #841 concurrent-Async battery (`TestConcurrentAsync841`) — fused `async_http_get`/`async_http_post`/`async_await` import pins, sync-import suppression, pure-shape eager pin (no task imports), kind-4 `register_wrapper` structural pin, a generic-fn-with-concrete-Future-return await classification pin (PR #842 review round 2), the behavioural two-gets-overlap test (local `ThreadingHTTPServer`, server-side request-log ordering, no wall-clock), and the #843 indirect-closure Ok-path pin (payload byte-exact through `await(apply_fn(...))`) |
 | `test_codegen_data_types.py` | 67 | 1,339 | ADT metadata + constructors, match expressions (incl. nested patterns), tuples, ADT string fields, generic-monomorphization regressions (#604, #767) (#419 split) |
-| `test_codegen_structural_eq.py` | 31 | 622 | Structural `Eq` auto-derivation (#773): String-field ADTs compared by content (distinct `string_concat` allocations), nested-ADT fields compared by value not pointer, 2-level recursion, a recursive generic ADT (`List<Int>` — the self-calling `$eq_` function + deep `List<T>` param substitution), a mutually-recursive ADT pair, `P<String>` wrapping `Box<T>`, `Box<String>` under an `Eq`-constrained generic, type-alias fields (alias-to-Int/String/ADT/refinement + 2-hop chains resolve before Eq dispatch), NaN-field runtime consistency with primitive `==`, Byte fields, loud E613 for `Map`/`Array`-field ADTs, the checker↔codegen derivability differential, and the #772 constructor-path lockstep probe |
+| `test_codegen_structural_eq.py` | 36 | 713 | Structural `Eq` auto-derivation (#773): String-field ADTs compared by content (distinct `string_concat` allocations), nested-ADT fields compared by value not pointer, 2-level recursion, a recursive generic ADT (`List<Int>` — the self-calling `$eq_` function + deep `List<T>` param substitution), a mutually-recursive ADT pair, `P<String>` wrapping `Box<T>`, `Box<String>` under an `Eq`-constrained generic, type-alias fields (alias-to-Int/String/ADT/refinement + 2-hop chains resolve before Eq dispatch), NaN-field runtime consistency with primitive `==`, Byte fields, loud E613 for `Map`/`Array`/`Set`-field ADTs on the generic path AND for direct `==` (Map-field, Md-builtin, ctor-inferred bare generic, and the always-true `Tuple` placeholder — PR #870 review), the checker↔codegen derivability differential, and the #772 constructor-path lockstep probe |
 | `test_codegen_arrays.py` | 82 | 1,427 | Byte type, array literals / bounds checking / length / range / concat, construction builtins (#209), compound element types (#132), array utilities (#419 split) |
 | `test_codegen_refinements.py` | 64 | 1046 | Assert/assume, forall/exists quantifiers (incl. WAT inspection), refinement type aliases, **refinement-predicate runtime guards** (#746 — primitive- and `@Array`-base boundary guards, `@Byte`-base i32-width guards incl. `@Byte`-returning fn-call operands + `0..255` range conjoin (#766), tuple-component decomposition at the FFI boundary, generic tuple aliases, infinite-alias E617 fail-closed, refinement-over-tuple unwrapping), head-over-refinement shape (#655) (#419 split) |
 | `test_codegen_strings.py` | 113 | 1,275 | String literals + IO host bindings, WAT string escaping (unit + end-to-end), String/Array signatures, format expressions, core string ops (length/concat/slice/char codes/repeat), char classification, string utilities (#419 split) |
@@ -152,7 +152,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 
 ## Conformance Suite
 
-The conformance suite is a collection of 104 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 108 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -591,7 +591,7 @@ Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 104 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 108 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 `.vera` examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
@@ -692,7 +692,7 @@ Every push is checked by 30 configured hooks across two stages: 28 are configure
 | `ruff check .` | Lint Python with ruff (default `F` + `E` rules) |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_conformance.py` | All 104 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 108 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |

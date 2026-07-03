@@ -19,7 +19,7 @@ See spec/11-compilation.md for the compilation specification.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from vera import ast
 from vera.skip import CodegenSkip
@@ -191,6 +191,14 @@ class WasmContext(
         # Names of eq-helpers already requested (guards recursion during
         # generation before the body is stored in ``_adt_eq_helpers``).
         self._adt_eq_pending: set[str] = set()
+        # #773 / PR #870 review: derivability oracle for the DIRECT `==` path
+        # — the CodeGenerator's `_adt_satisfies_eq` bound method (the same
+        # E613 gate the generic constraint path consults), injected via
+        # `set_adt_eq_derivable` in functions.py / closures.py so there is
+        # exactly ONE derivability implementation.  When None (a bare
+        # WasmContext in unit tests), the gate is skipped and generation
+        # proceeds as before.
+        self._adt_eq_derivable: Callable[[str], bool] | None = None
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
@@ -306,6 +314,17 @@ class WasmContext(
     ) -> None:
         """Set function return WASM types for FnCall type inference."""
         self._fn_ret_types = ret_types
+
+    def set_adt_eq_derivable(
+        self, oracle: Callable[[str], bool],
+    ) -> None:
+        """Set the structural-Eq derivability oracle for direct `==` (#773).
+
+        ``oracle`` is the CodeGenerator's ``_adt_satisfies_eq`` bound method —
+        the SAME gate the generic constraint path consults — so the direct
+        comparison path rejects exactly the set the E613 gate rejects.
+        """
+        self._adt_eq_derivable = oracle
 
     def set_future_ret_fns(
         self,

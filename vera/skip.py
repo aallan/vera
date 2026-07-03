@@ -152,3 +152,38 @@ class CodegenInvariantError(Exception):
         self.msg = msg
         self.node = node
         super().__init__(msg)
+
+
+class AdtEqNotDerivableError(CodegenInvariantError):
+    """A direct ``==`` on an ADT whose ``Eq`` is not structurally derivable.
+
+    Raised by ``_translate_adt_eq`` (#773 / PR #870 review): the generic
+    constraint path is guarded by the E613 gate (``_adt_satisfies_eq``)
+    *before* codegen, but a direct comparison has no gate in front of it, so
+    the translator checks derivability itself and raises this instead of
+    generating a helper that would either trip the field-dispatch invariant
+    (E699 on a check-green program) or — for the variadic ``Tuple``
+    placeholder — compare nothing and return always-true.
+
+    Subclasses :class:`CodegenInvariantError` deliberately: the two catch
+    sites that know about it (function bodies in ``functions.py``, lifted
+    closure bodies in ``closures.py``) convert it to a clean **E613** user
+    diagnostic; any translation context that doesn't degrades to the parent's
+    E699 path rather than crashing the compiler.
+
+    Parameters
+    ----------
+    type_name:
+        The Vera type name of the non-derivable comparison operand
+        (e.g. ``"HasMap"``, ``"MdInline"``, ``"Tuple<Int, Int>"``).
+    node:
+        The comparison's AST node, for the diagnostic span.
+    """
+
+    def __init__(
+        self, type_name: str, node: "ast.Node | None" = None
+    ) -> None:
+        self.type_name = type_name
+        super().__init__(
+            f"ADT equality on non-Eq-derivable type {type_name!r}", node,
+        )

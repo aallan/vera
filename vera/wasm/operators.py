@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.skip import CodegenInvariantError
+from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv
 
 
@@ -174,7 +174,7 @@ class OperatorsMixin:
                         and lv is not None
                         and lv_base not in ("Bool", "Byte")
                         and lv_base in self._adt_type_names):
-                    adt_eq = self._translate_adt_eq(left, right, lv)
+                    adt_eq = self._translate_adt_eq(left, right, lv, expr)
                     if adt_eq is not None:
                         if op == ast.BinOp.NEQ:
                             adt_eq.append("i32.eqz")
@@ -289,7 +289,6 @@ class OperatorsMixin:
         return left + right + [i32_op]
 
     # -----------------------------------------------------------------
-    # ADT structural equality
     # ADT structural equality (#773)
     # -----------------------------------------------------------------
     #
@@ -302,27 +301,39 @@ class OperatorsMixin:
     # the nested-field call is a plain `call`, not an unbounded expansion.
     #
     # A field type with no `Eq` semantics (Array / Map / host handle / a
-    # closure) is not derivable.  On the GENERIC constraint path the E613 gate
-    # (`_adt_satisfies_eq`, in `vera/codegen/monomorphize.py`) rejects such an
-    # ADT before codegen, so a non-derivable field reaching helper generation
-    # there is a compiler invariant violation, raised loudly rather than
-    # silently mis-compared by pointer.  A DIRECT `==` comparison has no gate
-    # in front of it: a non-derivable ADT that only ever reaches codegen this
-    # way (e.g. an empty-`field_types` Markdown builtin like `MdText`) hits
-    # the same loud invariant as an E699 instead of a clean E613 — #872 tracks
-    # gating the direct path.
+    # closure) is not derivable.  BOTH comparison paths consult the same E613
+    # gate (`_adt_satisfies_eq`, in `vera/codegen/monomorphize.py`): the
+    # GENERIC constraint path checks it before codegen, and the DIRECT `==`
+    # path checks it here in `_translate_adt_eq` (via the injected
+    # `_adt_eq_derivable` oracle) and raises `AdtEqNotDerivableError` —
+    # converted to a clean E613 by the function/closure compile drivers — so a
+    # non-derivable ADT never silently mis-compares by pointer and never trips
+    # the helper generator's E699 field-dispatch invariant (PR #870 review;
+    # closes the #872 hole).
 
     def _translate_adt_eq(
-        self, left: list[str], right: list[str], adt_name: str,
+        self,
+        left: list[str],
+        right: list[str],
+        adt_name: str,
+        node: ast.Expr | None = None,
     ) -> list[str] | None:
         """Emit a structural-equality comparison of two ADT values.
 
         ``adt_name`` is the comparison site's Vera type name — bare
         (``"Outer"``) for a concrete ADT or parameterized (``"Box<String>"``)
-        for a generic instantiation.  Requests the matching ``$eq_<type>``
-        helper (generating it, and any nested-ADT helpers, on demand) and
-        returns ``left ++ right ++ [call $eq_<type>]``.
+        for a generic instantiation.  Checks structural derivability (the same
+        E613 gate the generic constraint path uses; see the section comment),
+        then requests the matching ``$eq_<type>`` helper (generating it, and
+        any nested-ADT helpers, on demand) and returns
+        ``left ++ right ++ [call $eq_<type>]``.
+
+        ``node`` is the comparison's AST node, for the E613 diagnostic span
+        when the operand type is not derivable.
         """
+        if (self._adt_eq_derivable is not None
+                and not self._adt_eq_derivable(adt_name)):
+            raise AdtEqNotDerivableError(adt_name, node)
         fn_name = self._request_adt_eq_helper(adt_name)
         if fn_name is None:
             return None

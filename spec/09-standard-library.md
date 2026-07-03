@@ -2457,7 +2457,7 @@ For `Eq`, ADTs are automatically derivable when all constructor fields are Eq-sa
 
 Simple enums (ADTs with only nullary constructors) always satisfy `Eq` — equality reduces to tag comparison.
 
-ADTs with `String` or `Array` fields do not currently auto-derive `Eq` (these use pair representation in WASM and require special comparison logic beyond field-level comparison).
+ADTs with `String` fields derive `Eq` by content, and nested-ADT fields recurse into the nested ADT's own equality — including recursive and mutually-recursive types ([#773](https://github.com/aallan/vera/issues/773)). `Array`, `Map`, host-handle, and tuple fields remain non-derivable: an `Eq` constraint over (or a direct `==` on) such an ADT is rejected with E613.
 
 ### 9.8.3 Compilation Strategy
 
