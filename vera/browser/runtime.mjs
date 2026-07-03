@@ -1890,36 +1890,344 @@ function buildImportObject(module) {
   }
 
   // ── Decimal host imports ──────────────────────────────────────
-  // JS lacks native Decimal — use string-based arithmetic via a
-  // minimal implementation that wraps string representations.
+  // JS lacks a native Decimal, so this is an exact scaled-BigInt
+  // engine mirroring the Python runtime's ``decimal.Decimal`` under
+  // its default context (28 significant digits, ROUND_HALF_EVEN).
+  // It matches the ``vera/runtime/decimal.py`` host semantics op-for-op
+  // — arithmetic, division, rounding, comparison, and string form —
+  // so `--target browser` honours spec §9.7.2's exactness promise and
+  // ``decimal_compare`` / ``decimal_eq`` can never contradict each
+  // other (the #856 self-contradiction: the old engine routed through
+  // JS ``Number`` for compare/arithmetic while ``eq`` string-compared).
+  //
+  // Value model: ``{sign: 0|1, coeff: BigInt >= 0, exp: int}`` with
+  // value = (-1)^sign * coeff * 10^exp — the same digits/sign/exponent
+  // triple as Python's ``Decimal.as_tuple()``.  The store keeps the
+  // *canonical* string form (``decToString`` output), so every op reads
+  // back a losslessly-parseable operand and every producer stores a
+  // Python-identical rendering.  Special values (Inf/NaN) are out of
+  // scope: ``decimal_from_string`` rejects them (returns None), so the
+  // engine only ever sees finite decimals.
+  const DEC_PREC = 28n;
+  const DEC_RE = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/;
+
+  function decNumDigits(n) {
+    return n === 0n ? 1 : n.toString().length;
+  }
+
+  // Parse a (canonical or user) decimal string to the value model.
+  // Returns null on malformed input.
+  function decParse(str) {
+    const m = str.trim().match(DEC_RE);
+    if (!m) return null;
+    const intPart = m[2] || "";
+    const fracPart = m[3] || "";
+    if (intPart === "" && fracPart === "") return null;
+    const sign = m[1] === "-" ? 1 : 0;
+    let coeffStr = intPart + fracPart;
+    let exp = -fracPart.length;
+    if (m[4] !== undefined) exp += parseInt(m[4], 10);
+    coeffStr = coeffStr.replace(/^0+(?=\d)/, "");
+    return { sign, coeff: BigInt(coeffStr), exp };
+  }
+
+  // Spec §9.7.2 exponent bound for decimal_from_string acceptance: the
+  // literal exponent token must satisfy |exp| <= 999999 (the context's
+  // Emax/Emin floor already cited by the decimal_round Overflow
+  // fallback — a literal outside it could never participate in any
+  // operation without overflowing).  Checked on the token STRING before
+  // any numeric conversion: parseInt silently ROUNDS above
+  // Number.MAX_SAFE_INTEGER ("1e9007199254740993" parsed as ...992
+  // while Python stored it exactly — CR finding 3518083324).  This
+  // bound applies to decimal_from_string ONLY, not decParse: a stored
+  // canonical string can legitimately carry an adjusted-exponent token
+  // of -1000000 (a 999999 token plus a long fraction), and decimalGet
+  // must keep round-tripping those.
+  function decExpTokenInRange(str) {
+    const m = str.trim().match(DEC_RE);
+    if (!m || m[4] === undefined) return true;
+    const digits = m[4].replace(/^[+-]/, "").replace(/^0+(?=\d)/, "");
+    return digits.length <= 6;  // 6 digits: at most 999999
+  }
+
+  // Render to Python's to-sci-string form (plain when exp <= 0 and the
+  // adjusted exponent >= -6, else scientific ``d.ddddE±n``).
+  function decToString(d) {
+    const sgn = d.sign ? "-" : "";
+    const digits = d.coeff.toString();
+    const numDig = digits.length;
+    const adj = d.exp + numDig - 1;
+    if (d.exp <= 0 && adj >= -6) {
+      if (d.exp === 0) return sgn + digits;
+      const pointPos = numDig + d.exp;
+      if (pointPos > 0) {
+        return sgn + digits.slice(0, pointPos) + "." + digits.slice(pointPos);
+      }
+      return sgn + "0." + "0".repeat(-pointPos) + digits;
+    }
+    const mant = numDig === 1 ? digits : digits[0] + "." + digits.slice(1);
+    return sgn + mant + "E" + (adj >= 0 ? "+" : "-") + Math.abs(adj).toString();
+  }
+
+  // Round a value's coefficient to at most ``prec`` significant digits
+  // with ROUND_HALF_EVEN (the default-context rounding).
+  function decRoundToPrec(d, prec) {
+    const nd = decNumDigits(d.coeff);
+    if (BigInt(nd) <= prec) return d;
+    const drop = BigInt(nd) - prec;
+    const pow = 10n ** drop;
+    const q = d.coeff / pow;
+    const r = d.coeff % pow;
+    const half = pow / 2n;
+    let up;
+    if (r > half) up = true;
+    else if (r < half) up = false;
+    else up = (q % 2n) === 1n;
+    let coeff = up ? q + 1n : q;
+    let exp = d.exp + Number(drop);
+    if (decNumDigits(coeff) > Number(prec)) { coeff /= 10n; exp += 1; }
+    return { sign: d.sign, coeff, exp };
+  }
+
+  function decIsZero(d) { return d.coeff === 0n; }
+
+  function decAdd(a, b) {
+    const minExp = Math.min(a.exp, b.exp);
+    const ca = a.coeff * 10n ** BigInt(a.exp - minExp);
+    const cb = b.coeff * 10n ** BigInt(b.exp - minExp);
+    let sum = (a.sign ? -ca : ca) + (b.sign ? -cb : cb);
+    let sign;
+    if (sum < 0n) { sign = 1; sum = -sum; }
+    else if (sum > 0n) { sign = 0; }
+    // Exact-zero sum: negative iff BOTH operands negative (ROUND_HALF_EVEN).
+    else { sign = (a.sign === 1 && b.sign === 1) ? 1 : 0; }
+    return decRoundToPrec({ sign, coeff: sum, exp: minExp }, DEC_PREC);
+  }
+
+  function decSub(a, b) {
+    // subtract = add(a, copy_negate(b)); copy_negate flips the sign bit
+    // even on zero (unlike decNeg, which canonicalises -0 to +0).
+    return decAdd(a, { sign: b.sign ? 0 : 1, coeff: b.coeff, exp: b.exp });
+  }
+
+  function decMul(a, b) {
+    const coeff = a.coeff * b.coeff;
+    return decRoundToPrec(
+      { sign: a.sign ^ b.sign, coeff, exp: a.exp + b.exp }, DEC_PREC);
+  }
+
+  // Exact division mirroring Python __truediv__ (prec 28, HALF_EVEN,
+  // ideal-exponent trailing-zero trimming).  Returns null on x/0.
+  function decDiv(a, b) {
+    if (decIsZero(b)) return null;
+    const sign = a.sign ^ b.sign;
+    if (decIsZero(a)) return { sign, coeff: 0n, exp: a.exp - b.exp };
+    const shiftAmt =
+      decNumDigits(b.coeff) - decNumDigits(a.coeff) + Number(DEC_PREC) + 1;
+    let exp = (a.exp - b.exp) - shiftAmt;
+    let coeff, rem;
+    if (shiftAmt >= 0) {
+      const scaled = a.coeff * 10n ** BigInt(shiftAmt);
+      coeff = scaled / b.coeff;
+      rem = scaled % b.coeff;
+    } else {
+      const divisor = b.coeff * 10n ** BigInt(-shiftAmt);
+      coeff = a.coeff / divisor;
+      rem = a.coeff % divisor;
+    }
+    if (rem !== 0n) {
+      // Guard digit so the final HALF_EVEN round is correct.
+      if (coeff % 5n === 0n) coeff += 1n;
+    } else {
+      // Exact quotient: reduce toward the ideal exponent (expA - expB).
+      const idealExp = a.exp - b.exp;
+      while (exp < idealExp && coeff % 10n === 0n) { coeff /= 10n; exp += 1; }
+    }
+    return decRoundToPrec({ sign, coeff, exp }, DEC_PREC);
+  }
+
+  function decNegVal(d) {
+    // User-facing negate: canonicalise signed zero to positive, and
+    // APPLY THE CONTEXT — Python's unary minus rounds to 28 significant
+    // digits (the constructor does not, so a 29+-digit value can sit in
+    // the store; PR #877 panel finding A).
+    if (decIsZero(d)) return { sign: 0, coeff: 0n, exp: d.exp };
+    return decRoundToPrec(
+      { sign: d.sign ? 0 : 1, coeff: d.coeff, exp: d.exp }, DEC_PREC);
+  }
+
+  function decAbsVal(d) {
+    // abs() applies the context too (mirrors Python __abs__).
+    return decRoundToPrec({ sign: 0, coeff: d.coeff, exp: d.exp }, DEC_PREC);
+  }
+
+  // Exact numeric comparison: -1 / 0 / 1 (never routes through Number).
+  function decCompareVal(a, b) {
+    const za = decIsZero(a), zb = decIsZero(b);
+    if (za && zb) return 0;
+    const sa = za ? 0 : (a.sign ? -1 : 1);
+    const sb = zb ? 0 : (b.sign ? -1 : 1);
+    if (sa !== sb) return sa < sb ? -1 : 1;
+    if (sa === 0) return 0;
+    const minExp = Math.min(a.exp, b.exp);
+    const ca = a.coeff * 10n ** BigInt(a.exp - minExp);
+    const cb = b.coeff * 10n ** BigInt(b.exp - minExp);
+    const mag = ca < cb ? -1 : (ca > cb ? 1 : 0);
+    return sa > 0 ? mag : -mag;
+  }
+
+  // Round to N decimal places, mirroring the Python host's
+  // ``d.quantize(Decimal(10) ** -places)`` with the InvalidOperation
+  // fallback (value returned unchanged).  The quantize target is the
+  // QUANTUM'S exponent, and the quantum ``Decimal(10) ** k`` (k = -places
+  // >= 0) is itself computed under the context: exact (exponent 0) only
+  // while its k+1 digits fit in the 28-digit precision; for k >= 28 it
+  // context-rounds to a 28-digit coefficient with exponent k - 27.  So
+  // the target exponent for places <= 0 is ``max(0, -places - 27)``, NOT
+  // always 0 (PR #877 panel finding B).
+  function decRoundPlaces(d, places) {
+    if (-places > 999999) {
+      // places < -Emax (999999): the Python host's quantum computation
+      // Decimal(10)**-places raises Overflow before quantize even sees
+      // the operand, and the host falls back to the value unchanged —
+      // mirror that here, ahead of every other path including the
+      // zero special-case (PR #877 fold-in).
+      return d;
+    }
+    const targetExp =
+      places > 0 ? -places : Math.max(0, -places - (Number(DEC_PREC) - 1));
+    if (decIsZero(d)) {
+      // Zero quantizes to any exponent (coefficient stays one digit, so
+      // quantize can never raise); sign is preserved (-0 -> -0E+n).
+      return { sign: d.sign, coeff: 0n, exp: targetExp };
+    }
+    if (d.exp >= targetExp) {
+      const diff = d.exp - targetExp;
+      // Padded digit count check BEFORE constructing the power (a huge
+      // stored exponent must fall back, not build an astronomic BigInt).
+      if (decNumDigits(d.coeff) + diff > Number(DEC_PREC)) {
+        return d;  // InvalidOperation -> unchanged
+      }
+      return { sign: d.sign, coeff: d.coeff * 10n ** BigInt(diff), exp: targetExp };
+    }
+    const drop = targetExp - d.exp;
+    if (drop > decNumDigits(d.coeff)) {
+      // Every digit is dropped and the remainder is strictly below the
+      // rounding half (coeff < 10^digits <= 10^(drop-1) < 5*10^(drop-1)):
+      // HALF_EVEN rounds to zero.  Short-circuit before the power.
+      return { sign: d.sign, coeff: 0n, exp: targetExp };
+    }
+    const pow = 10n ** BigInt(drop);
+    const q = d.coeff / pow;
+    const r = d.coeff % pow;
+    const half = pow / 2n;
+    let up;
+    if (r > half) up = true;
+    else if (r < half) up = false;
+    else up = (q % 2n) === 1n;
+    const coeff = up ? q + 1n : q;
+    if (decNumDigits(coeff) > Number(DEC_PREC)) return d;  // InvalidOperation
+    return { sign: d.sign, coeff, exp: targetExp };
+  }
+
+  // Convert an integer (may exceed Number range) to the canonical form.
+  function decFromInt(v) {
+    const bi = BigInt(v);
+    return { sign: bi < 0n ? 1 : 0, coeff: bi < 0n ? -bi : bi, exp: 0 };
+  }
+
+  // Python ``str(float)`` over JS's shortest round-trip digits, so
+  // ``decimal_from_float`` mirrors the Python host's ``Decimal(str(v))``
+  // INCLUDING the exponent the float repr implies (``str(100.0)`` is
+  // "100.0", exponent -1 — which then propagates through arithmetic:
+  // from_float(100.0)*2 renders "200.0", not "200").  Rules (CPython
+  // float_repr): fixed notation when -4 <= x < 16 (x = decimal exponent
+  // of the shortest digits), integral values keep a trailing ".0";
+  // otherwise scientific with the exponent zero-padded to >= 2 digits.
+  // ``toExponential()`` with no argument returns exactly the shortest
+  // uniquely-identifying digits, same as Python's repr digits.
+  // Non-finite floats map to the Python Decimal renderings (str(nan) ->
+  // Decimal('nan') -> "NaN", etc.); they are stored verbatim and are
+  // outside the finite-decimal parity domain (spec §9.7.2).
+  function pyFloatRepr(v) {
+    if (Number.isNaN(v)) return "NaN";
+    if (v === Infinity) return "Infinity";
+    if (v === -Infinity) return "-Infinity";
+    if (v === 0) return Object.is(v, -0) ? "-0.0" : "0.0";
+    const neg = v < 0;
+    const [mant, expPart] = Math.abs(v).toExponential().split("e");
+    const x = parseInt(expPart, 10);
+    const digits = mant.replace(".", "");
+    let s;
+    if (x < -4 || x >= 16) {
+      const m = digits.length === 1 ? digits : digits[0] + "." + digits.slice(1);
+      const ea = Math.abs(x).toString();
+      s = m + "e" + (x < 0 ? "-" : "+") + (ea.length < 2 ? "0" + ea : ea);
+    } else if (x >= 0) {
+      s = x + 1 >= digits.length
+        ? digits + "0".repeat(x + 1 - digits.length) + ".0"
+        : digits.slice(0, x + 1) + "." + digits.slice(x + 1);
+    } else {
+      s = "0." + "0".repeat(-x - 1) + digits;
+    }
+    return (neg ? "-" : "") + s;
+  }
+
   const decimalStore = new Map();
   let decimalNextHandle = 1;
+  // Store the CANONICAL string form so every op parses a lossless
+  // operand and to_string matches Python exactly.
+  function decimalAllocVal(d) {
+    const h = decimalNextHandle++;
+    decimalStore.set(h, decToString(d));
+    return h;
+  }
   function decimalAlloc(s) {
     const h = decimalNextHandle++;
     decimalStore.set(h, s);
     return h;
   }
-
-  // String-based decimal arithmetic helpers.
-  // MVP limitation: these use JS Number() which loses precision for values
-  // beyond Number.MAX_SAFE_INTEGER or with many decimal digits.  A future
-  // version should use a proper arbitrary-precision decimal library.
-  function decStrAdd(a, b) { return String(Number(a) + Number(b)); }
-  function decStrSub(a, b) { return String(Number(a) - Number(b)); }
-  function decStrMul(a, b) { return String(Number(a) * Number(b)); }
-  function decStrDiv(a, b) { return String(Number(a) / Number(b)); }
+  // Read a stored handle back into the value model.  Stored strings are
+  // canonical except the non-finite renderings ("NaN" / "Infinity" /
+  // "-Infinity"), reachable only via decimal_from_float of a non-finite
+  // float — those construct and to_string/to_float fine, but
+  // arithmetic/comparison on them is outside the finite-decimal parity
+  // domain (spec §9.7.2) and must fail LOUDLY, not corrupt.
+  function decimalGet(h) {
+    const s = decimalStore.get(h);
+    const d = decParse(s);
+    if (d === null) {
+      throw new Error(
+        `Decimal arithmetic/comparison on non-finite value '${s}' is not ` +
+        "supported in the browser runtime (spec §9.7.2: the parity " +
+        "domain is finite decimals)");
+    }
+    return d;
+  }
 
   if (needed.has("decimal_from_int")) {
-    imports.vera.decimal_from_int = (v) => decimalAlloc(String(v));
+    imports.vera.decimal_from_int = (v) => decimalAllocVal(decFromInt(v));
   }
   if (needed.has("decimal_from_float")) {
-    imports.vera.decimal_from_float = (v) => decimalAlloc(String(v));
+    // Mirrors the Python host's ``Decimal(str(v))`` byte-for-byte via
+    // the pyFloatRepr port (Python float-repr formatting over the same
+    // shortest digits).  Non-finite floats store the Python Decimal
+    // renderings verbatim (to_string/to_float match; arithmetic on them
+    // is outside the finite-decimal parity domain).
+    imports.vera.decimal_from_float = (v) => {
+      const s = pyFloatRepr(v);
+      const d = decParse(s);
+      return d === null ? decimalAlloc(s) : decimalAllocVal(d);
+    };
   }
   if (needed.has("decimal_from_string")) {
     imports.vera.decimal_from_string = (ptr, len) => {
       const s = readString(ptr, len);
-      if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
-        const h = decimalAlloc(s.trim());
+      // Exponent-token bound checked BEFORE the (parseInt-based) parse.
+      const d = decExpTokenInRange(s) ? decParse(s) : null;
+      if (d !== null) {
+        // Store the canonical form so to_string matches Python exactly.
+        const h = decimalAllocVal(d);
         // #573 phase 3: wrap before stuffing into Some.
         // GC-rooting (#706): root the wrapper across the Option alloc —
         // register_wrapper is not a mark root.
@@ -1937,65 +2245,55 @@ function buildImportObject(module) {
   }
   if (needed.has("decimal_add")) {
     imports.vera.decimal_add = (a, b) =>
-      decimalAlloc(decStrAdd(decimalStore.get(a), decimalStore.get(b)));
+      decimalAllocVal(decAdd(decimalGet(a), decimalGet(b)));
   }
   if (needed.has("decimal_sub")) {
     imports.vera.decimal_sub = (a, b) =>
-      decimalAlloc(decStrSub(decimalStore.get(a), decimalStore.get(b)));
+      decimalAllocVal(decSub(decimalGet(a), decimalGet(b)));
   }
   if (needed.has("decimal_mul")) {
     imports.vera.decimal_mul = (a, b) =>
-      decimalAlloc(decStrMul(decimalStore.get(a), decimalStore.get(b)));
+      decimalAllocVal(decMul(decimalGet(a), decimalGet(b)));
   }
   if (needed.has("decimal_div")) {
     imports.vera.decimal_div = (a, b) => {
       // #573 phase 3: a, b are raw handles (the WASM-side
       // translator unwraps wrapper pointers).  Result is wrapped
       // here before stuffing into Some, matching the Python side.
-      const bVal = Number(decimalStore.get(b));
-      if (bVal === 0) return allocOptionNone();
-      const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
+      const q = decDiv(decimalGet(a), decimalGet(b));
+      if (q === null) return allocOptionNone();  // division by zero
+      const h = decimalAllocVal(q);
       // GC-rooting (#706): root the wrapper across the Option alloc.
       const wrapperPtr = wrapHandle(3, h);
       return gcRooted(wrapperPtr, () => allocOptionSomeI32(wrapperPtr));
     };
   }
   if (needed.has("decimal_neg")) {
-    imports.vera.decimal_neg = (h) => {
-      const s = decimalStore.get(h);
-      if (s.startsWith("-")) return decimalAlloc(s.slice(1));
-      // Canonical zero: neg("0") → "0", not "-0"
-      if (s === "0" || s === "0.0") return decimalAlloc(s);
-      return decimalAlloc("-" + s);
-    };
+    imports.vera.decimal_neg = (h) =>
+      decimalAllocVal(decNegVal(decimalGet(h)));
   }
   if (needed.has("decimal_compare")) {
     imports.vera.decimal_compare = (a, b) => {
-      const na = Number(decimalStore.get(a));
-      const nb = Number(decimalStore.get(b));
-      const tag = na < nb ? 0 : na === nb ? 1 : 2;
+      // Exact numeric comparison (never Number()): keeps compare and
+      // eq consistent — both dispatch on the same value model.
+      const c = decCompareVal(decimalGet(a), decimalGet(b));
+      const tag = c < 0 ? 0 : c === 0 ? 1 : 2;
       return allocOrdering(tag);
     };
   }
   if (needed.has("decimal_eq")) {
-    // Compare string representations rather than converting to Number,
-    // which would lose precision for large or high-precision values.
+    // Numeric equality (not string identity): "1.0" == "1".  Shares the
+    // exact comparison with decimal_compare so they can never disagree.
     imports.vera.decimal_eq = (a, b) =>
-      decimalStore.get(a) === decimalStore.get(b) ? 1 : 0;
+      decCompareVal(decimalGet(a), decimalGet(b)) === 0 ? 1 : 0;
   }
   if (needed.has("decimal_round")) {
-    imports.vera.decimal_round = (h, places) => {
-      const n = Number(decimalStore.get(h));
-      const p = Number(places);
-      const factor = 10 ** p;
-      return decimalAlloc(String(Math.round(n * factor) / factor));
-    };
+    imports.vera.decimal_round = (h, places) =>
+      decimalAllocVal(decRoundPlaces(decimalGet(h), Number(places)));
   }
   if (needed.has("decimal_abs")) {
-    imports.vera.decimal_abs = (h) => {
-      const s = decimalStore.get(h);
-      return decimalAlloc(s.startsWith("-") ? s.slice(1) : s);
-    };
+    imports.vera.decimal_abs = (h) =>
+      decimalAllocVal(decAbsVal(decimalGet(h)));
   }
 
   // ── Json host imports ────────────────────────────────────────

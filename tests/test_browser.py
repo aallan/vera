@@ -2401,3 +2401,423 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert self._eager_gc_node(src, monkeypatch, tmp_path) == "60"
+
+
+class TestBrowserDecimalExact856:
+    """Browser↔native Decimal parity (#856).
+
+    Spec §9.7.2 promises `Decimal` provides *exact* decimal arithmetic.
+    The browser runtime used to route the family through JS `Number` /
+    `Math.round`, so it (a) lost precision vs the Python runtime's
+    `decimal.Decimal` and (b) *contradicted itself*: `decimal_compare`
+    converted via `Number()` (so `"1.0"` == `"1"` → `Equal`) while
+    `decimal_eq` did strict string comparison (same operands → `false`).
+
+    Each test compiles ONE `.wasm` and runs it under both wasmtime
+    (Python reference runtime) and Node (browser runtime), asserting
+    byte-identical stdout.  Because the module bytes are identical, a
+    divergence isolates the browser host imports in
+    ``vera/browser/runtime.mjs``.  Pre-fix these are RED (wrong browser
+    values / the self-contradiction); post-fix GREEN.
+    """
+
+    def _parity_stdout(self, src: str, tmp_path: Path) -> str:
+        """Compile once, run under wasmtime and Node, assert byte-exact
+        stdout, and return the (shared) value."""
+        src_path = tmp_path / "dec856.vera"
+        src_path.write_text(src, encoding="utf-8")
+        wasm_path, result = _compile_file(src_path, tmp_path)
+        py_out = _run_python(result).stdout
+        node = _run_node(wasm_path)
+        assert not node.get("error"), (
+            f"Node harness reported error: {node.get('error')!r}"
+        )
+        node_out = node["stdout"]
+        assert node_out == py_out, (
+            "Browser↔native Decimal divergence:\n"
+            f"  Python (wasmtime): {py_out!r}\n"
+            f"  Node   (browser):  {node_out!r}"
+        )
+        return py_out
+
+    # --- helper prelude used by every fixture -----------------------
+    # ``d(s)`` parses a decimal string with a 0 fallback (all inputs are
+    # valid, so the fallback is never taken); ``show`` renders it.
+    _PRELUDE = """
+effect IO { op print(String -> Unit); }
+
+private fn d(@String -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(decimal_from_string(@String.0), decimal_from_int(0))
+}
+"""
+
+    def test_add_0_1_plus_0_2_is_exact(self, tmp_path: Path) -> None:
+        """0.1 + 0.2 is exactly 0.3 — the canonical binary-float trap.
+        Pre-fix the browser printed 0.30000000000000004."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(decimal_to_string(decimal_add(d("0.1"), d("0.2"))))
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "0.3"
+
+    def test_sub_0_3_minus_0_1_is_exact(self, tmp_path: Path) -> None:
+        """0.3 - 0.1 is exactly 0.2 — the subtraction dual of the 0.1+0.2
+        trap (binary float gives 0.19999999999999998).  Pins decimal_sub
+        parity, which the other arithmetic fixtures did not cover."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(decimal_to_string(decimal_sub(d("0.3"), d("0.1"))))
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "0.2"
+
+    def test_mul_high_precision(self, tmp_path: Path) -> None:
+        """A product with >16 significant digits that `Number` rounds
+        wrong.  Native decimal keeps 28 significant digits."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(decimal_to_string(
+    decimal_mul(d("1.23456789012345"), d("1.00000000000001"))))
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "1.234567890123462345678901234"
+
+    def test_div_repeating_and_ideal_exponent(self, tmp_path: Path) -> None:
+        """Division: 1/3 keeps 28 sig digits; 2.00/4 preserves the
+        ideal-exponent trailing zero (0.50)."""
+        # NB: extract via ``match`` rather than ``option_unwrap_or`` in
+        # ``main`` — the latter tickles #878 (mono instantiation
+        # inference misses user-fn return types in argument position,
+        # so the Bool phantom default drops the ``main`` export); it is
+        # orthogonal to the Decimal semantics under test here.
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match decimal_div(d("1"), d("3")) {
+    Some(@Decimal) -> decimal_to_string(@Decimal.0),
+    None -> "none"
+  };
+  let @String = string_concat(@String.0, "|");
+  let @String = match decimal_div(d("2.00"), d("4")) {
+    Some(@Decimal) -> string_concat(@String.0, decimal_to_string(@Decimal.0)),
+    None -> string_concat(@String.0, "none")
+  };
+  IO.print(@String.0)
+}
+"""
+        expected = "0.3333333333333333333333333333|0.50"
+        assert self._parity_stdout(src, tmp_path) == expected
+
+    def test_div_by_zero_is_none(self, tmp_path: Path) -> None:
+        """Division by zero returns None in both runtimes."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match decimal_div(d("5"), d("0")) {
+    Some(@Decimal) -> IO.print(decimal_to_string(@Decimal.0)),
+    None -> IO.print("none")
+  }
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "none"
+
+    def test_round_half_even(self, tmp_path: Path) -> None:
+        """round() uses ROUND_HALF_EVEN like Python's quantize, not
+        JS Math.round (half-up).  0.125→0.12, 2.675→2.68, -0.5→-0."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_round(d("0.125"), 2));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_round(d("2.675"), 2)));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_round(d("-0.5"), 0)));
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "0.12|2.68|-0"
+
+    def test_neg_and_abs_edges(self, tmp_path: Path) -> None:
+        """neg canonicalises signed zero to positive; abs clears sign;
+        exponents are preserved."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_neg(d("0")));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_neg(d("1.50"))));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_abs(d("-3.14"))));
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "0|-1.50|3.14"
+
+    def test_compare_eq_self_consistency(self, tmp_path: Path) -> None:
+        """The self-contradiction pair: "1.0" vs "1".  Both operations,
+        both runtimes, must agree — compare == Equal AND eq == true.
+        Pre-fix the browser had compare==Equal but eq==false, and
+        eq diverged from the numeric-equal Python runtime."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match decimal_compare(d("1.0"), d("1")) {
+    Less -> "less",
+    Equal -> "equal",
+    Greater -> "greater"
+  };
+  let @String = string_concat(string_concat(@String.0, "|"),
+    if decimal_eq(d("1.0"), d("1")) then { "eq" } else { "ne" });
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "equal|eq"
+
+    def test_compare_ordering_directions(self, tmp_path: Path) -> None:
+        """compare returns Less / Greater on unequal values, matching
+        the exact numeric ordering (not a Number() approximation)."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match decimal_compare(d("0.1"), d("0.2")) {
+    Less -> "less", Equal -> "equal", Greater -> "greater"
+  };
+  let @String = string_concat(string_concat(@String.0, "|"),
+    match decimal_compare(d("100"), d("99.9")) {
+      Less -> "less", Equal -> "equal", Greater -> "greater"
+    });
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "less|greater"
+
+    def test_eq_normalized_values(self, tmp_path: Path) -> None:
+        """eq is numeric: 0.10 == 0.1, but 0.1 != 0.2."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = if decimal_eq(d("0.10"), d("0.1")) then { "y" } else { "n" };
+  let @String = string_concat(@String.0,
+    if decimal_eq(d("0.1"), d("0.2")) then { "y" } else { "n" });
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "yn"
+
+    def test_big_integer_add_no_float_rounding(self, tmp_path: Path) -> None:
+        """Integers beyond Number.MAX_SAFE_INTEGER add exactly."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(decimal_to_string(
+    decimal_add(d("9007199254740993"), d("9007199254740993"))))
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "18014398509481986"
+
+    def test_neg_abs_context_rounding_29_digits(self, tmp_path: Path) -> None:
+        """Python's unary minus and abs() APPLY THE CONTEXT: a 29-digit
+        operand (exact in the store — the constructor does not round)
+        is rounded to 28 significant digits by neg/abs.  Pre-fix the
+        browser only flipped/cleared the sign bit, returning all 29
+        digits (PR #877 engine-soundness panel, finding A)."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_neg(d("12345678901234567890123456789")));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_abs(d("-12345678901234567890123456789"))));
+  IO.print(@String.0)
+}
+"""
+        expected = ("-1.234567890123456789012345679E+28"
+                    "|1.234567890123456789012345679E+28")
+        assert self._parity_stdout(src, tmp_path) == expected
+
+    def test_round_negative_places_beyond_prec(self, tmp_path: Path) -> None:
+        """For places <= -28 the Python host's quantum ``Decimal(10)**-places``
+        is itself context-rounded, so its exponent is ``-places - 27``, not 0.
+        Pre-fix the browser hardcoded target exponent 0 for all negative
+        places, producing wrong exponents AND wrong values (PR #877
+        engine-soundness panel, finding B)."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_round(d("52746E+25"), -31));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_round(d("986480576275650962365099E-24"), -37)));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_round(d("5"), -28)));
+  IO.print(@String.0)
+}
+"""
+        expected = "5.2746000000000000000000000E+29|0E+10|0E+1"
+        assert self._parity_stdout(src, tmp_path) == expected
+
+    def test_round_absurd_places_overflow_fallback(self, tmp_path: Path) -> None:
+        """places < -Emax (-999999): the Python host's quantum
+        ``Decimal(10)**-places`` raises ``decimal.Overflow`` — previously
+        an uncaught raw traceback (only InvalidOperation was caught),
+        while the browser returned a value (0E+1999973): a crash path
+        AND a cross-runtime divergence.  Both runtimes now return the
+        operand unchanged, extending the InvalidOperation fallback rule;
+        the -999999 boundary still quantizes (0E+999972).  Bare negative
+        literals are avoided via ``0 - n`` (PR #877 fold-in)."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_round(d("1"), 0 - 2000000));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_round(d("1"), 0 - 999999)));
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "1|0E+999972"
+
+    def test_compare_eq_negative_operands(self, tmp_path: Path) -> None:
+        """Negative-operand compare/eq parity: trailing-zero-equal pairs
+        and strict ordering under sign (coverage was all-nonnegative
+        before this — PR #877 CodeRabbit round)."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match decimal_compare(d("-1.0"), d("-1")) {
+    Less -> "less", Equal -> "equal", Greater -> "greater"
+  };
+  let @String = string_concat(string_concat(@String.0, "|"),
+    if decimal_eq(d("-0.10"), d("-0.1")) then { "eq" } else { "ne" });
+  let @String = string_concat(string_concat(@String.0, "|"),
+    match decimal_compare(d("-0.2"), d("-0.1")) {
+      Less -> "less", Equal -> "equal", Greater -> "greater"
+    });
+  let @String = string_concat(string_concat(@String.0, "|"),
+    match decimal_compare(d("-100"), d("-99.9")) {
+      Less -> "less", Equal -> "equal", Greater -> "greater"
+    });
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "equal|eq|less|less"
+
+    def test_from_string_acceptance_parity(self, tmp_path: Path) -> None:
+        """Both runtimes accept EXACTLY the spec §9.7.2 grammar (ASCII
+        finite decimals; no NaN/Inf/sNaN, no underscores, no non-ASCII
+        digits).  Pre-fix the Python host accepted whatever
+        ``decimal.Decimal`` does (NaN, Infinity, ``1_000``, unicode
+        digits) while the browser rejected them — an undisclosed
+        cross-target divergence (PR #877 CodeRabbit + panel; grammar
+        unification per DESIGN.md: explicit over host-incidental)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+private fn acc(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match decimal_from_string(@String.0) {
+    Some(@Decimal) -> "y",
+    None -> "n"
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = acc("1.5");
+  let @String = string_concat(@String.0, acc("+1"));
+  let @String = string_concat(@String.0, acc(".5"));
+  let @String = string_concat(@String.0, acc("5."));
+  let @String = string_concat(@String.0, acc("1e5"));
+  let @String = string_concat(@String.0, acc("  1.5  "));
+  let @String = string_concat(@String.0, acc("1e999999"));
+  let @String = string_concat(@String.0, acc("1e-999999"));
+  let @String = string_concat(@String.0, acc("NaN"));
+  let @String = string_concat(@String.0, acc("Infinity"));
+  let @String = string_concat(@String.0, acc("-Inf"));
+  let @String = string_concat(@String.0, acc("sNaN"));
+  let @String = string_concat(@String.0, acc("1_000"));
+  let @String = string_concat(@String.0, acc("١٢٣"));
+  let @String = string_concat(@String.0, acc("abc"));
+  let @String = string_concat(@String.0, acc("1.2.3"));
+  let @String = string_concat(@String.0, acc(""));
+  let @String = string_concat(@String.0, acc("1e1000000"));
+  let @String = string_concat(@String.0, acc("1e-1000000"));
+  let @String = string_concat(@String.0, acc("1e9007199254740993"));
+  let @String = string_concat(@String.0, acc("-1e-9007199254740993"));
+  IO.print(@String.0)
+}
+"""
+        # Eight conforming accepts (incl. the ±999999 exponent-bound
+        # boundary), then thirteen rejects (specials, underscores,
+        # unicode digits, malformed, out-of-range exponent tokens incl.
+        # the beyond-MAX_SAFE_INTEGER probe).
+        assert self._parity_stdout(src, tmp_path) == "y" * 8 + "n" * 13
+
+    def test_from_string_exponent_token_bound(self, tmp_path: Path) -> None:
+        """Exponent tokens beyond MAX_SAFE_INTEGER (CR finding
+        3518083324): the browser's ``parseInt`` silently ROUNDED
+        "1e9007199254740993" to exponent ...992 while the Python host
+        stored it exactly — Some(1E+9007199254740993) natively vs
+        Some(1E+9007199254740992) in the browser, a silent value
+        divergence.  The spec grammar now bounds the exponent token to
+        |exp| <= 999999 (the context's Emax/Emin floor — a larger
+        literal could never participate in any operation without
+        overflow), so BOTH runtimes reject the probe with None, and the
+        browser checks the token as a string before any numeric
+        conversion."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match decimal_from_string("1e9007199254740993") {
+    Some(@Decimal) -> IO.print(decimal_to_string(@Decimal.0)),
+    None -> IO.print("none")
+  }
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "none"
+
+    def test_from_float_formatting_parity(self, tmp_path: Path) -> None:
+        """``decimal_from_float`` mirrors Python's ``Decimal(str(v))``,
+        including Python float-repr FORMATTING: integral floats keep
+        ``.0`` (so the stored exponent is -1, not 0).  The divergence
+        propagates through arithmetic: from_float(100.0)*2 must be
+        "200.0", not "200" (PR #877 panel, from_float residual +
+        blast-radius chain finding)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_from_float(100.0));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_mul(decimal_from_float(100.0), decimal_from_int(2))));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_from_float(0.0001)));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_from_float(3.14)));
+  IO.print(@String.0)
+}
+"""
+        assert self._parity_stdout(src, tmp_path) == "100.0|200.0|0.0001|3.14"

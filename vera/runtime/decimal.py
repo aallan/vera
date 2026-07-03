@@ -8,8 +8,9 @@ host family that keeps a value-typed Python store (`decimal_store`, created in
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal as PyDecimal
-from decimal import InvalidOperation
+from decimal import InvalidOperation, Overflow
 
 import wasmtime
 
@@ -22,6 +23,24 @@ from vera.runtime.heap import (
     _read_wasm_string,
     _wrap_handle,
 )
+
+# The spec §9.7.2 ``decimal_from_string`` grammar (#856 / PR #877):
+# ASCII finite decimals only — no special values (NaN / Infinity /
+# sNaN), no digit-group underscores, no non-ASCII digits — applied
+# after stripping surrounding whitespace, with the exponent token
+# bounded to |exp| <= 999999 (the context's Emax/Emin floor; a literal
+# beyond it could never participate in any operation without
+# overflowing — CR finding 3518083324, where the browser's parseInt
+# silently rounded a beyond-MAX_SAFE_INTEGER exponent while this host
+# stored it exactly).  Both runtimes pre-validate with this exact
+# grammar (the browser runtime's ``DEC_RE`` + ``decExpTokenInRange``
+# in ``runtime.mjs`` recognise the same language), so the accepted
+# domain is defined by the spec, not by whatever the host decimal
+# library happens to parse (DESIGN.md: explicit over implicit).
+_DECIMAL_STRING_RE = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?"
+)
+_DECIMAL_EXP_TOKEN_MAX = 999999
 
 
 def register_decimal(
@@ -78,7 +97,19 @@ def register_decimal(
         def host_decimal_from_string(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> int:
-            s = _read_wasm_string(caller, ptr, length)
+            s = _read_wasm_string(caller, ptr, length).strip()
+            # Pre-validate against the spec §9.7.2 grammar so the
+            # accepted domain matches the browser runtime exactly
+            # (PyDecimal alone would also accept NaN / Infinity /
+            # sNaN / 1_000 / non-ASCII digits).
+            m = _DECIMAL_STRING_RE.fullmatch(s)
+            if m is None:
+                return _alloc_option_none(caller)
+            # Exponent-token bound (|exp| <= 999999); Python int() is
+            # arbitrary-precision, so this check is exact.
+            exp_tok = m.group(1)
+            if exp_tok is not None and abs(int(exp_tok)) > _DECIMAL_EXP_TOKEN_MAX:
+                return _alloc_option_none(caller)
             try:
                 d = PyDecimal(s)
                 # #573 phase 3: wrap the Decimal handle so the
@@ -91,6 +122,8 @@ def register_decimal(
                 )
                 return _alloc_option_some_i32(caller, wrapped)
             except InvalidOperation:
+                # Unreachable for grammar-conforming strings; kept as a
+                # belt-and-braces guard.
                 return _alloc_option_none(caller)
         linker.define_func(
             "vera", "decimal_from_string",
@@ -243,11 +276,16 @@ def register_decimal(
             _caller: wasmtime.Caller, h: int, places: int,
         ) -> int:
             d = decimal_store[h]
-            # Use quantize for precise rounding
-            q = PyDecimal(10) ** -places
+            # Use quantize for precise rounding.  The quantum
+            # computation lives INSIDE the try: for places < -Emax
+            # (-999999) ``Decimal(10) ** -places`` raises Overflow,
+            # which previously escaped as a raw traceback (PR #877
+            # fold-in).  Both failure modes fall back to the value
+            # unchanged, mirrored by the browser engine's guards.
             try:
+                q = PyDecimal(10) ** -places
                 return _decimal_alloc(d.quantize(q))
-            except InvalidOperation:
+            except (InvalidOperation, Overflow):
                 # Extreme exponent — return original value unchanged
                 return _decimal_alloc(d)
         linker.define_func(

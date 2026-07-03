@@ -10,7 +10,7 @@ The standard library comprises:
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unordered unique elements, and `Map<K, V>` for key-value mappings.
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), plus future effects for concurrency and LLM inference.
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
-- **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
+- **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in both the Python runtime (`decimal.Decimal`) and the browser runtime (scaled-BigInt engine), which mirror each other operation-for-operation over finite decimal values.
 - **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
 - **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
 - **Html type**: `HtmlNode` ADT for parsing and querying HTML documents — parse, serialize, query, and extract text via 5 built-in functions (see §9.7.4).
@@ -2098,17 +2098,19 @@ type ApiResponse = { @Json | json_has_field(@Json.0, "status") };
 
 `Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. Tracked in [#333](https://github.com/aallan/vera/issues/333).
 
-Decimal is an opaque built-in type implemented via host imports, following the same pattern as `Map<K, V>` and `Set<T>`. The runtime maintains `decimal.Decimal` values (Python) or string-based decimal values (JavaScript); WASM code interacts with decimals through `i32` handles. All operations are pure.
+Decimal is an opaque built-in type implemented via host imports, following the same pattern as `Map<K, V>` and `Set<T>`. The runtime maintains `decimal.Decimal` values (Python) or exact scaled-BigInt values (JavaScript); WASM code interacts with decimals through `i32` handles. All operations are pure.
 
 **Construction and conversion:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `decimal_from_int(n)` | `(Int) → Decimal` | Exact conversion from integer |
-| `decimal_from_float(f)` | `(Float64) → Decimal` | Conversion via `str(v)` (may not be exact) |
-| `decimal_from_string(s)` | `(String) → Option<Decimal>` | Parse a decimal string; `None` on failure |
+| `decimal_from_float(f)` | `(Float64) → Decimal` | Conversion via Python's `str(v)` float repr (may not be exact) |
+| `decimal_from_string(s)` | `(String) → Option<Decimal>` | Parse a decimal string per the grammar below; `None` on failure |
 | `decimal_to_string(d)` | `(Decimal) → String` | String representation |
 | `decimal_to_float(d)` | `(Decimal) → Float64` | Potentially lossy conversion to float |
+
+**`decimal_from_string` grammar:** both runtimes accept exactly the language `[+-]? ( digits ( "." digits? )? | "." digits ) ( ("e" | "E") [+-]? digits )?` where `digits` is one or more ASCII `0`–`9`, applied after ignoring surrounding whitespace, and the exponent token (when present) must satisfy `|exp| <= 999999` — the context's exponent floor already cited by the `decimal_round` fallback below; a literal beyond it could never participate in any operation without overflowing. Only finite decimals are accepted: special values (`NaN`, `sNaN`, `Infinity`), digit-group underscores (`1_000`), non-ASCII digits, and out-of-range exponent tokens are all rejected with `None`, even where a host decimal library would accept them. The accepted domain is defined by this grammar rather than inherited from whatever the host library parses (DESIGN.md: explicit over implicit) — the Python host pre-validates with this grammar before constructing a `decimal.Decimal`, and the browser runtime's parser recognises the same language, checking the exponent token as a string before any numeric conversion (an unbounded token would otherwise round silently above 2^53).
 
 **Arithmetic:**
 
@@ -2142,9 +2144,7 @@ private fn decimal_demo(-> @Int)
 }
 ```
 
-**Known limitation:**
-
-**Browser runtime precision:** The Python runtime uses `decimal.Decimal` and provides exact numeric arithmetic and comparison. The browser runtime MVP uses JavaScript `Number` (IEEE 754 double-precision float) for arithmetic operations (`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`, `decimal_round`, `decimal_compare`), which loses precision for values that are not exactly representable in binary floating-point. Note that `decimal_eq` in the browser performs strict string-representation equality (not numeric equivalence), so `decimal_from_string("1.0")` ≠ `decimal_from_string("1")` even though they are numerically equal — the Python runtime uses numeric `==` and considers them equal. A future browser runtime version will use an arbitrary-precision decimal library to match the Python runtime's exact semantics.
+**Runtime parity:** Both runtimes provide exact decimal arithmetic and comparison over finite decimal values. The Python runtime uses `decimal.Decimal`; the browser runtime uses a scaled-BigInt engine that mirrors `decimal.Decimal`'s default context (28 significant digits, `ROUND_HALF_EVEN`) operation-for-operation: construction (`decimal_from_int`; `decimal_from_float` including Python's float-repr formatting, so `decimal_from_float(100.0)` renders `"100.0"` in both runtimes and the implied exponent carries through arithmetic; `decimal_from_string` under the grammar above), addition, subtraction, multiplication, division (ideal-exponent trailing-zero trimming), rounding (quantize semantics, including negative `places`, whose quantum exponent is `max(0, -places - 27)` because the quantum itself is context-rounded; `places` below the context's exponent floor of `-999999` leave the value unchanged in both runtimes, extending the same unchanged-value fallback that covers unrepresentable quantize results), negation and absolute value (which apply the context, rounding to 28 significant digits like Python's unary operators), comparison, equality, and the canonical string form all agree byte-for-byte across the two runtimes — enforced by the compile-once, compare-stdout-byte-exact parity tests in `tests/test_browser.py` (`TestBrowserDecimalExact856`). `decimal_compare` and `decimal_eq` share one exact numeric comparison in each runtime, so `decimal_from_string("1.0")` and `decimal_from_string("1")` compare `Equal` **and** `eq` in both. The one exclusion is non-finite floats through `decimal_from_float` (NaN, ±infinity): `decimal_to_string` and `decimal_to_float` round-trip them identically in both runtimes (`NaN` / `Infinity` / `-Infinity`), but arithmetic and comparison on such values are defined only on the Python runtime — the browser runtime rejects them with a loud runtime error naming this section. This closed [#856](https://github.com/aallan/vera/issues/856) (was: the browser runtime routed the family through JavaScript `Number`, losing precision and contradicting itself); see the CHANGELOG.
 
 ### 9.7.3 Markdown
 
