@@ -2694,6 +2694,39 @@ public fn main(@Unit -> @Unit)
 """
         assert self._parity_stdout(src, tmp_path) == "1|0E+999972"
 
+    def test_binary_ops_large_finite_no_overflow(self, tmp_path: Path) -> None:
+        """Large finite operands (the from_string grammar admits exponent
+        tokens up to |exp| = 999999) whose exact result exceeds the
+        default context's Emax must NOT overflow: the host binary ops
+        run in a widened context (Emax/Emin = decimal.MAX_EMAX/MIN_EMIN,
+        prec 28, ROUND_HALF_EVEN) so they return the same exact value the
+        unbounded browser scaled-BigInt engine already produces.  Pre-fix
+        ``decimal_mul(1e999999, 1e999999)`` exited ``vera run`` with a raw
+        ``decimal.Overflow`` traceback while the browser returned
+        1E+1999998 — a check-green crash AND a cross-runtime divergence
+        (PR #877 CodeRabbit round, finding 3518540519).  Operation
+        RESULTS may exceed the input-token bound; only inputs are
+        bounded."""
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_mul(d("1e999999"), d("1e999999")));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_add(d("1e999999"), d("1e999999"))));
+  let @String = string_concat(string_concat(@String.0, "|"),
+    decimal_to_string(decimal_sub(d("1e999999"), d("-1e999999"))));
+  let @String = match decimal_div(d("1e999999"), d("1e-999999")) {
+    Some(@Decimal) -> string_concat(string_concat(@String.0, "|"),
+      decimal_to_string(@Decimal.0)),
+    None -> string_concat(@String.0, "|none")
+  };
+  IO.print(@String.0)
+}
+"""
+        expected = "1E+1999998|2E+999999|2E+999999|1E+1999998"
+        assert self._parity_stdout(src, tmp_path) == expected
+
     def test_compare_eq_negative_operands(self, tmp_path: Path) -> None:
         """Negative-operand compare/eq parity: trailing-zero-equal pairs
         and strict ordering under sign (coverage was all-nonnegative

@@ -9,6 +9,8 @@ host family that keeps a value-typed Python store (`decimal_store`, created in
 from __future__ import annotations
 
 import re
+from decimal import MAX_EMAX, MIN_EMIN, ROUND_HALF_EVEN
+from decimal import Context as PyContext
 from decimal import Decimal as PyDecimal
 from decimal import InvalidOperation, Overflow
 
@@ -41,6 +43,22 @@ _DECIMAL_STRING_RE = re.compile(
     r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]+))?"
 )
 _DECIMAL_EXP_TOKEN_MAX = 999999
+
+# Binary arithmetic runs in a context whose exponent range is widened to
+# the library maximum (``MAX_EMAX`` / ``MIN_EMIN`` ~= ±1e18) while keeping
+# the default precision (28 significant digits) and rounding
+# (``ROUND_HALF_EVEN``).  ``decimal_from_string`` bounds INPUT exponent
+# tokens to |exp| <= 999999, but exact arithmetic can grow the exponent
+# (``1e999999 * 1e999999`` -> ``1E+1999998``); under the default Emax of
+# 999999 that raised a raw ``decimal.Overflow`` traceback on a check-green
+# program, and diverged from the unbounded browser scaled-BigInt engine.
+# The widened range is comfortably above any result reachable from
+# grammar-conforming operands (worst case ~±2e6), so these ops never
+# overflow and return the SAME exact value the browser produces (#856 /
+# PR #877 CodeRabbit finding 3518540519).
+_DECIMAL_WIDE_CTX = PyContext(
+    prec=28, rounding=ROUND_HALF_EVEN, Emax=MAX_EMAX, Emin=MIN_EMIN,
+)
 
 
 def register_decimal(
@@ -163,7 +181,10 @@ def register_decimal(
         def host_decimal_add(
             _caller: wasmtime.Caller, a: int, b: int,
         ) -> int:
-            return _decimal_alloc(decimal_store[a] + decimal_store[b])
+            # Widened-exponent context so a finite result that exceeds the
+            # default Emax cannot raise Overflow (matches the browser).
+            return _decimal_alloc(
+                _DECIMAL_WIDE_CTX.add(decimal_store[a], decimal_store[b]))
         linker.define_func(
             "vera", "decimal_add",
             wasmtime.FuncType([wasmtime.ValType.i32(),
@@ -176,7 +197,8 @@ def register_decimal(
         def host_decimal_sub(
             _caller: wasmtime.Caller, a: int, b: int,
         ) -> int:
-            return _decimal_alloc(decimal_store[a] - decimal_store[b])
+            return _decimal_alloc(
+                _DECIMAL_WIDE_CTX.subtract(decimal_store[a], decimal_store[b]))
         linker.define_func(
             "vera", "decimal_sub",
             wasmtime.FuncType([wasmtime.ValType.i32(),
@@ -189,7 +211,8 @@ def register_decimal(
         def host_decimal_mul(
             _caller: wasmtime.Caller, a: int, b: int,
         ) -> int:
-            return _decimal_alloc(decimal_store[a] * decimal_store[b])
+            return _decimal_alloc(
+                _DECIMAL_WIDE_CTX.multiply(decimal_store[a], decimal_store[b]))
         linker.define_func(
             "vera", "decimal_mul",
             wasmtime.FuncType([wasmtime.ValType.i32(),
@@ -213,7 +236,8 @@ def register_decimal(
             divisor = decimal_store[b]
             if divisor == 0:
                 return _alloc_option_none(caller)
-            raw = _decimal_alloc(decimal_store[a] / divisor)
+            raw = _decimal_alloc(
+                _DECIMAL_WIDE_CTX.divide(decimal_store[a], divisor))
             wrapped = _wrap_handle(
                 caller, _WRAP_KIND_DECIMAL, raw,
             )
