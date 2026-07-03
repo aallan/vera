@@ -135,7 +135,7 @@ Contract predicates use the same expression syntax as Vera programs, with the fo
 
 Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Integer literals and slot references
-- Float64 literals and values (`1.5`, `-0.5`) — Z3's IEEE-754 binary64 FloatingPoint sort (`FPSort(11, 53)`, round-nearest-ties-to-even), so Tier-1 proofs respect `NaN` / `±Inf` / signed zero / rounding and match the runtime; `==`/`!=` are IEEE `fpEQ`/`fpNEQ` and `%` is the truncated remainder (C `fmod`) (added [#667](https://github.com/aallan/vera/issues/667), made IEEE-sound in [#797](https://github.com/aallan/vera/issues/797))
+- Float64 literals and values (`1.5`, `-0.5`) — Z3's IEEE-754 binary64 FloatingPoint sort (`FPSort(11, 53)`, round-nearest-ties-to-even), so Tier-1 proofs respect `NaN` / `±Inf` / signed zero / rounding and match the runtime; `==`/`!=` are IEEE `fpEQ`/`fpNEQ` and `%` is the truncated remainder (C `fmod`) (added [#667](https://github.com/aallan/vera/issues/667), made IEEE-sound in [#797](https://github.com/aallan/vera/issues/797)).  Equality on an ADT whose fields transitively include `Float64` decomposes per-field — same-constructor recognizers plus fieldwise `fpEQ` for Float64 fields, recursing into nested Float64-containing ADTs — so the Tier-1 model matches the runtime's structural per-field `f64.eq` (Chapter 9, Section 9.8.2) rather than Z3's structural datatype `=` (under which `NaN = NaN` holds and `+0.0 = -0.0` does not, both wrong at runtime); a *recursive* Float64-containing ADT has no finite decomposition, so its equality falls to Tier 3 ([#871](https://github.com/aallan/vera/issues/871))
 - String literals
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)

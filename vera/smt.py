@@ -822,14 +822,24 @@ class SmtContext:
             # `=` that Python `==` emits on FP terms (under which `NaN = NaN` is
             # true — which would re-introduce the #797 unsoundness).  Ordering
             # ops (`<`/`>`/`<=`/`>=`) already lower to the IEEE `fp.*` predicates
-            # via Z3's operator overloads; only `==`/`!=` need this.  Non-FP
-            # equality stays structural.
+            # via Z3's operator overloads; only `==`/`!=` need this.  #871: an
+            # FP value nested in a datatype is a datatype term, so datatype
+            # equality routes through `_datatype_value_eq` (per-field `fpEQ`
+            # decomposition) instead of structural `=`.  Non-FP equality stays
+            # structural.
             if isinstance(left, z3.FPRef):
                 return z3.fpEQ(left, right)
+            if isinstance(left.sort(), z3.DatatypeSortRef):
+                return self._datatype_value_eq(left, right)
             return left == right
         if op == ast.BinOp.NEQ:
             if isinstance(left, z3.FPRef):
                 return z3.fpNEQ(left, right)
+            if isinstance(left.sort(), z3.DatatypeSortRef):
+                eq = self._datatype_value_eq(left, right)
+                if eq is None:
+                    return None
+                return z3.Not(eq)
             return left != right
         if op == ast.BinOp.LT:
             return left < right
@@ -875,6 +885,75 @@ class SmtContext:
         abs_b = z3.If(b >= 0, b, -b)
         r = abs_a % abs_b
         return z3.If(a < 0, -r, r)
+
+    def _sort_contains_fp(
+        self, sort: z3.SortRef, _seen: set[str] | None = None,
+    ) -> bool:
+        """True if *sort* is an FP sort or a datatype sort with a (transitively)
+        FP-sorted field (#871).  Recursive datatypes terminate via *_seen*."""
+        if isinstance(sort, z3.FPSortRef):
+            return True
+        if not isinstance(sort, z3.DatatypeSortRef):
+            return False
+        seen = _seen if _seen is not None else set()
+        name = str(sort)
+        if name in seen:
+            return False
+        seen.add(name)
+        for i in range(sort.num_constructors()):
+            ctor = sort.constructor(i)
+            for j in range(ctor.arity()):
+                if self._sort_contains_fp(sort.accessor(i, j).range(), seen):
+                    return True
+        return False
+
+    def _datatype_value_eq(
+        self,
+        left: z3.ExprRef,
+        right: z3.ExprRef,
+        _expanding: frozenset[str] = frozenset(),
+    ) -> z3.ExprRef | None:
+        """Value equality for same-sorted terms, matching the runtime's ``==``.
+
+        #871: Z3's structural datatype ``=`` agrees with the runtime's
+        structural Eq (#870: tags first, then fields pairwise) EXCEPT on
+        Float64 fields, where the runtime emits ``f64.eq`` (IEEE: ``NaN !=
+        NaN``, ``+0.0 == -0.0``) but structural ``=`` is identity (``NaN =
+        NaN``, ``+0.0 != -0.0``) — a false Tier-1 in both directions.  For a
+        datatype sort that transitively contains FP, decompose per-field:
+        same-constructor recognizers plus field-wise equality (``fpEQ`` for FP
+        fields, recursing into nested FP-containing datatypes, structural ``=``
+        for everything else — where it matches the runtime).  A RECURSIVE
+        FP-containing datatype has no finite expansion; return None so the
+        obligation demotes to an honest Tier-3 runtime check rather than a
+        false proof (soundness over completeness — DESIGN.md tier row:
+        "degrades gracefully where SMT is undecidable").
+        """
+        sort = left.sort()
+        if isinstance(left, z3.FPRef):
+            return z3.fpEQ(left, right)
+        if (not isinstance(sort, z3.DatatypeSortRef)
+                or not self._sort_contains_fp(sort)):
+            return left == right
+        name = str(sort)
+        if name in _expanding:
+            return None  # recursive FP-containing datatype: no finite expansion
+        expanding = _expanding | {name}
+        arms: list[z3.ExprRef] = []
+        for i in range(sort.num_constructors()):
+            ctor = sort.constructor(i)
+            conj: list[z3.ExprRef] = [
+                sort.recognizer(i)(left), sort.recognizer(i)(right),
+            ]
+            for j in range(ctor.arity()):
+                acc = sort.accessor(i, j)
+                field_eq = self._datatype_value_eq(
+                    acc(left), acc(right), expanding)
+                if field_eq is None:
+                    return None
+                conj.append(field_eq)
+            arms.append(z3.And(*conj))
+        return arms[0] if len(arms) == 1 else z3.Or(*arms)
 
     def _translate_index_expr(
         self, expr: ast.IndexExpr, env: SlotEnv,

@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 6,007 across 95 files (~79,000 lines of test code; 5,938 passed + 26 stress, 43 skipped) |
+| **Tests** | 6,016 across 96 files (~79,000 lines of test code; 5,947 passed + 26 stress, 43 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 108 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 37, all validated through `vera check` + `vera verify` |
@@ -71,6 +71,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_verifier_primitive_ops.py` | 39 | 658 | **Primitive-operation safety obligations** (#680) — division/modulo by-zero `E526` and array-index-bounds `E527`, the in-bounds/out-of-bounds two-check with float-exemption, honest Tier-3 for opaque lengths, off-by-one and lower-bound pins, De Bruijn-correct fix hints (#839 split) |
 | `test_verifier_calls_modules.py` | 44 | 962 | Call-site preconditions (incl. branch-aware), pipe-operator verification, cross-module contracts (#839 split) |
 | `test_verifier_adt_decreases.py` | 20 | 626 | Match/ADT verification, decreases measures (incl. ADT decreases), mutual recursion (#839 split) |
+| `test_adt_float64_eq_871.py` | 9 | 306 | ADT equality over Float64 fields: per-field fpEQ soundness differentials (NaN, signed zero), multi-constructor recognizer guards, recursive-ADT Tier-3 demotion (#871) |
 | `test_verifier_refinements.py` | 62 | 1,462 | Refined Bool/String/Float64 param sorts, **refinement-predicate translation + verification** (#746 — Tier-1 discharge at narrowing/return positions, E505 with counterexample, E506 Tier-3 for untranslatable predicates, the R3 already-refined exemption, refined-ADT-sub-pattern arm-fact carry into `@Nat` narrowings and call preconditions, alias-base refined returns, refined returns from match arms) (#839 split) |
 | `test_verifier_shadow_audits.py` | 71 | 1,372 | **Per-monomorphization generic verification** (#732 — per-instantiation body verification, collapsed-type-var De Bruijn reindex soundness, one-diagnostic dedup, decreases-only discovery, Tier-3 `E520` residual) and the **#680 shadow/projection audit battery** — 57 differential tests pinning the safe→verified / opaque→Tier-3 / unsafe→loud trichotomy across compound shadows, destructure De Bruijn alignment, opaque match scrutinees, and intra-block scoping; **mutation-validated** (every test flips RED when its target machinery is broken) (#839 split) |
 | `test_verifier_mutation_obligations.py` | 38 | 883 | #387 mutation-hardening: obligation-record completeness and projection-helper pins (#839 split) |
