@@ -16,6 +16,47 @@ from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 class FunctionCompilationMixin:
     """Methods for compiling function bodies to WAT."""
 
+    def _emit_adt_eq_not_derivable(
+        self, ctx: WasmContext, nde: AdtEqNotDerivableError,
+        decl: ast.FnDecl,
+    ) -> None:
+        """Emit the E613 diagnostic for a direct `==` on a non-Eq ADT.
+
+        Shared by the function-body and closure-lift catch sites so the
+        user-facing message cannot drift between the two (#773 / PR #870
+        review).
+        """
+        from vera.errors import Diagnostic
+
+        self._harvest_interp_inference_failures(ctx)
+        loc, source_line = self._diag_location(
+            nde.node if nde.node is not None else decl
+        )
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
+                f"`==` requires both operands to be Eq."
+            ),
+            location=loc,
+            source_line=source_line,
+            rationale=(
+                "Structural Eq derivation requires every constructor "
+                "field to be itself Eq; this type has a field with no "
+                "Eq semantics (or an unresolved type argument), so no "
+                "equality can be generated."
+            ),
+            fix=(
+                f"Compare Eq-derivable values instead. An ADT derives Eq "
+                f"structurally when every constructor field is itself Eq "
+                f"— restructure '{nde.type_name}' so its fields are Eq "
+                f"primitives or Eq ADTs (Array/Map/handle fields are "
+                f"not Eq)."
+            ),
+            spec_ref='Chapter 9, Section 9.8 "Abilities"',
+            severity="error",
+            error_code="E613",
+        ))
+
     def _compile_fn(
         self, decl: ast.FnDecl, *, export: bool = True,
         module_renames: dict[str, str] | None = None,
@@ -358,36 +399,7 @@ class FunctionCompilationMixin:
             # Surface the same E613 the generic constraint path emits, with
             # the comparison's own span.  MUST precede the parent
             # CodegenInvariantError catch below (subclass).
-            from vera.errors import Diagnostic
-
-            self._harvest_interp_inference_failures(ctx)
-            loc, source_line = self._diag_location(
-                nde.node if nde.node is not None else decl
-            )
-            self.diagnostics.append(Diagnostic(
-                description=(
-                    f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
-                    f"`==` requires both operands to be Eq."
-                ),
-                location=loc,
-                source_line=source_line,
-                rationale=(
-                    "Structural Eq derivation requires every constructor "
-                    "field to be itself Eq; this type has a field with no "
-                    "Eq semantics (or an unresolved type argument), so no "
-                    "equality can be generated."
-                ),
-                fix=(
-                    f"Compare Eq-derivable values instead. An ADT derives Eq "
-                    f"structurally when every constructor field is itself Eq "
-                    f"— restructure '{nde.type_name}' so its fields are Eq "
-                    f"primitives or Eq ADTs (Array/Map/handle fields are "
-                    f"not Eq)."
-                ),
-                spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                severity="error",
-                error_code="E613",
-            ))
+            self._emit_adt_eq_not_derivable(ctx, nde, decl)
             return None
         except CodegenInvariantError as inv:  # #657: reachable — operators.py / closures.py raise this for type-check-impossible states; covered by tests/test_codegen_invariant_e699.py.
             # #626 Layer 3 — compiler bug, not a user error.  Surface
@@ -483,36 +495,7 @@ class FunctionCompilationMixin:
             # inside a CLOSURE body — same clean E613 as the function-body
             # catch above (a user error, not a compiler bug).  MUST precede
             # the parent CodegenInvariantError catch below (subclass).
-            from vera.errors import Diagnostic
-
-            self._harvest_interp_inference_failures(ctx)
-            loc, source_line = self._diag_location(
-                nde.node if nde.node is not None else decl
-            )
-            self.diagnostics.append(Diagnostic(
-                description=(
-                    f"Type '{nde.type_name}' does not satisfy ability 'Eq'; "
-                    f"`==` requires both operands to be Eq."
-                ),
-                location=loc,
-                source_line=source_line,
-                rationale=(
-                    "Structural Eq derivation requires every constructor "
-                    "field to be itself Eq; this type has a field with no "
-                    "Eq semantics (or an unresolved type argument), so no "
-                    "equality can be generated."
-                ),
-                fix=(
-                    f"Compare Eq-derivable values instead. An ADT derives Eq "
-                    f"structurally when every constructor field is itself Eq "
-                    f"— restructure '{nde.type_name}' so its fields are Eq "
-                    f"primitives or Eq ADTs (Array/Map/handle fields are "
-                    f"not Eq)."
-                ),
-                spec_ref='Chapter 9, Section 9.8 "Abilities"',
-                severity="error",
-                error_code="E613",
-            ))
+            self._emit_adt_eq_not_derivable(ctx, nde, decl)
             return None
         except CodegenInvariantError as inv:  # #657: a closure-body invariant
             # violation (a codegen bug) propagates out of
