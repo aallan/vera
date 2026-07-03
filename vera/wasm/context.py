@@ -227,6 +227,9 @@ class WasmContext(
         # #813: per-parameter concrete-@Int flags, the dual, for the runtime
         # @Nat -> @Int widening guard at call sites.
         self._fn_int_params: dict[str, tuple[bool, ...]] = {}
+        # #865: per-parameter concrete-@Byte flags, for the call-site
+        # int-literal → i32.const coercion (spec §11 — @Byte is i32).
+        self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
         # Closure compilation state — accumulated during translation
         # Each entry: (anon_fn, captures, closure_id)
         # captures: list of (type_name, outer_de_bruijn, wasm_type)
@@ -369,6 +372,13 @@ class WasmContext(
         """Set per-parameter concrete-@Int flags for the call-site
         runtime @Nat -> @Int widening guard (#813)."""
         self._fn_int_params = int_params
+
+    def set_fn_byte_params(
+        self, byte_params: dict[str, tuple[bool, ...]],
+    ) -> None:
+        """Set per-parameter concrete-@Byte flags for the call-site
+        int-literal → i32.const coercion (#865)."""
+        self._fn_byte_params = byte_params
 
     def set_type_aliases(
         self, aliases: dict[str, ast.TypeExpr],
@@ -670,6 +680,16 @@ class WasmContext(
                     # above i64.MAX reinterprets to a negative @Int.
                     instructions.extend(
                         self._emit_int_widen_guard(val_instrs))
+                elif (self._resolve_base_type_name(type_name) == "Byte"
+                        and isinstance(stmt.value, ast.IntLit)):
+                    # #865: `@Byte` is i32 (spec §11), but an int literal
+                    # defaults to `i64.const`.  The bidirectional checker
+                    # accepts a 0..255 literal bound to a `@Byte` (incl. a
+                    # `{ @Byte | P }` refinement) let target — lower it at i32
+                    # so the value matches the i32 Byte local.  Sibling of the
+                    # call-argument coercion; a non-literal Byte value already
+                    # yields i32 via `translate_expr`.
+                    instructions.append(f"i32.const {stmt.value.value}")
                 else:
                     instructions.extend(val_instrs)
                 instructions.append(f"local.set {local_idx}")

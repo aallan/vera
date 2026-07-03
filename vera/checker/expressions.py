@@ -128,10 +128,17 @@ class ExpressionsMixin:
         """
         if isinstance(expr, ast.IntLit):
             # Byte coercion: integer literals 0–255 accepted as Byte when
-            # the expected type is Byte (bidirectional checking).
+            # the expected type resolves to Byte (bidirectional checking).
+            # #865: see through a refinement wrapper (`{ @Byte | P }`, incl.
+            # via a `type SmallByte = { @Byte | P }` alias) with `base_type`,
+            # not a bare `isinstance(expected, PrimitiveType)` — otherwise
+            # `let @{ @Byte | @Byte.0 < 10 } = 5` fell through to @Nat and
+            # rejected the literal with E170, the same coercion gap as the
+            # #865 call-argument site (the predicate is deferred to the
+            # verifier, which is exactly how a `@Byte` argument to a refined
+            # parameter is already handled).
             if (expected is not None
-                    and isinstance(expected, PrimitiveType)
-                    and expected.name == "Byte"
+                    and base_type(expected) == BYTE
                     and 0 <= expr.value <= 255):
                 return BYTE
             # #812: range-check the literal against its target machine type

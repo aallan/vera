@@ -162,6 +162,9 @@ class FunctionCompilationMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #865: per-parameter concrete-@Byte flags for the call-site
+        # int-literal → i32.const coercion.
+        ctx.set_fn_byte_params(self._fn_byte_params)
         # Provide type aliases so closures can resolve FnType return types
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)

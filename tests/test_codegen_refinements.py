@@ -970,6 +970,124 @@ public fn f(@Checked -> @Int)
         )
 
 
+class TestByteLiteralCoercionWidth:
+    """`#865` — an int literal coerced to `@Byte` (spec §11 — Byte is i32)
+    must lower at `i32.const`, not the default `i64.const`.
+
+    The checker deliberately accepts a 0..255 int literal where a `@Byte` is
+    expected (bidirectional coercion, `expressions.py`), so codegen owns the
+    width: a literal reaching an i32 Byte parameter, an i32 Byte let local, or
+    a refined-Byte let target must be pushed as i32.  Before the fix these
+    emitted `i64.const N` against an i32 slot — a `type mismatch: expected i32,
+    found i64` that made the module fail wasmtime instantiation at `vera run`.
+    Distinct from #766 (PR #864), which fixed the same width at the *binop*
+    operand site; these are the call-argument and let-binding sites.
+
+    Each test would raise `WasmTrapError` on the unfixed tree (the module
+    fails to instantiate), so a plain `_run(...) == expected` assertion is the
+    RED-first proof — it cannot pass unless the literal lowers at i32.
+    """
+
+    def test_int_literal_arg_to_byte_param(self) -> None:
+        """`byte_lt(3, 7)` — the canonical #865 repro: two bare int-literal
+        arguments to a two-`@Byte`-parameter fn.  `@Byte.1 < @Byte.0` is
+        `3 < 7` = true (1)."""
+        src = """
+public fn byte_lt(@Byte, @Byte -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.1 < @Byte.0 }
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ byte_lt(3, 7) }
+"""
+        assert _run(src, fn="main") == 1
+
+    def test_int_literal_arg_nested_call(self) -> None:
+        """A literal argument to a Byte parameter nested inside another Byte
+        call (`byte_lt(byte_id(3), 7)`) — both the inner `3` and outer `7`
+        must lower at i32.  `byte_id(3)` returns 3, so `3 < 7` = 1."""
+        src = """
+public fn byte_id(@Byte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+public fn byte_lt(@Byte, @Byte -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.1 < @Byte.0 }
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ byte_lt(byte_id(3), 7) }
+"""
+        assert _run(src, fn="main") == 1
+
+    def test_int_literal_arg_in_match_arm(self) -> None:
+        """A literal argument to a Byte parameter inside a match arm
+        (`true -> byte_of(9)`).  The arm is an ordinary expression that
+        recurses through the same call-arg loop; it returns 9."""
+        src = """
+public fn byte_of(@Byte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+public fn byte_or(@Bool -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> byte_of(9),
+    false -> byte_of(4)
+  }
+}
+public fn main(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ byte_or(true) }
+"""
+        assert _run(src, fn="main") == 9
+
+    def test_int_literal_arg_only_byte_param_coerced(self) -> None:
+        """The coercion is per-parameter: a fn taking `(@Int, @Byte)` lowers
+        the @Int literal at i64 and the @Byte literal at i32.  A wrong-width
+        push on either would fail instantiation, so a clean run proves both
+        arguments matched their parameter widths (`5 + 7` = 12)."""
+        src = """
+public fn mix(@Int, @Byte -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + byte_to_int(@Byte.0) }
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ mix(5, 7) }
+"""
+        assert _run(src, fn="main") == 12
+
+    def test_int_literal_plain_byte_let(self) -> None:
+        """A bare int literal bound to a plain `@Byte` let local
+        (`let @Byte = 42`) lowers at i32 — before the fix it stored
+        `i64.const 42` into the i32 local, failing instantiation."""
+        src = """
+public fn main(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Byte = 42;
+  @Byte.0
+}
+"""
+        assert _run(src, fn="main") == 42
+
+    def test_int_literal_refined_byte_let(self) -> None:
+        """The #865 E170-sibling: an int literal bound to a *refined* Byte let
+        target (`let @{ @Byte | @Byte.0 < 10 } = 5`).  The checker fix accepts
+        the literal (seeing through the refinement to the Byte base), and the
+        let-binding lowering pushes it at i32.  Both were broken: the checker
+        rejected the literal with E170, and codegen would have emitted an i64
+        store against the i32 local."""
+        src = """
+public fn main(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Byte | @Byte.0 < 10 } = 5;
+  @Byte.0
+}
+"""
+        assert _run(src, fn="main") == 5
+
+
 class TestHeadOverRefinement655ShapeB:
     """`#655` Shape B — array indexing through a refinement-of-Array
     alias now compiles and runs cleanly.

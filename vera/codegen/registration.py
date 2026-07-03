@@ -51,6 +51,13 @@ class RegistrationMixin:
         self._fn_int_params[decl.name] = tuple(
             self._type_resolves_to_int(p) for p in decl.params
         )
+        # #865: per-parameter concrete-@Byte flags, for the call-site
+        # int-literal → i32.const coercion (an int-literal argument otherwise
+        # defaults to i64.const against the callee's i32 Byte parameter).
+        # Disjoint from the @Nat/@Int bitmaps above.
+        self._fn_byte_params[decl.name] = tuple(
+            self._type_resolves_to_base(p, "Byte") for p in decl.params
+        )
         # #614: also register the full Vera return type expression so
         # `_infer_index_element_type_expr` can extract the element type
         # of an `Array<T>`-returning call inside `f()[i]`.  Without

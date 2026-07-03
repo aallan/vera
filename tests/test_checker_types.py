@@ -110,6 +110,39 @@ private fn foo(@Unit -> @Byte)
 { 0 - 1 }
 """, "body has type")
 
+    # --- Byte literal coercion through a refinement wrapper (#865) ---
+
+    def test_byte_lit_coercion_refined_let(self) -> None:
+        """#865 (E170 sibling): a 0..255 int literal is accepted when bound to
+        a *refined* Byte let target (`{ @Byte | P }`).  Before the fix the
+        coercion checked `isinstance(expected, PrimitiveType)` and did not see
+        through the refinement, so the literal fell through to @Nat and the let
+        binding was rejected with E170 — the same root gap as the #865
+        call-argument site.  The predicate is deferred to the verifier, exactly
+        as a `@Byte` value bound to a refined parameter already is."""
+        _check_ok("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Byte | @Byte.0 < 10 } = 5;
+  @Byte.0
+}
+""")
+
+    def test_byte_lit_coercion_refined_let_out_of_range_rejected(self) -> None:
+        """The refined-Byte coercion is bounded by the Byte range: `300` bound
+        to `{ @Byte | @Byte.0 < 10 }` stays @Nat (not a Byte) and the let
+        binding is rejected with E170 — proving the coercion is not a blanket
+        literal→Byte acceptance."""
+        _check_err("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Byte | @Byte.0 < 10 } = 300;
+  @Byte.0
+}
+""", "Let binding expects")
+
 
 # =====================================================================
 # Binary operators

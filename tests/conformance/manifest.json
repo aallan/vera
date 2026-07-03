@@ -61,6 +61,18 @@
     ]
   },
   {
+    "id": "ch01_byte_literal_coercion",
+    "file": "ch01_byte_literal_coercion.vera",
+    "chapter": 1,
+    "title": "Byte literal coercion at call arguments and let bindings",
+    "level": "run",
+    "spec_ref": "Section 1.1",
+    "features": [
+      "byte_type",
+      "byte_coercion"
+    ]
+  },
+  {
     "id": "ch01_comments",
     "file": "ch01_comments.vera",
     "chapter": 1,

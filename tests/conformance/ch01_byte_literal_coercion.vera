@@ -1,0 +1,35 @@
+-- Conformance: Byte literal coercion at call arguments and let bindings (Ch 1)
+-- Tests: an int literal coerced to @Byte (spec §11 — Byte is i32) must lower
+-- at i32, not the default i64, at the CALL-ARGUMENT and LET-BINDING positions
+-- (#865).  The checker accepts a 0..255 literal where a @Byte is expected
+-- (bidirectional coercion), so codegen owns the width.  Before the fix a
+-- literal argument to a @Byte parameter, or a literal bound to a @Byte let
+-- local, emitted i64.const against the i32 slot — a type mismatch that made
+-- the module fail to instantiate at `vera run`.  Sibling positions to the
+-- #766 binop-operand width fix (PR #864).
+public fn byte_lt(@Byte, @Byte -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.1 < @Byte.0
+}
+
+public fn byte_id(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- literal bound to a @Byte let local lowers at i32
+  let @Byte = 3;
+  -- literal argument (7) and a nested Byte-returning call both flow as i32
+  byte_lt(byte_id(@Byte.0), 7)
+}

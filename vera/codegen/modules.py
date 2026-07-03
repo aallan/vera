@@ -147,6 +147,12 @@ class CrossModuleMixin:
             for fn_name, int_params in temp._fn_int_params.items():
                 self._fn_int_params.setdefault(fn_name, int_params)
 
+            # #865: same harvest for the @Byte-parameter bitmap, so a
+            # cross-module call `f(3)` into an imported `f(@Byte -> …)`
+            # coerces the int-literal argument to i32.const.
+            for fn_name, byte_params in temp._fn_byte_params.items():
+                self._fn_byte_params.setdefault(fn_name, byte_params)
+
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
                 # Builtin ADTs (Option, Result, Ordering, etc.) appear in
@@ -308,6 +314,8 @@ class CrossModuleMixin:
             mangled, temp._fn_nat_params.get(fn_name, ()))
         self._fn_int_params.setdefault(  # #813: dual widening-guard bitmap
             mangled, temp._fn_int_params.get(fn_name, ()))
+        self._fn_byte_params.setdefault(  # #865: byte-literal coercion bitmap
+            mangled, temp._fn_byte_params.get(fn_name, ()))
         ret_te = temp._fn_ret_type_exprs.get(fn_name)
         if ret_te is not None:
             self._fn_ret_type_exprs.setdefault(mangled, ret_te)

@@ -124,6 +124,13 @@ class CodeGenerator(
         # `_fn_nat_params`, for the runtime @Nat -> @Int widening guard at
         # call sites.
         self._fn_int_params: dict[str, tuple[bool, ...]] = {}
+        # #865: per-parameter "is a concrete @Byte formal" flags.  `@Byte` is
+        # i32 (spec §11) but an int-literal argument defaults to `i64.const`;
+        # a Byte-typed formal makes the call site coerce a literal argument to
+        # `i32.const`, mirroring the #766 binop-operand fix at the call-arg
+        # position.  Disjoint from the @Nat/@Int bitmaps (a formal resolves to
+        # one primitive base or neither).
+        self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False

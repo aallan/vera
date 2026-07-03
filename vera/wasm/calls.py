@@ -501,7 +501,23 @@ class CallsMixin:
         # @Int, so the call site needs the runtime widening guard.  Disjoint
         # from `nat_params` (a formal resolves to one base or neither).
         int_params = self._fn_int_params.get(call_target, ())
+        # #865: concrete-@Byte formals.  `@Byte` is i32 (spec §11), but an int
+        # literal defaults to `i64.const`; a literal argument to a Byte formal
+        # must lower at i32 so the pushed value matches the callee's parameter
+        # width.  Mirrors the #766 binop-operand coercion at the call-arg
+        # position.  Disjoint from `nat_params` / `int_params`.
+        byte_params = self._fn_byte_params.get(call_target, ())
         for i, arg in enumerate(call.args):
+            if (i < len(byte_params) and byte_params[i]
+                    and isinstance(arg, ast.IntLit)):
+                # The bidirectional checker (`_synth_expr(expected=Byte)`)
+                # accepts a 0..255 int literal as a Byte argument (spec §11);
+                # lower it as i32 rather than the default i64 to match the
+                # callee's i32 Byte parameter.  Non-literal Byte arguments (a
+                # Byte slot ref, a Byte-returning call) already yield i32 via
+                # `translate_expr`, so only the literal needs the override.
+                instructions.append(f"i32.const {arg.value}")
+                continue
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None

@@ -262,6 +262,9 @@ class ClosureLiftingMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard inside closure bodies too.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #865: per-parameter concrete-@Byte flags for the call-site
+        # int-literal → i32.const coercion inside closure bodies too.
+        ctx.set_fn_byte_params(self._fn_byte_params)
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)
         env = WasmSlotEnv()
