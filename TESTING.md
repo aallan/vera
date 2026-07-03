@@ -177,7 +177,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `parse` | Source text is syntactically valid | 0 |
 | `check` | Parses and type-checks cleanly | 8 |
 | `verify` | Type-checks and all contracts verified by Z3 | 10 |
-| `run` | Compiles to WASM and executes correctly | 89 |
+| `run` | Compiles to WASM and executes correctly | 90 |
 
 Almost all programs are at the `run` level — they compile and execute, producing correct results. Eight programs (`ch03_typed_holes`, `ch05_apply_fn_arity`, `ch07_cross_module_contracts_lib`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_http`, `ch09_inference`) are at the `check` level. Four of them — `ch05_apply_fn_arity`, `ch08_circular_import`, `ch08_visibility_private`, and `ch09_builtin_redefinition` — are **negative tests** that assert a specific diagnostic (E201, E011, E150, and E151 respectively) via the manifest's `expected_error` field; `ch09_http` and `ch09_inference` are environment-gated (network / API key). Ten programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_primitive_obligations`, `ch05_apply_fn_typing`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_http_server`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
 
