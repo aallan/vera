@@ -1413,6 +1413,64 @@ public fn main(@Unit -> @Unit)
             server.server_close()
         assert out == "CONCURRENTCONCURRENT", (out, log)
 
+    def test_indirect_closure_await_ok_path_payload_intact(self) -> None:
+        """#843 Ok-path pin (PR #868 panel, minor): the indirect
+        ``await(apply_fn(closure, url))`` shape must deliver the REAL
+        response body through the ``Ok`` arm.  The Err-message tests in
+        tests/test_codegen_modules.py discriminate only via the refusal
+        substring — an Ok-corruption (wrapper read as the ADT yields a
+        garbage payload) would read as the same 0 there.  Here a local
+        server returns a distinctive body and the test requires it
+        byte-exact on stdout."""
+        import http.server
+        import threading
+
+        body = b"OK-PAYLOAD-843"
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 (stdlib API name)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            out = _run_io(f"""
+type Fetcher = fn(String -> Future<Result<String, String>>) effects(<Http, Async>);
+
+private fn run_fetch(@Fetcher, @String -> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{{
+  let @Result<String, String> = await(apply_fn(@Fetcher.0, @String.0));
+  match @Result<String, String>.0 {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print("ERR")
+  }}
+}}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO, Http, Async>)
+{{
+  run_fetch(
+    fn(@String -> @Future<Result<String, String>>) effects(<Http, Async>) {{
+      async(Http.get(@String.0))
+    }},
+    "http://127.0.0.1:{port}/ok"
+  )
+}}
+""")
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert out == "OK-PAYLOAD-843", out
+
 
 class TestHttpServerCompilability305:
     """#305: a handler declaring <HttpServer> compiles to WASM (the

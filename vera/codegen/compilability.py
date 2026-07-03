@@ -322,6 +322,13 @@ class CompilabilityMixin:
                 for arg in inner.args:
                     self._scan_io_ops(arg)
                 return
+            # NOTE: this pre-scan registration is redundant-but-benign for
+            # await — the WasmContext translation's single registration
+            # site in calls_markup.py already guarantees the import ⟺
+            # check ⟺ host coherence.  It is kept so the two passes call
+            # the shared predicate with identical inputs (the module
+            # docstring's "both passes MUST agree" invariant) rather
+            # than one of them silently drifting.
             if (
                 node.name == "await"
                 and len(node.args) == 1
@@ -329,6 +336,8 @@ class CompilabilityMixin:
                     node.args[0],
                     self._future_ret_fns,
                     self._future_ret_module_fns,
+                    self._type_aliases,
+                    self._type_alias_params,
                 )
             ):
                 self._async_ops_used.add("async_await")

@@ -369,7 +369,11 @@ class CallsMarkupMixin:
         handle.
         """
         if not await_needs_check(
-            arg, self._future_ret_fns, self._future_ret_module_fns,
+            arg,
+            self._future_ret_fns,
+            self._future_ret_module_fns,
+            self._type_aliases,
+            self._type_alias_params,
         ):
             return self.translate_expr(arg, env)
         arg_instrs = self.translate_expr(arg, env)
