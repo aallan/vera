@@ -459,6 +459,7 @@ ERROR_CODES: dict[str, str] = {
     "E123": "Precondition predicate not Bool",
     "E124": "Postcondition predicate not Bool",
     "E125": "Call-site effect mismatch",
+    "E126": "Refinement predicate not Bool",
     "E130": "Unresolved slot reference",
     "E131": "Result ref outside ensures",
     "E132": "Cyclic type alias",

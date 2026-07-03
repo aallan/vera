@@ -844,7 +844,15 @@ public fn f(@Mid -> @Byte)
         """A Byte refinement whose predicate does arithmetic on the Byte
         (`@Byte.0 + 1 < 10`) lowers the `+` and `<` at `i32` — the arithmetic
         emission site had the same `i64`-on-`i32` width bug as the comparison
-        site (#766) — so it compiles to valid WASM and the guard fires."""
+        site (#766) — so it compiles to valid WASM and the guard fires.
+
+        NOTE (#861): through the real CLI this shape no longer reaches
+        codegen — the checker now types refinement predicates, and Byte is
+        excluded from arithmetic at type-check time (E140, the documented
+        universal rule), so `vera check` gates it.  This test's `_run` path
+        deliberately bypasses the TypeChecker (parse → transform → compile),
+        so it documents CODEGEN-LAYER robustness only: the i32 arithmetic
+        lowering stays correct should the checker rule ever change."""
         src = """
 type UnderTen = { @Byte | @Byte.0 + 1 < 10 };
 public fn f(@UnderTen -> @Byte)

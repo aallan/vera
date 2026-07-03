@@ -140,6 +140,18 @@ class TypeEnv:
     # Context flags
     in_ensures: bool = False
     in_contract: bool = False
+    # #861: stack of the RESOLVED base types of the refinement predicates
+    # currently being type-checked (innermost last; empty = not in a
+    # predicate).  Marks predicate context like ``in_contract``, but
+    # additionally scopes the Byte-literal comparison allowance (§2.6): an
+    # integer literal compared against a Byte-typed operand is typed
+    # against Byte — matching the i32 runtime-guard lowering the predicate
+    # compiles to (#766) — ONLY when the innermost base resolves to Byte.
+    # A stack, not a boolean (PR #876 review): keyed on a boolean, a
+    # Byte-typed operand inside an `@Int`-based refinement wrongly got the
+    # allowance, and a predicate nested via a forall/exists binder must
+    # use ITS base, not the enclosing predicate's.
+    refinement_bases: list[Type] = field(default_factory=list)
     current_return_type: Type | None = None
     current_effect_row: EffectRowType | None = None
 
@@ -1861,6 +1873,24 @@ class TypeEnv:
         """Exit the current scope."""
         if len(self._scopes) > 1:
             self._scopes.pop()
+
+    def isolate_scopes(self) -> list[list[Binding]]:
+        """Replace the scope stack with a single fresh empty scope and
+        return the saved stack for :meth:`restore_scopes`.
+
+        #861 (PR #876 review): a refinement predicate is checked with its
+        binder as the SOLE slot in scope (spec §2.6).  A plain
+        ``push_scope`` leaves enclosing scopes visible, so a predicate
+        checked inside a function body could resolve slots beyond its
+        binder (`@Int.1` reaching the enclosing fn's parameter).
+        """
+        saved = self._scopes
+        self._scopes = [[]]
+        return saved
+
+    def restore_scopes(self, saved: list[list[Binding]]) -> None:
+        """Restore a scope stack saved by :meth:`isolate_scopes`."""
+        self._scopes = saved
 
     def bind(self, type_name: str, resolved_type: Type, source: str) -> None:
         """Add a binding to the current (innermost) scope."""

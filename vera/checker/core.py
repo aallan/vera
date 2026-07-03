@@ -296,11 +296,62 @@ class TypeChecker(
             self._check_fn(decl)
         elif isinstance(decl, ast.DataDecl):
             self._check_data(decl)
-        # TypeAliasDecl, EffectDecl, and AbilityDecl are validated
-        # during registration
+        elif isinstance(decl, ast.TypeAliasDecl):
+            self._check_alias(decl)
+        elif isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
+            # #861 (PR #876 review): op signatures CAN carry refinement
+            # predicates (`op log({ @Int | P } -> ...)`), and registration
+            # does not check them — `_register_effect` / `_register_ability`
+            # only `_resolve_type` the signature, which wraps the base in
+            # `RefinedType(base, predicate)` without ever typing the
+            # predicate.
+            self._check_op_signatures(decl)
+
+    def _check_op_signatures(
+        self, decl: ast.EffectDecl | ast.AbilityDecl,
+    ) -> None:
+        """Check refinement predicates in effect / ability op signatures
+        (#861), with the declaration's type params in scope."""
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+        for op in decl.operations:
+            for param_te in op.param_types:
+                self._check_refinement_predicates(param_te)
+            self._check_refinement_predicates(op.return_type)
+        self.env.type_params = saved_params
+
+    def _check_alias(self, decl: ast.TypeAliasDecl) -> None:
+        """Check a type alias's refinement predicates (#861).
+
+        Registration (`_register_alias`) resolves the alias's *base* but does
+        not check any refinement predicate it carries.  Do that here, in the
+        check phase, so predicates can reference other registered types and
+        functions (e.g. `type SmallVia = { @Byte | ident(@Byte.0) < 10 }`).
+        """
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+        self._check_refinement_predicates(decl.type_expr)
+        self.env.type_params = saved_params
 
     def _check_data(self, decl: ast.DataDecl) -> None:
         """Check an ADT declaration (invariant well-formedness)."""
+        # #861: a constructor field type may carry a refinement
+        # (`data Wrap = Wrap({ @Int | @Int.0 > 0 })`); check its predicate
+        # with the ADT's type params in scope.
+        saved_field_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+        for ctor in decl.constructors:
+            if ctor.fields is not None:
+                for field_te in ctor.fields:
+                    self._check_refinement_predicates(field_te)
+        self.env.type_params = saved_field_params
+
         if decl.invariant is not None:
             # Push scope with constructor bindings for invariant checking
             self.env.push_scope()
@@ -377,6 +428,14 @@ class TypeChecker(
         param_types = tuple(self._resolve_type(p) for p in decl.params)
         return_type = self._resolve_type(decl.return_type)
         effect_row = self._resolve_effect_row(decl.effect)
+
+        # 2b. Check refinement predicates written directly in the signature —
+        # a refinement can reach a param / return via a type argument, e.g.
+        # `@Array<{ @Int | @Int.0 > 0 }>` (#861).  Type params are already in
+        # scope from step 1.
+        for param_te in decl.params:
+            self._check_refinement_predicates(param_te)
+        self._check_refinement_predicates(decl.return_type)
 
         # 3. Set context
         self.env.current_return_type = return_type
@@ -508,3 +567,95 @@ class TypeChecker(
                 ty = self._synth_expr(expr)
                 # Type is checked; termination verification is Tier 3
             self.env.in_contract = False
+
+    # -----------------------------------------------------------------
+    # Refinement predicates (#861)
+    # -----------------------------------------------------------------
+
+    def _check_refinement_predicates(self, te: ast.TypeExpr) -> None:
+        """Type-check every refinement predicate reachable from *te*.
+
+        A refinement predicate is a *logical* predicate over the refined
+        binder (§2.6): `{ @Int | @Int.0 > 0 }`.  Before #861 the predicate
+        skipped well-formedness checking entirely — the alias only had its
+        *base* resolved (`_register_alias`) — so a non-Bool predicate
+        (`{ @Int | @Int.0 }`) or an ill-typed one (`{ @String | @String.0 < 3 }`)
+        passed `vera check`.  This is the refinement counterpart of
+        `_check_contract`: the predicate must type as Bool — rejected with
+        the dedicated code E126, following the registry's one-code-per-
+        predicate-position convention (E120 data invariant, E123
+        precondition, E124 postcondition) — and its operands are typed by
+        the ordinary checker rules.
+
+        Refinements reach the checker not only as a top-level alias body but
+        nested inside type arguments (`Array<{ @Int | P }>`) and function-type
+        components, so this walks the whole `TypeExpr` tree.  Every
+        `type_expr` grammar position routes through this walker: alias
+        bodies, fn / anonymous-fn signatures, constructor fields, effect and
+        ability op signatures, let / destructure annotations, match binding
+        patterns, forall / exists binders, and handler state / clause-param /
+        with-clause annotations (PR #876 review — the first pass wired only
+        the first three, and a let-annotation escape crashed `vera verify`
+        with a raw Z3Exception on the untyped predicate).
+        """
+        if isinstance(te, ast.RefinementType):
+            # Base first: a refinement can nest in its own base
+            # (`{ { @Int | P } | Q }`) or reach one via the base's args.
+            self._check_refinement_predicates(te.base_type)
+            self._check_one_refinement_predicate(te)
+            return
+        if isinstance(te, ast.NamedType):
+            if te.type_args:
+                for arg in te.type_args:
+                    self._check_refinement_predicates(arg)
+            return
+        if isinstance(te, ast.FnType):
+            for p in te.params:
+                self._check_refinement_predicates(p)
+            self._check_refinement_predicates(te.return_type)
+
+    def _check_one_refinement_predicate(
+        self, te: ast.RefinementType,
+    ) -> None:
+        """Check a single refinement predicate for well-formedness (Bool)."""
+        # Bind the predicate's binder `@<base>.0` to the resolved base type,
+        # exactly as the verifier / codegen close the predicate over it.
+        binder_name = self._type_expr_to_slot_name(te.base_type)
+        resolved_base = self._resolve_type(te.base_type)
+
+        # The binder is the SOLE slot in scope (spec §2.6) — isolate the
+        # scope stack rather than pushing on top of it, or a predicate
+        # checked at a site with live bindings (a fn body, where-helper,
+        # handler clause) could resolve slots beyond its binder, e.g.
+        # `let @{ @Int | @Int.0 > @Int.1 } = 5;` reaching the enclosing
+        # fn's parameter (PR #876 review).
+        saved_scopes = self.env.isolate_scopes()
+        self.env.bind(binder_name, resolved_base, "refinement")
+        saved_in_contract = self.env.in_contract
+        self.env.in_contract = True
+        # Push this predicate's RESOLVED base for the Byte-literal
+        # allowance — a stack keyed per-predicate, so a predicate nested
+        # through a forall/exists binder uses its OWN base, not the
+        # enclosing predicate's (PR #876 review).
+        self.env.refinement_bases.append(resolved_base)
+        try:
+            ty = self._synth_expr(te.predicate)
+        finally:
+            self.env.refinement_bases.pop()
+            self.env.in_contract = saved_in_contract
+            self.env.restore_scopes(saved_scopes)
+
+        if ty and not is_subtype(ty, BOOL):
+            self._error(
+                te.predicate,
+                f"Refinement predicate must be Bool, found "
+                f"{pretty_type(ty)}.",
+                rationale="A refinement type `{ @T | P }` constrains its base "
+                          "with a logical predicate `P`, which must evaluate to "
+                          "Bool — the same rule contract predicates follow.",
+                fix="Turn the predicate into a Bool-valued expression over the "
+                    "binder, e.g. `{ @Int | @Int.0 > 0 }` instead of "
+                    "`{ @Int | @Int.0 }`.",
+                spec_ref='Chapter 2, Section 2.6 "Refinement Types"',
+                error_code="E126",
+            )

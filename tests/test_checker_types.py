@@ -541,6 +541,624 @@ private fn foo(@Int -> @Nat)
 { @Int.0 }
 """)
 
+    # -----------------------------------------------------------------
+    # #861 — refinement predicates get contract-grade type-checking.
+    # Before the fix these three passed `vera check` because the alias
+    # predicate skipped well-formedness checking entirely.
+    # -----------------------------------------------------------------
+
+    def test_refinement_predicate_non_bool_rejected(self) -> None:
+        """A bare value predicate (`@Int`, not a Bool) is rejected (E126).
+
+        #861: `type T = { @Int | @Int.0 }` — the predicate types as Int,
+        not Bool.  A refinement predicate must be a Bool the same way a
+        `requires()` predicate must, so it gets the dedicated refinement code E126.
+        """
+        errs = _check_err("""
+type Bad = { @Int | @Int.0 };
+
+private fn foo(@Bad -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Bad.0 }
+""", "predicate must be Bool")
+        assert any(e.error_code == "E126" for e in errs), \
+            f"Expected E126, got: {[e.error_code for e in errs]}"
+
+    def test_refinement_predicate_non_bool_byte_rejected(self) -> None:
+        """The issue's exact `{ @Byte | @Byte.0 }` non-Bool case (E126)."""
+        errs = _check_err("""
+type Bad = { @Byte | @Byte.0 };
+
+private fn foo(@Bad -> @Bad)
+  requires(true) ensures(true) effects(pure)
+{ @Bad.0 }
+""", "predicate must be Bool")
+        assert any(e.error_code == "E126" for e in errs), \
+            f"Expected E126, got: {[e.error_code for e in errs]}"
+
+    def test_refinement_predicate_ill_typed_rejected(self) -> None:
+        """A genuinely ill-typed predicate (String < Int) is rejected.
+
+        #861: the predicate body is now type-checked, so an incompatible
+        comparison surfaces (E142 — Cannot compare) instead of passing.
+        """
+        errs = _check_err("""
+type Bad = { @String | @String.0 < 3 };
+
+private fn foo(@Bad -> @Bad)
+  requires(true) ensures(true) effects(pure)
+{ @Bad.0 }
+""", "compare")
+        assert any(e.error_code == "E142" for e in errs), \
+            f"Expected E142, got: {[e.error_code for e in errs]}"
+
+    def test_refinement_predicate_nested_non_bool_rejected(self) -> None:
+        """A non-Bool predicate NESTED in a type argument is also rejected.
+
+        #861: refinements reach the checker through type args too
+        (`Array<{ @Int | @Int.0 }>`), not only as a top-level alias body.
+        """
+        errs = _check_err("""
+type Xs = Array<{ @Int | @Int.0 }>;
+
+private fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "predicate must be Bool")
+        assert any(e.error_code == "E126" for e in errs), \
+            f"Expected E126, got: {[e.error_code for e in errs]}"
+
+    def test_refinement_predicate_in_signature_non_bool_rejected(self) -> None:
+        """A non-Bool refinement predicate written directly in a function
+        signature (via a type argument) is rejected too — not only in a
+        `type` alias.  #861.
+        """
+        errs = _check_err("""
+private fn foo(@Array<{ @Int | @Int.0 }> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", "predicate must be Bool")
+        assert any(e.error_code == "E126" for e in errs), \
+            f"Expected E126, got: {[e.error_code for e in errs]}"
+
+    def test_refinement_predicate_byte_literal_comparison_ok(self) -> None:
+        """`@Byte.0 < 10` stays well-typed inside a refinement predicate.
+
+        #861 / #766: comparing a `@Byte` binder against an integer literal
+        has a defined i32 runtime-guard lowering (#766's `_translate_byte_binop`),
+        so the literal is typed against the Byte binder bidirectionally.  This
+        must NOT regress to E142 — the ch02_byte_refinement conformance program
+        depends on it.
+        """
+        _check_ok("""
+type SmallByte = { @Byte | @Byte.0 < 10 };
+
+private fn foo(@SmallByte -> @SmallByte)
+  requires(true) ensures(true) effects(pure)
+{ @SmallByte.0 }
+""")
+
+    def test_refinement_predicate_well_formed_ok(self) -> None:
+        """A well-formed Bool predicate still passes (no false positives)."""
+        _check_ok("""
+type PosInt = { @Int | @Int.0 > 0 };
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+private fn foo(@PosInt -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{ if @PosInt.0 <= 100 then { @PosInt.0 } else { 100 } }
+""")
+
+    def test_refinement_predicate_alias_base_binder_ok(self) -> None:
+        """The binder resolves through an alias base (`@Age` for `type Age = Nat`).
+
+        #861: proves the predicate binder is bound under its *syntactic* name
+        (`@Age.0`), not the resolved primitive — otherwise a well-formed
+        predicate would spuriously fail to resolve its slot.
+        """
+        _check_ok("""
+type Age = Nat;
+type Adult = { @Age | @Age.0 >= 18 };
+
+private fn f(@Adult -> @Age)
+  requires(true) ensures(true) effects(pure)
+{ @Adult.0 }
+""")
+
+    def test_refinement_predicate_generic_alias_ok(self) -> None:
+        """A generic refinement alias's predicate checks with `T` in scope.
+
+        #861: `type NonEmptyArray<T> = { @Array<T> | array_length(...) > 0 }`
+        — the alias type param must be bound before checking the predicate.
+        """
+        _check_ok("""
+type NonEmptyArray<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_refinement_predicate_undefined_slot_rejected(self) -> None:
+        """A predicate referencing a slot that is not the binder is rejected.
+
+        #861: before the fix `{ @Int | @Foo.0 > 0 }` (no `@Foo` in scope)
+        passed `vera check`; now the predicate is checked, so the dangling
+        slot surfaces (E130).
+        """
+        errs = _check_err("""
+type Bad = { @Int | @Foo.0 > 0 };
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", "Foo")
+        assert any(e.error_code == "E130" for e in errs), \
+            f"Expected E130, got: {[e.error_code for e in errs]}"
+
+
+class TestRefinementPredicateSites861:
+    """#861 (PR #876 review): a `RefinementType` is grammatically legal at
+    every `type_expr` position, and each position must route through the
+    predicate well-formedness check.  The first-pass fix wired only alias
+    bodies, constructor fields, and fn signatures — the ten positions below
+    (let / destructure annotations, match binding patterns, anonymous-fn
+    signatures, effect / ability op signatures, forall / exists binders,
+    and the three handler positions) all let a non-Bool predicate escape
+    `vera check`.  The let-annotation escape was the worst: check-green,
+    then an uncaught `Z3Exception` inside `vera verify`'s refined-binding
+    obligation (`z3.Not(<Int>)` on a non-Bool predicate sort).
+    """
+
+    @staticmethod
+    def _assert_e126(source: str) -> None:
+        errs = _check_err(source, "Refinement predicate must be Bool")
+        assert any(e.error_code == "E126" for e in errs), \
+            f"Expected E126, got: {[e.error_code for e in errs]}"
+
+    def test_let_annotation_non_bool_rejected(self) -> None:
+        """Site: `let @{ @Int | @Int.0 } = 5;` — pre-fix this passed check
+        and then CRASHED `vera verify` with a raw Z3Exception."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Int | @Int.0 } = 5;
+  0
+}
+""")
+
+    def test_let_destructure_non_bool_rejected(self) -> None:
+        """Site: tuple-destructure component annotation."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@{ @Int | @Int.0 }, @Int> = Tuple(1, 2);
+  0
+}
+""")
+
+    def test_match_binding_non_bool_rejected(self) -> None:
+        """Site: `@{ @Int | @Int.0 } ->` match binding pattern."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match 5 {
+    @{ @Int | @Int.0 } -> 0
+  }
+}
+""")
+
+    def test_anon_fn_param_non_bool_rejected(self) -> None:
+        """Site: anonymous-fn parameter annotation."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  apply_fn(fn(@{ @Int | @Int.0 } -> @Int) effects(pure) { 1 }, 5)
+}
+""")
+
+    def test_anon_fn_return_non_bool_rejected(self) -> None:
+        """Site: anonymous-fn return annotation."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  apply_fn(fn(@Int -> @{ @Int | @Int.0 }) effects(pure) { 1 }, 5)
+}
+""")
+
+    def test_effect_op_param_non_bool_rejected(self) -> None:
+        """Site: effect-op parameter type.  The pre-fix comment claimed
+        effect declarations "carry no refinement predicates to check" —
+        wrong: `_register_effect` only resolves the base, stripping
+        `RefinementType` layers without checking the predicate."""
+        self._assert_e126("""
+effect Log {
+  op log({ @Int | @Int.0 } -> Unit);
+}
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_effect_op_return_non_bool_rejected(self) -> None:
+        """Site: effect-op return type."""
+        self._assert_e126("""
+effect Gen {
+  op next(Unit -> { @Int | @Int.0 });
+}
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_ability_op_non_bool_rejected(self) -> None:
+        """Site: ability-op signature (param and return share the walker)."""
+        self._assert_e126("""
+ability Sized<T> {
+  op size({ @Int | @Int.0 } -> { @Int | @Int.0 });
+}
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_forall_binder_non_bool_rejected(self) -> None:
+        """Site: forall(...) binder type annotation."""
+        self._assert_e126("""
+private fn f(@Int -> @Bool)
+  requires(true)
+  ensures(forall(@{ @Int | @Int.0 }, [1, 2], fn(@Int -> @Bool) effects(pure) { true }))
+  effects(pure)
+{ true }
+""")
+
+    def test_exists_binder_non_bool_rejected(self) -> None:
+        """Site: exists(...) binder type annotation."""
+        self._assert_e126("""
+private fn f(@Int -> @Bool)
+  requires(true)
+  ensures(exists(@{ @Int | @Int.0 }, [1, 2], fn(@Int -> @Bool) effects(pure) { true }))
+  effects(pure)
+{ true }
+""")
+
+    def test_handler_state_non_bool_rejected(self) -> None:
+        """Site: handler initial-state annotation `handle[...](@T = e)`."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@{ @Int | @Int.0 } = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""")
+
+    def test_handler_clause_param_non_bool_rejected(self) -> None:
+        """Site: handler clause parameter annotation."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@{ @Int | @Int.0 }) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""")
+
+    def test_handler_with_clause_non_bool_rejected(self) -> None:
+        """Site: handler `with @T = e` state-update annotation."""
+        self._assert_e126("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @{ @Int | @Int.0 } = @Int.0
+  } in {
+    get(())
+  }
+}
+""")
+
+    def test_ctor_field_non_bool_rejected(self) -> None:
+        """Site: constructor field type (PR #876 CR review).
+
+        The walker covered constructor fields from the first pass — this
+        pins the site against regression alongside the other site tests.
+        """
+        self._assert_e126("""
+private data W {
+  Mk({ @Int | @Int.0 })
+}
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_let_annotation_bool_refinement_ok(self) -> None:
+        """A well-formed Bool predicate in a let annotation keeps passing."""
+        _check_ok("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Int | @Int.0 > 0 } = 5;
+  0
+}
+""")
+
+    def test_match_binding_bool_refinement_ok(self) -> None:
+        """A well-formed Bool predicate in a match binding keeps passing."""
+        _check_ok("""
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match 5 {
+    @{ @Int | @Int.0 > 0 } -> 0,
+    _ -> 1
+  }
+}
+""")
+
+    def test_verify_rejects_at_check_before_z3_crash(
+        self, tmp_path: object,
+    ) -> None:
+        """`vera verify` on the let-site program fails CLEANLY at check.
+
+        Pre-fix repro: the program was check-green, so `cmd_verify` reached
+        the verifier and `_check_refined_binding_obligation` handed the
+        non-Bool predicate to `z3.Not(...)` — an uncaught
+        `z3.z3types.Z3Exception` traceback.  Post-fix the checker rejects
+        with E126 and `cmd_verify` returns before the verifier runs.
+        """
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        src = (
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{\n"
+            "  let @{ @Int | @Int.0 } = 5;\n"
+            "  0\n"
+            "}\n"
+        )
+        f = Path(str(tmp_path)) / "let_refine_crash.vera"
+        f.write_text(src, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", f.as_posix()],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        combined = result.stdout + result.stderr
+        assert result.returncode == 1, \
+            f"expected exit 1, got {result.returncode}: {combined}"
+        assert "E126" in combined, f"expected E126 diagnostic, got: {combined}"
+        assert "Traceback" not in combined, \
+            f"verifier crash leaked through: {combined}"
+        assert "Z3Exception" not in combined, \
+            f"verifier crash leaked through: {combined}"
+
+
+class TestRefinementPredicateScopeIsolation861:
+    """#861 (PR #876 CR review): the predicate binder `@T.0` is the SOLE
+    slot in scope (spec §2.6).  The first-pass check pushed the binder with
+    a plain `push_scope()`, leaving all enclosing scopes visible — so at
+    any site with live bindings (a fn body, a where-helper body, a handler
+    clause) the predicate could resolve slots beyond its binder:
+    `let @{ @Int | @Int.0 > @Int.1 } = 5;` inside `fn f(@Int, @Int -> ...)`
+    passed check with `@Int.1` resolving the enclosing parameter.  The
+    check now runs the predicate in an isolated scope stack containing
+    only the binder, so any other slot is E130.
+    """
+
+    def test_predicate_cannot_see_enclosing_fn_params(self) -> None:
+        """`@Int.1` in a let-annotation predicate must NOT resolve the
+        enclosing function's parameter — E130."""
+        errs = _check_err("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Int | @Int.0 > @Int.1 } = 5;
+  0
+}
+""", "Int.1")
+        assert any(e.error_code == "E130" for e in errs), \
+            f"Expected E130, got: {[e.error_code for e in errs]}"
+
+    def test_predicate_cannot_see_where_helper_params(self) -> None:
+        """The same leak through a where-helper body — E130."""
+        errs = _check_err("""
+private fn top(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(@Int.0, 2)
+}
+where {
+  fn helper(@Int, @Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    let @{ @Int | @Int.0 > @Int.1 } = 5;
+    0
+  }
+}
+""", "Int.1")
+        assert any(e.error_code == "E130" for e in errs), \
+            f"Expected E130, got: {[e.error_code for e in errs]}"
+
+    def test_match_binding_predicate_cannot_see_outer_scope(self) -> None:
+        """The leak through a match binding pattern — E130."""
+        errs = _check_err("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match 5 {
+    @{ @Int | @Int.0 > @Int.1 } -> 0
+  }
+}
+""", "Int.1")
+        assert any(e.error_code == "E130" for e in errs), \
+            f"Expected E130, got: {[e.error_code for e in errs]}"
+
+    def test_binder_still_resolves_with_outer_scopes_live(self) -> None:
+        """Positive control: with enclosing Int params live, the binder
+        `@Int.0` still resolves and a Bool predicate is accepted."""
+        _check_ok("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @{ @Int | @Int.0 > 0 } = 5;
+  @Int.2
+}
+""")
+
+    def test_match_binding_predicate_ok_with_outer_scopes_live(self) -> None:
+        """Positive control: match-binding predicate under live outer
+        bindings."""
+        _check_ok("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    @{ @Int | @Int.0 > 0 } -> 0,
+    _ -> 1
+  }
+}
+""")
+
+    def test_handler_clause_predicate_ok_with_outer_scopes_live(self) -> None:
+        """Positive control: handler-clause param predicate is checked with
+        the clause / fn scopes live and still accepts a Bool predicate."""
+        _check_ok("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@{ @Int | @Int.0 > 0 }) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""")
+
+    def test_byte_allowance_still_works_under_isolation(self) -> None:
+        """The Byte-literal allowance keeps working in the isolated scope
+        (binder-only) — exercised at a match-binding site with enclosing
+        Int / Byte bindings live."""
+        _check_ok("""
+private fn f(@Int, @Byte -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Byte.0 {
+    @{ @Byte | @Byte.0 < 10 } -> 1,
+    _ -> 0
+  }
+}
+""")
+
+
+class TestByteAllowanceBaseScoping861:
+    """#861 (PR #876 CR review): the Byte-literal comparison allowance is
+    scoped to predicates over a `@Byte` BASE (spec §2.6).  The first pass
+    keyed it on a boolean "inside any refinement predicate" flag, so a
+    Byte-typed operand in an `@Int`-based refinement
+    (`{ @Int | b(@Int.0) < 10 }` with `b : Int -> Byte`) wrongly got the
+    allowance instead of E142.  The flag is now a stack of the active
+    refinement base types, and the allowance applies only when the
+    innermost base resolves to Byte.
+    """
+
+    def test_byte_operand_under_int_base_rejected(self) -> None:
+        """A Byte-returning call compared to a literal inside an
+        `@Int`-based refinement is E142 — the allowance must not apply."""
+        errs = _check_err("""
+type T = { @Int | b(@Int.0) < 10 };
+
+private fn b(@Int -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", "compare")
+        assert any(e.error_code == "E142" for e in errs), \
+            f"Expected E142, got: {[e.error_code for e in errs]}"
+
+    def test_nested_inner_byte_base_allowed(self) -> None:
+        """Nesting, allowance direction: an inner `@Byte`-based refinement
+        (reached through a forall binder inside an `@Int`-based outer
+        predicate) still gets the allowance."""
+        _check_ok("""
+type T = { @Int | forall(@{ @Byte | @Byte.0 < 10 }, [1], fn(@Byte -> @Bool) effects(pure) { true }) && @Int.0 > 0 };
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_nested_inner_int_base_rejected(self) -> None:
+        """Nesting, denial direction: an inner `@Int`-based refinement
+        inside an `@Byte`-based outer predicate must NOT inherit the
+        outer allowance — E142."""
+        errs = _check_err("""
+type U = { @Byte | forall(@{ @Int | b(@Int.0) < 10 }, [1], fn(@Int -> @Bool) effects(pure) { true }) && @Byte.0 < 10 };
+
+private fn b(@Int -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", "compare")
+        assert any(e.error_code == "E142" for e in errs), \
+            f"Expected E142, got: {[e.error_code for e in errs]}"
+
+    def test_byte_base_through_alias_allowed(self) -> None:
+        """The Byte base resolves through an alias chain: a refinement over
+        `@MyByte` (`type MyByte = Byte`) still gets the allowance."""
+        _check_ok("""
+type MyByte = Byte;
+type Small = { @MyByte | @MyByte.0 < 10 };
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_byte_fncall_operand_stays_allowed(self) -> None:
+        """The #766 fn-call operand shape (`ident(@Byte.0) < 10`) under a
+        `@Byte` base keeps the allowance."""
+        _check_ok("""
+type SmallVia = { @Byte | ident(@Byte.0) < 10 };
+
+private fn ident(@Byte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+
+private fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
 
 # =====================================================================
 # Array operations

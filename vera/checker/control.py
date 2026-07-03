@@ -384,6 +384,7 @@ class ControlFlowMixin:
     def _check_binding_pattern(self, pat: ast.BindingPattern,
                                expected: Type | None) -> list[Binding]:
         """Check a binding pattern (@Type)."""
+        self._check_refinement_predicates(pat.type_expr)  # #861
         resolved = self._resolve_type(pat.type_expr)
         tname = self._type_expr_to_slot_name(pat.type_expr)
         return [Binding(tname, resolved, "match")]
@@ -422,6 +423,7 @@ class ControlFlowMixin:
         # Check handler state
         state_type: Type | None = None
         if expr.state:
+            self._check_refinement_predicates(expr.state.type_expr)  # #861
             state_type = self._resolve_type(expr.state.type_expr)
             init_type = self._synth_expr(expr.state.init_expr)
             if init_type and not isinstance(init_type, UnknownType):
@@ -472,6 +474,7 @@ class ControlFlowMixin:
             op_param_types = tuple(
                 substitute(p, mapping) for p in op_info.param_types)
             for param_te, param_ty in zip(clause.params, op_param_types):
+                self._check_refinement_predicates(param_te)  # #861
                 tname = self._type_expr_to_slot_name(param_te)
                 self.env.bind(tname, param_ty, "handler")
 
@@ -498,6 +501,7 @@ class ControlFlowMixin:
             # Type-check with clause (state update) if present
             if clause.state_update is not None:
                 upd_te, upd_expr = clause.state_update
+                self._check_refinement_predicates(upd_te)  # #861
                 if state_type is None:
                     self._error(
                         clause,

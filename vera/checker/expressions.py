@@ -378,6 +378,28 @@ class ExpressionsMixin:
         right_ty = self._synth_expr(expr.right)
         if left_ty is None or right_ty is None:
             return None
+        # #861: inside a refinement predicate over a `@Byte` BASE (§2.6),
+        # an integer literal compared against a Byte-typed operand is typed
+        # against Byte, not Nat.  `@Byte.0 < 10` has a defined i32
+        # runtime-guard lowering (#766's `_translate_byte_binop`), so —
+        # unlike a general expression, where Byte-vs-Nat is E142 (no
+        # implicit numeric coercion, DESIGN §0.2.2) — the literal takes the
+        # binder's Byte type here.  A literal is not a runtime value, so
+        # this is literal-typing-from-context (the same rule that lets
+        # `small(7)` pass a Byte parameter), not a coercion.  Keyed on the
+        # INNERMOST active refinement base resolving to Byte (PR #876
+        # review): a Byte-typed operand inside an `@Int`-based refinement
+        # (`{ @Int | b(@Int.0) < 10 }` with `b : Int -> Byte`) stays E142.
+        if (self.env.refinement_bases
+                and base_type(self.env.refinement_bases[-1]) == BYTE):
+            if (isinstance(expr.right, ast.IntLit)
+                    and base_type(left_ty) == BYTE):
+                right_ty = self._synth_expr(expr.right, expected=BYTE)
+            elif (isinstance(expr.left, ast.IntLit)
+                    and base_type(right_ty) == BYTE):
+                left_ty = self._synth_expr(expr.left, expected=BYTE)
+            if left_ty is None or right_ty is None:
+                return None
         if isinstance(left_ty, UnknownType) or isinstance(right_ty, UnknownType):
             return UnknownType()
 
@@ -733,6 +755,11 @@ class ExpressionsMixin:
 
     def _check_let(self, stmt: ast.LetStmt) -> None:
         """Type-check a let binding."""
+        # #861: the annotation may carry a refinement whose predicate must be
+        # checked — pre-fix, a non-Bool predicate here was check-green and
+        # then crashed `vera verify` (uncaught Z3Exception in the refined-
+        # binding obligation).
+        self._check_refinement_predicates(stmt.type_expr)
         declared_type = self._resolve_type(stmt.type_expr)
         val_type = self._synth_expr(stmt.value, expected=declared_type)
 
@@ -764,6 +791,7 @@ class ExpressionsMixin:
         self._synth_expr(stmt.value)
 
         for te in stmt.type_bindings:
+            self._check_refinement_predicates(te)  # #861
             resolved = self._resolve_type(te)
             tname = self._type_expr_to_slot_name(te)
             self.env.bind(tname, resolved, "destruct")
@@ -774,6 +802,11 @@ class ExpressionsMixin:
 
     def _check_anon_fn(self, expr: ast.AnonFn) -> Type | None:
         """Type-check an anonymous function."""
+        # #861: closure signatures carry the same refinement positions as
+        # top-level fn signatures.
+        for param_te in expr.params:
+            self._check_refinement_predicates(param_te)
+        self._check_refinement_predicates(expr.return_type)
         param_types = tuple(self._resolve_type(p) for p in expr.params)
         ret_type = self._resolve_type(expr.return_type)
         eff = self._resolve_effect_row(expr.effect)
@@ -951,6 +984,7 @@ class ExpressionsMixin:
 
     def _check_forall_expr(self, expr: ast.ForallExpr) -> Type | None:
         """Type-check forall(type, domain, predicate)."""
+        self._check_refinement_predicates(expr.binding_type)  # #861
         self._resolve_type(expr.binding_type)
         self._synth_expr(expr.domain)
         self._synth_expr(expr.predicate)
@@ -958,6 +992,7 @@ class ExpressionsMixin:
 
     def _check_exists_expr(self, expr: ast.ExistsExpr) -> Type | None:
         """Type-check exists(type, domain, predicate)."""
+        self._check_refinement_predicates(expr.binding_type)  # #861
         self._resolve_type(expr.binding_type)
         self._synth_expr(expr.domain)
         self._synth_expr(expr.predicate)
