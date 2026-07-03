@@ -84,6 +84,7 @@ class FunctionCompilationMixin:
             known_fns=set(self._fn_sigs.keys()),
             ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
+            adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )
         # Build function return type map for FnCall type inference.
         # Include Unit-returning fns explicitly with None so `_is_void_expr`
@@ -510,6 +511,9 @@ class FunctionCompilationMixin:
         self._needs_overflow_trap = (
             self._needs_overflow_trap or ctx._needs_overflow_trap
         )
+        # #773: structural-Eq helper functions generated while lowering this
+        # body (deduped by name across the whole module at assembly).
+        self._adt_eq_helpers.update(ctx._adt_eq_helpers)
 
         # #517 — tail-call optimization fallback for functions whose
         # bodies are followed by post-body work that must run before

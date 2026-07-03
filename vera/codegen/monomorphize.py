@@ -19,14 +19,12 @@ from __future__ import annotations
 from vera import ast
 from vera.monomorphize import MonoContext, Monomorphizer
 
-# Types that satisfy the built-in abilities.
+# Types that satisfy the built-in abilities.  #773: `Eq` is structural, so a
+# field of ANY of these — String included (compared by content) — is
+# Eq-derivable; the scalar-only carve-out that excluded String is gone.
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
-# Eq primitives with a SCALAR WASM rep (i64/i32/f64), hence Eq-derivable as an
-# ADT *field*.  `String` is in `_EQ_TYPES` (a bare `@String` supports Eq) but is
-# `i32_pair`, so a String field breaks scalar auto-derivation — exclude it.
-_SCALAR_EQ_TYPES: frozenset[str] = _EQ_TYPES - frozenset({"String"})
 _ORD_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte",
 })
@@ -39,7 +37,7 @@ _SHOW_TYPES: frozenset[str] = frozenset({
 
 # Maps ability name → (type set, error description fragment).
 _ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
-    "Eq": (_EQ_TYPES, "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and simple enums"),
+    "Eq": (_EQ_TYPES, "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and ADTs whose fields are themselves Eq (structural derivation)"),
     "Ord": (_ORD_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte)"),
     "Hash": (_HASH_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
     "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
@@ -215,6 +213,21 @@ class MonomorphizationMixin:
                 if (constraint.ability_name == "Eq"
                         and self._adt_satisfies_eq(concrete)):
                     continue
+                # Vera has no `derive` construct — for Eq the actionable fix
+                # is structural: make every constructor field itself Eq.
+                if constraint.ability_name == "Eq":
+                    fix_text = (
+                        f"Instantiate the generic with a type that supports "
+                        f"'Eq'. An ADT derives Eq structurally when every "
+                        f"constructor field is itself Eq — restructure "
+                        f"'{concrete}' so its fields are Eq primitives or Eq "
+                        f"ADTs (Array/Map/handle fields are not Eq)."
+                    )
+                else:
+                    fix_text = (
+                        f"Instantiate the generic with a type that supports "
+                        f"'{constraint.ability_name}'."
+                    )
                 self.diagnostics.append(Diagnostic(
                     description=(
                         f"Type '{concrete}' does not satisfy ability "
@@ -227,11 +240,7 @@ class MonomorphizationMixin:
                         "parameter with a concrete type that must satisfy the "
                         "parameter's ability bounds; this type does not."
                     ),
-                    fix=(
-                        f"Instantiate the generic with a type that supports "
-                        f"'{constraint.ability_name}', or derive the ability "
-                        f"for '{concrete}'."
-                    ),
+                    fix=fix_text,
                     spec_ref='Chapter 9, Section 9.8 "Abilities"',
                     severity="error",
                     error_code="E613",
@@ -262,25 +271,31 @@ class MonomorphizationMixin:
     def _adt_satisfies_eq(
         self, type_name: str, _seen: frozenset[str] = frozenset(),
     ) -> bool:
-        """Check if an ADT type satisfies Eq via auto-derivation.
+        """Check if an ADT type satisfies Eq via *structural* auto-derivation.
 
-        An ADT satisfies Eq iff every constructor field does.  A CONCRETE field
-        is Eq iff its WASM rep is scalar (i64/i32/f64); a String/Array field
-        (i32_pair) needs a runtime comparison loop and is not auto-derivable.
-        Simple enums (all constructors zero-field) always satisfy Eq.
+        An ADT satisfies Eq iff every constructor field's type does (§9.8).  A
+        field is Eq iff it is an Eq primitive (Int/Nat/Bool/Float64/Byte/Unit
+        **or String**, which compares by content) or a nested ADT that itself
+        satisfies Eq (checked recursively).  A field with no Eq semantics —
+        Array, Map, a host handle, a function — is *not* derivable and the ADT
+        is rejected (E613).  Simple enums (all constructors zero-field) always
+        satisfy Eq.
 
-        A TYPE-PARAMETER field's Eq-ness is its concrete type ARGUMENT's, NOT the
-        generic `i64` boxed rep the bare layout records.  `_adt_layouts` is keyed
-        by the bare ADT name (`Box`), so a parameterized name (`Box<Int>`, from a
-        slot-ref- or constructor-inferred type) is split into base + args: the
-        bare layout gives each field's slot, and `_ctor_adt_tp_indices` says
-        which fields are type parameters — those are validated against the
-        matching type arg.  So `Box<Int>` derives Eq while `Box<String>` does
-        not, and the spurious E613 on `@Box<Int>.0` is gone without the
-        type-arg-blind false-accept a bare-name strip would leave (PR #767
-        review).
+        This must agree exactly with codegen's structural-Eq generator
+        (`OperatorsMixin._generate_adt_eq_fn`): a program the gate accepts must
+        never hit the generator's loud "no Eq comparison" invariant, and vice
+        versa — the checker↔codegen lockstep #732 relies on (differential-
+        tested by ``test_structural_eq_gate_matches_codegen``).
+
+        `_adt_layouts` is keyed by the bare ADT name (`Box`), so a
+        parameterized name (`Box<String>`) is split into base + args; a
+        TYPE-PARAMETER field's Eq-ness is its concrete type ARGUMENT's (per
+        `_ctor_adt_tp_indices`), while a concrete field's is its declared type's
+        (per `field_types`).  #773 lifted this from the old scalar-WASM-rep
+        basis (which false-rejected String fields and false-accepted nested-ADT
+        / Map pointer fields).
         """
-        from vera.monomorphize import Monomorphizer
+        from vera.monomorphize import Monomorphizer, substitute_type_param_names
 
         parsed = Monomorphizer._parse_type_name(type_name)
         base = parsed.name
@@ -295,6 +310,12 @@ class MonomorphizationMixin:
         if type_name in _seen:        # recursive ADT (e.g. List<T>) — break cycle
             return True
         seen = _seen | {type_name}
+        # Param-NAME → concrete-arg mapping, for params nested inside a
+        # parameterized declared field type (`List<T>` under `List<Int>`) —
+        # the same substitution codegen's generator applies, keeping the two
+        # in lockstep.
+        tp_names = self._adt_tp_param_names.get(base, ())
+        tp_mapping = dict(zip(tp_names, args))
         for ctor_name, layout in layouts.items():
             tp_indices = self._ctor_adt_tp_indices.get(ctor_name)
             for i, (_offset, wasm_type) in enumerate(layout.field_offsets):
@@ -305,21 +326,46 @@ class MonomorphizationMixin:
                 )
                 if tp_i is not None:
                     # Type-parameter field — its Eq-ness is the concrete type
-                    # argument's, not the boxed `i64` the bare layout records.
-                    if tp_i < len(args) and not self._type_eq_derivable(
-                        args[tp_i], seen,
-                    ):
+                    # argument's.
+                    if tp_i >= len(args):
+                        # No concrete type argument for this parameter (the
+                        # #772 residue: a `ConstructorCall` monomorphizes to the
+                        # bare ADT name `Box`, dropping `<String>`).  Codegen's
+                        # structural generator cannot resolve the field's type
+                        # either, so — to stay in lockstep — the gate reports it
+                        # NOT derivable (a clean E613) rather than accepting it
+                        # and letting codegen hit its loud invariant.  #772
+                        # tracks recovering the lost type argument so this path
+                        # derives instead of rejecting.
+                        return False
+                    if not self._type_eq_derivable(args[tp_i], seen):
+                        return False
+                elif layout.field_types:
+                    # Concrete field — dispatch on its DECLARED Vera type,
+                    # with nested type params substituted (`List<T>` →
+                    # `List<Int>` under a `List<Int>` check, so the recursive
+                    # tail hits the `_seen` cycle-break instead of failing on
+                    # an unresolved `T`).
+                    resolved = substitute_type_param_names(
+                        layout.field_types[i], tp_mapping,
+                    )
+                    if not self._type_eq_derivable(resolved, seen):
                         return False
                 elif wasm_type not in ("i64", "i32", "f64"):
-                    # Concrete non-scalar field (String/Array i32_pair).
+                    # Built-in layout without field-type metadata: fall back to
+                    # the scalar-rep basis (a non-scalar field is not derivable).
                     return False
         return True
 
     def _type_eq_derivable(self, name: str, seen: frozenset[str]) -> bool:
-        """Is ``name`` Eq-derivable as an ADT field — a scalar Eq primitive, or
-        a recursively-Eq ADT?  String/Array are `i32_pair`, so not."""
+        """Is ``name`` Eq-derivable as an ADT field?
+
+        True for an Eq primitive (Int/Nat/Bool/Float64/Byte/Unit **or String**,
+        compared by content) or a recursively-Eq ADT.  False for Array / Map /
+        host handles / functions — those have no auto-derived Eq.
+        """
         base = name.split("<", 1)[0]
-        if base in _SCALAR_EQ_TYPES:
+        if base in _EQ_TYPES:           # includes String (content comparison)
             return True
         if base in self._adt_layouts:
             return self._adt_satisfies_eq(name, seen)

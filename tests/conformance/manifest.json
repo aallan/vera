@@ -1424,6 +1424,24 @@
     ]
   },
   {
+    "id": "ch09_structural_eq",
+    "file": "ch09_structural_eq.vera",
+    "chapter": 9,
+    "title": "Structural Eq auto-derivation for ADTs (#773)",
+    "level": "run",
+    "spec_ref": "Section 9.8",
+    "features": [
+      "ability_constraint",
+      "forall_where",
+      "eq_operation",
+      "adt_auto_derivation",
+      "structural_eq",
+      "string_field_eq",
+      "nested_adt_eq",
+      "string_concat"
+    ]
+  },
+  {
     "id": "ch09_decimal_generics",
     "file": "ch09_decimal_generics.vera",
     "chapter": 9,

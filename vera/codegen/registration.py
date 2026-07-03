@@ -93,18 +93,25 @@ class RegistrationMixin:
         writes an explicit ``data Result`` or ``data Option`` declaration,
         ``_register_data`` will overwrite these entries.
         """
+        # #773: ``field_types`` on the generic built-ins records the bare type
+        # parameter ("T" / "E"); structural Eq substitutes the concrete type
+        # argument (from the parameterized comparison-site name) before
+        # dispatching.  Non-generic built-ins record their concrete field types.
         self._adt_layouts["Option"] = {
             "None": ConstructorLayout(tag=0, field_offsets=(), total_size=8),
             "Some": ConstructorLayout(
                 tag=1, field_offsets=((4, "i32"),), total_size=8,
+                field_types=("T",),
             ),
         }
         self._adt_layouts["Result"] = {
             "Ok": ConstructorLayout(
                 tag=0, field_offsets=((4, "i32"),), total_size=8,
+                field_types=("T",),
             ),
             "Err": ConstructorLayout(
                 tag=1, field_offsets=((4, "i32"),), total_size=8,
+                field_types=("E",),
             ),
         }
         # Ordering — result type for Ord's compare operation (§9.8)
@@ -130,6 +137,7 @@ class RegistrationMixin:
                     (36, "i32_pair"),
                 ),
                 total_size=48,
+                field_types=("String", "String", "String", "String", "String"),
             ),
         }
         # Tuple — variadic product type (tag=0, layout recomputed per-call)
@@ -222,6 +230,10 @@ class RegistrationMixin:
         self._adt_tp_counts["Ordering"] = 0
         self._adt_tp_counts["UrlParts"] = 0
         self._adt_tp_counts["Tuple"] = 0
+        # #773: parameter names for the generic built-ins (structural-Eq
+        # substitution); the rest have no type parameters.
+        self._adt_tp_param_names["Option"] = ("T",)
+        self._adt_tp_param_names["Result"] = ("T", "E")
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT and precompute constructor layouts."""
@@ -239,6 +251,11 @@ class RegistrationMixin:
         type_params = decl.type_params or ()
         tp_index: dict[str, int] = {tp: i for i, tp in enumerate(type_params)}
         self._adt_tp_counts[decl.name] = len(type_params)
+        # #773: ordered type-parameter NAMES, so structural Eq can substitute
+        # params nested inside a parameterized field type (`List<T>` under a
+        # `List<Int>` comparison) — the positional `_ctor_adt_tp_indices`
+        # table only covers fields that ARE a bare parameter.
+        self._adt_tp_param_names[decl.name] = tuple(type_params)
         for ctor in decl.constructors:
             if ctor.fields is not None:
                 indices: list[int | None] = []
@@ -267,6 +284,7 @@ class RegistrationMixin:
         field_offsets: list[tuple[int, str]] = []
         nat_fields: list[bool] = []
         int_fields: list[bool] = []
+        field_types: list[str] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -283,6 +301,10 @@ class RegistrationMixin:
                 # #813: a concrete @Int field receives the runtime @Nat -> @Int
                 # widening guard when constructed with a @Nat argument.
                 int_fields.append(self._type_resolves_to_int(field_te))
+                # #773: the RESOLVED Vera type name of the field, for
+                # structural Eq derivation (type params stay bare, e.g. "T";
+                # aliases and refinements resolve to their ground type).
+                field_types.append(self._field_vera_type_name(field_te, decl))
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -291,7 +313,64 @@ class RegistrationMixin:
             total_size=total_size,
             nat_fields=tuple(nat_fields),
             int_fields=tuple(int_fields),
+            field_types=tuple(field_types),
         )
+
+    def _field_vera_type_name(
+        self,
+        te: ast.TypeExpr,
+        decl: ast.DataDecl,
+        _seen: frozenset[str] = frozenset(),
+    ) -> str:
+        """Canonical RESOLVED Vera type name of a constructor field (#773).
+
+        Used to populate ``ConstructorLayout.field_types`` for structural
+        ``Eq`` derivation.  Resolution mirrors the sibling field resolvers
+        (``_resolve_field_wasm_type`` / ``_type_resolves_to_nat``): a type
+        ALIAS resolves through ``self._type_aliases`` — including chains
+        (``A2 = A1 = Int``, guarded by ``_seen``) and generic aliases
+        (``Id<Nat>`` via ``substitute_type_vars``) — so an alias-typed field
+        dispatches on its ground type, not the alias name; a
+        ``RefinementType`` (``{ @Int | p }``, or an alias to one) unwraps to
+        its base — a refinement of an Eq type is Eq and compared identically
+        at the machine level.  Aliases populate in declaration order, so an
+        alias declared *after* the ``data`` stays unresolved (same caveat as
+        the siblings).  The parent ADT's type PARAMETERS render as their bare
+        name (``"T"``, never alias-resolved — params shadow) and are
+        substituted with the concrete type argument at the comparison site.
+        A ``NamedType`` with type args renders parameterized
+        (``"Map<String, Int>"``), matching ``Monomorphizer._format_type_name``
+        so the comparison site can re-parse it, with each argument resolved
+        recursively.
+        """
+        if isinstance(te, ast.RefinementType):
+            return self._field_vera_type_name(te.base_type, decl, _seen)
+        if isinstance(te, ast.NamedType):
+            # Parent ADT's type parameter — stays bare; substituted with the
+            # concrete type argument at the comparison site.
+            if decl.type_params and te.name in decl.type_params:
+                return te.name
+            alias = self._type_aliases.get(te.name)
+            if alias is not None and te.name not in _seen:
+                params = self._type_alias_params.get(te.name)
+                if (params and te.type_args
+                        and len(params) == len(te.type_args)):
+                    alias = substitute_type_vars(
+                        alias, dict(zip(params, te.type_args)),
+                    )
+                return self._field_vera_type_name(
+                    alias, decl, _seen | {te.name},
+                )
+            if not te.type_args:
+                return te.name
+            arg_names = [
+                self._field_vera_type_name(ta, decl, _seen)
+                for ta in te.type_args
+            ]
+            return f"{te.name}<{', '.join(arg_names)}>"
+        # FnType or anything else has no Eq semantics; a placeholder the
+        # derivability check treats as non-Eq (rejected loudly at the gate).
+        return "<fn>"
 
     def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:
         """True if *te* is ``@Nat`` directly, through a ``type X = Nat``

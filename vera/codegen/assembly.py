@@ -527,6 +527,12 @@ class AssemblyMixin:
         for closure_wat in self._closure_fns_wat:
             parts.append(closure_wat)
 
+        # #773: generated structural-Eq helper functions ($eq_<type>, plus the
+        # shared $eq_String content comparator).  Deduped by name across the
+        # whole module; sorted for deterministic output.
+        for _name, eq_wat in sorted(self._adt_eq_helpers.items()):
+            parts.append(eq_wat)
+
         parts.append(")")
         return "\n".join(parts)
 
