@@ -1337,3 +1337,59 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(src) == "42.0"
+
+    # --- #857: float_to_string is total over all Float64 values. ---
+    # Pre-fix, the finite path's `i64.trunc_f64_s` trapped on NaN
+    # ("invalid conversion to integer") and overflowed on ±inf
+    # (surfaced as a misleading "Integer overflow" diagnostic).  The
+    # non-finite classes must render as canonical ASCII instead.
+
+    def test_nan(self) -> None:
+        """nan() must render "nan", not trap on i64.trunc_f64_s."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(nan()))
+}
+"""
+        assert _run_io(src) == "nan"
+
+    def test_positive_infinity(self) -> None:
+        """infinity() must render "inf", not overflow."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(infinity()))
+}
+"""
+        assert _run_io(src) == "inf"
+
+    def test_negative_infinity(self) -> None:
+        """A negated infinity must render "-inf" with the sign."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(0.0 - infinity()))
+}
+"""
+        assert _run_io(src) == "-inf"
+
+    def test_negative_infinity_via_log_zero(self) -> None:
+        """The issue's exact repro: log(0.0) -> -inf (#790) must
+        render "-inf", not steer the user to integer preconditions
+        via a misleading "Integer overflow" diagnostic (#857)."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(log(0.0)))
+}
+"""
+        assert _run_io(src) == "-inf"

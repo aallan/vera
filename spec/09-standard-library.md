@@ -1045,6 +1045,32 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
+#### float_to_string (total over all Float64 values)
+
+<!-- vera:skip-parse category="FRAGMENT" reason="float_to_string signature (no body)" -->
+```
+public fn float_to_string(@Float64 -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Renders a `Float64` as its decimal string (up to six fractional digits, trailing zeros trimmed but at least one kept, so `42.0` stays `"42.0"`). This function is **total**: it is defined for every `Float64` value, including the three IEEE 754 non-finite classes, which render as fixed ASCII spellings:
+
+| Input | Output |
+|-------|--------|
+| `NaN` (e.g. `nan()`, `log(-1.0)`) | `"nan"` |
+| `+∞` (e.g. `infinity()`) | `"inf"` |
+| `-∞` (e.g. `log(0.0)`, `0.0 - infinity()`) | `"-inf"` |
+
+These spellings are chosen for cross-runtime parity: `float_to_string` compiles to inline WASM (no host import), so the Python host runtime and the browser runtime execute the same module and emit these bytes identically by construction. Because the math built-ins commit to IEEE 754 semantics — `log(0.0)` returns `-∞` and out-of-domain inputs return `NaN` (§9.6.10) — these are ordinary, reachable values, not errors; rendering them never traps ([#857](https://github.com/aallan/vera/issues/857)).
+
+```
+float_to_string(log(0.0))
+```
+
+This expression evaluates to `"-inf"`.
+
 ### 9.6.12 Float64 Predicates
 
 Vera provides built-in functions for testing and constructing IEEE 754 special float values (NaN and infinity).
@@ -2450,6 +2476,8 @@ ability Show<T> {
 Operation: `show(@T -> @String)`. Returns a human-readable string representation.
 
 Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+
+`show(@Float64)` is backed by `float_to_string` and is therefore **total** over all `Float64` values: the non-finite classes render as `"nan"`, `"inf"`, and `"-inf"` (§9.6.11, [#857](https://github.com/aallan/vera/issues/857)), with the same spellings in both the Python and browser runtimes.
 
 ### 9.8.2 ADT Auto-Derivation
 

@@ -81,6 +81,35 @@ class CallsStringsMixin:
             "i32.wrap_i64",
         ]
 
+    @staticmethod
+    def _emit_write_ascii_literal(
+        buf: int, pos: int, literal: str, indent: str = "  ",
+    ) -> list[str]:
+        """Emit WAT that writes ``literal`` (ASCII) into ``buf`` at
+        offset 0 and sets ``pos`` to its byte length.
+
+        Used by ``_translate_float_to_string`` (#857) to render the
+        canonical non-finite spellings ("nan", "inf", "-inf") without
+        entering the ``i64.trunc_f64_s`` digit-extraction path, which
+        traps on NaN and ±inf.  ``buf`` and ``pos`` are pre-allocated
+        i32 locals; ``literal`` must be ASCII and fit the 32-byte
+        buffer.  ``indent`` sets the WAT leading whitespace so the
+        emitted lines nest cleanly inside surrounding ``if`` blocks
+        (whitespace is insignificant to the assembler, but keeps the
+        printed WAT readable).
+        """
+        data = literal.encode("ascii")
+        out: list[str] = []
+        for i, byte in enumerate(data):
+            out.append(f"{indent}local.get {buf}")
+            out.append(f"{indent}i32.const {i}")
+            out.append(f"{indent}i32.add")
+            out.append(f"{indent}i32.const {byte}")
+            out.append(f"{indent}i32.store8 offset=0")
+        out.append(f"{indent}i32.const {len(data)}")
+        out.append(f"{indent}local.set {pos}")
+        return out
+
     def _translate_string_length(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
@@ -811,6 +840,7 @@ class CallsStringsMixin:
         tlen = self.alloc_local("i32")
         idx = self.alloc_local("i32")
         frac_val = self.alloc_local("i64")
+        done = self.alloc_local("i32")  # non-finite short-circuit flag
 
         instructions: list[str] = []
 
@@ -825,6 +855,60 @@ class CallsStringsMixin:
         instructions.extend(gc_shadow_push(buf))
         instructions.append("i32.const 0")
         instructions.append(f"local.set {pos}")
+
+        # Non-finite short-circuit (#857).  The finite path below
+        # rounds via `i64.trunc_f64_s`, which TRAPS on NaN
+        # ("invalid conversion to integer") and on ±inf (overflow).
+        # `float_to_string` is documented total, so render the three
+        # IEEE 754 non-finite classes here as canonical ASCII —
+        # "nan", "inf", "-inf" — and set `done` to skip the finite
+        # digit-extraction body.  These bytes are emitted inline into
+        # the compiled WASM, so the Python host runtime and the
+        # browser runtime (both of which execute this same module)
+        # render identically by construction — the cross-runtime
+        # parity the issue requires (spec §9.6.11 / §9.8).
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {done}")
+        # NaN: the only value not equal to itself (f64.ne(x, x)).
+        instructions.append(f"local.get {fval}")
+        instructions.append(f"local.get {fval}")
+        instructions.append("f64.ne")
+        instructions.append("if")
+        instructions.extend(
+            self._emit_write_ascii_literal(buf, pos, "nan")
+        )
+        instructions.append("  i32.const 1")
+        instructions.append(f"  local.set {done}")
+        instructions.append("else")
+        # ±inf: f64.abs(x) == inf.  (NaN already handled above and
+        # would be false here anyway, since NaN comparisons are false.)
+        instructions.append(f"  local.get {fval}")
+        instructions.append("  f64.abs")
+        instructions.append("  f64.const inf")
+        instructions.append("  f64.eq")
+        instructions.append("  if")
+        # Sign: negative infinity gets a leading '-'.
+        instructions.append(f"    local.get {fval}")
+        instructions.append("    f64.const 0")
+        instructions.append("    f64.lt")
+        instructions.append("    if")
+        instructions.extend(
+            self._emit_write_ascii_literal(buf, pos, "-inf", indent="      ")
+        )
+        instructions.append("    else")
+        instructions.extend(
+            self._emit_write_ascii_literal(buf, pos, "inf", indent="      ")
+        )
+        instructions.append("    end")
+        instructions.append("    i32.const 1")
+        instructions.append(f"    local.set {done}")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Finite path: only run when the value was not non-finite.
+        instructions.append(f"local.get {done}")
+        instructions.append("i32.eqz")
+        instructions.append("if")
 
         # Check for negative
         instructions.append("i32.const 0")
@@ -1099,6 +1183,11 @@ class CallsStringsMixin:
         instructions.append(f"local.get {tlen}")
         instructions.append("i32.add")
         instructions.append(f"local.set {pos}")
+
+        # Close the finite-path `if (done == 0)` guard opened above.
+        # The non-finite branch (#857) already wrote its literal and
+        # set `pos` to its length, so `pos` is authoritative either way.
+        instructions.append("end")
 
         # Return (buf, pos) where pos is now the total length
         instructions.append(f"local.get {buf}")

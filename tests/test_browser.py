@@ -806,6 +806,49 @@ public fn main(-> @Unit)
             "true,true,true,true,true,true,true,true,true"
         )
 
+    def test_non_finite_render_parity(self, tmp_path: Path) -> None:
+        """float_to_string renders NaN/±inf identically in both runtimes (#857).
+
+        ``float_to_string`` is compiled to inline WASM (no host import),
+        so the Python (wasmtime) and browser (Node.js) runtimes execute
+        the *same* module — the non-finite spellings ("nan", "inf",
+        "-inf") are emitted as literal bytes and cannot diverge.  This
+        is a true differential: compile once, run under both runtimes,
+        assert stdout is byte-identical AND equal to the canonical
+        spellings.  It also guards against regressing to the pre-fix
+        behavior, where NaN trapped ("invalid conversion to integer")
+        and ±inf overflowed — either would surface as a Node harness
+        error rather than a value here.  ``log(0.0)`` is the issue's
+        exact -inf source (#790); ``0.0 - infinity()`` and the raw
+        ``nan()``/``infinity()`` constants cover the other classes.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(nan()));
+  IO.print(",");
+  IO.print(float_to_string(infinity()));
+  IO.print(",");
+  IO.print(float_to_string(0.0 - infinity()));
+  IO.print(",");
+  IO.print(float_to_string(log(0.0)))
+}
+'''
+        vera_file = tmp_path / "non_finite.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        py_result = _run_python(result)
+        node = _run_node(wasm_path)
+
+        assert node["stdout"] == py_result.stdout, (
+            f"non-finite render parity mismatch:\n"
+            f"  Python: {py_result.stdout!r}\n"
+            f"  Node:   {node['stdout']!r}"
+        )
+        assert node["stdout"] == "nan,inf,-inf,-inf"
+
 
 # =====================================================================
 # TestBrowserState — State<T> host bindings
