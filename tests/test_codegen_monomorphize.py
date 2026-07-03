@@ -1318,3 +1318,252 @@ public fn main(-> @Int)
 """
         # squares = [1, 4, 9, 16, 25]; sum = 55.
         assert _run(source, fn="main") == 55
+
+
+# =====================================================================
+# #775 — injective mono-clone name mangling
+# =====================================================================
+
+
+class TestMangleInjectivity:
+    """#775: ``_mangle_fn_name`` must be injective over instantiations.
+
+    The pre-fix sanitizer (``ct.replace("<", "_").replace(">", "")
+    .replace(", ", "_")`` joined with ``_``) was lossy: two DISTINCT
+    instantiations of one generic could share a WAT symbol, so both
+    clones were emitted under the same ``$name`` and WAT compilation
+    failed with ``duplicate func identifier`` (confirmed empirically:
+    Pass 1.5 has no collision detection — both clones emit, wasmtime's
+    parser rejects the module).
+
+    Collision classes killed (from the issue):
+
+    - parameterized built-in vs. flat user ADT:
+      ``g<Map<String, Int>>`` vs ``g<Map_String_Int>``
+      (both mangled to ``g$Map_String_Int``)
+    - multi-parameter joins across the ``_`` boundary:
+      ``g<A_B, C>`` vs ``g<A, B_C>`` (both ``g$A_B_C``)
+    """
+
+    def test_mangle_distinct_across_component_boundary(self) -> None:
+        """``g<A_B, C>`` and ``g<A, B_C>`` must get distinct symbols."""
+        from vera.monomorphize import Monomorphizer
+
+        a = Monomorphizer._mangle_fn_name("g", ("A_B", "C"))
+        b = Monomorphizer._mangle_fn_name("g", ("A", "B_C"))
+        assert a != b, (
+            f"non-injective mangle: g<A_B, C> and g<A, B_C> both -> {a}"
+        )
+
+    def test_mangle_distinct_parameterized_vs_flat_adt(self) -> None:
+        """``g<Map<String, Int>>`` vs ``g<Map_String_Int>`` (user ADT)."""
+        from vera.monomorphize import Monomorphizer
+
+        a = Monomorphizer._mangle_fn_name("g", ("Map<String, Int>",))
+        b = Monomorphizer._mangle_fn_name("g", ("Map_String_Int",))
+        assert a != b, (
+            f"non-injective mangle: Map<String, Int> and the flat ADT "
+            f"name Map_String_Int both -> {a}"
+        )
+
+    def test_mangle_pairwise_distinct_adversarial_vectors(self) -> None:
+        """A battery of near-miss type-arg vectors, all pairwise distinct.
+
+        Every entry is a distinct instantiation vector a Vera program can
+        legally produce (type names may contain ``_``; parameterized
+        names are canonical ``Name<A, B>`` forms).  The mangles must be
+        pairwise distinct — any collision is a wrong-symbol bug.
+        """
+        from vera.monomorphize import Monomorphizer
+
+        vectors: list[tuple[str, ...]] = [
+            ("A_B", "C"),
+            ("A", "B_C"),
+            ("A_B_C",),
+            ("A", "B", "C"),
+            ("A", "B_C_D"),
+            ("A_B", "C_D"),
+            ("A__B", "C"),
+            ("Map<String, Int>",),
+            ("Map_String_Int",),
+            ("Map<String_Int>",),
+            ("Box<A_B>", "C"),
+            ("Box<A>", "B_C"),
+            ("Box<A, B>",),
+            ("Box<A>", "B"),
+            # These two pairs pin the ``_`` doubling specifically: without
+            # it, a type name that literally spells an escape code or the
+            # join separator forges another instantiation's symbol.
+            ("Box_LInt_R",),   # vs the encoding of ("Box<Int>",)
+            ("Box<Int>",),
+            ("A_JB",),         # vs the joined encoding of ("A", "B")
+            ("A", "B"),
+        ]
+        mangled = [
+            Monomorphizer._mangle_fn_name("g", v) for v in vectors
+        ]
+        seen: dict[str, tuple[str, ...]] = {}
+        for vec, name in zip(vectors, mangled):
+            assert name not in seen, (
+                f"collision: {seen[name]} and {vec} both mangle to {name}"
+            )
+            seen[name] = vec
+
+    def test_mangle_deterministic(self) -> None:
+        """Same instantiation always yields the same symbol."""
+        from vera.monomorphize import Monomorphizer
+
+        a = Monomorphizer._mangle_fn_name("g", ("Map<String, Int>", "A_B"))
+        b = Monomorphizer._mangle_fn_name("g", ("Map<String, Int>", "A_B"))
+        assert a == b
+
+    # Two-param collision program: `unwrap_second<A_B, C>` and
+    # `unwrap_second<A, B_C>` collided to `$unwrap_second$A_B_C` pre-fix
+    # (WAT: duplicate func identifier).  Outputs are chosen so no
+    # accidental fallback can coincide: 0 + 100 + 7 = 107 requires BOTH
+    # instantiations to route to their own clone.
+    #
+    # The `array_fold` closure in `main` is a table-forcing workaround
+    # for #869, a pre-existing bug orthogonal to #775 (reproduces on
+    # main for non-colliding programs too): the single-letter ADT names
+    # (`data A`, `data C`) collide with the prelude generics' type
+    # parameters, pulling the never-called prelude templates
+    # `$option_map`/`$option_and_then` into compilation; their
+    # `call_indirect` references table 0, which nothing else emits —
+    # wasmtime rejects the module with "unknown table 0".  The closure
+    # forces the table so the module validates; the templates stay
+    # dead code.  Remove the fold once #869 is fixed.
+    TWO_PARAM_SRC = """\
+private data A_B { MkAB(Int) }
+private data B_C { MkBC(Int) }
+private data A { MkA(Int) }
+private data C { MkC(Int) }
+
+private forall<T, U> fn unwrap_second(@T, @U -> @U)
+  requires(true) ensures(true) effects(pure)
+{
+  @U.0
+}
+
+private fn c_value(@C -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @C.0 { MkC(@Int) -> @Int.0 }
+}
+
+private fn bc_value(@B_C -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @B_C.0 { MkBC(@Int) -> @Int.0 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold([0], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
+    + c_value(unwrap_second(MkAB(1), MkC(100)))
+    + bc_value(unwrap_second(MkA(2), MkBC(7)))
+}
+"""
+
+    def test_two_param_boundary_collision_end_to_end(self) -> None:
+        """``g<A_B, C>`` + ``g<A, B_C>`` in one program compiles and runs."""
+        assert _run(self.TWO_PARAM_SRC, fn="main") == 107
+
+    def test_two_param_boundary_collision_distinct_wat_symbols(self) -> None:
+        """The two instantiations must own two distinct WAT functions."""
+        import re
+
+        result = _compile_ok(self.TWO_PARAM_SRC)
+        defs = re.findall(
+            r"\(func (\$unwrap_second\$[A-Za-z0-9_]+)", result.wat
+        )
+        assert len(defs) == 2, (
+            f"expected exactly 2 unwrap_second clones, got {defs}"
+        )
+        assert len(set(defs)) == 2, (
+            f"mono clones share one WAT symbol (collision): {defs}"
+        )
+        # Every call site must reference an emitted definition.
+        calls = set(re.findall(
+            r"(?:return_)?call (\$unwrap_second\$[A-Za-z0-9_]+)",
+            result.wat,
+        ))
+        assert calls == set(defs), (
+            f"call sites {calls} do not match clone definitions {set(defs)}"
+        )
+
+    def test_nested_generic_call_ret_type_lookup_uses_shared_mangler(
+        self,
+    ) -> None:
+        """Nested generic calls need the shared mangler at ALL THREE sites.
+
+        ``unwrap_second(true, unwrap_second(false, 42))``: to bind the
+        outer call's ``U``, `_infer_vera_type` looks up the INNER call's
+        return type in the clone registry (``_fn_ret_types``), which is
+        keyed by the names Pass 1.5 emitted.  This test pins the
+        invariant that the lookup key is built by the SAME mangler as
+        clone emission.  Pre-#775 the two sites only agreed by
+        coincidence: the lookup joined RAW type names with ``_``, which
+        happened to equal the old sanitizer's output for simple types
+        (while silently missing every parameterized instantiation).
+        Under the injective scheme the coincidence is gone — a reverted
+        lookup site desyncs even for ``(Bool, Int)``, ``U`` falls back
+        to the phantom-var default ``Bool``, and the outer call resolves
+        to an unregistered clone name — `main` is E602-dropped with
+        "call target 'unwrap_second$...' not registered".  (Mutation-
+        validated: re-breaking the lookup site flips exactly this test.)
+        """
+        source = """\
+private forall<T, U> fn unwrap_second(@T, @U -> @U)
+  requires(true) ensures(true) effects(pure)
+{
+  @U.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  unwrap_second(true, unwrap_second(false, 42))
+}
+"""
+        result = _compile_ok(source)
+        e602 = [
+            d for d in result.diagnostics
+            if d.error_code == "E602" and "'main'" in d.description
+        ]
+        assert not e602, (
+            f"main was dropped — the return-type-lookup mangling desynced "
+            f"from clone emission: {[d.description for d in e602]}"
+        )
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 42
+
+    def test_map_vs_flat_adt_collision_end_to_end(self) -> None:
+        """``g<Map<String, Int>>`` + ``g<Map_String_Int>`` coexist."""
+        source = """\
+private data Map_String_Int { MkMSI(Int) }
+
+private forall<T> fn pass_through(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+
+private fn msi_value(@Map_String_Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Map_String_Int.0 { MkMSI(@Int) -> @Int.0 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 3);
+  let @Map<String, Int> = pass_through(@Map<String, Int>.0);
+  msi_value(pass_through(MkMSI(39))) + map_size(@Map<String, Int>.0)
+}
+"""
+        # 39 + 1 = 40: the ADT instantiation must return the ADT payload
+        # and the Map instantiation must return the (usable) Map handle.
+        assert _run(source, fn="main") == 40

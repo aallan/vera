@@ -72,7 +72,7 @@ public fn use_collapsed(@Int, @Int -> @Int)
 }
 """,
     # Instantiates a PRELUDE generic (option_map).  Codegen emits
-    # option_map$Int_Int; the verifier must discover it via prelude injection.
+    # option_map$Int_JInt; the verifier must discover it via prelude injection.
     # This is the #1 parity risk — verify the verifier doesn't miss it.
     "prelude_option_map": """
 public fn use_option_map(@Int -> @Option<Int>)

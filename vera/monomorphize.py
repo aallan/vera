@@ -131,6 +131,38 @@ def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
     return name  # pragma: no cover — NamedType in, NamedType out
 
 
+def mangle_type_name(type_name: str) -> str:
+    """Escape a canonical Vera type name for embedding in a WAT identifier.
+
+    The ONE escape convention for type names in WAT symbols (#775): both the
+    structural-Eq helper namer (``$eq_<type>``, ``vera/wasm/operators.py``,
+    #773) and the mono-clone namer (:meth:`Monomorphizer._mangle_fn_name`)
+    delegate here, so the two naming families cannot drift apart.
+
+    Encoding: ``_`` doubles to ``__``; the type-grammar metacharacters get
+    distinct ``_X`` codes — ``<`` → ``_L``, ``>`` → ``_R``, ``, ``/``,`` →
+    ``_C``, `` `` → ``_S``.
+
+    Injectivity (over canonical type names, as produced by
+    :meth:`Monomorphizer._format_type_name`): the output is a concatenation
+    of code units, each either a single non-``_`` character (mapping to
+    itself) or a two-character code starting with ``_`` (``__``, ``_L``,
+    ``_R``, ``_C``, ``_S``).  A left-to-right scan decodes uniquely: at a
+    ``_`` consume two characters, otherwise one — a prefix code, so no two
+    inputs share an output.  (``A, B`` / ``A,B`` both encode to ``A_CB``,
+    but canonical names always spell the separator ``", "``, so only one
+    preimage exists in the domain.)  This kills the ``g<Map<String, Int>>``
+    vs ``g<Map_String_Int>`` collision class from #775: the former encodes
+    its brackets (``Map_LString_CInt_R``) while the flat ADT name doubles
+    its underscores (``Map__String__Int``).
+    """
+    return (
+        type_name.replace("_", "__")
+        .replace("<", "_L").replace(">", "_R")
+        .replace(", ", "_C").replace(",", "_C").replace(" ", "_S")
+    )
+
+
 # Builtin function name → Vera return type name.
 # Used by Monomorphizer._infer_fncall_vera_type_simple() to resolve opaque
 # handle types that all share the same WASM representation (i32) but are
@@ -686,7 +718,7 @@ class Monomorphizer:
           unsubstituted ``T``.  Without substitution, the downstream
           ``_infer_fn_alias_type_args`` matcher would bind alias-local
           names instead of concrete ones, producing mono suffixes
-          like ``option_map$T_T`` rather than ``option_map$Int_Int``
+          like ``option_map$T_JT`` rather than ``option_map$Int_JInt``
           (CR-4 on PR #659).
 
         Returns ``None`` for any other arg shape.  Used by
@@ -698,7 +730,7 @@ class Monomorphizer:
         was called with a ``SlotRef`` typed as an FnType alias instead
         of an inline ``AnonFn``, ``B`` failed to bind and defaulted to
         ``Bool`` (the phantom-var fallback in :meth:`_infer_type_args_from_call`),
-        producing the wrong mono suffix (``option_map$Int_Bool``) and
+        producing the wrong mono suffix (``option_map$Int_JBool``) and
         an ``indirect call type mismatch`` trap at runtime.
         """
         if isinstance(arg, ast.AnonFn):
@@ -829,15 +861,40 @@ class Monomorphizer:
         """Produce a mangled name for a monomorphized function.
 
         Example: identity + ("Int",) -> "identity$Int"
+        Example: swap + ("Int", "Bool") -> "swap$Int_JBool"
         Example: option_unwrap_or + ("Map<String, Int>",)
-                 -> "option_unwrap_or$Map_String_Int"
+                 -> "option_unwrap_or$Map_LString_CInt_R"
+
+        INJECTIVE over (name, type-arg vector), #775.  Each component is
+        escaped by :func:`mangle_type_name` (itself injective — see its
+        docstring) and the vector is joined with ``_J``.  ``_J`` can never
+        be *produced* by the escape: every ``_`` in escaped output starts
+        one of the codes ``__``/``_L``/``_R``/``_C``/``_S``, so during the
+        left-to-right decode a ``_J`` at a code boundary is unambiguously a
+        separator (a literal ``_J`` in a type name escapes to ``__J``,
+        whose leading ``__`` is consumed as one code first).  Splitting on
+        boundary-``_J`` therefore recovers the exact component vector, and
+        each component un-escapes uniquely — no two distinct instantiation
+        vectors share a symbol.  ``name`` never contains ``$`` (Vera
+        identifiers can't lex it), so the prefix splits off unambiguously
+        at the first ``$``.
+
+        Collision classes this kills (both produced duplicate WAT ``func``
+        identifiers pre-fix): parameterized built-in vs flat user ADT
+        (``g<Map<String, Int>>`` / ``g<Map_String_Int>`` both mangled to
+        ``g$Map_String_Int``) and multi-parameter joins across the ``_``
+        boundary (``g<A_B, C>`` / ``g<A, B_C>`` both ``g$A_B_C``).
+
+        Determinism: a pure string map of the (already canonical,
+        deterministically ordered) instantiation vector — stable across
+        runs and platforms.  DESIGN.md principle 1 (checkability: the
+        injectivity argument is mechanical, with no reliance on
+        bracket-balance properties of the inputs) and principle 3 (one
+        canonical form: one shared escape for every type name embedded in
+        a WAT symbol) drove the encoding choice.
         """
-        sanitized = []
-        for ct in concrete_types:
-            # Replace angle brackets and commas for WAT identifier safety
-            s = ct.replace("<", "_").replace(">", "").replace(", ", "_")
-            sanitized.append(s)
-        return f"{name}${'_'.join(sanitized)}"
+        suffix = "_J".join(mangle_type_name(ct) for ct in concrete_types)
+        return f"{name}${suffix}"
 
     def monomorphize_fn(
         self,

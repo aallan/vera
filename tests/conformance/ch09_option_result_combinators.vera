@@ -3,7 +3,7 @@
 -- Also pins the #604 fix: prelude combinators work when the closure
 -- arg is a `SlotRef` typed with an `FnType` alias (e.g. `@IntMap.0`),
 -- not just AnonFn literals.  Pre-fix this produced wrong mono
--- suffixes (`option_map$Int_Bool`) and trapped at runtime.
+-- suffixes (`option_map$Int_JBool`) and trapped at runtime.
 type IntMap = fn(Int -> Int) effects(pure);
 
 -- option_unwrap_or: Some returns inner value
@@ -53,8 +53,8 @@ public fn test_result_map(@Unit -> @Int)
 
 -- option_map called via SlotRef-typed-as-FnType-alias closure (#604).
 -- Helper takes the closure via `@IntMap` and applies the prelude
--- combinator.  Pre-#604-fix the mono suffix was wrong (Int_Bool)
--- and this trapped at runtime; post-fix the suffix is Int_Int and
+-- combinator.  Pre-#604-fix the mono suffix was wrong (Int_JBool)
+-- and this trapped at runtime; post-fix the suffix is Int_JInt and
 -- the call returns the mapped value.
 private fn map_with_slot_closure(@Option<Int>, @IntMap -> @Option<Int>)
   requires(true)

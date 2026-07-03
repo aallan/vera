@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.monomorphize import substitute_type_vars
+from vera.monomorphize import Monomorphizer, substitute_type_vars
 from vera.wasm.helpers import _element_wasm_type
 
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
@@ -1177,7 +1177,12 @@ class InferenceMixin:
                 if tv not in mapping:  # pragma: no cover
                     return None
                 parts.append(mapping[tv])
-            mangled = f"{call.name}${'_'.join(parts)}"
+            # Shared injective mangler (#775) — the registry below is keyed
+            # by the clone names Pass 1.5 emitted, so the lookup key must be
+            # built by the same encoding.  (The pre-#775 site joined RAW
+            # type names with "_", which additionally missed every
+            # parameterized instantiation like Map<String, Int>.)
+            mangled = Monomorphizer._mangle_fn_name(call.name, tuple(parts))
             # Look up WASM return type and map back
             ret_wt = self._fn_ret_types.get(mangled)
             if ret_wt == "i64":

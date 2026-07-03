@@ -344,14 +344,14 @@ class OperatorsMixin:
 
         Injective over the type-name grammar: ``<`` / ``>`` / ``,`` / space are
         distinct escapes so ``Box<Int>`` and a bare ADT literally named
-        ``Box_Int`` cannot collide.
+        ``Box_Int`` cannot collide.  Delegates to the shared
+        :func:`vera.monomorphize.mangle_type_name` escape (#775) — the same
+        convention mono-clone symbols use, so the two naming families stay
+        in lockstep.
         """
-        mangled = (
-            type_name.replace("_", "__")
-            .replace("<", "_L").replace(">", "_R")
-            .replace(", ", "_C").replace(",", "_C").replace(" ", "_S")
-        )
-        return f"$eq_{mangled}"
+        from vera.monomorphize import mangle_type_name
+
+        return f"$eq_{mangle_type_name(type_name)}"
 
     def _request_adt_eq_helper(self, type_name: str) -> str | None:
         """Ensure a ``$eq_<type>`` helper exists; return its function name.

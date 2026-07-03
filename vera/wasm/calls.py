@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.monomorphize import Monomorphizer
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv
 from vera.wasm.inference import substitute_type_vars
@@ -602,15 +603,19 @@ class CallsMixin:
         for param_te, arg in zip(param_types, call.args):
             self._unify_param_arg_wasm(param_te, arg, forall_vars, mapping)
 
-        # Build mangled name; default phantom vars to Unit
+        # Build mangled name; default phantom vars to Bool (i32 repr — Unit
+        # has no WASM representation), matching Monomorphizer's clone-side
+        # default so the symbol is identical.
+        # MUST produce the same symbol as clone emission, so delegate to
+        # the shared injective mangler (#775) instead of duplicating the
+        # encoding here — a drift means the call site references a symbol
+        # Pass 1.5 never emitted.
         parts = []
         for tv in forall_vars:
             if tv not in mapping:
                 mapping[tv] = "Bool"
-            # Sanitize parameterized type names for WAT identifiers
-            s = mapping[tv].replace("<", "_").replace(">", "").replace(", ", "_")
-            parts.append(s)
-        return f"{call.name}${'_'.join(parts)}"
+            parts.append(mapping[tv])
+        return Monomorphizer._mangle_fn_name(call.name, tuple(parts))
 
     def _unify_param_arg_wasm(
         self,
@@ -687,7 +692,7 @@ class CallsMixin:
         substituted into the alias body so the resolver returns the
         instantiated shape (CR-5 on PR #659).  Without substitution,
         ``_resolve_generic_call`` would mangle the call to a name like
-        ``$option_map$T_T`` that doesn't match the mono-clone names
+        ``$option_map$T_JT`` that doesn't match the mono-clone names
         Pass 1.5 registered.
         """
         if isinstance(arg, ast.AnonFn):

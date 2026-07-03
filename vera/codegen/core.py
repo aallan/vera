@@ -808,7 +808,7 @@ class CodeGenerator(
         #
         # This is audit recommendation 2 from the #604 investigation
         # comment.  Pre-fix, the warnings were the only signal that
-        # `option_map$Int_Bool`-shape mono-suffix bugs existed;
+        # `option_map$Int_JBool`-shape mono-suffix bugs existed;
         # post-fix (the mono-suffix bug in monomorphize.py is closed),
         # they're pure noise for the catalogued cases.
         # Why bare-name (vs `(module, name)`) keying is safe here —

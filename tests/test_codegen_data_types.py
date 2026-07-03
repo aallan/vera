@@ -1103,8 +1103,8 @@ class TestGenericMonoSuffixFromSlotRef604:
     FnType aliases skipped that path and left the closure's return
     type variable unbound.  The unbound type var fell to the
     ``"Bool"`` phantom-var fallback at result-building time, producing
-    mono suffixes like ``option_map$Int_Bool`` instead of
-    ``option_map$Int_Int`` and trapping at runtime with ``indirect
+    mono suffixes like ``option_map$Int_JBool`` instead of
+    ``option_map$Int_JInt`` and trapping at runtime with ``indirect
     call type mismatch``.
 
     Post-fix (this commit): both AnonFn literals AND SlotRef-typed-as-
@@ -1113,7 +1113,7 @@ class TestGenericMonoSuffixFromSlotRef604:
 
     Two tests below pin the contract:
 
-    1. ``option_map(opt, fn_alias_slot)`` produces ``option_map$Int_Int``
+    1. ``option_map(opt, fn_alias_slot)`` produces ``option_map$Int_JInt``
        and runs correctly (not a runtime trap).
     2. The template-only ``[E602]``/``[E604]`` warnings on the prelude
        generics are suppressed in programs that successfully call them
@@ -1138,10 +1138,10 @@ public fn main(@Unit -> @Int)
 
     def test_mono_suffix_correct_for_slotref_fn_alias_arg(self) -> None:
         """`option_map(opt, @Doubler.0)` where ``Doubler = fn(Int -> Int)``
-        produces a mono clone with suffix ``$Int_Int`` (not ``$Int_Bool``)
+        produces a mono clone with suffix ``$Int_JInt`` (not ``$Int_JBool``)
         and runs without trapping.
 
-        Pre-fix this produced ``option_map$Int_Bool`` and trapped at
+        Pre-fix this produced ``option_map$Int_JBool`` and trapped at
         runtime with ``wasm trap: indirect call type mismatch`` because
         the closure's i64 return mismatched the i32 (Bool) the wrongly-
         suffixed mono clone expected.
@@ -1157,23 +1157,23 @@ public fn main(@Unit -> @Int)
         # The compiled module should contain the correctly-suffixed
         # mono clone, not the wrongly-suffixed one.  Use
         # boundary-safe regex (CR-10 on PR #659) so longer variants
-        # like `$option_map$Int_Int_X` don't slip past as substrings
+        # like `$option_map$Int_JInt_JX` don't slip past as substrings
         # of the expected token.
         wat = result.wat or ""
-        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
+        assert re.search(r"\$option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
             f"Expected correctly-suffixed mono clone "
-            f"`$option_map$Int_Int` in WAT; got WAT containing "
+            f"`$option_map$Int_JInt` in WAT; got WAT containing "
             f"option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
-        assert not re.search(r"\$option_map\$Int_Bool(?![A-Za-z0-9_])", wat), (
-            "Wrong-suffix mono clone `$option_map$Int_Bool` "
+        assert not re.search(r"\$option_map\$Int_JBool(?![A-Za-z0-9_])", wat), (
+            "Wrong-suffix mono clone `$option_map$Int_JBool` "
             "should not appear post-#604 fix; found in WAT"
         )
         # F8 on PR #659 review — independently pin the WASM-side
         # call-site rewriter (`vera/wasm/calls.py::_resolve_arg_fn_shape_wasm`
         # + `_infer_fn_alias_type_args_wasm`).  The function
-        # definition `(func $option_map$Int_Int ...)` is emitted by
+        # definition `(func $option_map$Int_JInt ...)` is emitted by
         # the monomorphizer at Pass 1.5; the `call` instruction is
         # emitted later by the WASM call-site rewriter, which has
         # an independent SlotRef-FnType-alias resolution path.  A
@@ -1181,14 +1181,14 @@ public fn main(@Unit -> @Int)
         # the rewriter mangles the call to a different name would
         # pass the function-definition assertion above but fail at
         # WASM validation with `unknown function $option_map$<wrong>`.
-        # Assert both names match by counting `call $option_map$Int_Int`
-        # (or `return_call $option_map$Int_Int`) occurrences.
+        # Assert both names match by counting `call $option_map$Int_JInt`
+        # (or `return_call $option_map$Int_JInt`) occurrences.
         call_pattern = (
-            r"(?:^|\s)(?:return_)?call\s+\$option_map\$Int_Int"
+            r"(?:^|\s)(?:return_)?call\s+\$option_map\$Int_JInt"
             r"(?![A-Za-z0-9_])"
         )
         assert re.search(call_pattern, wat, re.MULTILINE), (
-            f"Expected a `call $option_map$Int_Int` (or "
+            f"Expected a `call $option_map$Int_JInt` (or "
             f"`return_call`) instruction in WAT — without it the "
             f"call-site rewriter's mangled name doesn't match the "
             f"mono clone's definition.  Got option_map references: "
@@ -1215,8 +1215,8 @@ public fn main(@Unit -> @Int)
         ``fn(T -> T)`` and the downstream
         ``_infer_fn_alias_type_args`` matcher bound alias-local names
         (``A → T``, ``B → T``) instead of concrete ones.  The mono
-        suffix would have been ``option_map$T_T`` rather than
-        ``option_map$Int_Int`` — wrong shape, wouldn't match the
+        suffix would have been ``option_map$T_JT`` rather than
+        ``option_map$Int_JInt`` — wrong shape, wouldn't match the
         clone Pass 1.5 registered, runtime trap.
         """
         src = """
@@ -1237,8 +1237,8 @@ public fn main(@Unit -> @Int)
         result = _compile_ok(src)
         wat = result.wat or ""
         # Boundary-safe regex (CR-10 on PR #659) — see sibling test.
-        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
-            f"Expected `$option_map$Int_Int` from parameterised "
+        assert re.search(r"\$option_map\$Int_JInt(?![A-Za-z0-9_])", wat), (
+            f"Expected `$option_map$Int_JInt` from parameterised "
             f"alias `Mapper<Int>`; got option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
@@ -1247,9 +1247,9 @@ public fn main(@Unit -> @Int)
         # one.  A bug that produced both (e.g. partial substitution
         # leaking the raw alias body into a second registration) would
         # otherwise slip past the positive assertion.
-        assert not re.search(r"\$option_map\$T_T(?![A-Za-z0-9_])", wat), (
+        assert not re.search(r"\$option_map\$T_JT(?![A-Za-z0-9_])", wat), (
             "Unsubstituted parameterised-alias clone "
-            "`$option_map$T_T` should not appear after the "
+            "`$option_map$T_JT` should not appear after the "
             "`T → Int` substitution fix; found in WAT"
         )
         # Runtime pin — `Some(7) * 3 = 21`.

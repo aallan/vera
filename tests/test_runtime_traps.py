@@ -787,7 +787,7 @@ class TestResolveTrapFrames516:
         """`identity$Int` looks up `identity` after the rightmost `$`.
 
         Generic monomorphization mangles names like
-        ``identity$Map_String_Int``; the source map only stores the
+        ``identity$Map_LString_CInt_R``; the source map only stores the
         original generic.  The resolver strips at the rightmost ``$``
         and retries.
         """

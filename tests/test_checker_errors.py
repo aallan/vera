@@ -244,7 +244,7 @@ private fn wrap(@Int -> @Wrapper<Int>)
         Pre-fix the checker silently accepted this and the `zip`
         in `_resolve_type` truncated, leaving the alias body's
         `B` unsubstituted.  Downstream codegen leaked literal
-        `B` into mono suffixes (`option_map$Int_B`) → runtime
+        `B` into mono suffixes (`option_map$Int_JB`) → runtime
         `call_indirect` trap.  Post-fix the checker rejects with
         `[E133]` ("Type alias arity mismatch") at compile time.
 
