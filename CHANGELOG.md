@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A call's precondition is now statically checked (`E501`) even when the call sits inside an effect-operation argument** (e.g. `IO.print(need_pos(...))`) ([#776](https://github.com/aallan/vera/issues/776)).  `translate_expr` (`vera/smt.py`) had no `QualifiedCall` branch, so an effect op (`Module.op(args)`) fell through to `return None` **without** recursing into its arguments — a precondition-bearing call passed as an argument was never visited, and no `E501` fired for a violated `requires(...)`.  A `QualifiedCall` branch now walks each argument via `translate_expr` purely for the `E501` precondition side effect (the `#727` span-keyed dedup keeps it duplicate-free) and returns `None` — the effect op itself is still not Z3-translated, since translating an effect in a contract would be unsound.  Mirrors the `#730` statement-position (`ExprStmt`) handling.
+
 ## [0.1.0] - 2026-07-04
 
 ### Fixed

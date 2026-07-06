@@ -519,6 +519,44 @@ class TestObligationKinds:
         ]
         assert len(call_pres) == 1
 
+    def test_precondition_checked_inside_effect_op_argument(self) -> None:
+        """A precondition-bearing call nested inside an effect-op
+        argument (e.g. IO.print(need_pos(...))) must still be checked:
+        the QualifiedCall is untranslatable (effects violate purity) but
+        its args are walked for the E501 side effect (#776).  Pre-fix the
+        QualifiedCall fell through to `return None` without recursing, so
+        the nested call's requires(...) was never checked.
+        """
+        source = (
+            "effect IO {\n"
+            "  op print(String -> Unit);\n"
+            "}\n"
+            "\n"
+            "private fn need_pos(@Nat -> @String)\n"
+            "  requires(@Nat.0 >= 1)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            '  "ok"\n'
+            "}\n"
+            "\n"
+            "public fn caller(@Nat -> @Unit)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(<IO>)\n"
+            "{\n"
+            "  IO.print(need_pos(@Nat.0));\n"
+            "  ()\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 1, e501s
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert len(call_pres) == 1
+
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS
         is visited by THREE translation passes (body, walker env

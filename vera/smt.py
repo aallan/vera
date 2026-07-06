@@ -851,6 +851,9 @@ class SmtContext:
         #   MatchExpr         → arm dispatch
         #   ConstructorCall   → ADT constructor application
         #   NullaryConstructor → ADT nullary tag
+        #   QualifiedCall     → effect op; NOT Z3-translated (returns None),
+        #                       but its args are walked for the E501
+        #                       precondition side effect (#776)
         #   IndexExpr         → uninterpreted `index_<sort>(arr, i)`
         #                       function call (#667)
         #   ArrayLit          → fresh Array constant with asserted
@@ -870,7 +873,6 @@ class SmtContext:
         #
         # Cannot occur (rejected at check time or not in contracts):
         #   InterpolatedString → not in contract predicates
-        #   QualifiedCall     → effects in contracts violate purity
         #   HoleExpr          → check time rejects
         """
         if isinstance(expr, ast.IntLit):
@@ -957,6 +959,19 @@ class SmtContext:
 
         if isinstance(expr, ast.ConstructorCall):
             return self._translate_ctor_call(expr, env)
+
+        if isinstance(expr, ast.QualifiedCall):
+            # #776: an effect op (e.g. IO.print(...)) is itself untranslatable
+            # (effects in contracts violate purity — Z3-translating it would be
+            # unsound), but its ARGUMENTS may contain a call whose precondition
+            # must still be statically checked (E501).  Mirror the #730 ExprStmt
+            # handling: walk each arg purely for the precondition side effect,
+            # dropping the value, then return None so the effect op itself never
+            # becomes a Z3 term.  The #727 span-keyed dedup keeps re-translation
+            # duplicate-free.
+            for arg in expr.args:
+                self.translate_expr(arg, env)
+            return None
 
         # Unsupported: handle, lambdas, quantifiers,
         # old/new, assert/assume, etc.
