@@ -284,6 +284,149 @@ class TestPlumbingSkip:
         assert mod.check_source(src, "vera/codegen/core.py") == []
 
 
+class TestPlumbingSkipNarrowed:
+    """#827: the plumbing-skip must key on the helper's *own* single
+    return/append construction, not on the helper's NAME.  A stray/second
+    ``Diagnostic(...)`` inside an ``_error``/``_warning`` helper — the exact
+    shape below, straight from the #826 adversarial review — must still be
+    inspected by BOTH passes.  Faults A and B are deliberately ``return``
+    ctors (a naive "skip return/append child" rule would swallow them), while
+    the legit fully-tagged construction is a distractor bound to ``d``."""
+
+    # Two faults inside a helper: A (return, missing `rationale`) and B
+    # (return, spec_ref cites a real section under a WRONG title).  §4.3 IS
+    # "Slot References", so the first two spec_refs resolve; only B's is bogus.
+    SOURCE = (
+        "class Compiler:\n"
+        "    def _error(self, node, description):\n"
+        "        d = Diagnostic(description=description, rationale='r', fix='f',\n"
+        "                       spec_ref='Chapter 4, Section 4.3 \"Slot References\"')\n"
+        "        if node is None:\n"
+        "            # Fault A: real diagnostic missing `rationale`\n"
+        "            return Diagnostic(description='real bug', fix='f',\n"
+        "                              spec_ref='Chapter 4, Section 4.3 \"Slot References\"')\n"
+        "        # Fault B: real diagnostic with a WRONG spec_ref title\n"
+        "        return Diagnostic(description='real bug', rationale='r', fix='f',\n"
+        "                          spec_ref='Chapter 4, Section 4.3 \"Made Up Title\"')\n"
+    )
+    # The same body under a name that never triggered the skip — the maintainer's
+    # control: it always flagged both, so equal output here proves it was the
+    # name-based skip, not the checks, that swallowed the faults.
+    CONTROL = SOURCE.replace("def _error", "def _normal")
+
+    def test_stray_presence_fault_flagged(self, mod: object) -> None:
+        v = mod.check_source(self.SOURCE, "x.py")
+        # Only Fault A (the missing-`rationale` return ctor) — the legit
+        # `d = Diagnostic(...)` and Fault B (fully present) stay clean here.
+        assert len(v) == 1
+        assert v[0].missing == ["rationale"] and "real bug" in (v[0].snippet or "")
+
+    def test_stray_spec_ref_fault_flagged(
+        self, mod: object, tmp_path: Path) -> None:
+        # Self-contained: pin §4.3's title in an inline fixture spec so the
+        # assertion can't break on a live-spec re-title (greptile P2).  The
+        # legit ctor + Fault A cite §4.3 correctly (resolve); only Fault B cites
+        # it under a WRONG title, so exactly one violation is expected.
+        spec_dir = tmp_path / "spec"
+        spec_dir.mkdir()
+        (spec_dir / "04-x.md").write_text(
+            "# Chapter 4: Expressions\n\n### 4.3 Slot References\n",
+            encoding="utf-8")
+        v = mod.spec_ref_violations_in_source(
+            self.SOURCE, "x.py", spec_dir=spec_dir)
+        assert len(v) == 1 and "Slot References" in v[0].missing[0]
+        assert "Made Up Title" in (v[0].snippet or "")
+
+    def test_matches_non_helper_control(self, mod: object) -> None:
+        # The narrowed skip makes the _error span behave like a plain function.
+        pres_h = mod.check_source(self.SOURCE, "x.py")
+        pres_n = mod.check_source(self.CONTROL, "x.py")
+        ref_h = mod.spec_ref_violations_in_source(self.SOURCE, "x.py")
+        ref_n = mod.spec_ref_violations_in_source(self.CONTROL, "x.py")
+        assert [(x.line, x.missing) for x in pres_h] == \
+               [(x.line, x.missing) for x in pres_n]
+        assert [(x.line, x.missing) for x in ref_h] == \
+               [(x.line, x.missing) for x in ref_n]
+
+    def test_sole_plumbing_ctor_still_skipped(self, mod: object) -> None:
+        # Guard against over-correction: a real one-ctor helper (append arg with
+        # a threaded, unresolvable spec_ref) must remain skipped by both passes.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', spec_ref=''):\n"
+            "        self.errors.append(Diagnostic(\n"
+            "            description=description, location=loc,\n"
+            "            rationale=rationale, fix='f', spec_ref=spec_ref))\n"
+        )
+        assert mod.check_source(src, "vera/checker/core.py") == []
+        assert mod.spec_ref_violations_in_source(src, "vera/checker/core.py") == []
+
+
+class TestPlumbingSkipRequiresMethod:
+    """#827 review (codeant): the plumbing-skip keyed on the function NAME, so a
+    NON-helper *module-level* function coincidentally named ``_error`` /
+    ``_warning`` with a single returned/appended ``Diagnostic(...)`` was silently
+    skipped — re-opening the under-reporting path this gate closes.  The skip now
+    also requires a genuine helper *method* (``self`` receiver): every real
+    ``_error`` / ``_warning`` helper (codegen/checker/verifier) is a method, so a
+    module-level look-alike is inspected, not exempted."""
+
+    def test_module_level_error_lookalike_is_flagged(self, mod: object) -> None:
+        # codeant's exact repro: a module-level `_error` returning an incomplete
+        # Diagnostic must NOT be exempted just because it's named `_error`.
+        src = (
+            "def _error(node, description):\n"
+            "    return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        assert "Diagnostic(" in (v[0].snippet or "")
+
+    def test_module_level_warning_lookalike_is_flagged(self, mod: object) -> None:
+        # Same for a module-level `_warning` (warnings are fix-exempt, so the
+        # missing set is rationale + spec_ref).
+        src = (
+            "def _warning(node, description):\n"
+            "    return Diagnostic(description=description, severity='warning')\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "spec_ref"}
+
+    def test_nested_scope_ctor_not_attributed_to_helper(self, mod: object) -> None:
+        # PR #2 review (gemini/greptile): a Diagnostic in a NESTED def inside the
+        # helper must NOT be counted among the helper's own ctors — else the
+        # helper looks ambiguous (2 ctors) and its OWN legit plumbing ctor gets
+        # wrongly inspected.  This codegen helper's own append omits fix/spec_ref
+        # (legit: the codegen E699 structural exemption), and the nested return
+        # is fully tagged.  With the old `ast.walk`, the nested return pushed the
+        # count to 2, un-skipped the outer ctor, and FALSELY flagged it for the
+        # missing fix/spec_ref — so this assertion goes RED without the fix.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', error_code=''):\n"
+            "        def _inner():\n"
+            "            return Diagnostic(description='nested', rationale='r',\n"
+            "                              fix='f', spec_ref='Ch1')\n"
+            "        self.diagnostics.append(Diagnostic(description=description,\n"
+            "            rationale=rationale, error_code=error_code))\n"
+        )
+        assert mod.check_source(src, "vera/codegen/core.py") == []
+
+    def test_real_helper_method_still_skipped(self, mod: object) -> None:
+        # The contrast case: a genuine helper *method* (self receiver) threading
+        # its fields from params is still plumbing and stays skipped.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        return Diagnostic(description=description, rationale=rationale,\n"
+            "                          fix=fix, spec_ref=spec_ref)\n"
+        )
+        assert mod.check_source(src, "vera/checker/core.py") == []
+
+
 # =====================================================================
 # spec_ref validity: a present spec_ref must cite a real spec section
 # =====================================================================
