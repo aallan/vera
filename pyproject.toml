@@ -35,7 +35,7 @@ dependencies = [
     # `execute()` depends on the raw re-raise; do not lower this pin
     # without restoring the per-host-import `_VeraExit(130)` guards
     # removed in #599.
-    "wasmtime>=45.0.0",
+    "wasmtime>=46.0.1",
 ]
 
 [project.urls]
