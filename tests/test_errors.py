@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html as html_mod
+import json
 import re
 from pathlib import Path
 
@@ -27,6 +28,8 @@ ROOT = Path(__file__).parent.parent
 README = ROOT / "README.md"
 INDEX_HTML = ROOT / "docs" / "index.html"
 SPEC_INTRO = ROOT / "spec" / "00-introduction.md"
+BUILD_SITE = ROOT / "scripts" / "build_site.py"
+AGENTS = ROOT / "AGENTS.md"
 
 
 class TestDiagnosticFormat:
@@ -363,6 +366,37 @@ def _extract_spec_error_block() -> str:
     return "\n".join(block_lines)
 
 
+def _extract_build_site_error_block() -> str:
+    """Extract the rendered E001 example block from scripts/build_site.py.
+
+    The block is embedded in a Python f-string that generates docs/index.md,
+    so literal braces are doubled ({{ / }}); un-double them to recover the
+    rendered plaintext the way docs/index.md sees it.
+    """
+    text = BUILD_SITE.read_text(encoding="utf-8")
+    # Anchor the block end on the closing code fence, not the spec_ref text.
+    # Anchoring on the spec_ref value would make extraction fail opaquely if
+    # build_site.py's spec_ref ever drifts, hiding the precise mismatch that
+    # test_build_site_has_spec_ref is meant to surface.
+    match = re.search(r"\[E001\] Error at.*?\n```", text, re.DOTALL)
+    assert match, "Could not find E001 error block in scripts/build_site.py"
+    return match.group(0).replace("{{", "{").replace("}}", "}")
+
+
+def _extract_agents_diagnostic() -> dict[str, object]:
+    """Extract the E001 diagnostic dict from AGENTS.md's example --json block."""
+    text = AGENTS.read_text(encoding="utf-8")
+    for block in re.findall(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL):
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        for diag in payload.get("diagnostics", []):
+            if diag.get("error_code") == "E001":
+                return diag
+    raise AssertionError("Could not find E001 JSON diagnostic in AGENTS.md")
+
+
 def _normalize_ws(text: str) -> str:
     """Collapse all whitespace sequences to single spaces."""
     return " ".join(text.split())
@@ -523,3 +557,65 @@ class TestErrorDisplaySync:
         assert re.search(
             r"\[E001\] Error at .+, line \d+, column \d+:", block
         ), "Spec error block header doesn't match expected format"
+
+    # -- scripts/build_site.py (generates docs/index.md) ------------------
+
+    def test_build_site_has_error_code(self, canonical: Diagnostic) -> None:
+        block = _extract_build_site_error_block()
+        assert f"[{canonical.error_code}]" in block
+
+    def test_build_site_has_description(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_build_site_error_block())
+        expected = _normalize_ws(canonical.description)
+        assert expected in block, (
+            f"build_site.py error block is missing the canonical description.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_build_site_has_rationale(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_build_site_error_block())
+        expected = _normalize_ws(canonical.rationale)
+        assert expected in block, (
+            f"build_site.py error block is missing the canonical rationale.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_build_site_has_fix(self, canonical: Diagnostic) -> None:
+        block = _extract_build_site_error_block()
+        for line in canonical.fix.splitlines():
+            stripped = line.strip()
+            if stripped:
+                assert stripped in block, (
+                    f"build_site.py error block is missing fix line: {stripped!r}"
+                )
+
+    def test_build_site_has_spec_ref(self, canonical: Diagnostic) -> None:
+        block = _extract_build_site_error_block()
+        assert canonical.spec_ref in block, (
+            f"build_site.py error block is missing the canonical spec ref.\n"
+            f"Expected: {canonical.spec_ref!r}"
+        )
+
+    def test_build_site_has_header_format(self, canonical: Diagnostic) -> None:
+        """The build_site header should follow the [CODE] Error at FILE, line N format."""
+        block = _extract_build_site_error_block()
+        assert re.search(
+            r"\[E001\] Error at .+, line \d+, column \d+:", block
+        ), "build_site.py error block header doesn't match expected format"
+
+    # -- AGENTS.md (embedded example --json block) ------------------------
+    # description/rationale are ellipsis-truncated in the example JSON and the
+    # other fields are JSON-escaped, so only error_code and spec_ref appear
+    # verbatim.  spec_ref is exactly the field #826 drifted, which this guards.
+
+    def test_agents_has_error_code(self, canonical: Diagnostic) -> None:
+        diag = _extract_agents_diagnostic()
+        assert diag.get("error_code") == canonical.error_code
+
+    def test_agents_has_spec_ref(self, canonical: Diagnostic) -> None:
+        diag = _extract_agents_diagnostic()
+        assert diag.get("spec_ref") == canonical.spec_ref, (
+            f"AGENTS.md example JSON is missing the canonical spec ref.\n"
+            f"Expected: {canonical.spec_ref!r}\n"
+            f"Got:      {diag.get('spec_ref')!r}"
+        )
