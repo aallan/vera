@@ -557,6 +557,88 @@ class TestObligationKinds:
         ]
         assert len(call_pres) == 1
 
+    def test_precondition_checked_in_every_effect_op_argument(self) -> None:
+        """EVERY argument of an effect op is walked, not just the first.
+
+        The single-argument `IO.print(need_pos(...))` case above stays green if
+        the loop is degraded to `self.translate_expr(expr.args[0], env)`, so it
+        cannot pin the iteration.  Two violating calls in one argument list must
+        raise two independent `call_pre` obligations (#776).
+        """
+        source = (
+            "effect IO {\n"
+            "  op log(String, String -> Unit);\n"
+            "}\n"
+            "\n"
+            "private fn need_pos(@Nat -> @String)\n"
+            "  requires(@Nat.0 >= 1)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            '  "ok"\n'
+            "}\n"
+            "\n"
+            "public fn caller(@Nat, @Nat -> @Unit)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(<IO>)\n"
+            "{\n"
+            "  IO.log(need_pos(@Nat.1), need_pos(@Nat.0));\n"
+            "  ()\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 2, e501s
+        # Distinct call sites, not one obligation reported twice.
+        assert len({d.location.column for d in e501s}) == 2, e501s
+        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
+        assert len(call_pres) == 2
+        assert all(o.status == "violated" for o in call_pres), call_pres
+
+    def test_effect_op_never_becomes_a_z3_term(self) -> None:
+        """`translate_expr` must return None for a `QualifiedCall`.
+
+        Walking the arguments is a *side effect*; the effect operation's own
+        value is chosen by the handler at run time and is not a pure term, so it
+        must never enter the solver.  Returning an argument's term instead
+        (`return last`) is UNSOUND, and nothing else in the suite notices:
+
+            effect Counter { op bump(Int -> Int); }
+            public fn echo_bump(@Int -> @Int)
+              ensures(@Int.result == @Int.0) effects(<Counter>)
+            { Counter.bump(@Int.0) }
+
+        With `return None` the postcondition is not entailed and degrades to a
+        Tier-3 runtime check.  With `return last` the body translates to
+        `@Int.0`, the postcondition proves at Tier 1, and **no** runtime check is
+        emitted — so a handler returning anything else violates the contract
+        silently.  Mutating `return None` -> `return last` moves this obligation
+        from `tier3` to `verified` and leaves all 371 other tests green
+        (PR #953 review).
+        """
+        source = (
+            "effect Counter {\n"
+            "  op bump(Int -> Int);\n"
+            "}\n"
+            "\n"
+            "public fn echo_bump(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result == @Int.0)\n"
+            "  effects(<Counter>)\n"
+            "{\n"
+            "  Counter.bump(@Int.0)\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        posts = [o for o in result.obligations if o.kind == "ensures"]
+        assert len(posts) == 1, posts
+        assert posts[0].status == "tier3", (
+            "the effect op's result is the handler's choice — proving "
+            "`@Int.result == @Int.0` at Tier 1 would delete the runtime guard; "
+            f"got status={posts[0].status!r}"
+        )
+
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS
         is visited by THREE translation passes (body, walker env
