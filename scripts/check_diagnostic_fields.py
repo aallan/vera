@@ -54,7 +54,9 @@ convenience"; no silently-inferred exemptions):
   helper holding two constructions is ambiguous: neither is skipped, and both
   are inspected.  Counting *every* own-scope construction (not just the one
   structurally ``return``ed or ``.append(...)``-ed) is what makes (b) sound —
-  see ``_own_scope_diag_ctors``.
+  see ``_own_scope_diag_ctors``.  "Own scope" is the helper's **body**:
+  decorators, parameter defaults and annotations evaluate in the *enclosing*
+  scope, so a ``Diagnostic(...)`` there is inspected, never elected.
 
 Usage:
     python scripts/check_diagnostic_fields.py   # exit 0 if all sites
@@ -155,15 +157,28 @@ def _is_diag_ctor(node: ast.AST | None) -> bool:
             and node.func.id == "Diagnostic")
 
 
-def _walk_own_scope(fn: ast.AST) -> Iterator[ast.AST]:
-    """Yield every node in ``fn``'s body WITHOUT descending into nested
-    function / lambda / class scopes.  ``ast.walk`` would cross those
-    boundaries, so a ``Diagnostic(...)`` inside a nested ``def`` / ``lambda``
-    within the helper would be wrongly attributed to the *outer* helper —
-    either miscounting the helper as ambiguous (>1 ctor) or exempting a ctor
-    that belongs to the inner scope.  A ctor in a nested scope is that scope's
-    concern, governed by its own rules."""
-    stack: list[ast.AST] = list(ast.iter_child_nodes(fn))
+def _walk_own_scope(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+    """Yield every node in ``fn``'s BODY without descending into nested
+    function / lambda / class scopes.
+
+    Two boundaries matter, and both are load-bearing:
+
+    - **Downward:** ``ast.walk`` would cross into nested ``def`` / ``lambda`` /
+      ``class`` bodies, so a ``Diagnostic(...)`` there would be wrongly
+      attributed to the *outer* helper — either miscounting the helper as
+      ambiguous (>1 ctor) or exempting a ctor that belongs to the inner scope.
+    - **Sideways:** the seed is ``fn.body``, NOT ``ast.iter_child_nodes(fn)``.
+      For a ``FunctionDef`` the latter also yields ``decorator_list``, the
+      ``arguments`` node (carrying default-value expressions) and the ``returns``
+      annotation — all of which are evaluated in the *enclosing* scope, not the
+      helper's.  Sweeping them in let a ``Diagnostic(...)`` written as a
+      decorator argument (``@memo(fallback=Diagnostic(...))``) or a parameter
+      default be counted as the helper's own construction; where the helper had
+      no body ctor it then became the *sole* candidate, was elected as the
+      helper's plumbing, and was skipped by all three passes — an under-tagged
+      diagnostic escaping the gate (PR #952 review).
+    """
+    stack: list[ast.AST] = list(fn.body)
     while stack:
         node = stack.pop()
         yield node
@@ -175,10 +190,13 @@ def _walk_own_scope(fn: ast.AST) -> Iterator[ast.AST]:
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _own_scope_diag_ctors(fn: ast.AST) -> list[ast.Call]:
-    """Every ``Diagnostic(...)`` constructed in ``fn``'s OWN scope (nested
-    ``def`` / ``lambda`` / ``class`` bodies excluded — a ctor there is that
-    scope's concern).
+def _own_scope_diag_ctors(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.Call]:
+    """Every ``Diagnostic(...)`` constructed in ``fn``'s OWN scope — its body,
+    excluding nested ``def`` / ``lambda`` / ``class`` bodies (a ctor there is
+    that scope's concern) and excluding decorators / parameter defaults /
+    annotations (those evaluate in the enclosing scope; see ``_walk_own_scope``).
 
     Counts *every* construction, deliberately — not only the one structurally
     ``return``ed or ``.append(...)``-ed.  #827's fault class is a **stray** ctor

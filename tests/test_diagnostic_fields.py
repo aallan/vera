@@ -444,6 +444,27 @@ class TestPlumbingSkipRequiresMethod:
         assert len(v) == 1
         assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
 
+    def test_def_nested_inside_a_method_is_not_a_class_member(self, mod: object) -> None:
+        # `_class_scoped_functions` elects only *direct* members of a class body.
+        # A `def _error(self, ...)` nested inside a method is a local function,
+        # not a bound method, so it is inspected — even though it is lexically
+        # inside the `class` statement and names its first parameter `self`.
+        #
+        # Pins the scoping: relaxing the election to `ast.walk(class_node)` (the
+        # natural-looking widening) makes this nested def a "class member", elects
+        # its ctor as plumbing, and lets an under-tagged Diagnostic through — a
+        # mutant that survived the rest of the suite (PR #952 review).
+        src = (
+            "class C:\n"
+            "    def check(self, node):\n"
+            "        def _error(self, description):\n"
+            "            return Diagnostic(description=description)\n"
+            "        return _error(self, 'd')\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
 
 class TestPlumbingSkipCountsEveryOwnScopeCtor:
     """The ambiguity guard counts **every** ``Diagnostic(...)`` in the helper's
@@ -542,6 +563,83 @@ class TestPlumbingSkipCountsEveryOwnScopeCtor:
         f = "vera/checker/core.py"
         assert mod.check_source(src, f) == []
         assert mod.spec_ref_violations_in_source(src, f) == []
+
+
+class TestOwnScopeExcludesEnclosingScopeExpressions:
+    """"Own scope" means the helper's ``body`` — not everything hanging off its
+    ``FunctionDef`` node.
+
+    ``ast.iter_child_nodes(fn)`` also yields ``decorator_list``, the ``arguments``
+    node (carrying parameter defaults) and the ``returns`` annotation.  All three
+    are evaluated in the *enclosing* scope, so a ``Diagnostic(...)`` written there
+    is not the helper's plumbing.  Seeding the walk from ``iter_child_nodes``
+    swept them in, and where the helper had **no body ctor** the intruder became
+    the *sole* candidate — elected as the helper's plumbing and skipped by all
+    three passes.  An under-tagged diagnostic then escaped the gate entirely
+    (PR #952 review; ``main`` and the pre-fix PR both caught these shapes).
+
+    The escape was invisible to the whole-``vera/`` exempt-set differential,
+    because no real helper is decorated with a ``Diagnostic``-bearing decorator.
+    A gate must be probed with the code it will one day see, not only the code
+    it sees today.
+    """
+
+    F = "vera/checker/core.py"
+    GOOD_REF = 'Chapter 4, Section 4.3 "Slot References"'
+
+    def test_decorator_arg_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # A decorator expression runs in the CLASS BODY, before `_error` exists.
+        # Its Diagnostic must be inspected, never elected as the helper's own.
+        src = (
+            "class C:\n"
+            "    @memo(fallback=Diagnostic(description='in a decorator'))\n"
+            "    def _error(self, node, description):\n"
+            "        self.errors.append(self._build(description))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        assert "@memo(" in (v[0].snippet or "")
+
+    def test_param_default_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # Parameter defaults are evaluated once, at def time, in the enclosing
+        # scope — same argument as the decorator.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, tpl=Diagnostic(description='in a default')):\n"
+            "        self.errors.append(self._build(tpl))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_return_annotation_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # `returns` is likewise an enclosing-scope expression node.
+        src = (
+            "class C:\n"
+            "    def _error(self, node) -> Diagnostic(description='in an annotation'):\n"
+            "        self.errors.append(self._build(node))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_decorated_helper_still_skips_its_real_plumbing_ctor(self, mod: object) -> None:
+        # The other direction: a decorator ctor must not inflate the count and
+        # un-skip the helper's genuine, threaded plumbing construction.  Here the
+        # decorator's Diagnostic is fully tagged, so the only way this can report
+        # a violation is if the body ctor was wrongly inspected.
+        src = (
+            "class C:\n"
+            "    @memo(fallback=Diagnostic(description='d', rationale='r', fix='f',\n"
+            f"                              spec_ref='{self.GOOD_REF}'))\n"
+            "    def _error(self, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        self.errors.append(Diagnostic(description=description,\n"
+            "            rationale=rationale, fix=fix, spec_ref=spec_ref))\n"
+        )
+        assert mod.check_source(src, self.F) == []
+        assert mod.spec_ref_violations_in_source(src, self.F) == []
 
 
 class TestSkipWiringPinnedInAllThreePasses:
