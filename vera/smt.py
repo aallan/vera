@@ -965,12 +965,42 @@ class SmtContext:
             # (effects in contracts violate purity — Z3-translating it would be
             # unsound), but its ARGUMENTS may contain a call whose precondition
             # must still be statically checked (E501).  Mirror the #730 ExprStmt
-            # handling: walk each arg purely for the precondition side effect,
-            # dropping the value, then return None so the effect op itself never
-            # becomes a Z3 term.  The #727 span-keyed dedup keeps re-translation
+            # handling: walk each arg for the precondition side effect, dropping
+            # the value, then return None so the effect op itself never becomes a
+            # Z3 term.  The #727 span-keyed dedup keeps re-translation
             # duplicate-free.
-            for arg in expr.args:
-                self.translate_expr(arg, env)
+            #
+            # The walk runs inside `solver.push()` / `pop()`, and that scoping is
+            # load-bearing, not tidiness.  Translating a `FnCall` argument does
+            # more than record its E501: `_translate_call_with_info` ASSUMES the
+            # callee's `ensures` via a bare `self.solver.add(z3_post)`, which
+            # lands on the solver's BASE assertion stack.  `_path_conditions` are
+            # folded in by `check_valid` around the *goal* only, so an assumed
+            # postcondition otherwise escapes the `if` branch it was translated
+            # under and becomes an unconditional fact about the CALLER's slots
+            # (`_build_callee_env` binds the callee's params to the caller's
+            # terms).  It is even circular: `dec5 requires(@Nat.0 >= 5)
+            # ensures(@Nat.result == @Nat.0 - 5)` injects `ret == @Nat.0 - 5`,
+            # which with `@Nat`'s implicit `ret >= 0` entails `@Nat.0 >= 5` — the
+            # very precondition that licensed the assumption.  A caller's false
+            # `ensures(@Nat.0 >= 5)` then proves at Tier 1, no runtime check is
+            # emitted, and `vera run` violates the contract.
+            #
+            # Push/pop keeps the assumption scoped to the argument expression
+            # that earned it (so a nested `show(mag(x))` still discharges `show`'s
+            # precondition from `mag`'s postcondition) while discarding it before
+            # the caller's own obligations are checked.  Obligations and
+            # diagnostics are recorded in Python state, so `pop()` cannot erase
+            # them.  Discarding a fact can only make a later goal *less* provable
+            # — the fail-closed direction.  (PR #953 review.  The same unguarded
+            # assumption is reachable on `main` through the #730 statement-position
+            # walk and is tracked separately; this branch must not widen it.)
+            self.solver.push()
+            try:
+                for arg in expr.args:
+                    self.translate_expr(arg, env)
+            finally:
+                self.solver.pop()
             return None
 
         # Unsupported: handle, lambdas, quantifiers,

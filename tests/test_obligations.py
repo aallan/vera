@@ -639,6 +639,73 @@ class TestObligationKinds:
             f"got status={posts[0].status!r}"
         )
 
+    def test_effect_op_arg_assumption_does_not_escape_its_branch(self) -> None:
+        """A callee postcondition assumed while walking an effect-op argument
+        must not leak out of the `if` branch it was translated under.
+
+        `_translate_call_with_info` assumes the callee's `ensures` with a bare
+        `self.solver.add(z3_post)`, which lands on the solver's BASE assertion
+        stack.  `check_valid` folds `_path_conditions` around the *goal* only, so
+        the callee's `requires` is checked UNDER the branch guard while its
+        `ensures` escapes it and becomes an unconditional fact about the caller's
+        own slots (`_build_callee_env` binds the callee's params to the caller's
+        terms).
+
+        Here that fact is circular: `dec5`'s `ensures(@Nat.result == @Nat.0 - 5)`
+        plus `@Nat`'s implicit `result >= 0` entails `@Nat.0 >= 5` — the very
+        precondition that licensed the assumption.  Without the `solver.push()` /
+        `pop()` around the argument walk, `main`'s FALSE `ensures(@Nat.0 >= 5)`
+        proves at Tier 1, no diagnostic is emitted, and `vera run main -- 0`
+        violates the contract at run time.  `main` (before #776) rejected this
+        program correctly, so an unscoped walk would be a soundness REGRESSION.
+
+        The same unguarded assumption is reachable through the #730
+        statement-position walk with no effect op at all; that is pre-existing and
+        tracked separately.  This test pins only that #776's argument walk does
+        not widen it (PR #953 review).
+        """
+        source = (
+            "effect Slp {\n"
+            "  op sleep(Nat -> Unit);\n"
+            "}\n"
+            "\n"
+            "private fn dec5(@Nat -> @Nat)\n"
+            "  requires(@Nat.0 >= 5)\n"
+            "  ensures(@Nat.result == @Nat.0 - 5)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0 - 5\n"
+            "}\n"
+            "\n"
+            "public fn main(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(@Nat.0 >= 5)\n"
+            "  effects(<Slp>)\n"
+            "{\n"
+            "  if @Nat.0 >= 5 then { Slp.sleep(dec5(@Nat.0)) } else { () };\n"
+            "  @Nat.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        caller_post = [
+            o for o in result.obligations
+            if o.fn_name == "main" and o.kind == "ensures"
+        ]
+        assert len(caller_post) == 1, caller_post
+        assert caller_post[0].status == "violated", (
+            "`ensures(@Nat.0 >= 5)` is false for @Nat.0 = 0; proving it at Tier 1 "
+            "means dec5's postcondition escaped its `if` guard.  "
+            f"got status={caller_post[0].status!r}"
+        )
+        e500s = [d for d in result.diagnostics if d.error_code == "E500"]
+        assert len(e500s) == 1, e500s
+        # dec5's own precondition IS legitimately discharged under the guard.
+        callee_pre = [
+            o for o in result.obligations
+            if o.fn_name == "dec5" and o.kind == "requires"
+        ]
+        assert callee_pre and all(o.status == "verified" for o in callee_pre)
+
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS
         is visited by THREE translation passes (body, walker env
