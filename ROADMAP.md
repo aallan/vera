@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-6,812 tests, 143 conformance programs, 37 examples, 14 spec chapters.
+6,814 tests, 143 conformance programs, 37 examples, 14 spec chapters.
 
 ## The roadmap
 
@@ -23,7 +23,8 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
 | [#828](https://github.com/aallan/vera/issues/828) | Make `error_code` one-concept-per-code: `ERROR_CODES` names codes but doesn't stop two unrelated diagnostics sharing one (4 such collisions surfaced in #682).  A cheap emission-side registration check shipped; the proper fix is a collision-detection gate + making the registry the single home of each code's concept. |
 | [#954](https://github.com/aallan/vera/issues/954) | Single-source the `E001` example so the five doc mirrors cannot drift.  #951 closed the *detection* half (`TestErrorDisplaySync` now guards `README.md`, `docs/index.html`, `spec/00-introduction.md`, `AGENTS.md`'s example JSON and the `build_site.py` generator), but the example is still hand-duplicated in all five; generating each from `vera/errors.py` would remove the drift class structurally. |
-| [#955](https://github.com/aallan/vera/issues/955) | Make the diagnostic-fields gate's `# diag-fields-exempt` opt-out mean one thing: the failure report offers it for every violation class, but only the field-presence pass consults it — the `spec_ref`-validity and `error_code`-registration passes ignore it.  Either honour it in all three, or stop advertising it where it does nothing. |
+| [#955](https://github.com/aallan/vera/issues/955) | Make the diagnostic-fields gate's `# diag-fields-exempt` opt-out mean one thing: the failure report offers it for every violation class, but only the field-presence pass consults it — the `spec_ref`-validity and `error_code`-registration passes, and `check_source`'s own non-literal-`severity` violation, all ignore it.  Either honour it everywhere, or stop advertising it where it does nothing. |
+| [#956](https://github.com/aallan/vera/issues/956) | Make the diagnostic-fields gate's plumbing-skip check its own premise.  It exempts a helper's sole `Diagnostic(...)` because "its fields are threaded from the helper's parameters" — but nothing verifies that, so a delegating helper whose sole construction hardcodes a bogus `spec_ref` and an unregistered `error_code` is exempt too.  Narrowing the election to the ctor *reachable as the helper's result* closes it; two existing tests assert the current contract, so it is a deliberate change. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |

@@ -449,6 +449,46 @@ class TestPlumbingSkipRequiresMethod:
         assert len(v) == 1
         assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
 
+    def test_positional_only_self_receiver_is_still_a_helper(self, mod: object) -> None:
+        # `def _error(self, /, node)` puts `self` in `fn.args.posonlyargs`, NOT in
+        # `fn.args.args`.  Reading only `args` would miss the receiver, treat a
+        # real helper as a look-alike, and inspect its threaded plumbing ctor —
+        # a false positive on `spec_ref is not a string literal`.
+        #
+        # Fail-closed rather than an escape, which is why nothing caught it:
+        # dropping `posonlyargs` was the one mutant to survive the whole battery.
+        src = (
+            "class C:\n"
+            "    def _error(self, /, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        return Diagnostic(description=description, rationale=rationale,\n"
+            "                          fix=fix, spec_ref=spec_ref)\n"
+        )
+        f = "vera/checker/core.py"
+        assert mod.check_source(src, f) == []
+        assert mod.spec_ref_violations_in_source(src, f) == []
+
+    def test_class_member_without_self_receiver_is_flagged(self, mod: object) -> None:
+        # Pins the `self`-receiver conjunct ON ITS OWN.  This `def _error` IS a
+        # direct class-body member and carries no decorator, so `class_methods`
+        # and `_not_an_instance_method` both wave it through — only the receiver
+        # name distinguishes it from a real helper.
+        #
+        # Why it needs its own test: mutating the whole of `_is_helper_method` to
+        # `return True` breaks the class-member guard too, so the module-level
+        # look-alike test reddens and the suite reports "killed" while the
+        # receiver check stays unexercised.  Dropping ONLY
+        # `params[0].arg == "self"` was a mutant that survived all 64 tests, and
+        # under it this source drops from 1 violation to 0 (PR #952 review).
+        src = (
+            "class C:\n"
+            "    def _error(cls, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
     def test_classmethod_lookalike_is_flagged(self, mod: object) -> None:
         # `@classmethod` binds to the class, so a first parameter named `self` is
         # not an instance receiver.  (Ordinarily it would be `cls`, which the
