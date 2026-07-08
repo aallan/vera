@@ -102,7 +102,7 @@ include = ["vera*"]
 "vera.browser" = ["*.mjs"]
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
