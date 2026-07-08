@@ -40,7 +40,7 @@ Exit criterion: every verification-completeness and guard-deferral row in KNOWN_
 
 *One fact, one home, drift caught by a gate.*
 
-The Stage 18 consistency sweep fixed a long tail of drift **by hand**; this stage makes those classes structural so the next sweep finds nothing.  It inherits the June 2026 audit's second theme and the gate-honesty findings the first external contributions surfaced: a gate that doesn't check its own premise is drift waiting to happen.  The release-process holdouts ride here too — automation is single-sourcing for process.
+The Stage 18 consistency sweep fixed a long tail of drift **by hand**; this stage makes those classes structural so the next sweep finds nothing.  It inherits the June 2026 audit's second theme and the gate-honesty findings the July external contributions surfaced: a gate that doesn't check its own premise is drift waiting to happen.  The release-process holdouts ride here too — automation is single-sourcing for process.
 
 Exit criterion: each listed drift class has a generator or a gate, and a release requires no manual tag/publish steps.
 
