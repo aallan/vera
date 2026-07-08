@@ -63,7 +63,7 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 
 *Production controls for the headline effects.*
 
-Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  Every item is a current KNOWN_ISSUES limitation.
+Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  The Http and Inference control rows are current KNOWN_ISSUES limitations; the provider and example rows are supporting work on the same effect surface.
 
 Exit criterion: the Http and Inference limitation rows are retired; an agent can call an authenticated API and mock the model call in tests.
 
