@@ -637,6 +637,147 @@ class TestPlumbingSkipCountsEveryOwnScopeCtor:
         assert mod.spec_ref_violations_in_source(src, f) == []
 
 
+class TestPlumbingSkipRequiresReachability:
+    """The skip additionally requires the helper's sole own-scope ctor to be
+    reachable as the helper's *result* — return-ed, appended, or bound to a
+    local that is later return-ed/appended (#956).
+
+    A ctor merely constructed and handed to something else (e.g. dispatched
+    via a bound attribute) is not plumbing: nothing threads its literal
+    fields through a call site, so it must be inspected.  Before this fix,
+    "sole own-scope construction" alone was sufficient to elect a ctor as
+    plumbing, so a helper that builds a ``Diagnostic`` and hands it to
+    ``self.dispatch(...)`` (never returning or appending it) escaped every
+    pass despite carrying a bogus ``spec_ref`` and an unregistered
+    ``error_code``."""
+
+    F = "vera/checker/core.py"
+
+    # Sole own-scope ctor, but handed to self.dispatch — never returned or
+    # appended, so never reachable as the helper's result.
+    DISPATCHED_NOT_RETURNED = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        self.dispatch(d)\n"
+    )
+
+    # Control: identical fields, but appended — the legitimately-exempt shape.
+    # This is the mutation-kill for the reachability rule: a neutered
+    # `_ctor_is_reachable_as_result` that always returns True must fail
+    # `test_dispatched_ctor_is_inspected_not_skipped` below while this test
+    # keeps passing either way.
+    APPENDED = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        self.errors.append(d)\n"
+    )
+
+    def test_check_source_stays_clean_all_fields_literal_present(
+            self, mod: object) -> None:
+        # Presence pass stays clean regardless: every field is a non-empty
+        # string literal.  The reachability rule only affects spec_ref/
+        # error_code validity, not field presence.
+        assert mod.check_source(self.DISPATCHED_NOT_RETURNED, self.F) == []
+
+    def test_dispatched_ctor_is_inspected_not_skipped(self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.DISPATCHED_NOT_RETURNED, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+        codes = mod.error_code_registration_violations_in_source(
+            self.DISPATCHED_NOT_RETURNED, self.F, {"E130"})
+        assert len(codes) == 1
+        assert "E9999" in codes[0].missing[0]
+
+    def test_appended_control_stays_exempt(self, mod: object) -> None:
+        assert mod.check_source(self.APPENDED, self.F) == []
+        assert mod.spec_ref_violations_in_source(self.APPENDED, self.F) == []
+        assert mod.error_code_registration_violations_in_source(
+            self.APPENDED, self.F, {"E130"}) == []
+
+    # A ctor bound to a local that is later REASSIGNED before the return: the
+    # name-based check has no real data-flow, so on its own it cannot tell
+    # that `d` no longer holds the ctor by the time it's returned.  Being
+    # conservative (not exempting whenever the name is reassigned at all)
+    # keeps a genuinely swapped-out ctor from silently escaping as plumbing.
+    REASSIGNED_BEFORE_RETURN = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        d = self.template\n"
+        "        return d\n"
+    )
+
+    def test_reassigned_local_is_not_reachable_as_result(self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REASSIGNED_BEFORE_RETURN, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # A `for` loop target rebinds the same name without being an ast.Assign —
+    # a plain-Assign-only rebind check misses this and would still treat the
+    # name as reachable via the trailing `return d`.
+    REBOUND_VIA_FOR_LOOP = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        for d in ():\n"
+        "            pass\n"
+        "        return d\n"
+    )
+
+    def test_for_loop_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_FOR_LOOP, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # `.append(...)` on an unrelated throwaway local is not a diagnostic
+    # sink — every real plumbing site appends to `self.<attr>` (e.g.
+    # `self.errors`, `self.diagnostics`).  A bare `.append` check would
+    # wrongly treat this ctor as reachable even though `tmp` is never used
+    # for anything.
+    APPENDED_TO_UNRELATED_LOCAL = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        tmp = []\n"
+        "        tmp.append(d)\n"
+        "        self.dispatch(d)\n"
+    )
+
+    def test_append_to_unrelated_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.APPENDED_TO_UNRELATED_LOCAL, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+
 class TestOwnScopeExcludesEnclosingScopeExpressions:
     """"Own scope" means the helper's ``body`` — not everything hanging off its
     ``FunctionDef`` node.
