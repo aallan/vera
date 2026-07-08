@@ -30,7 +30,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
 | Standard library | 164 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
-| Modules | `module`/`import` with explicit re-exports | Programs split across files; `vera check` resolves the module graph |
+| Modules | `module`/`import` with explicit `public`/`private` visibility | Programs split across files; `vera check` resolves the module graph; re-exports are tracked in [#127](https://github.com/aallan/vera/issues/127) |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
 | Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$alloc`, `$gc_collect`, shadow stack); no host GC; models focus on logic |
