@@ -25,16 +25,24 @@ dependencies = [
     # get a clear "no matching distribution" error instead of a cryptic
     # source-build failure 20 minutes later.  See README §Supported platforms.
     "z3-solver>=4.15.5",
-    # `>=45.0.0` is the first wasmtime-py release whose host-import
-    # trampoline catches `BaseException` rather than `Exception`
+    # Floor rationale: `>=45.0.0` was the first wasmtime-py release whose
+    # host-import trampoline catches `BaseException` rather than `Exception`
     # (bytecodealliance/wasmtime-py#337).  Vera relies on this so a
     # `KeyboardInterrupt` raised inside a host import (IO.sleep /
     # IO.read_char) unwinds the wasm call safely and re-raises in
     # Python instead of escaping into Rust with an undefined ABI
     # return value (libmalloc SIGABRT, #595).  The exit-130 mapping in
     # `execute()` depends on the raw re-raise; do not lower this pin
-    # without restoring the per-host-import `_VeraExit(130)` guards
-    # removed in #599.
+    # below 45 without restoring the per-host-import `_VeraExit(130)`
+    # guards removed in #599.
+    # Raised to `>=46.0.1` for GHSA-4ch3-9j33-3pmj (a wasmtime-wasi
+    # FilePerms bypass on hard-link/rename destinations; 45.0.0 is in the
+    # affected range).  The core backport is 45.0.3, but wasmtime-py never
+    # tagged a 45.0.x patch — 46.0.1 is the only patched binding release.
+    # Vera's own WASI host is not exploitable (it preopens with the
+    # default READ_WRITE FilePerms, so there is nothing to bypass); the
+    # bump keeps the resolved floor off a CVE-affected release for
+    # embedders who restrict perms.
     "wasmtime>=46.0.1",
 ]
 
