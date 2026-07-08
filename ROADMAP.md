@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-6,779 tests, 143 conformance programs, 37 examples, 14 spec chapters.
+6,815 tests, 143 conformance programs, 37 examples, 14 spec chapters.
 
 ## The roadmap
 
@@ -22,7 +22,9 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 |---|---|
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
 | [#828](https://github.com/aallan/vera/issues/828) | Make `error_code` one-concept-per-code: `ERROR_CODES` names codes but doesn't stop two unrelated diagnostics sharing one (4 such collisions surfaced in #682).  A cheap emission-side registration check shipped; the proper fix is a collision-detection gate + making the registry the single home of each code's concept. |
-| [#829](https://github.com/aallan/vera/issues/829) | Extend `TestErrorDisplaySync` to the two unguarded `E001` `spec_ref` mirrors (`AGENTS.md` + the `build_site.py` generator): the example lives in six places, only four are test-guarded, and #826 drifted the ungated pair.  Deeper option: single-source the example so nothing can drift. |
+| [#954](https://github.com/aallan/vera/issues/954) | Single-source the `E001` example so the five doc mirrors cannot drift.  #951 closed the *detection* half (`TestErrorDisplaySync` now guards `README.md`, `docs/index.html`, `spec/00-introduction.md`, `AGENTS.md`'s example JSON and the `build_site.py` generator), but the example is still hand-duplicated in all five; generating each from `vera/errors.py` would remove the drift class structurally. |
+| [#955](https://github.com/aallan/vera/issues/955) | Make the diagnostic-fields gate's `# diag-fields-exempt` opt-out mean one thing: the failure report offers it for every violation class, but only the field-presence pass consults it — the `spec_ref`-validity and `error_code`-registration passes, and `check_source`'s own non-literal-`severity` violation, all ignore it.  Either honour it everywhere, or stop advertising it where it does nothing. |
+| [#956](https://github.com/aallan/vera/issues/956) | Make the diagnostic-fields gate's plumbing-skip check its own premise.  It exempts a helper's sole `Diagnostic(...)` because "its fields are threaded from the helper's parameters" — but nothing verifies that, so a delegating helper whose sole construction hardcodes a bogus `spec_ref` and an unregistered `error_code` is exempt too.  Narrowing the election to the ctor *reachable as the helper's result* closes it; two existing tests assert the current contract, so it is a deliberate change. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
@@ -44,7 +46,6 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
 | [#795](https://github.com/aallan/vera/issues/795) | **Extend mutation testing beyond the soundness core.**  #387 hardened the trust root (`verifier`/`smt`/`checker`/`obligations`, 80.8% → 83.3% caught); this extends the sweep to `codegen`/`wasm`/`transform`/`parser`/CLI, where a surviving mutant is a weak test for an already-*loud* failure (wrong output / trap, already caught by the `test_codegen_*.py` suite + conformance + execution tests) rather than a silent verification gap — so it ranked below the Tier 1 soundness work (now complete).  Needs the full marathon sweep made reliable first: it deadlocks on `mutmut` 3.6 / Python 3.14 (targeted per-function runs are fine).  The deep `smt.py` translate-layer hardening + the verifier timeout probe are tracked in [#792](https://github.com/aallan/vera/issues/792). |
-| [#827](https://github.com/aallan/vera/issues/827) | Narrow the diagnostic-fields gate's plumbing-skip: it keys on function name, so a stray/second `Diagnostic` in an `_error`/`_warning` helper would escape both gate passes (latent — no live escape; from the #826 adversarial review). |
 | [#860](https://github.com/aallan/vera/issues/860) | Harden the four sibling shadow-stack bounds (WAT `gc_shadow_push` emitter, `$register_wrapper` slow path, browser `gcRooted`/`gcShadowPush`) to the slot-complete form #791 gave `_ShadowGuard.push` — same unreachable-while-4-aligned invariant, but the WAT sites re-baseline golden pins, so tracked separately from the burndown. |
 
 ### Not doing now

@@ -41,9 +41,22 @@ convenience"; no silently-inferred exemptions):
   (e.g. an "unknown expression type" fallback).  A marker without a
   reason is itself a violation.  (A dedicated token, not a ruff-style
   suppression comment — see ``OPT_OUT`` below for why.)
-- **Plumbing skip:** the ``Diagnostic(...)`` construction *inside* an
-  ``_error`` / ``_warning`` helper def is not an independent site — its
-  call sites plus the registry govern it.
+- **Plumbing skip:** the *single* ``Diagnostic(...)`` an ``_error`` /
+  ``_warning`` helper *method* constructs is not an independent site — its
+  fields are threaded from the helper's parameters, so its call sites plus
+  the registry govern it.  All three passes below honour the skip.
+  Narrowed for #827: keying on the helper's *name* alone let a stray second
+  ctor in the same helper (or a non-helper coincidentally named ``_error``)
+  escape every pass.  The skip now requires (a) a genuine helper *method* —
+  a class member with a ``self`` receiver, since every real helper is one, so
+  a module-level function merely named ``_error`` is inspected, not exempted —
+  AND (b) that the ctor is the method's **sole own-scope** construction.  A
+  helper holding two constructions is ambiguous: neither is skipped, and both
+  are inspected.  Counting *every* own-scope construction (not just the one
+  structurally ``return``ed or ``.append(...)``-ed) is what makes (b) sound —
+  see ``_own_scope_diag_ctors``.  "Own scope" is the helper's **body**:
+  decorators, parameter defaults and annotations evaluate in the *enclosing*
+  scope, so a ``Diagnostic(...)`` there is inspected, never elected.
 
 Usage:
     python scripts/check_diagnostic_fields.py   # exit 0 if all sites
@@ -139,6 +152,146 @@ def _field_present(call: ast.Call, name: str) -> bool:
     return False
 
 
+def _is_diag_ctor(node: ast.AST | None) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "Diagnostic")
+
+
+def _walk_own_scope(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+    """Yield every node in ``fn``'s BODY without descending into nested
+    function / lambda / class scopes.
+
+    Two boundaries matter, and both are load-bearing:
+
+    - **Downward:** ``ast.walk`` would cross into nested ``def`` / ``lambda`` /
+      ``class`` bodies, so a ``Diagnostic(...)`` there would be wrongly
+      attributed to the *outer* helper — either miscounting the helper as
+      ambiguous (>1 ctor) or exempting a ctor that belongs to the inner scope.
+    - **Sideways:** the seed is ``fn.body``, NOT ``ast.iter_child_nodes(fn)``.
+      For a ``FunctionDef`` the latter also yields ``decorator_list``, the
+      ``arguments`` node (carrying default-value expressions) and the ``returns``
+      annotation — all of which are evaluated in the *enclosing* scope, not the
+      helper's.  Sweeping them in let a ``Diagnostic(...)`` written as a
+      decorator argument (``@memo(fallback=Diagnostic(...))``) or a parameter
+      default be counted as the helper's own construction; where the helper had
+      no body ctor it then became the *sole* candidate, was elected as the
+      helper's plumbing, and was skipped by all three passes — an under-tagged
+      diagnostic escaping the gate (PR #952 review).
+    """
+    stack: list[ast.AST] = list(fn.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        # A nested def / async def / lambda / class opens a new scope — its
+        # Diagnostic constructions are not the enclosing helper's plumbing.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _own_scope_diag_ctors(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.Call]:
+    """Every ``Diagnostic(...)`` constructed in ``fn``'s OWN scope — its body,
+    excluding nested ``def`` / ``lambda`` / ``class`` bodies (a ctor there is
+    that scope's concern) and excluding decorators / parameter defaults /
+    annotations (those evaluate in the enclosing scope; see ``_walk_own_scope``).
+
+    Counts *every* construction, deliberately — not only the one structurally
+    ``return``ed or ``.append(...)``-ed.  #827's fault class is a **stray** ctor
+    living alongside the helper's real one, and a rule that recognised only the
+    return/append shape would miss a helper whose real construction is bound to
+    a local first (``d = Diagnostic(...)``, then ``self.errors.append(d)``):
+    the stray would be the lone *recognised* construction, get elected as "the
+    helper's own", and be skipped — re-opening the very hole this gate closes.
+    Counting all constructions makes any stray push the count to two, so neither
+    is skipped and both are inspected."""
+    return [n for n in _walk_own_scope(fn) if _is_diag_ctor(n)]  # type: ignore[misc]
+
+
+def _not_an_instance_method(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if a decorator rebinds ``fn`` to something other than an instance
+    method, so a first parameter named ``self`` would not be a receiver.
+
+    Matches the bare name (``@staticmethod``) and the dotted form
+    (``@builtins.staticmethod``).  An alias (``from builtins import staticmethod
+    as sm``) is undetectable statically; it would leave the ctor *inspected*
+    rather than exempted, which is the fail-closed direction."""
+    for d in fn.decorator_list:
+        name = (d.id if isinstance(d, ast.Name)
+                else d.attr if isinstance(d, ast.Attribute) else None)
+        if name in ("staticmethod", "classmethod"):
+            return True
+    return False
+
+
+def _class_scoped_functions(tree: ast.AST) -> set[ast.AST]:
+    """Every ``def`` that is a *direct* member of a ``class`` body and is bound as
+    an instance method — a genuine helper's home.
+
+    Three shapes are excluded, each of which could otherwise name its first
+    parameter ``self`` without that parameter being a receiver: a module-level
+    function, a function nested inside a method (a local, not a bound method —
+    ``ast.walk`` over the class would wrongly claim it), and a
+    ``@staticmethod`` / ``@classmethod``."""
+    out: set[ast.AST] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if _not_an_instance_method(item):
+                    continue
+                out.add(item)
+    return out
+
+
+def _is_helper_method(fn: ast.FunctionDef | ast.AsyncFunctionDef,
+                      class_methods: set[ast.AST]) -> bool:
+    """True if ``fn`` is a genuine instance *method*: a direct member of a class
+    body whose first positional parameter is ``self``.  Every real ``_error`` /
+    ``_warning`` diagnostic helper in the tree (``checker/core.py``,
+    ``codegen/core.py``, ``verifier.py``) is one.  A module-level function merely
+    *named* ``_error`` — even one that names its first parameter ``self`` — is
+    not, so its ``Diagnostic(...)`` is inspected rather than exempted (#827:
+    keying the skip on the name alone let such a non-helper silently exempt an
+    incomplete ctor, re-opening the under-reporting path this gate closes)."""
+    if fn not in class_methods:
+        return False
+    params = fn.args.posonlyargs + fn.args.args
+    return bool(params) and params[0].arg == "self"
+
+
+def _plumbing_ctors(tree: ast.AST) -> set[ast.Call]:
+    """The ``Diagnostic(...)`` node that each ``_error`` / ``_warning`` helper
+    method constructs as its *own* plumbing — narrowed for #827.
+
+    Previously the skip keyed on the enclosing function's NAME and dropped
+    *every* ``Diagnostic(...)`` lexically inside a helper span, so a stray /
+    second ctor (one in an ``else`` branch, say) or a non-helper coincidentally
+    named ``_error`` escaped every pass.  A ctor is now skipped only when its
+    enclosing function is BOTH a genuine helper *method* (a class member with a
+    ``self`` receiver — see ``_is_helper_method``) AND that method's **sole**
+    own-scope construction — the one whose fields are threaded from the helper's
+    params and are governed by its call sites plus ``STRUCTURAL_EXEMPTIONS``.
+    A helper containing two constructions is ambiguous, so neither is skipped
+    and both are inspected.
+
+    Returns the ctor *nodes*; callers match by identity (AST nodes hash by
+    identity), so the set is meaningful only for ``tree``."""
+    class_methods = _class_scoped_functions(tree)
+    out: set[ast.Call] = set()
+    for fn in ast.walk(tree):
+        if (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and fn.name in ("_error", "_warning")
+                and _is_helper_method(fn, class_methods)):
+            ctors = _own_scope_diag_ctors(fn)
+            if len(ctors) == 1:
+                out.add(ctors[0])
+    return out
+
+
 def _optout_lines(source: str) -> dict[int, str]:
     """Map a line number to its opt-out reason, but ONLY where the marker
     appears in a real ``COMMENT`` token — never inside a string literal or
@@ -173,16 +326,10 @@ def check_source(source: str, filename: str) -> list[Violation]:
     src_lines = source.splitlines()
     fam = family(filename)
 
-    # Spans of _error/_warning helper *definitions* — Diagnostic()
-    # constructions inside them are plumbing, not independent sites.
-    helper_spans: list[tuple[int, int]] = []
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
-                n.name in ("_error", "_warning"):
-            helper_spans.append((n.lineno, n.end_lineno or n.lineno))
-
-    def inside_helper(lineno: int) -> bool:
-        return any(a <= lineno <= b for a, b in helper_spans)
+    # The sole Diagnostic() construction inside an _error/_warning helper method
+    # is plumbing, not an independent site (#827: was keyed on function name,
+    # which swallowed a stray second ctor in the same helper).
+    plumbing = _plumbing_ctors(tree)
 
     optout = _optout_lines(source)
     violations: list[Violation] = []
@@ -191,7 +338,7 @@ def check_source(source: str, filename: str) -> list[Violation]:
             continue
         f = node.func
         if isinstance(f, ast.Name) and f.id == "Diagnostic":
-            if inside_helper(node.lineno):
+            if node in plumbing:
                 continue  # plumbing
             target = "Diagnostic"
             method = None
@@ -324,15 +471,7 @@ def _iter_spec_refs(
     skipped — its call sites plus the registry govern it."""
     tree = ast.parse(source, filename=filename)
     src_lines = source.splitlines()
-    helper_spans = [
-        (n.lineno, n.end_lineno or n.lineno)
-        for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name in ("_error", "_warning")
-    ]
-
-    def inside_helper(lineno: int) -> bool:
-        return any(a <= lineno <= b for a, b in helper_spans)
+    plumbing = _plumbing_ctors(tree)
 
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
@@ -343,7 +482,7 @@ def _iter_spec_refs(
                      and f.attr in ("_error", "_warning"))
         if not (is_ctor or is_helper):
             continue
-        if is_ctor and inside_helper(n.lineno):
+        if is_ctor and n in plumbing:
             continue  # plumbing
         for kw in n.keywords:
             if kw.arg != "spec_ref":
@@ -458,15 +597,7 @@ def _diagnostic_call_sites(source: str, filename: str) -> Iterator[ast.Call]:
     """Yield each Diagnostic() / ._error() / ._warning() Call node, skipping the
     plumbing Diagnostic() construction inside an _error/_warning helper def."""
     tree = ast.parse(source, filename=filename)
-    helper_spans = [
-        (n.lineno, n.end_lineno or n.lineno)
-        for n in ast.walk(tree)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name in ("_error", "_warning")
-    ]
-
-    def inside_helper(lineno: int) -> bool:
-        return any(a <= lineno <= b for a, b in helper_spans)
+    plumbing = _plumbing_ctors(tree)
 
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
@@ -477,7 +608,7 @@ def _diagnostic_call_sites(source: str, filename: str) -> Iterator[ast.Call]:
                      and f.attr in ("_error", "_warning"))
         if not (is_ctor or is_helper):
             continue
-        if is_ctor and inside_helper(n.lineno):
+        if is_ctor and n in plumbing:
             continue
         yield n
 

@@ -284,6 +284,488 @@ class TestPlumbingSkip:
         assert mod.check_source(src, "vera/codegen/core.py") == []
 
 
+class TestPlumbingSkipNarrowed:
+    """#827: the plumbing-skip must key on the helper's *own single* ctor, not
+    on the helper's NAME.  A stray/second ``Diagnostic(...)`` inside an
+    ``_error``/``_warning`` helper — the exact shape below, straight from the
+    #826 adversarial review — must still be inspected.
+
+    This class covers the field-presence and ``spec_ref``-validity passes; the
+    third consumer of the skip (``error_code`` registration) is covered by
+    ``TestPlumbingSkipCountsEveryOwnScopeCtor`` and
+    ``TestSkipWiringPinnedInAllThreePasses``.
+
+    Faults A and B are deliberately ``return`` ctors (a naive "skip the
+    return/append child" rule would swallow them), while the legit fully-tagged
+    construction is a distractor bound to ``d`` (a rule that counted only
+    return/append ctors would see the strays as the helper's *only* ctors and
+    elect one of them — see ``TestPlumbingSkipCountsEveryOwnScopeCtor``)."""
+
+    # Two faults inside a helper: A (return, missing `rationale`) and B
+    # (return, spec_ref cites a real section under a WRONG title).  §4.3 IS
+    # "Slot References", so the first two spec_refs resolve; only B's is bogus.
+    SOURCE = (
+        "class Compiler:\n"
+        "    def _error(self, node, description):\n"
+        "        d = Diagnostic(description=description, rationale='r', fix='f',\n"
+        "                       spec_ref='Chapter 4, Section 4.3 \"Slot References\"')\n"
+        "        if node is None:\n"
+        "            # Fault A: real diagnostic missing `rationale`\n"
+        "            return Diagnostic(description='real bug', fix='f',\n"
+        "                              spec_ref='Chapter 4, Section 4.3 \"Slot References\"')\n"
+        "        # Fault B: real diagnostic with a WRONG spec_ref title\n"
+        "        return Diagnostic(description='real bug', rationale='r', fix='f',\n"
+        "                          spec_ref='Chapter 4, Section 4.3 \"Made Up Title\"')\n"
+    )
+    # The same body under a name that never triggered the skip — the maintainer's
+    # control: it always flagged both, so equal output here proves it was the
+    # name-based skip, not the checks, that swallowed the faults.
+    CONTROL = SOURCE.replace("def _error", "def _normal")
+
+    def test_stray_presence_fault_flagged(self, mod: object) -> None:
+        v = mod.check_source(self.SOURCE, "x.py")
+        # Only Fault A (the missing-`rationale` return ctor) — the legit
+        # `d = Diagnostic(...)` and Fault B (fully present) stay clean here.
+        assert len(v) == 1
+        assert v[0].missing == ["rationale"] and "real bug" in (v[0].snippet or "")
+
+    def test_stray_spec_ref_fault_flagged(
+        self, mod: object, tmp_path: Path) -> None:
+        # Self-contained: pin §4.3's title in an inline fixture spec so the
+        # assertion can't break on a live-spec re-title.  The legit ctor +
+        # Fault A cite §4.3 correctly (resolve); only Fault B cites it under a
+        # WRONG title, so exactly one violation is expected.
+        spec_dir = tmp_path / "spec"
+        spec_dir.mkdir()
+        (spec_dir / "04-x.md").write_text(
+            "# Chapter 4: Expressions\n\n### 4.3 Slot References\n",
+            encoding="utf-8")
+        v = mod.spec_ref_violations_in_source(
+            self.SOURCE, "x.py", spec_dir=spec_dir)
+        assert len(v) == 1 and "Slot References" in v[0].missing[0]
+        assert "Made Up Title" in (v[0].snippet or "")
+
+    def test_matches_non_helper_control(self, mod: object) -> None:
+        # The narrowed skip makes the _error span behave like a plain function.
+        pres_h = mod.check_source(self.SOURCE, "x.py")
+        pres_n = mod.check_source(self.CONTROL, "x.py")
+        ref_h = mod.spec_ref_violations_in_source(self.SOURCE, "x.py")
+        ref_n = mod.spec_ref_violations_in_source(self.CONTROL, "x.py")
+        assert [(x.line, x.missing) for x in pres_h] == \
+               [(x.line, x.missing) for x in pres_n]
+        assert [(x.line, x.missing) for x in ref_h] == \
+               [(x.line, x.missing) for x in ref_n]
+
+    def test_sole_plumbing_ctor_still_skipped(self, mod: object) -> None:
+        # Guard against over-correction: a real one-ctor helper (append arg with
+        # a threaded, unresolvable spec_ref) must remain skipped by both the
+        # presence and the spec_ref pass.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', spec_ref=''):\n"
+            "        self.errors.append(Diagnostic(\n"
+            "            description=description, location=loc,\n"
+            "            rationale=rationale, fix='f', spec_ref=spec_ref))\n"
+        )
+        assert mod.check_source(src, "vera/checker/core.py") == []
+        assert mod.spec_ref_violations_in_source(src, "vera/checker/core.py") == []
+
+
+class TestPlumbingSkipRequiresMethod:
+    """#827: the plumbing-skip keyed on the function NAME, so a NON-helper
+    *module-level* function coincidentally named ``_error`` / ``_warning`` with a
+    single ``Diagnostic(...)`` was silently skipped — re-opening the
+    under-reporting path this gate closes.  The skip now also requires a genuine
+    helper *method* (a class member with a ``self`` receiver): every real
+    ``_error`` / ``_warning`` helper (codegen/checker/verifier) is one, so a
+    module-level look-alike is inspected, not exempted."""
+
+    def test_module_level_error_lookalike_is_flagged(self, mod: object) -> None:
+        # #827's exact repro: a module-level `_error` returning an incomplete
+        # Diagnostic must NOT be exempted just because it's named `_error`.
+        src = (
+            "def _error(node, description):\n"
+            "    return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        assert "Diagnostic(" in (v[0].snippet or "")
+
+    def test_module_level_warning_lookalike_is_flagged(self, mod: object) -> None:
+        # Same for a module-level `_warning` (warnings are fix-exempt, so the
+        # missing set is rationale + spec_ref).
+        src = (
+            "def _warning(node, description):\n"
+            "    return Diagnostic(description=description, severity='warning')\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "spec_ref"}
+
+    def test_nested_scope_ctor_not_attributed_to_helper(self, mod: object) -> None:
+        # A Diagnostic in a NESTED def inside the helper must NOT be counted
+        # among the helper's own ctors — else the helper looks ambiguous (2
+        # ctors) and its OWN legit plumbing ctor gets wrongly inspected.  This
+        # codegen helper's own append omits fix/spec_ref (legit: the codegen
+        # E699 structural exemption), and the nested return is fully tagged.
+        # With the old `ast.walk`, the nested return pushed the count to 2,
+        # un-skipped the outer ctor, and FALSELY flagged it for the missing
+        # fix/spec_ref — so this assertion goes RED without the fix.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', error_code=''):\n"
+            "        def _inner():\n"
+            "            return Diagnostic(description='nested', rationale='r',\n"
+            "                              fix='f', spec_ref='Ch1')\n"
+            "        self.diagnostics.append(Diagnostic(description=description,\n"
+            "            rationale=rationale, error_code=error_code))\n"
+        )
+        assert mod.check_source(src, "vera/codegen/core.py") == []
+
+    def test_real_helper_method_still_skipped(self, mod: object) -> None:
+        # The contrast case: a genuine helper *method* (self receiver) threading
+        # its fields from params is still plumbing and stays skipped.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        return Diagnostic(description=description, rationale=rationale,\n"
+            "                          fix=fix, spec_ref=spec_ref)\n"
+        )
+        assert mod.check_source(src, "vera/checker/core.py") == []
+
+    def test_staticmethod_lookalike_is_flagged(self, mod: object) -> None:
+        # `self` as the first parameter of a @staticmethod is an ordinary
+        # positional, not a receiver — one keystroke from the module-level
+        # look-alike above, and it must be inspected for the same reason.
+        src = (
+            "class C:\n"
+            "    @staticmethod\n"
+            "    def _error(self, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_positional_only_self_receiver_is_still_a_helper(self, mod: object) -> None:
+        # `def _error(self, /, node)` puts `self` in `fn.args.posonlyargs`, NOT in
+        # `fn.args.args`.  Reading only `args` would miss the receiver, treat a
+        # real helper as a look-alike, and inspect its threaded plumbing ctor —
+        # a false positive on `spec_ref is not a string literal`.
+        #
+        # Fail-closed rather than an escape, which is why nothing caught it:
+        # dropping `posonlyargs` was the one mutant to survive the whole battery.
+        src = (
+            "class C:\n"
+            "    def _error(self, /, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        return Diagnostic(description=description, rationale=rationale,\n"
+            "                          fix=fix, spec_ref=spec_ref)\n"
+        )
+        f = "vera/checker/core.py"
+        assert mod.check_source(src, f) == []
+        assert mod.spec_ref_violations_in_source(src, f) == []
+
+    def test_class_member_without_self_receiver_is_flagged(self, mod: object) -> None:
+        # Pins the `self`-receiver conjunct ON ITS OWN.  This `def _error` IS a
+        # direct class-body member and carries no decorator, so `class_methods`
+        # and `_not_an_instance_method` both wave it through — only the receiver
+        # name distinguishes it from a real helper.
+        #
+        # Why it needs its own test: mutating the whole of `_is_helper_method` to
+        # `return True` breaks the class-member guard too, so the module-level
+        # look-alike test reddens and the suite reports "killed" while the
+        # receiver check stays unexercised.  Dropping ONLY
+        # `params[0].arg == "self"` was a mutant that survived all 64 tests, and
+        # under it this source drops from 1 violation to 0 (PR #952 review).
+        src = (
+            "class C:\n"
+            "    def _error(cls, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_classmethod_lookalike_is_flagged(self, mod: object) -> None:
+        # `@classmethod` binds to the class, so a first parameter named `self` is
+        # not an instance receiver.  (Ordinarily it would be `cls`, which the
+        # `self` check already rejects — this pins the decorator half.)
+        src = (
+            "class C:\n"
+            "    @classmethod\n"
+            "    def _error(self, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_dotted_staticmethod_lookalike_is_flagged(self, mod: object) -> None:
+        # `@builtins.staticmethod` is an `ast.Attribute`, not an `ast.Name` — a
+        # decorator check matching only the bare name would exempt it.
+        src = (
+            "class C:\n"
+            "    @builtins.staticmethod\n"
+            "    def _error(self, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_def_nested_inside_a_method_is_not_a_class_member(self, mod: object) -> None:
+        # `_class_scoped_functions` elects only *direct* members of a class body.
+        # A `def _error(self, ...)` nested inside a method is a local function,
+        # not a bound method, so it is inspected — even though it is lexically
+        # inside the `class` statement and names its first parameter `self`.
+        #
+        # Pins the scoping: relaxing the election to `ast.walk(class_node)` (the
+        # natural-looking widening) makes this nested def a "class member", elects
+        # its ctor as plumbing, and lets an under-tagged Diagnostic through — a
+        # mutant that survived the rest of the suite (PR #952 review).
+        src = (
+            "class C:\n"
+            "    def check(self, node):\n"
+            "        def _error(self, description):\n"
+            "            return Diagnostic(description=description)\n"
+            "        return _error(self, 'd')\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+
+class TestPlumbingSkipCountsEveryOwnScopeCtor:
+    """The ambiguity guard counts **every** ``Diagnostic(...)`` in the helper's
+    own scope, not only the one structurally ``return``ed or ``.append(...)``-ed.
+
+    #827's fault class is a *stray* ctor living alongside the helper's real one.
+    A rule that recognised only the return/append shape would miss a helper whose
+    real construction is bound to a local first (``d = Diagnostic(...)``, then
+    ``self.errors.append(d)``): the stray would be the lone *recognised*
+    construction, be elected as "the helper's own", and get skipped — re-opening
+    the very hole this gate closes.  #827 named counting-all as its second
+    suggested option; these tests pin it in both directions.
+
+    The escape is not hypothetical: with the return/append rule, ``check_source``
+    on ``test_local_bound_real_ctor_elects_no_stray``'s source returns **zero**
+    violations."""
+
+    # A helper whose real ctor is bound to a local, plus ONE stray direct ctor.
+    # Return-form stray: it is the only `return Diagnostic(...)` in the body.
+    STRAY_RETURN = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        if node is None:\n"
+        "            return Diagnostic(description='stray', fix='f',\n"
+        "                              spec_ref='Chapter 4, Section 4.3 "
+        '"Slot References"\')\n'
+        "        d = Diagnostic(description=description, rationale=rationale,\n"
+        "                       fix=fix, spec_ref=spec_ref)\n"
+        "        self.errors.append(d)\n"
+    )
+
+    # Append-form stray carrying a bogus spec_ref AND an unregistered code, so
+    # all three passes have something to find on the SAME node.
+    STRAY_APPEND = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        self.errors.append(Diagnostic(description='stray',\n"
+        "            spec_ref='Chapter 99, Section 99.1 \"Nope\"',\n"
+        "            error_code='E9999'))\n"
+        "        d = Diagnostic(description=description, rationale=rationale,\n"
+        "                       fix=fix, spec_ref=spec_ref)\n"
+        "        return d\n"
+    )
+
+    def test_local_bound_real_ctor_elects_no_stray(self, mod: object) -> None:
+        # Two own-scope ctors → ambiguous → skip neither.  The stray (missing
+        # `rationale`) is caught by the presence pass.  Under a return/append
+        # rule the stray is the lone *recognised* ctor, gets elected as the
+        # helper's plumbing, and this returns [] — the #827 escape.
+        v = mod.check_source(self.STRAY_RETURN, "vera/checker/core.py")
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale"}
+        assert "stray" in (v[0].snippet or "")
+
+    def test_ambiguous_helper_inspects_its_own_ctor_too(self, mod: object) -> None:
+        # The deliberate consequence of "ambiguous → skip neither": the helper's
+        # *legit* local-bound ctor is inspected as well, and its threaded
+        # `spec_ref=spec_ref` trips "not a string literal".  Loud, not silent —
+        # the author must disambiguate the helper.  Pinned so a future widening
+        # of the skip cannot quietly re-exempt it.
+        v = mod.spec_ref_violations_in_source(
+            self.STRAY_RETURN, "vera/checker/core.py")
+        assert len(v) == 1
+        assert "not a string literal" in v[0].missing[0]
+        assert "spec_ref=spec_ref" in (v[0].snippet or "")
+
+    def test_stray_append_caught_by_all_three_passes(self, mod: object) -> None:
+        f = "vera/checker/core.py"
+        pres = mod.check_source(self.STRAY_APPEND, f)
+        refs = mod.spec_ref_violations_in_source(self.STRAY_APPEND, f)
+        codes = mod.error_code_registration_violations_in_source(
+            self.STRAY_APPEND, f, {"E130"})
+        assert len(pres) == 1 and set(pres[0].missing) == {"rationale", "fix"}
+        # Two spec_ref hits: the stray's bogus literal, plus the un-skipped legit
+        # ctor's threaded value (see test_ambiguous_helper_inspects_its_own_ctor).
+        bogus = [v for v in refs if "§99.1" in v.missing[0]]
+        assert len(refs) == 2 and len(bogus) == 1
+        assert len(codes) == 1 and "E9999" in codes[0].missing[0]
+
+    def test_lone_local_bound_ctor_is_still_skipped(self, mod: object) -> None:
+        # The other direction — no false positive.  A helper whose SOLE own-scope
+        # ctor happens to be bound to a local is still plumbing.  Under a
+        # return/append rule this hoist-to-a-local refactor turns the gate RED on
+        # `spec_ref is not a string literal`, whose suggested fix ("make it a
+        # literal") is impossible: it is a parameter.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, description, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        d = Diagnostic(description=description, rationale=rationale,\n"
+            "                       fix=fix, spec_ref=spec_ref)\n"
+            "        self.errors.append(d)\n"
+        )
+        f = "vera/checker/core.py"
+        assert mod.check_source(src, f) == []
+        assert mod.spec_ref_violations_in_source(src, f) == []
+
+
+class TestOwnScopeExcludesEnclosingScopeExpressions:
+    """"Own scope" means the helper's ``body`` — not everything hanging off its
+    ``FunctionDef`` node.
+
+    ``ast.iter_child_nodes(fn)`` also yields ``decorator_list``, the ``arguments``
+    node (carrying parameter defaults) and the ``returns`` annotation.  All three
+    are evaluated in the *enclosing* scope, so a ``Diagnostic(...)`` written there
+    is not the helper's plumbing.  Seeding the walk from ``iter_child_nodes``
+    swept them in, and where the helper had **no body ctor** the intruder became
+    the *sole* candidate — elected as the helper's plumbing and skipped by all
+    three passes.  An under-tagged diagnostic then escaped the gate entirely
+    (PR #952 review; ``main`` and the pre-fix PR both caught these shapes).
+
+    The escape was invisible to the whole-``vera/`` exempt-set differential,
+    because no real helper is decorated with a ``Diagnostic``-bearing decorator.
+    A gate must be probed with the code it will one day see, not only the code
+    it sees today.
+    """
+
+    F = "vera/checker/core.py"
+    GOOD_REF = 'Chapter 4, Section 4.3 "Slot References"'
+
+    def test_decorator_arg_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # A decorator expression runs in the CLASS BODY, before `_error` exists.
+        # Its Diagnostic must be inspected, never elected as the helper's own.
+        src = (
+            "class C:\n"
+            "    @memo(fallback=Diagnostic(description='in a decorator'))\n"
+            "    def _error(self, node, description):\n"
+            "        self.errors.append(self._build(description))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        assert "@memo(" in (v[0].snippet or "")
+
+    def test_param_default_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # Parameter defaults are evaluated once, at def time, in the enclosing
+        # scope — same argument as the decorator.
+        src = (
+            "class C:\n"
+            "    def _error(self, node, tpl=Diagnostic(description='in a default')):\n"
+            "        self.errors.append(self._build(tpl))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_return_annotation_ctor_is_not_the_helpers_plumbing(self, mod: object) -> None:
+        # `returns` is likewise an enclosing-scope expression node.
+        src = (
+            "class C:\n"
+            "    def _error(self, node) -> Diagnostic(description='in an annotation'):\n"
+            "        self.errors.append(self._build(node))\n"
+        )
+        v = mod.check_source(src, self.F)
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_decorated_helper_still_skips_its_real_plumbing_ctor(self, mod: object) -> None:
+        # The other direction: a decorator ctor must not inflate the count and
+        # un-skip the helper's genuine, threaded plumbing construction.  Here the
+        # decorator's Diagnostic is fully tagged, so the only way this can report
+        # a violation is if the body ctor was wrongly inspected.
+        src = (
+            "class C:\n"
+            "    @memo(fallback=Diagnostic(description='d', rationale='r', fix='f',\n"
+            f"                              spec_ref='{self.GOOD_REF}'))\n"
+            "    def _error(self, node, description, *, rationale='', fix='',\n"
+            "               spec_ref=''):\n"
+            "        self.errors.append(Diagnostic(description=description,\n"
+            "            rationale=rationale, fix=fix, spec_ref=spec_ref))\n"
+        )
+        assert mod.check_source(src, self.F) == []
+        assert mod.spec_ref_violations_in_source(src, self.F) == []
+
+
+class TestSkipWiringPinnedInAllThreePasses:
+    """The skip is consumed by three passes; each must apply it to the elected
+    plumbing ctor **and to that ctor only**.
+
+    The three predicates the skip is built from are pinned elsewhere.  What this
+    class pins is the *wiring*: that each consumer actually consults the set,
+    per-node.  Coarsening any consumer's ``node in plumbing`` to a file-wide
+    ``if plumbing:`` is a non-equivalent mutant that survives every other test in
+    this module, because no other fixture builds a source where the skip *fires*
+    for a real helper while an independent under-tagged ``Diagnostic(...)`` exists
+    elsewhere in the same file (CLAUDE.md: "green with it does not prove added
+    code does anything").
+
+    A related mutant — reverting the error_code pass to ``main``'s name-span skip
+    — is *not* caught here (this fixture's under-tagged ctors live outside the
+    helper's span, which a name-span skip would not exempt either).  It is caught
+    by ``TestPlumbingSkipCountsEveryOwnScopeCtor``'s stray-inside-the-helper
+    fixture, which is the only test in the module that kills it."""
+
+    SRC = (
+        "class C:\n"
+        "    def _error(self, node, description, *, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        self.errors.append(Diagnostic(description=description,\n"
+        "            rationale=rationale, fix=fix, spec_ref=spec_ref))\n"
+        "\n"
+        "    def check(self, node):\n"
+        "        self.errors.append(Diagnostic(description='independent'))\n"
+        "        self.errors.append(Diagnostic(description='bad', rationale='r',\n"
+        "            fix='f', spec_ref='Chapter 99, Section 99.1 \"Nope\"',\n"
+        "            error_code='E9999'))\n"
+    )
+    F = "vera/checker/core.py"
+
+    def test_presence_pass_skips_only_the_plumbing_ctor(self, mod: object) -> None:
+        v = mod.check_source(self.SRC, self.F)
+        assert len(v) == 1, [(x.line, x.missing) for x in v]
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+        assert "independent" in (v[0].snippet or "")
+
+    def test_spec_ref_pass_skips_only_the_plumbing_ctor(self, mod: object) -> None:
+        # The helper's threaded `spec_ref=spec_ref` must stay exempt while the
+        # sibling's bogus literal is flagged.
+        v = mod.spec_ref_violations_in_source(self.SRC, self.F)
+        assert len(v) == 1 and "§99.1" in v[0].missing[0]
+
+    def test_error_code_pass_skips_only_the_plumbing_ctor(self, mod: object) -> None:
+        v = mod.error_code_registration_violations_in_source(
+            self.SRC, self.F, {"E130"})
+        assert len(v) == 1 and "E9999" in v[0].missing[0]
+
+
 # =====================================================================
 # spec_ref validity: a present spec_ref must cite a real spec section
 # =====================================================================
