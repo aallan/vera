@@ -210,20 +210,38 @@ def _own_scope_diag_ctors(
     return [n for n in _walk_own_scope(fn) if _is_diag_ctor(n)]  # type: ignore[misc]
 
 
+def _not_an_instance_method(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if a decorator rebinds ``fn`` to something other than an instance
+    method, so a first parameter named ``self`` would not be a receiver.
+
+    Matches the bare name (``@staticmethod``) and the dotted form
+    (``@builtins.staticmethod``).  An alias (``from builtins import staticmethod
+    as sm``) is undetectable statically; it would leave the ctor *inspected*
+    rather than exempted, which is the fail-closed direction."""
+    for d in fn.decorator_list:
+        name = (d.id if isinstance(d, ast.Name)
+                else d.attr if isinstance(d, ast.Attribute) else None)
+        if name in ("staticmethod", "classmethod"):
+            return True
+    return False
+
+
 def _class_scoped_functions(tree: ast.AST) -> set[ast.AST]:
-    """Every ``def`` that is a direct member of a ``class`` body and is bound as
-    an instance method — a genuine helper's home.  A module-level or nested
-    function whose first parameter merely happens to be named ``self`` is not
-    one, and neither is a ``@staticmethod`` that names its first parameter
-    ``self`` (there the name is an ordinary positional, not a receiver)."""
+    """Every ``def`` that is a *direct* member of a ``class`` body and is bound as
+    an instance method — a genuine helper's home.
+
+    Three shapes are excluded, each of which could otherwise name its first
+    parameter ``self`` without that parameter being a receiver: a module-level
+    function, a function nested inside a method (a local, not a bound method —
+    ``ast.walk`` over the class would wrongly claim it), and a
+    ``@staticmethod`` / ``@classmethod``."""
     out: set[ast.AST] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             for item in node.body:
                 if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                if any(isinstance(d, ast.Name) and d.id == "staticmethod"
-                       for d in item.decorator_list):
+                if _not_an_instance_method(item):
                     continue
                 out.add(item)
     return out

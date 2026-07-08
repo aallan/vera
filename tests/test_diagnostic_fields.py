@@ -288,8 +288,13 @@ class TestPlumbingSkipNarrowed:
     """#827: the plumbing-skip must key on the helper's *own single* ctor, not
     on the helper's NAME.  A stray/second ``Diagnostic(...)`` inside an
     ``_error``/``_warning`` helper — the exact shape below, straight from the
-    #826 adversarial review — must still be inspected by ALL THREE passes
-    (field presence, ``spec_ref`` validity, ``error_code`` registration).
+    #826 adversarial review — must still be inspected.
+
+    This class covers the field-presence and ``spec_ref``-validity passes; the
+    third consumer of the skip (``error_code`` registration) is covered by
+    ``TestPlumbingSkipCountsEveryOwnScopeCtor`` and
+    ``TestSkipWiringPinnedInAllThreePasses``.
+
     Faults A and B are deliberately ``return`` ctors (a naive "skip the
     return/append child" rule would swallow them), while the legit fully-tagged
     construction is a distractor bound to ``d`` (a rule that counted only
@@ -437,6 +442,33 @@ class TestPlumbingSkipRequiresMethod:
         src = (
             "class C:\n"
             "    @staticmethod\n"
+            "    def _error(self, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_classmethod_lookalike_is_flagged(self, mod: object) -> None:
+        # `@classmethod` binds to the class, so a first parameter named `self` is
+        # not an instance receiver.  (Ordinarily it would be `cls`, which the
+        # `self` check already rejects — this pins the decorator half.)
+        src = (
+            "class C:\n"
+            "    @classmethod\n"
+            "    def _error(self, node, description):\n"
+            "        return Diagnostic(description=description)\n"
+        )
+        v = mod.check_source(src, "vera/foo.py")
+        assert len(v) == 1
+        assert set(v[0].missing) == {"rationale", "fix", "spec_ref"}
+
+    def test_dotted_staticmethod_lookalike_is_flagged(self, mod: object) -> None:
+        # `@builtins.staticmethod` is an `ast.Attribute`, not an `ast.Name` — a
+        # decorator check matching only the bare name would exempt it.
+        src = (
+            "class C:\n"
+            "    @builtins.staticmethod\n"
             "    def _error(self, node, description):\n"
             "        return Diagnostic(description=description)\n"
         )
@@ -646,13 +678,20 @@ class TestSkipWiringPinnedInAllThreePasses:
     """The skip is consumed by three passes; each must apply it to the elected
     plumbing ctor **and to that ctor only**.
 
-    Without this fixture two non-equivalent mutants survive the whole suite:
-    coarsening a consumer's ``node in plumbing`` to a file-wide ``if plumbing:``,
-    and reverting the error_code pass to the old name-keyed skip.  Both need a
-    source where the skip *fires* for a real helper while an independent
-    under-tagged ``Diagnostic(...)`` exists elsewhere in the same file — a shape
-    no other test builds (CLAUDE.md: "green with it does not prove added code
-    does anything")."""
+    The three predicates the skip is built from are pinned elsewhere.  What this
+    class pins is the *wiring*: that each consumer actually consults the set,
+    per-node.  Coarsening any consumer's ``node in plumbing`` to a file-wide
+    ``if plumbing:`` is a non-equivalent mutant that survives every other test in
+    this module, because no other fixture builds a source where the skip *fires*
+    for a real helper while an independent under-tagged ``Diagnostic(...)`` exists
+    elsewhere in the same file (CLAUDE.md: "green with it does not prove added
+    code does anything").
+
+    A related mutant — reverting the error_code pass to ``main``'s name-span skip
+    — is *not* caught here (this fixture's under-tagged ctors live outside the
+    helper's span, which a name-span skip would not exempt either).  It is caught
+    by ``TestPlumbingSkipCountsEveryOwnScopeCtor``'s stray-inside-the-helper
+    fixture, which is the only test in the module that kills it."""
 
     SRC = (
         "class C:\n"
