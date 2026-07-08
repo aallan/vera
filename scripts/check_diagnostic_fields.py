@@ -50,13 +50,18 @@ convenience"; no silently-inferred exemptions):
   escape every pass.  The skip now requires (a) a genuine helper *method* —
   a class member with a ``self`` receiver, since every real helper is one, so
   a module-level function merely named ``_error`` is inspected, not exempted —
-  AND (b) that the ctor is the method's **sole own-scope** construction.  A
+  (b) that the ctor is the method's **sole own-scope** construction, and (c)
+  that the ctor is actually *reachable as the helper's result* — return-ed,
+  appended, or bound to a local that is later return-ed/appended (#956).  A
   helper holding two constructions is ambiguous: neither is skipped, and both
   are inspected.  Counting *every* own-scope construction (not just the one
   structurally ``return``ed or ``.append(...)``-ed) is what makes (b) sound —
   see ``_own_scope_diag_ctors``.  "Own scope" is the helper's **body**:
   decorators, parameter defaults and annotations evaluate in the *enclosing*
-  scope, so a ``Diagnostic(...)`` there is inspected, never elected.
+  scope, so a ``Diagnostic(...)`` there is inspected, never elected.  Without
+  (c), a helper that builds its sole ctor and hands it to something other
+  than a return/append (e.g. ``self.dispatch(d)``) was wrongly elected as
+  plumbing — see ``_ctor_is_reachable_as_result``.
 
 Usage:
     python scripts/check_diagnostic_fields.py   # exit 0 if all sites
@@ -263,9 +268,93 @@ def _is_helper_method(fn: ast.FunctionDef | ast.AsyncFunctionDef,
     return bool(params) and params[0].arg == "self"
 
 
+def _is_append_call(node: ast.AST) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append")
+
+
+def _bump_target(target: ast.expr, counts: dict[str, int]) -> None:
+    """Record every plain name a (possibly-tuple/list) assignment target
+    binds — recursing into nested unpacking so ``a, (b, c) = ...`` counts
+    all three."""
+    if isinstance(target, ast.Name):
+        counts[target.id] = counts.get(target.id, 0) + 1
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            _bump_target(elt, counts)
+
+
+def _rebound_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, int]:
+    """Count every name-binding site in ``fn``'s own scope: plain and
+    augmented assignment, ``for``/``async for`` loop targets, ``with``/
+    ``async with`` ``as`` aliases, walrus (``:=``) targets, and exception-
+    handler ``as`` names.  A name bound more than once by ANY of these forms
+    cannot be trusted to still hold its first value later in the function —
+    see ``_ctor_is_reachable_as_result``."""
+    counts: dict[str, int] = {}
+    for node in _walk_own_scope(fn):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                _bump_target(t, counts)
+        elif isinstance(node, ast.AugAssign):
+            _bump_target(node.target, counts)
+        elif isinstance(node, ast.NamedExpr):
+            _bump_target(node.target, counts)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            _bump_target(node.target, counts)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    _bump_target(item.optional_vars, counts)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            counts[node.name] = counts.get(node.name, 0) + 1
+    return counts
+
+
+def _ctor_is_reachable_as_result(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, ctor: ast.Call,
+) -> bool:
+    """True if the helper's sole own-scope ctor is return-ed, appended, or
+    bound to a local that is later return-ed/appended (#956).  A ctor merely
+    constructed and handed to something else (e.g. dispatched via a bound
+    attribute) is not plumbing — nothing threads its literal fields through
+    a call site, so it must be inspected.
+
+    The second loop matches a return/append by NAME alone — it has no real
+    data-flow, so it cannot tell whether that name still holds the ctor by
+    the time it's returned.  A local rebound after the ctor-binding Assign —
+    plain reassignment (``d = something_else``), a ``for``/``with`` target,
+    a walrus, or any of the other binding forms ``_rebound_names`` counts —
+    would otherwise still match on the name and be wrongly treated as
+    reachable.  Conservative fix: if the bound name is rebound more than
+    once anywhere in own scope (by any binding form), its later reads are
+    unreliable — don't treat it as reachable at all (inspected, not
+    exempted)."""
+    local_name = None
+    for node in _walk_own_scope(fn):
+        if isinstance(node, ast.Return) and node.value is ctor:
+            return True
+        if _is_append_call(node) and any(a is ctor for a in node.args):
+            return True
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.value is ctor):
+            local_name = node.targets[0].id
+    if local_name is None or _rebound_names(fn).get(local_name, 0) != 1:
+        return False
+    for node in _walk_own_scope(fn):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Name) \
+                and node.value.id == local_name:
+            return True
+        if _is_append_call(node) and any(
+                isinstance(a, ast.Name) and a.id == local_name for a in node.args):
+            return True
+    return False
+
+
 def _plumbing_ctors(tree: ast.AST) -> set[ast.Call]:
     """The ``Diagnostic(...)`` node that each ``_error`` / ``_warning`` helper
-    method constructs as its *own* plumbing — narrowed for #827.
+    method constructs as its *own* plumbing — narrowed for #827, then again
+    for #956.
 
     Previously the skip keyed on the enclosing function's NAME and dropped
     *every* ``Diagnostic(...)`` lexically inside a helper span, so a stray /
@@ -278,6 +367,13 @@ def _plumbing_ctors(tree: ast.AST) -> set[ast.Call]:
     A helper containing two constructions is ambiguous, so neither is skipped
     and both are inspected.
 
+    Neither of those checks confirms the sole ctor is actually the helper's
+    *output* — #956: a helper that builds the ``Diagnostic`` and hands it to
+    something else entirely (e.g. ``self.dispatch(d)``) rather than returning
+    or appending it was still elected as plumbing.  ``_ctor_is_reachable_as_result``
+    closes that gap, run after the ``len(ctors) == 1`` gate so it doesn't disturb
+    the ambiguity handling above.
+
     Returns the ctor *nodes*; callers match by identity (AST nodes hash by
     identity), so the set is meaningful only for ``tree``."""
     class_methods = _class_scoped_functions(tree)
@@ -287,7 +383,7 @@ def _plumbing_ctors(tree: ast.AST) -> set[ast.Call]:
                 and fn.name in ("_error", "_warning")
                 and _is_helper_method(fn, class_methods)):
             ctors = _own_scope_diag_ctors(fn)
-            if len(ctors) == 1:
+            if len(ctors) == 1 and _ctor_is_reachable_as_result(fn, ctors[0]):
                 out.add(ctors[0])
     return out
 
