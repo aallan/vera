@@ -403,12 +403,16 @@ def _normalize_ws(text: str) -> str:
 
 
 class TestErrorDisplaySync:
-    """The E001 error in README, docs/index.html, and spec must match the compiler.
+    """The E001 error must match the compiler in every place it is mirrored.
 
-    Generates the canonical E001 diagnostic from vera.errors and verifies
-    that every semantic component (description, rationale, fix, spec_ref)
-    appears identically in all documentation files.  Whitespace is
-    normalised before comparison because the docs wrap long lines.
+    Generates the canonical E001 diagnostic from vera.errors and verifies that
+    its semantic components (description, rationale, fix, spec_ref) appear
+    identically in each mirror: ``README.md``, ``docs/index.html``,
+    ``spec/00-introduction.md``, ``AGENTS.md``'s example ``--json`` block, and
+    the hardcoded example in ``scripts/build_site.py`` that generates
+    ``docs/index.md`` (#829).  Whitespace is normalised before comparison
+    because the docs wrap long lines; AGENTS.md's ellipsis-truncated
+    description/rationale are prefix-compared rather than matched exactly.
     """
 
     @pytest.fixture()
@@ -604,9 +608,12 @@ class TestErrorDisplaySync:
         ), "build_site.py error block header doesn't match expected format"
 
     # -- AGENTS.md (embedded example --json block) ------------------------
-    # description/rationale are ellipsis-truncated in the example JSON and the
-    # other fields are JSON-escaped, so only error_code and spec_ref appear
-    # verbatim.  spec_ref is exactly the field #826 drifted, which this guards.
+    # `_extract_agents_diagnostic()` runs the block through `json.loads`, which
+    # resolves the escaping, so every field is directly comparable in Python.
+    # `error_code`, `spec_ref` and `fix` are canonical and compared exactly;
+    # `description` / `rationale` are ellipsis-truncated in the example, so they
+    # are prefix-compared; `source_line` / `location` are example-specific and
+    # deliberately excluded.  `spec_ref` is exactly the field #826 drifted.
 
     def test_agents_has_error_code(self, canonical: Diagnostic) -> None:
         diag = _extract_agents_diagnostic()
@@ -619,3 +626,32 @@ class TestErrorDisplaySync:
             f"Expected: {canonical.spec_ref!r}\n"
             f"Got:      {diag.get('spec_ref')!r}"
         )
+
+    def test_agents_has_fix(self, canonical: Diagnostic) -> None:
+        """`fix` deserialises byte-identically to the canonical text, so a drift
+        in either direction must fail.  Without this the AGENTS.md mirror is the
+        one place a `fix` edit can go stale while every other mirror is updated
+        in lockstep — the exact #829 drift class."""
+        diag = _extract_agents_diagnostic()
+        assert diag.get("fix") == canonical.fix, (
+            f"AGENTS.md example JSON has a drifted fix.\n"
+            f"Expected: {canonical.fix!r}\n"
+            f"Got:      {diag.get('fix')!r}"
+        )
+
+    def test_agents_truncated_fields_are_prefixes(
+        self, canonical: Diagnostic
+    ) -> None:
+        """`description` / `rationale` are ellipsis-truncated in the example, so
+        assert each is a genuine prefix of the canonical text.  A drift in either
+        still fails, without requiring the example to carry the full string."""
+        diag = _extract_agents_diagnostic()
+        for field in ("description", "rationale"):
+            truncated = str(diag.get(field, "")).removesuffix("...")
+            assert truncated, f"AGENTS.md example JSON has no {field}"
+            assert getattr(canonical, field).startswith(truncated), (
+                f"AGENTS.md example JSON's {field} is not a prefix of the "
+                f"canonical text.\n"
+                f"Canonical: {getattr(canonical, field)!r}\n"
+                f"Got:       {diag.get(field)!r}"
+            )

@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-6,787 tests, 143 conformance programs, 37 examples, 14 spec chapters.
+6,789 tests, 143 conformance programs, 37 examples, 14 spec chapters.
 
 ## The roadmap
 
@@ -22,7 +22,7 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 |---|---|
 | [#735](https://github.com/aallan/vera/issues/735) | Builtin dispatch table — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it. |
 | [#828](https://github.com/aallan/vera/issues/828) | Make `error_code` one-concept-per-code: `ERROR_CODES` names codes but doesn't stop two unrelated diagnostics sharing one (4 such collisions surfaced in #682).  A cheap emission-side registration check shipped; the proper fix is a collision-detection gate + making the registry the single home of each code's concept. |
-| [#829](https://github.com/aallan/vera/issues/829) | Extend `TestErrorDisplaySync` to the two unguarded `E001` `spec_ref` mirrors (`AGENTS.md` + the `build_site.py` generator): the example lives in six places, only four are test-guarded, and #826 drifted the ungated pair.  Deeper option: single-source the example so nothing can drift. |
+| [#954](https://github.com/aallan/vera/issues/954) | Single-source the `E001` example so the five doc mirrors cannot drift.  #951 closed the *detection* half (`TestErrorDisplaySync` now guards `README.md`, `docs/index.html`, `spec/00-introduction.md`, `AGENTS.md`'s example JSON and the `build_site.py` generator), but the example is still hand-duplicated in all five; generating each from `vera/errors.py` would remove the drift class structurally. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps.  The current manual ordering is documented in [CONTRIBUTING.md](CONTRIBUTING.md) until this lands. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
