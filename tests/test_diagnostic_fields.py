@@ -324,9 +324,9 @@ class TestPlumbingSkipNarrowed:
     def test_stray_spec_ref_fault_flagged(
         self, mod: object, tmp_path: Path) -> None:
         # Self-contained: pin §4.3's title in an inline fixture spec so the
-        # assertion can't break on a live-spec re-title (greptile P2).  The
-        # legit ctor + Fault A cite §4.3 correctly (resolve); only Fault B cites
-        # it under a WRONG title, so exactly one violation is expected.
+        # assertion can't break on a live-spec re-title.  The legit ctor +
+        # Fault A cite §4.3 correctly (resolve); only Fault B cites it under a
+        # WRONG title, so exactly one violation is expected.
         spec_dir = tmp_path / "spec"
         spec_dir.mkdir()
         (spec_dir / "04-x.md").write_text(
@@ -395,7 +395,7 @@ class TestPlumbingSkipRequiresMethod:
         assert set(v[0].missing) == {"rationale", "spec_ref"}
 
     def test_nested_scope_ctor_not_attributed_to_helper(self, mod: object) -> None:
-        # PR #2 review (gemini/greptile): a Diagnostic in a NESTED def inside the
+        # A Diagnostic in a NESTED def inside the
         # helper must NOT be counted among the helper's own ctors — else the
         # helper looks ambiguous (2 ctors) and its OWN legit plumbing ctor gets
         # wrongly inspected.  This codegen helper's own append omits fix/spec_ref

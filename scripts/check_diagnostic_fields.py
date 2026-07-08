@@ -156,10 +156,10 @@ def _walk_own_scope(fn: ast.AST) -> Iterator[ast.AST]:
     function / lambda / class scopes.  ``ast.walk`` would cross those
     boundaries, so a ``return Diagnostic(...)`` or ``.append(Diagnostic(...))``
     inside a nested ``def`` / ``lambda`` within the helper would be wrongly
-    attributed to the *outer* helper (PR #2 review, gemini + greptile) — either
-    miscounting the helper as ambiguous (>1 ctor) or exempting a ctor that
-    belongs to the inner scope.  A ctor in a nested scope is that scope's
-    concern, governed by its own name/return rules."""
+    attributed to the *outer* helper — either miscounting the helper as
+    ambiguous (>1 ctor) or exempting a ctor that belongs to the inner scope.
+    A ctor in a nested scope is that scope's concern, governed by its own
+    name/return rules."""
     stack: list[ast.AST] = list(ast.iter_child_nodes(fn))
     while stack:
         node = stack.pop()
