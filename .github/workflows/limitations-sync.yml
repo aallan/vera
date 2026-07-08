@@ -1,0 +1,42 @@
+name: Limitations sync (issue states)
+
+# Checks that spec/SKILL.md/README limitation tables agree with the live
+# state of the GitHub issues they cite (#852) — e.g. a row still listing a
+# limitation whose tracking issue has since been closed. This is a
+# visibility signal on the Actions tab, not a merge gate: it is
+# deliberately NOT added to required branch-protection status checks,
+# since issue state can drift independently of any particular PR.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'   # Monday 07:00 UTC — offset from nightly-stress's 06:00 daily slot
+  workflow_dispatch:
+
+# A manual workflow_dispatch run right around the Monday cron shouldn't race
+# a scheduled run against the same live issue-state data; queue instead of
+# cancelling either one.
+concurrency:
+  group: limitations-sync
+  cancel-in-progress: false
+
+jobs:
+  check-states:
+    permissions:
+      contents: read
+      issues: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check limitation tables against live issue states
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/check_limitations_sync.py --check-states
