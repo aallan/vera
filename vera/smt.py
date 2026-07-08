@@ -970,37 +970,15 @@ class SmtContext:
             # Z3 term.  The #727 span-keyed dedup keeps re-translation
             # duplicate-free.
             #
-            # The walk runs inside `solver.push()` / `pop()`, and that scoping is
-            # load-bearing, not tidiness.  Translating a `FnCall` argument does
-            # more than record its E501: `_translate_call_with_info` ASSUMES the
-            # callee's `ensures` via a bare `self.solver.add(z3_post)`, which
-            # lands on the solver's BASE assertion stack.  `_path_conditions` are
-            # folded in by `check_valid` around the *goal* only, so an assumed
-            # postcondition otherwise escapes the `if` branch it was translated
-            # under and becomes an unconditional fact about the CALLER's slots
-            # (`_build_callee_env` binds the callee's params to the caller's
-            # terms).  It is even circular: `dec5 requires(@Nat.0 >= 5)
-            # ensures(@Nat.result == @Nat.0 - 5)` injects `ret == @Nat.0 - 5`,
-            # which with `@Nat`'s implicit `ret >= 0` entails `@Nat.0 >= 5` — the
-            # very precondition that licensed the assumption.  A caller's false
-            # `ensures(@Nat.0 >= 5)` then proves at Tier 1, no runtime check is
-            # emitted, and `vera run` violates the contract.
-            #
-            # Push/pop keeps the assumption scoped to the argument expression
-            # that earned it (so a nested `show(mag(x))` still discharges `show`'s
-            # precondition from `mag`'s postcondition) while discarding it before
-            # the caller's own obligations are checked.  Obligations and
-            # diagnostics are recorded in Python state, so `pop()` cannot erase
-            # them.  Discarding a fact can only make a later goal *less* provable
-            # — the fail-closed direction.  (PR #953 review.  The same unguarded
-            # assumption is reachable on `main` through the #730 statement-position
-            # walk and is tracked separately; this branch must not widen it.)
-            self.solver.push()
-            try:
-                for arg in expr.args:
-                    self.translate_expr(arg, env)
-            finally:
-                self.solver.pop()
+            # Translating a `FnCall` argument does more than record its E501: it
+            # also ASSUMES the callee's `ensures` (`_translate_call_with_info`).
+            # That assumption is scoped to the branch it was learned in by
+            # `_guard_fact`; without that guard it escapes the enclosing `if` and
+            # becomes an unconditional — and circular — fact about the CALLER's
+            # slots, letting a caller's false `ensures` prove at Tier 1.  See
+            # `_guard_fact` for the mechanism and the repro.
+            for arg in expr.args:
+                self.translate_expr(arg, env)
             return None
 
         # Unsupported: handle, lambdas, quantifiers,
@@ -2033,7 +2011,7 @@ class SmtContext:
                 continue
             z3_post = self.translate_expr(contract.expr, callee_env)
             if z3_post is not None:
-                self.solver.add(z3_post)
+                self.solver.add(self._guard_fact(z3_post))
         self._result_var = saved_result
 
         # #746: a refined return type is an implicit postcondition — assume
@@ -2066,7 +2044,7 @@ class SmtContext:
             inner_env = SlotEnv().push(binder, ret_var)
             z3_pred = self.translate_expr(ret_type.predicate, inner_env)
             if z3_pred is not None:
-                self.solver.add(z3_pred)
+                self.solver.add(self._guard_fact(z3_pred))
 
         return ret_var
 
@@ -2713,6 +2691,33 @@ class SmtContext:
     # -----------------------------------------------------------------
     # Validity checking
     # -----------------------------------------------------------------
+
+    def _guard_fact(self, fact: z3.ExprRef) -> z3.ExprRef:
+        """Scope an assumed fact to the branch it was learned in.
+
+        A callee's `ensures` (and a refined return's predicate) is only
+        guaranteed on the paths where the call actually executes.  Asserting it
+        bare puts it on the solver's BASE stack, where it outlives the enclosing
+        ``if`` — `check_valid` folds ``_path_conditions`` around the *goal* only,
+        so a fact learned under ``cond`` silently becomes unconditional.
+
+        That is unsound, and circularly so: `dec5 requires(@Nat.0 >= 5)
+        ensures(@Nat.result == @Nat.0 - 5)` injects `ret == @Nat.0 - 5`, which
+        with `@Nat`'s implicit `ret >= 0` entails `@Nat.0 >= 5` — the very
+        precondition the branch guard was there to establish.  A caller's false
+        `ensures(@Nat.0 >= 5)` then proves at Tier 1.  Two calls in
+        mutually-exclusive arms inject contradictory facts, the base solver goes
+        UNSAT, and *every* obligation discharges vacuously — including the E501s
+        this translator exists to raise.
+
+        `_translate_match` already guards its injected facts this way
+        (`solver.add(z3.Implies(cond, f))`); the call translator did not.
+        Guarding keeps each fact exactly as strong as the path that earned it
+        (PR #953 review).
+        """
+        if self._path_conditions:
+            return z3.Implies(z3.And(*self._path_conditions), fact)
+        return fact
 
     def check_valid(
         self,

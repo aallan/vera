@@ -609,13 +609,15 @@ class TestObligationKinds:
               ensures(@Int.result == @Int.0) effects(<Counter>)
             { Counter.bump(@Int.0) }
 
-        With `return None` the postcondition is not entailed and degrades to a
-        Tier-3 runtime check.  With `return last` the body translates to
-        `@Int.0`, the postcondition proves at Tier 1, and **no** runtime check is
-        emitted — so a handler returning anything else violates the contract
-        silently.  Mutating `return None` -> `return last` moves this obligation
-        from `tier3` to `verified` and leaves all 371 other tests green
-        (PR #953 review).
+        With `return None` the postcondition is not entailed and `vera verify`
+        honestly reports it as `tier3` — not proved, deferred to the runtime
+        contract check.  With `return last` the body translates to `@Int.0`, so
+        the verifier *proves* `@Int.result == @Int.0` and reports `verified`, for
+        a claim only the handler could satisfy.  (Codegen never reads the tiers,
+        so the runtime `contract_fail` guard survives either way; what breaks is
+        `vera verify`'s claim.)  Mutating `return None` -> `return last` moves
+        this obligation from `tier3` to `verified` and leaves all 371 other tests
+        green (PR #953 review).
         """
         source = (
             "effect Counter {\n"
@@ -635,7 +637,7 @@ class TestObligationKinds:
         assert len(posts) == 1, posts
         assert posts[0].status == "tier3", (
             "the effect op's result is the handler's choice — proving "
-            "`@Int.result == @Int.0` at Tier 1 would delete the runtime guard; "
+            "`@Int.result == @Int.0` at Tier 1 is a false claim; "
             f"got status={posts[0].status!r}"
         )
 
@@ -653,16 +655,16 @@ class TestObligationKinds:
 
         Here that fact is circular: `dec5`'s `ensures(@Nat.result == @Nat.0 - 5)`
         plus `@Nat`'s implicit `result >= 0` entails `@Nat.0 >= 5` — the very
-        precondition that licensed the assumption.  Without the `solver.push()` /
-        `pop()` around the argument walk, `main`'s FALSE `ensures(@Nat.0 >= 5)`
-        proves at Tier 1, no diagnostic is emitted, and `vera run main -- 0`
-        violates the contract at run time.  `main` (before #776) rejected this
-        program correctly, so an unscoped walk would be a soundness REGRESSION.
+        precondition that licensed the assumption.  Without `_guard_fact`,
+        `main`'s FALSE `ensures(@Nat.0 >= 5)` proves at Tier 1, `vera verify`
+        reports `ok=true` with no diagnostic, and `vera run main -- 0` traps.
+        `main` (before #776) rejected this program correctly, so leaving the
+        assumption unguarded would have been a soundness REGRESSION.
 
-        The same unguarded assumption is reachable through the #730
-        statement-position walk with no effect op at all; that is pre-existing and
-        tracked separately.  This test pins only that #776's argument walk does
-        not widen it (PR #953 review).
+        `_translate_match` already guarded its injected facts this way; the call
+        translator did not.  See `test_pure_call_postcondition_does_not_escape_its_branch`
+        for the same leak with no effect operation anywhere — that one is
+        reachable on `main` today (PR #953 review).
         """
         source = (
             "effect Slp {\n"
@@ -705,6 +707,128 @@ class TestObligationKinds:
             if o.fn_name == "dec5" and o.kind == "requires"
         ]
         assert callee_pre and all(o.status == "verified" for o in callee_pre)
+
+    def test_pure_call_postcondition_does_not_escape_its_branch(self) -> None:
+        """The same leak with NO effect operation anywhere — a false Tier-1 that
+        `main` shipped with, reachable through the #730 statement-position walk.
+
+        `_translate_call_with_info` assumed the callee's `ensures` onto the
+        solver's base stack.  `_translate_match` already guarded its injected
+        facts (`solver.add(z3.Implies(cond, f))`); the call translator did not, so
+        a fact learned under an `if` outlived the branch.
+
+        Before `_guard_fact`, `vera verify` printed "6 verified (Tier 1)" and no
+        diagnostic for this program, and `vera run main -- 0` trapped on the
+        postcondition it had just "proved".  A verifier that reports MORE
+        successes and FEWER diagnostics than a correct one is failing open — the
+        one outcome this language cannot afford.
+
+        Two calls in mutually-exclusive arms inject contradictory facts, the base
+        solver goes UNSAT, and every obligation discharges vacuously — which is
+        how this bug silently swallowed the very `E501` that #776 adds.
+        """
+        source = (
+            "private fn dec5(@Nat -> @Nat)\n"
+            "  requires(@Nat.0 >= 5)\n"
+            "  ensures(@Nat.result == @Nat.0 - 5)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0 - 5\n"
+            "}\n"
+            "\n"
+            "public fn main(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(@Nat.0 >= 5)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  if @Nat.0 >= 5 then { let @Nat = dec5(@Nat.0); () } else { () };\n"
+            "  @Nat.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        caller_post = [
+            o for o in result.obligations
+            if o.fn_name == "main" and o.kind == "ensures"
+        ]
+        assert len(caller_post) == 1, caller_post
+        assert caller_post[0].status == "violated", (
+            "`ensures(@Nat.0 >= 5)` is false for @Nat.0 = 0; proving it at Tier 1 "
+            "means dec5's postcondition escaped its `if` guard.  "
+            f"got status={caller_post[0].status!r}"
+        )
+        assert [d.error_code for d in result.diagnostics] == ["E500"], (
+            result.diagnostics
+        )
+        # The callee's own precondition IS legitimately discharged under the guard,
+        # so the guard must not over-reject.
+        callee_pre = [
+            o for o in result.obligations
+            if o.fn_name == "dec5" and o.kind == "requires"
+        ]
+        assert callee_pre and all(o.status == "verified" for o in callee_pre)
+
+    def test_guard_fact_conjoins_every_path_condition(self) -> None:
+        """`_guard_fact` must conjoin ALL live path conditions, not any one of them.
+
+        With a single path condition `And(c)` and `Or(c)` are the same formula, so
+        no program with one `if` can distinguish them — mutating `z3.And` to
+        `z3.Or` survives the whole behavioural suite.  A nested `if` gives two,
+        and `Or` is then a strictly weaker premise, asserting the callee's fact on
+        paths where it was never established.
+
+        Checked semantically (Z3 equivalence), not by matching the formula's
+        printed shape.
+        """
+        import z3
+
+        from vera.smt import SmtContext
+
+        ctx = SmtContext()
+        fact = z3.Bool("fact")
+        # No path conditions: the fact is unconditional, returned untouched.
+        assert ctx._guard_fact(fact) is fact
+
+        c1, c2 = z3.Bool("c1"), z3.Bool("c2")
+        ctx._path_conditions.extend([c1, c2])
+        guarded = ctx._guard_fact(fact)
+
+        solver = z3.Solver()
+        solver.add(z3.Not(guarded == z3.Implies(z3.And(c1, c2), fact)))
+        assert solver.check() == z3.unsat, (
+            f"_guard_fact must be Implies(And(*path_conditions), fact); got {guarded}"
+        )
+
+        solver = z3.Solver()
+        solver.add(z3.Not(guarded == z3.Implies(z3.Or(c1, c2), fact)))
+        assert solver.check() == z3.sat, (
+            "_guard_fact collapsed to the Or form — the premise is too weak and "
+            "the callee's fact escapes onto paths that never established it"
+        )
+
+    def test_injected_callee_facts_route_through_guard_fact(self) -> None:
+        """Both facts `_translate_call_with_info` injects must be guarded.
+
+        A wiring test, deliberately.  The callee `ensures` has a behavioural probe
+        (`test_pure_call_postcondition_does_not_escape_its_branch`), but the
+        refined-return predicate constrains only the call's *fresh* result
+        variable, so removing its guard changes no observable verdict — un-guarding
+        it survives every behavioural test in this module.  It is still wrong: an
+        unsatisfiable predicate asserted at base level makes the solver UNSAT and
+        discharges every obligation vacuously.  Pin the wiring instead.
+        """
+        import pathlib as _pathlib
+
+        import vera.smt
+
+        src = _pathlib.Path(vera.smt.__file__).read_text(encoding="utf-8")
+        assert "self.solver.add(self._guard_fact(z3_post))" in src, (
+            "the callee postcondition must be guarded by the path conditions"
+        )
+        assert "self.solver.add(self._guard_fact(z3_pred))" in src, (
+            "the refined-return predicate must be guarded by the path conditions"
+        )
+        assert "self.solver.add(z3_post)" not in src, "bare, unguarded postcondition assumption"
+        assert "self.solver.add(z3_pred)" not in src, "bare, unguarded refined-return assumption"
 
     def test_let_nat_subtraction_records_once(self) -> None:
         """A violating call as a @Nat-subtraction operand in a let RHS
