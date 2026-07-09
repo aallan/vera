@@ -98,5 +98,7 @@ class TestCheckStatesFailsLoud:
             timeout=120,
         )
         assert result.returncode == 1
-        out = result.stdout + result.stderr
+        # Windows: a capture pipe read by a crippled-PATH subprocess can
+        # surface as None rather than "" — guard both streams.
+        out = (result.stdout or "") + (result.stderr or "")
         assert "could not be determined" in out
