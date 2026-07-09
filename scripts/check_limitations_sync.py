@@ -315,7 +315,7 @@ def main() -> int:
                     # workflow green while checking nothing.
                     errors.append(
                         f"Issue #{num} state could not be determined "
-                        "(gh CLI missing, auth failure, or timeout) — "
+                        "(gh CLI missing, auth failure, or timeout); "
                         "--check-states cannot verify the limitation tables"
                     )
 

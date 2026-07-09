@@ -89,6 +89,9 @@ class TestCheckStatesFailsLoud:
     def test_unknown_state_is_an_error(self, tmp_path: Path) -> None:
         env = os.environ.copy()
         env["PATH"] = str(tmp_path)  # no `gh` resolvable -> every state UNKNOWN
+        # The child script prints via the platform default encoding (cp1252 on
+        # Windows); pin its stdio to UTF-8 so the utf-8 pipe decode is sound.
+        env["PYTHONIOENCODING"] = "utf-8"
         result = subprocess.run(
             [sys.executable, str(_SCRIPT), "--check-states"],
             capture_output=True,
