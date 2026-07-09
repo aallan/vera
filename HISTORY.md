@@ -461,13 +461,13 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 ## Stage 19 and Stage 20: The dual-threaded start (9 July onwards)
 
-*Two stages, two authors.*
+*Two sprints at once.*
 
-The staged roadmap met reality within a day: the project's third external contributor opened four PRs — three against the single-source sprint's table, one an ongoing-thread CI item — while the verification-completeness campaign was still queued — so Stages 19 and 20 run dual-threaded, the external thread working gate honesty and CI machinery (Stage 20), the maintainer thread (Stage 19) to follow.  All four merged after adversarial review and hardening on their branches: the scheduled limitations-sync workflow made failure-proof, the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair.
+Stages 19 and 20 run dual-threaded: community PRs against the single-source sprint's table landed first — the scheduled limitations-sync workflow (made failure-proof in review), the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair — while the verification-completeness campaign follows.  The pre-release sweep also caught an E009 crash, fixed in the release, and retired two CI workarounds whose removal triggers had fired.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.1.2 | 9 Jul | **The external gate-hardening batch** — four community PRs: scheduled limitations-sync, the arm64 advisory lane, and the gate-honesty pair ([#956](https://github.com/aallan/vera/issues/956)). |
+| v0.1.2 | 9 Jul | **The gate-hardening batch** — scheduled limitations-sync, the arm64 advisory lane, the gate-honesty pair ([#956](https://github.com/aallan/vera/issues/956)), and the E009 crash fix from the pre-release sweep. |
 
 ---
 
