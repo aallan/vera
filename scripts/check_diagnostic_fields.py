@@ -36,11 +36,14 @@ convenience"; no silently-inferred exemptions):
   fix or spec section.  These are exempt from ``fix`` / ``spec_ref`` —
   declared *once*, with a written reason, here.  A new helper or a new
   direct ``Diagnostic(...)`` defaults to fully-required until added.
-- **Per-call opt-out:** ``# diag-fields-exempt: <reason>`` on the call,
-  the reason mandatory — for one-off defensive / internal branches
-  (e.g. an "unknown expression type" fallback).  A marker without a
-  reason is itself a violation.  (A dedicated token, not a ruff-style
-  suppression comment — see ``OPT_OUT`` below for why.)
+- **Per-call opt-out:** ``# diag-fields-exempt: <reason>`` on the call
+  (found anywhere across a multi-line call's span), the reason mandatory —
+  for one-off defensive / internal branches (e.g. an "unknown expression
+  type" fallback).  It waives missing fields and *unresolvable* non-literal
+  severity/spec_ref, never a resolving-but-wrong spec_ref or an
+  unregistered error_code (#955).  A marker without a reason is itself a
+  violation.  (A dedicated token, not a ruff-style suppression comment —
+  see ``OPT_OUT`` below for why.)
 - **Plumbing skip:** the *single* ``Diagnostic(...)`` an ``_error`` /
   ``_warning`` helper *method* constructs is not an independent site — its
   fields are threaded from the helper's parameters, so its call sites plus

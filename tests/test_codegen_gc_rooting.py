@@ -797,7 +797,8 @@ public fn main(-> @Unit)
         ``json_get`` retrieves the still-live block and the assertion
         observes ``10``.  The architectural follow-up — move ``_map_store``
         reads into the bucket array and delete the Python store entirely
-        — is tracked as #706.
+        — landed as #706 (bucket-as-truth): the store is gone and the
+        bucket array is the sole truth.
         """
         src = """
 effect IO { op print(String -> Unit); }

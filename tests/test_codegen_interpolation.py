@@ -990,8 +990,8 @@ public fn main(-> @Unit)
         Note: a more direct test using `type Id<T> = T;` (per
         CodeRabbit's suggestion) hits a parallel
         parameterised-alias gap in `_type_expr_to_wasm_type`
-        (codegen/core.py compilability check) that's outside
-        #630's scope and tracked as a follow-up.  `Box<T> =
+        (codegen/core.py compilability check) that was outside
+        #630's scope — since fixed by #635.  `Box<T> =
         Array<T>` exercises the walker substitution path
         end-to-end via the IndexExpr-of-FnCall element-type
         lookup, which doesn't go through the compilability

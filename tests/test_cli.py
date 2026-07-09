@@ -268,6 +268,51 @@ class TestCmdParse:
 
 
 class TestCmdCheck:
+    _INVALID_ESCAPE_SRC = (
+        "public fn main(-> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(<IO>)\n"
+        "{\n"
+        '  IO.print("bad \\q escape");\n'
+        "  0\n"
+        "}\n"
+    )
+
+    def test_invalid_escape_is_a_diagnostic_not_a_traceback(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An invalid string escape (E009) must surface as a diagnostic, not
+        a raw lark.VisitError traceback: the E009 TransformError is raised
+        inside a Lark token callback, which lark wraps in VisitError, so
+        cmd_check's `except VeraError` never fired and the CLI crashed with
+        empty stdout in both text and --json modes (#966)."""
+        path = _bad_vera(tmp_path, self._INVALID_ESCAPE_SRC)
+        rc = cmd_check(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "E009" in err
+        assert "Invalid escape sequence" in err
+        assert "Traceback" not in err
+
+    def test_invalid_escape_json_envelope(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--json mode: the E009 crash left ZERO bytes on stdout, so there
+        was no `ok` field for CI to gate on (spec \u00a70.5.8) (#966)."""
+        import json as _json
+        path = _bad_vera(tmp_path, self._INVALID_ESCAPE_SRC)
+        rc = cmd_check(path, as_json=True)
+        assert rc == 1
+        payload = _json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["error_code"] == "E009"
+        # Full instruction fields (spec \u00a70.5.1) — the E009 factory call
+        # previously shipped description-only under a false grammar-prevents
+        # waiver.
+        d = payload["diagnostics"][0]
+        assert d["rationale"] and d["fix"] and d["spec_ref"]
+
     def test_clean_example(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = cmd_check(INCREMENT)
         assert rc == 0

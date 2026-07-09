@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from lark import Token, Transformer, Tree, v_args
+from lark.exceptions import VisitError
 
 from vera.ast import (
     AbilityConstraint,
@@ -88,7 +89,7 @@ from vera.ast import (
     _WhereFns,
     _WithClause,
 )
-from vera.errors import Diagnostic, SourceLocation, TransformError
+from vera.errors import Diagnostic, SourceLocation, TransformError, VeraError
 
 
 def _span_from_meta(meta: Any) -> Span | None:
@@ -105,13 +106,61 @@ def _span_from_meta(meta: Any) -> Span | None:
 
 def _transform_error(
     msg: str, meta: Any = None, *, error_code: str = "E010",
+    rationale: str = "", fix: str = "", spec_ref: str = "",
 ) -> TransformError:
-    """Create a TransformError with optional location info."""
+    """Create a TransformError with optional location info.
+
+    E009 (user-reachable escape / interpolation errors) callers pass the
+    full instruction fields; E010 (unhandled grammar rule) callers do not —
+    a rule the grammar defines but the transformer misses is a compiler
+    bug, not a user error, so there is no user-facing fix to offer (#966).
+    """
     loc = SourceLocation()
     if meta and hasattr(meta, "line") and meta.line is not None:
         loc = SourceLocation(line=meta.line, column=meta.column)
-    return TransformError(Diagnostic(  # diag-fields-exempt: generic transform-phase error factory (E009 escapes / E010 unhandled rule); reports structural invariants the grammar largely prevents — per-call rationale/fix/spec_ref tracked as a follow-up.
-        description=msg, location=loc, error_code=error_code))
+    return TransformError(Diagnostic(  # diag-fields-exempt: fields threaded from call sites (E009 passes rationale/fix/spec_ref; E010 unhandled-rule sites report internal invariants, description-only — see the docstring)
+        description=msg, location=loc, error_code=error_code,
+        rationale=rationale, fix=fix, spec_ref=spec_ref))
+
+
+_E009_ESCAPE_RATIONALE = (
+    "Vera strings accept a closed set of escape sequences so string "
+    "literals are unambiguous; an unrecognised escape is more likely a "
+    "typo than an intention, and silently passing it through would change "
+    "the string's meaning."
+)
+_E009_ESCAPE_FIX = (
+    'Use one of the valid escapes — \\\\, \\", \\n, \\t, \\r, \\0, '
+    "\\u{XXXX} (1-6 hex digits), or \\( for interpolation — or escape the "
+    "backslash itself (\\\\) if a literal backslash is intended."
+)
+_E009_ESCAPE_SPEC = 'Chapter 1, Section 1.6 "Literals"'
+_E009_INTERP_RATIONALE = (
+    "String interpolation embeds a full Vera expression inside \\(...); a "
+    "malformed or empty segment cannot be parsed as one, so the string "
+    "has no well-defined value."
+)
+_E009_INTERP_FIX = (
+    "Close every \\( with a matching ) and put exactly one expression "
+    "(not a statement) inside it."
+)
+_E009_INTERP_SPEC = 'Chapter 4, Section 4.13.1 "String Interpolation"'
+
+
+def _escape_error(msg: str, meta: Any = None) -> TransformError:
+    """An E009 for the invalid-escape class, with full instruction fields."""
+    return _transform_error(
+        msg, meta, error_code="E009",
+        rationale=_E009_ESCAPE_RATIONALE, fix=_E009_ESCAPE_FIX,
+        spec_ref=_E009_ESCAPE_SPEC)
+
+
+def _interp_error(msg: str, meta: Any = None) -> TransformError:
+    """An E009 for the malformed-interpolation class, with full fields."""
+    return _transform_error(
+        msg, meta, error_code="E009",
+        rationale=_E009_INTERP_RATIONALE, fix=_E009_INTERP_FIX,
+        spec_ref=_E009_INTERP_SPEC)
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +196,8 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
 
         # Backslash at end of string (shouldn't happen with valid grammar)
         if i + 1 >= len(s):
-            raise _transform_error(
-                "Invalid escape sequence: trailing backslash",
-                meta, error_code="E009")
+            raise _escape_error(
+                "Invalid escape sequence: trailing backslash", meta)
 
         nxt = s[i + 1]
         if nxt in _SIMPLE_ESCAPES:
@@ -158,32 +206,27 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
         elif nxt == "u":
             # \u{XXXX} — 1-6 hex digits
             if i + 2 >= len(s) or s[i + 2] != "{":
-                raise _transform_error(
-                    "Invalid unicode escape: expected '{' after \\u",
-                    meta, error_code="E009")
+                raise _escape_error(
+                    "Invalid unicode escape: expected '{' after \\u", meta)
             close = s.find("}", i + 3)
             if close == -1:
-                raise _transform_error(
-                    "Invalid unicode escape: missing '}'",
-                    meta, error_code="E009")
+                raise _escape_error(
+                    "Invalid unicode escape: missing '}'", meta)
             hex_str = s[i + 3:close]
             if not (1 <= len(hex_str) <= 6) or not all(
                 c in "0123456789abcdefABCDEF" for c in hex_str
             ):
-                raise _transform_error(
-                    f"Invalid unicode escape: \\u{{{hex_str}}}",
-                    meta, error_code="E009")
+                raise _escape_error(
+                    f"Invalid unicode escape: \\u{{{hex_str}}}", meta)
             code_point = int(hex_str, 16)
             if code_point > 0x10FFFF:
-                raise _transform_error(
-                    f"Unicode code point out of range: \\u{{{hex_str}}}",
-                    meta, error_code="E009")
+                raise _escape_error(
+                    f"Unicode code point out of range: \\u{{{hex_str}}}", meta)
             result.append(chr(code_point))
             i = close + 1
         else:
-            raise _transform_error(
-                f"Invalid escape sequence: \\{nxt}",
-                meta, error_code="E009")
+            raise _escape_error(
+                f"Invalid escape sequence: \\{nxt}", meta)
     return "".join(result)
 
 
@@ -249,17 +292,14 @@ def _split_interpolation(
                         depth -= 1
                     j += 1
                 if depth != 0:
-                    raise _transform_error(
+                    raise _interp_error(
                         "Unmatched '\\(' in string interpolation — "
-                        "missing closing ')'.",
-                        meta, error_code="E009",
-                    )
+                        "missing closing ')'.", meta)
                 expr_text = raw[i + 2:j - 1]
                 if not expr_text.strip():
-                    raise _transform_error(
+                    raise _interp_error(
                         "Empty expression in string interpolation '\\()'.",
-                        meta, error_code="E009",
-                    )
+                        meta)
                 parts.append((expr_text, i))
                 i = j
             else:
@@ -355,21 +395,17 @@ def _parse_interp_expr(
     try:
         tree = _parse(wrapper)
     except Exception:
-        raise _transform_error(
+        raise _interp_error(
             f"Invalid expression in string interpolation: "
-            f"\\({source})",
-            meta, error_code="E009",
-        )
+            f"\\({source})", meta)
     # Transform the parse tree and extract the body expression
     program = VeraTransformer().transform(tree)
     fn_decl = program.declarations[0].decl
     body = fn_decl.body
     if body.statements:
-        raise _transform_error(
+        raise _interp_error(
             "Statements are not allowed inside string interpolation. "
-            "Only expressions may appear inside '\\(...)'.",
-            meta, error_code="E009",
-        )
+            "Only expressions may appear inside '\\(...)'.", meta)
     expr = body.expr
     if base_line is not None and base_col is not None:
         # Wrapper places the segment at line 3, col 3 (after `{ `).
@@ -1385,6 +1421,15 @@ def transform(tree: Tree[Any]) -> Program:
         A Program AST node.
 
     Raises:
-        TransformError: If an unhandled grammar rule is encountered.
+        TransformError: If an unhandled grammar rule is encountered, or a
+            user-facing E009 (invalid escape / malformed interpolation) is
+            raised inside a token callback — lark wraps exceptions from
+            token callbacks in ``VisitError``, which would otherwise escape
+            the CLI's ``except VeraError`` as a raw traceback (#966).
     """
-    return _transformer.transform(tree)
+    try:
+        return _transformer.transform(tree)
+    except VisitError as exc:
+        if isinstance(exc.orig_exc, VeraError):
+            raise exc.orig_exc from None
+        raise

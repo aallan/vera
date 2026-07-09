@@ -1,5 +1,5 @@
 <svg width="920" height="272" viewBox="0 0 920 272" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
-  <title id="title">Growth across the nine landmark releases, 23 February to 4 July 2026: tests from about fifty to 6,821; conformance programs from zero to 143; examples from thirteen to 37; built-in functions from zero to 164.</title>
+  <title id="title">Growth across the nine landmark releases, 23 February to 4 July 2026: tests from about fifty to 6,779; conformance programs from zero to 143; examples from thirteen to 37; built-in functions from zero to 164.</title>
   <!-- Design system: see architecture.svg. Data: HISTORY.md §By the numbers, as recorded at v0.1.0.
        Series (9 columns): tests 50,300,1400,3095,4342,5559,5615,5808,6821 · conformance 0,0,0,64,89,103,104,104,143
        examples 13,15,18,30,35,35,36,36,37 · builtins 0,0,30,122,164,164,164,164,164 -->
@@ -27,7 +27,7 @@
   <g>
     <rect class="card" x="36" y="84" width="194" height="140" rx="10"/>
     <text class="f lbl" x="52" y="108">TESTS</text>
-    <text class="f val" x="52" y="130">6,821</text>
+    <text class="f val" x="52" y="130">6,779</text>
     <text class="f from" x="214" y="130" text-anchor="end">from ~50</text>
     <polygon points="52,186 72,184 93,177 113,166 133,158 154,150 174,150 194,149 214,142 214,186" fill="#f8efdf"/>
     <polyline points="52,186 72,184 93,177 113,166 133,158 154,150 174,150 194,149 214,142" fill="none" stroke="#d4952a" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>

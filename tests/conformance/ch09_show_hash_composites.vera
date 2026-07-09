@@ -199,7 +199,7 @@ public fn test_show_option_of_tuple(@Unit -> @Bool)
 -- Test: same-base finite nesting (Tuple inside Tuple) renders, not dropped
 -- (recursion guard keys on the full parameterized type, not the bare head —
 -- #911 review).  Tuple-of-Tuple is used here because a nested-Option-returning
--- helper trips a pre-existing verifier limitation unrelated to show/hash.
+-- helper once crashed the verifier (since fixed by #918).
 public fn test_show_tuple_of_tuple(@Unit -> @Bool)
   requires(true)
   ensures(@Bool.result == true)

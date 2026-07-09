@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-6,846 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
+6,848 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -34,6 +34,7 @@ Exit criterion: every verification-completeness and guard-deferral row in KNOWN_
 | [#765](https://github.com/aallan/vera/issues/765) | Nested constructor sub-pattern binds (`Some(Some(@PosInt))`) runtime-guarded to match their static obligation. |
 | [#820](https://github.com/aallan/vera/issues/820) | The `@Nat` → `@Int` widening residuals: tuple / array-element / generic-field coercions guarded (today disclosed as E531 only), and the effect-op / closure / genuine-`@Int`-arm sites obligated at all. |
 | [#860](https://github.com/aallan/vera/issues/860) | Harden the four sibling shadow-stack bounds (WAT `gc_shadow_push` emitter, `$register_wrapper` slow path, browser `gcRooted`/`gcShadowPush`) to the slot-complete form #791 gave `_ShadowGuard.push` — rides here because the WAT sites re-baseline golden pins. |
+| [#967](https://github.com/aallan/vera/issues/967) | `verify --json` summary off-by-one on three examples — derive the summary from the reified obligations list instead of ~15 manual counter sites, with a summary==derived differential across examples + conformance. |
 | [#958](https://github.com/aallan/vera/issues/958) | Decide and align spec §11.8 with codegen truth: contract guards are always emitted today — either implement tier-aware omission as a deliberate optimisation or fix the spec's promise. |
 
 ## Stage 20 — The single-source sprint
