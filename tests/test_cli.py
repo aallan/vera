@@ -313,6 +313,30 @@ class TestCmdCheck:
         d = payload["diagnostics"][0]
         assert d["rationale"] and d["fix"] and d["spec_ref"]
 
+    def test_interp_statement_error_is_a_diagnostic(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The interpolation E009 class (raised in _parse_interp_expr, inside
+        the outer transformer's token callback) must unwrap the same way the
+        escape class does (#966, PR #968 review)."""
+        import json as _json
+        src = (
+            "public fn main(-> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(<IO>)\n"
+            "{\n"
+            '  IO.print("x \\(let @Int = 1; 2)");\n'
+            "  0\n"
+            "}\n"
+        )
+        path = _bad_vera(tmp_path, src)
+        rc = cmd_check(path, as_json=True)
+        assert rc == 1
+        payload = _json.loads(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["diagnostics"][0]["error_code"] == "E009"
+
     def test_clean_example(self, capsys: pytest.CaptureFixture[str]) -> None:
         rc = cmd_check(INCREMENT)
         assert rc == 0
@@ -3746,3 +3770,30 @@ class TestCmdServe:
         assert code == 1
         err = capsys.readouterr().err
         assert "handle" in err
+
+
+class TestVisitErrorUnwrapChain:
+    """The transform() boundary must unwrap ARBITRARILY nested VisitError
+    chains (PR #968 review): a VeraError raised inside a nested transformer
+    (e.g. _parse_interp_expr's inner VeraTransformer running within the outer
+    transformer's token callback) gets wrapped once per boundary crossed."""
+
+    def test_double_wrapped_vera_error_unwraps(self) -> None:
+        from lark.exceptions import VisitError
+        from vera.errors import Diagnostic, SourceLocation, TransformError
+        from vera.transform import _unwrap_visit_error
+
+        inner = TransformError(Diagnostic(
+            description="x", location=SourceLocation(),
+            error_code="E009"))
+        once = VisitError("STRING_LIT", None, inner)
+        twice = VisitError("STRING_LIT", None, once)
+        assert _unwrap_visit_error(twice) is inner
+        assert _unwrap_visit_error(once) is inner
+
+    def test_non_vera_error_returns_none(self) -> None:
+        from lark.exceptions import VisitError
+        from vera.transform import _unwrap_visit_error
+
+        assert _unwrap_visit_error(
+            VisitError("RULE", None, ValueError("not ours"))) is None

@@ -1411,6 +1411,25 @@ class VeraTransformer(Transformer):
 _transformer = VeraTransformer()
 
 
+def _unwrap_visit_error(exc: VisitError) -> VeraError | None:
+    """Walk a (possibly nested) ``VisitError`` chain to the ``VeraError`` it
+    wraps, or ``None`` if the chain bottoms out in something else.
+
+    lark wraps exceptions raised in token/rule callbacks in ``VisitError``
+    once per transformer boundary crossed — a nested transformer (e.g.
+    ``_parse_interp_expr``'s inner ``VeraTransformer`` running inside the
+    outer transformer's ``STRING_LIT`` callback) can therefore produce a
+    doubly-wrapped chain.  Not user-reachable today (interpolation segments
+    cannot contain nested string literals, and the inner transformer's other
+    token callbacks cannot raise on grammar-valid input), but flattening the
+    whole chain makes the #966 boundary robust to future nesting
+    (PR #968 review)."""
+    inner: BaseException = exc.orig_exc
+    while isinstance(inner, VisitError):
+        inner = inner.orig_exc
+    return inner if isinstance(inner, VeraError) else None
+
+
 def transform(tree: Tree[Any]) -> Program:
     """Transform a Lark parse tree into a Vera AST.
 
@@ -1430,6 +1449,7 @@ def transform(tree: Tree[Any]) -> Program:
     try:
         return _transformer.transform(tree)
     except VisitError as exc:
-        if isinstance(exc.orig_exc, VeraError):
-            raise exc.orig_exc from None
+        inner = _unwrap_visit_error(exc)
+        if inner is not None:
+            raise inner from None
         raise
