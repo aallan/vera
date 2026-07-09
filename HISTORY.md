@@ -463,7 +463,7 @@ Three external PRs hardened the self-checking machinery, and their adversarial r
 
 *Two stages, two authors.*
 
-The staged roadmap met reality within a day: the project's third external contributor opened four PRs against the single-source sprint's table while the verification-completeness campaign was still queued — so Stages 19 and 20 run dual-threaded, the external thread working gate honesty and CI machinery (Stage 20), the maintainer thread (Stage 19) to follow.  All four merged after adversarial review and hardening on their branches: the scheduled limitations-sync workflow made failure-proof, the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair.
+The staged roadmap met reality within a day: the project's third external contributor opened four PRs — three against the single-source sprint's table, one an ongoing-thread CI item — while the verification-completeness campaign was still queued — so Stages 19 and 20 run dual-threaded, the external thread working gate honesty and CI machinery (Stage 20), the maintainer thread (Stage 19) to follow.  All four merged after adversarial review and hardening on their branches: the scheduled limitations-sync workflow made failure-proof, the advisory Linux aarch64 lane, and the diagnostic-fields gate-honesty pair.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
