@@ -138,7 +138,7 @@ Tested in CI on every commit:
 Untested but expected to work (wheels available for all dependencies):
 
 - Linux x86_64 with glibc 2.27+ (Ubuntu 18.04+ / Debian 10+ / RHEL 8+)
-- Linux aarch64 with glibc 2.38+ on Python 3.11 / 3.13 (the 3.12 cell is CI-tested above; Ubuntu 23.10+ / Debian 12+)
+- Linux aarch64 with glibc 2.38+ on Python 3.11 / 3.13 (the 3.12 cell is CI-tested above; e.g. Ubuntu 23.10+)
 - macOS 15+ on Intel (x86_64)
 
 Out of scope — `pip install -e .` will fail at dependency resolution (clear "no matching distribution" error rather than a cryptic source-build failure):
