@@ -777,6 +777,134 @@ class TestPlumbingSkipRequiresReachability:
         assert len(refs) == 1
         assert "§99.1" in refs[0].missing[0]
 
+    # An annotated assignment (`d: object = ...`) is a binding site too —
+    # ast.AnnAssign, not ast.Assign — so a rebind through one must break
+    # reachability exactly like a plain reassignment (PR #964 review).
+    ANNASSIGN_REBIND = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        d: object = self.template\n"
+        "        return d\n"
+    )
+
+    def test_annassign_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.ANNASSIGN_REBIND, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # The dual: an annotated assignment can also be the ctor's *initial*
+    # binding (`d: Diagnostic = Diagnostic(...)`).  That is genuine plumbing
+    # when the local is later returned, and must be recognised as reachable —
+    # not permanently inspected just because the binding carried an
+    # annotation (PR #964 review).
+    ANNASSIGN_INITIAL_BIND = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d: object = Diagnostic(description=description,\n"
+        "                               rationale='ok', fix='ok',\n"
+        '                               spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                               error_code='E9999')\n"
+        "        return d\n"
+    )
+
+    def test_annassign_initial_bind_is_reachable_as_result(
+            self, mod: object) -> None:
+        assert mod.spec_ref_violations_in_source(
+            self.ANNASSIGN_INITIAL_BIND, self.F) == []
+
+    # A *bare* annotation (`d: object` with no value) does not assign at
+    # runtime, so it is not a rebind and must not break reachability — pins
+    # the value-carrying distinction in the AnnAssign handling.
+    BARE_ANNOTATION_AFTER_BIND = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        d: object\n"
+        "        self.errors.append(d)\n"
+    )
+
+    def test_bare_annotation_does_not_break_reachability(
+            self, mod: object) -> None:
+        assert mod.spec_ref_violations_in_source(
+            self.BARE_ANNOTATION_AFTER_BIND, self.F) == []
+
+    # The remaining ``_rebound_names`` binding forms, pinned one each so a
+    # dropped arm (With / NamedExpr / ExceptHandler) ships RED, not green
+    # (PR #965 review).
+    REBOUND_VIA_WITH = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        with self.ctx() as d:\n"
+        "            pass\n"
+        "        return d\n"
+    )
+
+    def test_with_as_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_WITH, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    REBOUND_VIA_WALRUS = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        if (d := self.template):\n"
+        "            pass\n"
+        "        return d\n"
+    )
+
+    def test_walrus_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_WALRUS, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    REBOUND_VIA_EXCEPT = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        try:\n"
+        "            pass\n"
+        "        except Exception as d:\n"
+        "            pass\n"
+        "        return d\n"
+    )
+
+    def test_except_as_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_EXCEPT, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
 
 class TestOwnScopeExcludesEnclosingScopeExpressions:
     """"Own scope" means the helper's ``body`` — not everything hanging off its

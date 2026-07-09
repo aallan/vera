@@ -293,7 +293,8 @@ def _bump_target(target: ast.expr, counts: dict[str, int]) -> None:
 
 
 def _rebound_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, int]:
-    """Count every name-binding site in ``fn``'s own scope: plain and
+    """Count every name-binding site in ``fn``'s own scope: plain,
+    annotated (value-carrying ``AnnAssign``) and
     augmented assignment, ``for``/``async for`` loop targets, ``with``/
     ``async with`` ``as`` aliases, walrus (``:=``) targets, and exception-
     handler ``as`` names.  A name bound more than once by ANY of these forms
@@ -304,6 +305,11 @@ def _rebound_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, int]
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 _bump_target(t, counts)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            # An annotated assignment binds like a plain one; a *bare*
+            # annotation (``d: object`` with no value) does not assign at
+            # runtime and is not counted.
+            _bump_target(node.target, counts)
         elif isinstance(node, ast.AugAssign):
             _bump_target(node.target, counts)
         elif isinstance(node, ast.NamedExpr):
@@ -347,6 +353,11 @@ def _ctor_is_reachable_as_result(
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and node.value is ctor):
             local_name = node.targets[0].id
+        if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                and node.value is ctor):
+            # ``d: Diagnostic = Diagnostic(...)`` is an initial binding too,
+            # not a disqualifier (PR #964 review).
+            local_name = node.target.id
     if local_name is None or _rebound_names(fn).get(local_name, 0) != 1:
         return False
     for node in _walk_own_scope(fn):
