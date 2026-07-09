@@ -308,6 +308,16 @@ def main() -> int:
                         f"Issue #{num} is CLOSED but still listed as "
                         f"open limitation in: {', '.join(locations)}"
                     )
+                elif state == "UNKNOWN":
+                    # A state that cannot be determined (gh CLI missing,
+                    # auth failure, rate limit, timeout) must be loud: a
+                    # silent pass here would leave the scheduled #852
+                    # workflow green while checking nothing.
+                    errors.append(
+                        f"Issue #{num} state could not be determined "
+                        "(gh CLI missing, auth failure, or timeout) — "
+                        "--check-states cannot verify the limitation tables"
+                    )
 
     # ------------------------------------------------------------------
     # 5. Report

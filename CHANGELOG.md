@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A scheduled CI workflow now checks the limitation tables against live issue states** ([#852](https://github.com/aallan/vera/issues/852)).  `check_limitations_sync.py --check-states` runs Mondays 07:00 UTC and on demand: every issue a KNOWN_ISSUES / spec / SKILL limitation row cites is queried against the tracker, and a closed issue still listed as a limitation fails the run — the drift class the v0.1.1 sweep caught by hand is now caught on a schedule.  Deliberately a visibility signal on the Actions tab rather than a required merge check, since issue state drifts independently of any particular PR.  External contribution by [@chethanuk](https://github.com/chethanuk).
+
 ## [0.1.1] - 2026-07-08
 
 ### Added

@@ -23,7 +23,7 @@ jobs:
   check-states:
     permissions:
       contents: read
-      issues: read
+      issues: write   # read for the state check; write for the on-failure tracking issue
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,3 +40,63 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/check_limitations_sync.py --check-states
+
+      # Failure routing, mirroring nightly-stress.yml: scheduled-run
+      # failure emails go to the workflow author, not the maintainer,
+      # and nobody watches the Actions tab — so a failure (drift found,
+      # OR the state check itself couldn't run) files/updates a
+      # labelled tracking issue instead.  Open tracking issues stay
+      # open until manually closed, by design.
+      - name: Open or update tracking issue on cron failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v9
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const LABEL = "limitations-drift";
+            const TITLE = "Limitations sync failure on main (tracking)";
+            const runUrl = process.env.RUN_URL;
+            const commentBody = [
+              `The scheduled limitations-sync run failed.`,
+              ``,
+              `**Run logs**: ${runUrl}`,
+              ``,
+              `Either a limitation table cites an issue that has since closed (fix: retire the row per the no-strikethroughs convention), or the state check itself could not run (gh auth / rate limit — the check fails loud rather than passing vacuously).`,
+            ].join("\n");
+
+            // Ensure the label exists (idempotent).
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: LABEL,
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name: LABEL, color: "d4a72c",
+                  description: "Scheduled limitations-sync failure (#852)",
+                });
+              } else { throw e; }
+            }
+
+            // Find an existing open tracking issue (filter out PRs that
+            // might carry the label — same defensive filter as
+            // nightly-stress.yml).
+            const { data: candidates } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: "open", per_page: 10,
+            });
+            const existing = candidates.filter(item => !item.pull_request);
+
+            if (existing.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing[0].number, body: commentBody,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body: commentBody, labels: [LABEL],
+              });
+            }
