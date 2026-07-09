@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-6,839 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
+6,840 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -54,7 +54,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#653](https://github.com/aallan/vera/issues/653) | Spec audit for §0.2 / §0.3 design-principle violations — the spec held to its own principles. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts (the Stage 18 landing-page audit found this class live). |
 | [#540](https://github.com/aallan/vera/issues/540) | lychee + markdownlint MD051 cross-doc anchor validation. |
-| [#852](https://github.com/aallan/vera/issues/852) | Scheduled `check_limitations_sync.py --check-states` run to catch closed-issue drift in limitation tables. |
 | [#481](https://github.com/aallan/vera/issues/481) | Auto-tag and auto-release on version bump — removes the forgettable manual release steps documented in [CONTRIBUTING.md](CONTRIBUTING.md). |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 
@@ -163,7 +162,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 Not stage-gated; advanced alongside whatever stage is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 23's measurement ([#225](https://github.com/aallan/vera/issues/225)).
-- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry, [#537](https://github.com/aallan/vera/issues/537) drop the pip-upgrade audit workaround (removal trigger in [KNOWN_ISSUES.md](KNOWN_ISSUES.md)), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch.
+- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#537](https://github.com/aallan/vera/issues/537) drop the pip-upgrade audit workaround (removal trigger in [KNOWN_ISSUES.md](KNOWN_ISSUES.md)), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch.
 
 ## Not doing now
 

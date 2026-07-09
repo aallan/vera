@@ -9,6 +9,9 @@ so renamed sections fail loudly.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -75,3 +78,30 @@ class TestExtractSectionIssues:
     def test_subheading_does_not_match(self) -> None:
         text = f"### Known Limitations\n\n| Row | {_link(5)} |\n"
         assert _MOD.extract_section_issues(text, "Known Limitations") is None
+
+
+class TestCheckStatesFailsLoud:
+    """--check-states must fail loudly when issue states cannot be determined
+    (gh CLI missing, auth failure, rate limit) — a state check that silently
+    degrades to a no-op would leave the scheduled workflow (#852) green while
+    checking nothing (PR #960 review)."""
+
+    def test_unknown_state_is_an_error(self, tmp_path: Path) -> None:
+        env = os.environ.copy()
+        env["PATH"] = str(tmp_path)  # no `gh` resolvable -> every state UNKNOWN
+        # The child script prints via the platform default encoding (cp1252 on
+        # Windows); pin its stdio to UTF-8 so the utf-8 pipe decode is sound.
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [sys.executable, str(_SCRIPT), "--check-states"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=120,
+        )
+        assert result.returncode == 1
+        # Windows: a capture pipe read by a crippled-PATH subprocess can
+        # surface as None rather than "" — guard both streams.
+        out = (result.stdout or "") + (result.stderr or "")
+        assert "could not be determined" in out
