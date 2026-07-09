@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-6,826 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
+6,831 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -49,7 +49,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#735](https://github.com/aallan/vera/issues/735) | **Builtin dispatch table** — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it.  The sprint's lead: one table, three consumers. |
 | [#828](https://github.com/aallan/vera/issues/828) | `error_code` uniqueness — one stable code per diagnostic concept, enforced by a collision gate on the registry. |
 | [#954](https://github.com/aallan/vera/issues/954) | Single-source the `E001` example — generate all five doc mirrors from `vera/errors.py` instead of guarding hand-copies. |
-| [#955](https://github.com/aallan/vera/issues/955) | Diagnostic-fields gate: honour `# diag-fields-exempt` in all three passes, or stop advertising it where it does nothing. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
 | [#653](https://github.com/aallan/vera/issues/653) | Spec audit for §0.2 / §0.3 design-principle violations — the spec held to its own principles. |
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts (the Stage 18 landing-page audit found this class live). |

@@ -433,6 +433,13 @@ def check_source(source: str, filename: str) -> list[Violation]:
         if not isinstance(node, ast.Call):
             continue
         f = node.func
+        # A non-literal severity is itself unresolvable (like an unresolvable
+        # spec_ref below) and so IS opt-out-able — but the opt-out lookup must
+        # run before we decide to report it (#955: it used to be appended and
+        # `continue`d immediately, so a marker on this exact call was never
+        # consulted).  Held here and only appended once we know there's no
+        # opt-out for this call.
+        pending: Violation | None = None
         if isinstance(f, ast.Name) and f.id == "Diagnostic":
             if node in plumbing:
                 continue  # plumbing
@@ -451,11 +458,10 @@ def check_source(source: str, filename: str) -> list[Violation]:
                     # demand a `fix`.  Flag it rather than guess.
                     snip = (src_lines[node.lineno - 1]
                             if node.lineno - 1 < len(src_lines) else None)
-                    violations.append(Violation(
+                    pending = Violation(
                         filename, node.lineno, "Diagnostic",
                         ["severity is not a string literal — the gate cannot "
-                         "tell error from warning; make it a literal"], snip))
-                    continue
+                         "tell error from warning; make it a literal"], snip)
         elif isinstance(f, ast.Attribute) and f.attr in ("_error", "_warning"):
             target = method = f.attr
             severity = "error" if f.attr == "_error" else "warning"
@@ -476,7 +482,11 @@ def check_source(source: str, filename: str) -> list[Violation]:
             if opt_reason == "":
                 violations.append(Violation(
                     filename, node.lineno, target, ["<opt-out reason>"], snippet))
-            continue  # opt-out with a reason suppresses the site
+            continue  # opt-out with a reason suppresses the site, `pending` included
+
+        if pending is not None:
+            violations.append(pending)
+            continue
 
         required = set(REQUIRED_FIELDS)
         if severity == "warning":
@@ -555,8 +565,11 @@ def _norm(s: str) -> str:
 
 def _iter_spec_refs(
     source: str, filename: str,
-) -> Iterator[tuple[int, str | None, str | None]]:
-    """Yield (lineno, ref_text_or_None, snippet) for each spec_ref argument.
+) -> Iterator[tuple[int, str | None, str | None, int, int]]:
+    """Yield (lineno, ref_text_or_None, snippet, call_start, call_end) for each
+    spec_ref argument.  ``call_start``/``call_end`` are the enclosing call's
+    line span, so the caller can look up an opt-out marker anywhere across a
+    multi-line call (#955), not just on the spec_ref argument's own line.
 
     ``ref_text`` is the literal string for a constant spec_ref; ``None`` marks
     a *non-literal* spec_ref (a variable / f-string / concatenation) that the
@@ -580,6 +593,7 @@ def _iter_spec_refs(
             continue
         if is_ctor and n in plumbing:
             continue  # plumbing
+        call_start, call_end = n.lineno, n.end_lineno or n.lineno
         for kw in n.keywords:
             if kw.arg != "spec_ref":
                 continue
@@ -588,20 +602,31 @@ def _iter_spec_refs(
             snip = src_lines[ln - 1] if ln - 1 < len(src_lines) else None
             if isinstance(v, ast.Constant):
                 if isinstance(v.value, str) and v.value.strip():
-                    yield ln, v.value, snip
+                    yield ln, v.value, snip, call_start, call_end
                 # empty / None / non-str literal → presence check owns "missing"
             else:
-                yield ln, None, snip  # non-literal: unresolvable, flag it
+                yield ln, None, snip, call_start, call_end  # non-literal: unresolvable, flag it
 
 
 def spec_ref_violations_in_source(source: str, filename: str,
                                   spec_dir: Path | None = None) -> list[Violation]:
     """Flag every spec_ref in one source that does not resolve to a real spec
-    section/chapter with a matching (normalized) title."""
+    section/chapter with a matching (normalized) title.
+
+    A non-literal (unresolvable) spec_ref honours ``# diag-fields-exempt``
+    (#955) — same as a non-literal severity in ``check_source``.  A spec_ref
+    that DOES resolve but cites the wrong/nonexistent section is a content
+    error and is never suppressed by the opt-out, marker or not."""
     sections, chapters = _load_spec(spec_dir or (ROOT / "spec"))
+    optout = _optout_lines(source)
     out: list[Violation] = []
-    for ln, ref, snip in _iter_spec_refs(source, filename):
+    for ln, ref, snip, call_start, call_end in _iter_spec_refs(source, filename):
         if ref is None:
+            opt_reason = next(
+                (optout[cl] for cl in range(call_start, call_end + 1) if cl in optout),
+                None)
+            if opt_reason is not None:
+                continue  # unresolvable spec_ref, opted out
             out.append(Violation(
                 filename, ln, "spec_ref",
                 ["spec_ref is not a string literal — the gate cannot validate "
@@ -765,8 +790,11 @@ def main() -> int:
           "spec_ref must also resolve to a real section/chapter, and any "
           "error_code must be registered in vera/errors.py ERROR_CODES.")
     print("Populate the missing field(s) / fix the spec_ref / register the "
-          "error_code, or add `# diag-fields-exempt: <reason>` for a genuinely "
-          "fix-less internal/defensive site.\n")
+          "error_code.  `# diag-fields-exempt: <reason>` waives a missing "
+          "field or an unresolvable (non-literal) severity/spec_ref for a "
+          "genuinely fix-less internal/defensive site — it does NOT waive a "
+          "spec_ref citing the wrong/nonexistent section, or an unregistered "
+          "error_code: those are content errors, not tagging gaps.\n")
     for fname in sorted(by_file):
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):

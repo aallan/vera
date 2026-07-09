@@ -1030,6 +1030,65 @@ class TestErrorCodeRegistration:
 
 
 # =====================================================================
+# #955: `# diag-fields-exempt` must be honoured consistently across all
+# three passes — but only for *unresolvable* (non-literal) fields, never
+# for a spec_ref/error_code that resolves but is factually WRONG.
+# =====================================================================
+
+class TestOptOutHonouredAcrossAllThreePasses:
+    def test_optout_suppresses_nonliteral_severity(self, mod: object) -> None:
+        # Bug: check_source appended the non-literal-severity violation and
+        # `continue`d BEFORE its own opt-out lookup ran, so this marker was
+        # never consulted even though check_source is "the pass that
+        # otherwise honours it."
+        src = (
+            "level = 'error'\n"
+            "d = Diagnostic(description='d', rationale='r', fix='f',\n"
+            "               spec_ref='Chapter 4, Section 4.4 \"Arithmetic Expressions\"',\n"
+            "               severity=level)  # diag-fields-exempt: severity threaded from caller\n"
+        )
+        assert mod.check_source(src, "vera/checker/x.py") == []
+
+    def test_optout_suppresses_nonliteral_spec_ref(self, mod: object) -> None:
+        # The issue's exact repro: spec_ref_violations_in_source never
+        # consulted the opt-out at all.
+        src = "self._error(node, 'd', spec_ref=COMMON_REF)  # diag-fields-exempt: shared ref constant\n"
+        assert mod.spec_ref_violations_in_source(src, "vera/checker/x.py") == []
+
+    def test_optout_does_not_suppress_wrong_spec_ref(self, mod: object) -> None:
+        # Literal-but-bogus spec_ref, marker present — still flagged: a
+        # content error is never waivable by the opt-out (Option 2, not the
+        # rejected blanket-honour Option 1).  Mutation-kill: hand-apply an
+        # Option 1 patch (suppress whenever opt_reason is not None,
+        # regardless of ref being None) and this assertion goes RED.
+        src = ("self._error(node, 'd', spec_ref='Chapter 4, Section 4.99 \"Nope\"')"
+               "  # diag-fields-exempt: legacy\n")
+        v = mod.spec_ref_violations_in_source(src, "vera/checker/x.py")
+        assert len(v) == 1 and "does not exist" in v[0].missing[0]
+
+    def test_optout_does_not_suppress_unregistered_error_code(self, mod: object) -> None:
+        # error_code_registration_violations_in_source has no unresolvable
+        # sub-case at all — an unregistered literal code is always
+        # content-wrong, never opt-out-able.
+        src = ("self._error(node, 'd', error_code='E9999')"
+               "  # diag-fields-exempt: legacy\n")
+        v = mod.error_code_registration_violations_in_source(
+            src, "vera/checker/x.py", {"E130"})
+        assert len(v) == 1 and "E9999" in v[0].missing[0]
+
+    def test_optout_empty_reason_still_flagged_for_all_kinds(self, mod: object) -> None:
+        # A bare marker (no reason) is itself a violation — check_source's
+        # existing rule.  It must surface exactly ONCE across all passes: the
+        # spec_ref pass suppresses the (now-exempt) unresolvable ref rather
+        # than re-flagging the missing reason itself.
+        src = "self._error(node, 'd', spec_ref=COMMON_REF)  # diag-fields-exempt\n"
+        presence = mod.check_source(src, "vera/checker/x.py")
+        validity = mod.spec_ref_violations_in_source(src, "vera/checker/x.py")
+        assert len(presence) == 1 and presence[0].missing == ["<opt-out reason>"]
+        assert validity == []
+
+
+# =====================================================================
 # _load_spec caches per resolved spec_dir
 # =====================================================================
 
