@@ -68,7 +68,7 @@ python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
-python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason (#682)
+python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
 python scripts/check_site_assets.py   # Verify site assets are up-to-date
@@ -207,7 +207,7 @@ This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull re
 
 ## Cross-platform pitfalls (test fixtures)
 
-The CI matrix tests on `{ubuntu-latest, macos-15, macos-26, windows-latest} × {3.11, 3.12, 3.13}` (12 combinations; macOS pinned explicitly to insulate from silent `macos-latest` migration — see README §Supported platforms).  When writing test fixtures, three Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
+The CI matrix tests on `{ubuntu-latest, macos-15, macos-26, windows-latest} × {3.11, 3.12, 3.13}` plus an advisory `ubuntu-24.04-arm` × 3.12 cell (13 combinations; macOS pinned explicitly to insulate from silent `macos-latest` migration — see README §Supported platforms).  When writing test fixtures, three Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
 
 - `tempfile.NamedTemporaryFile` handed off to a subprocess MUST use `delete=False` + manual `Path.unlink()` (Windows can't reopen a held file).
 - Paths embedded into Vera string literals MUST be POSIX-form (`Path(tmp_path).as_posix()`); Windows backslashes trip Vera's `\U` escape grammar.

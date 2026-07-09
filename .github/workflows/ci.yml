@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: read
     strategy:
-      # #848: don't let one failed combo cancel the other 11 — a single
+      # #848: don't let one failed combo cancel the other 12 — a single
       # flaky test cancelled two otherwise-green matrices on PR #846.
       # Full per-run results also make real cross-platform breakage
       # (one OS red, others green) legible at a glance.
@@ -26,6 +26,11 @@ jobs:
         # (Tahoe) is current and dominant (~75%).
         os: [ubuntu-latest, macos-15, macos-26, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # #702: real end-to-end Linux aarch64 coverage — platform
+          # coverage, not python-version coverage, so one job only.
+          - os: ubuntu-24.04-arm
+            python-version: "3.12"
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
