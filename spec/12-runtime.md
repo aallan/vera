@@ -87,13 +87,20 @@ For the string pool implementation, see Chapter 11, Section 11.5.
 
 The reference runtime uses wasmtime's Python bindings. The execution pipeline is:
 
-```
+![Embedding wasmtime: Engine, Module, Linker and Store, then define the vera.* host functions, instantiate, look up the export, and call it.](../assets/diagrams/wasmtime-embedding.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 Engine → Module(engine, wat) → Linker(engine) → Store(engine)
   → linker.define_func(...)   [register host functions]
   → linker.instantiate(store, module)
   → instance.exports(store).get(fn_name)
   → func(store, *args)
 ```
+
+</details>
 
 Each execution creates a fresh engine, module, linker, and store. There is no persistent state between invocations.
 
@@ -420,13 +427,18 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 
 **Returns:** `i32` — `0` or `1`, each with probability ≈ 0.5.
 
-**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered; future work tracked alongside #465.
+**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered; a seeding API remains future work.
 
 ## 12.5 Memory Model
 
 ### 12.5.1 Linear Memory Layout
 
-```
+![Linear memory layout: string constants, the 4 KiB GC shadow stack, the 4 KiB mark worklist, and the heap growing toward higher addresses inside a growable 64 KiB page.](../assets/diagrams/memory-layout.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 ┌──────────────────────────────────┐  offset 0
 │  String constants (data section) │
 ├──────────────────────────────────┤  data_end
@@ -436,13 +448,15 @@ The `Random` effect provides three host-backed operations for non-deterministic 
 ├──────────────────────────────────┤  data_end + 8192 = $heap_ptr (initial)
 │  Heap-allocated data             │
 │  (ADTs, closures, arrays)        │
-│          ↓ grows downward        │
+│  ↓ grows toward higher addresses │
 ├──────────────────────────────────┤
 │  (unused)                        │
 └──────────────────────────────────┘  65536+ (64 KiB, growable)
 ```
 
-String constants occupy the lowest addresses. The GC shadow stack and mark worklist each occupy 4096 bytes after the string data. The heap grows upward from `data_end + 8192`. The GC infrastructure (shadow stack, worklist, and heap offset) is only emitted when the program allocates heap data.
+</details>
+
+String constants occupy the lowest addresses. The GC shadow stack and mark worklist each occupy 4096 bytes after the string data. The heap grows toward higher addresses from `data_end + 8192`. The GC infrastructure (shadow stack, worklist, and heap offset) is only emitted when the program allocates heap data.
 
 ### 12.5.2 Allocator
 
@@ -480,6 +494,8 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 ### 12.5.4 Garbage Collection
 
 The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
+
+![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
 **Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Four globals track the shadow stack and GC state:
 
@@ -587,6 +603,8 @@ The browser runtime (`vera/browser/runtime.mjs`) is a self-contained JavaScript 
 ### 12.9.1 Architecture
 
 The runtime uses **dynamic import introspection** to work with any compiled Vera program. At initialization, it calls `WebAssembly.Module.imports(module)` to discover which host functions the module requires, then builds the import object containing only those bindings. This means the same runtime file works with every compiled Vera program — from a hello-world (1 import: `print`) to a markdown-heavy program (15+ imports).
+
+![Dynamic import introspection: the browser runtime asks the compiled module which host functions it needs via WebAssembly.Module.imports, builds an import object with only those bindings, and instantiates — one runtime file for every program, with State bindings pattern-matched from import names.](../assets/diagrams/browser-bindings.svg)
 
 State\<T\> bindings are pattern-matched from import names: `state_get_Int` and `state_put_Int` are recognized as `State<Int>` operations and dynamically paired.
 

@@ -1,0 +1,75 @@
+<svg width="920" height="464" viewBox="0 0 920 464" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Effect handler dispatch: an effect operation performed in the handled body suspends it, control transfers to the matching handler clause with the operation arguments and current state in scope, and resume(value) continues the body with that value — optionally updating handler state. Omitting resume aborts the body, which is how Exn is built.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/07 §7.5.2. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .title { font-size: 13.5px; font-weight: 600; fill: #2d2b28; }
+      .desc { font-size: 11px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .life { stroke: #d9d6d0; stroke-width: 1; stroke-dasharray: 3 3; }
+      .step { font-size: 11px; font-weight: 600; fill: #2d2b28; }
+      .note { font-size: 10.5px; fill: #7a756d; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="461" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">ALGEBRAIC EFFECTS · HANDLER DISPATCH</text>
+  <text class="f sub" x="36" y="64">An effect operation is a resumable transfer of control from the handled body to its handler.</text>
+
+  <!-- lane headers -->
+  <g>
+    <rect class="card" x="80" y="84" width="300" height="44" rx="10"/>
+    <rect x="80.5" y="84.5" width="4" height="43" rx="2" fill="#4a82a8"/>
+    <text class="f title" x="230" y="103" text-anchor="middle">handled body</text>
+    <text class="m" x="230" y="119" text-anchor="middle" font-size="10px" fill="#7a756d">in { … }</text>
+  </g>
+  <g>
+    <rect class="card" x="540" y="84" width="300" height="44" rx="10"/>
+    <rect x="540.5" y="84.5" width="4" height="43" rx="2" fill="#d4952a"/>
+    <text class="f title" x="690" y="103" text-anchor="middle">handler</text>
+    <text class="m" x="690" y="119" text-anchor="middle" font-size="10px" fill="#7a756d">handle[Counter](0) { bump(@Int) -&gt; { … } }</text>
+  </g>
+
+  <!-- lifelines -->
+  <line class="life" x1="230" y1="128" x2="230" y2="392"/>
+  <line class="life" x1="690" y1="128" x2="690" y2="392"/>
+
+  <!-- body running, then suspended -->
+  <rect x="224" y="128" width="12" height="46" rx="3" fill="#e4ecf2" stroke="#4a82a8" stroke-width="0.75"/>
+
+  <!-- 1 · perform -->
+  <line class="edge" x1="236" y1="174" x2="682" y2="174" marker-end="url(#arr)"/>
+  <text class="f step" x="460" y="164" text-anchor="middle">1 · effect op performed — <tspan class="m" font-size="10.5px">Counter.bump(3)</tspan> — body suspends</text>
+
+  <!-- handler activation -->
+  <rect x="684" y="174" width="12" height="150" rx="3" fill="#f8efdf" stroke="#d4952a" stroke-width="0.75"/>
+  <text class="f note" x="706" y="196"><tspan class="step">2</tspan> · control moves to the matching clause</text>
+  <text class="f note" x="706" y="218"><tspan class="step">3</tspan> · the op's arguments and the current</text>
+  <text class="f note" x="716" y="232">handler state (<tspan class="m" font-size="10px">@Int.0</tspan>) are in scope</text>
+
+  <!-- 4 · resume -->
+  <line class="edge" x1="684" y1="324" x2="242" y2="324" marker-end="url(#arr)"/>
+  <text class="f step" x="460" y="300" text-anchor="middle">4 · <tspan class="m" font-size="10.5px">resume(7) with @Int = @Int.0 + 3</tspan></text>
+  <text class="f note" x="460" y="315" text-anchor="middle">the body continues with 7; the state update applies to later operations</text>
+
+  <!-- body resumes -->
+  <rect x="224" y="324" width="12" height="40" rx="3" fill="#e4ecf2" stroke="#4a82a8" stroke-width="0.75"/>
+
+  <!-- abort variant -->
+  <polyline class="edge" points="690,344 690,376 628,376" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <rect x="300" y="364" width="324" height="24" rx="12" fill="#ffffff" stroke="#cfccc5" stroke-width="1" stroke-dasharray="4 3"/>
+  <text class="f note" x="462" y="380" text-anchor="middle">alternative: the clause never calls <tspan class="m" font-size="10px">resume</tspan> → the body aborts (how <tspan class="m" font-size="10px">Exn&lt;E&gt;</tspan> is built)</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="428">The handler owns the continuation: resume(v) supplies the operation's return value; omitting resume abandons the body.</text>
+</svg>

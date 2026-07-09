@@ -1,0 +1,75 @@
+<svg width="920" height="424" viewBox="0 0 920 424" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The GC-exempt arena: a fixed 64 KiB scratch region below gc_heap_start that the collector never scans or sweeps, with a 128-byte retptr slab at its base and a bump cabi_realloc reset at every op entry; data crossing back into Vera is copied out into ordinary GC-heap blocks with explicit shadow-stack rooting, and host data larger than the arena traps cleanly.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/13 §13.3. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .seg { stroke: #e8e6e1; stroke-width: 1; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .off { font-size: 10px; fill: #7a756d; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="421" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">WASI TARGET · THE GC-EXEMPT ARENA</text>
+  <text class="f sub" x="36" y="64">Canonical-ABI lowering needs a cabi_realloc the host can call — routing it through the GC heap would be unsound.</text>
+
+  <!-- memory strip -->
+  <rect class="seg" x="60" y="96" width="70" height="72" fill="#f8efdf"/>
+  <text class="m" x="95" y="128" text-anchor="middle" font-size="10px" fill="#b07820">retptr</text>
+  <text class="m" x="95" y="141" text-anchor="middle" font-size="10px" fill="#b07820">slab</text>
+  <text class="f off" x="95" y="158" text-anchor="middle" font-size="8.5px">128 B</text>
+  <rect class="seg" x="130" y="96" width="330" height="72" fill="#f7efe8"/>
+  <text class="f t" x="295" y="126" text-anchor="middle">bump arena — cabi_realloc</text>
+  <text class="f d" x="295" y="144" text-anchor="middle">reset at every op entry · never scanned, never swept</text>
+  <rect class="seg" x="460" y="96" width="360" height="72" fill="#e6f0e9"/>
+  <text class="f t" x="640" y="126" text-anchor="middle">GC heap</text>
+  <text class="f d" x="640" y="144" text-anchor="middle">mark-sweep territory (§12.5)</text>
+
+  <line x1="60" y1="176" x2="60" y2="184" stroke="#cfccc5"/>
+  <text class="m off" x="60" y="198">arena base</text>
+  <line x1="460" y1="176" x2="460" y2="184" stroke="#cfccc5"/>
+  <text class="m off" x="460" y="198" text-anchor="middle">gc_heap_start</text>
+  <text class="f off" x="260" y="198" text-anchor="middle" font-style="italic">fixed 64 KiB, below the heap</text>
+
+  <!-- flows -->
+  <g>
+    <rect class="card" x="60" y="228" width="380" height="60" rx="10"/>
+    <rect x="60.5" y="228.5" width="4" height="59" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="78" y="250">host writes land here</text>
+    <text class="f d" x="78" y="268">the canon lowering places lists and strings via cabi_realloc;</text>
+    <text class="f d" x="78" y="282">retptrs use the fixed slab at the base</text>
+  </g>
+  <polyline class="edge" points="440,258 490,258" marker-end="url(#arr)"/>
+  <text class="f d" x="466" y="248" text-anchor="middle" font-size="9px" font-style="italic" fill="#a9a49b">copy out</text>
+  <g>
+    <rect class="card" x="494" y="228" width="390" height="60" rx="10"/>
+    <rect x="494.5" y="228.5" width="4" height="59" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="512" y="250">…then cross into Vera properly</text>
+    <text class="f d" x="512" y="268">an IO.read_file payload or the IO.args array is copied into ordinary</text>
+    <text class="f d" x="512" y="282">GC-heap blocks with explicit shadow-stack rooting (_ShadowGuard discipline)</text>
+  </g>
+
+  <!-- why card -->
+  <g>
+    <rect class="card" x="60" y="312" width="824" height="56" rx="10"/>
+    <rect x="60.5" y="312.5" width="4" height="55" rx="2" fill="#c45"/>
+    <text class="f t" x="78" y="332" fill="#a83838">why the exemption is load-bearing</text>
+    <text class="f d" x="78" y="349">a collection between two host writes inside one lowered call could move or sweep the</text>
+    <text class="f d" x="78" y="363">half-written block — the same use-after-free class as #593/#695, from the host side.</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="400">Host data larger than the arena — say an argv list over 64 KiB — traps cleanly rather than overflowing into the GC heap.</text>
+</svg>

@@ -2293,19 +2293,17 @@ class TestMangleInjectivity:
     # Two-param collision program: `unwrap_second<A_B, C>` and
     # `unwrap_second<A, B_C>` collided to `$unwrap_second$A_B_C` pre-fix
     # (WAT: duplicate func identifier).  Outputs are chosen so no
-    # accidental fallback can coincide: 0 + 100 + 7 = 107 requires BOTH
+    # accidental fallback can coincide: 100 + 7 = 107 requires BOTH
     # instantiations to route to their own clone.
     #
-    # The `array_fold` closure in `main` is a table-forcing workaround
-    # for #869, a pre-existing bug orthogonal to #775 (reproduces on
-    # main for non-colliding programs too): the single-letter ADT names
-    # (`data A`, `data C`) collide with the prelude generics' type
-    # parameters, pulling the never-called prelude templates
-    # `$option_map`/`$option_and_then` into compilation; their
-    # `call_indirect` references table 0, which nothing else emits —
-    # wasmtime rejects the module with "unknown table 0".  The closure
-    # forces the table so the module validates; the templates stay
-    # dead code.  Remove the fold once #869 is fixed.
+    # The single-letter ADT names (`data A`, `data C`) also double as a
+    # #869 regression pin: pre-fix they collided with the prelude
+    # generics' type parameters, pulling never-called prelude templates
+    # into compilation whose `call_indirect` referenced a table nothing
+    # emitted — wasmtime rejected the module with "unknown table 0",
+    # and this fixture needed a table-forcing `array_fold` workaround
+    # in `main` to validate.  #869 is fixed; if it regresses, this
+    # test fails at instantiation with the same error.
     TWO_PARAM_SRC = """\
 private data A_B { MkAB(Int) }
 private data B_C { MkBC(Int) }
@@ -2333,8 +2331,7 @@ private fn bc_value(@B_C -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  array_fold([0], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
-    + c_value(unwrap_second(MkAB(1), MkC(100)))
+  c_value(unwrap_second(MkAB(1), MkC(100)))
     + bc_value(unwrap_second(MkA(2), MkBC(7)))
 }
 """

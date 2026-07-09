@@ -1,0 +1,77 @@
+<svg width="920" height="384" viewBox="0 0 920 384" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The browser runtime's dynamic import introspection: at initialization it calls WebAssembly.Module.imports on the compiled module to discover which host functions it needs, builds an import object containing only those bindings, and instantiates — so one runtime file works with every compiled Vera program, and State bindings are pattern-matched from import names like state_get_Int.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/12 §12.9.1–12.9.2. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="381" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">BROWSER RUNTIME · DYNAMIC IMPORT INTROSPECTION</text>
+  <text class="f sub" x="36" y="64">One runtime file for every compiled program — it asks the module what it needs instead of shipping every binding.</text>
+
+  <!-- flow -->
+  <rect x="36" y="88" width="150" height="28" rx="14" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="111" y="106" text-anchor="middle" font-size="11px" fill="#2d2b28">module.wasm</text>
+  <line class="edge" x1="186" y1="102" x2="226" y2="102" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="230" y="80" width="300" height="52" rx="10"/>
+    <rect x="230.5" y="80.5" width="4" height="51" rx="2" fill="#4a82a8"/>
+    <text class="m t" x="248" y="102" font-size="11.5px">WebAssembly.Module.imports(module)</text>
+    <text class="f d" x="248" y="120">discover exactly which host functions it requires</text>
+  </g>
+  <line class="edge" x1="530" y1="106" x2="570" y2="106" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="574" y="80" width="310" height="52" rx="10"/>
+    <rect x="574.5" y="80.5" width="4" height="51" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="592" y="102">build the import object — only those bindings</text>
+    <text class="f d" x="592" y="120">hello-world needs one (<tspan class="m" font-size="10px">print</tspan>); markdown-heavy, dozens</text>
+  </g>
+  <polyline class="edge" points="729,132 729,156" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="574" y="158" width="310" height="40" rx="10"/>
+    <rect x="574.5" y="158.5" width="4" height="39" rx="2" fill="#cc9966"/>
+    <text class="f t" x="592" y="183">instantiate — the program runs in the page</text>
+  </g>
+
+  <!-- state pattern-matching -->
+  <g>
+    <rect class="card" x="36" y="158" width="494" height="76" rx="10"/>
+    <rect x="36.5" y="158.5" width="4" height="75" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="54" y="180">State&lt;T&gt; is recognised by name</text>
+    <text class="f d" x="54" y="198">import names are pattern-matched: <tspan class="m" font-size="10px">state_get_Int</tspan> and <tspan class="m" font-size="10px">state_put_Int</tspan></text>
+    <text class="f d" x="54" y="212">are paired dynamically as the <tspan class="m" font-size="10px">State&lt;Int&gt;</tspan> operations — no generated</text>
+    <text class="f d" x="54" y="226">glue per program, no bindings manifest</text>
+  </g>
+
+  <!-- public API -->
+  <text class="f micro" x="36" y="272">THE PUBLIC API (§12.9.2)</text>
+  <g class="m" font-size="10.5px">
+    <rect class="card" x="36"  y="282" width="128" height="26" rx="13"/><text x="100" y="299" text-anchor="middle" fill="#2d2b28">await init(wasm)</text>
+    <rect class="card" x="172" y="282" width="96"  height="26" rx="13"/><text x="220" y="299" text-anchor="middle" fill="#2d2b28">call('main')</text>
+    <rect class="card" x="276" y="282" width="100" height="26" rx="13"/><text x="326" y="299" text-anchor="middle" fill="#2d2b28">getStdout()</text>
+    <rect class="card" x="384" y="282" width="100" height="26" rx="13"/><text x="434" y="299" text-anchor="middle" fill="#2d2b28">getStderr()</text>
+    <rect class="card" x="492" y="282" width="96"  height="26" rx="13"/><text x="540" y="299" text-anchor="middle" fill="#2d2b28">getState()</text>
+    <rect class="card" x="596" y="282" width="104" height="26" rx="13"/><text x="648" y="299" text-anchor="middle" fill="#2d2b28">resetState()</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="342">The same WASM import surface is served by the Python host — the two runtimes are parity-tested against each other,</text>
+  <text class="f footi" x="36" y="358">so the module neither knows nor cares which host it landed in.</text>
+</svg>

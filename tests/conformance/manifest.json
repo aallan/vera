@@ -1423,6 +1423,7 @@
       "decimal_neg",
       "decimal_abs",
       "decimal_eq",
+      "decimal_compare",
       "decimal_round",
       "decimal_to_float",
       "decimal_to_string",

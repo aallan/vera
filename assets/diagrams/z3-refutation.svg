@@ -1,0 +1,89 @@
+<svg width="920" height="440" viewBox="0 0 920 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">How a contract becomes a Z3 query: the requires clauses become assumptions, the ensures clause with the body substituted for the result becomes the goal, and the solver is asked to refute it — assert the assumptions and the negated goal. Unsat means verified, sat yields a concrete counterexample, unknown defers to a Tier 3 runtime check.</title>
+  <!-- Design system: see architecture.svg. Grounded in vera/README.md §Verifier. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .lbl { font-size: 10.5px; font-weight: 600; }
+      .elbl { font-size: 10px; font-style: italic; fill: #a9a49b; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="437" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">VERIFIER · PROOF BY REFUTATION</text>
+  <text class="f sub" x="36" y="64">To prove the postcondition always holds, ask Z3 for a world where it doesn't.</text>
+
+  <!-- sources -->
+  <g>
+    <rect class="card" x="120" y="88" width="280" height="48" rx="10"/>
+    <rect x="120.5" y="88.5" width="4" height="47" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="260" y="109" text-anchor="middle" font-size="12px">requires(P₁) · requires(P₂)</text>
+    <text class="f d" x="260" y="126" text-anchor="middle">become the assumptions</text>
+  </g>
+  <g>
+    <rect class="card" x="520" y="88" width="280" height="48" rx="10"/>
+    <rect x="520.5" y="88.5" width="4" height="47" rx="2" fill="#d4952a"/>
+    <text class="m t" x="660" y="109" text-anchor="middle" font-size="12px">ensures(Q)</text>
+    <text class="f d" x="660" y="126" text-anchor="middle">goal = Q with the body substituted for result</text>
+  </g>
+
+  <polyline class="edge" points="260,136 260,166 420,166 420,182" marker-end="url(#arr)"/>
+  <polyline class="edge" points="660,136 660,166 500,166 500,182" marker-end="url(#arr)"/>
+
+  <!-- solver -->
+  <g>
+    <rect class="card" x="330" y="184" width="260" height="104" rx="10"/>
+    <rect x="330.5" y="184.5" width="4" height="103" rx="2" fill="#d4952a"/>
+    <text class="f t" x="460" y="206" text-anchor="middle">Z3 solver</text>
+    <text class="m" x="358" y="228" font-size="11px" fill="#2d2b28">assert  P₁</text>
+    <text class="m" x="358" y="244" font-size="11px" fill="#2d2b28">assert  P₂</text>
+    <text class="m" x="358" y="260" font-size="11px" fill="#b07820">assert  ¬Q      ← the refutation</text>
+    <text class="m" x="358" y="278" font-size="11px" fill="#2d2b28">check()</text>
+  </g>
+  <text class="f elbl" x="606" y="224">a model satisfying ¬Q under the</text>
+  <text class="f elbl" x="606" y="238">assumptions is a concrete input</text>
+  <text class="f elbl" x="606" y="252">that breaks the contract; if none</text>
+  <text class="f elbl" x="606" y="266">exists, Q holds for every input</text>
+
+  <!-- outcomes -->
+  <polyline class="edge" points="380,288 380,308 190,308 190,326" marker-end="url(#arr)"/>
+  <text class="m lbl" x="368" y="322" text-anchor="end" fill="#3d7a4d">unsat</text>
+  <line class="edge" x1="460" y1="288" x2="460" y2="326" marker-end="url(#arr)"/>
+  <text class="m lbl" x="472" y="316" fill="#a83838">sat</text>
+  <polyline class="edge" points="540,288 540,308 730,308 730,326" marker-end="url(#arr)"/>
+  <text class="m lbl" x="552" y="322" fill="#b07820">unknown · timeout</text>
+
+  <g>
+    <rect class="card" x="80" y="328" width="220" height="56" rx="10"/>
+    <rect x="80.5" y="328.5" width="4" height="55" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="96" y="350" fill="#3d7a4d">Verified — Tier 1</text>
+    <text class="f d" x="96" y="368">no counterexample can exist</text>
+  </g>
+  <g>
+    <rect class="card" x="350" y="328" width="220" height="56" rx="10"/>
+    <rect x="350.5" y="328.5" width="4" height="55" rx="2" fill="#c45"/>
+    <text class="f t" x="366" y="350" fill="#a83838">Violated — E500</text>
+    <text class="f d" x="366" y="368">the model is reported as inputs</text>
+  </g>
+  <g>
+    <rect class="card" x="620" y="328" width="220" height="56" rx="10"/>
+    <rect x="620.5" y="328.5" width="4" height="55" rx="2" fill="#d4952a"/>
+    <text class="f t" x="636" y="350" fill="#b07820">Tier 3 — runtime guard</text>
+    <text class="f d" x="636" y="368">checked on every call instead</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="418">Callee contracts join the assumptions at call sites — scoped to the path that established them.</text>
+</svg>

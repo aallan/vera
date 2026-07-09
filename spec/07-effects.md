@@ -176,6 +176,8 @@ When an effect operation is performed in the handled body:
 
 The handler may also choose NOT to call `resume`, which aborts the handled body. This is how exceptions are implemented.
 
+![Handler dispatch: an effect operation suspends the handled body, control transfers to the matching clause with the arguments and handler state in scope, and resume(value) continues the body — omitting resume aborts it.](../assets/diagrams/effect-handlers.svg)
+
 ### 7.5.3 Examples
 
 **State handler:**
@@ -392,6 +394,8 @@ effects(<IO>) <: effects(<IO, State<Int>>)
 ```
 
 In general, `effects(<E1>)` is a subtype of `effects(<E1, E2>)`. A function that performs no IO can safely be called in a context that allows IO.
+
+![Effect subtyping by row inclusion: pure fits where IO is allowed, IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](../assets/diagrams/effect-row-lattice.svg)
 
 This means:
 - A `pure` function can be passed where `Fn(@A -> @B) effects(<IO>)` is expected.

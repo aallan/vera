@@ -1,0 +1,95 @@
+<svg width="920" height="432" viewBox="0 0 920 432" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Vera's complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base, reflexivity — and nothing else: no structural subtyping, no covariance. The checker additionally permits Int where Nat is expected; the verifier, not the checker, enforces the non-negativity proof.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/02 §2.8. Arrows point at the SUPERTYPE. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 13px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .elbl { font-size: 10px; font-style: italic; fill: #a9a49b; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="429" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">TYPES · THE COMPLETE SUBTYPING RELATION</text>
+  <text class="f sub" x="36" y="64">Four rules and nothing else — arrows point at the supertype.</text>
+
+  <!-- lattice chain -->
+  <g>
+    <rect class="card" x="80" y="88" width="240" height="42" rx="10"/>
+    <rect x="80.5" y="88.5" width="4" height="41" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="200" y="114" text-anchor="middle">T</text>
+  </g>
+  <line class="edge" x1="200" y1="170" x2="200" y2="134" marker-end="url(#arr)"/>
+  <text class="f elbl" x="212" y="156">refinement to base</text>
+
+  <g>
+    <rect class="card" x="80" y="172" width="240" height="42" rx="10"/>
+    <rect x="80.5" y="172.5" width="4" height="41" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="200" y="198" text-anchor="middle">{ @T | Q }</text>
+  </g>
+  <line class="edge" x1="200" y1="254" x2="200" y2="218" marker-end="url(#arr)"/>
+  <text class="f elbl" x="212" y="240">when P ⇒ Q is valid</text>
+
+  <g>
+    <rect class="card" x="80" y="256" width="240" height="42" rx="10"/>
+    <rect x="80.5" y="256.5" width="4" height="41" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="200" y="282" text-anchor="middle">{ @T | P }</text>
+  </g>
+  <line class="edge" x1="200" y1="338" x2="200" y2="302" marker-end="url(#arr)"/>
+  <text class="f elbl" x="212" y="324">Never &lt;: every type</text>
+
+  <g>
+    <rect class="card" x="80" y="340" width="240" height="42" rx="10"/>
+    <rect x="80.5" y="340.5" width="4" height="41" rx="2" fill="#4a82a8"/>
+    <text class="m t" x="200" y="366" text-anchor="middle">Never</text>
+  </g>
+
+  <!-- concrete instance -->
+  <text class="f micro" x="420" y="98">A CONCRETE CHAIN</text>
+  <g class="m" font-size="11.5px">
+    <rect class="card" x="420" y="108" width="90" height="30" rx="15"/>
+    <text x="465" y="128" text-anchor="middle" fill="#2d2b28">Never</text>
+    <text class="f elbl" x="524" y="127">&lt;:</text>
+    <rect class="card" x="542" y="108" width="128" height="30" rx="15"/>
+    <text x="606" y="128" text-anchor="middle" fill="#2d2b28">{@Int | &gt; 0}</text>
+    <text class="f elbl" x="684" y="127">&lt;:</text>
+    <rect class="card" x="702" y="108" width="120" height="30" rx="15"/>
+    <text x="762" y="128" text-anchor="middle" fill="#2d2b28">Nat (≥ 0)</text>
+  </g>
+  <text class="f d" x="420" y="158">…and <tspan class="m" font-size="10px">Nat &lt;: Int</tspan> (§2.2.1). Each step holds because its predicate implies the next.</text>
+
+  <!-- what is NOT here -->
+  <g>
+    <rect class="card" x="420" y="184" width="464" height="92" rx="10"/>
+    <rect x="420.5" y="184.5" width="4" height="91" rx="2" fill="#c45"/>
+    <text class="f t" x="438" y="208" fill="#a83838">That is the whole relation</text>
+    <text class="f d" x="438" y="228">No structural subtyping, no implicit numeric conversions, no</text>
+    <text class="f d" x="438" y="242">covariance or contravariance on compound types:</text>
+    <text class="f d" x="438" y="262"><tspan class="m" font-size="10px">Array&lt;PosInt&gt;</tspan> is NOT <tspan class="m" font-size="10px">&lt;: Array&lt;Int&gt;</tspan> — convert with an explicit map.</text>
+  </g>
+
+  <!-- checker/verifier split -->
+  <g>
+    <rect class="card" x="420" y="292" width="464" height="90" rx="10"/>
+    <rect x="420.5" y="292.5" width="4" height="89" rx="2" fill="#d4952a"/>
+    <text class="f t" x="438" y="316" fill="#b07820">One implementation allowance</text>
+    <text class="f d" x="438" y="336">The checker also permits <tspan class="m" font-size="10px">Int</tspan> where <tspan class="m" font-size="10px">Nat</tspan> is expected, so Nat-computing</text>
+    <text class="f d" x="438" y="350">functions need no explicit conversion. Non-negativity is enforced by the</text>
+    <text class="f d" x="438" y="364"><tspan font-weight="600">verifier</tspan> (Z3), not the checker — check-green but verify-red on a Nat</text>
+    <text class="f d" x="438" y="378">return means the ≥ 0 proof failed.</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="414">Minimal by design: every conversion the relation doesn't grant is spelled out in the program.</text>
+</svg>

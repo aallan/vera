@@ -1,0 +1,59 @@
+<svg width="920" height="312" viewBox="0 0 920 312" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Per-type right-to-left numbering: in fn(@A, @B, @A, @B) each type has its own counter — the rightmost B is @B.0 and the earlier one @B.1; independently, the rightmost A is @A.0 and the earlier one @A.1.</title>
+  <!-- Design system: see architecture.svg. Grounded in DE_BRUIJN.md §mnemonic. -->
+  <defs>
+    <marker id="arrA" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#4a82a8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#8b6cad" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .sig { font-size: 17px; fill: #2d2b28; }
+      .idx { font-size: 12px; font-weight: 700; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="309" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">SLOT REFERENCES · EACH TYPE COUNTS ITS OWN BINDINGS, RIGHT TO LEFT</text>
+  <text class="f sub" x="36" y="64">Interleaved types don't share a counter — the rightmost binding of each type is its .0</text>
+
+  <!-- the signature, params at known x positions -->
+  <g class="m sig">
+    <text x="300" y="130" text-anchor="end">fn(</text>
+    <text x="330" y="130" text-anchor="middle" fill="#4a82a8" font-weight="600">@A</text>
+    <text x="358" y="130" text-anchor="middle">,</text>
+    <text x="400" y="130" text-anchor="middle" fill="#8b6cad" font-weight="600">@B</text>
+    <text x="428" y="130" text-anchor="middle">,</text>
+    <text x="470" y="130" text-anchor="middle" fill="#4a82a8" font-weight="600">@A</text>
+    <text x="498" y="130" text-anchor="middle">,</text>
+    <text x="540" y="130" text-anchor="middle" fill="#8b6cad" font-weight="600">@B</text>
+    <text x="568" y="130" text-anchor="start"> -&gt; …)</text>
+  </g>
+
+  <!-- B row -->
+  <line x1="400" y1="182" x2="400" y2="146" stroke="#8b6cad" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <line x1="540" y1="182" x2="540" y2="146" stroke="#8b6cad" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <rect x="368" y="184" width="64" height="26" rx="13" fill="#ede8f2" stroke="#e8e6e1"/>
+  <text class="m idx" x="400" y="202" text-anchor="middle" fill="#8b6cad">@B.1</text>
+  <rect x="508" y="184" width="64" height="26" rx="13" fill="#ede8f2" stroke="#e8e6e1"/>
+  <text class="m idx" x="540" y="202" text-anchor="middle" fill="#8b6cad">@B.0</text>
+  <text class="f" x="600" y="202" font-size="11px" fill="#7a756d">rightmost B = .0</text>
+
+  <!-- A row -->
+  <line x1="330" y1="244" x2="330" y2="146" stroke="#4a82a8" stroke-width="1.5" marker-end="url(#arrA)"/>
+  <line x1="470" y1="244" x2="470" y2="146" stroke="#4a82a8" stroke-width="1.5" marker-end="url(#arrA)"/>
+  <rect x="298" y="246" width="64" height="26" rx="13" fill="#e4ecf2" stroke="#e8e6e1"/>
+  <text class="m idx" x="330" y="264" text-anchor="middle" fill="#4a82a8">@A.1</text>
+  <rect x="438" y="246" width="64" height="26" rx="13" fill="#e4ecf2" stroke="#e8e6e1"/>
+  <text class="m idx" x="470" y="264" text-anchor="middle" fill="#4a82a8">@A.0</text>
+  <text class="f" x="600" y="264" font-size="11px" fill="#4a82a8">rightmost A = .0 — B's don't count</text>
+
+  <text class="f footi" x="36" y="296">A String parameter between two Ints never shifts the Int indices — counters are per-type.</text>
+</svg>

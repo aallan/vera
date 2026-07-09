@@ -1,0 +1,62 @@
+<svg width="920" height="292" viewBox="0 0 920 292" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed — in general a function with fewer effects can always be used where more effects are expected.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/07 §7.8. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 14px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="289" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">EFFECTS · SUBTYPING BY ROW INCLUSION</text>
+  <text class="f sub" x="36" y="64">Fewer effects always fit where more are allowed — the row only ever grants capability, never demands it.</text>
+
+  <!-- the chain -->
+  <g>
+    <rect class="card" x="60" y="96" width="200" height="52" rx="10"/>
+    <rect x="60.5" y="96.5" width="4" height="51" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="160" y="120" text-anchor="middle">effects(pure)</text>
+    <text class="f d" x="160" y="138" text-anchor="middle">no effects at all</text>
+  </g>
+  <line class="edge" x1="260" y1="122" x2="322" y2="122" marker-end="url(#arr)"/>
+  <text class="m" x="291" y="112" text-anchor="middle" font-size="12px" font-weight="700" fill="#7a756d">&lt;:</text>
+
+  <g>
+    <rect class="card" x="326" y="96" width="220" height="52" rx="10"/>
+    <rect x="326.5" y="96.5" width="4" height="51" rx="2" fill="#cc9966"/>
+    <text class="m t" x="436" y="120" text-anchor="middle">effects(&lt;IO&gt;)</text>
+    <text class="f d" x="436" y="138" text-anchor="middle">may print, read, …</text>
+  </g>
+  <line class="edge" x1="546" y1="122" x2="608" y2="122" marker-end="url(#arr)"/>
+  <text class="m" x="577" y="112" text-anchor="middle" font-size="12px" font-weight="700" fill="#7a756d">&lt;:</text>
+
+  <g>
+    <rect class="card" x="612" y="96" width="272" height="52" rx="10"/>
+    <rect x="612.5" y="96.5" width="4" height="51" rx="2" fill="#cc9966"/>
+    <text class="m t" x="748" y="120" text-anchor="middle">effects(&lt;IO, State&lt;Int&gt;&gt;)</text>
+    <text class="f d" x="748" y="138" text-anchor="middle">…and may touch state</text>
+  </g>
+
+  <!-- the general rule -->
+  <g>
+    <rect class="card" x="60" y="176" width="824" height="52" rx="10"/>
+    <rect x="60.5" y="176.5" width="4" height="51" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="80" y="199" font-size="12.5px">The general rule: <tspan class="m">effects(&lt;E1&gt;) &lt;: effects(&lt;E1, E2&gt;)</tspan></text>
+    <text class="f d" x="80" y="217">A pure function can be passed where <tspan class="m" font-size="10px">Fn(@A -&gt; @B) effects(&lt;IO&gt;)</tspan> is expected; an <tspan class="m" font-size="10px">&lt;IO&gt;</tspan> function fits an <tspan class="m" font-size="10px">&lt;IO, Exn&lt;String&gt;&gt;</tspan> context.</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="262">The declared row is an upper bound on what a function may do — never a lower bound on what it must.</text>
+</svg>

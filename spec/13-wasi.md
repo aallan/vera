@@ -33,7 +33,12 @@ inherited, not reimplemented.
 The emitter (`vera/codegen/wasi.py`) produces a single component
 wrapping two core modules:
 
-```
+![The emitted component: core module $Main calls every vera.* op through a funcref dispatch table that core module $Adapter fills at instantiation, implementing the ops over canon-lowered WASI imports; the component exports wasi:cli/run.](../assets/diagrams/wasi-component.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 component
 ├── core module $Main      — the ordinary Vera core module, with:
 │     · each (import "vera" "op") replaced by a same-named
@@ -49,6 +54,8 @@ component
 └── exports: wasi:cli/run@0.2.0 (+ a plain lifted `main` when the
     return type is scalar — Section 13.5)
 ```
+
+</details>
 
 Instantiation order `$Main` → lowers → `$Adapter` is a strict DAG (the
 component model forbids instantiation cycles); dispatch-table slots are
@@ -85,6 +92,8 @@ scans or sweeps it:
 
 Host data larger than the arena (for example an argv list over
 64 KiB) traps cleanly rather than overflowing into the GC heap.
+
+![The GC-exempt arena: a fixed 64 KiB scratch region below gc_heap_start with a 128-byte retptr slab and a bump cabi_realloc reset at every op entry; data crossing into Vera is copied out to GC-heap blocks with shadow-stack rooting, and oversized host data traps cleanly.](../assets/diagrams/wasi-arena.svg)
 
 ## 13.4 Supported Host Surface
 
@@ -170,6 +179,8 @@ guest heap (using the compilation's own constructor layouts), calls
 `handle`, decodes the returned `Response`, and drives the
 outgoing-response resource sequence.  Guest traps map to a 500 from
 the host.
+
+![The server world: stock wasmtime serve delivers each request through wasi:http; the generated adapter builds the Request ADT in the guest heap, calls the verified handle, decodes the Response, and drives the outgoing resources — with String-keyed Map operations implemented in guest code.](../assets/diagrams/server-world.svg)
 
 **Headers without a host.**  `Request`/`Response` headers are
 `Map<String, String>`, and Map operations are host imports on the

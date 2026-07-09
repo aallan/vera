@@ -370,6 +370,8 @@ The refinement type on the function parameter's second argument serves as the co
 
 ## 6.8 Summary of Verification Tiers
 
+![Three-tier verification: each contract obligation goes to Z3 with a ten-second budget — unsat is verified (Tier 1), sat is a compile error with a counterexample, unknown or timeout defers to a Tier 3 runtime guard whose violation traps with a kind, a Fix paragraph, and a backtrace. Tier 2 (hints) is not yet implemented and also falls to Tier 3.](../assets/diagrams/tiers.svg)
+
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
 | 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667).  No single SMT-LIB logic name covers all of these — QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |

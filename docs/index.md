@@ -4,7 +4,7 @@
 
 From the Latin *veritas* — truth. In Vera, verification is a first-class citizen.
 
-**Current version:** [0.1.0](https://github.com/aallan/vera/releases/tag/v0.1.0)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
+**Current version:** [0.1.1](https://github.com/aallan/vera/releases/tag/v0.1.1)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
 
 ## Why?
 
@@ -15,6 +15,8 @@ Programming languages have always co-evolved with their users. Assembly emerged 
 The [empirical literature](https://arxiv.org/abs/2307.12488) shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.
 
 The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.
+
+![The loop: the model writes Vera with mandatory contracts; the compiler proves every type and every contract via Z3; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI, browser, and WASI.](https://veralang.dev/loop-web.svg)
 
 For deeper questions about the design — why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka — see the [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md).
 
@@ -32,7 +34,7 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
-Read the slots: `@Int.1` is the first parameter, `@Int.0` is the second — De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The `requires` clause is what lifts divide-by-zero from a runtime crash to a compile-time error.
+Read the slots: `@Int.1` is the first parameter, `@Int.0` is the second — De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The `requires` clause is what lifts divide-by-zero from a runtime crash to a compile-time error. [examples/safe_divide.vera](https://github.com/aallan/vera/blob/main/examples/safe_divide.vera).
 
 ```vera
 public fn fizzbuzz(@Nat -> @String)
@@ -56,7 +58,7 @@ public fn fizzbuzz(@Nat -> @String)
 }
 ```
 
-A program everyone knows. Interpolation uses `"\(@Nat.0)"` — the slot reference substitutes in directly with auto-conversion. There are no naming decisions to make, and none to hallucinate.
+A program everyone knows. Interpolation uses `"\(@Nat.0)"` — the slot reference substitutes in directly with auto-conversion. There are no naming decisions to make, and none to hallucinate. [examples/fizzbuzz.vera](https://github.com/aallan/vera/blob/main/examples/fizzbuzz.vera).
 
 ```vera
 public fn classify_sentiment(@String -> @Result<String, String>)
@@ -69,7 +71,7 @@ public fn classify_sentiment(@String -> @Result<String, String>)
 }
 ```
 
-LLM calls are effects. Where the two functions above are `effects(pure)`, this one declares `<Inference>`. A caller that does not permit `<Inference>` cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up.
+LLM calls are effects. Where the two functions above are `effects(pure)`, this one declares `<Inference>`. A caller that does not permit `<Inference>` cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up. [examples/inference.vera](https://github.com/aallan/vera/blob/main/examples/inference.vera).
 
 ```vera
 public fn research_topic(@String -> @Result<String, String>)
@@ -86,7 +88,7 @@ public fn research_topic(@String -> @Result<String, String>)
 }
 ```
 
-Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
 
 When you get it wrong, every error is an instruction for the model that wrote the code:
 
@@ -153,11 +155,11 @@ Full source and data: [https://github.com/aallan/vera-bench](https://github.com/
 
 - **No variable names** — Typed [De Bruijn indices](https://raw.githubusercontent.com/aallan/vera/main/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.
 - **Full contracts** — Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM — no manual test cases.
-- **Algebraic effects** — IO, Http, HttpServer, State, Exceptions, Async, Inference, Random — declared, typed, and handled explicitly. Pure by default.
+- **Algebraic effects** — IO, Http, HttpServer, State, Exceptions, Async, Inference, Random, Diverge — declared, typed, and handled explicitly. Pure by default.
 - **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
-- **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), guided with hints, runtime fallback for the rest.
+- **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/) plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.
 - **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
-- **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.
+- **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot, Mistral.
 - **Typed stdlib** — JSON, HTML, Markdown, HTTP, Regex, Decimal — built-in ADTs with parse/query/serialize.
 - **Async / Future<T>** — Futures carry an `<Async>` effect and compose with the rest of the effect system.
 - **Verified HTTP handlers** — An `<HttpServer>` effect marks a total `handle(Request -> Response)`. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. `vera serve` runs it.
@@ -195,9 +197,10 @@ Self-contained — no bundler. Serve with any HTTP server (`python -m http.serve
 
 ```bash
 $ vera compile --target wasi-p2 --world server examples/http_server.vera
-WASI Preview 2 server component: http_server.wasm
+Compiled (WASI Preview 2 server component
+(run with: wasmtime serve <file>)): examples/http_server.wasm
 
-$ wasmtime serve http_server.wasm
+$ wasmtime serve examples/http_server.wasm
 Serving HTTP on http://0.0.0.0:8080/
 ```
 
@@ -244,7 +247,7 @@ For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via 
 
 ## Status
 
-Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, eight algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 14-chapter specification. A 143-program conformance suite and 37 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
+Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, nine algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random, Diverge), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 14-chapter specification. A 143-program conformance suite and 37 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
 
 ## Links
 

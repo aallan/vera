@@ -1,0 +1,81 @@
+<svg width="920" height="412" viewBox="0 0 920 412" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">De Bruijn slot resolution: parameters bind left to right into scope 0, a let pushes a new binding in scope 1, and @Int.n counts backwards from the most recent Int binding — so @Int.0 is the let, @Int.1 the second parameter, @Int.2 the first.</title>
+  <!-- Design system: see architecture.svg. Grounded in vera/README.md + DE_BRUIJN.md. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .code { font-size: 12.5px; fill: #2d2b28; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="409" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">SLOT REFERENCES · @Int.0 IS THE MOST RECENT BINDING</text>
+  <text class="f sub" x="36" y="64">Indices count backwards through the scope stack — not forwards through the parameter list.</text>
+
+  <!-- code card -->
+  <g>
+    <rect class="card" x="36" y="88" width="400" height="104" rx="10"/>
+    <rect x="36.5" y="88.5" width="4" height="103" rx="2" fill="#4a82a8"/>
+    <text class="m code" x="58" y="116">private fn add(@Int, @Int -&gt; @Int) {</text>
+    <text class="m code" x="58" y="140">  let @Int = @Int.0 + @Int.1;</text>
+    <text class="m code" x="58" y="164">  @Int.0</text>
+    <text class="m code" x="58" y="184">}</text>
+  </g>
+  <text class="f d" x="36" y="214" font-style="italic" fill="#a9a49b">parameters bind left-to-right; the let pushes a newer Int on top</text>
+
+  <!-- resolve pills -->
+  <g>
+    <rect x="72" y="246" width="96" height="30" rx="15" fill="#f3f2ef" stroke="#e8e6e1"/>
+    <text class="m t" x="120" y="266" text-anchor="middle">@Int.0</text>
+  </g>
+  <g>
+    <rect x="72" y="296" width="96" height="30" rx="15" fill="#f3f2ef" stroke="#e8e6e1"/>
+    <text class="m t" x="120" y="316" text-anchor="middle">@Int.1</text>
+  </g>
+  <g>
+    <rect x="72" y="346" width="96" height="30" rx="15" fill="#f3f2ef" stroke="#e8e6e1"/>
+    <text class="m t" x="120" y="366" text-anchor="middle">@Int.2</text>
+  </g>
+  <text class="f d" x="200" y="266" fill="#3d7a4d">most recent — the let binding</text>
+  <text class="f d" x="200" y="316" fill="#7a756d">one before — param₂ (rightmost)</text>
+  <text class="f d" x="200" y="366" fill="#7a756d">two before — param₁</text>
+
+  <!-- scope stack -->
+  <g>
+    <rect class="card" x="560" y="112" width="324" height="92" rx="10"/>
+    <rect x="560.5" y="112.5" width="4" height="91" rx="2" fill="#8b6cad"/>
+    <text class="f micro" x="578" y="136" letter-spacing="1">SCOPE 0 · FN PARAMETERS</text>
+    <rect x="578" y="150" width="128" height="34" rx="8" fill="#ede8f2" stroke="#e8e6e1"/>
+    <text class="m" x="642" y="172" text-anchor="middle" font-size="11.5px" fill="#2d2b28">param₁ : Int</text>
+    <rect x="722" y="150" width="128" height="34" rx="8" fill="#ede8f2" stroke="#e8e6e1"/>
+    <text class="m" x="786" y="172" text-anchor="middle" font-size="11.5px" fill="#2d2b28">param₂ : Int</text>
+  </g>
+  <g>
+    <rect class="card" x="560" y="216" width="324" height="92" rx="10"/>
+    <rect x="560.5" y="216.5" width="4" height="91" rx="2" fill="#5a9e6f"/>
+    <text class="f micro" x="578" y="240" letter-spacing="1">SCOPE 1 · FN BODY</text>
+    <rect x="578" y="254" width="200" height="34" rx="8" fill="#e6f0e9" stroke="#e8e6e1"/>
+    <text class="m" x="678" y="276" text-anchor="middle" font-size="11.5px" fill="#2d2b28">let binding : Int</text>
+    <text class="f d" x="578" y="302" font-style="italic" fill="#a9a49b">← most recent Int</text>
+  </g>
+
+  <!-- resolution arrows -->
+  <polyline class="edge" points="168,261 460,261 460,271 570,271" marker-end="url(#arr)" stroke="#5a9e6f"/>
+  <polyline class="edge" points="168,311 490,311 490,210 786,210 786,205" marker-end="url(#arr)"/>
+  <polyline class="edge" points="168,361 540,361 540,167 572,167" marker-end="url(#arr)"/>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="396">Commutative operators mask a wrong index — subtraction, division, comparison and recursive-call order do not. `vera check --explain-slots` prints this table.</text>
+</svg>

@@ -1187,9 +1187,10 @@ public fn main(@Unit -> @Bool)
         """Type-arg validation is sound, not just a bare-name strip: `Box<Array<Int>>`
         (a non-`Eq` `Array` type argument) is correctly REJECTED with E613, where a
         naive strip-to-`Box` would have false-accepted it.  `Array` is used rather
-        than `String` for an UNAMBIGUOUS non-`Eq` arg: `String` itself *is* `Eq`,
-        just not as a scalar ADT field — the scalar-only auto-derivation basis (and
-        its String false-reject / nested-ADT false-accept) is tracked in #773."""
+        than `String` for an UNAMBIGUOUS non-`Eq` arg: `String` itself *is* `Eq` —
+        the old scalar-only derivation basis that false-rejected it (and
+        false-accepted nested ADTs) was fixed by #773's structural derivation;
+        what this test pins is the sound rejection that remains."""
         result = _compile(self._REJECT_SRC)
         e613 = [
             d for d in result.diagnostics

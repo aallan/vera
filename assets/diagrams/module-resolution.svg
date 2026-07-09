@@ -1,0 +1,118 @@
+<svg width="920" height="548" viewBox="0 0 920 548" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Module resolution: an import path is mapped to a file (relative to the importer, then the project root), served from the parse cache when seen before, rejected as a circular import if it is already in progress, and otherwise parsed with its own imports resolved recursively. Transitively reached modules are compiled but their declarations are not visible to the original importer.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/08 §8.6. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .lbl { font-size: 10px; font-weight: 600; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="545" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">MODULES · RESOLUTION</text>
+  <text class="f sub" x="36" y="64">File-system based, cached, cycle-rejecting — and the dependency graph must be acyclic.</text>
+
+  <!-- input -->
+  <rect x="36" y="86" width="180" height="26" rx="13" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="126" y="103" text-anchor="middle" font-size="11px" fill="#2d2b28">import vera.math</text>
+  <line class="edge" x1="70" y1="112" x2="70" y2="128" marker-end="url(#arr)"/>
+
+  <!-- path mapping -->
+  <g>
+    <rect class="card" x="36" y="130" width="400" height="64" rx="10"/>
+    <rect x="36.5" y="130.5" width="4" height="63" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="54" y="152">Path mapping</text>
+    <text class="f d" x="54" y="170"><tspan class="m" font-size="9.5px">vera.math → vera/math.vera</tspan> — tried relative to the</text>
+    <text class="f d" x="54" y="184">importing file's directory, then the project root</text>
+  </g>
+  <line class="edge" x1="70" y1="194" x2="70" y2="210" marker-end="url(#arr)"/>
+
+  <!-- cache -->
+  <g>
+    <rect class="card" x="36" y="212" width="400" height="52" rx="10"/>
+    <rect x="36.5" y="212.5" width="4" height="51" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="54" y="234">Cache — parsed once, ever</text>
+    <text class="f d" x="54" y="252">key: the module path tuple <tspan class="m" font-size="9.5px">("vera", "math")</tspan></text>
+  </g>
+  <polyline class="edge" points="436,238 480,238" marker-end="url(#arr)"/>
+  <text class="m lbl" x="442" y="230" fill="#3d7a4d">hit</text>
+  <line class="edge" x1="70" y1="264" x2="70" y2="280" marker-end="url(#arr)"/>
+  <text class="m lbl" x="80" y="276" fill="#7a756d">miss</text>
+
+  <!-- in-progress -->
+  <g>
+    <rect class="card" x="36" y="282" width="400" height="52" rx="10"/>
+    <rect x="36.5" y="282.5" width="4" height="51" rx="2" fill="#d4952a"/>
+    <text class="f t" x="54" y="304">In-progress set</text>
+    <text class="f d" x="54" y="322">already being resolved right now?</text>
+  </g>
+  <polyline class="edge" points="436,308 480,308" marker-end="url(#arr)"/>
+  <text class="m lbl" x="442" y="300" fill="#a83838">yes</text>
+  <line class="edge" x1="70" y1="334" x2="70" y2="350" marker-end="url(#arr)"/>
+  <text class="m lbl" x="80" y="346" fill="#7a756d">no</text>
+
+  <!-- recurse -->
+  <g>
+    <rect class="card" x="36" y="352" width="400" height="64" rx="10"/>
+    <rect x="36.5" y="352.5" width="4" height="63" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="54" y="374">Parse · transform · recurse</text>
+    <text class="f d" x="54" y="392">mark in-progress, parse and transform the file, then</text>
+    <text class="f d" x="54" y="406">resolve its own imports the same way; cache the result</text>
+  </g>
+  <line class="edge" x1="70" y1="416" x2="70" y2="432" marker-end="url(#arr)"/>
+
+  <!-- output -->
+  <g>
+    <rect class="card" x="36" y="434" width="400" height="40" rx="10"/>
+    <rect x="36.5" y="434.5" width="4" height="39" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="459" fill="#3d7a4d">resolved module — typed AST, cached</text>
+  </g>
+
+  <!-- right column: outcomes -->
+  <g>
+    <rect class="card" x="484" y="216" width="400" height="44" rx="10"/>
+    <rect x="484.5" y="216.5" width="4" height="43" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="502" y="235" fill="#3d7a4d">cached module returned</text>
+    <text class="f d" x="502" y="251">every later import of the same path is free</text>
+  </g>
+  <g>
+    <rect class="card" x="484" y="286" width="400" height="44" rx="10"/>
+    <rect x="484.5" y="286.5" width="4" height="43" rx="2" fill="#c45"/>
+    <text class="f t" x="502" y="305" fill="#a83838">circular import — rejected</text>
+    <text class="f d" x="502" y="321"><tspan class="m" font-size="9.5px">'vera.math' is already being resolved</tspan> — the graph must be a DAG</text>
+  </g>
+
+  <!-- visibility DAG -->
+  <text class="f micro" x="484" y="374">TRANSITIVE ≠ VISIBLE (§8.6.4)</text>
+  <g>
+    <rect class="card" x="484" y="386" width="120" height="34" rx="10"/>
+    <text class="m t" x="544" y="408" text-anchor="middle">main</text>
+    <rect class="card" x="648" y="386" width="100" height="34" rx="10"/>
+    <text class="m t" x="698" y="408" text-anchor="middle">A</text>
+    <rect class="card" x="784" y="386" width="100" height="34" rx="10"/>
+    <text class="m t" x="834" y="408" text-anchor="middle">B</text>
+  </g>
+  <line class="edge" x1="604" y1="403" x2="644" y2="403" marker-end="url(#arr)"/>
+  <text class="f d" x="624" y="395" text-anchor="middle" font-size="9px" font-style="italic" fill="#a9a49b">import</text>
+  <line class="edge" x1="748" y1="403" x2="780" y2="403" marker-end="url(#arr)"/>
+  <text class="f d" x="764" y="395" text-anchor="middle" font-size="9px" font-style="italic" fill="#a9a49b">import</text>
+  <path d="M 544 420 C 544 452, 834 452, 834 424" fill="none" stroke="#c45" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text class="m" x="689" y="446" text-anchor="middle" font-size="11px" font-weight="700" fill="#a83838">✗</text>
+  <text class="f d" x="484" y="472">B is resolved and compiled — but its declarations are <tspan font-weight="600">not visible</tspan> to main;</text>
+  <text class="f d" x="484" y="486">only A's public surface is. Reaching B's symbols means importing B directly.</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="522">An unresolvable path is a loud diagnostic naming both locations searched, with the fix spelled out.</text>
+</svg>
