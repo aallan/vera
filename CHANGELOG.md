@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A scheduled CI workflow now checks the limitation tables against live issue states** ([#852](https://github.com/aallan/vera/issues/852)).  `check_limitations_sync.py --check-states` runs Mondays 07:00 UTC and on demand: every issue a KNOWN_ISSUES.md, vera/README.md, spec, SKILL.md, or LSP_SERVER.md limitation row cites is queried against the tracker, and a closed issue still listed as a limitation fails the run — the drift class the v0.1.1 sweep caught by hand is now caught on a schedule.  Deliberately a visibility signal on the Actions tab rather than a required merge check, since issue state drifts independently of any particular PR.  External contribution by [@chethanuk](https://github.com/chethanuk).
 - **Linux aarch64 gains an advisory CI lane** ([#702](https://github.com/aallan/vera/issues/702)).  The test matrix gains an `ubuntu-24.04-arm` cell (Python 3.12 — platform coverage, not version coverage), and the wheel-availability gate now checks `manylinux_2_38_aarch64` wheels for all three Python versions; README §Supported platforms lists the tested cell, with Python 3.11/3.13 on aarch64 remaining wheel-checked only.  The new cell is advisory for now — it runs on every commit but is deliberately not in the required merge checks until the arm runners prove reliable.  External contribution by [@chethanuk](https://github.com/chethanuk).
 
 ## [0.1.1] - 2026-07-08
