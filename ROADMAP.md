@@ -164,7 +164,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 Not stage-gated; advanced alongside whatever stage is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 23's measurement ([#225](https://github.com/aallan/vera/issues/225)).
-- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#702](https://github.com/aallan/vera/issues/702) Linux aarch64 CI matrix entry, [#537](https://github.com/aallan/vera/issues/537) drop the pip-upgrade audit workaround (removal trigger in [KNOWN_ISSUES.md](KNOWN_ISSUES.md)), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch.
+- **CI and process** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#537](https://github.com/aallan/vera/issues/537) drop the pip-upgrade audit workaround (removal trigger in [KNOWN_ISSUES.md](KNOWN_ISSUES.md)), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch.
 
 ## Not doing now
 

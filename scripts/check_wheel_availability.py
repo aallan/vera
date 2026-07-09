@@ -68,6 +68,12 @@ SUPPORTED: list[tuple[str, str, str]] = [
     ("manylinux_2_27_x86_64", "3.11", "Linux x86_64 manylinux_2_27+ (Python 3.11)"),
     ("manylinux_2_27_x86_64", "3.12", "Linux x86_64 manylinux_2_27+ (Python 3.12)"),
     ("manylinux_2_27_x86_64", "3.13", "Linux x86_64 manylinux_2_27+ (Python 3.13)"),
+    # Linux aarch64 — manylinux_2_38 mirrors the README's documented glibc
+    # baseline for this arch; the 3.12 cell is CI-tested (#702), 3.11/3.13
+    # are wheel-checked only.
+    ("manylinux_2_38_aarch64", "3.11", "Linux aarch64 manylinux_2_38+ (Python 3.11)"),
+    ("manylinux_2_38_aarch64", "3.12", "Linux aarch64 manylinux_2_38+ (Python 3.12)"),
+    ("manylinux_2_38_aarch64", "3.13", "Linux aarch64 manylinux_2_38+ (Python 3.13)"),
     # Windows x86_64
     ("win_amd64", "3.11", "Windows x86_64 (Python 3.11)"),
     ("win_amd64", "3.12", "Windows x86_64 (Python 3.12)"),

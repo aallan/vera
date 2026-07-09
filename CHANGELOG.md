@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Linux aarch64 is now CI-tested** ([#702](https://github.com/aallan/vera/issues/702)).  The test matrix gains an `ubuntu-24.04-arm` cell (Python 3.12 — platform coverage, not version coverage), and the wheel-availability gate now checks `manylinux_2_38_aarch64` wheels for all three Python versions, promoting Linux aarch64 from "untested but expected to work" to a tested platform in README §Supported platforms.  The new cell is advisory for now — it runs on every commit but is deliberately not in the required merge checks until the arm runners prove reliable.  External contribution by [@chethanuk](https://github.com/chethanuk).
+
 ## [0.1.1] - 2026-07-08
 
 ### Added

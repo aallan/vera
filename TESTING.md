@@ -15,7 +15,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 annotated snippet) |
 | **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
 | **Contract verification** | 256 of 280 contracts (91.4%) verified statically (Tier 1) |
-| **CI matrix** | 12 combinations (Python 3.11/3.12/3.13 × ubuntu-latest/macos-15/macos-26/windows-latest) + browser parity (Node.js 22) + wheel-availability preflight |
+| **CI matrix** | 13 combinations (Python 3.11/3.12/3.13 × ubuntu-latest/macos-15/macos-26/windows-latest, plus an advisory ubuntu-24.04-arm × 3.12 cell) + browser parity (Node.js 22) + wheel-availability preflight |
 
 ## Running Tests
 
