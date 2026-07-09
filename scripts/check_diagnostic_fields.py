@@ -293,35 +293,63 @@ def _bump_target(target: ast.expr, counts: dict[str, int]) -> None:
 
 
 def _rebound_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, int]:
-    """Count every name-binding site in ``fn``'s own scope: plain,
-    annotated (value-carrying ``AnnAssign``) and
-    augmented assignment, ``for``/``async for`` loop targets, ``with``/
-    ``async with`` ``as`` aliases, walrus (``:=``) targets, and exception-
-    handler ``as`` names.  A name bound more than once by ANY of these forms
-    cannot be trusted to still hold its first value later in the function —
-    see ``_ctor_is_reachable_as_result``."""
+    """Count every name-binding site that can affect ``fn``'s own scope —
+    generically, rather than by enumerating statement forms (the
+    enumeration approach missed starred unpacks, ``import ... as``,
+    ``match`` captures, parameters, and ``nonlocal`` — PR #964 review):
+
+    - any ``ast.Name`` in Store/Del context in own scope (assignment
+      targets of every shape, ``for``/``with`` targets, walrus) — except
+      the target of a *bare* annotation (``d: object`` with no value),
+      which does not assign at runtime;
+    - the binding forms that carry plain strings rather than Name nodes:
+      ``import ... as``, ``except ... as``, ``match`` capture patterns;
+    - the helper's own parameters (a ctor assigned to a name shadowing a
+      parameter has two binding sites);
+    - a ``nonlocal`` declaration in ANY nested function — it licenses an
+      invisible rebind of the helper's local that the own-scope walk
+      cannot see, so the declaration itself breaks trust in the name.
+
+    A name bound more than once cannot be trusted to still hold its first
+    value later in the function — see ``_ctor_is_reachable_as_result``."""
     counts: dict[str, int] = {}
+
+    def bump(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    a = fn.args
+    for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs,
+                *([a.vararg] if a.vararg else []),
+                *([a.kwarg] if a.kwarg else [])):
+        bump(arg.arg)
+
+    bare_annotation_targets: set[int] = set()
     for node in _walk_own_scope(fn):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                _bump_target(t, counts)
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            # An annotated assignment binds like a plain one; a *bare*
-            # annotation (``d: object`` with no value) does not assign at
-            # runtime and is not counted.
-            _bump_target(node.target, counts)
-        elif isinstance(node, ast.AugAssign):
-            _bump_target(node.target, counts)
-        elif isinstance(node, ast.NamedExpr):
-            _bump_target(node.target, counts)
-        elif isinstance(node, (ast.For, ast.AsyncFor)):
-            _bump_target(node.target, counts)
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            for item in node.items:
-                if item.optional_vars is not None:
-                    _bump_target(item.optional_vars, counts)
+        if (isinstance(node, ast.AnnAssign) and node.value is None
+                and isinstance(node.target, ast.Name)):
+            bare_annotation_targets.add(id(node.target))
+
+    for node in _walk_own_scope(fn):
+        if (isinstance(node, ast.Name)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+                and id(node) not in bare_annotation_targets):
+            bump(node.id)
+        elif isinstance(node, ast.alias):
+            bump(node.asname if node.asname else node.name.split(".")[0])
         elif isinstance(node, ast.ExceptHandler) and node.name:
-            counts[node.name] = counts.get(node.name, 0) + 1
+            bump(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bump(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bump(node.rest)
+
+    # Full-tree scan (crossing nested-scope boundaries deliberately):
+    # only `nonlocal` can rebind the helper's local from a nested scope.
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Nonlocal):
+            for name in node.names:
+                bump(name)
+
     return counts
 
 
@@ -345,6 +373,7 @@ def _ctor_is_reachable_as_result(
     unreliable — don't treat it as reachable at all (inspected, not
     exempted)."""
     local_name = None
+    bind_line = 0
     for node in _walk_own_scope(fn):
         if isinstance(node, ast.Return) and node.value is ctor:
             return True
@@ -353,14 +382,20 @@ def _ctor_is_reachable_as_result(
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and node.value is ctor):
             local_name = node.targets[0].id
+            bind_line = node.lineno
         if (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
                 and node.value is ctor):
             # ``d: Diagnostic = Diagnostic(...)`` is an initial binding too,
             # not a disqualifier (PR #964 review).
             local_name = node.target.id
+            bind_line = node.lineno
     if local_name is None or _rebound_names(fn).get(local_name, 0) != 1:
         return False
     for node in _walk_own_scope(fn):
+        # Order-sensitive: a `return d` textually BEFORE the binding is not
+        # evidence the ctor reaches the result (PR #964 review).
+        if getattr(node, "lineno", 0) < bind_line:
+            continue
         if isinstance(node, ast.Return) and isinstance(node.value, ast.Name) \
                 and node.value.id == local_name:
             return True

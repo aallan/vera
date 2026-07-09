@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-6,833 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
+6,839 tests, 143 conformance programs, 37 examples, 14 spec chapters.  No known bugs ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)); what remains there are *limitations*, and the stages below are how they retire.
 
 ## Stage 19 — The verification completeness sprint
 

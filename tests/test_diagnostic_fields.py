@@ -905,6 +905,138 @@ class TestPlumbingSkipRequiresReachability:
         assert len(refs) == 1
         assert "§99.1" in refs[0].missing[0]
 
+    # The remaining binding forms the enumeration missed (PR #964 panel
+    # review) — each one a fail-OPEN shape where a swapped-out ctor kept
+    # its plumbing exemption.  Starred unpack:
+    REBOUND_VIA_STARRED = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        first, *d = self.items()\n"
+        "        return d\n"
+    )
+
+    def test_starred_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_STARRED, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    REBOUND_VIA_IMPORT_AS = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        import textwrap as d\n"
+        "        return d\n"
+    )
+
+    def test_import_as_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_IMPORT_AS, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    REBOUND_VIA_MATCH_AS = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        match node:\n"
+        "            case _ as d:\n"
+        "                pass\n"
+        "        return d\n"
+    )
+
+    def test_match_as_rebound_local_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.REBOUND_VIA_MATCH_AS, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # A parameter is a binding too: a ctor assigned to a name that shadows
+    # a parameter has two binding sites, so its later return cannot be
+    # trusted to be the ctor on every path.
+    PARAM_SHADOWED_CTOR = (
+        "class C:\n"
+        "    def _error(self, d, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        if description:\n"
+        "            d = Diagnostic(description=description, rationale='ok',\n"
+        "                           fix='ok',\n"
+        '                           spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                           error_code='E9999')\n"
+        "        return d\n"
+    )
+
+    def test_param_shadowing_ctor_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.PARAM_SHADOWED_CTOR, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # The name-match must be order-sensitive: a `return d` textually
+    # BEFORE the ctor binding is not evidence the ctor reaches the
+    # helper's result.
+    RETURN_BEFORE_BINDING = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        if node is None:\n"
+        "            return d\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        self.dispatch(d)\n"
+    )
+
+    def test_return_before_binding_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.RETURN_BEFORE_BINDING, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
+    # A nested function declaring `nonlocal d` licenses an invisible
+    # rebind of the helper's local — the own-scope walk cannot see the
+    # assignment, so the declaration itself must break trust in the name.
+    NONLOCAL_REBIND_IN_NESTED = (
+        "class C:\n"
+        "    def _error(self, node, description, rationale='', fix='',\n"
+        "               spec_ref=''):\n"
+        "        d = Diagnostic(description=description, rationale='ok',\n"
+        "                       fix='ok',\n"
+        '                       spec_ref=\'Chapter 99, Section 99.1 "Nope"\',\n'
+        "                       error_code='E9999')\n"
+        "        def swap():\n"
+        "            nonlocal d\n"
+        "            d = None\n"
+        "        swap()\n"
+        "        return d\n"
+    )
+
+    def test_nonlocal_rebind_in_nested_fn_is_not_reachable_as_result(
+            self, mod: object) -> None:
+        refs = mod.spec_ref_violations_in_source(
+            self.NONLOCAL_REBIND_IN_NESTED, self.F)
+        assert len(refs) == 1
+        assert "§99.1" in refs[0].missing[0]
+
 
 class TestOwnScopeExcludesEnclosingScopeExpressions:
     """"Own scope" means the helper's ``body`` — not everything hanging off its
