@@ -1,0 +1,94 @@
+<svg width="920" height="420" viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">How slot indices shift as lets stack, traced through double_then_increment: on entry the parameter is at Int index zero; after the first let the doubled value takes index zero and the parameter shifts to one; after the second let the incremented value is zero, the doubled value one, the parameter two — and the ensures clause evaluates in the entry environment, where index zero is still the parameter.</title>
+  <!-- Design system: see architecture.svg. Grounded in DE_BRUIJN.md §5.3. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .colh { font-size: 11px; font-weight: 600; fill: #2d2b28; }
+      .chip { stroke: #e8e6e1; stroke-width: 1; }
+      .ct { font-size: 10.5px; text-anchor: middle; fill: #2d2b28; }
+      .idx { font-size: 9px; text-anchor: middle; fill: #7a756d; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="417" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">SLOT REFERENCES · THE STACK, STATEMENT BY STATEMENT</text>
+  <text class="f sub" x="36" y="64">double_then_increment: each let pushes a newer Int on top, and every older Int shifts one index up.</text>
+
+  <!-- code strip -->
+  <g>
+    <rect class="card" x="36" y="84" width="330" height="96" rx="10"/>
+    <rect x="36.5" y="84.5" width="4" height="95" rx="2" fill="#4a82a8"/>
+    <text class="m" x="54" y="107" font-size="11px" fill="#2d2b28">fn double_then_increment(@Int -&gt; @Int)</text>
+    <text class="m" x="54" y="126" font-size="11px" fill="#2d2b28">  ensures(@Int.result == @Int.0*2 + 1)</text>
+    <text class="m" x="54" y="145" font-size="11px" fill="#2d2b28">  { let @Int = @Int.0 * 2;</text>
+    <text class="m" x="54" y="164" font-size="11px" fill="#2d2b28">    let @Int = @Int.0 + 1;  @Int.0 }</text>
+  </g>
+  <text class="f d" x="392" y="110">On each let's right-hand side, <tspan class="m" font-size="10px">@Int.0</tspan> is the <tspan font-weight="600">current</tspan></text>
+  <text class="f d" x="392" y="126">most-recent Int — never the binding being introduced;</text>
+  <text class="f d" x="392" y="142">it only becomes visible after the let completes.</text>
+
+  <!-- timeline: 4 stack snapshots -->
+  <!-- col 1: enter body -->
+  <text class="f colh" x="36" y="224">enter body</text>
+  <rect class="chip" x="36" y="236" width="150" height="30" rx="8" fill="#ede8f2"/>
+  <text class="m ct" x="111" y="255">parameter</text>
+  <text class="m idx" x="111" y="280">@Int.0</text>
+
+  <line class="edge" x1="196" y1="252" x2="232" y2="252" marker-end="url(#arr)"/>
+
+  <!-- col 2: after let 1 -->
+  <text class="f colh" x="240" y="224">after let ×2</text>
+  <rect class="chip" x="240" y="236" width="150" height="30" rx="8" fill="#e6f0e9"/>
+  <text class="m ct" x="315" y="255">param × 2</text>
+  <text class="m idx" x="315" y="280">@Int.0</text>
+  <rect class="chip" x="240" y="290" width="150" height="30" rx="8" fill="#ede8f2"/>
+  <text class="m ct" x="315" y="309">parameter</text>
+  <text class="m idx" x="315" y="334">@Int.1</text>
+
+  <line class="edge" x1="400" y1="252" x2="436" y2="252" marker-end="url(#arr)"/>
+
+  <!-- col 3: after let 2 -->
+  <text class="f colh" x="444" y="224">after let +1</text>
+  <rect class="chip" x="444" y="236" width="150" height="30" rx="8" fill="#f8efdf"/>
+  <text class="m ct" x="519" y="255">param × 2 + 1</text>
+  <text class="m idx" x="519" y="280">@Int.0</text>
+  <rect class="chip" x="444" y="290" width="150" height="30" rx="8" fill="#e6f0e9"/>
+  <text class="m ct" x="519" y="309">param × 2</text>
+  <text class="m idx" x="519" y="334">@Int.1</text>
+  <rect class="chip" x="444" y="344" width="150" height="30" rx="8" fill="#ede8f2"/>
+  <text class="m ct" x="519" y="363">parameter</text>
+  <text class="m idx" x="519" y="388">@Int.2</text>
+
+  <line class="edge" x1="604" y1="252" x2="640" y2="252" marker-end="url(#arr)"/>
+
+  <!-- col 4: return -->
+  <text class="f colh" x="648" y="224">return @Int.0</text>
+  <rect class="chip" x="648" y="236" width="150" height="30" rx="8" fill="#f8efdf"/>
+  <text class="m ct" x="723" y="255">param × 2 + 1  ✓</text>
+  <text class="m idx" x="723" y="280">the returned value</text>
+
+  <!-- ensures note -->
+  <g>
+    <rect class="card" x="648" y="300" width="236" height="74" rx="10"/>
+    <rect x="648.5" y="300.5" width="4" height="73" rx="2" fill="#d4952a"/>
+    <text class="f" x="664" y="320" font-size="11px" font-weight="600" fill="#b07820">ensures sees the entry state</text>
+    <text class="f d" x="664" y="338">postconditions evaluate in the</text>
+    <text class="f d" x="664" y="352">function's <tspan font-weight="600">entry</tspan> environment —</text>
+    <text class="f d" x="664" y="366"><tspan class="m" font-size="10px">@Int.0</tspan> there is the parameter</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="404">Same colour = same value shifting index as newer bindings land on top of it.</text>
+</svg>

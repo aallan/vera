@@ -149,6 +149,8 @@ The macOS 15+ baseline reflects [TelemetryDeck's macOS version distribution data
 
 ### The workflow
 
+![The workflow: an LLM agent writes Vera with mandatory contracts; vera check and vera verify prove the types and contracts, feeding every diagnostic — description, rationale, fix, spec_ref — straight back to the agent; when the proofs hold, vera run executes the WebAssembly on CLI, browser, WASI or HTTP.](assets/diagrams/workflow.svg)
+
 ```
 $ vera check examples/absolute_value.vera
 OK: examples/absolute_value.vera
@@ -221,15 +223,19 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.1.0 — its first minor release, with **no known bugs**: 1,900+ commits, 198 releases, 6,821 tests, 91% code coverage, 143 conformance programs, 37 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.1.1, with **no known bugs**: 1,900+ commits, 199 releases, 6,821 tests, 91% code coverage, 143 conformance programs, 37 examples, and a 14-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 
-**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, three-tier verification (Z3 static, guided, runtime fallback), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random, Diverge), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, three-tier verification design (Z3 static and runtime fallback shipped; the Z3-guided tier is specified, not yet implemented), a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods, and contract-verified HTTP handlers served natively (`vera serve`) or as wasi:http components for stock `wasmtime serve` (`--target wasi-p2 --world server`).
 
 **What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; the flagship tier averages 93% Vera vs 93% Python — essentially parity. These are single-run results with high variance — see the [full report](https://github.com/aallan/vera-bench) for details.
 
 Known bugs and open issues are tracked on the **[issue tracker](https://github.com/aallan/vera/issues)**. See **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** for a consolidated list.
+
+The compiler is a seven-stage pipeline — see [vera/README.md](vera/README.md) for the architecture in depth:
+
+![The compiler pipeline and module map: parse, transform and resolve feed the two-pass type checker; vera verify proves each contract obligation or defers it to a runtime guard, with a warm-verification sidecar for the LSP, while vera compile emits WAT and WASM for the wasmtime host, the browser bundle, or a WASI 0.2 component.](assets/diagrams/architecture.svg)
 
 <details>
 <summary><strong>Project structure</strong></summary>
@@ -257,8 +263,8 @@ vera/
 │   ├── transform.py               #   Lark parse tree → AST transformer
 │   ├── checker/                   #   Type checker (mixin package)
 │   ├── verifier.py                #   Contract verifier (Z3)
-│   ├── codegen/                   #   Code generation (11 modules)
-│   ├── wasm/                      #   WASM translation (9 modules)
+│   ├── codegen/                   #   Code generation (13 modules)
+│   ├── wasm/                      #   WASM translation (19 modules)
 │   ├── browser/                   #   Browser runtime
 │   ├── formatter.py               #   Canonical code formatter
 │   ├── errors.py                  #   LLM-oriented diagnostics

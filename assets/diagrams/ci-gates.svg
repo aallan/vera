@@ -1,0 +1,71 @@
+<svg width="920" height="472" viewBox="0 0 920 472" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The gate pipeline: file-filtered commit-stage hooks (lint, types, tests, conformance, examples, doc code-blocks, doc counts, site assets, licences, browser parity), two push-stage hooks (the CHANGELOG gate with its Skip-changelog escape, and uv.lock sync), and CI re-running everything against the platform matrix on protected main.</title>
+  <!-- Design system: see architecture.svg. Grounded in CONTRIBUTING.md §Pre-commit Hooks.
+       Deliberately count-free — hook counts are policed doc counts and drift. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .pill { fill: #f3f2ef; stroke: #e8e6e1; stroke-width: 1; }
+      .pt { font-size: 9.5px; fill: #2d2b28; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="469" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">CONTRIBUTING · THE GATE PIPELINE</text>
+  <text class="f sub" x="36" y="64">Three rings around main: per-commit hooks, per-push hooks, and CI on the pull request — main itself is protected.</text>
+
+  <!-- commit stage -->
+  <g>
+    <rect class="card" x="36" y="88" width="848" height="170" rx="10"/>
+    <rect x="36.5" y="88.5" width="4" height="169" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="56" y="112">git commit — the commit-stage hooks</text>
+    <text class="f d" x="56" y="130">File-filtered: a docs-only commit triggers a small subset; a compiler-level commit triggers most of them.</text>
+    <!-- pill grid -->
+    <rect class="pill" x="56"  y="146" width="128" height="24" rx="12"/><text class="m pt" x="120" y="162" text-anchor="middle">whitespace · yaml · toml</text>
+    <rect class="pill" x="192" y="146" width="80"  height="24" rx="12"/><text class="m pt" x="232" y="162" text-anchor="middle">ruff lint</text>
+    <rect class="pill" x="280" y="146" width="80"  height="24" rx="12"/><text class="m pt" x="320" y="162" text-anchor="middle">mypy</text>
+    <rect class="pill" x="368" y="146" width="96"  height="24" rx="12"/><text class="m pt" x="416" y="162" text-anchor="middle">pytest suite</text>
+    <rect class="pill" x="472" y="146" width="150" height="24" rx="12"/><text class="m pt" x="547" y="162" text-anchor="middle">conformance @ declared level</text>
+    <rect class="pill" x="630" y="146" width="140" height="24" rx="12"/><text class="m pt" x="700" y="162" text-anchor="middle">examples check + verify</text>
+    <rect class="pill" x="56"  y="178" width="196" height="24" rx="12"/><text class="m pt" x="154" y="194" text-anchor="middle">doc code-blocks (README/spec/SKILL/…)</text>
+    <rect class="pill" x="260" y="178" width="96"  height="24" rx="12"/><text class="m pt" x="308" y="194" text-anchor="middle">doc counts</text>
+    <rect class="pill" x="364" y="178" width="150" height="24" rx="12"/><text class="m pt" x="439" y="194" text-anchor="middle">site assets regenerated</text>
+    <rect class="pill" x="522" y="178" width="120" height="24" rx="12"/><text class="m pt" x="582" y="194" text-anchor="middle">licence compliance</text>
+    <rect class="pill" x="650" y="178" width="120" height="24" rx="12"/><text class="m pt" x="710" y="194" text-anchor="middle">browser parity</text>
+    <text class="f d" x="56" y="230" font-style="italic" fill="#a9a49b">…the executable form of "what not to break": conformance holds, examples verify, docs match the tree.</text>
+  </g>
+  <line class="edge" x1="80" y1="258" x2="80" y2="278" marker-end="url(#arr)"/>
+
+  <!-- push stage -->
+  <g>
+    <rect class="card" x="36" y="280" width="848" height="74" rx="10"/>
+    <rect x="36.5" y="280.5" width="4" height="73" rx="2" fill="#d4952a"/>
+    <text class="f t" x="56" y="304">git push — the push-stage hooks</text>
+    <text class="f d" x="56" y="322"><tspan font-weight="600">CHANGELOG gate:</tspan> substantive paths (vera/**, spec/**, SKILL.md, unknown top-level dirs) need a new entry — escape with a</text>
+    <text class="f d" x="56" y="336"><tspan class="m" font-size="10px">Skip-changelog: &lt;reason&gt;</tspan> trailer or the PR label. <tspan font-weight="600">uv.lock sync:</tspan> <tspan class="m" font-size="10px">uv lock --check</tspan> before the CI round-trip.</text>
+  </g>
+  <line class="edge" x1="80" y1="354" x2="80" y2="374" marker-end="url(#arr)"/>
+
+  <!-- CI -->
+  <g>
+    <rect class="card" x="36" y="376" width="848" height="58" rx="10"/>
+    <rect x="36.5" y="376.5" width="4" height="57" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="56" y="400">pull request — CI</text>
+    <text class="f d" x="56" y="418">everything above re-runs, plus the OS × Python test matrix — and main is protected: merging needs the required contexts green.</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="458">The hooks catch it before the push; CI catches it before the merge; nothing lands on main unchecked.</text>
+</svg>

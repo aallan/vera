@@ -1,0 +1,154 @@
+<svg width="920" height="560" viewBox="0 0 920 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Allocation and collection: $alloc aligns the request, tries the free list, bumps the heap pointer if there is room, and otherwise runs the three-phase mark-sweep collector — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/12 §12.5.2 + §12.5.4. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .lbl { font-size: 10px; font-weight: 600; }
+      .ok { fill: #3d7a4d; }
+      .no { fill: #a83838; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="557" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">HEAP · ALLOCATION &amp; MARK-SWEEP COLLECTION</text>
+  <text class="f sub" x="36" y="64">A bump allocator with a free-list overlay; the collector runs entirely in WASM, only when allocation is short of space.</text>
+
+  <!-- ═══ left: $alloc flow ═══ -->
+  <text class="f micro" x="36" y="98">$alloc(payload_size)</text>
+
+  <g>
+    <rect class="card" x="36" y="108" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="108.5" width="4" height="37" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="126">align</text>
+    <text class="f d" x="54" y="139">header + payload → 8-byte multiple</text>
+  </g>
+  <line class="edge" x1="70" y1="146" x2="70" y2="164" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="166" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="166.5" width="4" height="37" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="184">free-list first-fit</text>
+    <text class="f d" x="54" y="197">reuse a swept block if one is big enough</text>
+  </g>
+  <line class="edge" x1="286" y1="185" x2="330" y2="185" marker-end="url(#arr)"/>
+  <text class="m lbl ok" x="292" y="178">found</text>
+  <line class="edge" x1="70" y1="204" x2="70" y2="222" marker-end="url(#arr)"/>
+  <text class="m lbl no" x="80" y="216">miss</text>
+
+  <g>
+    <rect class="card" x="36" y="224" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="224.5" width="4" height="37" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="242">room at $heap_ptr?</text>
+    <text class="f d" x="54" y="255">heap_ptr + total within memory</text>
+  </g>
+  <line class="edge" x1="286" y1="243" x2="330" y2="243" marker-end="url(#arr)"/>
+  <text class="m lbl ok" x="292" y="236">yes</text>
+  <line class="edge" x1="70" y1="262" x2="70" y2="280" marker-end="url(#arr)"/>
+  <text class="m lbl no" x="80" y="274">no</text>
+
+  <g>
+    <rect class="card" x="36" y="282" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="282.5" width="4" height="37" rx="2" fill="#d4952a"/>
+    <text class="f t" x="54" y="300">$gc_collect</text>
+    <text class="f d" x="54" y="313">three phases — right →</text>
+  </g>
+  <line class="edge" x1="70" y1="320" x2="70" y2="338" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="340" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="340.5" width="4" height="37" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="358">retry free list</text>
+    <text class="f d" x="54" y="371">collection may have freed a fit</text>
+  </g>
+  <line class="edge" x1="286" y1="359" x2="330" y2="359" marker-end="url(#arr)"/>
+  <text class="m lbl ok" x="292" y="352">found</text>
+  <line class="edge" x1="70" y1="378" x2="70" y2="396" marker-end="url(#arr)"/>
+  <text class="m lbl no" x="80" y="390">miss</text>
+
+  <g>
+    <rect class="card" x="36" y="398" width="250" height="38" rx="10"/>
+    <rect x="36.5" y="398.5" width="4" height="37" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="416">memory.grow</text>
+    <text class="f d" x="54" y="429">extend beyond the initial 64 KiB</text>
+  </g>
+  <line class="edge" x1="286" y1="417" x2="330" y2="417" marker-end="url(#arr)"/>
+  <text class="m lbl ok" x="292" y="410">ok</text>
+  <line class="edge" x1="70" y1="436" x2="70" y2="454" marker-end="url(#arr)"/>
+  <text class="m lbl no" x="80" y="448">fail</text>
+
+  <rect class="card" x="36" y="456" width="250" height="30" rx="10"/>
+  <rect x="36.5" y="456.5" width="4" height="29" rx="2" fill="#c45"/>
+  <text class="f t" x="54" y="475" fill="#a83838">trap — out of memory</text>
+
+  <!-- success rail -->
+  <rect class="card" x="334" y="164" width="170" height="270" rx="10"/>
+  <rect x="334.5" y="164.5" width="4" height="269" rx="2" fill="#5a9e6f"/>
+  <text class="f t" x="352" y="188" fill="#3d7a4d">allocate</text>
+  <text class="f d" x="352" y="206">write the 4-byte header,</text>
+  <text class="f d" x="352" y="220">advance <tspan class="m" font-size="9.5px">$heap_ptr</tspan>,</text>
+  <text class="f d" x="352" y="234">return the payload pointer</text>
+  <text class="f d" x="352" y="260">the new pointer is pushed</text>
+  <text class="f d" x="352" y="274">onto the shadow stack so a</text>
+  <text class="f d" x="352" y="288">later collection can't reap it</text>
+
+  <!-- ═══ right: collection phases ═══ -->
+  <text class="f micro" x="560" y="98">$gc_collect — THREE PHASES</text>
+
+  <g>
+    <rect class="card" x="560" y="108" width="324" height="30" rx="10"/>
+    <rect x="560.5" y="108.5" width="4" height="29" rx="2" fill="#8b6cad"/>
+    <text class="f d" x="576" y="127"><tspan class="t">roots:</tspan> shadow-stack entries that point into the heap</text>
+  </g>
+  <line class="edge" x1="742" y1="138" x2="742" y2="156" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="560" y="158" width="324" height="56" rx="10"/>
+    <rect x="560.5" y="158.5" width="4" height="55" rx="2" fill="#d4952a"/>
+    <text class="f t" x="576" y="180">1 · clear</text>
+    <text class="f d" x="576" y="196">walk the heap from <tspan class="m" font-size="9.5px">$gc_heap_start</tspan> to <tspan class="m" font-size="9.5px">$heap_ptr</tspan>,</text>
+    <text class="f d" x="576" y="209">clearing every header's mark bit</text>
+  </g>
+  <line class="edge" x1="742" y1="214" x2="742" y2="232" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="560" y="234" width="324" height="70" rx="10"/>
+    <rect x="560.5" y="234.5" width="4" height="69" rx="2" fill="#d4952a"/>
+    <text class="f t" x="576" y="256">2 · mark</text>
+    <text class="f d" x="576" y="272">seed the worklist from the roots; drain it, setting</text>
+    <text class="f d" x="576" y="285">mark bits and conservatively scanning every i32 word</text>
+    <text class="f d" x="576" y="298">of each payload for further heap pointers</text>
+  </g>
+  <line class="edge" x1="742" y1="304" x2="742" y2="322" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="560" y="324" width="324" height="56" rx="10"/>
+    <rect x="560.5" y="324.5" width="4" height="55" rx="2" fill="#d4952a"/>
+    <text class="f t" x="576" y="346">3 · sweep</text>
+    <text class="f d" x="576" y="362">walk the heap again; link every unmarked block</text>
+    <text class="f d" x="576" y="375">into the free list for reuse</text>
+  </g>
+
+  <!-- free list feeds back to the retry -->
+  <polyline class="edge" points="560,352 528,352 528,359 296,359" stroke-dasharray="4 3"/>
+  <text class="f d" x="536" y="344" text-anchor="end" font-style="italic" fill="#a9a49b">free list refilled</text>
+
+  <!-- conservative note -->
+  <text class="f d" x="560" y="408" font-style="italic" fill="#a9a49b">conservative scanning: any aligned in-range word counts as a pointer —</text>
+  <text class="f d" x="560" y="422" font-style="italic" fill="#a9a49b">a false positive retains a dead object; it can never corrupt a live one</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="530">No host-side GC logic and no type maps — the collector is plain WASM over the header bits and the shadow stack.</text>
+</svg>

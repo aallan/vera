@@ -1,0 +1,79 @@
+<svg width="920" height="372" viewBox="0 0 920 372" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The three-layer testing model — unit tests for compiler internals, spec-anchored conformance programs, and end-to-end examples — and the nested conformance levels: parse, check, verify, run, where each program declares the deepest stage it must pass.</title>
+  <!-- Design system: see architecture.svg. Grounded in TESTING.md §Three-layer model + §Test levels.
+       Deliberately count-free: the per-level counts drift and live in TESTING.md's tables. -->
+  <defs>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="369" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">TESTING · THREE LAYERS, FOUR LEVELS</text>
+  <text class="f sub" x="36" y="64">Unit tests prove the compiler works; conformance programs prove the language works; examples prove it's usable.</text>
+
+  <!-- left: layers -->
+  <text class="f micro" x="36" y="98">THE LAYERS</text>
+  <g>
+    <rect class="card" x="36" y="108" width="380" height="64" rx="10"/>
+    <rect x="36.5" y="108.5" width="4" height="63" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="54" y="130">Unit tests</text>
+    <text class="m" x="400" y="129" text-anchor="end" font-size="10px" fill="#7a756d">tests/test_*.py</text>
+    <text class="f d" x="54" y="148">compiler internals — error paths, edge cases,</text>
+    <text class="f d" x="54" y="162">internal APIs, mutation-validated guards</text>
+  </g>
+  <g>
+    <rect class="card" x="36" y="180" width="380" height="64" rx="10"/>
+    <rect x="36.5" y="180.5" width="4" height="63" rx="2" fill="#d4952a"/>
+    <text class="f t" x="54" y="202">Conformance suite</text>
+    <text class="m" x="400" y="201" text-anchor="end" font-size="10px" fill="#7a756d">tests/conformance/</text>
+    <text class="f d" x="54" y="220">one focused program per language feature,</text>
+    <text class="f d" x="54" y="234">anchored to its spec chapter via manifest.json</text>
+  </g>
+  <g>
+    <rect class="card" x="36" y="252" width="380" height="64" rx="10"/>
+    <rect x="36.5" y="252.5" width="4" height="63" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="54" y="274">Example programs</text>
+    <text class="m" x="400" y="273" text-anchor="end" font-size="10px" fill="#7a756d">examples/</text>
+    <text class="f d" x="54" y="292">end-to-end showcases — every one must pass</text>
+    <text class="f d" x="54" y="306"><tspan class="m" font-size="9.5px">vera check</tspan> and <tspan class="m" font-size="9.5px">vera verify</tspan></text>
+  </g>
+
+  <!-- right: levels staircase -->
+  <text class="f micro" x="470" y="98">CONFORMANCE LEVELS — EACH PROGRAM DECLARES ITS DEEPEST</text>
+  <g>
+    <rect class="card" x="470" y="108" width="414" height="46" rx="10"/>
+    <rect x="470.5" y="108.5" width="4" height="45" rx="2" fill="#4a82a8"/>
+    <text class="m t" x="488" y="128" font-size="12px">parse</text>
+    <text class="f d" x="488" y="144">the source is syntactically valid</text>
+  </g>
+  <g>
+    <rect class="card" x="500" y="162" width="384" height="46" rx="10"/>
+    <rect x="500.5" y="162.5" width="4" height="45" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="518" y="182" font-size="12px">check</text>
+    <text class="f d" x="518" y="198">…and type-checks cleanly — negative fixtures assert their E-code here</text>
+  </g>
+  <g>
+    <rect class="card" x="530" y="216" width="354" height="46" rx="10"/>
+    <rect x="530.5" y="216.5" width="4" height="45" rx="2" fill="#d4952a"/>
+    <text class="m t" x="548" y="236" font-size="12px">verify</text>
+    <text class="f d" x="548" y="252">…and every contract is proved by Z3</text>
+  </g>
+  <g>
+    <rect class="card" x="560" y="270" width="324" height="46" rx="10"/>
+    <rect x="560.5" y="270.5" width="4" height="45" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="578" y="290" font-size="12px">run</text>
+    <text class="f d" x="578" y="306">…and compiles to WASM and executes correctly</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="350">Stages past a program's declared level are skipped by design; almost the whole suite sits at run. Counts live in TESTING.md.</text>
+</svg>

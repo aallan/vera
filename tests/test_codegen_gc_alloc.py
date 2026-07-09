@@ -773,26 +773,23 @@ class TestWorklistOverflow348:
         silently dropping.  Any residual overflow is a clean WASM
         trap, not silent corruption.
 
-    Note: the obvious "wide-graph" runtime test (e.g. an
-    `array_map`-built `Array<Box>` of 5 000+ elements) is blocked by
-    a separate pre-existing shadow-stack-overflow issue inside
-    `array_map`'s per-element allocation pattern, which trips at
-    around 4 000 elements regardless of GC worklist size.  The
-    wide-graph runtime regression is therefore covered by a
-    moderate-size case (which exercises the mark loop without
-    tripping the shadow-stack issue) plus structural pins on the
-    WAT.
+    The wide-graph runtime regression is covered directly: the
+    `array_map` shadow-stack overflow that used to trip at ~4 000
+    elements was #570, since fixed (the stress suite runs
+    `array_map` over 10 000 ints), so the 5 000-element
+    `Array<Box>` graph below exercises the mark loop at full width,
+    plus structural pins on the WAT.
     """
 
-    def test_moderate_graph_with_gc_pressure(self) -> None:
-        """ADT graph + heap pressure exercises the post-fix mark loop.
+    def test_wide_graph_with_gc_pressure(self) -> None:
+        """A wide ADT graph + heap pressure exercises the mark loop.
 
-        Builds a 1 000-element `Array<Box>` (well within the
-        shadow-stack budget) and forces several `$gc_collect`
-        cycles via additional allocations before reading.  The
-        Box pointers in the array's payload are pushed onto the
-        worklist during the mark phase — exercising the same code
-        path that overflowed pre-fix on larger graphs.
+        Builds a 5 000-element `Array<Box>` — the exact shape the
+        pre-fix worklist overflowed on, and past the ~4 000-element
+        `array_map` shadow-stack ceiling that #570 removed — and
+        forces `$gc_collect` via the allocations themselves.  Every
+        Box pointer in the array's payload is pushed onto the
+        worklist during the mark phase.
         """
         src = """
 private data Box { MkBox(Int) }
@@ -801,7 +798,7 @@ public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Array<Box> = array_map(
-    array_range(0, 1000),
+    array_range(0, 5000),
     fn(@Int -> @Box) effects(pure) { MkBox(@Int.0) }
   );
   array_fold(
@@ -813,8 +810,8 @@ public fn main(@Unit -> @Int)
   )
 }
 """
-        # 0+1+...+999 = 499_500
-        assert _run(src) == 499_500
+        # 0+1+...+4999 = 12_497_500
+        assert _run(src) == 12_497_500
 
     def test_worklist_size_quadrupled_in_wat(self) -> None:
         """Structural pin: the GC region reflects the 64 KiB worklist.

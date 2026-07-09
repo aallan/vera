@@ -1,0 +1,102 @@
+<svg width="920" height="484" viewBox="0 0 920 484" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The wasmtime host layer: execute() registers one pluggable family adapter per optional effect into the Linker — most stateless and conditional on use, Decimal and State carrying an explicit store execute() reads back — while IO stays inline in execute() because its callbacks write the state that becomes the return value. The compiled module's import interface is the portability contract the browser runtime implements in parallel.</title>
+  <!-- Design system: see architecture.svg. Grounded in vera/README.md §Host-binding families. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .pill { fill: #f3f2ef; stroke: #e8e6e1; stroke-width: 1; }
+      .pt { font-size: 10px; fill: #2d2b28; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="481" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">EXECUTE · HOST-BINDING FAMILIES (vera/runtime/)</text>
+  <text class="f sub" x="36" y="64">One pluggable adapter per optional effect family — and one deliberate exception.</text>
+
+  <!-- execute card -->
+  <g>
+    <rect class="card" x="330" y="88" width="260" height="58" rx="10"/>
+    <rect x="330.5" y="88.5" width="4" height="57" rx="2" fill="#cc9966"/>
+    <text class="m t" x="460" y="110" text-anchor="middle" font-size="12.5px">execute()</text>
+    <text class="f d" x="460" y="128" text-anchor="middle">codegen/api.py — builds the wasmtime Linker</text>
+  </g>
+
+  <!-- IO inline card -->
+  <g>
+    <rect class="card" x="36" y="88" width="256" height="120" rx="10"/>
+    <rect x="36.5" y="88.5" width="4" height="119" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="54" y="110">IO — inline, by design</text>
+    <text class="f d" x="54" y="128">IO is execute()'s <tspan font-weight="600">observation channel</tspan>:</text>
+    <text class="f d" x="54" y="144">its callbacks write the state that becomes</text>
+    <text class="f d" x="54" y="158">the result — output buffers → stdout/stderr,</text>
+    <text class="f d" x="54" y="172">last violation → the trap diagnostic,</text>
+    <text class="f d" x="54" y="186">tee → live streaming. Extracting it would</text>
+    <text class="f d" x="54" y="200">relocate a cohesive unit, not decouple one.</text>
+  </g>
+  <line class="edge" x1="292" y1="117" x2="326" y2="117" marker-end="url(#arr)"/>
+
+  <!-- browser card -->
+  <g>
+    <rect class="card" x="628" y="88" width="256" height="120" rx="10"/>
+    <rect x="628.5" y="88.5" width="4" height="119" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="646" y="110">browser/runtime.mjs</text>
+    <text class="f d" x="646" y="128">implements the <tspan font-weight="600">same import surface</tspan> in</text>
+    <text class="f d" x="646" y="142">JavaScript, with the same WASM memory</text>
+    <text class="f d" x="646" y="156">allocation protocol.</text>
+    <text class="f d" x="646" y="176">The compiled module's <tspan class="m" font-size="10px">(import "vera" …)</tspan></text>
+    <text class="f d" x="646" y="190">interface is the portability contract —</text>
+    <text class="f d" x="646" y="204">parity-tested between the two hosts.</text>
+  </g>
+  <line class="edge" x1="590" y1="117" x2="624" y2="117" marker-end="url(#arr)"/>
+
+  <!-- registration arrow down -->
+  <line class="edge" x1="460" y1="146" x2="460" y2="212" marker-end="url(#arr)"/>
+  <text class="m" x="472" y="172" font-size="10px" fill="#7a756d">register_&lt;family&gt;(linker, …)</text>
+  <text class="f" x="472" y="188" font-size="10px" font-style="italic" fill="#a9a49b">conditional on the ops the program uses</text>
+
+  <!-- family adapter band -->
+  <g>
+    <rect class="card" x="36" y="216" width="848" height="130" rx="10"/>
+    <rect x="36.5" y="216.5" width="4" height="129" rx="2" fill="#d4952a"/>
+    <text class="f t" x="56" y="240">family adapters — one module each, minimal coupling</text>
+    <rect class="pill" x="56"  y="254" width="82" height="24" rx="12"/><text class="m pt" x="97"  y="270" text-anchor="middle">random</text>
+    <rect class="pill" x="146" y="254" width="70" height="24" rx="12"/><text class="m pt" x="181" y="270" text-anchor="middle">math</text>
+    <rect class="pill" x="224" y="254" width="60" height="24" rx="12"/><text class="m pt" x="254" y="270" text-anchor="middle">md</text>
+    <rect class="pill" x="292" y="254" width="66" height="24" rx="12"/><text class="m pt" x="325" y="270" text-anchor="middle">json</text>
+    <rect class="pill" x="366" y="254" width="72" height="24" rx="12"/><text class="m pt" x="402" y="270" text-anchor="middle">regex</text>
+    <rect class="pill" x="446" y="254" width="66" height="24" rx="12"/><text class="m pt" x="479" y="270" text-anchor="middle">html</text>
+    <rect class="pill" x="520" y="254" width="62" height="24" rx="12"/><text class="m pt" x="551" y="270" text-anchor="middle">map</text>
+    <rect class="pill" x="590" y="254" width="58" height="24" rx="12"/><text class="m pt" x="619" y="270" text-anchor="middle">set</text>
+    <rect class="pill" x="656" y="254" width="82" height="24" rx="12"/><text class="m pt" x="697" y="270" text-anchor="middle">decimal ◆</text>
+    <rect class="pill" x="746" y="254" width="66" height="24" rx="12"/><text class="m pt" x="779" y="270" text-anchor="middle">http</text>
+    <rect class="pill" x="56"  y="286" width="98" height="24" rx="12"/><text class="m pt" x="105" y="302" text-anchor="middle">async_http</text>
+    <rect class="pill" x="162" y="286" width="90" height="24" rx="12"/><text class="m pt" x="207" y="302" text-anchor="middle">inference</text>
+    <rect class="pill" x="260" y="286" width="72" height="24" rx="12"/><text class="m pt" x="296" y="302" text-anchor="middle">state ◆</text>
+    <text class="f d" x="56" y="332">◆ the two stateful families: execute() creates their store, passes it as one explicit parameter, and reads it back</text>
+  </g>
+
+  <!-- marshalling base -->
+  <g>
+    <rect class="card" x="36" y="354" width="848" height="46" rx="10"/>
+    <rect x="36.5" y="354.5" width="4" height="45" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="56" y="374">shared substrate</text>
+    <text class="f d" x="56" y="390"><tspan class="m" font-size="10px">heap.py</tspan> — the WASM memory-marshalling primitives every family calls · <tspan class="m" font-size="10px">collections.py</tspan> · <tspan class="m" font-size="10px">traps.py</tspan> — trap classification (WasmTrapError)</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="424">Extracting the family adapters reduced coupling — each is self-contained. IO would not have: cohesion of a genuinely</text>
+  <text class="f footi" x="36" y="440">coupled unit outweighs uniform placement. By the surface model IO is an effect like any other; this is compiler structure.</text>
+  <text class="f footi" x="36" y="462">The .wasm import interface is unchanged by any of this — it is an internal factoring, not a contract change.</text>
+</svg>

@@ -206,6 +206,8 @@ Constructor names follow the same shadowing rules as function names.
 
 The resolver maps an import path to a source file on disk using a simple file-system-based algorithm.
 
+![Module resolution: path mapping relative to the importer then the project root, a parse cache keyed by module path, an in-progress set that rejects circular imports, and recursive resolution — with transitively reached modules compiled but not visible to the original importer.](../assets/diagrams/module-resolution.svg)
+
 ### 8.6.1 Path Mapping
 
 Given an import path like `vera.math`:

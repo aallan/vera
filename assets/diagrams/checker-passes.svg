@@ -1,0 +1,83 @@
+<svg width="920" height="336" viewBox="0 0 920 336" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The three-pass type checker: pass 0 registers each resolved module's declarations into module-qualified dictionaries, pass 1 registers all local declarations into the TypeEnv, and pass 2 checks every function body against the fully populated environment.</title>
+  <!-- Design system: see architecture.svg. Grounded in vera/README.md §Type checker. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .elbl { font-size: 10px; font-style: italic; fill: #a9a49b; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="333" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">TYPE CHECKER · THREE PASSES</text>
+  <text class="f sub" x="36" y="64">Signatures are registered before any body is checked — forward references need no declaration order.</text>
+
+  <!-- pass 0 -->
+  <g>
+    <rect class="card" x="36" y="88" width="260" height="168" rx="10"/>
+    <rect x="36.5" y="88.5" width="4" height="167" rx="2" fill="#8b6cad"/>
+    <text class="f micro" x="54" y="112" letter-spacing="1">PASS 0</text>
+    <text class="f t" x="54" y="132">Module registration</text>
+    <text class="f d" x="54" y="154">for each resolved module:</text>
+    <text class="f d" x="54" y="172">· spin up a temporary TypeChecker</text>
+    <text class="f d" x="54" y="188">· register its declarations</text>
+    <text class="f d" x="54" y="204">· harvest signatures into</text>
+    <text class="f d" x="66" y="218">module-qualified dictionaries</text>
+    <text class="f d" x="54" y="242" font-style="italic" fill="#a9a49b">signatures only — no bodies</text>
+  </g>
+  <line class="edge" x1="296" y1="172" x2="340" y2="172" marker-end="url(#arr)"/>
+  <text class="f elbl" x="318" y="158" text-anchor="middle">TypeEnv</text>
+  <text class="f elbl" x="318" y="192" text-anchor="middle">imports</text>
+  <text class="f elbl" x="318" y="204" text-anchor="middle">injected</text>
+
+  <!-- pass 1 -->
+  <g>
+    <rect class="card" x="344" y="88" width="260" height="168" rx="10"/>
+    <rect x="344.5" y="88.5" width="4" height="167" rx="2" fill="#8b6cad"/>
+    <text class="f micro" x="362" y="112" letter-spacing="1">PASS 1</text>
+    <text class="f t" x="362" y="132">Local registration</text>
+    <text class="f d" x="362" y="154">walk all declarations, register:</text>
+    <text class="f d" x="362" y="172">· functions</text>
+    <text class="f d" x="362" y="188">· ADTs + their constructors</text>
+    <text class="f d" x="362" y="204">· type aliases</text>
+    <text class="f d" x="362" y="220">· effects + operations</text>
+  </g>
+  <line class="edge" x1="604" y1="172" x2="648" y2="172" marker-end="url(#arr)"/>
+  <text class="f elbl" x="626" y="158" text-anchor="middle">TypeEnv</text>
+  <text class="f elbl" x="626" y="192" text-anchor="middle">fully</text>
+  <text class="f elbl" x="626" y="204" text-anchor="middle">populated</text>
+
+  <!-- pass 2 -->
+  <g>
+    <rect class="card" x="652" y="88" width="232" height="168" rx="10"/>
+    <rect x="652.5" y="88.5" width="4" height="167" rx="2" fill="#8b6cad"/>
+    <text class="f micro" x="670" y="112" letter-spacing="1">PASS 2</text>
+    <text class="f t" x="670" y="132">Checking</text>
+    <text class="f d" x="670" y="154">for each function:</text>
+    <text class="f d" x="670" y="172">· bind forall vars, resolve types</text>
+    <text class="f d" x="670" y="188">· push scope, bind parameters</text>
+    <text class="f d" x="670" y="204">· check contracts + effects</text>
+    <text class="f d" x="670" y="220">· synthesise the body's type</text>
+    <text class="f d" x="670" y="236">· pop scope</text>
+  </g>
+
+  <!-- output -->
+  <polyline class="edge" points="768,256 768,282 630,282" marker-end="url(#arr)"/>
+  <rect x="380" y="270" width="246" height="24" rx="12" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="503" y="286" text-anchor="middle" font-size="10.5px" fill="#2d2b28">list[Diagnostic] — never raised, always returned</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="318">Every error accumulates; a broken body cannot hide the errors after it.</text>
+</svg>

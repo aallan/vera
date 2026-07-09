@@ -1,0 +1,86 @@
+<svg width="920" height="500" viewBox="0 0 920 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The WASI Preview 2 component: one binary wraps the ordinary Vera core module ($Main, whose vera.* imports become call_indirect shims through a funcref dispatch table it exports), canon-lowered WASI imports, and a $Adapter core module that implements every vera.* op over those lowered functions and plants itself into the dispatch table via active element segments. The component exports wasi:cli/run.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/13 §13.2. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 13px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .elbl { font-size: 10px; font-style: italic; fill: #a9a49b; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="497" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">WASI 0.2 TARGET · COMPONENT ARCHITECTURE</text>
+  <text class="f sub" x="36" y="64"><tspan class="m" font-size="10.5px">vera compile --target wasi-p2</tspan> emits one binary component any stock wasip2 host can run — no Vera bindings.</text>
+
+  <!-- component container -->
+  <rect x="36" y="84" width="848" height="342" rx="12" fill="#f5f4f1" stroke="#cfccc5" stroke-width="1" stroke-dasharray="5 4"/>
+  <text class="m" x="52" y="106" font-size="11px" font-weight="600" fill="#7a756d">component — one binary .wasm</text>
+
+  <!-- $Main -->
+  <g>
+    <rect class="card" x="60" y="122" width="384" height="150" rx="10"/>
+    <rect x="60.5" y="122.5" width="4" height="149" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="78" y="146">core module $Main</text>
+    <text class="f d" x="78" y="162">the ordinary Vera core module, unchanged semantics</text>
+    <text class="f d" x="78" y="184">· each <tspan class="m" font-size="9.5px">(import "vera" "op")</tspan> becomes a same-named</text>
+    <text class="f d" x="90" y="198">call_indirect shim through a dispatch table it exports</text>
+    <text class="f d" x="78" y="216">· GC-exempt scratch arena + <tspan class="m" font-size="9.5px">cabi_realloc</tspan> (§13.3)</text>
+    <text class="f d" x="78" y="234">· a <tspan class="m" font-size="9.5px">__wasi_run</tspan> entry wrapper</text>
+    <text class="f d" x="78" y="258" font-style="italic" fill="#a9a49b">its memory and realloc are what the lowerings target</text>
+  </g>
+
+  <!-- lowered imports chip -->
+  <g>
+    <rect class="card" x="480" y="122" width="384" height="44" rx="10"/>
+    <rect x="480.5" y="122.5" width="4" height="43" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="496" y="141" font-size="12px">canon-lowered WASI imports</text>
+    <text class="f d" x="496" y="157"><tspan class="m" font-size="9.5px">wasi:cli · wasi:io · wasi:random · wasi:clocks · wasi:filesystem</tspan></text>
+  </g>
+  <line class="edge" x1="672" y1="166" x2="672" y2="188" marker-end="url(#arr)"/>
+
+  <!-- $Adapter -->
+  <g>
+    <rect class="card" x="480" y="190" width="384" height="120" rx="10"/>
+    <rect x="480.5" y="190.5" width="4" height="119" rx="2" fill="#d4952a"/>
+    <text class="m t" x="498" y="214">core module $Adapter</text>
+    <text class="f d" x="498" y="234">· implements every <tspan class="m" font-size="9.5px">vera.*</tspan> op, exact core signature</text>
+    <text class="f d" x="498" y="252">· over the canon-lowered WASI functions</text>
+    <text class="f d" x="498" y="270">· plants its implementations into the dispatch table</text>
+    <text class="f d" x="510" y="284">via active elem segments at instantiation</text>
+  </g>
+
+  <!-- dispatch table -->
+  <g>
+    <rect x="250" y="338" width="420" height="38" rx="10" fill="#e6f0e9" stroke="#e8e6e1"/>
+    <text class="m t" x="460" y="357" text-anchor="middle" font-size="12px">funcref dispatch table</text>
+    <text class="f d" x="460" y="370" text-anchor="middle" font-size="9.5px">one slot per vera.* operation</text>
+  </g>
+  <polyline class="edge" points="252,272 252,357 246,357" marker-end="url(#arr)"/>
+  <text class="f elbl" x="112" y="300">$Main calls through it —</text>
+  <text class="f elbl" x="112" y="313">call_indirect, one shim per op</text>
+  <polyline class="edge" points="672,310 672,338" marker-end="url(#arr)"/>
+  <text class="f elbl" x="684" y="328">$Adapter fills the slots</text>
+
+  <!-- exports -->
+  <g>
+    <rect class="card" x="60" y="390" width="380" height="26" rx="13"/>
+    <text class="m" x="250" y="407" text-anchor="middle" font-size="10.5px" fill="#2d2b28">exports: wasi:cli/run@0.2.0 · lifted main (scalar returns)</text>
+  </g>
+  <text class="f elbl" x="460" y="407">instantiation order $Main → lowers → $Adapter is a strict DAG — slots are live before any vera.* call</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="454">Same Chapter 11 semantics — contracts, GC, traps — the component boundary only changes who serves the host imports.</text>
+  <text class="m" x="36" y="478" font-size="10px" fill="#7a756d">wasmtime run program.wasm   ·   --world server → wasi:http/incoming-handler for `wasmtime serve`</text>
+</svg>

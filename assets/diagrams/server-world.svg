@@ -1,0 +1,98 @@
+<svg width="920" height="512" viewBox="0 0 920 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The server world: stock wasmtime serve delivers each request through wasi:http; a generated adapter reads method, path, headers and body, constructs the Request ADT in the guest heap, calls the verified handle function, decodes the returned Response, and drives the outgoing-response resources — guest traps map to a 500 from the host. String-keyed Map operations run in guest code with the host's exact semantics.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/13 §13.7. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="509" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">WASI SERVER WORLD · --target wasi-p2 --world server</text>
+  <text class="f sub" x="36" y="64">The same verified handler `vera serve` hosts natively, compiled to a wasi:http/incoming-handler component stock `wasmtime serve` runs unmodified.</text>
+
+  <!-- host chip -->
+  <rect x="36" y="86" width="240" height="28" rx="14" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="156" y="104" text-anchor="middle" font-size="11px" fill="#2d2b28">wasmtime serve program.wasm</text>
+  <line class="edge" x1="156" y1="114" x2="156" y2="134" marker-end="url(#arr)"/>
+  <text class="f d" x="168" y="130" font-style="italic" fill="#a9a49b">wasi:http/incoming-handler@0.2.0</text>
+
+  <!-- adapter in -->
+  <g>
+    <rect class="card" x="36" y="136" width="400" height="72" rx="10"/>
+    <rect x="36.5" y="136.5" width="4" height="71" rx="2" fill="#d4952a"/>
+    <text class="f t" x="54" y="158">generated adapter — inbound</text>
+    <text class="f d" x="54" y="176">reads method · path-with-query · headers · body through</text>
+    <text class="f d" x="54" y="190">the wasi:http interfaces, then constructs the <tspan class="m" font-size="10px">Request</tspan> ADT</text>
+    <text class="f d" x="54" y="204">in the guest heap using the compilation's own layouts</text>
+  </g>
+  <line class="edge" x1="156" y1="208" x2="156" y2="230" marker-end="url(#arr)"/>
+
+  <!-- handler -->
+  <g>
+    <rect class="card" x="36" y="232" width="400" height="60" rx="10"/>
+    <rect x="36.5" y="232.5" width="4" height="59" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="54" y="254" font-size="12px">handle(@Request -&gt; @Response)</text>
+    <text class="f d" x="54" y="272">the §9.5.6 validation rules — total, contract-verified,</text>
+    <text class="f d" x="54" y="286">unchanged from the natively-served program</text>
+  </g>
+  <line class="edge" x1="156" y1="292" x2="156" y2="314" marker-end="url(#arr)"/>
+
+  <!-- adapter out -->
+  <g>
+    <rect class="card" x="36" y="316" width="400" height="58" rx="10"/>
+    <rect x="36.5" y="316.5" width="4" height="57" rx="2" fill="#d4952a"/>
+    <text class="f t" x="54" y="338">generated adapter — outbound</text>
+    <text class="f d" x="54" y="356">decodes the returned <tspan class="m" font-size="10px">Response</tspan> and drives the</text>
+    <text class="f d" x="54" y="370">outgoing-response resource sequence</text>
+  </g>
+
+  <!-- trap path -->
+  <polyline class="edge" points="436,262 486,262" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <g>
+    <rect class="card" x="490" y="240" width="150" height="44" rx="10"/>
+    <rect x="490.5" y="240.5" width="4" height="43" rx="2" fill="#c45"/>
+    <text class="f t" x="508" y="260" fill="#a83838">guest trap</text>
+    <text class="f d" x="508" y="276">→ 500 from the host</text>
+  </g>
+
+  <!-- surface cards -->
+  <g>
+    <rect class="card" x="490" y="86" width="394" height="122" rx="10"/>
+    <rect x="490.5" y="86.5" width="4" height="121" rx="2" fill="#5a9e6f"/>
+    <text class="f t" x="508" y="108">in-guest String maps</text>
+    <text class="f d" x="508" y="126">Map ops are host imports on the core target — but a Vera Map is</text>
+    <text class="f d" x="508" y="140">two plain guest-heap blocks, so the server world implements the</text>
+    <text class="f d" x="508" y="154">String-keyed operations <tspan font-weight="600">in guest code</tspan> with the host's exact</text>
+    <text class="f d" x="508" y="168">semantics (position-preserving update, later-insert-wins, growth).</text>
+    <text class="f d" x="508" y="188">Handlers use <tspan class="m" font-size="10px">map_new / map_insert / map_get</tspan> unchanged.</text>
+  </g>
+
+  <g>
+    <rect class="card" x="490" y="304" width="394" height="118" rx="10"/>
+    <rect x="490.5" y="304.5" width="4" height="117" rx="2" fill="#cc9966"/>
+    <text class="f t" x="508" y="326">the surface, loud at the edges</text>
+    <text class="f d" x="508" y="344"><tspan font-weight="600" fill="#3d7a4d">allowed:</tspan> IO.print / IO.stderr (serve console) · IO.time · IO.sleep ·</text>
+    <text class="f d" x="520" y="358">the Random family · the pure language</text>
+    <text class="f d" x="508" y="376"><tspan font-weight="600" fill="#a83838">rejected with a diagnostic:</tspan> read_line · read_char · read_file ·</text>
+    <text class="f d" x="520" y="390">write_file · get_env · args · exit — the proxy world has no stdin,</text>
+    <text class="f d" x="520" y="404">filesystem, or environment</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="450">v1 limits, each loud: bodies buffered (not streamed) · request headers share the fixed arena (~63 KiB) · out-of-range status or</text>
+  <text class="f footi" x="36" y="466">forbidden header answers 500 · handler IO.print is line-buffered by `wasmtime serve` — end log lines with \n.</text>
+  <text class="f footi" x="36" y="490">`vera run` cannot execute a server-world artifact (no wasi:http in the built-in host) — it points you at `wasmtime serve`.</text>
+</svg>

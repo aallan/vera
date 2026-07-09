@@ -1,0 +1,61 @@
+<svg width="920" height="372" viewBox="0 0 920 372" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The Diagnostic record: description, location, source line, rationale, fix, spec_ref, severity and a stable error code — every field aimed at a model revising its own code.</title>
+  <!-- Design system: see architecture.svg. Grounded in vera/README.md §Diagnostics / errors.py. -->
+  <defs>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .fname { font-size: 11.5px; font-weight: 600; fill: #8b6cad; }
+      .fdesc { font-size: 11.5px; fill: #2d2b28; }
+      .frow { stroke: #f0eeea; stroke-width: 1; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="369" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">DIAGNOSTICS · WHAT EVERY ERROR CARRIES</text>
+  <text class="f sub" x="36" y="64">Eight fields, designed for the reader that will fix the code — usually a model.</text>
+
+  <!-- the record card -->
+  <rect x="36" y="84" width="620" height="244" rx="10" fill="#ffffff" stroke="#e8e6e1"/>
+  <rect x="36.5" y="84.5" width="4" height="243" rx="2" fill="#8b6cad"/>
+  <text class="m" x="58" y="108" font-size="12.5px" font-weight="600" fill="#2d2b28">Diagnostic</text>
+
+  <line class="frow" x1="58" y1="120" x2="636" y2="120"/>
+  <text class="m fname" x="58" y="140">description</text>
+  <text class="f fdesc" x="200" y="140">what went wrong, in plain English</text>
+  <line class="frow" x1="58" y1="150" x2="636" y2="150"/>
+  <text class="m fname" x="58" y="168">location</text>
+  <text class="f fdesc" x="200" y="168">file · line · column</text>
+  <line class="frow" x1="58" y1="178" x2="636" y2="178"/>
+  <text class="m fname" x="58" y="196">source_line</text>
+  <text class="f fdesc" x="200" y="196">the offending line of code</text>
+  <line class="frow" x1="58" y1="206" x2="636" y2="206"/>
+  <text class="m fname" x="58" y="224">rationale</text>
+  <text class="f fdesc" x="200" y="224">which language rule was violated, and why it exists</text>
+  <line class="frow" x1="58" y1="234" x2="636" y2="234"/>
+  <text class="m fname" x="58" y="252">fix</text>
+  <text class="f fdesc" x="200" y="252">concrete corrected code — paste-able, not advisory</text>
+  <line class="frow" x1="58" y1="262" x2="636" y2="262"/>
+  <text class="m fname" x="58" y="280">spec_ref</text>
+  <text class="f fdesc" x="200" y="280">“Chapter X, Section Y.Z” — every rule is citable</text>
+  <line class="frow" x1="58" y1="290" x2="636" y2="290"/>
+  <text class="m fname" x="58" y="308">severity · error_code</text>
+  <text class="f fdesc" x="260" y="308">error | warning · stable id (E130, E200, …)</text>
+
+  <!-- side notes -->
+  <text class="f" x="692" y="140" font-size="11px" font-weight="600" fill="#2d2b28">gated in CI</text>
+  <text class="f" x="692" y="158" font-size="10.5px" fill="#7a756d">every diagnostic must carry</text>
+  <text class="f" x="692" y="172" font-size="10.5px" fill="#7a756d">rationale, fix and a resolvable</text>
+  <text class="f" x="692" y="186" font-size="10.5px" fill="#7a756d">spec_ref, or the build fails</text>
+
+  <text class="f" x="692" y="224" font-size="11px" font-weight="600" fill="#2d2b28">stable codes</text>
+  <text class="f" x="692" y="242" font-size="10.5px" fill="#7a756d">E001–E702, grouped by phase;</text>
+  <text class="f" x="692" y="256" font-size="10.5px" fill="#7a756d"><tspan class="m" font-size="10px">vera errors --json</tspan> lists the</text>
+  <text class="f" x="692" y="270" font-size="10.5px" fill="#7a756d">whole registry</text>
+
+  <text class="f footi" x="36" y="354">All diagnostics accumulate into one pass — an agent never fixes errors one compile at a time.</text>
+</svg>

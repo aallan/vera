@@ -1,0 +1,65 @@
+<svg width="920" height="252" viewBox="0 0 920 252" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The workflow: an LLM agent writes Vera with mandatory contracts; vera check and vera verify prove the types and contracts, feeding every diagnostic — description, rationale, fix, spec reference — straight back to the agent; when the proofs hold, vera run executes the WebAssembly on CLI, browser, WASI or HTTP.</title>
+  <!-- Design system: see architecture.svg. The front-door diagram. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 14.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 11px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .elbl { font-size: 10.5px; font-style: italic; fill: #a9a49b; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="249" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="40">THE WORKFLOW</text>
+
+  <!-- agent -->
+  <g>
+    <rect class="card" x="36" y="60" width="210" height="84" rx="10"/>
+    <rect x="36.5" y="60.5" width="4" height="83" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="56" y="90">LLM agent</text>
+    <text class="f d" x="56" y="112">writes Vera — contracts are</text>
+    <text class="f d" x="56" y="128">mandatory in every function</text>
+  </g>
+  <line class="edge" x1="246" y1="102" x2="290" y2="102" marker-end="url(#arr)"/>
+  <text class="m elbl" x="268" y="92" text-anchor="middle" font-style="normal">.vera</text>
+
+  <!-- check + verify -->
+  <g>
+    <rect class="card" x="296" y="60" width="300" height="84" rx="10"/>
+    <rect x="296.5" y="60.5" width="4" height="83" rx="2" fill="#8b6cad"/>
+    <rect x="302.5" y="60.5" width="4" height="83" rx="2" fill="#d4952a"/>
+    <text class="m t" x="322" y="90" font-size="13.5px">vera check · vera verify</text>
+    <text class="f d" x="322" y="112">every type checked, every contract</text>
+    <text class="f d" x="322" y="128">proved by Z3 — or precisely diagnosed</text>
+  </g>
+  <line class="edge" x1="596" y1="102" x2="640" y2="102" marker-end="url(#arr)"/>
+  <text class="f elbl" x="618" y="92" text-anchor="middle" fill="#3d7a4d">proofs hold</text>
+
+  <!-- run -->
+  <g>
+    <rect class="card" x="646" y="60" width="238" height="84" rx="10"/>
+    <rect x="646.5" y="60.5" width="4" height="83" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="666" y="90" font-size="13.5px">vera run</text>
+    <text class="f d" x="666" y="112">WebAssembly, everywhere</text>
+    <text class="m" x="666" y="128" font-size="10px" fill="#7a756d">CLI · browser · WASI 0.2 · HTTP</text>
+  </g>
+
+  <!-- feedback loop -->
+  <path class="edge" d="M 446 144 L 446 188 L 141 188 L 141 150" marker-end="url(#arr)"/>
+  <text class="f" x="300" y="172" text-anchor="middle" font-size="11px" font-weight="600" fill="#2d2b28">diagnostics feed straight back</text>
+  <text class="m" x="300" y="204" text-anchor="middle" font-size="10.5px" fill="#b07820">description · rationale · fix · spec_ref — machine-readable (--json)</text>
+
+  <!-- footer -->
+  <text class="f footi" x="646" y="188">Contracts are the interface: if verification</text>
+  <text class="f footi" x="646" y="204">passes, Tier-1 properties hold for every input.</text>
+</svg>

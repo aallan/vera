@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through the ongoing server-effects sprint (Stage 16), across 92 active development days.
+How the Vera compiler was built, from initial commit through the visual documentation pass (Stage 18), across 95 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -24,7 +24,10 @@ Version rows follow one rule: one sentence, at most one issue link.  [CHANGELOG.
 | 12 | 26 Apr – 8 May | The bug-killing campaign | v0.0.120–v0.0.142 |
 | 13 | 10–29 May | Stabilisation and memory safety | v0.0.143–v0.0.160 |
 | 14 | 10–12 Jun | The language server | v0.0.161–v0.0.170 |
-| 15 | 15 Jun onwards | The soundness campaign | v0.0.171– |
+| 15 | 15 Jun – 1 Jul | The soundness campaign | v0.0.171–v0.0.191 |
+| 16 | 2–3 Jul | The server-effects sprint | v0.0.192–v0.0.195 |
+| 17 | 4 Jul | The v0.1.0 bug burndown | v0.1.0 |
+| 18 | 8 Jul | The visual documentation pass | v0.1.1 |
 
 ---
 
@@ -387,7 +390,7 @@ After v0.0.170 the editor loop was complete, and attention turned to the verifie
 
 ---
 
-## Stage 15: The soundness campaign (15 June onwards)
+## Stage 15: The soundness campaign (15 June – 1 July)
 
 *Closing the gap between what the verifier proves and what the runtime does.*
 
@@ -417,7 +420,7 @@ A sustained audit of every place where `vera verify` could prove a postcondition
 | v0.0.190 | 1 Jul | Text I/O (files and `subprocess` captures) is UTF-8 regardless of host locale, gated in pre-commit/CI, letting the `PYTHONUTF8` backstop be removed ([#645](https://github.com/aallan/vera/issues/645)). |
 | v0.0.191 | 1 Jul | Type-check-impossible codegen guards raise `CodegenInvariantError` (`[E699]`) instead of silently returning None ([#657](https://github.com/aallan/vera/issues/657)). |
 
-## Stage 16: The server-effects sprint (2 July onwards)
+## Stage 16: The server-effects sprint (2–3 July)
 
 *From concurrent `<Async>` to a served `<HttpServer>` — the road to WASI.*
 
@@ -431,21 +434,35 @@ Demo-first: each stage ships a working capability, cut as its own release, on th
 | v0.0.195 | 2 Jul | The `wasi:http` serve backend: `--world server` packages a verified `handle(Request -> Response)` program as an incoming-handler component that stock `wasmtime serve` runs unmodified (spec §13.7). |
 | v0.0.196 | 2 Jul | Post-sprint consolidation: prelude skip-warnings silenced with `<prelude>` attribution ([#851](https://github.com/aallan/vera/issues/851)), `apply_fn` typed as a checker special form (spurious E200 gone, misuse now check-time errors), and a docs/site/examples sweep surfacing HttpServer + WASI. |
 
-## Stage 17: The v0.1.0 bug burndown (4 July onwards)
+## Stage 17: The v0.1.0 bug burndown (4 July)
 
 *Zero known bugs, then the first minor release.*
 
-A single `release/v0.1.0` integration branch absorbed a fix for every open `bug`-labelled issue — 37 in all, surfaced by systematic hunts for check-green programs that fail at codegen or verify — each on its own adversarially-reviewed PR.  The severe cases were silent wrong results: `compare` / ordering on a user ADT compiled to a heap-pointer comparison, and `==` on a non-`Eq` type pointer-compared instead of erroring — both now rejected at check (`E242` / `E243`).  Structural `show` / `hash` / `eq` gained composite, recursive, nested-generic, and generic-mutually-recursive support; effect handlers work over composite type arguments; transitive and alias module imports resolve; the verifier no longer crashes on nested same-ADT constructors.  With the tracker's `bug` label empty, the project cut **v0.1.0** — its first minor release — with a full documentation sweep and the literal "No known bugs."
+A single integration branch absorbed a fix for every open `bug`-labelled issue — 37 in all, each on its own adversarially-reviewed PR, the severest being silent wrong results (ADT ordering and non-`Eq` `==` compiled to pointer comparisons, now rejected at check).  With the tracker empty, **v0.1.0** shipped with the literal "No known bugs."
 
 | Version | Date | What shipped |
 |---------|------|-------------|
 | v0.1.0 | 4 Jul | **Zero known bugs** — the first minor release: 37 `bug`-labelled issues fixed on one integration branch. |
+
+
+
+## Stage 18: The visual documentation pass (8 July)
+
+*The language explains itself.*
+
+Three external PRs hardened the self-checking machinery, and their adversarial review surfaced a verifier-soundness fix (#957).  Then the documentation itself: a 34-figure hand-authored SVG layer across the spec, the compiler README, the top-level docs, and the landing page; a six-auditor consistency sweep; the last bug-era shapes retired from the test suite; and the roadmap reworked into staged sprints that continue this file's numbering.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.1.1 | 8 Jul | **The visual documentation release** — 34 figures, a six-auditor consistency sweep, three external PRs, and the #957 verifier-soundness fix. |
 
 ---
 
 ## By the numbers
 
 Nine releases, chosen for the capability each one unlocked rather than even spacing.
+
+![Growth across the nine landmark releases: tests from ~50 to 6,821, conformance programs from 0 to 143, examples from 13 to 37, built-in functions from 0 to 164.](assets/diagrams/history-growth.svg)
 
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.65 (4 Mar) | v0.0.101 (27 Mar) | v0.0.170 (12 Jun) | v0.0.191 (1 Jul) | v0.0.193 (2 Jul) | v0.0.195 (2 Jul) | v0.1.0 (4 Jul) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -458,4 +475,4 @@ Nine releases, chosen for the capability each one unlocked rather than even spac
 | Spec chapters | 7 | 10 | 12 | 13 | 13 | 13 | 13 | 14 | 14 |
 | Python coverage | — | — | 90% | 96% | 95% | 95% | 95% | 95% | 95% |
 
-Total: **1,900+ commits, 198 tagged releases, 94 active development days.**
+Total: **1,900+ commits, 199 tagged releases, 95 active development days.**

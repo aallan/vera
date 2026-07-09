@@ -37,6 +37,8 @@ The bet is that contracts are a better surface for capturing intent than variabl
 
 There are three layers, and they cover different things.
 
+![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified — the human reviews contracts, not implementations.](assets/diagrams/faq-layers.svg)
+
 **Layer 1: Type system (mechanical, complete).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme, but it's total — if it type-checks, the pieces fit.
 
 **Layer 2: Z3 contract verification (mechanical, bounded).** Every function has mandatory preconditions, postconditions, and effect declarations. The compiler translates these into a decidable SMT fragment and hands them to Z3. Currently that fragment covers linear arithmetic over integers and booleans, array lengths, ADT constructor discrimination and field access (via Z3 datatype sorts), and termination measures for structural recursion. Across the current example programs, the vast majority of contracts verify statically — the compiler can prove the implementation satisfies the spec without running the code. The remainder are contracts involving generic type parameters (a fundamental SMT limitation) or symbolic effect state modelling across handlers. These fall back to runtime contract checking: the assertions still execute, they just aren't proven at compile time.
@@ -131,6 +133,8 @@ Mandatory parity tests enforce that the browser runtime produces identical resul
 
 `vera test` is Vera's built-in testing command. It generates test inputs automatically from function contracts — you don't write test cases manually.
 
+![Contract-driven testing: Z3 generates inputs satisfying each requires clause, every input runs for real as WASM under wasmtime, and the ensures postcondition is checked against the actual output — a violation fails with the concrete input.](assets/diagrams/contract-testing.svg)
+
 The process works in three steps:
 
 1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the second is non-zero. It generates up to 100 trials per function by default (configurable with `--trials`).
@@ -179,6 +183,8 @@ Vera's approach has three parts. First, the agent-facing documentation (SKILL.md
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
 
+![How Vera compares to Dafny, Lean 4, Koka and F*: SMT-automated verification, mandatory contracts, algebraic effects and refinement types side by side — no production language combines the whole column in one design built for LLM code generation.](assets/diagrams/language-comparison.svg)
+
 **Dafny** shares Vera's Z3/SMT verification approach and is used in production at AWS (Cedar authorisation). But it's imperative, lacks algebraic effects, and has optional (not mandatory) annotations. The 2025 paper proposing Dafny as a verification intermediate language for LLM-generated code validates Vera's core thesis — but Dafny wasn't purpose-built for it.
 
 **Lean 4** has the richest LLM integration ecosystem (LeanDojo, Lean Copilot) and significant investment. But it's primarily a theorem prover with monadic effects. LLMs achieve only 27% success rate on Lean versus 82% on Dafny, suggesting explicit proof construction is harder for models than SMT-automated verification.
@@ -219,10 +225,10 @@ The reference compiler is under active development. The current release includes
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
-- Full IO operations (print, read_line, read_file, write_file, args, exit, get_env, sleep, time, stderr)
+- Full IO operations (print, read_line, read_char, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
-- Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<State>`, `<IO>`, `<Async>`, `<Random>` effects
+- Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<State>`, `<IO>`, `<Async>`, `<Random>`, and `Exn<T>` (typed exception) effects
 - `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), or Mistral via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types

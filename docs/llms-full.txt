@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.1.0. For the full documentation index including the 14-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.1.1. For the full documentation index including the 14-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -2326,7 +2326,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 103 small programs (each self-contained except `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion) that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 143 small programs (each self-contained except `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `_lib.vera` companions) that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2383,6 +2383,7 @@ The full language specification is in the [`spec/`](https://github.com/aallan/ve
 | 10 | [Grammar](https://github.com/aallan/vera/blob/main/spec/10-grammar.md) | Formal EBNF grammar |
 | 11 | [Compilation](https://github.com/aallan/vera/blob/main/spec/11-compilation.md) | Compilation model and WASM target |
 | 12 | [Runtime](https://github.com/aallan/vera/blob/main/spec/12-runtime.md) | Runtime execution, host bindings, memory model |
+| 13 | [WASI Preview 2 Target](https://github.com/aallan/vera/blob/main/spec/13-wasi.md) | The wasi-p2 component target and server world |
 
 
 ========================================================================
@@ -2399,7 +2400,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 143 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exception is `ch07_cross_module_contracts.vera`, which imports its `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the seven negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 143 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exceptions are `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the seven negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2541,10 +2542,10 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
+source -> parse (parser.py) -> transform (transform.py) -> resolve (resolver.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
 ```
 
-Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
+Each stage is a module with a single public API function (`parse_file`, `transform`, `resolve_imports`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
 
 ### Key modules
 
@@ -2810,6 +2811,8 @@ every step.
    threading an effect — call the dedicated method instead and let
    the server construct the candidate.
 
+![The agent proof-delta loop: didOpen returns diagnostics and tier hints; speculativeEdit verifies a draft in memory and returns a proof delta without touching the document; proposeEdit re-verifies from the warm cache and applies only if nothing newly fails to prove.](https://raw.githubusercontent.com/aallan/vera/main/assets/diagrams/lsp-session.svg)
+
 ## Current limitations
 
 | Limitation | Issue |
@@ -2871,6 +2874,8 @@ The bet is that contracts are a better surface for capturing intent than variabl
 ## What actually gets verified?
 
 There are three layers, and they cover different things.
+
+![The three verification layers: the type system is mechanical and complete, Z3 contract verification is mechanical and bounded (prove or counterexample, the rest runtime-checked), and human intent is expressive but unverified — the human reviews contracts, not implementations.](https://raw.githubusercontent.com/aallan/vera/main/assets/diagrams/faq-layers.svg)
 
 **Layer 1: Type system (mechanical, complete).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme, but it's total — if it type-checks, the pieces fit.
 
@@ -2965,6 +2970,8 @@ Mandatory parity tests enforce that the browser runtime produces identical resul
 
 `vera test` is Vera's built-in testing command. It generates test inputs automatically from function contracts — you don't write test cases manually.
 
+![Contract-driven testing: Z3 generates inputs satisfying each requires clause, every input runs for real as WASM under wasmtime, and the ensures postcondition is checked against the actual output — a violation fails with the concrete input.](https://raw.githubusercontent.com/aallan/vera/main/assets/diagrams/contract-testing.svg)
+
 The process works in three steps:
 
 1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the second is non-zero. It generates up to 100 trials per function by default (configurable with `--trials`).
@@ -3013,6 +3020,8 @@ Vera's approach has three parts. First, the agent-facing documentation (SKILL.md
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
 
+![How Vera compares to Dafny, Lean 4, Koka and F*: SMT-automated verification, mandatory contracts, algebraic effects and refinement types side by side — no production language combines the whole column in one design built for LLM code generation.](https://raw.githubusercontent.com/aallan/vera/main/assets/diagrams/language-comparison.svg)
+
 **Dafny** shares Vera's Z3/SMT verification approach and is used in production at AWS (Cedar authorisation). But it's imperative, lacks algebraic effects, and has optional (not mandatory) annotations. The 2025 paper proposing Dafny as a verification intermediate language for LLM-generated code validates Vera's core thesis — but Dafny wasn't purpose-built for it.
 
 **Lean 4** has the richest LLM integration ecosystem (LeanDojo, Lean Copilot) and significant investment. But it's primarily a theorem prover with monadic effects. LLMs achieve only 27% success rate on Lean versus 82% on Dafny, suggesting explicit proof construction is harder for models than SMT-automated verification.
@@ -3053,10 +3062,10 @@ The reference compiler is under active development. The current release includes
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
-- Full IO operations (print, read_line, read_file, write_file, args, exit, get_env, sleep, time, stderr)
+- Full IO operations (print, read_line, read_char, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
-- Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<State>`, `<IO>`, `<Async>`, `<Random>` effects
+- Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<State>`, `<IO>`, `<Async>`, `<Random>`, and `Exn<T>` (typed exception) effects
 - `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), or Mistral via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types

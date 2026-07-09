@@ -1,10 +1,8 @@
 -- Conformance: Decimal type operations (Chapter 9, Section 9.7.2)
 -- Tests: decimal_from_int, decimal_from_float, decimal_add, decimal_sub,
---        decimal_mul, decimal_neg, decimal_abs, decimal_eq, decimal_round,
---        decimal_to_float, decimal_to_string
--- Note: decimal_compare returns Ordering but match on Ordering from
---       decimal_compare is not yet supported in codegen. Tests use
---       decimal_eq instead.
+--        decimal_mul, decimal_neg, decimal_abs, decimal_eq, decimal_compare
+--        (match on the returned Ordering), decimal_round, decimal_to_float,
+--        decimal_to_string
 -- ================================================================
 -- test_decimal_from_int
 -- Construct a Decimal from an Int and check equality.
@@ -123,6 +121,22 @@ public fn test_decimal_eq_different(@Unit -> @Int)
 }
 
 -- ================================================================
+-- test_decimal_compare
+-- Match on the Ordering returned by decimal_compare, hitting every
+-- arm: 3 vs 7 -> Less (1), 7 vs 7 -> Equal (2), 9 vs 7 -> Greater (4).
+-- ================================================================
+public fn test_decimal_compare(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Int = match decimal_compare(decimal_from_int(3), decimal_from_int(7)) { Less -> 1, Equal -> 0, Greater -> 0 };
+  let @Int = match decimal_compare(decimal_from_int(7), decimal_from_int(7)) { Less -> 0, Equal -> 2, Greater -> 0 };
+  let @Int = match decimal_compare(decimal_from_int(9), decimal_from_int(7)) { Less -> 0, Equal -> 0, Greater -> 4 };
+  @Int.0 + @Int.1 + @Int.2
+}
+
+-- ================================================================
 -- test_decimal_round
 -- round(3.7, 0) = 4 (via decimal_from_float)
 -- ================================================================
@@ -165,15 +179,15 @@ public fn test_decimal_to_string(@Unit -> @Int)
 
 -- ================================================================
 -- main — run all tests and return 0 on success
--- Sum: 1+1+1+1+1+1+0+1+42+2 = 51
+-- Sum: 1+1+1+1+1+1+0+7+1+42+2 = 58
 -- ================================================================
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Int = test_decimal_from_int(()) + test_decimal_add(()) + test_decimal_sub(()) + test_decimal_mul(()) + test_decimal_neg_add(()) + test_decimal_abs(()) + test_decimal_eq_different(()) + test_decimal_round(()) + test_decimal_to_float(()) + test_decimal_to_string(());
-  if @Int.0 == 51 then {
+  let @Int = test_decimal_from_int(()) + test_decimal_add(()) + test_decimal_sub(()) + test_decimal_mul(()) + test_decimal_neg_add(()) + test_decimal_abs(()) + test_decimal_eq_different(()) + test_decimal_compare(()) + test_decimal_round(()) + test_decimal_to_float(()) + test_decimal_to_string(());
+  if @Int.0 == 58 then {
     0
   } else {
     1

@@ -58,7 +58,7 @@ These are not hypothetical failure modes. Empirical studies of LLM code generati
 
 - C.C. Le, M.V.T. Pham, C.D. Van, H.N. Phan, H.N. Phan, and T.N. Nguyen. ["When Names Disappear."](https://arxiv.org/pdf/2510.03178) arXiv:2510.03178, 2025. Demonstrates that LLMs exploit statistical correlations between identifiers and functionality even on execution prediction tasks that depend only on program structure — what the authors call "identifier leakage." The model appears to understand code when it is pattern-matching on familiar tokens rather than reasoning about program structure.
 
-- **[VeraBench](https://github.com/aallan/vera-bench)** — first empirical results from Vera's own benchmark suite confirm slot ordering as the dominant failure mode. Claude Sonnet 4 achieved 83% run_correct overall, but GCD, `div_natural`, and `safe_div` all failed because the model wrote `@Int.0 / @Int.1` with the arguments reversed — `@Int.0` is the *most recent* binding (the divisor), not the first parameter (the dividend). These are exactly the non-commutative operations where De Bruijn ordering matters most.
+- **[VeraBench](https://github.com/aallan/vera-bench)** — first empirical results from Vera's own benchmark suite confirm slot ordering as the dominant failure mode. Claude Sonnet 4 achieved 83% run_correct overall in that early snapshot (current results live in the README), but GCD, `div_natural`, and `safe_div` all failed because the model wrote `@Int.0 / @Int.1` with the arguments reversed — `@Int.0` is the *most recent* binding (the divisor), not the first parameter (the dividend). These are exactly the non-commutative operations where De Bruijn ordering matters most.
 
 ### The structural alternative
 
@@ -177,6 +177,8 @@ Trace the binding stack:
 | After `let @Int = @Int.0 * 2;` | param × 2 | parameter | — |
 | After `let @Int = @Int.0 + 1;` | param × 2 + 1 | param × 2 | parameter |
 | Return `@Int.0` | param × 2 + 1 | param × 2 | parameter |
+
+![The binding stack statement by statement: each let pushes a newer Int at index zero and shifts every older Int up by one — and the ensures clause evaluates in the entry environment, where index zero is still the parameter.](assets/diagrams/slot-evolution.svg)
 
 On the right-hand side of each `let`, `@Int.0` refers to the *current* most-recent `Int` — not the one being bound. The binding only becomes visible *after* the `let` completes.
 
@@ -373,7 +375,12 @@ Coq (the Coq Development Team, INRIA) and Isabelle (Nipkow, Paulson, and Wenzel)
 
 **Right-to-left, starting at zero.** Read the parameter list from right to left. The first parameter you encounter (rightmost) is index 0. The second (next to rightmost) is index 1. Continue outward.
 
-```
+![Per-type right-to-left numbering: the rightmost binding of each type is its .0 — interleaved types never share a counter.](assets/diagrams/slot-numbering.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 fn(@A, @B, @A, @B -> ...)
         ↑         ↑
      @B.1      @B.0   (rightmost B = 0)
@@ -382,6 +389,8 @@ fn(@A, @B, @A, @B -> ...)
     ↑       ↑
  @A.1    @A.0          (rightmost A = 0)
 ```
+
+</details>
 
 ### Let bindings
 

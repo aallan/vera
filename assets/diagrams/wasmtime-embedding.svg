@@ -1,0 +1,85 @@
+<svg width="920" height="264" viewBox="0 0 920 264" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Embedding wasmtime: an Engine compiles the WAT into a Module, a Linker registers the vera.* host imports, a Store holds per-run state, then instantiate, look up the export, and call it.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/12 §12.3.1. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 11.5px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 9.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="261" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">EXECUTION · EMBEDDING WASMTIME</text>
+
+  <!-- row 1 -->
+  <g>
+    <rect class="card" x="36" y="64" width="176" height="48" rx="10"/>
+    <rect x="36.5" y="64.5" width="4" height="47" rx="2" fill="#cc9966"/>
+    <text class="m t" x="52" y="85">Engine()</text>
+    <text class="f d" x="52" y="101">shared compiler configuration</text>
+  </g>
+  <line class="edge" x1="212" y1="88" x2="256" y2="88" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="260" y="64" width="176" height="48" rx="10"/>
+    <rect x="260.5" y="64.5" width="4" height="47" rx="2" fill="#cc9966"/>
+    <text class="m t" x="276" y="85">Module(engine, wat)</text>
+    <text class="f d" x="276" y="101">compile the WAT once</text>
+  </g>
+  <line class="edge" x1="436" y1="88" x2="480" y2="88" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="484" y="64" width="176" height="48" rx="10"/>
+    <rect x="484.5" y="64.5" width="4" height="47" rx="2" fill="#cc9966"/>
+    <text class="m t" x="500" y="85">Linker(engine)</text>
+    <text class="f d" x="500" y="101">will resolve the vera.* imports</text>
+  </g>
+  <line class="edge" x1="660" y1="88" x2="704" y2="88" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="708" y="64" width="176" height="48" rx="10"/>
+    <rect x="708.5" y="64.5" width="4" height="47" rx="2" fill="#cc9966"/>
+    <text class="m t" x="724" y="85">Store(engine)</text>
+    <text class="f d" x="724" y="101">per-run state · captured stdio</text>
+  </g>
+
+  <!-- elbow to row 2 -->
+  <polyline class="edge" points="796,112 796,132 124,132 124,148" marker-end="url(#arr)"/>
+
+  <!-- row 2 -->
+  <g>
+    <rect class="card" x="36" y="150" width="176" height="48" rx="10"/>
+    <rect x="36.5" y="150.5" width="4" height="47" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="52" y="171">define_func("vera", …)</text>
+    <text class="f d" x="52" y="187">register IO, State, … host bindings</text>
+  </g>
+  <line class="edge" x1="212" y1="174" x2="256" y2="174" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="260" y="150" width="176" height="48" rx="10"/>
+    <rect x="260.5" y="150.5" width="4" height="47" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="276" y="171">instantiate(store, mod)</text>
+    <text class="f d" x="276" y="187">imports resolved, data written</text>
+  </g>
+  <line class="edge" x1="436" y1="174" x2="480" y2="174" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="484" y="150" width="176" height="48" rx="10"/>
+    <rect x="484.5" y="150.5" width="4" height="47" rx="2" fill="#8b6cad"/>
+    <text class="m t" x="500" y="171">exports(store).get(fn)</text>
+    <text class="f d" x="500" y="187">look up the entry function</text>
+  </g>
+  <line class="edge" x1="660" y1="174" x2="704" y2="174" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="708" y="150" width="176" height="48" rx="10"/>
+    <rect x="708.5" y="150.5" width="4" height="47" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="724" y="171">func(store, *args)</text>
+    <text class="f d" x="724" y="187">execute — traps become results</text>
+  </g>
+
+  <text class="f" x="36" y="234" font-size="11px" font-style="italic" fill="#a9a49b">execute() wraps this chain; every vera run, vera test and vera serve call goes through it.</text>
+</svg>

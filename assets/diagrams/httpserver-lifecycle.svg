@@ -1,0 +1,87 @@
+<svg width="920" height="440" viewBox="0 0 920 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The vera serve request lifecycle: the host owns the accept loop, marshals each incoming request into a Request value, calls the contract-checked handler on a fresh module instance so state cannot leak between requests, and turns the returned Response into the HTTP response — any trap or contract violation answers 500 with the diagnostic in a JSON body.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/09 §9.5.6. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="437" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">HTTPSERVER · THE vera serve REQUEST LIFECYCLE</text>
+  <text class="f sub" x="36" y="64">The accept loop lives in the host, so the handler is an ordinary total function — no Diverge, every contract an ordinary obligation.</text>
+
+  <!-- host band -->
+  <rect x="36" y="84" width="848" height="118" rx="12" fill="#f5f4f1" stroke="#cfccc5" stroke-width="1" stroke-dasharray="5 4"/>
+  <text class="m" x="52" y="106" font-size="11px" font-weight="600" fill="#7a756d">host — vera serve prog.vera [--port N]</text>
+
+  <g>
+    <rect class="card" x="60" y="120" width="180" height="62" rx="10"/>
+    <rect x="60.5" y="120.5" width="4" height="61" rx="2" fill="#cc9966"/>
+    <text class="f t" x="78" y="142">accept loop</text>
+    <text class="f d" x="78" y="160">sequential in v1;</text>
+    <text class="f d" x="78" y="174">every connection answered</text>
+  </g>
+  <line class="edge" x1="240" y1="151" x2="282" y2="151" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="286" y="120" width="260" height="62" rx="10"/>
+    <rect x="286.5" y="120.5" width="4" height="61" rx="2" fill="#4a82a8"/>
+    <text class="f t" x="304" y="142">marshal the request</text>
+    <text class="m" x="304" y="160" font-size="10px" fill="#7a756d">Request(method, path, headers, body)</text>
+    <text class="f d" x="304" y="176">headers: Map&lt;String, String&gt;</text>
+  </g>
+  <line class="edge" x1="546" y1="151" x2="588" y2="151" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="592" y="120" width="268" height="62" rx="10"/>
+    <rect x="592.5" y="120.5" width="4" height="61" rx="2" fill="#8b6cad"/>
+    <text class="f t" x="610" y="142">fresh module instance</text>
+    <text class="f d" x="610" y="160">per-request isolation — State&lt;T&gt;</text>
+    <text class="f d" x="610" y="174">mutations cannot leak between requests</text>
+  </g>
+
+  <!-- into the guest -->
+  <line class="edge" x1="726" y1="202" x2="726" y2="226" marker-end="url(#arr)"/>
+
+  <!-- handler -->
+  <g>
+    <rect class="card" x="286" y="228" width="574" height="74" rx="10"/>
+    <rect x="286.5" y="228.5" width="4" height="73" rx="2" fill="#d4952a"/>
+    <text class="m t" x="304" y="252" font-size="12px">handle(@Request -&gt; @Response)  effects(&lt;HttpServer&gt;)</text>
+    <text class="f d" x="304" y="272">total and contract-checked: Tier-1 obligations proved at build, Tier-3 guards evaluated here.</text>
+    <text class="f d" x="304" y="288">Routing is ordinary pattern matching; per-request effects compose in the row (e.g. State&lt;Int&gt;).</text>
+  </g>
+
+  <!-- outcomes -->
+  <polyline class="edge" points="420,302 420,330 388,330" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="60" y="312" width="324" height="56" rx="10"/>
+    <rect x="60.5" y="312.5" width="4" height="55" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="78" y="334" font-size="11.5px">Response(status, headers, body)</text>
+    <text class="f d" x="78" y="352">becomes the HTTP response</text>
+  </g>
+  <polyline class="edge" points="700,302 700,330 732,330" marker-end="url(#arr)"/>
+  <g>
+    <rect class="card" x="736" y="312" width="148" height="56" rx="10"/>
+    <rect x="736.5" y="312.5" width="4" height="55" rx="2" fill="#c45"/>
+    <text class="f t" x="754" y="334" fill="#a83838">trap → 500</text>
+    <text class="f d" x="754" y="352">diagnostic in a JSON body</text>
+  </g>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="398">Request/Response are prelude ADTs, injected when referenced. The same handler compiles to a wasi:http component for</text>
+  <text class="f footi" x="36" y="414">stock `wasmtime serve` (--target wasi-p2 --world server, §13.7) — verified handlers as a portable deployment artifact.</text>
+</svg>

@@ -268,7 +268,7 @@
         <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
       </div>
       <p class="version">
-        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.1.0">0.1.0</a></span>
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.1.1">0.1.1</a></span>
         <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
       </p>
     </div>
@@ -283,6 +283,7 @@
       <p class="thesis">The biggest problem models face isn't syntax &mdash; it's coherence over scale. Models are pattern matchers optimising for local plausibility, not architects holding the entire system in mind.</p>
       <p>The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.</p>
       <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.</p>
+      <img src="loop-web.svg" alt="The loop: the model writes Vera with mandatory contracts; the compiler proves every type and every contract via Z3; when it's wrong the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold it ships as one .wasm for CLI, browser, and WASI." width="828" height="188" loading="lazy" style="width:100%;max-width:860px;height:auto;display:block;margin:2.25rem auto">
       <p style="margin-top:1.5rem">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
     </div>
   </section>
@@ -305,7 +306,7 @@
 }</pre>
         </div>
         <aside class="aside">
-          <strong>Read the slots.</strong> <code>@Int.1</code> is the first parameter, <code>@Int.0</code> is the second &mdash; De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The <code>requires</code> clause is what lifts divide-by-zero from a runtime crash to a compile-time error.
+          <strong>Read the slots.</strong> <code>@Int.1</code> is the first parameter, <code>@Int.0</code> is the second &mdash; De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The <code>requires</code> clause is what lifts divide-by-zero from a runtime crash to a compile-time error. <a href="https://github.com/aallan/vera/blob/main/examples/safe_divide.vera">examples/safe_divide.vera</a>.
         </aside>
       </div>
 
@@ -348,7 +349,7 @@
 }</pre>
         </div>
         <aside class="aside">
-          <strong>LLM calls are effects.</strong> Where the two functions above are <code>effects(pure)</code>, this one declares <code>&lt;Inference&gt;</code>. A caller that does not permit <code>&lt;Inference&gt;</code> cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up.
+          <strong>LLM calls are effects.</strong> Where the two functions above are <code>effects(pure)</code>, this one declares <code>&lt;Inference&gt;</code>. A caller that does not permit <code>&lt;Inference&gt;</code> cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up. <a href="https://github.com/aallan/vera/blob/main/examples/inference.vera">examples/inference.vera</a>.
         </aside>
       </div>
 
@@ -368,7 +369,7 @@
 }</pre>
         </div>
         <aside class="aside">
-          <strong>Effects compose.</strong> <code>&lt;Http, Inference&gt;</code> is the row &mdash; both must be permitted. <code>Inference</code> auto-detects the provider (Anthropic, OpenAI, Moonshot) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+          <strong>Effects compose.</strong> <code>&lt;Http, Inference&gt;</code> is the row &mdash; both must be permitted. <code>Inference</code> auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
         </aside>
       </div>
 
@@ -484,12 +485,12 @@
       <div class="ref-grid ref-grid--flow">
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
         <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
-        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
+        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, HttpServer, State, Exceptions, Async, Inference, Random, Diverge &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
-        <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
+        <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a> plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.</div></div>
         <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
-        <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
+        <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot, Mistral.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
         <div class="ref-item"><div class="title">Async / Future&lt;T&gt;</div><div class="desc">Futures carry an <code>&lt;Async&gt;</code> effect and compose with the rest of the effect system.</div></div>
         <div class="ref-item"><div class="title">Verified HTTP handlers</div><div class="desc">An <code>&lt;HttpServer&gt;</code> effect marks a total <code>handle(Request -&gt; Response)</code>. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. <code>vera serve</code> runs it.</div></div>
@@ -534,9 +535,10 @@ Browser bundle: examples/hello_world_browser/
           <div class="code-block">
 <pre><span class="cm">$ vera compile --target wasi-p2 --world server \
     examples/http_server.vera</span>
-WASI Preview 2 server component: http_server.wasm
+Compiled (WASI Preview 2 server component
+(run with: wasmtime serve &lt;file&gt;)): examples/http_server.wasm
 
-<span class="cm">$ wasmtime serve http_server.wasm</span>
+<span class="cm">$ wasmtime serve examples/http_server.wasm</span>
 Serving HTTP on http://0.0.0.0:8080/</pre>
           </div>
           <p><code>--target wasi-p2</code> emits a WASI 0.2 component any stock wasip2 host runs &mdash; <code>wasmtime run module.wasm</code> needs no flags and no Vera bindings <em>(experimental; the IO and Random surface)</em>. <code>--world server</code> packages a <code>handle(Request&nbsp;-&gt;&nbsp;Response)</code> program as a <code>wasi:http</code> component that <code>wasmtime serve</code> runs unmodified.</p>
@@ -645,7 +647,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 164 built-in functions, eight algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 143-program conformance suite and 37 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
+        A complete compiler with 164 built-in functions, nine algebraic effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, Random, Diverge), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 14-chapter specification. A 143-program conformance suite and 37 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>

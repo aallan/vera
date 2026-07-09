@@ -1,0 +1,78 @@
+<svg width="920" height="436" viewBox="0 0 920 436" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The compilation pipeline: source is parsed to a Lark parse tree, transformed to a typed AST, type-checked into diagnostics, verified into a Tier 1 / Tier 3 classification, and compiled to WAT text plus a WASM binary.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/11 §11.1. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .title { font-size: 13.5px; font-weight: 600; fill: #2d2b28; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .art { font-size: 11px; fill: #7a756d; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="433" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">COMPILATION PIPELINE</text>
+  <text class="f sub" x="36" y="64">Five stages, one artifact each. <tspan class="m" font-size="10.5px">vera compile</tspan> drives all five; earlier commands stop earlier.</text>
+
+  <!-- source chip -->
+  <rect x="36" y="84" width="118" height="26" rx="13" fill="#f3f2ef" stroke="#e8e6e1"/>
+  <text class="m" x="95" y="101" text-anchor="middle" font-size="11px" fill="#2d2b28">source.vera</text>
+  <line class="edge" x1="60" y1="110" x2="60" y2="126" marker-end="url(#arr)"/>
+
+  <!-- stages -->
+  <g>
+    <rect class="card" x="36" y="128" width="430" height="40" rx="10"/>
+    <rect x="36.5" y="128.5" width="4" height="39" rx="2" fill="#4a82a8"/>
+    <text class="f title" x="56" y="153">Parse</text>
+  </g>
+  <line class="edge" x1="466" y1="148" x2="496" y2="148" marker-end="url(#arr)"/>
+  <text class="m art" x="506" y="152">Lark parse tree</text>
+  <line class="edge" x1="60" y1="168" x2="60" y2="184" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="186" width="430" height="40" rx="10"/>
+    <rect x="36.5" y="186.5" width="4" height="39" rx="2" fill="#4a82a8"/>
+    <text class="f title" x="56" y="211">Transform</text>
+  </g>
+  <line class="edge" x1="466" y1="206" x2="496" y2="206" marker-end="url(#arr)"/>
+  <text class="m art" x="506" y="210">typed AST</text>
+  <line class="edge" x1="60" y1="226" x2="60" y2="242" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="244" width="430" height="40" rx="10"/>
+    <rect x="36.5" y="244.5" width="4" height="39" rx="2" fill="#8b6cad"/>
+    <text class="f title" x="56" y="269">Type Check</text>
+  </g>
+  <line class="edge" x1="466" y1="264" x2="496" y2="264" marker-end="url(#arr)"/>
+  <text class="m art" x="506" y="268">list[Diagnostic] — every error, one pass</text>
+  <line class="edge" x1="60" y1="284" x2="60" y2="300" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="302" width="430" height="40" rx="10"/>
+    <rect x="36.5" y="302.5" width="4" height="39" rx="2" fill="#d4952a"/>
+    <text class="f title" x="56" y="327">Verify</text>
+  </g>
+  <line class="edge" x1="466" y1="322" x2="496" y2="322" marker-end="url(#arr)"/>
+  <text class="m art" x="506" y="326">VerifyResult — Tier 1 proved · Tier 3 runtime</text>
+  <line class="edge" x1="60" y1="342" x2="60" y2="358" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="36" y="360" width="430" height="40" rx="10"/>
+    <rect x="36.5" y="360.5" width="4" height="39" rx="2" fill="#5a9e6f"/>
+    <text class="f title" x="56" y="385">Compile</text>
+  </g>
+  <line class="edge" x1="466" y1="380" x2="496" y2="380" marker-end="url(#arr)"/>
+  <text class="m art" x="506" y="384">CompileResult — WAT text + .wasm binary</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="422">Verification classifies each contract; compilation emits the module — with its contract guards — either way.</text>
+</svg>

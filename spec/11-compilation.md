@@ -4,7 +4,12 @@
 
 Vera programs compile to WebAssembly (WASM). The compilation pipeline extends the verification pipeline: after parsing, transformation, type checking, and contract verification, the code generator translates the verified AST into a WASM module.
 
-```
+![The compilation pipeline: parse to a Lark tree, transform to a typed AST, type-check into diagnostics, verify into a Tier 1/Tier 3 classification, and compile to WAT plus a WASM binary.](../assets/diagrams/pipeline.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 Source (.vera)
   │
   ├── Parse        → Lark parse tree
@@ -13,6 +18,8 @@ Source (.vera)
   ├── Verify       → VerifyResult (Tier 1/3 classification)
   └── Compile      → CompileResult (WAT text + WASM binary)
 ```
+
+</details>
 
 The compilation target is a standalone WASM module containing:
 - Exported functions (callable from the host or other modules)
@@ -381,6 +388,8 @@ Flags:
 ## 11.10 Closures and Anonymous Functions
 
 Anonymous functions (`AnonFn`) compile to closure values — heap-allocated structs containing a function table index and captured variables.
+
+![Closures at runtime: a heap struct with the function-table index at offset zero and the captures after it, invoked by apply_fn through the funcref table with call_indirect to the lifted module-level function, which loads its captures from the environment.](../assets/diagrams/closure-layout.svg)
 
 ### 11.10.1 Closure Representation
 

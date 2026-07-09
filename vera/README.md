@@ -12,49 +12,42 @@ For other documentation:
 
 The compiler is a seven-stage pipeline. Each stage consumes the output of the previous one. Each stage has a single public entry point and is independently testable.
 
-```
+![The compiler pipeline and module map: parse, transform and resolve feed the two-pass type checker; after checking, vera verify proves each contract obligation (Tier 1) or defers it to a runtime guard (Tier 3) with a warm-verification sidecar for the LSP, while vera compile emits WAT and WASM for the wasmtime host, the browser bundle, or a WASI 0.2 component.](../assets/diagrams/architecture.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 Source (.vera)
-  │
-  ▼
-┌──────────────────────────────────────────────────────────┐
-│  1. Parse                    grammar.lark + parser.py    │
-│     Source text → Lark parse tree                        │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  2. Transform                          transform.py      │
-│     Lark parse tree → typed AST (ast.py)                 │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  2b. Resolve                           resolver.py       │
-│      Map import paths → source files, parse + cache      │
-│      Circular import detection                           │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  3. Type Check            checker/ + environment.py      │
-│     AST → list[Diagnostic]        types.py               │
-│     Two-pass: register declarations, then check bodies   │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  4. Verify                      verifier.py + smt.py     │
-│     AST → VerifyResult               (Z3 SMT solver)    │
-│     Tier 1: Z3 proves   Tier 3: runtime fallback        │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  5. Compile                    codegen/ + wasm/           │
-│     AST → CompileResult          (WAT text + WASM binary)│
-│     Runtime contract insertion for Tier 3                │
-└────────────────────────┬─────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│  6. Execute                            (wasmtime)        │
-│     WASM binary → host runtime with IO bindings          │
-└──────────────────────────────────────────────────────────┘
+  |
+  v
+1   Parse        grammar.lark + parser.py     -> Lark parse tree (LALR(1))
+2   Transform    transform.py + ast.py        -> typed AST
+2b  Resolve      resolver.py                  -> transitive module closure
+3   Type Check   checker/ + environment.py    -> list[Diagnostic]
+  |              (two passes: register every signature, then check bodies)
+  |
+  +--- vera verify ------------->  4  Verify   verifier.py + smt.py (Z3)
+  |                                   each obligation proved (Tier 1) or
+  |                                   deferred to a runtime guard (Tier 3)
+  |                                   -> ok / diagnostics / tier counts
+  |                                   sidecar: obligations/ + lsp/ -- warm
+  |                                   incremental re-verification (LSP)
+  v    vera compile / vera run
+5   Compile      codegen/ + wasm/             -> WAT + .wasm
+  |              monomorphize generics / insert contract guards
+  +------------------------------>  Browser bundle   (--target browser)
+  +------------------------------>  WASI 0.2 component (--target wasi-p2)
+  v
+6   Execute      runtime/ + wasmtime          vera run / test / serve
+
+Cross-cutting: cli.py (orchestrates every stage) / errors.py (Diagnostic,
+E-codes) / formatter.py (vera fmt) / tester.py (vera test).
+Nothing exits early -- every stage accumulates diagnostics, so an agent
+gets all feedback in one pass.
 ```
+
+</details>
 
 Errors never cause early exit. Parse errors raise exceptions (the tree is incomplete), but the type checker and verifier **accumulate** all diagnostics and return them as a list. This is critical for LLM consumption — the model gets all feedback in one pass.
 
@@ -74,24 +67,25 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
-| `grammar.lark` | 342 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
-| `parser.py` | 147 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
-| `transform.py` | 1,228 | Transform | Lark tree → AST transformer | `transform()` |
-| `ast.py` | 824 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
-| `types.py` | 384 | Type check | Semantic type representation | `Type`, `is_subtype()` |
-| `environment.py` | 1,560 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
-| `checker/` | 2,675 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `grammar.lark` | 343 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
+| `parser.py` | 153 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
+| `transform.py` | 1,390 | Transform | Lark tree → AST transformer | `transform()` |
+| `ast.py` | 875 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
+| `types.py` | 533 | Type check | Semantic type representation | `Type`, `is_subtype()` |
+| `environment.py` | 2,002 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
+| `checker/` | 4,745 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
 | `  core.py` | 395 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 217 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
-| `  registration.py` | 168 | | Pass 1 forward declarations, ability registration | |
+| `  registration.py` | 376 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 624 | | Expression synthesis (bidirectional), operators, statements | |
+| `  eq_ability.py` | 199 | | Eq ability derivation checks | |
 | `  calls.py` | 610 | | Function/constructor/module/ability calls | |
 | `  control.py` | 508 | | If/match, patterns, effect handlers | |
-| `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
-| `smt.py` | 1,026 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 1,005 | Verify | Contract verification | `verify()` |
-| `wasm/` | 20,716 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
+| `smt.py` | 2,809 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
+| `verifier.py` | 6,582 | Verify | Contract verification | `verify()` |
+| `wasm/` | 23,463 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 829 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 421 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
 | ` ├ inference.py` | 1,747 | | Type inference, slot/type utilities, operator tables | |
@@ -112,23 +106,23 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ json_serde.py` | 265 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 651 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
-| `obligations/` | 637 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
+| `obligations/` | 729 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
 | `  core.py` | 109 | | ProofObligation record: identity (content_key) + discharge outcome | |
 | `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache | |
 | `  session.py` | 252 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order | |
-| `lsp/` | 1389 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
+| `lsp/` | 1,397 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
 | `  convert.py` | 144 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
 | `  features.py` | 292 | | Diagnostics + tier hints, hover, slot goto, hole completion | |
 | `  extensions.py` | 146 | | vera/speculativeEdit proof-delta | |
 | `  server.py` | 169 | | pygls wiring, single-session serialisation | |
-| `codegen/` | 12,991 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `codegen/` | 14,608 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 1,306 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
 | `  memory.py` | 77 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
 | `  core.py` | 1,354 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
 | `  modules.py` | 620 | | Cross-module registration + call detection (C7e) | |
-| `  registration.py` | 371 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 326 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  registration.py` | 457 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 1,132 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
 | `  functions.py` | 687 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
 | `  tail_position.py` | 106 | | Tail-position analysis for the function body compiler | |
 | `  closures.py` | 622 | | Closure lifting, GC instrumentation | |
@@ -136,7 +130,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  assembly.py` | 1,406 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 529 | | Compilability checks, state handler scanning | |
 | `  wasi.py` | 4,819 | | WASI Preview 2 component/adapter emitter — `--target wasi-p2` / `--world server` (#237, #853) | |
-| `runtime/` | 4,310 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
+| `runtime/` | 4,426 | Execute | wasmtime host layer (#421): traps + per-effect host-binding families | `register_*()`, `WasmTrapError` |
 | `  traps.py` | 493 | | `WasmTrapError`, `_classify_trap`, source-backtrace resolution | |
 | `  heap.py` | 1,197 | | WASM memory marshalling primitives, ADT/Option/Array/bucket codecs, `_ShadowGuard`, shared collection helpers | |
 | `  collections.py` | 16 | | `_VAL_WASM_TYPES` value-type dispatch table (shared by Map/Set) | |
@@ -144,21 +138,21 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  <effect>.py` ×13 | 2,207 | | one `register_<effect>(linker, …)` per family: random, math, md, json, regex, html, map, set, decimal, http, async_http (#841 fused-async: worker-thread submit + blocking await + kind-4 cancel/evict decref), inference, state | |
 | `  wasi_host.py` | 213 | | Built-in `wasi-p2` runner via `add_wasip2` — `vera run --target wasi-p2` (#237, #853) | |
 | `  server.py` | 150 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
-| `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
-| `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
-| `browser/` | 2,993 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
+| `tester.py` | 956 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
+| `formatter.py` | 1,122 | Format | Canonical code formatter | `format_source()` |
+| `errors.py` | 582 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `browser/` | 138 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
 | ` ├ runtime.mjs` | 2,750 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
 | ` └ harness.mjs` | 106 | | Node.js test harness for parity testing | |
-| `cli.py` | 1,006 | All | CLI commands | `main()` |
-| `registration.py` | 59 | Type check | Shared function registration | `register_fn()` |
+| `cli.py` | 1,705 | All | CLI commands | `main()` |
+| `registration.py` | 95 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~65,000 lines of Python + 343 lines of grammar + 2,856 lines of JavaScript.
+Total: ~72,000 lines of Python + 343 lines of grammar + 3,378 lines of JavaScript.
 
 ## Parsing
 
-**Files:** `grammar.lark` (342 lines), `parser.py` (147 lines)
+**Files:** `grammar.lark` (343 lines), `parser.py` (147 lines)
 
 The grammar is a Lark LALR(1) grammar derived from the formal EBNF in spec Chapter 10. It uses:
 
@@ -246,7 +240,12 @@ This is the most architecturally complex stage.
 
 ### Three-pass architecture
 
-```
+![The three checker passes: module registration harvests imported signatures, local registration populates the TypeEnv, and the checking pass verifies every function body against it.](../assets/diagrams/checker-passes.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
  Pass 0: Module Registration       Pass 1: Local Registration         Pass 2: Checking
   ┌──────────────────────┐          ┌────────────────────────┐          ┌──────────────────────────┐
   │  For each resolved   │          │  Walk all declarations │          │  Walk all declarations   │
@@ -261,6 +260,8 @@ This is the most architecturally complex stage.
          │   no bodies checked)   │          │   • pop scope            │
          └────────────────────────┘          └──────────────────────────┘
 ```
+
+</details>
 
 **Why two passes:** Forward references and mutual recursion. A function declared on line 50 can call a function declared on line 10, or vice versa. Pass 1 makes all signatures visible before any bodies are checked.
 
@@ -279,7 +280,12 @@ The compiler maintains two distinct type representations:
 
 See [`DE_BRUIJN.md`](../DE_BRUIJN.md) for the conceptual background and worked examples. In brief: Vera uses typed De Bruijn indices instead of variable names. `@Int.0` means "the most recent `Int` binding", `@Int.1` means "the one before that".
 
-```
+![Slot resolution: parameters bind left-to-right into scope 0, a let pushes scope 1, and @Int.n counts backwards from the most recent Int binding.](../assets/diagrams/slot-scopes.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 private fn add(@Int, @Int -> @Int) {        Parameters bind left-to-right.
   let @Int = @Int.0 + @Int.1;       @Int.0 = param₂ (rightmost), @Int.1 = param₁
   @Int.0                             @Int.0 = let binding (shadows param₂)
@@ -298,6 +304,8 @@ resolve("Int", 0) → let_binding    (index 0 = most recent)
 resolve("Int", 1) → param₂         (index 1 = one before)
 resolve("Int", 2) → param₁         (index 2 = two before)
 ```
+
+</details>
 
 The resolver walks scopes **innermost to outermost**, counting backwards within each scope. This is implemented in `TypeEnv.resolve_slot()`.
 
@@ -429,7 +437,12 @@ When a contract or function body contains constructs that can't be translated to
 
 ### Verification condition generation
 
-```
+![Proof by refutation: the requires clauses become assumptions, the negated ensures becomes the goal, and Z3's unsat/sat/unknown answers map to Verified, Violated-with-counterexample, and Tier 3.](../assets/diagrams/z3-refutation.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
  requires(P₁), requires(P₂)           ensures(Q)
          │                                 │
          ▼                                 ▼
@@ -454,6 +467,8 @@ When a contract or function body contains constructs that can't be translated to
                   + counter-
                    example
 ```
+
+</details>
 
 **Forward symbolic execution:** The function body is translated to a Z3 expression, and `@T.result` in postconditions is substituted with this expression. This is simpler than weakest-precondition calculus and equivalent for the non-recursive straight-line code that Tier 1 handles.
 
@@ -538,7 +553,9 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 Before #421, `execute()` and every effect's host bindings lived in one ~4,358-line `codegen/api.py`. The wasmtime host layer is now factored into `vera/runtime/`: trap classification (`traps.py`), WASM memory marshalling (`heap.py`, `collections.py`), and **one module per optional effect family**, each exposing a single `register_<family>(linker, …)` that defines and registers its host callbacks. `execute()` calls these in sequence instead of inlining ~3,000 lines of branches. The compiled `.wasm` import interface is unchanged — this is an internal refactor, not a contract change.
 
-**What counts as a "family" module.** Each of the twelve (`random`, `math`, `md`, `json`, `regex`, `html`, `map`, `set`, `decimal`, `http`, `inference`, `state`) is a *pluggable adapter* with minimal coupling to `execute()`. Map/Set/Decimal marshal opaque handles; Json/Html/Markdown/Regex bridge Python parsers; Http/Inference wrap network calls; Random/Math/State are thin shims. Most are stateless and registered conditionally (`if result.<effect>_ops_used`). The two stateful ones — Decimal and State — keep a single Python-side store that `execute()` creates and reads back (Decimal's handle store feeds the GC decref hook and `host_store_sizes`; State's cell stacks feed `ExecuteResult.state`), passed as one explicit parameter (e.g. `register_decimal(linker, ops, decimal_store, host_store_refs)`), keeping each family a clean unit. `heap.py` holds the marshalling primitives they all call.
+![The wasmtime host layer: execute() registers one pluggable adapter per optional effect family into the Linker — Decimal and State carry an explicit store — while IO stays inline as execute()'s observation channel; the module's import interface is the portability contract the browser runtime also implements.](../assets/diagrams/host-families.svg)
+
+**What counts as a "family" module.** Each of the thirteen (`random`, `math`, `md`, `json`, `regex`, `html`, `map`, `set`, `decimal`, `http`, `async_http`, `inference`, `state`) is a *pluggable adapter* with minimal coupling to `execute()`. Map/Set/Decimal marshal opaque handles; Json/Html/Markdown/Regex bridge Python parsers; Http/Inference wrap network calls; Random/Math/State are thin shims. Most are stateless and registered conditionally (`if result.<effect>_ops_used`). The two stateful ones — Decimal and State — keep a single Python-side store that `execute()` creates and reads back (Decimal's handle store feeds the GC decref hook and `host_store_sizes`; State's cell stacks feed `ExecuteResult.state`), passed as one explicit parameter (e.g. `register_decimal(linker, ops, decimal_store, host_store_refs)`), keeping each family a clean unit. `heap.py` holds the marshalling primitives they all call.
 
 **Why IO is *not* a family module.** IO stays inline in `execute()` by design. Unlike the twelve adapters, IO is execute()'s **observation channel**: its host callbacks write into state that *becomes the return value* — `output_buf`/`stderr_buf` → `ExecuteResult.stdout`/`stderr`, `last_violation` → the trap diagnostic via `_classify_trap`, `tee_stdout` → the live-streaming decision — and it shares the `_VeraExit` Ctrl-C exception with execute()'s exit handling. Extracting the twelve adapters *reduced* coupling (each became self-contained); extracting IO would not — it would relocate a naturally cohesive unit across a file boundary behind a 7-field context object that both the host callbacks and the result-building code would thread through. Cohesion of a genuinely-coupled unit outweighs uniform "every effect lives in `runtime/`" placement. (By Vera's *surface* model IO is an effect like any other; by the *compiler's* internal structure it is execute()'s I/O substrate. The decomposition follows the compiler's structure — the principle that each module be a cohesive, independently-testable unit.)
 
@@ -556,7 +573,7 @@ The WASM import interface is the portability contract: the compiled `.wasm` bina
 
 ### Browser runtime
 
-`browser/runtime.mjs` is a self-contained JavaScript runtime (~1,123 lines) that provides JavaScript implementations of all Vera host bindings. It works with **any** compiled Vera `.wasm` module — no code generation needed.
+`browser/runtime.mjs` is a self-contained JavaScript runtime (~3,272 lines) that provides JavaScript implementations of all Vera host bindings. It works with **any** compiled Vera `.wasm` module — no code generation needed.
 
 **Dynamic import introspection:** Instead of generating per-program glue code, the runtime uses `WebAssembly.Module.imports(module)` at initialization to discover which host functions the module actually needs, then builds the import object dynamically. State\<T\> types are pattern-matched from `state_get_*`/`state_put_*` import names.
 
@@ -572,10 +589,11 @@ The WASM import interface is the portability contract: the compiled `.wasm` bina
 
 ### Runtime contracts
 
-The code generator classifies contracts using the verifier's tier results:
-- **Tier 1 (proven):** omitted — statically guaranteed
-- **Trivial (`requires(true)`, `ensures(true)`):** omitted — no meaningful check
-- **Tier 3 (unverified):** compiled as runtime assertions using `unreachable` traps
+The code generator does **not** consult the verifier: `vera compile` emits the module — with its contract guards — whether or not `vera verify` ever ran. Tier classification is `vera verify`'s *reporting*, not a codegen input:
+- **Trivial (`requires(true)`, `ensures(true)`):** omitted — recognised syntactically, no meaningful check
+- **Everything else:** compiled as runtime assertions using `unreachable` traps, whether Z3 proved it (Tier 1) or deferred it (Tier 3)
+
+Omitting statically-proven guards is the spec §11.8 aspiration tracked in [#958](https://github.com/aallan/vera/issues/958) — it must wait on the soundness guarantees noted there.
 
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
@@ -619,7 +637,12 @@ VeraError (exception hierarchy)
 
 Every diagnostic includes eight fields designed for LLM consumption:
 
-```
+![The Diagnostic record: description, location, source line, rationale, fix, spec_ref, severity, and a stable error code.](../assets/diagrams/diagnostic-card.svg)
+
+<details>
+<summary>Text version</summary>
+
+```text
 ┌──────────────────────────────────────────────────────┐
 │  Diagnostic                                          │
 │                                                      │
@@ -633,6 +656,8 @@ Every diagnostic includes eight fields designed for LLM consumption:
 │  error_code    stable identifier ("E130", "E200")    │
 └──────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 `Diagnostic.format()` produces the multi-section natural language output shown in the root README's "What Errors Look Like" section. The format is designed so the compiler's output can be fed directly back to the model that wrote the code.
 
@@ -697,7 +722,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (12
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 6,763 tests across 104 files — compiler-internals unit tests plus a **conformance suite** (143 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (37 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing spans a **pytest suite** of 6,821 tests across 104 files — compiler-internals unit tests plus a **conformance suite** (143 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (37 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

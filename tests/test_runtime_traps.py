@@ -19,8 +19,9 @@ Covers two paired bug fixes:
   ``kind`` and a Vera-native message; only true contract-host-import
   traps keep the contract-violation label.
 
-Stage 2 (source mapping the trapping function) and Stage 3 (per-kind
-``Fix:`` paragraphs) are deferred — see #516 for the campaign plan.
+Stage 2 (source mapping — the ``frames`` field, v0.0.124) and Stage 3
+(per-kind ``Fix:`` paragraphs) have since shipped; their behaviour is
+exercised throughout this file.
 """
 
 from __future__ import annotations

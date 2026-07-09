@@ -1,0 +1,99 @@
+<svg width="920" height="472" viewBox="0 0 920 472" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">How Vera compares to Dafny, Lean 4, Koka and F*: Dafny shares the SMT approach but is imperative with optional annotations; Lean has the richest LLM ecosystem but explicit proof construction is harder for models; Koka pioneered row-polymorphic effects but has no verification; F* is the closest feature set but targets human programmers. No production language combines all of it in a design optimised for LLM code generation.</title>
+  <!-- Design system: see architecture.svg. Grounded strictly in FAQ §How does Vera compare — every cell traces to a sentence there. -->
+  <defs>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .rowline { stroke: #f0eeea; stroke-width: 1; }
+      .lang { font-size: 12.5px; font-weight: 600; fill: #2d2b28; }
+      .col { font-size: 9.5px; font-weight: 600; letter-spacing: 0.6px; fill: #a9a49b; text-anchor: middle; }
+      .cell { font-size: 13px; text-anchor: middle; }
+      .note { font-size: 9.5px; fill: #7a756d; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+      .yes { fill: #3d7a4d; } .part { fill: #b07820; } .no { fill: #c0bcb4; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="469" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">HOW VERA COMPARES · DAFNY / LEAN 4 / KOKA / F*</text>
+  <text class="f sub" x="36" y="64">Each cell traces to the FAQ's comparison — ● yes · ◐ partial or qualified · ○ no.</text>
+
+  <!-- table card -->
+  <rect class="card" x="36" y="84" width="848" height="308" rx="10"/>
+
+  <!-- column headers -->
+  <text class="f col" x="195" y="110">SMT-AUTOMATED</text>
+  <text class="f col" x="195" y="121">VERIFICATION</text>
+  <text class="f col" x="315" y="110">MANDATORY</text>
+  <text class="f col" x="315" y="121">CONTRACTS</text>
+  <text class="f col" x="425" y="110">ALGEBRAIC</text>
+  <text class="f col" x="425" y="121">EFFECTS</text>
+  <text class="f col" x="530" y="110">REFINEMENT</text>
+  <text class="f col" x="530" y="121">TYPES</text>
+  <text class="f col" x="616" y="116" text-anchor="start">NOTES (FROM THE FAQ)</text>
+
+  <line class="rowline" x1="52" y1="130" x2="868" y2="130"/>
+
+  <!-- Dafny -->
+  <text class="f lang" x="56" y="158">Dafny</text>
+  <text class="m cell yes" x="195" y="158">●</text>
+  <text class="m cell part" x="315" y="158">◐</text>
+  <text class="m cell no" x="425" y="158">○</text>
+  <text class="m cell no" x="530" y="158">○</text>
+  <text class="f note" x="616" y="151">production at AWS (Cedar); imperative;</text>
+  <text class="f note" x="616" y="164">annotations optional, not mandatory</text>
+  <line class="rowline" x1="52" y1="180" x2="868" y2="180"/>
+
+  <!-- Lean 4 -->
+  <text class="f lang" x="56" y="208">Lean 4</text>
+  <text class="m cell no" x="195" y="208">○</text>
+  <text class="m cell no" x="315" y="208">○</text>
+  <text class="m cell part" x="425" y="208">◐</text>
+  <text class="m cell no" x="530" y="208">○</text>
+  <text class="f note" x="616" y="195">theorem prover — explicit proofs; monadic</text>
+  <text class="f note" x="616" y="208">effects; richest LLM ecosystem, yet 27%</text>
+  <text class="f note" x="616" y="221">success vs Dafny's 82%</text>
+  <line class="rowline" x1="52" y1="230" x2="868" y2="230"/>
+
+  <!-- Koka -->
+  <text class="f lang" x="56" y="258">Koka</text>
+  <text class="m cell no" x="195" y="258">○</text>
+  <text class="m cell no" x="315" y="258">○</text>
+  <text class="m cell yes" x="425" y="258">●</text>
+  <text class="m cell no" x="530" y="258">○</text>
+  <text class="f note" x="616" y="245">pioneered the row-polymorphic effect</text>
+  <text class="f note" x="616" y="258">system Vera draws from; no verification;</text>
+  <text class="f note" x="616" y="271">not production-ready</text>
+  <line class="rowline" x1="52" y1="280" x2="868" y2="280"/>
+
+  <!-- F* -->
+  <text class="f lang" x="56" y="308">F*</text>
+  <text class="m cell yes" x="195" y="308">●</text>
+  <text class="m cell no" x="315" y="308">○</text>
+  <text class="m cell yes" x="425" y="308">●</text>
+  <text class="m cell yes" x="530" y="308">●</text>
+  <text class="f note" x="616" y="301">the closest feature set — but it targets</text>
+  <text class="f note" x="616" y="314">human programmers; steep learning curve</text>
+  <line class="rowline" x1="52" y1="330" x2="868" y2="330"/>
+
+  <!-- Vera -->
+  <rect x="44" y="338" width="832" height="46" rx="8" fill="#f7efe8"/>
+  <text class="f lang" x="56" y="366">Vera</text>
+  <text class="m cell yes" x="195" y="366">●</text>
+  <text class="m cell yes" x="315" y="366">●</text>
+  <text class="m cell yes" x="425" y="366">●</text>
+  <text class="m cell yes" x="530" y="366">●</text>
+  <text class="f note" x="616" y="352">…plus constrained generics, De Bruijn</text>
+  <text class="f note" x="616" y="365">indices, and WebAssembly — purpose-built</text>
+  <text class="f note" x="616" y="378">for LLM code generation</text>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="420">The Dafny-as-verification-target paper (2025) validates the core thesis — SMT-automated verification suits model-written code</text>
+  <text class="f footi" x="36" y="436">far better than explicit proof construction. No production language today combines this whole column in one design.</text>
+  <text class="f" x="36" y="458" font-size="9.5px" fill="#a9a49b">Claims as stated in FAQ.md; success-rate figures quoted there from published LLM benchmarks.</text>
+</svg>

@@ -1,0 +1,88 @@
+<svg width="920" height="472" viewBox="0 0 920 472" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Closures at runtime: a heap struct holding a function-table index at offset zero and the captured values after it, invoked by apply_fn pushing the environment pointer plus arguments and dispatching through the funcref table with call_indirect to the lifted module-level function, which loads its captures from the environment.</title>
+  <!-- Design system: see architecture.svg. Grounded in spec/11 §11.10. -->
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0.5 L7.5,4 L0,7.5" fill="none" stroke="#a9a49b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .f  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+      .m  { font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; }
+      .micro { font-size: 10.5px; font-weight: 600; letter-spacing: 1.5px; fill: #a9a49b; }
+      .sub { font-size: 11.5px; fill: #7a756d; }
+      .card { fill: #ffffff; stroke: #e8e6e1; stroke-width: 1; }
+      .seg { stroke: #e8e6e1; stroke-width: 1; }
+      .t { font-size: 12px; font-weight: 600; fill: #2d2b28; }
+      .d { font-size: 10.5px; fill: #7a756d; }
+      .edge { fill: none; stroke: #a9a49b; stroke-width: 1.5; }
+      .footi { font-size: 11px; font-style: italic; fill: #a9a49b; }
+    </style>
+  </defs>
+
+  <rect x="1.5" y="1.5" width="917" height="469" rx="14" fill="#faf9f7" stroke="#e8e6e1" stroke-width="1.5"/>
+
+  <text class="f micro" x="36" y="42">CLOSURES · HEAP LAYOUT AND call_indirect DISPATCH</text>
+  <text class="f sub" x="36" y="64">A closure is one i32 heap pointer — it flows through lets, parameters, match arms and returns like any other value.</text>
+
+  <!-- heap struct -->
+  <text class="f micro" x="36" y="98">THE HEAP STRUCT</text>
+  <rect class="seg" x="36" y="108" width="150" height="44" fill="#f8efdf"/>
+  <text class="m t" x="111" y="127" text-anchor="middle" font-size="11px">func_table_idx</text>
+  <text class="f d" x="111" y="143" text-anchor="middle" font-size="9.5px">i32 · offset 0</text>
+  <rect class="seg" x="186" y="108" width="130" height="44" fill="#e6f0e9"/>
+  <text class="m t" x="251" y="127" text-anchor="middle" font-size="11px">capture_0</text>
+  <text class="f d" x="251" y="143" text-anchor="middle" font-size="9.5px">offset 4+ · 8-byte aligned</text>
+  <rect class="seg" x="316" y="108" width="120" height="44" fill="#e6f0e9"/>
+  <text class="m t" x="376" y="127" text-anchor="middle" font-size="11px">capture_1 …</text>
+  <text class="f d" x="376" y="143" text-anchor="middle" font-size="9.5px">i32 / i64 / f64</text>
+  <text class="f d" x="36" y="174">Captures are evaluated <tspan font-weight="600">at closure creation</tspan>: a SlotRef is a capture when its De Bruijn index reaches past</text>
+  <text class="f d" x="36" y="188">the anonymous function's own parameters of that type. Same bump-allocation pattern as ADTs.</text>
+
+  <!-- dispatch flow -->
+  <text class="f micro" x="36" y="230">INVOCATION — apply_fn(closure, args…)</text>
+
+  <g>
+    <rect class="card" x="36" y="242" width="220" height="56" rx="10"/>
+    <rect x="36.5" y="242.5" width="4" height="55" rx="2" fill="#5a9e6f"/>
+    <text class="m t" x="54" y="264" font-size="11.5px">apply_fn(closure, …)</text>
+    <text class="f d" x="54" y="282">push env pointer first, then args</text>
+  </g>
+  <line class="edge" x1="256" y1="270" x2="296" y2="270" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="300" y="242" width="220" height="56" rx="10"/>
+    <rect x="300.5" y="242.5" width="4" height="55" rx="2" fill="#d4952a"/>
+    <text class="m t" x="318" y="264" font-size="11.5px">load func_table_idx</text>
+    <text class="f d" x="318" y="282">from the closure struct, offset 0</text>
+  </g>
+  <line class="edge" x1="520" y1="270" x2="560" y2="270" marker-end="url(#arr)"/>
+
+  <g>
+    <rect class="card" x="564" y="242" width="320" height="56" rx="10"/>
+    <rect x="564.5" y="242.5" width="4" height="55" rx="2" fill="#d4952a"/>
+    <text class="m t" x="582" y="264" font-size="11.5px">call_indirect (type $closure_sig_N)</text>
+    <text class="f d" x="582" y="282">signature-checked dispatch through the funcref table</text>
+  </g>
+
+  <!-- funcref table -->
+  <g>
+    <rect x="564" y="322" width="320" height="38" rx="10" fill="#ede8f2" stroke="#e8e6e1"/>
+    <text class="m t" x="724" y="341" text-anchor="middle" font-size="11.5px">(table funcref) · (elem $anon_0 $anon_1 …)</text>
+    <text class="f d" x="724" y="354" text-anchor="middle" font-size="9px">one slot per lifted function; one $closure_sig_N per unique signature</text>
+  </g>
+  <line class="edge" x1="724" y1="298" x2="724" y2="318" marker-end="url(#arr)"/>
+
+  <!-- lifted function -->
+  <g>
+    <rect class="card" x="300" y="384" width="584" height="56" rx="10"/>
+    <rect x="300.5" y="384.5" width="4" height="55" rx="2" fill="#4a82a8"/>
+    <text class="m t" x="318" y="406" font-size="11.5px">(func $anon_N (param $env i32) (param …) …)</text>
+    <text class="f d" x="318" y="424">lifted to module level — entry code loads each captured value out of $env before the body runs</text>
+  </g>
+  <polyline class="edge" points="724,360 724,368 592,368 592,380" marker-end="url(#arr)"/>
+
+  <!-- footer -->
+  <text class="f footi" x="36" y="330">Anonymous functions are never nested in the</text>
+  <text class="f footi" x="36" y="346">emitted WASM — every one is lifted, and the</text>
+  <text class="f footi" x="36" y="362">environment pointer carries its context.</text>
+</svg>

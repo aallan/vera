@@ -1,0 +1,42 @@
+<svg width="828" height="188" viewBox="18 58 828 188" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">The loop: the model writes Vera with mandatory contracts; the compiler proves every type and every contract via Z3; when it's wrong, the diagnostics return — description, rationale, fix, spec_ref — and when the proofs hold, it ships as one .wasm for CLI, browser, and WASI.</title>
+  <!-- Website design system (docs/index.html): paper #FFECD1 · ink #1A0B00/#5E2C08/#975526 ·
+       flame #E05600 accent · JetBrains Mono / Inter · transparent bg, 2px strokes, one accent.
+       Markers use markerUnits="userSpaceOnUse" so head stroke weight == line weight. -->
+  <defs>
+    <marker id="warr" viewBox="0 0 12 12" refX="9" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M2,1.5 L10,6 L2,10.5" fill="none" stroke="#1A0B00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="flarr" viewBox="0 0 13 13" refX="10" refY="6.5" markerWidth="13" markerHeight="13" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M2,1.75 L11,6.5 L2,11.25" fill="none" stroke="#E05600" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .mono { font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace; }
+      .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .big { font-size: 17px; font-weight: 600; }
+      .sub { font-size: 11.5px; fill: #975526; }
+      .edge { stroke: #1A0B00; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <!-- the model writes -->
+  <rect x="30" y="70" width="250" height="64" rx="32" fill="none" stroke="#1A0B00" stroke-width="2"/>
+  <text class="mono big" x="155" y="108" text-anchor="middle" fill="#1A0B00">the model writes</text>
+  <text class="sans sub" x="155" y="158" text-anchor="middle">contracts mandatory on every function</text>
+  <line class="edge" x1="280" y1="102" x2="322" y2="102" marker-end="url(#warr)"/>
+
+  <!-- the compiler proves -->
+  <rect x="330" y="70" width="280" height="64" rx="32" fill="#E05600"/>
+  <text class="mono big" x="470" y="108" text-anchor="middle" fill="#FFECD1">the compiler proves</text>
+  <text class="sans sub" x="470" y="158" text-anchor="middle">every type · every contract, via Z3</text>
+  <line class="edge" x1="610" y1="102" x2="652" y2="102" marker-end="url(#warr)"/>
+
+  <!-- it ships -->
+  <rect x="660" y="70" width="160" height="64" rx="32" fill="#1A0B00"/>
+  <text class="mono big" x="740" y="108" text-anchor="middle" fill="#FFECD1">it ships</text>
+  <text class="sans sub" x="740" y="158" text-anchor="middle">one .wasm — CLI · browser · WASI</text>
+
+  <!-- the return: diagnostics -->
+  <path d="M 470 176 L 470 204 L 155 204 L 155 182" fill="none" stroke="#E05600" stroke-width="2.5" stroke-dasharray="0.1 6.5" stroke-linecap="round" marker-end="url(#flarr)"/>
+  <text class="mono" x="312" y="230" text-anchor="middle" font-size="11.5px" fill="#E05600">wrong? the diagnostics return — description · rationale · fix · spec_ref</text>
+</svg>

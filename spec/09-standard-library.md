@@ -514,6 +514,8 @@ private fn compute(@Nat, @Nat -> @Int)
 }
 ```
 
+![The async model: async(e) evaluates concurrently when e's effect row is commutative — Http requests issue on a host worker thread at the async point and await blocks for the response — while every other shape evaluates eagerly with a W002 warning; Future of T is WASM-transparent either way.](../assets/diagrams/async-model.svg)
+
 Key design points:
 - `async(expr)` evaluates `expr` and wraps the result in `Future<T>`.
 - `await(@Future<T>.n)` unwraps the future, yielding the result of type `T`.
@@ -596,6 +598,8 @@ data Response { Response(Int, Map<String, String>, String) }
 `Request` fields are method, path, headers, body; `Response` fields are status, headers, body.
 
 **Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation — `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions — no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
+
+![The vera serve request lifecycle: the host owns the accept loop, marshals each request into a Request value, calls the contract-checked handler on a fresh module instance, and turns the returned Response into the HTTP response — traps answer 500 with the diagnostic.](../assets/diagrams/httpserver-lifecycle.svg)
 
 - Routing is ordinary pattern matching on the request fields.
 - Per-request effects compose in the row: `effects(<HttpServer, State<Int>>)`.

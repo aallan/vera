@@ -315,6 +315,8 @@ Vera has minimal subtyping. The complete subtyping relation is:
 
 This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between them requires an explicit mapping.
 
+![The complete subtyping relation: Never below everything, refinement subtyping when one predicate implies the other, refinement-to-base, reflexivity — and nothing else. The checker additionally permits Int where Nat is expected; the verifier enforces the non-negativity proof.](../assets/diagrams/subtyping-lattice.svg)
+
 ## 2.9 Type Equality
 
 Two types are equal if and only if they have the same structure after resolving type aliases. Refinement type equality uses logical equivalence: `{ @T | P }` equals `{ @T | Q }` if and only if `P <==> Q` is valid.

@@ -22,7 +22,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | References | [`@T.n` typed De Bruijn indices](DE_BRUIJN.md) | Eliminates naming coherence errors; indices are locally determinable from types alone |
 | Contracts | Mandatory `requires`/`ensures`/`effects` on all functions | Programs must be checkable; contracts are the machine-verifiable specification |
 | Verification | Z3 static (Tier 1) → runtime fallback (Tier 3); Tier 2 (Z3-guided) is specified but not yet implemented | Maximises static guarantees; degrades gracefully where SMT is undecidable |
-| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `State`, `Async`, `Inference`, `Random`, `Diverge`, plus the parameterised exception effect `Exn<T>` — all reported by `vera effects --json`) | All state and side effects explicit; effects are typed, trackable, and handleable |
+| Effects | Algebraic, row-polymorphic (`IO`, `Http`, `HttpServer`, `State`, `Async`, `Inference`, `Random`, `Diverge`, plus the parameterised exception effect `Exn<T>` — all reported by `vera effects --json`) | All state and side effects explicit; effects are typed, trackable, and handleable |
 | Error handling | `Result<T,E>` ADTs for expected errors; `Exn<T>` algebraic effect for exceptions | Errors are values; `match` enforces handling every case; `Exn<T>` is handleable like any other effect |
 | Inference | `Inference.complete` as an algebraic effect | LLM calls are typed, contract-verifiable, mockable via `handle[Inference]`, and explicit in signatures |
 | Data types | Algebraic data types + exhaustive `match` | No classes, no inheritance; compiler enforces every case is handled |
@@ -30,7 +30,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
 | Standard library | 164 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
-| Modules | `module`/`import` with explicit re-exports | Programs split across files; `vera check` resolves the module graph |
+| Modules | `module`/`import` with explicit `public`/`private` visibility | Programs split across files; `vera check` resolves the module graph; re-exports are tracked in [#127](https://github.com/aallan/vera/issues/127) |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
 | Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$alloc`, `$gc_collect`, shadow stack); no host GC; models focus on logic |
@@ -48,7 +48,9 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 Vera's contracts are checked in two implemented tiers, applied at every call site:
 
-**Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers arithmetic, boolean logic, and simple refinement predicates.
+![Three-tier verification: each obligation goes to Z3 — unsat is verified (Tier 1), sat is a compile error with a counterexample, unknown or timeout defers to a Tier 3 runtime guard; Tier 2 (hints) is specified but not yet implemented and also falls to Tier 3.](assets/diagrams/tiers.svg)
+
+**Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers linear integer and real arithmetic, boolean logic, strings, ADT constructor discrimination and fields, array lengths and literals, and refinement predicates (spec §6.8).
 
 **Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation raises a trap at the call site with the contract text.
 
@@ -77,9 +79,14 @@ Built-in effects:
 | `State<T>` | `get`, `put` | Typed mutable state; scope controlled by `handle[State<T>]` |
 | `Exn<T>` | `throw` | Typed exceptions; `throw` never resumes (`Never` return type); handling is via `handle[Exn<T>]` syntax |
 | `Async` | `async`, `await` | `Future<T>` is zero-overhead at compile time; `async(Http.get/post(...))` runs concurrently on a host worker thread (v0.0.192), all other shapes evaluate eagerly |
+| `HttpServer` | — (marker) | Verified HTTP handling: `vera serve` hosts a contract-checked `handle(Request -> Response)`; compiles to a wasi:http component with `--world server` |
+| `Random` | `random_int`, `random_float`, `random_bool` | Host randomness; rejection-sampled for unbiased ranges |
+| `Diverge` | — (marker) | Declares potential non-termination |
 | `Inference` | `complete` | LLM calls; `String → Result<String, String>`; provider selected by env var |
 
 User-defined effects follow the same pattern. Effects compose in rows: `effects(<IO, Http>)`, `effects(<Inference, IO>)`.
+
+![Effect subtyping by row inclusion: pure fits where IO is allowed, and IO fits where IO plus State is allowed — fewer effects always fit where more are expected.](assets/diagrams/effect-row-lattice.svg)
 
 `handle[EffectName]` blocks intercept operations, enabling mocking, logging, and local state. See [spec/07-effects.md](spec/07-effects.md).
 
