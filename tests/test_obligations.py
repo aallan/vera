@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.checker import typecheck
+from vera.checker import typecheck, typecheck_with_artifacts
 from vera.errors import Diagnostic
 from vera.obligations import ProofObligation, VerificationSession
 from vera.parser import parse
@@ -65,18 +65,24 @@ CORPUS = _example_corpus() + _conformance_corpus()
 
 
 def _cold_verify(path: Path) -> tuple[VerifyResult, str]:
-    """Run the cold pipeline exactly as cmd_verify does."""
+    """Run the cold pipeline exactly as cmd_verify does — including the #747
+    semantic-type side-tables (expr_types / expr_target_types), without which
+    target-type-dependent obligations demote to Tier-3 and the corpus tier
+    counts measure a pipeline no user runs (PR #758 review)."""
     source = path.read_text(encoding="utf-8")
     program = transform(parse(source, file=str(path)))
     resolver = ModuleResolver(_root=path.parent)
     resolved = resolver.resolve_imports(program, path)
-    diags = resolver.errors + typecheck(
+    check_diags, artifacts = typecheck_with_artifacts(
         program, source, file=str(path), resolved_modules=resolved,
     )
+    diags = resolver.errors + check_diags
     errors = [d for d in diags if d.severity == "error"]
     assert not errors, f"{path.name}: corpus program failed typecheck: {errors}"
     return (
-        verify(program, source, file=str(path), resolved_modules=resolved),
+        verify(program, source, file=str(path), resolved_modules=resolved,
+               expr_types=artifacts.expr_semantic_types,
+               expr_target_types=artifacts.expr_target_types),
         source,
     )
 
