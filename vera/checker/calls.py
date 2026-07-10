@@ -1009,13 +1009,22 @@ class CallsMixin:
             # Try to infer type args from argument types
             mapping = self._infer_ctor_type_args(ci, arg_types)
 
-            # Fill unresolved TypeVars from expected type (bidirectional)
+            # Fill unresolved TypeVars from expected type (bidirectional).
+            # The same-ADT guard (expected.name == ci.parent_type) means every
+            # exp_arg here is the type the surrounding declaration names for
+            # THIS constructor's parent, so adopting it can never pull in
+            # another ADT's parameter.  #971: adopt exp_arg even when it is a
+            # TypeVar — under `forall<T> ... -> @Option<T>` the declared arg is
+            # the forall var itself, and mapping the fresh ctor var to it is
+            # exactly the var-to-var unification the checker otherwise lacks;
+            # without it a bare `None` mints an unrelated `T$n` and the program
+            # is rejected against a type that unifies trivially (E121/E170/E302).
             if (isinstance(expected, AdtType)
                     and expected.name == ci.parent_type
                     and len(expected.type_args) == len(ci.parent_type_params)):
                 for tv, exp_arg in zip(ci.parent_type_params,
                                        expected.type_args):
-                    if tv not in mapping and not isinstance(exp_arg, TypeVar):
+                    if tv not in mapping:
                         mapping[tv] = exp_arg
 
             # Use fresh TypeVars for any that remain unresolved — prevents

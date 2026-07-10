@@ -1708,6 +1708,21 @@
     ]
   },
   {
+    "id": "ch09_generic_none_return",
+    "file": "ch09_generic_none_return.vera",
+    "chapter": 9,
+    "title": "Bare None under forall<T> resolves its type argument from the declared context (#971)",
+    "level": "run",
+    "spec_ref": "Section 9.3.1",
+    "features": [
+      "generic_type_inference",
+      "forall",
+      "option",
+      "monomorphization",
+      "combinator"
+    ]
+  },
+  {
     "id": "ch09_prelude",
     "file": "ch09_prelude.vera",
     "chapter": 9,

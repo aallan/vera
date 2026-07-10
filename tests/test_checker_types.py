@@ -541,6 +541,113 @@ private fn f(@Int -> @Int)
 """)
 
 
+class TestForallNullaryCtorInference971:
+    """#971: a bare nullary constructor (`None`) under `forall<T>` must
+    unify its fresh constructor type variable with the declared forall var
+    supplied by the surrounding type context — return type, let binding, or
+    match arm — instead of minting a fresh `T$n` and then rejecting the
+    program with a message describing two types that unify trivially.
+
+    Each case below fails today (return -> E121, let -> E170, match -> E302)
+    and must check clean once `_ctor_result_type` maps the fresh ctor var to
+    an expected TypeVar.
+    """
+
+    def test_bare_none_return_position(self) -> None:
+        """Shape (a): `None` returned where the declared type is Option<T>."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  None
+}
+""")
+
+    def test_bare_none_return_position_alt_param_name(self) -> None:
+        """Shape (a) with a param named E, not T — a fix keyed on the literal
+        name "T" would leave this failing E121."""
+        _check_ok("""
+private forall<E> fn nothing_e(@Unit -> @Option<E>)
+  requires(true) ensures(true) effects(pure)
+{
+  None
+}
+""")
+
+    def test_bare_none_let_position(self) -> None:
+        """Shape (b): `let @Option<T> = None` under forall<T>."""
+        _check_ok("""
+private forall<T> fn via_let(@Unit -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<T> = None;
+  @Option<T>.0
+}
+""")
+
+    def test_bare_none_match_arm_position(self) -> None:
+        """Shape (c): every match arm is `None` under forall<T>; the arms
+        must agree at Option<T> instead of each minting its own T$n."""
+        _check_ok("""
+private forall<T> fn via_match(@Bool -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> None,
+    false -> None
+  }
+}
+""")
+
+    def test_two_adts_share_param_no_cross_contamination(self) -> None:
+        """The relaxed bidirectional fill must resolve each nullary ctor to
+        ITS OWN parent: under forall<T>, `BNil` in a `let @Beta<T>` stays
+        Beta<T> and the returned `ANil` stays Alpha<T>. If the fresh ctor var
+        were mapped to the wrong parent's var the body would type as Beta<T>
+        and re-raise E121 — so a clean check proves no cross-contamination."""
+        _check_ok("""
+private data Alpha<T> { ANil, ACons(T) }
+private data Beta<T> { BNil, BCons(T) }
+
+private forall<T> fn mix(@T -> @Alpha<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Beta<T> = BNil;
+  ANil
+}
+""")
+
+    def test_two_adts_share_param_fresh_var_path_unchanged(self) -> None:
+        """Regression guard for the fresh-var minting path the relaxation does
+        NOT touch: two ADTs sharing "T" whose nullary ctors are resolved by
+        cross-argument inference (expected concrete, not a forall var) still
+        check clean. Green before and after — pins the invariant, not the fix."""
+        _check_ok("""
+private data Alpha<T> { ANil, ACons(T) }
+private data Beta<T> { BNil, BCons(T) }
+
+private forall<T> fn alpha_or(@Alpha<T>, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Alpha<T>.0 { ACons(@T) -> @T.0, ANil -> @T.0 }
+}
+
+private forall<T> fn beta_or(@Beta<T>, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Beta<T>.0 { BCons(@T) -> @T.0, BNil -> @T.0 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = alpha_or(ANil, 7);
+  let @Int = beta_or(BNil, 9);
+  @Int.1 + @Int.0
+}
+""")
+
+
 # =====================================================================
 # Refinement types
 # =====================================================================

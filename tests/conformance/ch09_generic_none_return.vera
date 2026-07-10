@@ -1,0 +1,69 @@
+-- Conformance: bare None under forall<T> resolves its type argument from the
+--   surrounding declared context (Chapter 9)
+-- Tests: generic_type_inference, forall, option, monomorphization, combinator
+-- Regresses #971: a bare nullary constructor (None) whose type argument is
+-- fully determined by the enclosing declaration -- the forall return type, a
+-- let binding, or the common type of match arms -- must unify its fresh
+-- constructor type variable with the declared forall var, not mint an
+-- unrelated T$n and reject the well-typed program (E121 / E170 / E302).
+-- Each function below is monomorphized at T = Int by option_unwrap_or's
+-- Int-typed default, so the whole pipeline (check + verify + monomorphize +
+-- run) is pinned: every call yields None, so the sentinel default flows through.
+-- Return position: the declared -> @Option<T> determines None's type argument.
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+-- Let position: the declared @Option<T> binding determines None's type argument.
+private forall<T> fn nothing_via_let(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<T> = None;
+  @Option<T>.0
+}
+
+-- Match position: both arms are None; they must agree at Option<T> (which the
+-- return type then determines) instead of each minting its own fresh var.
+private forall<T> fn nothing_via_match(@Bool -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Bool.0 {
+    true -> None,
+    false -> None
+  }
+}
+
+-- main: each generic is instantiated at Int and unwrapped with a distinct
+-- sentinel default. All three return None, so all three defaults flow through.
+-- Returns 0 iff 11, 22, and 33 are all observed (De Bruijn: @Int.2 is the
+-- first let, @Int.0 the last).
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = option_unwrap_or(nothing(()), 11);
+  let @Int = option_unwrap_or(nothing_via_let(()), 22);
+  let @Int = option_unwrap_or(nothing_via_match(true), 33);
+  if @Int.2 == 11 then {
+    if @Int.1 == 22 then {
+      if @Int.0 == 33 then {
+        0
+      } else {
+        1
+      }
+    } else {
+      1
+    }
+  } else {
+    1
+  }
+}
