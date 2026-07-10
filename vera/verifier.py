@@ -2121,7 +2121,7 @@ class ContractVerifier:
         #     slot — the return-position analogue of #552's let/call-arg
         #     narrowing and the dual of 7c's @Nat -> @Int widen-return.  The
         #     obligation folds in path conditions (via `check_valid`), so an
-        #     `if @Int.0 >= 0 then @Int.0 else 0 - @Int.0` tail proves per-arm
+        #     `if @Int.0 >= 0 then @Int.0 else -@Int.0` tail proves per-arm
         #     at Tier 1 (`examples/absolute_value.vera`).  A refinement OVER
         #     @Nat is a RefinedType handled by 7b (`>= 0 && P`), so gate on the
         #     bare @Nat primitive — refined-first, R9, the two never co-fire on

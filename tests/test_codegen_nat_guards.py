@@ -1151,3 +1151,175 @@ public fn main(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
 { f([1, 2, 3]) }
 """, fn="main") == 3
+
+
+def _fn_body(wat: str, fn: str) -> str:
+    """Slice out function ``fn``'s WAT body (boundary-safe so ``$f`` does not
+    match ``$f_helper``).  The guard-presence tests assert ``i64.lt_s`` appears
+    in this slice; that uniquely identifies the @Nat guard only because the
+    fixtures contain no other ``i64.lt_s`` emitter — keep them to plain
+    arithmetic / slot / call bodies."""
+    m = re.search(rf"\(func \${re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
+    assert m is not None, f"{fn} not found in WAT"
+    idx = m.start()
+    end = wat.find("\n  (func ", idx + 1)
+    return wat[idx:end if end >= 0 else len(wat)]
+
+
+class TestNatAliasReturnGuard983:
+    """#983 review — the @Int->@Nat return narrowing guard (and its @Nat->@Int
+    widen dual) resolve type ALIASES and stay off the refinement-boundary path.
+
+    Pre-fix the codegen gates keyed on the RAW alias name
+    (``_type_expr_to_slot_name(return_type) == "Nat"`` / ``"Int"``), so a
+    ``type Count = Nat`` / ``type MyInt = Int`` return slipped past the guard
+    while the verifier's alias-resolving 7d/7c gates still obligated it
+    (``nat_bind`` / ``nat_to_int_coerce``) — an unsound silent negative
+    (``run(-5)`` returned -5 through the @Nat slot).  The fix resolves the alias
+    via ``_resolve_base_type_name`` (the resolver the let-bind guard already
+    uses) and excludes an alias-to-refinement via ``_refinement_guard_parts`` so
+    it keeps its single 7b boundary guard.
+    """
+
+    _ALIAS_WITNESSABLE = """
+type Count = Nat;
+public fn f(@Int -> @Count)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+
+    def test_alias_nat_return_guard_emitted_in_wat(self) -> None:
+        """A ``type Count = Nat`` return carries the ``i64.lt_s``/``unreachable``
+        narrowing guard — pre-fix the alias name masked the bare @Nat and no
+        guard was emitted (the alias-blind gate)."""
+        result = _compile_ok(self._ALIAS_WITNESSABLE)
+        body = _fn_body(result.wat, "f")
+        assert "i64.lt_s" in body, f"missing alias narrowing guard:\n{body}"
+        assert "unreachable" in body, f"missing trap edge:\n{body}"
+
+    def test_alias_nat_return_negative_traps_at_runtime(self) -> None:
+        """``f(-5)`` through the ``@Count`` alias TRAPS rather than silently
+        returning -5 (the pre-fix soundness gap)."""
+        result = _compile_ok(self._ALIAS_WITNESSABLE)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="f", args=[-5])
+
+    def test_alias_nat_return_nonnegative_returns_value(self) -> None:
+        """A non-negative input passes the alias guard unchanged."""
+        assert _run(self._ALIAS_WITNESSABLE, fn="f", args=[7]) == 7
+
+    _ALIAS_OPAQUE = """
+type Count = Nat;
+public fn f(@Array<Int> -> @Count)
+  requires(true) ensures(true) effects(pure)
+{ array_length(@Array<Int>.0) }
+"""
+
+    def test_alias_opaque_tier3_narrowing_guard_emitted(self) -> None:
+        """An opaque ``array_length`` narrowing into a ``type Count = Nat``
+        return still carries the guard.  The verifier obligates this ``tier3``
+        (promising a runtime guard); pre-fix codegen emitted none through the
+        alias — the exact silent-guard-promise soundness gap.  The guard is dead
+        here (``array_length`` is never negative), so a valid array never
+        traps."""
+        result = _compile_ok(self._ALIAS_OPAQUE)
+        body = _fn_body(result.wat, "f")
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"missing alias tier3 narrowing guard:\n{body}"
+        )
+        assert _run(self._ALIAS_OPAQUE + """
+public fn main(@Unit -> @Count)
+  requires(true) ensures(true) effects(pure)
+{ f([1, 2, 3]) }
+""", fn="main") == 3
+
+    _ALIAS_WIDEN = """
+type MyInt = Int;
+public fn g(@Nat -> @MyInt)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+"""
+
+    def test_alias_int_return_widen_guard_emitted(self) -> None:
+        """A ``type MyInt = Int`` return with a @Nat body carries the
+        @Nat->@Int widening guard — pre-fix the alias name masked the bare @Int
+        and no widen guard was emitted, though the verifier obligated it
+        ``nat_to_int_coerce`` ``tier3`` (the widen sibling of the alias-blind
+        narrow gate)."""
+        result = _compile_ok(self._ALIAS_WIDEN)
+        body = _fn_body(result.wat, "g")
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"missing alias widen guard:\n{body}"
+        )
+
+    _ALIAS_TO_REFINEMENT = """
+type Pos = { @Nat | @Nat.0 > 0 };
+public fn f(@Int -> @Pos)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+
+    def test_alias_to_refinement_return_single_guard_not_double(self) -> None:
+        """An alias-to-refinement (``type Pos = { @Nat | ... }``) return stays
+        on the 7b refinement-boundary path — guarded ONCE by the boundary
+        predicate (``vera.contract_fail``), NOT additionally by the bare-@Nat
+        nat-bind narrowing guard.  The predicate uses ``>`` (``i64.gt_s``), so
+        the ABSENCE of ``i64.lt_s`` (the nat-bind guard's signature) pins that
+        the narrow gate did not co-fire — a double guard.  The
+        ``_refinement_guard_parts`` exclusion is what prevents the alias
+        resolution from double-guarding; dropping it reintroduces ``i64.lt_s``
+        (the item-1c mutation)."""
+        result = _compile_ok(self._ALIAS_TO_REFINEMENT)
+        body = _fn_body(result.wat, "f")
+        assert "vera.contract_fail" in body, (
+            f"expected the refinement boundary guard:\n{body}"
+        )
+        assert "i64.lt_s" not in body, (
+            f"the nat-bind narrow guard must NOT co-fire with the refinement "
+            f"boundary guard (double guard):\n{body}"
+        )
+
+
+class TestNatReturnPerLeafTCO983:
+    """#983 review — the @Int->@Nat return narrowing guard is emitted PER
+    NARROWING LEAF, not as a whole-body wrap, so a non-narrowing @Nat->@Nat
+    recursive tail call keeps its ``return_call`` and runs constant-stack.
+
+    Pre-fix the guard wrapped the whole body and the ``narrow_guarded`` flag
+    reverted EVERY ``return_call`` to plain ``call``, so ``drain`` (a mixed-arm
+    function: one narrowing leaf ``@Int.0``, one @Nat->@Nat recursive tail call)
+    lost TCO and stack-exhausted at ~35k depth.  Post-fix only the narrowing
+    leaf is guarded inline; the recursive tail call's ``return_call`` survives.
+    """
+
+    _DRAIN = """
+public fn drain(@Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) decreases(@Int.0) effects(pure)
+{ if @Int.0 == 0 then { @Int.0 } else { drain(@Int.0 - 1) } }
+"""
+
+    def test_recursive_tail_call_keeps_return_call(self) -> None:
+        """The @Nat->@Nat recursive tail call keeps ``return_call $drain`` — TCO
+        is no longer reverted by the sibling narrowing arm's guard."""
+        result = _compile_ok(self._DRAIN)
+        body = _fn_body(result.wat, "drain")
+        assert "return_call $drain" in body, (
+            f"recursive tail call lost TCO (reverted to plain call):\n{body}"
+        )
+
+    def test_narrowing_leaf_still_guarded(self) -> None:
+        """The narrowing ``@Int.0`` leaf still carries its inline guard — the
+        per-leaf emission guards the genuine narrowing without touching the
+        recursive tail call."""
+        result = _compile_ok(self._DRAIN)
+        body = _fn_body(result.wat, "drain")
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"narrowing leaf lost its guard:\n{body}"
+        )
+
+    def test_runs_constant_stack_at_200k(self) -> None:
+        """``drain(200000)`` returns 0 — constant-stack via the preserved
+        ``return_call``.  Pre-fix this stack-exhausted at ~35k depth."""
+        assert _run(self._DRAIN, fn="drain", args=[200000]) == 0

@@ -343,7 +343,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 282 T1 / 98 T3 / 380 total (current).
+        """All examples together: 284 T1 / 96 T3 / 380 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -488,7 +488,7 @@ private fn sum(@List<Int> -> @Int)
             # modules.vera's two imported-function obligations demote to
             # Tier-3; without the artifacts, target-type-dependent
             # obligations do — either way this pin would measure a pipeline
-            # no user runs (PR #758 review).
+            # no user runs (PR #983 review).
             resolver = ModuleResolver(_root=f.parent)
             resolved = resolver.resolve_imports(prog, f)
             _diags, artifacts = typecheck_with_artifacts(
@@ -560,7 +560,7 @@ private fn sum(@List<Int> -> @Int)
         # (`array_length(...)` over an opaque let-bound array — array_length
         # returns @Int) is an honest Tier-3 runtime-guarded narrowing (+1 T3).
         #
-        # Method correction (PR #758 review): every trajectory entry above
+        # Method correction (PR #983 review): every trajectory entry above
         # was measured through a bare `verify(prog, text)` call WITHOUT the
         # #747 semantic-type side-tables and WITHOUT resolved modules — both
         # of which the CLI always passes.  modules.vera's two

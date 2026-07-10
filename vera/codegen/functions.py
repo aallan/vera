@@ -386,8 +386,31 @@ class FunctionCompilationMixin:
         # for the analyzer rules and ``_translate_call`` in
         # ``vera/wasm/calls.py`` for the emit site.
         tail_sites = compute_tail_call_sites(decl)
+
+        # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  Collect the
+        # tail-position return leaves that narrow into a bare @Nat return so
+        # each is guarded inline at emission (mirroring the verifier 7d leaf
+        # descent), instead of wrapping the WHOLE body — which reverted EVERY
+        # `return_call` and broke TCO for a non-narrowing @Nat->@Nat recursive
+        # tail call (`drain`, which stack-exhausted at depth).  Alias-aware
+        # (`type Count = Nat`) via `_resolve_base_type_name` and refined-excluded
+        # (`{ @Nat | P }` / an alias to one stays on the 7b refinement-boundary
+        # path) via `_refinement_guard_parts`, exactly as the whole-body
+        # narrow-return gate below.  A narrowing leaf that is itself a tail call
+        # (an @Int-returning call) is removed from `tail_sites` so it lowers to
+        # a plain `call` — the appended guard runs AFTER it, which `return_call`
+        # would skip.
+        nat_leaf_ids: set[int] = set()
+        if (decl.body is not None
+                and ctx._resolve_base_type_name(
+                    self._type_expr_to_slot_name(decl.return_type) or "")
+                == "Nat"
+                and self._refinement_guard_parts(decl.return_type) is None):
+            nat_leaf_ids = ctx._collect_narrowing_return_leaves(decl.body)
+        ctx._nat_return_leaf_ids = nat_leaf_ids
+
         ctx.set_tail_call_context(
-            tail_sites,
+            tail_sites - nat_leaf_ids,
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
@@ -604,38 +627,35 @@ class FunctionCompilationMixin:
         # so trap rather than silently return it — the runtime backstop for the
         # verifier's nat_to_int_coerce obligation (7c).  @Int is i64, so this
         # runs before (and is unaffected by) the i32 coercion below.
+        # Alias-aware (`type MyInt = Int`) via `_resolve_base_type_name` so an
+        # alias-typed @Int return is guarded too — matching the verifier's 7c
+        # gate (`_is_int_type` over the *resolved* return type), whereas the raw
+        # `_type_expr_to_slot_name` returns the opaque alias name and missed it
+        # (#983 review, the widen sibling of the alias-blind narrow gate).  A
+        # refinement over @Int stays here (the verifier's 7c fires on refined
+        # @Int too: the `<= i64.MAX` bound is not subsumed by the predicate).
         widen_guarded = (
-            self._type_expr_to_slot_name(decl.return_type) == "Int"
+            ctx._resolve_base_type_name(
+                self._type_expr_to_slot_name(decl.return_type) or "") == "Int"
             and ctx._result_is_nat(decl.body)
         )
         if widen_guarded:
             body_instrs = ctx._emit_int_widen_guard(body_instrs)
 
-        # #758: guard an @Int -> @Nat narrowing at the return position.  An
-        # @Int body narrowing into a @Nat return can be negative
+        # #758/#983: an @Int body narrowing into a @Nat return can be negative
         # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
         # @Nat slot — the runtime backstop for the verifier's return nat_bind
-        # obligation (7d), the dual of the #813 widen guard above.  A refined
-        # @Nat return is guarded by the refinement boundary check, so gate on
-        # the bare @Nat primitive (mirrors the verifier's 7d gate).  @Nat is
-        # i64, so this (like the widen guard) runs before the i32 coercion.
-        # `_narrows_into_nat` keys on `_is_static_nat_typed`, which maps a user
-        # @Nat-returning *call* back through its erased i64 return to "Int" (it
-        # cannot see @Nat through the WASM type) — so a genuine @Nat -> @Nat
-        # tail call (`count_down(@Nat.0 - 1)`) would look like a narrowing and
-        # wrongly revert its `return_call` (breaking TCO).  Exclude bodies the
-        # side-table-aware `_result_is_nat` proves intrinsically @Nat (the same
-        # precise classifier the #813 widen guard uses), which resolves the
-        # callee's @Nat return — keeping this in lockstep with the verifier's
-        # 7d obligation, whose leaf check is likewise side-table-aware.
-        narrow_guarded = (
-            self._type_expr_to_slot_name(decl.return_type) == "Nat"
-            and not isinstance(decl.return_type, ast.RefinementType)
-            and ctx._narrows_into_nat(decl.body)
-            and not ctx._result_is_nat(decl.body)
-        )
-        if narrow_guarded:
-            body_instrs = ctx._emit_nat_bind_guard(body_instrs)
+        # obligation (7d), the dual of the #813 widen guard above.  This is
+        # emitted PER NARROWING LEAF during body translation (via the
+        # `_nat_return_leaf_ids` set threaded above), NOT as a whole-body wrap:
+        # the whole-body wrap appended the guard after the entire body and so
+        # reverted EVERY `return_call`, losing TCO for a non-narrowing
+        # @Nat->@Nat recursive tail call (`drain`) that then stack-exhausted at
+        # depth (#983 regression).  Guarding only the genuine narrowing leaves
+        # inline leaves the recursive tail call's `return_call` structurally
+        # intact — nothing is appended after the body — so, unlike the widen
+        # guard, this no longer forces a revert below.  The alias-aware +
+        # refinement-excluded gate lives where `nat_leaf_ids` is computed.
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)
@@ -833,15 +853,19 @@ class FunctionCompilationMixin:
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
 
-        if post_instrs or widen_guarded or narrow_guarded:
+        if post_instrs or widen_guarded:
             # Postcondition checks must run; return_call would skip them.  The
-            # #813 @Nat->@Int return widen guard and the #758 @Int->@Nat return
-            # narrow guard (above) are the same case: each is appended *after*
-            # the trailing tail call, so a `return_call` would return before the
-            # guard runs, silently leaking a reinterpreted negative @Int / a
-            # negative @Nat (e.g. `fn f(@Nat -> @Int) { make_nat(@Nat.0) }`, or
-            # `fn f(@Int -> @Nat) { make_int(@Int.0) }`).  Revert every
-            # return_call to plain call so the guard is reached.
+            # #813 @Nat->@Int return widen guard is the same case: it is appended
+            # *after* the trailing tail call (whole-body wrap), so a
+            # `return_call` would return before the guard runs, silently leaking
+            # a reinterpreted negative @Int (e.g. `fn f(@Nat -> @Int) {
+            # make_nat(@Nat.0) }`).  Revert every return_call to plain call so
+            # the guard is reached.  The #758 @Int->@Nat narrow guard is NOT
+            # here: it is emitted per narrowing LEAF during body translation, so
+            # a non-narrowing @Nat->@Nat recursive tail call keeps its
+            # `return_call` (a narrowing-leaf call was already excluded from
+            # `tail_sites` above, so it lowers to a plain `call` reached by its
+            # own inline guard) — this is what restores TCO for `drain` (#983).
             body_instrs = [
                 instr.replace("return_call ", "call ", 1)
                 if instr.lstrip().startswith("return_call ")

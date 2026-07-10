@@ -383,6 +383,10 @@ class DataMixin:
             body = self.translate_expr(arm.body, arm_env)
             if body is None:
                 return None
+            # #758/#983 — guard a narrowing @Nat-return leaf inline (a bare-expr
+            # arm body IS the leaf; a Block arm body's leaf is its trailing expr,
+            # guarded in `translate_block`, so this no-ops on that id).
+            body = self._guard_nat_return_leaf(arm.body, body)
             return setup_instrs + body
 
         # Conditional arm with more arms following
@@ -395,6 +399,9 @@ class DataMixin:
         body = self.translate_expr(arm.body, arm_env)
         if body is None:
             return None
+        # #758/#983 — per-leaf narrowing @Nat-return guard (see the catch-all
+        # arm above); no-ops unless this arm body is a collected narrowing leaf.
+        body = self._guard_nat_return_leaf(arm.body, body)
 
         # Compile remaining arms (else branch)
         else_instrs = self._compile_match_arms(

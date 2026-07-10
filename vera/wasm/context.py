@@ -339,6 +339,17 @@ class WasmContext(
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
         self._self_ret_wt: str | None = None
+        # #758/#983 — per-narrowing-leaf @Int->@Nat return guard.  The set of
+        # ``id(leaf)`` tail-position return leaves that narrow into a @Nat
+        # return, so ``translate_expr`` / the block-trailing / match-arm
+        # emission sites wrap EACH such leaf with ``_emit_nat_bind_guard``
+        # inline (mirroring the verifier 7d leaf descent) rather than wrapping
+        # the whole body.  The whole-body wrap reverted EVERY ``return_call`` —
+        # breaking TCO for a non-narrowing @Nat->@Nat recursive tail call
+        # (`drain`) that stack-exhausted at depth (the #983 regression).
+        # Populated per-fn by ``CodeGenerator._compile_fn``; defaults empty so
+        # closure bodies and untargeted contexts guard nothing.
+        self._nat_return_leaf_ids: set[int] = set()
         # #630 Tier 2 — interpolation-segment inference failures.
         # When `_translate_interpolated_string` can't classify a segment's
         # Vera type, it appends the offending `Expr` here and returns
@@ -843,6 +854,12 @@ class WasmContext(
         expr_instrs = self.translate_expr(block.expr, current_env)
         if expr_instrs is None:
             return None
+        # #758/#983 — guard a narrowing @Nat-return leaf inline (per-leaf, not
+        # whole-body).  A no-op unless this exact trailing expr is a collected
+        # narrowing return leaf; this covers the top-level body's trailing expr
+        # AND every if-branch trailing expr (branches are Blocks routed here by
+        # `_translate_if`).
+        expr_instrs = self._guard_nat_return_leaf(block.expr, expr_instrs)
         instructions.extend(expr_instrs)
         return instructions
 

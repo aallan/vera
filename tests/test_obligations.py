@@ -68,7 +68,7 @@ def _cold_verify(path: Path) -> tuple[VerifyResult, str]:
     """Run the cold pipeline exactly as cmd_verify does — including the #747
     semantic-type side-tables (expr_types / expr_target_types), without which
     target-type-dependent obligations demote to Tier-3 and the corpus tier
-    counts measure a pipeline no user runs (PR #758 review)."""
+    counts measure a pipeline no user runs (PR #983 review)."""
     source = path.read_text(encoding="utf-8")
     program = transform(parse(source, file=str(path)))
     resolver = ModuleResolver(_root=path.parent)
