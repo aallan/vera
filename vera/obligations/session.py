@@ -8,8 +8,8 @@ fresh-``z3.Solver()`` construction cost per function that the cold
 
 Phase A established the API and the warm re-verify-everything path.
 Phase B adds the discharge cache behind that same API: each top-level
-function's verification output (obligations, diagnostics, summary
-deltas) is cached under an invalidation key covering everything its
+function's verification output (obligations and diagnostics) is
+cached under an invalidation key covering everything its
 verification reads (see :mod:`vera.obligations.cache` for the soundness
 model), and functions whose key is unchanged replay their cached output
 in declaration order instead of re-entering Z3.  The differential

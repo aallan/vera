@@ -38,7 +38,7 @@ from vera.obligations import ProofObligation, VerificationSession
 from vera.parser import parse
 from vera.resolver import ModuleResolver
 from vera.transform import transform
-from vera.verifier import VerifyResult, verify
+from vera.verifier import ContractVerifier, VerifyResult, summarize, verify
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -215,6 +215,71 @@ class TestSummaryTotalSelfConsistency:
         assert ws.total == ws.tier1_verified + ws.tier3_runtime, (
             f"{path.name} (warm): total={ws.total} != tier1_verified"
             f"({ws.tier1_verified}) + tier3_runtime({ws.tier3_runtime})"
+        )
+
+
+class TestSummarizeUnit:
+    """Direct unit coverage of :func:`summarize` (PR #974 review).
+
+    The corpus contains no ``timeout`` obligations and no empty streams,
+    so without a hand-built stream the ``timeout`` leg of the mapping and
+    the empty case carry no mutation coverage.
+    """
+
+    @staticmethod
+    def _obl(status: str) -> ProofObligation:
+        return ProofObligation(
+            fn_name="f", kind="ensures", expr_text="@Int.0 > 0",
+            status=status,  # type: ignore[arg-type]
+        )
+
+    def test_empty_stream(self) -> None:
+        s = summarize([])
+        assert (s.tier1_verified, s.tier3_runtime, s.total) == (0, 0, 0)
+
+    def test_all_five_statuses(self) -> None:
+        stream = [
+            self._obl("verified"),
+            self._obl("verified"),
+            self._obl("tier3"),
+            self._obl("timeout"),
+            self._obl("violated"),
+            self._obl("tier3_unguarded"),
+        ]
+        s = summarize(stream)
+        assert s.tier1_verified == 2  # verified only
+        assert s.tier3_runtime == 2  # tier3 + timeout
+        assert s.total == 4  # violated / tier3_unguarded excluded
+
+
+class TestSummaryDerivedOnRead:
+    """The verifier's ``summary`` is a computed property over the obligation
+    stream, never a stored field (#967, PR #974 review).
+
+    A caller that drives verification piecemeal — ``register_program`` +
+    ``_verify_fn`` per declaration, the ``VerificationSession`` pattern —
+    must observe a summary that reflects the obligations recorded so far.
+    A stored field assigned only at the end of ``verify_program`` reads as
+    all-zero on this path.
+    """
+
+    def test_piecemeal_drive_summary_is_current(self) -> None:
+        from vera import ast as A
+
+        path = EXAMPLES_DIR / "increment.vera"
+        source = path.read_text(encoding="utf-8")
+        program = transform(parse(source, file=str(path)))
+        verifier = ContractVerifier(source=source, file=str(path))
+        verifier.register_program(program)
+        assert verifier.summary == summarize(verifier.obligations)
+        for tld in program.declarations:
+            if isinstance(tld.decl, A.FnDecl):
+                verifier._verify_fn(tld.decl)
+                assert verifier.summary == summarize(verifier.obligations)
+        assert verifier.obligations, "corpus program must record obligations"
+        assert verifier.summary.total > 0, (
+            "summary read after a piecemeal drive must reflect the recorded "
+            "obligations, not a stale stored default"
         )
 
 

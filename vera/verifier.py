@@ -192,7 +192,6 @@ class ContractVerifier:
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
-        self.summary = VerifySummary()
         # #222 Phase A: reified obligations in discharge order.
         self.obligations: list[ProofObligation] = []
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
@@ -1355,6 +1354,19 @@ class ContractVerifier:
                     result.setdefault(t_name, set()).add(t_ct)
                     stack.append(mono.monomorphize_fn(generic_decls[t_name], t_ct))
 
+    @property
+    def summary(self) -> VerifySummary:
+        """Derived on read from the reified obligation stream (#967).
+
+        A computed property, not a stored field, so a caller that drives
+        verification piecemeal (``register_program`` + ``_verify_fn``, the
+        :class:`~vera.obligations.session.VerificationSession` pattern) can
+        never observe a stale value — the tier counts always reflect exactly
+        the obligations recorded so far.  The warm session derives its own
+        summaries the same way, per function slice.
+        """
+        return summarize(self.obligations)
+
     def verify_program(self, program: ast.Program) -> None:
         """Entry point: register modules, then local declarations, then verify."""
         self.register_program(program)
@@ -1362,11 +1374,6 @@ class ContractVerifier:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
         self._verify_shadowed_module_generics()
-        # #967: the summary is derived from the reified obligation stream, not
-        # hand-accumulated, so its tier counts can never drift out of step with
-        # the obligations a consumer reads.  The warm VerificationSession
-        # derives the same way, per function slice.
-        self.summary = summarize(self.obligations)
 
     def _verify_shadowed_module_generics(self) -> None:
         """Verify each IMPORTED generic's clone at the type args the importer
@@ -1937,8 +1944,9 @@ class ContractVerifier:
             # successful call-pre checks discharge silently inside the
             # SMT layer's _translate_call and are not yet enumerated
             # (Phase B extends the SMT layer to record successes for
-            # the discharge cache).  Summary counters are untouched
-            # here, mirroring the existing bookkeeping.  The span comes
+            # the discharge cache).  The summary needs no handling
+            # here: it is derived from the obligation stream, and a
+            # violated obligation is excluded by summarize().  The span comes
             # from the CALL SITE (not the callee's contract node) so
             # two calls violating the same precondition remain distinct
             # obligations; E501 matches _report_call_violation.

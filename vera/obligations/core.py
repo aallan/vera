@@ -26,8 +26,8 @@ Identity vs. outcome:
   ``verified`` ↔ ``tier1_verified``; ``tier3`` and ``timeout`` ↔
   ``tier3_runtime``; ``violated`` ↔ an error diagnostic and
   ``tier3_unguarded`` ↔ a warning diagnostic (both excluded from the
-  summary totals, matching the existing ``summary.total -= 1``
-  convention at those sites).
+  summary totals: ``summarize()`` counts only ``verified`` / ``tier3``
+  / ``timeout``, #967).
 """
 
 from __future__ import annotations

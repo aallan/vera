@@ -583,6 +583,42 @@ class TestCmdVerify:
         assert dotted != normalized  # the probe must exercise the divergence
         for o in obls:
             assert o["location"]["file"] == normalized
+        # The join must actually work: at least one obligation shares its
+        # full (file, line, column) key with a reported diagnostic
+        # (increment.vera's W-diagnostic sits on an obligated contract).
+        diag_keys = {
+            (d["location"]["file"], d["location"]["line"],
+             d["location"]["column"])
+            for d in data["diagnostics"] + data["warnings"]
+        }
+        obl_keys = {
+            (o["location"]["file"], o["location"]["line"],
+             o["location"]["column"])
+            for o in obls
+        }
+        assert diag_keys & obl_keys, (
+            f"no (file, line, column) join between obligations {obl_keys} "
+            f"and diagnostics {diag_keys}"
+        )
+
+    def test_json_summary_consistent_on_demotion_example(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The #967 symptom at the layer it was reported: `verify --json`
+        on a call-demotion example must emit a self-consistent summary
+        that a consumer can reproduce from the obligations array.
+        increment.vera has no demotions, so only a demotion program
+        (http.vera: one call-pre demotion) pins the derivation here."""
+        rc = cmd_verify(str(EXAMPLES_DIR / "http.vera"), as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        v = data["verification"]
+        assert v["total"] == v["tier1_verified"] + v["tier3_runtime"]
+        obls = data["obligations"]
+        tier1 = sum(1 for o in obls if o["status"] == "verified")
+        tier3 = sum(1 for o in obls if o["status"] in ("tier3", "timeout"))
+        assert v["tier1_verified"] == tier1
+        assert v["tier3_runtime"] == tier3
 
     def test_json_type_error(
         self,

@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main, 'release/**']
 
+# Cancel superseded runs of the same PR (each push restarts the matrix).
+# Push runs are never cancelled: main and release/** keep a completed
+# check run per commit, which release tagging and bisection rely on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     permissions:
