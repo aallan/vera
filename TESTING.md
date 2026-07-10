@@ -161,7 +161,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 
 ## Conformance Suite
 
-The conformance suite is a collection of 146 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 147 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -593,7 +593,7 @@ Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 146 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 147 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 `.vera` examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 189 parseable code blocks from spec chapters: parse, type-check, and verify |
@@ -694,7 +694,7 @@ Every push is checked by 30 configured hooks across two stages: 28 are configure
 | `ruff check .` | Lint Python with ruff (default `F` + `E` rules) |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_conformance.py` | All 146 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 147 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |
