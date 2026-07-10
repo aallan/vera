@@ -164,6 +164,8 @@ Components:
 - `resume(value)`: a built-in that continues execution of the handled body with a return value
 - `in { ... }`: the body in which the effect is handled
 
+The handler state is in scope as a `@T` slot **only inside the operation clauses** — for example `get(@Unit) -> { resume(@Int.0) }` reads the current `Int` state as `@Int.0`, and `with @Int = @Int.0` reads it to compute an update. The **handled body reaches state only through the typed operations** `get(())` and `put(...)`; it has no state slot. A slot reference to the state type in the handled body (e.g. `@Int.0` where the only `Int` in scope would be the state) is a checker error (E130) — state access there must go through `get(())`.
+
 ### 7.5.2 Handler Semantics
 
 When an effect operation is performed in the handled body:

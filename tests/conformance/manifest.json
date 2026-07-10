@@ -1135,6 +1135,21 @@
     ]
   },
   {
+    "id": "ch07_handler_state_body_scope_rejected",
+    "file": "ch07_handler_state_body_scope_rejected.vera",
+    "chapter": 7,
+    "title": "Reading handler state as a slot in the handled body is a checker error (#973)",
+    "level": "check",
+    "spec_ref": "Section 7.5",
+    "expected_error": "E130",
+    "features": [
+      "state_effect",
+      "handler",
+      "slot_resolution",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch08_module_decl",
     "file": "ch08_module_decl.vera",
     "chapter": 8,

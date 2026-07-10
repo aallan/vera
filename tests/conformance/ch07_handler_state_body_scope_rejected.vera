@@ -1,0 +1,28 @@
+-- Conformance: reading handler state as a slot in the handled body is a
+-- checker error (Chapter 7, Section 7.5).
+-- Tests: E130 — the handled body of a handle[State<T>] reaches state ONLY
+-- through the typed get(())/put(...) operations, never a @T.n slot (#973).
+-- The function param is @Unit, so @Int.0 in the body has no binding: the
+-- checker now rejects it with an unresolved-slot error plus a get(()) hint,
+-- instead of accepting a body-scope state slot the backends never provide
+-- (which previously passed check + verify but crashed compile with E699).
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 7) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe(())
+}

@@ -2362,7 +2362,6 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 
 | Shape | Bug summary | Workaround | Issue |
 |---|---|---|---|
-| Handler state slot | Referencing the state SLOT inside a `State<T>`-handled body (`@Int.0` under `handle[State<Int>](@Int = 0)`) silently reads an enclosing same-typed binding (a parameter or `let`) instead of the state — check-green, wrong value, no diagnostic — or fails compile with E699 when no same-typed binding encloses the handler. | Always read state via `get(())` inside the handled body; never via the state slot name. | [#973](https://github.com/aallan/vera/issues/973) |
 | `where` helpers | A helper body referencing the OUTER function's parameter slot passes `check` and `verify` but fails compile with E699 (dangling slot). | Pass everything a helper needs as explicit arguments; treat `where` helpers as closed param-rooted scopes. | [#969](https://github.com/aallan/vera/issues/969) |
 | Type param named `T` | `forall<T>` collides with the builtin registry's internal generic `T` (e.g. `array_length`), producing a spurious E202/E302/E121 cascade on valid programs. | Name user type parameters anything but `T` (`E`, `A`, `B`, ...). | [#970](https://github.com/aallan/vera/issues/970) |
 | Bare `None` under `forall` | Returning a bare `None` from a `forall<T>` function declared `-> @Option<T>` is rejected with E121 (`Option<T$1>` vs `Option<T>` — a false mismatch; the fresh constructor var is never unified with the declared forall var). | Restructure so the `Option` value's type argument is determined by an expression (e.g. build it via `option_map` over a determined value), or make the function non-generic. | [#971](https://github.com/aallan/vera/issues/971) |
@@ -2407,7 +2406,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 145 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exceptions are `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the seven negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 146 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exceptions are `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the eight negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2582,7 +2581,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 145 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 146 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 37 examples must pass
 ```
 
@@ -2592,7 +2591,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 145 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) must *fail* `check` with their `expected_error` E-code
+- All 146 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) must *fail* `check` with their `expected_error` E-code
 - All 37 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -3022,7 +3021,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (145 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (146 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -3065,7 +3064,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 6,929 tests, including a 145-program conformance suite
+- 6,936 tests, including a 146-program conformance suite
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

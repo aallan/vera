@@ -333,6 +333,20 @@ class ExpressionsMixin:
         resolved = self.env.resolve_slot(tname, ref.index)
         if resolved is None:
             count = self.env.count_bindings(tname)
+            # #973: a failed slot resolution whose type is the state of an
+            # enclosing handler's HANDLED BODY is almost certainly an attempt
+            # to read handler state directly — which is not a slot there.
+            # Steer the user to the typed operation instead of a bare
+            # binding-count hint.
+            if tname in self._handler_body_state_tnames:
+                fix = (
+                    f"Handler state is not a slot in the handled body — read "
+                    f"it through the typed operation: get(()) returns the "
+                    f"current {tname} state, and put(<{tname}>) updates it."
+                )
+            else:
+                fix = (f"Ensure enough {tname} bindings are in scope, or use a "
+                       f"lower index.")
             self._error(
                 ref,
                 f"Cannot resolve @{tname}.{ref.index}: "
@@ -343,8 +357,7 @@ class ExpressionsMixin:
                      f"no {tname} bindings in scope.",
                 rationale=f"Slot reference @{tname}.{ref.index} requires at "
                           f"least {ref.index + 1} binding(s) of type {tname}.",
-                fix=f"Ensure enough {tname} bindings are in scope, or use a "
-                    f"lower index.",
+                fix=fix,
                 spec_ref='Chapter 3, Section 3.4 "Reference Resolution"',
                 error_code="E130",
             )

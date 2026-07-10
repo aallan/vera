@@ -183,6 +183,15 @@ class TypeChecker(
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
+        # #973: canonical type names of the handler state(s) whose HANDLED
+        # BODY is currently being checked.  State is in scope as a slot only in
+        # handler clauses, never the handled body — the body reaches state
+        # through the typed get(())/put(...) operations (spec §7.5; DESIGN
+        # principles 2/3/6).  This stack lets a failed slot resolution of a
+        # state type inside the body carry a get(()) hint instead of a bare
+        # unbound-slot error.  Push/pop straddles the body check in
+        # _check_handle; empty everywhere else.
+        self._handler_body_state_tnames: list[str] = []
         # #815: ids of FnDecls rejected for redefining a built-in (E151).
         # They are not registered (the built-in stays canonical), so the
         # check phase skips them — re-checking would resolve their own body

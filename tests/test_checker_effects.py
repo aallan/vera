@@ -129,6 +129,51 @@ private fn foo(@Unit -> @Int)
 }
 """)
 
+    def test_handled_body_state_slot_rejected(self) -> None:
+        """#973: reading handler state as a @T.n slot in the handled body is an
+        unresolved-slot error (E130).  State reaches the body only through the
+        typed get(())/put(...) operations; codegen and the verifier give the
+        body no state slot, so binding one in the checker desynced the front
+        end (previously check+verify passed, then compile crashed with E699).
+        The @Unit param means @Int.0 has no other binding to shadow the miss."""
+        errs = _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    @Int.0
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        # The fix text must steer the user to the typed operation.
+        assert "get(())" in e130[0].fix, \
+            f"Expected a get(()) hint in the fix, got: {e130[0].fix!r}"
+
+    def test_handler_clause_state_slot_still_ok(self) -> None:
+        """#973 guard: handler CLAUSE bodies keep their state slot — the fix
+        removes ONLY the handled body's binding, not the clause-scope one that
+        codegen, the captures walk, and Exn compilation all agree on.  Here
+        `resume(@Int.0)` and `with @Int = @Int.0` both read state as a slot
+        inside clauses, which must remain valid."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(get(()) + 1);
+    get(())
+  }
+}
+""")
+
     def test_with_clause_type_mismatch(self) -> None:
         """Handler with-clause value must match state type (E335)."""
         errs = _check_err("""
