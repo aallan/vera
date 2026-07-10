@@ -62,6 +62,11 @@ reviews:
     enabled: true
     auto_incremental_review: true
     drafts: false
+    # Review PRs targeting integration/release branches too, not just main —
+    # the vX.Y.Z burndowns merge fix PRs into release/** before landing on
+    # main, and each fix PR needs its own review pass.
+    base_branches:
+      - "release/.*"
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
