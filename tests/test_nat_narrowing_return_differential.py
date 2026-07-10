@@ -32,7 +32,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import wasmtime
+
+from vera.codegen.api import WasmTrapError
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -126,7 +127,7 @@ def _run(source: str, fn: str, arg: int) -> int | None:
         )
         try:
             exec_result = execute(result, fn_name=fn, args=[arg])
-        except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
+        except WasmTrapError:
             return None
         return exec_result.value
 

@@ -7,7 +7,8 @@ from __future__ import annotations
 import re
 
 import pytest
-import wasmtime
+
+from vera.codegen.api import WasmTrapError
 
 from vera.codegen import (
     compile,
@@ -87,7 +88,7 @@ public fn main(@Unit -> @Nat)
         propagates.
         """
         result = _compile_ok(self._GUARDED_SUB)
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        with pytest.raises(WasmTrapError):
             execute(result, fn_name="main", args=[])
 
     def test_safe_subtraction_returns_correct_result(self) -> None:
@@ -362,7 +363,7 @@ public fn main(@Unit -> @Nat)
         # @Int.1 is the first parameter (older / De Bruijn = 1) and @Int.0 the
         # second (most-recent), so call order is preserved in the body via
         # the swapped subscripts.
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        with pytest.raises(WasmTrapError):
             execute(result, fn_name="main", args=[])
 
         # Safe case: passing args where lhs >= rhs runs cleanly.
@@ -438,7 +439,7 @@ public fn main(@Unit -> @Nat)
         )
 
         # Behavioural assertion: lit_minus_slot(1) → 0 - 1 → trap.
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        with pytest.raises(WasmTrapError):
             execute(result, fn_name="main", args=[])
 
         # Safe case: lit_minus_slot(0) → 0 - 0 = 0 (no underflow).
@@ -525,7 +526,7 @@ public fn main(@Unit -> @Nat)
         """
         result = _compile_ok(self._GUARDED_LET)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -642,7 +643,7 @@ public fn main(@Unit -> @Nat)
 """
         result = _compile_ok(src)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -815,7 +816,7 @@ public fn main(@Unit -> @Nat)
 { takesNat(0 - 5) }
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -830,7 +831,7 @@ public fn main(@Unit -> @Nat)
 { let Tuple<@Nat, @Nat> = Tuple(0 - 5, 1); @Nat.0 }
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -843,7 +844,7 @@ public fn main(@Unit -> @Int)
 { match Some(0 - 5) { Some(@Nat) -> @Nat.0, None -> 0 } }
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -857,7 +858,7 @@ public fn main(@Unit -> @Int)
 { match 0 - 5 { @Nat -> @Nat.0 } }
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -907,7 +908,7 @@ public fn main(@Unit -> @NatBox)
             resolved_modules=[self._boxes_module()])
         assert not [d for d in result.diagnostics if d.severity == "error"]
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -962,7 +963,7 @@ public fn gimpfn(@Int -> @Nat)
             resolved_modules=[self._nat_fn_module()])
         assert not [d for d in result.diagnostics if d.severity == "error"]
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="gimpfn", args=[-1])
 
@@ -984,7 +985,7 @@ public fn main(@Unit -> @String)
 {{ {body} }}
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -1021,7 +1022,7 @@ public fn main(@Unit -> @Unit)
 }
 """)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="main", args=[])
 
@@ -1076,7 +1077,7 @@ public fn f(@Int -> @Nat)
         through the @Nat slot."""
         result = _compile_ok(self._BARE_SLOT)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="to_nat", args=[-5])
 
@@ -1088,7 +1089,7 @@ public fn f(@Int -> @Nat)
         """The `to_nat` body carries the `i64.lt_s` + `unreachable` guard."""
         result = _compile_ok(self._BARE_SLOT)
         wat = result.wat
-        idx = wat.find("(func $to_nat")
+        idx = wat.find("(func $to_nat ")
         assert idx >= 0, "to_nat function not found in WAT"
         body_end = wat.find("\n  (func ", idx + 1)
         if body_end < 0:
@@ -1202,7 +1203,7 @@ public fn f(@Int -> @Count)
         returning -5 (the pre-fix soundness gap)."""
         result = _compile_ok(self._ALIAS_WITNESSABLE)
         with pytest.raises(
-            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+            WasmTrapError
         ):
             execute(result, fn_name="f", args=[-5])
 
