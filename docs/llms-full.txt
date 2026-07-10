@@ -2368,7 +2368,6 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 | Bare `None` under `forall` | Returning a bare `None` from a `forall<T>` function declared `-> @Option<T>` is rejected with E121 (`Option<T$1>` vs `Option<T>` — a false mismatch; the fresh constructor var is never unified with the declared forall var). | Restructure so the `Option` value's type argument is determined by an expression (e.g. build it via `option_map` over a determined value), or make the function non-generic. | [#971](https://github.com/aallan/vera/issues/971) |
 | `@Nat` at return / value position | Narrowing `@Int` → `@Nat` at a function return or inside a value-position tuple/constructor is neither obligated nor guarded: a `verify`-clean function can return a negative `@Nat`. | Write `ensures(@Nat.result >= 0)` on narrowing returns; narrow via `let`-destructure (which IS obligated) instead of constructing in value position. | [#758](https://github.com/aallan/vera/issues/758) |
 | `@Nat` through closures / mixed arms | `@Nat` → `@Int` widening through a closure argument/return/capture, or a `if`/`match` arm whose alternative is a genuine `@Int` slot, is silent (values above `2^63 - 1` reinterpret negative). | Keep `@Nat` values out of closure boundaries; keep `if`/`match` arms type-homogeneous (a non-negative literal alternative IS guarded). | [#820](https://github.com/aallan/vera/issues/820) |
-| `verify --json` summary | On three examples the summary's `tier1_verified + tier3_runtime` exceeds `total` by 1. | Derive counts from the `obligations`/diagnostics lists, never the summary arithmetic. | [#967](https://github.com/aallan/vera/issues/967) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation, and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
@@ -3066,7 +3065,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 6,920 tests, including a 145-program conformance suite
+- 6,924 tests, including a 145-program conformance suite
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

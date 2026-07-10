@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`vera verify --json`'s summary is now derived from the reified obligation stream, closing a `total` off-by-one** ([#967](https://github.com/aallan/vera/issues/967)).  The `VerifySummary` counters (`tier1_verified`, `tier3_runtime`, `total`) were accumulated by ~50 hand-written increments scattered through the verifier.  One of them — the #882 call-site precondition demotion — bumped `tier3_runtime` and reified a `tier3` `call_pre` obligation but forgot the matching `total` bump, so `tier1_verified + tier3_runtime == total + 1` on the three examples that hit the path (`http.vera`, `inference.vera`, `async_http_fanout.vera`).  Diagnostics and the individual tier counts were unaffected — only the summary's own arithmetic was internally inconsistent.  The fix replaces every hand-written counter with a single `summarize(obligations)` derivation (status `verified` → `tier1_verified`; `tier3`/`timeout` → `tier3_runtime`; `violated`/`tier3_unguarded` excluded; `total = tier1_verified + tier3_runtime`), computed at report-assembly time on both the cold `verify` and the warm `VerificationSession` paths, so the counts can no longer drift from the obligations a consumer reads.  `vera verify --json` also gains an `obligations` array (per obligation: `kind`, `status`, `description`, `location`, and `error_code` when present), so a machine consumer can reproduce or refine the tier counts directly.
+
 ## [0.1.3] - 2026-07-10
 
 ### Fixed

@@ -285,6 +285,23 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
                     "tier3_runtime": s.tier3_runtime,
                     "total": s.total,
                 },
+                # #967: expose the reified obligation stream the summary is
+                # derived from, so a machine consumer can reproduce or refine
+                # the tier counts (location mirrors a diagnostic's shape).
+                "obligations": [
+                    {
+                        "kind": o.kind,
+                        "status": o.status,
+                        "description": o.expr_text,
+                        "location": {
+                            "line": o.line,
+                            "column": o.column,
+                            **({"file": path} if path else {}),
+                        },
+                        **({"error_code": o.error_code} if o.error_code else {}),
+                    }
+                    for o in result.obligations
+                ],
             }
             print(json.dumps(result_dict, indent=2))
             return 1 if errors else 0

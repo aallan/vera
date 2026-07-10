@@ -178,15 +178,14 @@ class FnCacheEntry:
 
     Replay appends these lists verbatim (the entries are treated as
     immutable after creation — nothing in the session or verifier
-    mutates a recorded Diagnostic or ProofObligation) and adds the
-    summary deltas to the run's summary.
+    mutates a recorded Diagnostic or ProofObligation).  The run's
+    :class:`~vera.verifier.VerifySummary` is *derived* from the assembled
+    obligation stream at report-assembly time (#967), so no per-function
+    summary deltas are cached — the cached ``obligations`` are the count.
     """
 
     diagnostics: list[Diagnostic]
     obligations: list[ProofObligation]
-    tier1_delta: int
-    tier3_delta: int
-    total_delta: int
 
 
 class DischargeCache:

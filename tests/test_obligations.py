@@ -104,7 +104,18 @@ def _obligation_fingerprint(
 
 
 def _assert_summary_consistent(result_name: str, result: object) -> None:
-    """summary counters must mirror the obligation stream exactly."""
+    """summary counters must mirror the obligation stream exactly.
+
+    ``tier1_verified`` equals the count of ``verified`` obligations,
+    ``tier3_runtime`` the count of ``tier3`` + ``timeout`` obligations, and
+    ``total`` their sum (``violated`` / ``tier3_unguarded`` are surfaced as
+    diagnostics and excluded from every count).  The ``total`` leg is the
+    #967 differential: a call-site precondition demotion (#882) reified a
+    ``tier3`` obligation and bumped ``tier3_runtime`` but omitted the matching
+    ``total`` bump, so ``tier1_verified + tier3_runtime == total + 1`` on the
+    three examples that hit it — until the summary is *derived* from the
+    obligation stream, which makes the desync unrepresentable.
+    """
     obligations = result.obligations  # type: ignore[attr-defined]
     summary = result.summary  # type: ignore[attr-defined]
     verified = sum(1 for o in obligations if o.status == "verified")
@@ -116,6 +127,11 @@ def _assert_summary_consistent(result_name: str, result: object) -> None:
     assert tier3 == summary.tier3_runtime, (
         f"{result_name}: tier3_runtime={summary.tier3_runtime} but "
         f"{tier3} obligations have status tier3/timeout"
+    )
+    assert verified + tier3 == summary.total, (
+        f"{result_name}: total={summary.total} but derived "
+        f"tier1_verified+tier3_runtime={verified + tier3} "
+        f"(verified={verified}, tier3/timeout={tier3})"
     )
 
 
@@ -164,6 +180,42 @@ class TestDifferentialOracle:
         session = VerificationSession()
         warm = session.verify_source(source, file=str(path))
         _assert_summary_consistent(f"{path.name} (warm)", warm)
+
+
+# The three examples that hit the #882 call-site precondition demotion path,
+# where the pre-fix verifier bumped `tier3_runtime` without the matching
+# `total`, leaving `tier1_verified + tier3_runtime == total + 1` (#967).
+_SUMMARY_TOTAL_EXAMPLES = ["async_http_fanout", "http", "inference"]
+
+
+class TestSummaryTotalSelfConsistency:
+    """#967: `total` must equal `tier1_verified + tier3_runtime` (self-check).
+
+    A tighter, source-independent restatement of the differential above: the
+    summary a consumer reads must be internally arithmetic-consistent, with no
+    reference to the obligation stream.  Fails on the three demotion examples
+    until the summary is derived from the obligations.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [EXAMPLES_DIR / f"{n}.vera" for n in _SUMMARY_TOTAL_EXAMPLES],
+        ids=_SUMMARY_TOTAL_EXAMPLES,
+    )
+    def test_total_equals_tier_sum(self, path: Path) -> None:
+        result, source = _cold_verify(path)
+        s = result.summary
+        assert s.total == s.tier1_verified + s.tier3_runtime, (
+            f"{path.name}: total={s.total} != tier1_verified"
+            f"({s.tier1_verified}) + tier3_runtime({s.tier3_runtime})"
+        )
+        session = VerificationSession()
+        warm = session.verify_source(source, file=str(path))
+        ws = warm.summary
+        assert ws.total == ws.tier1_verified + ws.tier3_runtime, (
+            f"{path.name} (warm): total={ws.total} != tier1_verified"
+            f"({ws.tier1_verified}) + tier3_runtime({ws.tier3_runtime})"
+        )
 
 
 class TestObligationKinds:
@@ -1217,7 +1269,7 @@ class TestIncrementalInvalidation:
         from vera.obligations.cache import DischargeCache, FnCacheEntry
 
         cache = DischargeCache(max_entries=2)
-        entry = FnCacheEntry([], [], 0, 0, 0)
+        entry = FnCacheEntry([], [])
         cache.put("a", entry)
         cache.put("b", entry)
         cache.put("c", entry)

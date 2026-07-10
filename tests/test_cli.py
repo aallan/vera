@@ -544,6 +544,28 @@ class TestCmdVerify:
         assert v["tier3_runtime"] > 0
         assert len(data["warnings"]) > 0
 
+    def test_json_obligations_array(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """verify --json exposes the reified obligation stream, and the
+        `verification` summary is reproducible from it (#967)."""
+        rc = cmd_verify(INCREMENT, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        obls = data["obligations"]
+        assert obls, "expected a non-empty obligations array"
+        for o in obls:
+            assert set(o) >= {"kind", "status", "description", "location"}
+            assert set(o["location"]) >= {"line", "column"}
+        # The summary is derived from this stream: the tier counts a consumer
+        # recomputes from `obligations` must equal the `verification` block.
+        v = data["verification"]
+        tier1 = sum(1 for o in obls if o["status"] == "verified")
+        tier3 = sum(1 for o in obls if o["status"] in ("tier3", "timeout"))
+        assert v["tier1_verified"] == tier1
+        assert v["tier3_runtime"] == tier3
+        assert v["total"] == tier1 + tier3
+
     def test_json_type_error(
         self,
         tmp_path: Path,

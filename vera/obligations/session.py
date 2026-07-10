@@ -45,7 +45,7 @@ from vera.parser import parse
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.smt import SmtContext
 from vera.transform import transform
-from vera.verifier import ContractVerifier, VerifySummary
+from vera.verifier import ContractVerifier, VerifySummary, summarize
 
 
 @dataclass
@@ -202,7 +202,6 @@ class VerificationSession:
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
-        summary = VerifySummary()
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -225,31 +224,19 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
-                summary.tier1_verified += cached.tier1_delta
-                summary.tier3_runtime += cached.tier3_delta
-                summary.total += cached.total_delta
                 stats.replayed_fns += 1
                 continue
 
             d0 = len(verifier.errors)
             o0 = len(verifier.obligations)
-            t1_0 = verifier.summary.tier1_verified
-            t3_0 = verifier.summary.tier3_runtime
-            tot_0 = verifier.summary.total
             verifier._verify_fn(decl)
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
-                tier1_delta=verifier.summary.tier1_verified - t1_0,
-                tier3_delta=verifier.summary.tier3_runtime - t3_0,
-                total_delta=verifier.summary.total - tot_0,
             )
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
             out_obls.extend(entry.obligations)
-            summary.tier1_verified += entry.tier1_delta
-            summary.tier3_runtime += entry.tier3_delta
-            summary.total += entry.total_delta
             stats.verified_fns += 1
 
         # #774 (CR 3519156263): verify IMPORTED generic clones (shadowed and
@@ -261,18 +248,16 @@ class VerificationSession:
         # already reflected in `_instances` (register_program ran above).  Folded
         # into the output stream so the warm session's summary/diagnostics match
         # the cold path's (the #732 warm==cold differential oracle).
-        s0, o0, e0 = (
-            verifier.summary.tier1_verified,
-            len(verifier.obligations),
-            len(verifier.errors),
-        )
-        t3_0, tot_0 = verifier.summary.tier3_runtime, verifier.summary.total
+        o0, e0 = len(verifier.obligations), len(verifier.errors)
         verifier._verify_shadowed_module_generics()
         out_obls.extend(verifier.obligations[o0:])
         out_diags.extend(verifier.errors[e0:])
-        summary.tier1_verified += verifier.summary.tier1_verified - s0
-        summary.tier3_runtime += verifier.summary.tier3_runtime - t3_0
-        summary.total += verifier.summary.total - tot_0
+
+        # #967: the summary is derived from the assembled obligation stream,
+        # exactly as the cold `verify_program` path derives it from its own —
+        # so the warm and cold summaries agree by construction (the tier counts
+        # can't drift from the obligations a consumer reads).
+        summary = summarize(out_obls)
 
         self.last_program = program
         self.last_run_stats = stats

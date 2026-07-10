@@ -152,7 +152,7 @@ Before changing code — **adding or removing** — write the test that proves y
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts (the summary is derived from the reified obligation stream, so `total == tier1_verified + tier3_runtime`), plus an `obligations` array — one entry per reified obligation with `kind`, `status`, `description`, `location`, and `error_code` (when present) — from which a consumer can reproduce the counts.
 
 ### Error codes
 

@@ -342,7 +342,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 281 T1 / 94 T3 / 375 total (current).
+        """All examples together: 281 T1 / 97 T3 / 378 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -525,16 +525,21 @@ private fn sum(@List<Int> -> @Int)
         # #882: a call-site precondition over an argument (or a precondition)
         # outside the decidable fragment previously produced NO obligation —
         # a silent static-coverage gap.  It now demotes LOUDLY to a Tier-3
-        # call_pre obligation (E522).  Three example call sites — `http::main`
+        # call_pre obligation (E532).  Three example call sites — `http::main`
         # -> fetch_title, `inference::main` -> classify_sentiment, and
         # `async_http_fanout::main` -> fetch_both — each call a helper whose
         # `requires(string_length(...) > 0)` is undecidable, so each gains one
-        # demoted call_pre: +3 T3.  These demotions bump `tier3_runtime` but
-        # not `total` (call_pre obligations never entered `total`, matching the
-        # E501-violation convention): 281/94/375 -> 281/97/375.
+        # demoted call_pre: +3 T3.
+        #
+        # #967: a demoted call_pre is a Tier-3 obligation, so it counts toward
+        # `total` like any other runtime-checked obligation.  The pre-fix
+        # hand-counted path bumped `tier3_runtime` but forgot the matching
+        # `total`, leaving total short by three (one per demotion).  Deriving
+        # the summary from the obligation stream closes it:
+        # 281/94/375 -> 281/97/378.
         assert t1 == 281, f"Expected 281 T1, got {t1}"
         assert t3 == 97, f"Expected 97 T3, got {t3}"
-        assert total == 375, f"Expected 375 total, got {total}"
+        assert total == 378, f"Expected 378 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
