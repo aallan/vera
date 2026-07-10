@@ -27,6 +27,51 @@ from tests.codegen_helpers import (
 )
 
 
+class TestHandledBodySlotIdentity973:
+    """#973 (PR #975 review): the checker no longer binds handler state into
+    the handled body's scope, so a body slot reference must name the same
+    binding in the checker and in codegen.  These run end-to-end — the run
+    result is the value codegen resolves, so a re-introduced phantom checker
+    binding cannot silently re-diverge the two models."""
+
+    def test_body_slot_resolves_to_same_typed_param_end_to_end(self) -> None:
+        """A same-typed fn param inside a handled body: `@Int.0` is the param
+        (the argument, 5) — never the state init (99) or the put value (7)."""
+        source = """\
+public fn probe(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 99) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(7);
+    @Int.0
+  }
+}
+"""
+        assert _run(source, fn="probe", args=[5]) == 5
+
+    def test_body_get_put_end_to_end(self) -> None:
+        """The canonical body path under a custom-clause handler: put then
+        get runs to the put value (builtin state-cell semantics; #976 tracks
+        the clauses themselves not being executed)."""
+        source = """\
+public fn probe(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 2) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(8);
+    get(())
+  }
+}
+"""
+        assert _run(source, fn="probe") == 8
+
+
 class TestStateEffect:
 
     def test_state_int_get_default(self) -> None:

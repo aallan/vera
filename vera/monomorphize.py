@@ -1824,12 +1824,11 @@ class Monomorphizer:
                 # with the env unchanged; _walk_free_vars likewise), so the
                 # walker must not count one — a phantom binding shifts every
                 # same-named ref in the body to a dangling or wrong local
-                # (adversarial panel, PR #972).  The checker DOES bind state
-                # in the handled body's scope — a pre-existing checker/codegen
-                # divergence tracked separately; indices must match the
-                # CONSUMERS.  Clause scopes above keep params + state: that is
-                # what _walk_free_vars counts (and Exn clause compilation
-                # pushes the thrown binder).
+                # (adversarial panel, PR #972).  The checker agrees since
+                # #973: it binds no body-scope state either, rejecting such
+                # refs with E130.  Clause scopes above keep params + state:
+                # that is what _walk_free_vars counts (and Exn clause
+                # compilation pushes the thrown binder).
                 walk(v.body)
                 return
             if isinstance(v, ast.Node):
