@@ -583,6 +583,13 @@ class TestCmdVerify:
         assert dotted != normalized  # the probe must exercise the divergence
         for o in obls:
             assert o["location"]["file"] == normalized
+        # Diagnostics/warnings must carry the same normalized path — checked
+        # per entry, not just via the join below, so a dotted path cannot
+        # hide behind one other entry that happens to join.
+        reported = data["diagnostics"] + data["warnings"]
+        assert reported, "fixture must expose a diagnostic or warning"
+        for entry in reported:
+            assert entry["location"]["file"] == normalized
         # The join must actually work: at least one obligation shares its
         # full (file, line, column) key with a reported diagnostic
         # (increment.vera's W-diagnostic sits on an obligated contract).
@@ -615,6 +622,12 @@ class TestCmdVerify:
         v = data["verification"]
         assert v["total"] == v["tier1_verified"] + v["tier3_runtime"]
         obls = data["obligations"]
+        # Keep the fixture non-vacuous: the arithmetic above only pins the
+        # bug while http.vera actually emits a demoted call-pre obligation.
+        assert any(
+            o["kind"] == "call_pre" and o["status"] in ("tier3", "timeout")
+            for o in obls
+        ), "http.vera must exercise the call-pre demotion"
         tier1 = sum(1 for o in obls if o["status"] == "verified")
         tier3 = sum(1 for o in obls if o["status"] in ("tier3", "timeout"))
         assert v["tier1_verified"] == tier1
