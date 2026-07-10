@@ -621,7 +621,19 @@ private forall<T> fn mix(@T -> @Alpha<T>)
         """Regression guard for the fresh-var minting path the relaxation does
         NOT touch: two ADTs sharing "T" whose nullary ctors are resolved by
         cross-argument inference (expected concrete, not a forall var) still
-        check clean. Green before and after — pins the invariant, not the fix."""
+        check clean. Green before and after — pins the invariant, not the fix.
+
+        The same-ADT guard `expected.name == ci.parent_type` in
+        `_ctor_result_type` is defense-in-depth masked downstream: removing it
+        is caught by NO test, because the result type's name is always the
+        constructor's own parent (`AdtType(ci.parent_type, ...)`), never
+        `expected.name`, so a cross-ADT expected still mismatches on the
+        nominal parent name (E121/E170/E302) regardless of which var the fill
+        adopts. Verified empirically for PR #980 by removing the guard: an
+        adversarial `ANil` returned where `@Beta<T>` is expected still reports
+        E121, only the resolved type arg changes (`Alpha<T$1>` -> `Alpha<T>`).
+        A vacuous pin would only assert that downstream check, so none is added.
+        """
         _check_ok("""
 private data Alpha<T> { ANil, ACons(T) }
 private data Beta<T> { BNil, BCons(T) }
@@ -646,6 +658,59 @@ public fn main(@Unit -> @Int)
   @Int.1 + @Int.0
 }
 """)
+
+    # -----------------------------------------------------------------
+    # Ill-typed direction pins: the relaxed bidirectional fill must not
+    # over-admit.  When a payload-bearing sibling `Some(<Nat literal>)`
+    # pins the body to Option<Nat>, the program is genuinely ill-typed
+    # against the declared Option<T> and must still be rejected E121.  The
+    # fresh-var adoption only ties a *bare nullary* ctor to the declared
+    # forall var; it never launders a concrete Option<Nat> into Option<T>.
+    # (The diagnostic names Option<Nat> because 5/3 are Nat literals.)
+    # -----------------------------------------------------------------
+
+    def test_some_literal_return_rejected(self) -> None:
+        """Shape (a) ill-typed: `Some(5)` returned under forall<T> ->
+        @Option<T> is Option<Nat>, not Option<T>, and must still fail E121."""
+        errs = _check_err("""
+private forall<T> fn bad_some(@Unit -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(5)
+}
+""", "Option<Nat>")
+        assert any(e.error_code == "E121" for e in errs), \
+            f"Expected E121, got: {[e.error_code for e in errs]}"
+
+    def test_mixed_if_arms_rejected(self) -> None:
+        """Shape (b) ill-typed: `if @Bool.0 then None else Some(3)` types the
+        whole `if` at Option<Nat> (the concrete arm wins), so against
+        forall<T> -> @Option<T> it is E121 — None does not force Option<T>."""
+        errs = _check_err("""
+private forall<T> fn bad_mixed(@Bool -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { None } else { Some(3) }
+}
+""", "Option<Nat>")
+        assert any(e.error_code == "E121" for e in errs), \
+            f"Expected E121, got: {[e.error_code for e in errs]}"
+
+    def test_mixed_match_arms_rejected(self) -> None:
+        """Shape (c) ill-typed: a match with arms `None` / `Some(3)` unifies
+        at Option<Nat>; against forall<T> -> @Option<T> that is E121."""
+        errs = _check_err("""
+private forall<T> fn bad_mixed_match(@Bool -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> None,
+    false -> Some(3)
+  }
+}
+""", "Option<Nat>")
+        assert any(e.error_code == "E121" for e in errs), \
+            f"Expected E121, got: {[e.error_code for e in errs]}"
 
 
 # =====================================================================

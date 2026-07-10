@@ -248,6 +248,41 @@ public fn main(-> @Int)
         # the unwrap also proves the ADT round-trips its payload intact.
         assert _run(source, fn="main") == 42
 
+    def test_generic_nullary_ctor_leaf_runs(self) -> None:
+        """#971: a bare nullary constructor `Leaf` returned under
+        forall<T> -> @Tree<T> (a user-defined generic ADT) type-checks after
+        the fix, monomorphizes at T = Int, and runs.  `empty_tree(())` yields
+        Leaf; `tree_or` funnels both arms to the sentinel default, so the Leaf
+        arm carries 555 through the compiled module — the run-level companion
+        to the checker/verify pins for the bare-None-under-forall family."""
+        source = """\
+private data Tree<T> { Leaf, Node(T) }
+
+private forall<T> fn empty_tree(@Unit -> @Tree<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  Leaf
+}
+
+private forall<T> fn tree_or(@Tree<T>, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Tree<T>.0 {
+    Node(@T) -> @T.0,
+    Leaf -> @T.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  tree_or(empty_tree(()), 555)
+}
+"""
+        # 555 is not a codegen fallback/default; a wrong lowering of the
+        # nullary Leaf arm would trap at compile or produce a different value.
+        assert _run(source, fn="main") == 555
+
     def test_generic_fn_wat_has_mangled_name(self) -> None:
         """WAT output contains mangled function name."""
         source = """\

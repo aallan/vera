@@ -1016,7 +1016,10 @@ class CallsMixin:
             # another ADT's parameter.  #971: adopt exp_arg even when it is a
             # TypeVar — under `forall<T> ... -> @Option<T>` the declared arg is
             # the forall var itself, and mapping the fresh ctor var to it is
-            # exactly the var-to-var unification the checker otherwise lacks;
+            # exactly the var-to-var unification the expected-type fill
+            # otherwise lacks for a nullary constructor (the argument-driven
+            # path in _unify_for_inference does record forall-to-forall
+            # mappings, but a nullary ctor has no arguments to drive it);
             # without it a bare `None` mints an unrelated `T$n` and the program
             # is rejected against a type that unifies trivially (E121/E170/E302).
             if (isinstance(expected, AdtType)

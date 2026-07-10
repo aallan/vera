@@ -1,14 +1,16 @@
 -- Conformance: bare None under forall<T> resolves its type argument from the
 --   surrounding declared context (Chapter 9)
 -- Tests: generic_type_inference, forall, option, monomorphization, combinator
--- Regresses #971: a bare nullary constructor (None) whose type argument is
--- fully determined by the enclosing declaration -- the forall return type, a
--- let binding, or the common type of match arms -- must unify its fresh
--- constructor type variable with the declared forall var, not mint an
--- unrelated T$n and reject the well-typed program (E121 / E170 / E302).
--- Each function below is monomorphized at T = Int by option_unwrap_or's
--- Int-typed default, so the whole pipeline (check + verify + monomorphize +
--- run) is pinned: every call yields None, so the sentinel default flows through.
+-- Regression test for #971: a bare nullary constructor (None) whose type
+-- argument is fully determined by the enclosing declaration -- the forall
+-- return type, a let binding, or the common type of match arms -- must unify
+-- its fresh constructor type variable with the declared forall var, not mint
+-- an unrelated T$n and reject the well-typed program (E121 / E170 / E302).
+-- Each function below is monomorphized by option_unwrap_or's default type, so
+-- the whole pipeline (check + verify + monomorphize + run) is pinned: every
+-- call yields None, so the sentinel default flows through. `nothing` is
+-- instantiated TWICE -- at Int and at String -- so one forall fn drives two
+-- distinct monomorphizations in the same program.
 -- Return position: the declared -> @Option<T> determines None's type argument.
 private forall<T> fn nothing(@Unit -> @Option<T>)
   requires(true)
@@ -41,10 +43,14 @@ private forall<T> fn nothing_via_match(@Bool -> @Option<T>)
   }
 }
 
--- main: each generic is instantiated at Int and unwrapped with a distinct
--- sentinel default. All three return None, so all three defaults flow through.
--- Returns 0 iff 11, 22, and 33 are all observed (De Bruijn: @Int.2 is the
--- first let, @Int.0 the last).
+-- main: each generic is instantiated with a distinct sentinel default, all of
+-- which flow through because every call returns None. Three Int instantiations
+-- plus one String instantiation of `nothing` (unwrapped with a length-4
+-- default, then measured) exercise both a scalar and a heap type argument.
+-- Sentinels avoid type-default coincidence: Int defaults 11/22/33 (not 0), the
+-- String default "abcd" is non-empty (length 4, not 0).
+-- Returns 0 iff 11, 22, 33, and the String length 4 are all observed. De Bruijn
+-- (after the four @Int lets): @Int.3 is the first let, @Int.0 the last.
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -53,10 +59,16 @@ public fn main(@Unit -> @Int)
   let @Int = option_unwrap_or(nothing(()), 11);
   let @Int = option_unwrap_or(nothing_via_let(()), 22);
   let @Int = option_unwrap_or(nothing_via_match(true), 33);
-  if @Int.2 == 11 then {
-    if @Int.1 == 22 then {
-      if @Int.0 == 33 then {
-        0
+  let @String = option_unwrap_or(nothing(()), "abcd");
+  let @Int = string_length(@String.0);
+  if @Int.3 == 11 then {
+    if @Int.2 == 22 then {
+      if @Int.1 == 33 then {
+        if @Int.0 == 4 then {
+          0
+        } else {
+          1
+        }
       } else {
         1
       }
