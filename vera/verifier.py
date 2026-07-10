@@ -2114,6 +2114,29 @@ class ContractVerifier:
                 site="return type",
             )
 
+        # 7d. #758: a bare @Int body narrowing into a @Nat return can be
+        #     negative — `to_nat(@Int -> @Nat) { @Int.0 }` verified clean yet
+        #     `to_nat(0 - 5)` returned -5 through the @Nat slot with no
+        #     obligation and no trap.  Obligate `result >= 0` at the return
+        #     slot — the return-position analogue of #552's let/call-arg
+        #     narrowing and the dual of 7c's @Nat -> @Int widen-return.  The
+        #     obligation folds in path conditions (via `check_valid`), so an
+        #     `if @Int.0 >= 0 then @Int.0 else 0 - @Int.0` tail proves per-arm
+        #     at Tier 1 (`examples/absolute_value.vera`).  A refinement OVER
+        #     @Nat is a RefinedType handled by 7b (`>= 0 && P`), so gate on the
+        #     bare @Nat primitive — refined-first, R9, the two never co-fire on
+        #     one site.  Codegen backs the undischarged/Tier-3 case with the
+        #     return nat-bind guard so the function traps before returning a
+        #     negative.
+        if (decl.body is not None
+                and self._is_nat_type(ret_type)
+                and not self._is_refined_type(ret_type)
+                and self._return_narrows_into_nat(decl.body)):
+            self._check_nat_binding_obligation(
+                decl, decl.body, smt, slot_env, list(assumptions),
+                site="return type",
+            )
+
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
         # into the decreases checking below.
@@ -5993,6 +6016,36 @@ class ContractVerifier:
         if not self._is_nat_typed(value):
             return True
         return self._has_underflow_leaf(value)
+
+    def _return_narrows_into_nat(self, body: ast.Expr) -> bool:
+        """Whether a @Nat function-return slot receives a value that can be
+        negative — the return-boundary narrowing check for #758.
+
+        Mirrors codegen's ``_narrows_into_nat(decl.body)`` at the return
+        boundary.  The top-level body is *target-typed* to the @Nat return, so
+        the checker's side-table reports the whole expression as @Nat even when
+        a join arm narrows (``match @Int.0 { 0 -> 0, _ -> @Int.0 }`` records
+        @Nat for the match, masking the raw-@Int ``_`` arm); consulting
+        :py:meth:`_narrows_into_nat` on the whole body would then miss it.
+        Descend the ``Block`` / ``IfExpr`` / ``MatchExpr`` join to each leaf
+        return expression and apply the per-value ``_narrows_into_nat`` there —
+        the value narrows iff ANY leaf narrows, exactly the set codegen's
+        ``_is_static_nat_typed`` (an all-arms-@Nat test) guards.  The whole-body
+        ``>= 0`` obligation (translated in :py:meth:`_check_nat_binding_obligation`)
+        still folds in each arm's path condition, so a provable join proves.
+        """
+        if isinstance(body, ast.Block):
+            return (body.expr is not None
+                    and self._return_narrows_into_nat(body.expr))
+        if isinstance(body, ast.IfExpr):
+            if body.else_branch is None:
+                return False
+            return (self._return_narrows_into_nat(body.then_branch)
+                    or self._return_narrows_into_nat(body.else_branch))
+        if isinstance(body, ast.MatchExpr):
+            return any(self._return_narrows_into_nat(arm.body)
+                       for arm in body.arms)
+        return self._narrows_into_nat(body)
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
         """True iff a statically-@Nat *value* can still be negative

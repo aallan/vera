@@ -611,6 +611,32 @@ class FunctionCompilationMixin:
         if widen_guarded:
             body_instrs = ctx._emit_int_widen_guard(body_instrs)
 
+        # #758: guard an @Int -> @Nat narrowing at the return position.  An
+        # @Int body narrowing into a @Nat return can be negative
+        # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
+        # @Nat slot — the runtime backstop for the verifier's return nat_bind
+        # obligation (7d), the dual of the #813 widen guard above.  A refined
+        # @Nat return is guarded by the refinement boundary check, so gate on
+        # the bare @Nat primitive (mirrors the verifier's 7d gate).  @Nat is
+        # i64, so this (like the widen guard) runs before the i32 coercion.
+        # `_narrows_into_nat` keys on `_is_static_nat_typed`, which maps a user
+        # @Nat-returning *call* back through its erased i64 return to "Int" (it
+        # cannot see @Nat through the WASM type) — so a genuine @Nat -> @Nat
+        # tail call (`count_down(@Nat.0 - 1)`) would look like a narrowing and
+        # wrongly revert its `return_call` (breaking TCO).  Exclude bodies the
+        # side-table-aware `_result_is_nat` proves intrinsically @Nat (the same
+        # precise classifier the #813 widen guard uses), which resolves the
+        # callee's @Nat return — keeping this in lockstep with the verifier's
+        # 7d obligation, whose leaf check is likewise side-table-aware.
+        narrow_guarded = (
+            self._type_expr_to_slot_name(decl.return_type) == "Nat"
+            and not isinstance(decl.return_type, ast.RefinementType)
+            and ctx._narrows_into_nat(decl.body)
+            and not ctx._result_is_nat(decl.body)
+        )
+        if narrow_guarded:
+            body_instrs = ctx._emit_nat_bind_guard(body_instrs)
+
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)
         if ret_wt == "i32":
@@ -807,13 +833,15 @@ class FunctionCompilationMixin:
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
 
-        if post_instrs or widen_guarded:
+        if post_instrs or widen_guarded or narrow_guarded:
             # Postcondition checks must run; return_call would skip them.  The
-            # #813 @Nat->@Int return widen guard (above) is the same case: it is
-            # appended *after* the trailing tail call, so a `return_call` would
-            # return before the guard runs, silently leaking a reinterpreted
-            # negative @Int (e.g. `fn f(@Nat -> @Int) { make_nat(@Nat.0) }`).
-            # Revert every return_call to plain call so the guard is reached.
+            # #813 @Nat->@Int return widen guard and the #758 @Int->@Nat return
+            # narrow guard (above) are the same case: each is appended *after*
+            # the trailing tail call, so a `return_call` would return before the
+            # guard runs, silently leaking a reinterpreted negative @Int / a
+            # negative @Nat (e.g. `fn f(@Nat -> @Int) { make_nat(@Nat.0) }`, or
+            # `fn f(@Int -> @Nat) { make_int(@Int.0) }`).  Revert every
+            # return_call to plain call so the guard is reached.
             body_instrs = [
                 instr.replace("return_call ", "call ", 1)
                 if instr.lstrip().startswith("return_call ")

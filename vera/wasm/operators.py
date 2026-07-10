@@ -1748,6 +1748,20 @@ class OperatorsMixin:
             resolved = self._resolved_codegen_type(expr)
             if resolved is not None:
                 return resolved == "Nat"
+            # No side-table (an unverified `vera compile`): recover a user
+            # callee's declared @Nat return from `_fn_ret_type_exprs`, mirroring
+            # the verifier's `env.lookup_function().return_type` path.
+            # `_infer_fncall_vera_type` cannot — it maps the erased i64 return
+            # back to "Int" (both @Nat and @Int lower to i64), which would make
+            # a genuine @Nat -> @Nat tail call (`count_down(@Nat.0 - 1)`) look
+            # like a narrowing and break its return_call TCO (#758).
+            decl_ret = self._fn_ret_type_exprs.get(expr.name)
+            if isinstance(decl_ret, ast.RefinementType):
+                decl_ret = decl_ret.base_type
+            if (isinstance(decl_ret, ast.NamedType)
+                    and not decl_ret.type_args
+                    and self._resolve_base_type_name(decl_ret.name) == "Nat"):
+                return True
             call = (
                 expr if isinstance(expr, ast.FnCall)
                 else ast.FnCall(name=expr.name, args=expr.args, span=expr.span)

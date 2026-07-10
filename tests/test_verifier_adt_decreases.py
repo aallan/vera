@@ -342,7 +342,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 281 T1 / 97 T3 / 378 total (current).
+        """All examples together: 282 T1 / 98 T3 / 380 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -537,9 +537,18 @@ private fn sum(@List<Int> -> @Int)
         # `total`, leaving total short by three (one per demotion).  Deriving
         # the summary from the obligation stream closes it:
         # 281/94/375 -> 281/97/378.
-        assert t1 == 281, f"Expected 281 T1, got {t1}"
-        assert t3 == 97, f"Expected 97 T3, got {t3}"
-        assert total == 378, f"Expected 378 total, got {total}"
+        #
+        # #758: the @Int -> @Nat narrowing obligation (nat_bind) now fires at
+        # the RETURN position too (the dual of #813's 7c widen-return).  Two
+        # corpus returns narrow into @Nat: `absolute_value.vera::absolute_value`
+        # (`if @Int.0 >= 0 then @Int.0 else -@Int.0`) proves `>= 0` per-arm at
+        # Tier 1 (+1 T1), and `nested_closures.vera::three_d_count`
+        # (`array_length(...)` over an opaque let-bound array — array_length
+        # returns @Int) is an honest Tier-3 runtime-guarded narrowing (+1 T3):
+        # 281/97/378 -> 282/98/380.
+        assert t1 == 282, f"Expected 282 T1, got {t1}"
+        assert t3 == 98, f"Expected 98 T3, got {t3}"
+        assert total == 380, f"Expected 380 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

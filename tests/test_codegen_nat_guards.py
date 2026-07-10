@@ -1046,3 +1046,108 @@ public fn f(@Unit -> @Option<Nat>)
         # No pytest.raises: the deferred-guard state means this MUST NOT trap.
         # If #757 adds the guard, replace this with a pytest.raises(...) block.
         execute(result, fn_name="f", args=[])
+
+
+class TestNatReturnRuntimeGuard758:
+    """Codegen emits the `@Int -> @Nat` narrowing guard at the RETURN
+    position (#758) — the dual of the #813 `@Nat -> @Int` widen-return
+    guard.  An `@Int` body narrowing into a `@Nat` return can be negative
+    (`to_nat(0 - 5)` = -5), so the function must trap rather than store a
+    negative in the `@Nat` slot.
+
+    Pre-fix the return slot carried no guard: `to_nat(0 - 5)` silently
+    returned -5.  Mirrors `TestNatBindingRuntimeGuard552` for the let site.
+    """
+
+    _BARE_SLOT = """
+public fn to_nat(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+
+    _ABS_IF = """
+public fn f(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 } }
+"""
+
+    def test_negative_return_narrowing_traps_at_runtime(self) -> None:
+        """to_nat(-5) trips the return guard and traps before returning -5
+        through the @Nat slot."""
+        result = _compile_ok(self._BARE_SLOT)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="to_nat", args=[-5])
+
+    def test_nonnegative_return_narrowing_returns_value(self) -> None:
+        """to_nat(7) passes the guard and returns 7 — no spurious trap."""
+        assert _run(self._BARE_SLOT, fn="to_nat", args=[7]) == 7
+
+    def test_guard_emitted_in_wat_for_return_narrowing(self) -> None:
+        """The `to_nat` body carries the `i64.lt_s` + `unreachable` guard."""
+        result = _compile_ok(self._BARE_SLOT)
+        wat = result.wat
+        idx = wat.find("(func $to_nat")
+        assert idx >= 0, "to_nat function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body, f"Expected `i64.lt_s` in to_nat body:\n{body}"
+        assert "unreachable" in body, (
+            f"Expected `unreachable` in to_nat body:\n{body}"
+        )
+
+    def test_provable_abs_return_does_not_trap(self) -> None:
+        """The absolute-value shape's guard is DEAD — the value is always
+        non-negative, so run(-5) returns 5, never trips the trap.  Pins that
+        a Tier-1-provable narrowing pays only dead instructions."""
+        assert _run(self._ABS_IF, fn="f", args=[-5]) == 5
+        assert _run(self._ABS_IF, fn="f", args=[7]) == 7
+
+    def test_int_return_emits_no_narrowing_guard(self) -> None:
+        """Control: an `@Int -> @Int` return is not a narrowing, so it must
+        NOT carry the guard — a negative Int result returns cleanly."""
+        result = _compile_ok("""
+public fn ident(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        exec_result = execute(result, fn_name="ident", args=[-5])
+        assert exec_result.value == -5, (
+            "an @Int->@Int identity must return -5, not trap"
+        )
+
+    def test_guard_emitted_for_builtin_return_narrowing(self) -> None:
+        """The return guard fires for a builtin-@Int-returning call narrowed
+        into a `@Nat` return.  `array_length(...)` returns `@Int` (registry),
+        so returning it into a `@Nat` slot is guarded like any other @Int->@Nat
+        narrowing — the codegen mirror of the verifier's nat_bind obligation,
+        keeping the two site sets in agreement."""
+        result = _compile_ok("""
+public fn f(@Array<Int> -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ array_length(@Array<Int>.0) }
+""")
+        wat = result.wat
+        idx = wat.find("(func $f ")
+        assert idx >= 0, "f function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the @Nat narrowing guard in f body:\n{body}"
+        )
+        # The guard is DEAD (array_length is never negative) — a valid array
+        # returns its length, never traps.
+        assert _run("""
+public fn f(@Array<Int> -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ array_length(@Array<Int>.0) }
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ f([1, 2, 3]) }
+""", fn="main") == 3

@@ -1,0 +1,69 @@
+-- Conformance: @Nat narrowing obligation at the RETURN position (Chapter 4)
+--
+-- Tests the proof obligation introduced by #758: a function whose declared
+-- return type is `@Nat` but whose body tail narrows an `@Int` value must
+-- statically prove `result >= 0` at the return slot.  This is the
+-- return-position analogue of the #552 let/call-argument narrowing obligation
+-- and the dual of #813's `@Nat -> @Int` widen-return obligation.  Per spec/04
+-- and spec/11 §11.2.1, the Tier-3 fallback emits a runtime guard so an
+-- unproven narrowing traps rather than storing a negative in the `@Nat` slot.
+--
+-- Pre-#758 `to_nat(@Int -> @Nat) { @Int.0 }` verified clean yet
+-- `to_nat(0 - 5)` returned -5 through the `@Nat` slot with no trap; the return
+-- slot was neither obligated nor guarded.
+--
+-- All return sites here verify at Tier 1 — discharged from explicit `requires`
+-- clauses or from the per-arm path conditions of an `if` tail.
+-- Return narrowing discharged via a path condition: the absolute-value shape.
+-- The `if @Int.0 >= 0` guard proves `@Int.0 >= 0` in the then-arm and
+-- `0 - @Int.0 >= 0` in the else-arm, so the whole-body `>= 0` obligation holds.
+public fn abs_val(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    0 - @Int.0
+  }
+}
+
+-- Return narrowing discharged via requires.
+public fn to_nat(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  @Int.0
+}
+
+-- Return narrowing discharged via a match arm's path condition: the `_` arm is
+-- reached only when `@Int.0 > 0`, so returning `@Int.0` there proves `>= 0`.
+public fn clamp_positive(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> 0,
+    _ -> if @Int.0 >= 0 then { @Int.0 } else { 0 }
+  }
+}
+
+-- An already-@Nat return is not a narrowing, so it raises no obligation.
+public fn identity_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  abs_val(-42)
+}

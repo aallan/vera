@@ -1396,3 +1396,130 @@ public fn main(@Int -> @Bool)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert not [o for o in result.obligations
                     if o.kind == "nat_bind" and o.status == "violated"]
+
+
+# =====================================================================
+# @Nat narrowing at the RETURN position (#758)
+# =====================================================================
+
+class TestNatReturnObligation758:
+    """A function whose declared return is `@Nat` but whose body tail
+    narrows an `@Int` value must prove `result >= 0` at the return slot —
+    the return-position analogue of the #552 let/call-arg narrowing and the
+    dual of #813's `@Nat -> @Int` widen-return obligation (7d/7c).
+
+    Pre-fix (issue #758): `to_nat(@Int -> @Nat) { @Int.0 }` verified clean —
+    no `nat_bind` obligation at the return slot — yet `to_nat(0 - 5)` returned
+    -5 through the `@Nat` slot at runtime.  `vera verify`-clean was not a
+    "no negative @Nat" guarantee at the return position.
+    """
+
+    def test_bare_slot_return_narrow_unguarded_fails(self) -> None:
+        """`{ @Int.0 }` into a `@Nat` return is an unconstrained narrowing —
+        Z3 witnesses `@Int.0 = -1`, so a loud E503 (mirrors the let site)."""
+        _verify_err("""
+public fn to_nat(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""", "may be negative")
+
+    def test_literal_subtraction_return_fails(self) -> None:
+        """`{ 0 - 5 }` is provably negative at the `@Nat` return — E503."""
+        _verify_err("""
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ 0 - 5 }
+""", "may be negative")
+
+    def test_match_tail_return_narrow_fails(self) -> None:
+        """A match whose `_` arm returns the raw `@Int` scrutinee into the
+        `@Nat` return is a narrowing — the arm value can be negative (E503)."""
+        _verify_err("""
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ match @Int.0 { 0 -> 0, _ -> @Int.0 } }
+""", "may be negative")
+
+    def test_return_narrow_requires_discharges(self) -> None:
+        """An explicit `requires(@Int.0 >= 0)` discharges the return narrowing
+        at Tier 1 — the obligation fires and verifies (not merely silent)."""
+        result = _verify("""
+public fn to_nat(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+    def test_abs_if_tail_discharges_per_branch(self) -> None:
+        """The canonical absolute-value shape: `if @Int.0 >= 0 then @Int.0
+        else 0 - @Int.0`.  The whole-if term encodes the per-arm path
+        condition (`ite`), so the return `>= 0` obligation proves at Tier 1 —
+        this is what keeps `examples/absolute_value.vera` Tier-1-provable
+        under the new obligation."""
+        result = _verify("""
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 } }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+    def test_nat_return_of_nat_body_not_flagged(self) -> None:
+        """`@Nat -> @Nat` returning a `@Nat` slot is not a narrowing — no
+        obligation (guards against a walker firing on every `@Nat` return)."""
+        result = _verify("""
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_int_return_of_int_body_not_flagged(self) -> None:
+        """Control: an `@Int -> @Int` return is not a narrowing (nor a
+        widening), so no `nat_bind` obligation at the return."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_untranslatable_builtin_return_is_tier3_guarded(self) -> None:
+        """`array_length(...)` returns `@Int` (registry), so returning it into a
+        `@Nat` slot is a narrowing.  Over an opaque (let-bound) array the value
+        is untranslatable to Z3, so it is an honest Tier-3 narrowing (a codegen
+        runtime guard backs it) — never a silent Tier-1 pass, and never a loud
+        E503 (not provably negative).  This is the return-position analogue of
+        the untranslatable let-site narrowing and the shape that makes
+        `examples/nested_closures.vera` gain a Tier-3."""
+        result = _verify("""
+public fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = array_range(0, 2);
+  array_length(@Array<Int>.0)
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["tier3"]
