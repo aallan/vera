@@ -372,10 +372,15 @@ where {
 """)
 
     def test_generic_type_param_still_ok(self) -> None:
-        """Guard (type params preserved): a helper inside a forall<T> parent
-        uses @T both as a type (its own param's declared type) and as a value
-        slot (@T.0, its own param).  T must remain in scope through the
-        where-block check even though the parent's VALUE scope is popped."""
+        """Guard (value-scope pop is harmless for a generic helper): a helper
+        inside a forall<T> parent uses @T both as a type (its own param's
+        declared type) and as a value slot (@T.0, its own param).  Popping the
+        parent's VALUE scope before the where-block check must not break the
+        helper's use of its own @T param — that is what this test pins.  (The
+        parent's TYPE-param retention is spec-intent, documented in core.py;
+        it is not load-bearing for resolution today — an absent type name
+        falls through to the opaque type-var branch and monomorphization is
+        call-site-driven — so it is not itself test-guarded.)"""
         _check_ok("""
 private forall<T> fn wrap(@T -> @T)
   requires(true) ensures(true) effects(pure)
@@ -447,6 +452,158 @@ private fn plain(@Bool -> @Int)
         assert "param-rooted" not in e130[0].fix, \
             f"plain is not a helper; expected generic hint, got: {e130[0].fix!r}"
         assert "lower index" in e130[0].fix
+
+    def test_contract_requires_outer_slot_rejected(self) -> None:
+        """GAP A: the closed-scope rule covers the helper's CONTRACT clauses,
+        not just its body.  A helper whose requires() reads the outer @Int
+        param slot is E130 with the where-helper hint — the parent's value
+        scope is popped before the helper's contract is checked too, so the
+        outer slot has no binding there either."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(@Int.0 == 0) ensures(true) effects(pure)
+  {
+    1
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" in e130[0].fix and "argument" in e130[0].fix, \
+            f"Expected the where-helper hint, got: {e130[0].fix!r}"
+        assert "lower index" not in e130[0].fix
+
+    def test_contract_ensures_outer_slot_rejected(self) -> None:
+        """GAP A: same as requires, but the outer slot is read from the
+        helper's ensures() clause.  @Int.result is the helper's own return and
+        resolves; @Int.0 is the outer param slot and does not — E130 with the
+        where-helper hint."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(true) ensures(@Int.result == @Int.0) effects(pure)
+  {
+    1
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" in e130[0].fix and "argument" in e130[0].fix, \
+            f"Expected the where-helper hint, got: {e130[0].fix!r}"
+        assert "lower index" not in e130[0].fix
+
+    def test_nested_where_immediate_parent_hint(self) -> None:
+        """GAP C (nesting): a grandchild helper reading its IMMEDIATE parent
+        (mid)'s @Bool param slot earns the where-helper hint naming @Bool —
+        the outer-tname stack top is the immediate parent's frame.  (Nested
+        where-blocks parse and CHECK fine; only the non-generic codegen path
+        is unimplemented, tracked as #978, so this check-level test is safe.)"""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  mid(true)
+}
+where {
+  fn mid(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    grandchild(())
+  }
+  where {
+    fn grandchild(@Unit -> @Int)
+      requires(true) ensures(true) effects(pure)
+    {
+      @Bool.0
+    }
+  }
+}
+""", "Cannot resolve @Bool.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" in e130[0].fix and "@Bool" in e130[0].fix, \
+            f"Expected the where-helper hint naming @Bool, got: {e130[0].fix!r}"
+        assert "lower index" not in e130[0].fix
+
+    def test_nested_where_grandparent_slot_generic_hint(self) -> None:
+        """GAP C (only the immediate parent's frame is consulted): a grandchild
+        reading the GRANDPARENT (outer)'s @Int slot — where its immediate
+        parent mid binds only @Bool — gets the GENERIC hint, not the
+        where-helper one, because @Int is absent from mid's param frame (the
+        stack top).  Pins that the hint reads only `[-1]`, not the whole
+        ancestor chain."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  mid(true)
+}
+where {
+  fn mid(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    grandchild(())
+  }
+  where {
+    fn grandchild(@Unit -> @Int)
+      requires(true) ensures(true) effects(pure)
+    {
+      @Int.0
+    }
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" not in e130[0].fix, \
+            f"@Int is the grandparent's slot, not mid's; expected the generic " \
+            f"hint, got: {e130[0].fix!r}"
+        assert "lower index" in e130[0].fix
+
+    def test_handler_hint_wins_inside_helper(self) -> None:
+        """Hint ordering: when a slot miss inside a helper body is BOTH an
+        outer-param type AND the innermost handler's state type, the
+        handler-state hint wins — it is the innermost context.  The outer fn
+        binds @Int, and the helper body opens handle[State<Int>]; the
+        handled-body @Int.0 earns the get(()) hint, not the where-helper one.
+        Pins the if/elif order in expressions.py (handler branch precedes the
+        where-helper branch)."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    handle[State<Int>](@Int = 0) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) } with @Int = @Int.0
+    } in {
+      @Int.0
+    }
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "get(())" in e130[0].fix, \
+            f"Expected the handler-state hint to win, got: {e130[0].fix!r}"
+        assert "param-rooted" not in e130[0].fix
 
 
 # =====================================================================

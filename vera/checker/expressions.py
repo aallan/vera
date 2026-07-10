@@ -364,9 +364,8 @@ class ExpressionsMixin:
                 fix = (
                     f"where-helpers are closed, param-rooted scopes (spec §5): "
                     f"the outer function's @{tname} slot is not in scope here. "
-                    f"Pass it as an explicit argument — add a @{tname} "
-                    f"parameter to the helper and pass the value at the call "
-                    f"site."
+                    f"Pass it as an explicit argument — add @{tname} to the "
+                    f"helper's parameters and pass the value at the call site."
                 )
             else:
                 fix = (f"Ensure enough {tname} bindings are in scope, or use a "

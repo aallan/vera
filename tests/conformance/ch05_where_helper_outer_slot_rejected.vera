@@ -1,5 +1,5 @@
 -- Conformance: a where-helper body reading the OUTER function's parameter
--- slot is a checker error (Chapter 5, Section 5.2).
+-- slot is a checker error (Chapter 5, Section 5.6.2).
 -- Tests: E130 — where-helpers are closed, param-rooted scopes; the outer
 -- function's @Int slot is not visible inside the helper.  The helper's own
 -- param is @Bool, so @Int.0 in its body has no binding: the checker rejects

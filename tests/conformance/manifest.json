@@ -811,7 +811,7 @@
     "chapter": 5,
     "title": "Reading the outer function's parameter slot in a where-helper body is a checker error (#969)",
     "level": "check",
-    "spec_ref": "Section 5.2",
+    "spec_ref": "Section 5.6.2",
     "expected_error": "E130",
     "features": [
       "where_block",

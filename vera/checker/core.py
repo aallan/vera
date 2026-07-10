@@ -541,8 +541,13 @@ class TypeChecker(
         #    helper param-rooted, so a body @T.n reaching an outer slot passed
         #    check + verify then crashed compile with a dangling-slot E699.
         #    Now it is an ordinary E130.  Parent TYPE params stay in scope
-        #    (restored below, after the loop) so a generic parent still
-        #    parameterizes its helpers (ch09_generic_where_helper).
+        #    (restored below, after the loop), matching spec §5's intent that
+        #    a generic parent's helpers may be written over @T.  Note the
+        #    retention is not load-bearing for resolution today — an absent
+        #    type name falls through to the opaque AdtType branch in
+        #    _resolve_named_type and monomorphization is call-site-driven —
+        #    so no test fails if it is removed; it is kept as the semantics
+        #    the spec states.
         self.env.pop_scope()
         if decl.where_fns:
             # Record the parent's param slot types so a failed slot resolution

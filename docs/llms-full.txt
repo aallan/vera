@@ -2364,6 +2364,7 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 |---|---|---|---|
 | Type param named `T` | `forall<T>` collides with the builtin registry's internal generic `T` (e.g. `array_length`), producing a spurious E202/E302/E121 cascade on valid programs. | Name user type parameters anything but `T` (`E`, `A`, `B`, ...). | [#970](https://github.com/aallan/vera/issues/970) |
 | `handle[State<T>]` custom clauses | Clause bodies and `with` state-update expressions are type-checked but not executed — the runtime always applies builtin cell semantics (`get` returns the cell, `put` stores its argument). | Write `State` clauses only in the canonical form (`get(@Unit) -> { resume(@T.0) }`, `put(@T) -> { resume(()) } with @T = @T.0`); do not rely on custom handler logic for `State`. | [#976](https://github.com/aallan/vera/issues/976) |
+| Nested `where` blocks | A helper that carries its own `where`-helpers checks green but fails `vera compile`: the non-generic codegen path never emits the grandchild helpers, leaving a dangling unknown-func reference. | Flatten helpers to a single `where`-block level (siblings under one parent), or make the parent generic — both emit their helpers correctly. | [#978](https://github.com/aallan/vera/issues/978) |
 | Bare `None` under `forall` | Returning a bare `None` from a `forall<T>` function declared `-> @Option<T>` is rejected with E121 (`Option<T$1>` vs `Option<T>` — a false mismatch; the fresh constructor var is never unified with the declared forall var). | Restructure so the `Option` value's type argument is determined by an expression (e.g. build it via `option_map` over a determined value), or make the function non-generic. | [#971](https://github.com/aallan/vera/issues/971) |
 | `@Nat` at return / value position | Narrowing `@Int` → `@Nat` at a function return or inside a value-position tuple/constructor is neither obligated nor guarded: a `verify`-clean function can return a negative `@Nat`. | Write `ensures(@Nat.result >= 0)` on narrowing returns; narrow via `let`-destructure (which IS obligated) instead of constructing in value position. | [#758](https://github.com/aallan/vera/issues/758) |
 | `@Nat` through closures / mixed arms | `@Nat` → `@Int` widening through a closure argument/return/capture, or a `if`/`match` arm whose alternative is a genuine `@Int` slot, is silent (values above `2^63 - 1` reinterpret negative). | Keep `@Nat` values out of closure boundaries; keep `if`/`match` arms type-homogeneous (a non-negative literal alternative IS guarded). | [#820](https://github.com/aallan/vera/issues/820) |
@@ -3064,7 +3065,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 6,953 tests, including a 147-program conformance suite
+- 6,958 tests, including a 147-program conformance suite
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
