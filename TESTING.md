@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 7,009 across 105 files (~94,000 lines of test code; 6,916 passed + 26 stress, 67 skipped) |
+| **Tests** | 7,017 across 105 files (~94,000 lines of test code; 6,924 passed + 26 stress, 67 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 149 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 37, all validated through `vera check` + `vera verify` |
@@ -149,7 +149,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_float64_fp.py` | 9 | 204 | #797 — `@Float64` contracts via Z3's IEEE-754 FloatingPoint sort: unsound relational / reflexive contracts (rounding at 2^53, `NaN`, `Inf`) flip from proved to violated/Tier-3, NaN-guarded contracts still verify at Tier 1, `==`/`!=` use IEEE `fpEQ`/`fpNEQ` (incl. `+0.0 == -0.0`), `%` matches codegen truncated remainder (not `fp.rem`; NaN-by-zero + large-magnitude edges), and `float_is_nan` / `float_is_infinite` / `nan()` / `infinity()` translate to FP predicates / constants. Also guards mixed `@Float64`/`@Int` ordering as a clean E142 (not a Z3 crash). Test-first: each fails on the pre-fix Real-sort verifier |
 | `test_float64_builtins_807.py` | 81 | 491 | #807 — Tier-1 modeling of the modelable `@Float64` builtins. `float_clamp` modeled unconditionally as faithful WASM `f64.min(f64.max(v,lo),hi)` (the NaN-propagation soundness guard distinguishes it from a naive `z3.fpMin`/`fpMax`); `int_to_float` / `float_to_int` concrete-gated (symbolic args defer to Tier 3 — Z3's symbolic FP↔Real reasoning returns spurious counterexamples); `float_to_int` domain obligation (E529) for concrete NaN/Inf/out-of-range args. Verify-vs-run differentials confirm each model agrees with wasmtime bit-for-bit (±0, ±inf, NaN, ties, lo>hi, the 2^53 rounding boundary, i64 max, and the trap cases) |
 | `test_build_site.py` | 25 | 341 | Site-asset tooling — `_abs_links` rewriting (relative links, fenced-block immunity incl. inline backticks and tilde fences, http/https/fragment pass-through, Vera effect syntax not mis-parsed), `build_site` `<lastmod>` stability (preserve/refresh keyed on URL-structure change), `check_site_assets` sitemap staleness (missing / date-only-clean / structural-stale), and the #538 leak guard (vera:skip fence annotations stripped from generated `docs/SKILL.md` / `docs/llms-full.txt`, with a non-vacuous precondition that the source carries annotations) |
-| `test_builtin_typevar_collision_970.py` | 21 | 257 | #970 a user `forall` type-var name colliding with a built-in generic's internal name (`T`/`E`/`A`/`B`/`K`/`U`/`V`): focused check/verify pins for the compound-argument shapes (`@Array<Option<T>>`, `@Result<Int, Option<E>>`, `@Map<K, Option<V>>`) plus a collide-vs-control differential battery over every generic-builtin family and contract/where-helper position |
+| `test_builtin_typevar_collision_970.py` | 29 | 483 | #970 a user `forall` type-var name colliding with a built-in generic's internal name (`T`/`E`/`A`/`B`/`K`/`U`/`V`): focused check/verify pins for the compound-argument shapes (`@Array<Option<T>>`, `@Result<Int, Option<E>>`, `@Map<K, Option<V>>`) plus a collide-vs-control differential battery over every generic-builtin family and contract/where-helper position.  PR #982 review adds marker-strip pins (the `#b` namespacing marker must never reach an E205/E202 diagnostic), a registry-consistency pin (every built-in ability-constraint `type_var` stays a member of its `forall_vars`), the dual completeness-gap pinned in both argument orders, and a tier-split equality pin |
 | `test_check_changelog_updated.py` | 68 | 711 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths, and `GIT_*`-env hermeticity of the temp-repo fixtures (regression for the pre-commit-hook env leak) |
 | `test_check_doc_counts.py` | 19 | 187 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows, the #419 empty-section sentinel + its cannot-mask-a-malformed-table dual) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
 | `test_check_explicit_encoding.py` | 54 | 254 | `check_explicit_encoding.py` gate (#645): flags text-mode `open()` / `read_text()` / `write_text()` **and** `subprocess.run/Popen/check_output(..., text=True)` captures missing an `encoding="utf-8"` literal (rejects non-literal / non-UTF-8 values), skips binary/bytes-mode calls, honours the `# encoding-exempt` opt-out, and asserts the shipped repo is clean |
@@ -162,7 +162,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 
 ## Conformance Suite
 
-The conformance suite is a collection of 148 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 149 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Most programs are self-contained; the module-focused Chapter 8 cases use `import` statements where needed, and `ch07_cross_module_contracts.vera` still depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -594,7 +594,7 @@ Twenty-one scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 148 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 149 conformance entries hold at their declared level (parse/check/verify/run) — positives pass; the negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 `.vera` examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 189 parseable code blocks from spec chapters: parse, type-check, and verify |
@@ -695,7 +695,7 @@ Every push is checked by 30 configured hooks across two stages: 28 are configure
 | `ruff check .` | Lint Python with ruff (default `F` + `E` rules) |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_conformance.py` | All 148 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
+| `check_conformance.py` | All 149 conformance entries hold at their declared level — positives pass; negatives fail `check` with their `expected_error` E-code |
 | `check_examples.py` | All 37 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |

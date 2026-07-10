@@ -29,6 +29,7 @@ from vera.types import (
     is_subtype,
     pretty_effect,
     pretty_type,
+    strip_builtin_typevar_marker,
     substitute,
 )
 
@@ -143,10 +144,17 @@ class CallsMixin:
                 # "expected Res<String, ...>, got Res<Int, ...>" E202 the
                 # partial merge would otherwise emit for one arm.
                 type_arg_conflict = True
+                # #970 (PR #982 review): ``conflicts`` holds raw callee
+                # forall-var names; for a built-in generic these carry the
+                # internal namespacing marker (``T#b``).  Strip it so the
+                # user-facing message names the parameter as ``T``.
+                conflict_names = ", ".join(
+                    strip_builtin_typevar_marker(c) for c in sorted(conflicts)
+                )
                 self._error(
                     node,
                     f"Cannot infer a consistent type for the type "
-                    f"parameter(s) {', '.join(sorted(conflicts))} of "
+                    f"parameter(s) {conflict_names} of "
                     f"'{fn_info.name}': different arguments require "
                     f"incompatible types.",
                     rationale="A generic call binds each type parameter to one "

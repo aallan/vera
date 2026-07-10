@@ -1890,21 +1890,41 @@ class TypeEnv:
         The rename is applied consistently to each signature's ``forall_vars``
         *and* to every ``TypeVar`` occurrence inside its ``param_types`` /
         ``return_type`` (via :func:`substitute` with a var→renamed-var map keyed
-        on that signature's own ``forall_vars``), so the two never drift.
+        on that signature's own ``forall_vars``) *and* to the ``type_var`` of
+        each ``forall_constraints`` entry (``Eq<K>`` / ``Hash<K>`` on the
+        ``map_*`` / ``set_*`` families), so the three never drift.  Skipping the
+        constraints would leave, e.g., ``map_insert`` with
+        ``forall_vars=('K#b','V#b')`` but ``[('Eq','K'),('Hash','K')]`` — inert
+        today (built-in constraints don't route through
+        ``monomorphize._check_constraints``) but a latent unsound-skip trap.
         """
+        from vera.ast import AbilityConstraint
+
         for info in self.functions.values():
             if not info.forall_vars:
                 continue
+            original_vars = info.forall_vars
             rename: dict[str, Type] = {
-                v: TypeVar(v + BUILTIN_TYPEVAR_MARKER) for v in info.forall_vars
+                v: TypeVar(v + BUILTIN_TYPEVAR_MARKER) for v in original_vars
             }
-            info.forall_vars = tuple(
-                v + BUILTIN_TYPEVAR_MARKER for v in info.forall_vars
-            )
+            renamed_name: dict[str, str] = {
+                v: v + BUILTIN_TYPEVAR_MARKER for v in original_vars
+            }
+            info.forall_vars = tuple(renamed_name[v] for v in original_vars)
             info.param_types = tuple(
                 substitute(p, rename) for p in info.param_types
             )
             info.return_type = substitute(info.return_type, rename)
+            if info.forall_constraints:
+                info.forall_constraints = tuple(
+                    AbilityConstraint(
+                        ability_name=c.ability_name,
+                        type_var=renamed_name.get(c.type_var, c.type_var),
+                    )
+                    if isinstance(c, AbilityConstraint)
+                    else c
+                    for c in info.forall_constraints
+                )
 
     # -----------------------------------------------------------------
     # Scope management

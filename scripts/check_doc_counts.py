@@ -322,6 +322,25 @@ def main() -> int:
                 f" live conformance is {live_conformance}"
             )
 
+    # Prose forms the `(\d+) programs` pattern above cannot reach: an
+    # adjective intervenes ("N small, focused programs") or the noun differs
+    # ("All N conformance entries").  These three sites drifted silently to a
+    # stale 148 (PR #982 review); pin them so the whole class dies, not just
+    # the individual instances.
+    for pat, label in (
+        (r"(\d+) small, focused programs", "small-focused programs prose"),
+        (r"All (\d+) conformance entries", "conformance-entries prose"),
+    ):
+        for m in re.finditer(pat, testing_md):
+            n = int(m.group(1))
+            if n != live_conformance:
+                pos = m.start()
+                line_no = testing_md[:pos].count("\n") + 1
+                errors.append(
+                    f"TESTING.md line {line_no} ({label}): says {n},"
+                    f" live conformance is {live_conformance}"
+                )
+
     # ------------------------------------------------------------------
     # 7. Check CONTRIBUTING.md
     # ------------------------------------------------------------------

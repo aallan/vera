@@ -325,16 +325,18 @@ class ResolutionMixin:
             elif (isinstance(existing, TypeVar)
                   and not isinstance(concrete, TypeVar)):
                 # #970 (dual): the existing binding is a bare type variable that
-                # leaked UNRESOLVED from a nested generic call — e.g.
-                # `option_unwrap_or(nothing(()), 11)`, where `nothing() :
-                # Option<T>` binds the callee's param to `nothing`'s escaped
-                # `T` before the concrete `11` arrives.  A later argument that
-                # pins a CONCRETE type resolves it, exactly as a fresh `$`
-                # placeholder would.  (Pre-rename a name coincidence between the
-                # leaked var and the built-in's internal var made the skip-guard
-                # fire and hide this; the #970 registry rename removed the
-                # coincidence, so the concrete-wins rule must be explicit — not a
-                # weakening, the same downstream subtype check runs unchanged.)
+                # leaked UNRESOLVED from a nested generic call — e.g., given a
+                # user-defined `forall<T> fn nothing(@Unit -> @Option<T>)`, the
+                # call `option_unwrap_or(nothing(()), 11)`, where `nothing(())`
+                # returns `@Option<T>`, binds `option_unwrap_or`'s param to
+                # `nothing`'s escaped `T` before the concrete `11` arrives.  A
+                # later argument that pins a CONCRETE type resolves it, exactly
+                # as a fresh `$` placeholder would.  (Pre-rename a name
+                # coincidence between the leaked var and the built-in's internal
+                # var made the skip-guard fire and hide this; the #970 registry
+                # rename removed the coincidence, so the concrete-wins rule must
+                # be explicit — not a weakening, the same downstream subtype
+                # check runs unchanged.)
                 mapping[pattern.name] = concrete
             else:
                 # #898: both the existing binding and the new one are (partly)
