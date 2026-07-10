@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from vera.types import (
     BOOL,
+    BUILTIN_TYPEVAR_MARKER,
     BYTE,
     FLOAT64,
     INT,
@@ -26,6 +27,7 @@ from vera.types import (
     PureEffectRow,
     Type,
     TypeVar,
+    substitute,
 )
 
 
@@ -1866,6 +1868,43 @@ class TypeEnv:
             return_type=FLOAT64,
             effect=PureEffectRow(),
         )
+
+        # #970: namespace every built-in generic's internal type-var names away
+        # from the user's, so a user `forall<T>` (or E/A/B/K/U/V) can never
+        # collide by name in the inference skip-guard (_unify_for_inference).
+        self._namespace_builtin_typevars()
+
+    def _namespace_builtin_typevars(self) -> None:
+        """Alpha-rename each built-in generic's internal type-var names (#970).
+
+        The inference skip-guard (``_unify_for_inference``) matches a concrete
+        argument's type-args against the callee's ``forall_vars`` *by name*.
+        The registry names its internal vars ``T``/``U``/``A``/``B``/``E``/
+        ``K``/``V`` — identical to names a user is likely to pick — so an
+        identically-named user ``forall`` var aborted unification, producing a
+        spurious E202 whenever it was the immediate type-arg of a compound
+        argument type (``@Array<Option<T>>``).  Suffixing each internal name
+        with :data:`BUILTIN_TYPEVAR_MARKER` (a parser-unwritable form) makes the
+        collision impossible while leaving the guard itself untouched.
+
+        The rename is applied consistently to each signature's ``forall_vars``
+        *and* to every ``TypeVar`` occurrence inside its ``param_types`` /
+        ``return_type`` (via :func:`substitute` with a var→renamed-var map keyed
+        on that signature's own ``forall_vars``), so the two never drift.
+        """
+        for info in self.functions.values():
+            if not info.forall_vars:
+                continue
+            rename: dict[str, Type] = {
+                v: TypeVar(v + BUILTIN_TYPEVAR_MARKER) for v in info.forall_vars
+            }
+            info.forall_vars = tuple(
+                v + BUILTIN_TYPEVAR_MARKER for v in info.forall_vars
+            )
+            info.param_types = tuple(
+                substitute(p, rename) for p in info.param_types
+            )
+            info.return_type = substitute(info.return_type, rename)
 
     # -----------------------------------------------------------------
     # Scope management

@@ -15,6 +15,34 @@ if TYPE_CHECKING:
 
 
 # =====================================================================
+# Built-in generic type-variable namespacing (#970)
+# =====================================================================
+
+# The built-in function registry (``vera/environment.py`` ``_register_builtins``)
+# names its internal generic vars ``T``/``U``/``A``/``B``/``E``/``K``/``V``.  The
+# inference skip-guard in ``_unify_for_inference`` compares a concrete argument's
+# type-args *by name* against the callee's ``forall_vars``; an identically-named
+# user ``forall<T>`` var therefore aborted unification and produced a spurious
+# E202 (#970).  Every built-in internal var name is alpha-renamed at registration
+# by suffixing this marker, making it impossible to collide with a user type
+# name.  ``#`` is deliberate: it is outside the ``UPPER_IDENT`` grammar
+# (``[A-Z][A-Za-z0-9_]*`` — see ``vera/grammar.lark``) so no user-written type
+# name can contain it, and it is distinct from ``$`` (reserved for fresh
+# inference placeholders — ``_is_fresh_typevar``), so a renamed var is never
+# mistaken for a fresh hole.  Stripped for user-facing display (``pretty_type``).
+BUILTIN_TYPEVAR_MARKER = "#b"
+
+
+def strip_builtin_typevar_marker(name: str) -> str:
+    """Drop the #970 built-in-namespacing marker for user-facing display.
+
+    ``"T#b"`` → ``"T"``.  A name without the marker is returned unchanged.
+    """
+    marker_at = name.find(BUILTIN_TYPEVAR_MARKER)
+    return name[:marker_at] if marker_at != -1 else name
+
+
+# =====================================================================
 # Type hierarchy
 # =====================================================================
 
@@ -170,7 +198,7 @@ def pretty_type(ty: Type) -> str:
     if isinstance(ty, RefinedType):
         return f"{{@{pretty_type(ty.base)} | ...}}"
     if isinstance(ty, TypeVar):
-        return ty.name
+        return strip_builtin_typevar_marker(ty.name)
     if isinstance(ty, UnknownType):
         return "?"
     return str(ty)

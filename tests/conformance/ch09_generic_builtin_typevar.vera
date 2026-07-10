@@ -1,0 +1,52 @@
+-- Conformance: a user generic whose type-parameter NAME coincides with a
+--   built-in generic's internal type-variable name, over a COMPOUND element
+--   type (Chapter 9 — generic inference against built-in signatures).
+-- Tests: #970 — the inference skip-guard in `_unify_for_inference` matched a
+--        user `forall` var against a built-in's internal generic var purely by
+--        NAME.  With `T`/`E` as the immediate type-arg of a compound argument
+--        (`@Array<Option<T>>`, `@Result<Int, Option<E>>`), the guard wrongly
+--        aborted unification and the call was rejected with a spurious E202.
+--        The fix alpha-renames the registry's internal var names to a
+--        parser-unwritable form, so a user `T`/`E`/`K`/`V` can never collide.
+--        This program uses `T` (vs the array/option built-ins) AND `E` (vs the
+--        result built-ins) — both colliding names — over compound element
+--        types, then monomorphizes and runs, returning the sentinel 42.
+-- ================================================================
+-- opt_count — user `forall<T>` (collides with array_*/option_* internal `T`)
+-- over `@Array<Option<T>>`; array_length over the compound element type.
+-- ================================================================
+private forall<T> fn opt_count(@Array<Option<T>> -> @Int)
+  requires(array_length(@Array<Option<T>>.0) >= 0)
+  ensures(@Int.result == array_length(@Array<Option<T>>.0))
+  effects(pure)
+{
+  array_length(@Array<Option<T>>.0)
+}
+
+-- ================================================================
+-- res_or — user `forall<E>` (collides with result_* internal `E`) over
+-- `@Result<Int, Option<E>>`; result_unwrap_or with the compound error type.
+-- ================================================================
+private forall<E> fn res_or(@Result<Int, Option<E>>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(@Result<Int, Option<E>>.0, @Int.0)
+}
+
+-- ================================================================
+-- main — monomorphize opt_count at T = Int and res_or at E = Bool, run over
+-- sentinel data, and return 3 + 39 = 42 (never a 0/false/"" fallback).
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Option<Int>> = [Some(7), None, Some(13)];
+  let @Int = opt_count(@Array<Option<Int>>.0);
+  let @Result<Int, Option<Bool>> = Ok(39);
+  let @Int = res_or(@Result<Int, Option<Bool>>.0, 100);
+  @Int.1 + @Int.0
+}

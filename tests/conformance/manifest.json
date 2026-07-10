@@ -2022,6 +2022,21 @@
     ]
   },
   {
+    "id": "ch09_generic_builtin_typevar",
+    "file": "ch09_generic_builtin_typevar.vera",
+    "chapter": 9,
+    "title": "User forall var name colliding with a builtin internal generic var over a compound element type (#970)",
+    "level": "run",
+    "spec_ref": "Section 9.1",
+    "features": [
+      "generics",
+      "forall",
+      "monomorphization",
+      "array_length",
+      "result_unwrap_or"
+    ]
+  },
+  {
     "id": "ch09_http",
     "file": "ch09_http.vera",
     "chapter": 9,
