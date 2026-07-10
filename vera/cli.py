@@ -296,7 +296,12 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
                         "location": {
                             "line": o.line,
                             "column": o.column,
-                            **({"file": path} if path else {}),
+                            # str(p), not the raw CLI `path`: diagnostics
+                            # carry the normalized path (verify(...,
+                            # file=str(p))), and a consumer must be able to
+                            # join an obligation to its diagnostic on
+                            # (file, line, column) (PR #974 review).
+                            **({"file": str(p)} if path else {}),
                         },
                         **({"error_code": o.error_code} if o.error_code else {}),
                     }

@@ -566,6 +566,24 @@ class TestCmdVerify:
         assert v["tier3_runtime"] == tier3
         assert v["total"] == tier1 + tier3
 
+    def test_json_obligation_file_matches_diagnostics(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An obligation's location.file must equal the NORMALIZED path
+        diagnostics carry, so a consumer can join the two arrays on
+        (file, line, column) — a raw dot-segment CLI argument must not
+        leak through (PR #974 review)."""
+        dotted = str(EXAMPLES_DIR) + "/./increment.vera"
+        rc = cmd_verify(dotted, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        obls = data["obligations"]
+        assert obls, "expected a non-empty obligations array"
+        normalized = str(Path(dotted))
+        assert dotted != normalized  # the probe must exercise the divergence
+        for o in obls:
+            assert o["location"]["file"] == normalized
+
     def test_json_type_error(
         self,
         tmp_path: Path,
