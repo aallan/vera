@@ -190,6 +190,8 @@ where {
 }
 ```
 
+A `where`-helper is a closed, param-rooted scope: its body resolves slot references only against its **own** parameters, never the outer function's. The outer function's parameter slots are not in scope inside a helper — everything a helper needs must be passed as an explicit argument (a helper's mandatory contract covers only its own parameters, so an implicit outer-frame capture would move a value across a contract boundary). Reading an outer parameter slot from a helper body is an unresolved-slot error (E130). The parent's `forall` **type** parameters remain in scope, so a helper of a generic parent may still be written over `@T`; only value slots are isolated.
+
 ## 5.7 Anonymous Functions (Closures)
 
 Anonymous functions (lambdas/closures) use the same `fn` keyword without a name:

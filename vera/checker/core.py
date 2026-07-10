@@ -192,6 +192,17 @@ class TypeChecker(
         # unbound-slot error.  Push/pop straddles the body check in
         # _check_handle; empty everywhere else.
         self._handler_body_state_tnames: list[str] = []
+        # #969: canonical slot-type names bound by the PARENT function whose
+        # where-block is currently being checked.  A where-helper is a closed,
+        # param-rooted scope (spec §5): its body cannot read the outer
+        # function's parameter slots — the parent's value scope is popped
+        # before helper bodies are checked, so an outer slot becomes an
+        # ordinary E130.  This stack lets that failed resolution carry a
+        # "pass it as an explicit argument" hint when the failing type is one
+        # the parent bound.  Push/pop straddles the where-fn loop in
+        # _check_fn; empty everywhere else (so no non-helper diagnostic sees
+        # the hint).  Parent TYPE params stay in scope through the loop.
+        self._where_helper_outer_tnames: list[frozenset[str]] = []
         # #815: ids of FnDecls rejected for redefining a built-in (E151).
         # They are not registered (the built-in stays canonical), so the
         # check phase skips them — re-checking would resolve their own body
@@ -477,9 +488,11 @@ class TypeChecker(
 
         # 4. Push scope and bind parameters
         self.env.push_scope()
+        param_slot_names: set[str] = set()
         for i, (param_te, param_ty) in enumerate(
                 zip(decl.params, param_types)):
             tname = self._type_expr_to_slot_name(param_te)
+            param_slot_names.add(tname)
             self.env.bind(tname, param_ty, "param")
 
         # 5. Check contracts
@@ -518,18 +531,36 @@ class TypeChecker(
                 error_code="E122",
             )
 
-        # 8. Check where-block functions
+        # 8. Check where-block functions.
+        #    Pop the parent's VALUE-slot scope FIRST so a helper body cannot
+        #    resolve the outer function's parameter slots (#969).  spec §5:
+        #    where-helpers are always local to the parent and carry their own
+        #    mandatory contracts over their own params; an implicit outer-frame
+        #    capture would move a value across a contract boundary uncontracted
+        #    (DESIGN principles 2 and 5).  The backends already compile each
+        #    helper param-rooted, so a body @T.n reaching an outer slot passed
+        #    check + verify then crashed compile with a dangling-slot E699.
+        #    Now it is an ordinary E130.  Parent TYPE params stay in scope
+        #    (restored below, after the loop) so a generic parent still
+        #    parameterizes its helpers (ch09_generic_where_helper).
+        self.env.pop_scope()
         if decl.where_fns:
-            for wfn in decl.where_fns:
-                # #815: skip a where-helper rejected for redefining a built-in
-                # (E151 already emitted; it is not registered, so re-checking
-                # would resolve its body against the built-in).
-                if id(wfn) in self._rejected_builtin_redefs:
-                    continue
-                self._check_fn(wfn)
+            # Record the parent's param slot types so a failed slot resolution
+            # of one of them inside a helper body carries the pass-as-argument
+            # hint instead of the generic lower-index hint.
+            self._where_helper_outer_tnames.append(frozenset(param_slot_names))
+            try:
+                for wfn in decl.where_fns:
+                    # #815: skip a where-helper rejected for redefining a
+                    # built-in (E151 already emitted; it is not registered, so
+                    # re-checking would resolve its body against the built-in).
+                    if id(wfn) in self._rejected_builtin_redefs:
+                        continue
+                    self._check_fn(wfn)
+            finally:
+                self._where_helper_outer_tnames.pop()
 
         # 9. Restore context
-        self.env.pop_scope()
         self.env.type_params = saved_params
         self.env.current_return_type = saved_return
         self.env.current_effect_row = saved_effect

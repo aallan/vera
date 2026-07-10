@@ -6,9 +6,9 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 6,943 across 104 files (~93,500 lines of test code; 6,852 passed + 26 stress, 65 skipped) |
+| **Tests** | 6,953 across 104 files (~93,600 lines of test code; 6,860 passed + 26 stress, 67 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
-| **Conformance programs** | 146 programs across 9 spec chapters, validating every language feature |
+| **Conformance programs** | 147 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 37, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 189 parseable blocks from 14 spec chapters: 92 parse, 86 type-check, 85 verify (the rest carry inline `vera:skip` annotations, #538) |
 | **README code blocks** | 3 Vera blocks (3 validated, 0 annotated) |
@@ -39,7 +39,7 @@ VERA_EAGER_GC=1 pytest tests/test_codegen_closures.py::TestClosureReturnShadowPu
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (146 programs, see manifest.json)
+python scripts/check_conformance.py                  # conformance suite (147 programs, see manifest.json)
 python scripts/check_examples.py                     # 37 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -59,7 +59,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_checker_types.py` | 151 | 2045 | Primitive types, literals, binary/unary ops, generics, constructors, refinement types, arrays, tuples, return/match-arm types, byte-arithmetic + integer-literal-range rejection (#420 split), the #898 cross-argument type-argument merge (`eq2(MkErr(5), MkOk("x"))` fully determines `Res<String, Int>` and type-checks; a per-parameter conflict `eq2(MkOk("x"), MkOk(5))` is a clear E205; a determined-non-Eq type still type-checks), the #900/#939 generic-over-zero-size rejection (E206 fires only when the `forall<T>` READS `@T` and `T` erases to no WASM local — bare `Unit` OR a transparent `Future<Unit>` (#939) — in the body (direct return, match scrutinee, nested `let`/`if`) OR in a `requires`/`ensures` clause (#939); a `@T`-unread generic like `firstInt`/`ignore`, a boxed `Option<Unit>`, a `Future<Int>`, and the built-in `async(IO.print(...))` over Unit all stay accepted), and the #945 array-of-zero-size rejection (`Array<Unit>` / a bare `[()]` is E135 at both the type-resolution and array-literal gates — emitted exactly once, the literal gate defers to the annotation when both apply (including a refined `{ @Array<Unit> | p }` annotation, whose `RefinedType` the guard strips via `base_type`), and a zero-size `Array` param reports E135 once via the general exact-duplicate diagnostic dedup (PR #938); `Array<Int>` stays accepted) |
 | `test_checker_int_nat.py` | 8 | 153 | #755 — mixed `Int <op> Nat` arithmetic joins to the formal LUB `Int` (not `Nat`); direct `expr_types` observation that `@Int.0 - 2`, `@Int.0 + @Nat.0`, `@Int.0 * @Nat.0`, `@Int.0 / @Nat.0`, and `@Int.0 % @Nat.0` synthesise `Int` (the DIV/MOD pins kill a per-operator `numeric_join` bypass nothing else in the suite catches), with `Nat`/`Nat` → `Nat` and `Int`/`Int` → `Int` guards against over-correction |
 | `test_checker_patterns.py` | 59 | 936 | Pattern matching, match-arm typing, exhaustiveness, pattern/match coverage, bidirectional inference, typed holes (#420 split) |
-| `test_checker_functions.py` | 68 | 694 | Function signatures, slot references, result refs, calls, control flow, higher-order, where-blocks, expression diagnostics, IO operations, string interpolation (#420 split) |
+| `test_checker_functions.py` | 73 | 827 | Function signatures, slot references, result refs, calls, control flow, higher-order, where-blocks (incl. #969 closed-scope isolation), expression diagnostics, IO operations, string interpolation (#420 split) |
 | `test_checker_effects.py` | 67 | 1,066 | Effect declarations, abilities, effect subtyping, async effect, handler typing (#420 split) |
 | `test_checker_modules.py` | 45 | 975 | Module-call diagnostics, cross-module typing, visibility enforcement, builtin redefinition, parsed module calls (#420 split) |
 | `test_checker_errors.py` | 47 | 663 | Error codes, resolution-coverage diagnostics, contracts, error accumulation (#420 split) |
@@ -140,7 +140,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_markdown.py` | 59 | 393 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_lsp.py` | 94 | 1211 | LSP transport + coordinate layer (#222 Phase C) and language features (#222 Phase D): parametrized code-point↔UTF-16 goldens incl. astral-plane fixtures and surrogate-pair snapping, Span (1-based, exclusive-end) and SourceLocation (0-based col) → LSP Range conversions, point→token-range widening, DocumentStore open/change/close + index invalidation, an in-process handler-drive test, and one stdio end-to-end round-trip against the real `vera lsp` subprocess (initialize → didOpen → shutdown → exit) pinning serverInfo + textDocumentSync capabilities; plus the Phase D feature suite — parse-error single-diagnostic path, type-error verification short-circuit, tier=3 in E520 diagnostic data, per-function tier Hint synthesis (and its suppression for functions with violated obligations), smallest-enclosing-span hover, De Bruijn slot goto (most-recent-parameter jump, out-of-range None, off-slot None), and typed-hole completion (inside/after hole, away-from-hole None); plus the Phase E speculativeEdit suite — identical-text all-unchanged, breaking edit surfaces newly_undischarged (violated nat_sub) with canonical state untouched, strengthening edit surfaces newly_discharged, parse/type errors report ok:false, deleted functions report removed, proof_delta purity; plus the Phase F1 proposeEdit suite — the apply gate (clean and strengthening edits apply, breaking and non-compiling edits refuse), force overriding both gates with the delta still reported, wiring against a structural fake server (apply round-trip with exact full-document replacement range, refuse touches no canonical state, unopened-URI clamp sentinel), and full-document-range goldens (trailing-newline virtual line, UTF-16 end column); plus the Phase F2 strengthenContract suite — splice goldens (first-clause-only replacement with byte-identical remainder, ensures variant, unknown-fn None), the call-site audit pin (tightened precondition refused with newly_undischarged call_pre items, canonical state untouched), provable-ensures strengthening applies, and the three splice-target refusal paths (no analysis, unparseable document, unknown function); plus the Phase F3 addEffect suite — transitive-caller closure goldens (diamond in declaration order, leaf, unknown-fn None, recursion appears once), effect-row rewrite goldens (pure to singleton set, source-preserving append, already-present None, base-name identity blocking State<Int> next to State<Bool>), diamond propagation applying one multi-site candidate with the bystander untouched, mixed append/replace rows with already-satisfied callers skipped, the fully-satisfied no-op shape, and the two refusal paths; plus the #728 instruction-contract suite — the LSP message carries description, rationale, and the Fix: paragraph (also pinning single E501 emission at the LSP surface), and a bare diagnostic maps to the description alone |
 | `test_browser.py` | 136 | 3,058 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 730 | 124 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 146 programs |
+| `test_conformance.py` | 735 | 124 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 147 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_checker_apply_fn.py` | 18 | 454 | #854 — `apply_fn` as a checker special form: zero-warning pins (API + CLI `--json` + closures.vera), E201 arity / E202 type / non-function-first-arg errors, E122/E125 effect-row enforcement for applied fn values, E151 redefinition rejection, variadic two-param application, prelude combinator regression pins |
 | `test_prelude_diagnostics.py` | 8 | 271 | #851 — prelude combinator skip-warnings: unreferenced-prelude E602/E604 suppression (zero-warning minimal compile, API + CLI `--json`), `<prelude>` origin attribution for referenced-but-skipped combinators (text + `to_dict`), transitive reference scan, and user-fn warning locations pinned unchanged |
@@ -186,15 +186,15 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | Level | What it validates | Count |
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
-| `check` | Parses and type-checks cleanly | 14 |
+| `check` | Parses and type-checks cleanly | 15 |
 | `verify` | Type-checks and all contracts verified by Z3 | 13 |
 | `run` | Compiles to WASM and executes correctly | 119 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Fourteen programs (`ch02_generic_over_unit_rejected`, `ch03_typed_holes`, `ch05_apply_fn_arity`, `ch07_cross_module_contracts_lib`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_cross_module_generic_lib`, `ch08_transitive_module_import_base`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_eq_non_derivable_rejected`, `ch09_http`, `ch09_inference`, `ch09_ord_adt_rejected`) are at the `check` level. Eight of them — `ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, and `ch09_eq_non_derivable_rejected` — are **negative tests** that assert a specific diagnostic (E206, E201, E130, E011, E150, E151, E242, and E243 respectively) via the manifest's `expected_error` field; `ch09_http` and `ch09_inference` are environment-gated (network / API key). Thirteen programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_nested_option_ctor`, `ch04_primitive_obligations`, `ch05_apply_fn_typing`, `ch06_adt_sort_disambiguation`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch08_transitive_module_import_mid`, `ch09_http_server`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Fifteen programs (`ch02_generic_over_unit_rejected`, `ch03_typed_holes`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_cross_module_contracts_lib`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_cross_module_generic_lib`, `ch08_transitive_module_import_base`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_eq_non_derivable_rejected`, `ch09_http`, `ch09_inference`, `ch09_ord_adt_rejected`) are at the `check` level. Nine of them — `ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, and `ch09_eq_non_derivable_rejected` — are **negative tests** that assert a specific diagnostic (E206, E201, E130, E130, E011, E150, E151, E242, and E243 respectively) via the manifest's `expected_error` field; `ch09_http` and `ch09_inference` are environment-gated (network / API key). Thirteen programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch04_nested_option_ctor`, `ch04_primitive_obligations`, `ch05_apply_fn_typing`, `ch06_adt_sort_disambiguation`, `ch07_cross_module_contracts`, `ch07_io_read_char`, `ch07_io_sleep`, `ch07_random_effect`, `ch08_transitive_module_import_mid`, `ch09_http_server`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
 
 ### Skipped tests
 
-`pytest tests/ -v` skips 27 conformance-stage tests across the two categories below (the suite's remaining skips are platform- or tool-gated and documented beside the tests that declare them):
+`pytest tests/ -v` skips 29 conformance-stage tests across the two categories below (the suite's remaining skips are platform- or tool-gated and documented beside the tests that declare them):
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -207,6 +207,8 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch04_primitive_obligations]` | `ch04_primitive_obligations.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_verify[ch05_apply_fn_arity]` | `ch05_apply_fn_arity.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E201`): verify stage not run |
 | `test_run[ch05_apply_fn_arity]` | `ch05_apply_fn_arity.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch05_where_helper_outer_slot_rejected]` | `ch05_where_helper_outer_slot_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E130`): verify stage not run |
+| `test_run[ch05_where_helper_outer_slot_rejected]` | `ch05_where_helper_outer_slot_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_run[ch05_apply_fn_typing]` | `ch05_apply_fn_typing.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch07_cross_module_contracts]` | `ch07_cross_module_contracts.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_verify[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `verify` | `check`-level program: verify stage not run |
@@ -243,7 +245,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 146 programs total, organized by spec chapter
+├── ...                        # 147 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions

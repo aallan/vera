@@ -350,6 +350,24 @@ class ExpressionsMixin:
                     f"it through the typed operation: get(()) returns the "
                     f"current {tname} state, and put(<{tname}>) updates it."
                 )
+            elif (count == 0
+                    and self._where_helper_outer_tnames
+                    and tname in self._where_helper_outer_tnames[-1]):
+                # #969: inside a where-helper body, an unresolved slot whose
+                # type the PARENT function binds is almost certainly an attempt
+                # to read the outer parameter.  where-helpers are closed,
+                # param-rooted scopes — steer the user to pass the value in.
+                # The gate is narrow (PR review discipline mirroring #973):
+                # empty outside helper bodies, and only the parent's own param
+                # types carry the hint, so an unrelated unresolved slot keeps
+                # the generic lower-index message.
+                fix = (
+                    f"where-helpers are closed, param-rooted scopes (spec §5): "
+                    f"the outer function's @{tname} slot is not in scope here. "
+                    f"Pass it as an explicit argument — add a @{tname} "
+                    f"parameter to the helper and pass the value at the call "
+                    f"site."
+                )
             else:
                 fix = (f"Ensure enough {tname} bindings are in scope, or use a "
                        f"lower index.")

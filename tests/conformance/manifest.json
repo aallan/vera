@@ -806,6 +806,20 @@
     ]
   },
   {
+    "id": "ch05_where_helper_outer_slot_rejected",
+    "file": "ch05_where_helper_outer_slot_rejected.vera",
+    "chapter": 5,
+    "title": "Reading the outer function's parameter slot in a where-helper body is a checker error (#969)",
+    "level": "check",
+    "spec_ref": "Section 5.2",
+    "expected_error": "E130",
+    "features": [
+      "where_block",
+      "slot_resolution",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch06_requires",
     "file": "ch06_requires.vera",
     "chapter": 6,

@@ -35,6 +35,13 @@ class OperatorsMixin:
                 "slot reference type argument is not a NamedType", ref)
         local_idx = env.resolve(type_name, ref.index)
         if local_idx is None:
+            # Defensive invariant: a check-green slot reference must map to a
+            # local.  The two source routes that used to reach here — reading
+            # handler state as a slot in a handled body (#973) and a
+            # where-helper body reading the OUTER function's parameter slot
+            # (#969) — are both now rejected at check with E130, so no known
+            # valid-source program trips this.  It stays as a soundness net for
+            # any future checker/backend scope desync (never delete the guard).
             raise CodegenInvariantError(  # pragma: no cover
                 "slot reference resolved to no local (dangling @T.n)", ref)
         # Pair types (String, Array<T>) push (ptr, len) — two locals

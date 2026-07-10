@@ -1,0 +1,32 @@
+-- Conformance: a where-helper body reading the OUTER function's parameter
+-- slot is a checker error (Chapter 5, Section 5.2).
+-- Tests: E130 — where-helpers are closed, param-rooted scopes; the outer
+-- function's @Int slot is not visible inside the helper.  The helper's own
+-- param is @Bool, so @Int.0 in its body has no binding: the checker rejects
+-- it with an unresolved-slot error plus a "pass it as an argument" hint,
+-- instead of accepting an outer-frame capture the backends never provide
+-- (which previously passed check + verify then crashed compile with E699, #969).
+private fn outer(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  outer(5)
+}

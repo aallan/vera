@@ -316,6 +316,139 @@ where {
 """)
 
 
+class TestWhereHelperScope:
+    """#969: a where-helper body is a closed, param-rooted scope — it cannot
+    read the OUTER function's parameter slots.  The checker used to check
+    helper bodies while the parent's value scope was still live, so an outer
+    slot resolved at check + verify then crashed compile with a dangling-slot
+    E699 (the backends compile each helper param-rooted).  The value scope is
+    now popped before helper bodies are checked; the outer slot becomes an
+    ordinary E130, carrying a hint to pass the value as an explicit argument.
+    Parent TYPE params stay in scope (a generic parent still parameterizes its
+    helpers)."""
+
+    def test_outer_value_slot_rejected(self) -> None:
+        """The reported bug: a helper body reads the outer @Int param slot.
+        The helper's own param is @Bool, so @Int.0 has no in-scope binding —
+        E130, with the where-helper hint (pass it as an argument), not the
+        generic lower-index hint."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0
+  }
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" in e130[0].fix and "argument" in e130[0].fix, \
+            f"Expected the where-helper hint, got: {e130[0].fix!r}"
+        assert "lower index" not in e130[0].fix
+
+    def test_own_param_still_ok(self) -> None:
+        """Guard (over-pop): a helper reading its OWN same-typed param still
+        checks green.  The outer ALSO has an @Int param, but @Int.0 in the
+        helper body must resolve to the helper's own binding, not desync."""
+        _check_ok("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(@Int.0)
+}
+where {
+  fn helper(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0
+  }
+}
+""")
+
+    def test_generic_type_param_still_ok(self) -> None:
+        """Guard (type params preserved): a helper inside a forall<T> parent
+        uses @T both as a type (its own param's declared type) and as a value
+        slot (@T.0, its own param).  T must remain in scope through the
+        where-block check even though the parent's VALUE scope is popped."""
+        _check_ok("""
+private forall<T> fn wrap(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  id(@T.0)
+}
+where {
+  fn id(@T -> @T)
+    requires(true) ensures(true) effects(pure)
+  {
+    @T.0
+  }
+}
+""")
+
+    def test_unrelated_slot_keeps_generic_hint(self) -> None:
+        """Guard (hint gated on an outer binding of that type): a helper body
+        reading a type NEITHER the helper NOR the outer binds (@String, while
+        outer has @Int and helper has @Bool) is a plain E130 with the generic
+        hint — the where-helper hint must not fire for an unrelated type."""
+        errs = _check_err("""
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(true)
+}
+where {
+  fn helper(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @String.0
+  }
+}
+""", "Cannot resolve @String.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" not in e130[0].fix, \
+            f"@String is not an outer param; expected generic hint, " \
+            f"got: {e130[0].fix!r}"
+        assert "lower index" in e130[0].fix
+
+    def test_hint_not_leaked_to_sibling_fn(self) -> None:
+        """Guard (stack pops after the where-block): a LATER top-level function
+        that fails to resolve a slot of the same type the earlier parent bound
+        gets the generic hint, never a stale where-helper suggestion.  `plain`
+        is not a helper, so no where-helper hint applies."""
+        errs = _check_err("""
+private fn has_helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(@Int.0)
+}
+where {
+  fn helper(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0
+  }
+}
+
+private fn plain(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0
+}
+""", "Cannot resolve @Int.0")
+        e130 = [e for e in errs if e.error_code == "E130"]
+        assert e130, f"Expected E130, got {[e.error_code for e in errs]}"
+        assert "param-rooted" not in e130[0].fix, \
+            f"plain is not a helper; expected generic hint, got: {e130[0].fix!r}"
+        assert "lower index" in e130[0].fix
+
+
 # =====================================================================
 # Expression diagnostics (#387 fix-core)
 # =====================================================================
