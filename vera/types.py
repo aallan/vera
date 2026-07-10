@@ -38,8 +38,7 @@ def strip_builtin_typevar_marker(name: str) -> str:
 
     ``"T#b"`` → ``"T"``.  A name without the marker is returned unchanged.
     """
-    marker_at = name.find(BUILTIN_TYPEVAR_MARKER)
-    return name[:marker_at] if marker_at != -1 else name
+    return name.removesuffix(BUILTIN_TYPEVAR_MARKER)
 
 
 # =====================================================================
