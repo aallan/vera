@@ -645,18 +645,23 @@ class CodeGenerator(
                 math_ops_used=set(),
             )
 
-        # Pass 0: register imported module declarations (C7e)
-        self._register_modules(program)
-
-        # Pass 0.5: hoist non-generic where-helpers to parent-qualified
+        # Pass 0: hoist non-generic where-helpers to parent-qualified
         # top-level decls (#991) so same-named helpers in different parent trees
         # (or a helper named like a top-level function) don't collide in the
-        # flat WAT namespace.  Runs before every downstream pass — registration,
-        # monomorphization discovery, and Pass-2 emission all then see the
-        # mangled names uniformly.  Codegen-only: the checker and verifier keep
-        # the original nested AST (the verifier scopes helper resolution
-        # separately, #991).
+        # flat WAT namespace.  Runs before EVERY other pass — including module
+        # registration below, whose `_collect_local_fn_names` shadow set must
+        # see the post-hoist program: a hoisted helper no longer occupies its
+        # bare source name, so it must no longer suppress a same-named import's
+        # bare emission (PR #1013 round 4 — the stale pre-hoist shadow left the
+        # import unemitted and the bare call dangling `unknown func`; at base
+        # the helper's bare emission silently CAPTURED the import-bound call, a
+        # wrong body under spec §5 helper locality).  Codegen-only: the checker
+        # and verifier keep the original nested AST (both scope helper
+        # resolution lexically, #991).
         program = self._hoist_nongeneric_where_helpers(program)
+
+        # Pass 0.5: register imported module declarations (C7e)
+        self._register_modules(program)
 
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)

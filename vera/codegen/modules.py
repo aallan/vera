@@ -346,13 +346,24 @@ class CrossModuleMixin:
 
     @staticmethod
     def _collect_local_fn_names(program: ast.Program) -> set[str]:
-        """All locally-declared function names, including (recursively) the
-        names of ``where``-fn helpers.
+        """All locally-declared function names that occupy (or may occupy) a
+        bare ``$name`` in the single WASM module, including (recursively) the
+        names of ``where``-fn helpers still nested in *program*.
 
-        A ``where``-fn flattens to a bare ``$name`` in the single WASM module
-        exactly like a top-level fn, so it shadows the importer's namespace
-        identically — an imported fn of the same name must therefore be treated
-        as shadowed too (reached via ``mod$…``, not a clashing bare emission).
+        Only a name that flattens to a bare emission shadows the importer's
+        namespace — an imported fn of the same name is then treated as
+        shadowed (reached via ``mod$…``, never a clashing bare emission).
+        Callers pass the POST-hoist program (#991 / PR #1013 round 4): a
+        non-generic helper is by then a separate ``$``-qualified top-level
+        decl that can never equal an import's bare name, so it no longer
+        suppresses the import — its bare source name belongs to the import
+        outside the parent (spec §5 helper locality; the stale pre-hoist
+        shadow left the import unemitted and the bare call dangling, and at
+        base the helper's bare emission silently CAPTURED it).  Helpers still
+        nested here — RETAINED generic helpers, and everything under a
+        generic top-level — must keep shadowing: an uninstantiated T-unused
+        generic template still emits under its bare name, which would collide
+        with the import's bare emission (duplicate func identifier).
         """
         def walk(decl: ast.FnDecl) -> set[str]:
             names = {decl.name}
