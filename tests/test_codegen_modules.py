@@ -2772,3 +2772,42 @@ public fn main(@Unit -> @Int)
 """
         mod = self._resolved(("lib",), lib_src)
         assert self._run_mod(main_src, [mod], fn="main") == 116
+
+    def test_shadowed_imported_fn_nested_helpers_run(self) -> None:
+        """A locally-shadowed imported fn (Pass 2.6, `mod$…` emission) whose
+        body reaches a nested grandchild helper: the module-qualified call
+        must run the module's version through the full helper chain while the
+        bare call resolves to the local shadow (#814 §8.5.3).
+
+        The Pass-2.5/2.6 compile sites need no where-fn walk of their own —
+        `_register_modules` pre-flattens the helper tree into
+        `_imported_fn_decls` — and this pins that the shadow path inherits
+        that: `calc(1)` = 100 (local) + `lib::calc(10)` = 16 (module chain
+        through `grandchild`) = 116.
+        """
+        lib_src = """\
+public fn calc(@Int -> @Int)
+  requires(true) ensures(@Int.result == @Int.0 + 6) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int)
+    requires(true) ensures(@Int.result == @Int.0 + 6) effects(pure)
+  { grandchild(@Int.0 + 1) }
+  where {
+    fn grandchild(@Int -> @Int)
+      requires(true) ensures(@Int.result == @Int.0 + 5) effects(pure)
+    { @Int.0 + 5 }
+  }
+}
+"""
+        main_src = """\
+import lib;
+private fn calc(@Int -> @Int)
+  requires(true) ensures(@Int.result == @Int.0 * 100) effects(pure)
+{ @Int.0 * 100 }
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 116) effects(pure)
+{ calc(1) + lib::calc(10) }
+"""
+        mod = self._resolved(("lib",), lib_src)
+        assert self._run_mod(main_src, [mod], fn="main") == 116
