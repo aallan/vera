@@ -48,6 +48,10 @@ def _compile_main(
     program = parse_to_ast(source)
     resolver = ModuleResolver(_root=tmp_path)
     resolved = resolver.resolve_imports(program, main_path)
+    # A broken/missing fixture must fail loudly here, not silently leave the
+    # imported function unresolved so a control test passes vacuously.
+    assert not resolver.errors, \
+        f"module resolution errors: {[e.description for e in resolver.errors]}"
     diags, arts = typecheck_with_artifacts(
         program, source, file=str(main_path), resolved_modules=resolved,
         collect_module_artifacts=True,
