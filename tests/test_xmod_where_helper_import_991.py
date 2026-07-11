@@ -27,14 +27,19 @@ with the import's bare emission (duplicate func identifier).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from vera.checker import typecheck_with_artifacts
+from vera.codegen import CompileResult
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 
 
-def _compile_main(tmp_path, files: dict[str, str], main_name: str):
+def _compile_main(
+    tmp_path: Path, files: dict[str, str], main_name: str,
+) -> CompileResult:
     tmp_path.mkdir(parents=True, exist_ok=True)
     for name, src in files.items():
         (tmp_path / name).write_text(src, encoding="utf-8")
@@ -60,7 +65,7 @@ def _compile_main(tmp_path, files: dict[str, str], main_name: str):
     return result
 
 
-def _run(result, fn: str, arg: int) -> int:
+def _run(result: CompileResult, fn: str, arg: int) -> int:
     return execute(result, fn_name=fn, args=[arg]).value
 
 
@@ -101,7 +106,7 @@ public fn parent(@Int -> @Int)
 
 
 class TestWhereHelperImportShadow991:
-    def test_import_wins_outside_parent_helper_inside(self, tmp_path) -> None:
+    def test_import_wins_outside_parent_helper_inside(self, tmp_path: Path) -> None:
         # THE BUG: the helper's stale bare-name shadow suppressed the
         # import's emission (unknown func at head; silent wrong body 101 at
         # base).  701 proves both doors resolve correctly.
@@ -114,7 +119,7 @@ class TestWhereHelperImportShadow991:
         # through its parent.
         assert _run(result, "parent", 0) == 1
 
-    def test_top_level_local_still_shadows_import(self, tmp_path) -> None:
+    def test_top_level_local_still_shadows_import(self, tmp_path: Path) -> None:
         # CONTROL (§8.5.2, unchanged behavior): a TOP-LEVEL local fn sharing
         # an import's name still shadows it — bare calls reach the local.
         lib = """\
@@ -145,7 +150,7 @@ public fn go(@Int -> @Int)
         assert _run(result, "go", 0) == 1
 
     def test_uninstantiated_generic_helper_still_shadows_import(
-        self, tmp_path,
+        self, tmp_path: Path,
     ) -> None:
         # The generic nuance: an UNINSTANTIATED T-unused generic helper
         # template still EMITS under its bare name (the round-2 dead-template
