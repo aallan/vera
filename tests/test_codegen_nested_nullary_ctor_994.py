@@ -154,6 +154,33 @@ def test_body_nested_none_eq_compiles_and_runs() -> None:
     assert _check_compile_run(_BODY_EQ) == 77
 
 
+_BODY_EQ_TRUE = """
+private forall<T> fn cmp(@Option<Option<T>> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(None) == @Option<Option<T>>.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if cmp(Some(None)) then { 55 } else { 1 }
+}
+"""
+
+
+def test_body_nested_none_eq_true_branch_distinguishes_pointer_identity() -> None:
+    # Two SEPARATELY constructed `Some(None)` values are structurally EQUAL,
+    # so cmp returns true -> 55.  This is the case a pointer-identity lowering
+    # CANNOT satisfy: the operands live at distinct heap addresses, so an
+    # identity compare returns false (-> 1).  The false-branch sibling test
+    # above cannot distinguish that lowering (structurally-unequal values are
+    # also pointer-unequal); this one pins structural equality specifically.
+    assert _check_compile_run(_BODY_EQ_TRUE) == 55
+
+
 # ---------------------------------------------------------------------------
 # Controls that must KEEP compiling+running (no regression from the fix).
 # ---------------------------------------------------------------------------
