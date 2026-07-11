@@ -25,6 +25,7 @@ from vera.types import (
     RefinedType,
     Type,
     TypeVar,
+    contains_typevar,
     BOOL,
     FLOAT64,
     INT,
@@ -328,6 +329,13 @@ class SmtContext:
         # PR-review).  Signature: (scrutinee_ast, scrutinee_z3, pattern, smt)
         # -> list[z3 fact].  None when no verifier is driving (pure-SMT tests).
         self._subpattern_fact_hook: Any = None
+        # Optional hook (injected by the verifier) returning the checker's
+        # recorded (instance-substituted) semantic ``Type`` for an expression
+        # — the #747 side-table, via ``ContractVerifier._resolved_type_of``.
+        # Used to resolve a bare nullary constructor's exact instantiation when
+        # its base-name scan would be ambiguous (#994 F1).  Signature:
+        # (expr_ast) -> Type | None.  None when no verifier is driving.
+        self._recorded_type_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -1205,6 +1213,16 @@ class SmtContext:
         "degrades gracefully where SMT is undecidable").
         """
         sort = left.sort()
+        if sort != right.sort():
+            # Defence-in-depth (#994 F1): a residual sort mismatch — e.g. a
+            # bare nullary ctor whose base-name scan picked the wrong same-ADT
+            # instantiation when the recorded-type hint was unavailable — has no
+            # sound structural equality (two differently-sorted terms can never
+            # be equal, and the checker's E142 already rejects a genuine
+            # cross-type comparison).  Degrade to an honest Tier-3 (None) rather
+            # than let ``left == right`` raise an uncaught ``z3 sort mismatch``
+            # traceback out of ``vera verify`` on a check-green program.
+            return None
         if isinstance(left, z3.FPRef):
             return z3.fpEQ(left, right)
         if (not isinstance(sort, z3.DatatypeSortRef)
@@ -2574,14 +2592,64 @@ class SmtContext:
     def _translate_nullary_ctor(
         self, expr: ast.NullaryConstructor
     ) -> z3.ExprRef | None:
-        """Translate a nullary constructor (e.g. ``Nil``) to Z3."""
-        sort = self._find_sort_for_ctor(expr.name)
+        """Translate a nullary constructor (e.g. ``Nil``) to Z3.
+
+        A bare nullary tag carries no payload, so ``_find_sort_for_ctor``'s
+        base-name scan cannot disambiguate two live instantiations of the
+        owning ADT (``Option<Int>`` vs ``Option<Option<Int>>``) — it returns
+        whichever cached first, a wrongly-sorted term that later crashes Z3 with
+        ``sort mismatch`` in ``_datatype_value_eq`` (#994 F1).  When the verifier
+        has threaded the recorded-type hook, resolve the sort from this
+        expression's checker-recorded (instance-substituted) type first, which
+        names the exact instantiation; fall back to the base-name scan only when
+        no hint is available (nullary tags in a non-verifier / pure-SMT context,
+        or a hint that does not resolve to a datatype sort owning this ctor).
+        """
+        sort = self._nullary_ctor_sort_from_hint(expr)
+        if sort is None:
+            sort = self._find_sort_for_ctor(expr.name)
         if sort is None:
             return None
         idx = self._find_ctor_index(sort, expr.name)
         if idx is None:  # pragma: no cover
             return None
         return sort.constructor(idx)()
+
+    def _nullary_ctor_sort_from_hint(
+        self, expr: ast.NullaryConstructor
+    ) -> z3.SortRef | None:
+        """The Z3 sort for a bare nullary ctor from the recorded-type hint (#994).
+
+        Consults the verifier-injected ``_recorded_type_hook`` for *expr*'s
+        checker-recorded semantic type — already instance-substituted (T := the
+        concrete type of the monomorphized clone under verification), so a
+        generic ``Option<T>`` reads back as ``Option<Int>`` — and resolves that
+        exact instantiation's sort.  Returns None (falling back to the base-name
+        scan) when: no hook is driving; the recorded type still carries a type
+        variable (the generic pre-clone path, where no SMT runs anyway); the
+        type is not an ADT; or the pinned resolution finds no owning sort (a
+        stale/mismatched hint must never silence the scan).
+        """
+        hook = self._recorded_type_hook
+        if hook is None:
+            return None
+        recorded = hook(expr)
+        if isinstance(recorded, RefinedType):
+            recorded = recorded.base
+        if not isinstance(recorded, AdtType) or contains_typevar(recorded):
+            return None
+        # Route through the #918 pinning machinery rather than materialising the
+        # sort directly: pinning PREFERS an already-cached instantiation and is
+        # gated (``_has_cached_instantiation``) so it never newly-enables an
+        # otherwise-untranslatable ctor.  So the hint DISAMBIGUATES among the
+        # live same-ADT sorts (the crash) — resolving ``None``'s exact
+        # ``Option<Option<Int>>`` where the base-name scan picked the wrong
+        # ``Option<...>`` — without perturbing the warm/cold sort-creation order
+        # the test_obligations differential pins (a direct
+        # ``_vera_type_to_z3_sort`` could materialise a sort the base-name scan
+        # would otherwise have found already cached, shifting the counterexample
+        # model between the warm and cold contexts).
+        return self._find_sort_for_ctor(expr.name, recorded.type_args)
 
     def _translate_ctor_call(
         self, expr: ast.ConstructorCall, env: SlotEnv

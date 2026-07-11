@@ -1736,6 +1736,12 @@ class ContractVerifier:
         # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
         # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
         smt._subpattern_fact_hook = self._subpattern_source_facts
+        # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
+        # exact instantiation from the checker's recorded (instance-substituted)
+        # semantic type, instead of the ambiguous base-name scan that crashed Z3
+        # on `Some(None) == None` / `!= None`.  Stateless (reads the live
+        # `_instance_subst` per clone), so safe on the warm (shared) smt too.
+        smt._recorded_type_hook = self._resolved_type_of
         # Register all known ADTs with the SMT context.  Idempotent on
         # the warm path (same AdtInfo re-registered into the persistent
         # registry); kept per-function so cold and warm stay identical.
@@ -4691,6 +4697,10 @@ class ContractVerifier:
         # `match` arm would otherwise false-E505/E501 (the arm accessor is
         # translated without the field's source refinement fact).
         smt._subpattern_fact_hook = self._subpattern_source_facts
+        # #994 F1: same recorded-type hint as the main path — a bare nullary
+        # ctor in this generic body's refined return must resolve its sort from
+        # the recorded type, not the ambiguous base-name scan.
+        smt._recorded_type_hook = self._resolved_type_of
         slot_env = SlotEnv()
         assumptions: list[object] = []
         for param_te in decl.params:

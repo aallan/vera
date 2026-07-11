@@ -67,7 +67,7 @@ private forall<T> fn nothing_rev(@Unit -> @Option<T>)
 -- De Bruijn (after the four @Int lets): @Int.3 is the first, @Int.0 the last.
 public fn main(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 0)
   effects(pure)
 {
   let @Int = match nest(()) { Some(@Option<Int>) -> match @Option<Int>.0 { Some(@Int) -> 1, None -> 55 }, None -> 2 };

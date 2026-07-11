@@ -191,45 +191,37 @@ class OperatorsMixin:
                 # ADT structural equality (§9.8 auto-derivation).  `lv` may be
                 # parameterized (`Box<String>`); dispatch on the base name but
                 # pass the full name so the generated helper resolves the
-                # concrete field types of *this* instantiation (#773).  A
-                # `ConstructorCall` operand (`Some(1)`) resolves to the BARE
-                # ADT name via `_infer_vera_type`, dropping its type argument;
-                # recover the parameterized name from the argument so the direct
-                # `==` derivation sees the concrete field type, just as the
-                # slot-ref operand form does (#772).
-                lv = self._parameterize_ctor_operand(expr.left, lv)
-                # #912: a `ResultRef`/`SlotRef` operand resolves through the
-                # SlotRef name logic, which — unlike a `ConstructorCall` — has no
-                # arguments to recover a dropped type parameter from.  When such
-                # an operand is a monomorphized generic-ADT clone whose type
-                # argument was substituted to the bare base name (`@T.result` →
-                # `@Box.result`, the #772 residue, e.g. `id2<Box<Int>>`), the
-                # derivability gate cannot resolve the field type and would raise
-                # E613 on an otherwise-valid program.  Recover the concrete type
-                # argument from the OTHER operand first (`@Box.result ==
-                # MkBox(7)` → `Box<Int>`); only if that fails does the composite
-                # fall through to the scalar lowering below (the established
-                # pre-#912 behavior for this lost-type-arg shape — never an
-                # E613 on the derivable original).
-                lv = self._recover_lost_type_arg(lv, expr.right)
-                # #932: inside an Eq-constrained generic clone (`eq2$List<List>`)
-                # the `==` operands are `@T` slots whose substituted type is the
-                # TRUNCATED one-level clone name (`List<List>` for a
-                # `List<List<Int>>` instantiation — the same residue the
-                # constraint gate sees).  Recover the fully-nested name recorded
-                # at the call site so the direct-`==` derivability decision AND
-                # the generated `$eq_<type>` helper resolve the concrete inner
-                # field types, exactly as the constraint gate now does.  This
-                # only affects the derivability name + helper the clone BODY
-                # emits; the mono clone SYMBOL stays the truncated name (#772).
-                if lv is not None:
-                    lv = self._eq_full_type_names.get(lv, lv)
+                # concrete field types of *this* instantiation (#773).  Recover
+                # the left operand's fully-qualified name via the shared chain:
+                # `_parameterize_ctor_operand` (a `Some(1)` operand → `Option<Int>`,
+                # #772), `_recover_lost_type_arg` (a bare generic-ADT slot →
+                # `Box<Int>` from its sibling, #912) and the `_eq_full_type_names`
+                # map (a truncated `List<List>` clone → `List<List<Int>>`, #932).
+                lv = self._eq_operand_full_name(expr.left, expr.right, lv)
+                # #994 F2: a payload-less nested constructor (`Some(None)` →
+                # `Option<Option>`, inner argument erased) or a dead base generic
+                # clone's slot (`Option<Option<T>>`, nested free `T`) leaves `lv`
+                # only PARTIALLY resolved — the structural-Eq derivation cannot
+                # lower it and raised a spurious E613.  Both operands share a type
+                # (checker E142 otherwise), and a monomorphized *reachable* clone
+                # substitutes the sibling slot to a fully concrete name, so
+                # recover the concrete name from the OTHER operand when this one
+                # is under-resolved.  When NEITHER resolves (the dead base clone),
+                # `lv` stays partial and the concreteness gate below routes it to
+                # the harmless scalar (dead-code) lowering, exactly as the #912
+                # lost-type-arg clone does.
+                if lv is not None and not self._eq_type_name_fully_concrete(lv):
+                    rv_full = self._eq_operand_full_name(expr.right, expr.left, rv)
+                    if (rv_full is not None
+                            and self._eq_type_name_fully_concrete(rv_full)):
+                        lv = rv_full
                 lv_base = lv.split("<", 1)[0] if lv is not None else None
                 if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
                         and lv is not None
                         and lv_base not in ("Bool", "Byte")
                         and lv_base in self._adt_type_names
-                        and not self._is_lost_type_arg_clone(lv, lv_base)):
+                        and not self._is_lost_type_arg_clone(lv, lv_base)
+                        and self._eq_type_name_fully_concrete(lv)):
                     adt_eq = self._translate_adt_eq(left, right, lv, expr)
                     if adt_eq is not None:
                         if op == ast.BinOp.NEQ:
@@ -571,6 +563,98 @@ class OperatorsMixin:
         if "<" in lv:
             return self._has_free_type_var_arg(lv)
         return bool(self._adt_tp_param_names.get(lv_base or ""))
+
+    @staticmethod
+    def _split_type_name(name: str) -> tuple[str, list[str]]:
+        """Split a rendered type name into ``(base, top-level args)`` (#994 F2).
+
+        ``"Option<Option<Int>>"`` → ``("Option", ["Option<Int>"])`` (respecting
+        nesting depth so a comma inside a nested ``<…>`` does not split).  A bare
+        name yields ``(name, [])``.
+        """
+        lt = name.find("<")
+        if lt == -1:
+            return name.strip(), []
+        base = name[:lt].strip()
+        inner = name[lt + 1 : name.rfind(">")]
+        args: list[str] = []
+        depth = 0
+        start = 0
+        for i, ch in enumerate(inner):
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                args.append(inner[start:i].strip())
+                start = i + 1
+        tail = inner[start:].strip()
+        if tail:
+            args.append(tail)
+        return base, args
+
+    def _eq_type_name_fully_concrete(self, name: str) -> bool:
+        """Whether a rendered ADT type name is fully instantiated (#994 F2).
+
+        Fully concrete = no free type variable and no under-parameterized ADT
+        at ANY nesting level: every registered-ADT segment carries EXACTLY its
+        declared type-parameter count and every argument is itself fully
+        concrete.  This rejects the two shapes the structural-Eq derivation
+        cannot lower on a check-green ``forall<T>`` program:
+
+        * a payload-less nested constructor operand — ``Some(None)`` recovers as
+          the erased ``Option<Option>`` (inner ``Option`` missing its argument,
+          since a bare ``None`` carries none to recover ``<Int>`` from); and
+        * a dead base generic clone's slot operand — ``Option<Option<T>>``, whose
+          nested free ``T`` the top-level-only ``_has_free_type_var_arg`` misses.
+
+        A GENUINELY concrete-but-non-Eq name (``Box<Array<Int>>`` — ``Array`` is
+        not Eq, but the argument is a known concrete type; or ``Tuple<Int, Int>``
+        — variadic, never Eq) is fully concrete, so it still routes to
+        ``_translate_adt_eq`` and raises the CORRECT E613, keeping the
+        checker↔codegen lockstep the #732 differential pins.
+        """
+        base, args = self._split_type_name(name)
+        if base in self._CONCRETE_NON_ADT_BASES:
+            # Primitive / built-in container (``Int``, ``Array<T>``, ``Tuple<…>``):
+            # concrete iff every argument is (``Array<Int>`` yes, ``Array<T>`` no,
+            # bare ``Int`` yes).  Checked BEFORE the ADT branch because a variadic
+            # container (``Tuple``) is registered as a 0-type-parameter ADT yet
+            # renders WITH arguments, which the exact tp-count check below would
+            # wrongly flag as under-parameterized — silently dropping the loud
+            # E613 that a non-Eq ``Tuple`` comparison must raise.
+            return all(self._eq_type_name_fully_concrete(a) for a in args)
+        if base in self._adt_type_names:
+            if len(args) != self._adt_tp_counts.get(base, 0):
+                return False  # under-parameterized: an argument was erased
+            return all(self._eq_type_name_fully_concrete(a) for a in args)
+        # A single-segment name that is neither a registered ADT nor a known
+        # concrete base is an unresolved type VARIABLE (``T``).
+        return False
+
+    def _eq_operand_full_name(
+        self, operand: ast.Expr, other: ast.Expr, bare: str | None,
+    ) -> str | None:
+        """Fully-recover an ``==`` operand's ADT type name (#994 F2).
+
+        Factors the established recovery chain (used for the left operand since
+        #772/#912/#932) so it can be applied to EITHER operand symmetrically:
+
+        * ``_parameterize_ctor_operand`` — recover a ``ConstructorCall``'s dropped
+          type argument from its own arguments (``Some(1)`` → ``Option<Int>``);
+        * ``_recover_lost_type_arg`` — recover a bare generic-ADT slot operand's
+          argument from the *other* operand (``@Box.result == MkBox(7)`` →
+          ``Box<Int>``);
+        * the ``_eq_full_type_names`` map — expand a truncated one-level clone
+          name to its fully-nested form (#932).
+
+        ``bare`` is *operand*'s already-computed ``_infer_vera_type`` name.
+        """
+        name = self._parameterize_ctor_operand(operand, bare)
+        name = self._recover_lost_type_arg(name, other)
+        if name is not None:
+            name = self._eq_full_type_names.get(name, name)
+        return name
 
     def _translate_adt_eq(
         self,
