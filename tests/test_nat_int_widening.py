@@ -258,7 +258,7 @@ public fn arr_elem(@Nat -> @Int)
 { let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
-        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]
@@ -290,7 +290,7 @@ public fn tup_destr(@Nat -> @Int)
 { let Tuple<@Int, @Int> = Tuple(@Nat.0, @Nat.0); @Int.0 }
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
-        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert len(co) == 2, [(o.kind, o.status) for o in result.obligations]
         assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]
@@ -343,7 +343,7 @@ public fn tup_construct(@Nat -> @Int)
 { let @Tuple<Int, Int> = Tuple(@Nat.0, 0); match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 } }
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
-        assert co, [(o.kind, o.status) for o in result.obligations]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]

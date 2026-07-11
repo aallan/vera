@@ -23,12 +23,12 @@ land at the identical span — the test asserts that coincidence up front, so a
 from __future__ import annotations
 
 import pytest
-import wasmtime
 
 from vera import ast
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
+from vera.codegen.api import WasmTrapError
 from vera.obligations.cache import walk_nodes
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
@@ -107,11 +107,17 @@ class TestCrossModuleSpanCollision:
         # the fix the imported body ignores the main span table — no trap.
         result = _compile_main(tmp_path)
         exec_result = execute(result, fn_name="callit", args=[])
+        # `lw` is the @Nat identity, so u64.MAX must round-trip bit-exactly
+        # (read back as a signed i64: compare under the u64 mask) — "no trap"
+        # alone would miss a silent truncation.
         assert exec_result.value is not None
+        assert exec_result.value & ((1 << 64) - 1) == U64_MAX
 
     def test_same_file_top_level_guard_unaffected(self, tmp_path) -> None:
         # Control: the SAME-file `mw` genuinely targets `Tuple<Int, Int>`, so its
         # @Nat component widen guard must remain — `mw(u64.MAX)` still traps.
         result = _compile_main(tmp_path)
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+        with pytest.raises(WasmTrapError) as exc_info:
             execute(result, fn_name="mw", args=[U64_MAX])
+        # Pin the kind: the widen guard is a bare `unreachable` net.
+        assert exc_info.value.kind == "unreachable", exc_info.value.kind

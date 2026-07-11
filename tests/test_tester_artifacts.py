@@ -61,13 +61,29 @@ def _cmd_test_capturing_wat(source: str, monkeypatch) -> str:
     return captured["wat"]
 
 
+def _wat_function(wat: str, name: str) -> str:
+    """Slice the ``(func $name ...)`` s-expression out of a WAT module by
+    paren-matching, so the guard assertion is scoped to that function rather
+    than the runtime prelude (which has its own unrelated traps)."""
+    start = wat.index(f"(func ${name} ")
+    depth = 0
+    for i in range(start, len(wat)):
+        if wat[i] == "(":
+            depth += 1
+        elif wat[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return wat[start:i + 1]
+    raise AssertionError(f"unbalanced WAT for ${name}")
+
+
 class TestTesterThreadsWideningArtifacts:
     def test_tester_compiled_wat_has_tuple_widen_guard(self, monkeypatch) -> None:
         # BUG at head: cmd_test compiled without the target-type table, so the
         # tuple-component widen guard (`i64.lt_s`) was absent from the tester's
         # WASM while the verifier claimed the site tier3-guarded.
         wat = _cmd_test_capturing_wat(_TUPLE_WIDEN, monkeypatch)
-        assert "i64.lt_s" in wat, (
+        assert "i64.lt_s" in _wat_function(wat, "tc"), (
             "the tester-compiled WASM is missing the @Nat->@Int tuple-component "
             "widen guard — cmd_test did not thread expr_target_types into codegen"
         )

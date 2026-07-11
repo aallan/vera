@@ -34,11 +34,11 @@ import tempfile
 from pathlib import Path
 
 import pytest
-import wasmtime
 
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
+from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
@@ -88,8 +88,11 @@ def _run(source: str, fn: str, args: list[int]) -> int:
 
 def _assert_traps(source: str, fn: str, args: list[int]) -> None:
     result = _compile_with_types(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+    with pytest.raises(WasmTrapError) as exc_info:
         execute(result, fn_name=fn, args=args)
+    # The widen guard is a bare `unreachable` net (no dedicated trap kind yet),
+    # so pin the kind to prove it is the guard firing, not an unrelated failure.
+    assert exc_info.value.kind == "unreachable", exc_info.value.kind
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:
@@ -294,8 +297,9 @@ class TestFix3UserTupleGate:
     def test_user_tuple_run_does_not_trap(self) -> None:
         # BUG at head: codegen emitted a widen guard the verifier never
         # obligated, so run(u64.MAX) trapped.  After the fix the user Tuple's
-        # generic field stays unguarded and the value round-trips.
-        assert _run(_FIX3_USER_TUPLE, "f", [U64_MAX]) is not None
+        # generic field stays unguarded and the value round-trips bit-exactly
+        # (read back as a signed i64, so compare under the u64 mask).
+        _assert_no_trap(_FIX3_USER_TUPLE, "f", [U64_MAX], U64_MAX)
 
     def test_user_tuple_in_range(self) -> None:
         _assert_no_trap(_FIX3_USER_TUPLE, "f", [42], 42)
