@@ -1347,23 +1347,49 @@ class CodeGenerator(
             program = _replace(program, declarations=tuple(new_tlds))
 
         # Rewrite monomorphized declarations
-        new_monos: list[ast.FnDecl] = []
-        for mdecl in mono_decls:
-            new_body = self._rewrite_ops_in_expr(mdecl.body, ability_ops)
-            new_where = self._rewrite_where_fns(
-                mdecl.where_fns, ability_ops)
-            new_contracts = self._rewrite_ops_in_contracts(
-                mdecl.contracts, ability_ops)
-            if (new_body is not mdecl.body
-                    or new_where is not mdecl.where_fns
-                    or new_contracts is not mdecl.contracts):
-                mdecl = _replace(
-                    mdecl, body=new_body,  # type: ignore[arg-type]
-                    where_fns=new_where,
-                    contracts=new_contracts)
-            new_monos.append(mdecl)
+        new_monos: list[ast.FnDecl] = [
+            self._rewrite_fn_ability_ops(mdecl, ability_ops)
+            for mdecl in mono_decls
+        ]
+
+        # #992: the imported populations compile directly in Pass 2.5/2.6
+        # and never pass through the loops above — an `eq`/`compare` in any
+        # imported body stayed a raw FnCall codegen cannot lower, dropping
+        # the body and dangling the importer's call.  Rewrite each entry
+        # too.  Entries are the FLATTENED where-tree (every helper is its
+        # own entry), and the rewrite is idempotent, so also rewriting a
+        # parent's carried ``where_fns`` cannot double-transform anything.
+        self._imported_fn_decls = [
+            (path, self._rewrite_fn_ability_ops(idecl, ability_ops))
+            for path, idecl in self._imported_fn_decls
+        ]
+        self._shadowed_module_fns = [
+            (path, mangled, self._rewrite_fn_ability_ops(idecl, ability_ops))
+            for path, mangled, idecl in self._shadowed_module_fns
+        ]
 
         return program, new_monos
+
+    def _rewrite_fn_ability_ops(
+        self,
+        decl: ast.FnDecl,
+        ability_ops: dict[str, str],
+    ) -> ast.FnDecl:
+        """Rewrite one declaration's body, where-tree, and contracts."""
+        from dataclasses import replace as _replace
+
+        new_body = self._rewrite_ops_in_expr(decl.body, ability_ops)
+        new_where = self._rewrite_where_fns(decl.where_fns, ability_ops)
+        new_contracts = self._rewrite_ops_in_contracts(
+            decl.contracts, ability_ops)
+        if (new_body is not decl.body
+                or new_where is not decl.where_fns
+                or new_contracts is not decl.contracts):
+            decl = _replace(
+                decl, body=new_body,  # type: ignore[arg-type]
+                where_fns=new_where,
+                contracts=new_contracts)
+        return decl
 
     def _rewrite_ops_in_contracts(
         self,
