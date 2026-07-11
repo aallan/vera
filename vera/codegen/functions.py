@@ -16,7 +16,7 @@ from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 
 if TYPE_CHECKING:
-    from vera.types import Type
+    from vera.types import SpanTypeTable
 
 
 class FunctionCompilationMixin:
@@ -110,10 +110,9 @@ class FunctionCompilationMixin:
         self, decl: ast.FnDecl, *, export: bool = True,
         module_renames: dict[str, str] | None = None,
         imported: bool = False,
-        module_tables: tuple[
-            dict[tuple[int, int, int, int], Type] | None,
-            dict[tuple[int, int, int, int], Type] | None,
-        ] | None = None,
+        module_tables: (
+            tuple[SpanTypeTable | None, SpanTypeTable | None] | None
+        ) = None,
     ) -> str | None:
         """Compile a single function to WAT.
 

@@ -558,3 +558,12 @@ def substitute_effect(eff: EffectRowType,
         )
         return ConcreteEffectRow(new_effects, eff.row_var)
     return eff
+
+# The span-keyed side-table shapes, spelled once (#987).  ``SpanKey`` is
+# ``ast.span_key``'s tuple — (line, col, end_line, end_col) — and a
+# ``SpanTypeTable`` maps it to the checker's recorded ``Type`` for that
+# expression.  ``ModuleArtifacts`` maps a resolved module's path tuple to its
+# own ``(expr_semantic_types, expr_target_types)`` table pair.
+SpanKey = tuple[int, int, int, int]
+SpanTypeTable = dict[SpanKey, Type]
+ModuleArtifacts = dict[tuple[str, ...], tuple[SpanTypeTable, SpanTypeTable]]

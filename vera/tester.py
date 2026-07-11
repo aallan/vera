@@ -21,7 +21,7 @@ from vera import ast
 from vera.errors import Diagnostic, SourceLocation
 from vera.slots import type_expr_slot_name
 from vera.smt import SlotEnv, SmtContext
-from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, PrimitiveType, RefinedType, Type, base_type
+from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, ModuleArtifacts, PrimitiveType, RefinedType, Type, base_type
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -153,13 +153,7 @@ def test(
     resolved_modules: list[ResolvedModule] | None = None,
     expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-    module_artifacts: dict[
-        tuple[str, ...],
-        tuple[
-            dict[tuple[int, int, int, int], Type],
-            dict[tuple[int, int, int, int], Type],
-        ],
-    ] | None = None,
+    module_artifacts: ModuleArtifacts | None = None,
 ) -> TestResult:
     """Test a type-checked Vera program by generating inputs from contracts.
 
@@ -213,13 +207,7 @@ class _TestEngine:
             dict[tuple[int, int, int, int], Type] | None) = None,
         expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None) = None,
-        module_artifacts: dict[
-            tuple[str, ...],
-            tuple[
-                dict[tuple[int, int, int, int], Type],
-                dict[tuple[int, int, int, int], Type],
-            ],
-        ] | None = None,
+        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.program = program
         self.source = source

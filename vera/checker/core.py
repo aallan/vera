@@ -34,6 +34,7 @@ from vera.environment import (
 )
 from vera.types import (
     BOOL,
+    ModuleArtifacts,
     PureEffectRow,
     Type,
     TypeVar,
@@ -119,13 +120,7 @@ class CheckArtifacts:
     # Codegen threads the matching entry when compiling each module's body, so
     # the #820 @Nat -> @Int widening guard fires at the array-element /
     # tuple-construction sites through the import door, not just same-file.
-    module_artifacts: dict[
-        tuple[str, ...],
-        tuple[
-            dict[tuple[int, int, int, int], Type],
-            dict[tuple[int, int, int, int], Type],
-        ],
-    ]
+    module_artifacts: ModuleArtifacts
 
 
 def typecheck_with_artifacts(
@@ -176,13 +171,7 @@ def typecheck_with_artifacts(
 
 def _collect_module_artifacts(
     resolved_modules: list[ResolvedModule] | None,
-) -> dict[
-    tuple[str, ...],
-    tuple[
-        dict[tuple[int, int, int, int], Type],
-        dict[tuple[int, int, int, int], Type],
-    ],
-]:
+) -> ModuleArtifacts:
     """Collect each resolved module's OWN span-keyed side-tables (#987).
 
     The top-level program's ``expr_target_types`` / ``expr_semantic_types`` are
@@ -224,13 +213,7 @@ def _collect_module_artifacts(
     future optimisation candidate that would collapse it toward O(N).
     """
     mods = resolved_modules or []
-    result: dict[
-        tuple[str, ...],
-        tuple[
-            dict[tuple[int, int, int, int], Type],
-            dict[tuple[int, int, int, int], Type],
-        ],
-    ] = {}
+    result: ModuleArtifacts = {}
     for mod in mods:
         mod_direct = {imp.path for imp in mod.program.imports}
         sub_resolved = [

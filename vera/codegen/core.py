@@ -44,7 +44,7 @@ from vera.codegen.compilability import CompilabilityMixin
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
-    from vera.types import Type
+    from vera.types import ModuleArtifacts, SpanTypeTable, Type
     from vera.wasm.context import WasmContext
 
 
@@ -96,13 +96,7 @@ class CodeGenerator(
         expr_target_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = None,
-        module_artifacts: dict[
-            tuple[str, ...],
-            tuple[
-                dict[tuple[int, int, int, int], Type],
-                dict[tuple[int, int, int, int], Type],
-            ],
-        ] | None = None,
+        module_artifacts: ModuleArtifacts | None = None,
     ) -> None:
         self.source = source
         self.file = file
@@ -139,10 +133,7 @@ class CodeGenerator(
         # (#986), never a wrong-file-keyed guard.
         self._module_artifacts: dict[
             tuple[str, ...],
-            tuple[
-                dict[tuple[int, int, int, int], Type] | None,
-                dict[tuple[int, int, int, int], Type] | None,
-            ],
+            tuple[SpanTypeTable | None, SpanTypeTable | None],
         ] = dict(module_artifacts or {})
 
         # Registered function signatures: name -> (param_types, return_type)

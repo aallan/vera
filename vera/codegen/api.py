@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
     from vera.errors import Diagnostic
     from vera.resolver import ResolvedModule
-    from vera.types import Type
+    from vera.types import ModuleArtifacts, Type
 
 
 # =====================================================================
@@ -203,13 +203,7 @@ def compile(
     resolved_modules: list[ResolvedModule] | None = None,
     expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
-    module_artifacts: dict[
-        tuple[str, ...],
-        tuple[
-            dict[tuple[int, int, int, int], Type],
-            dict[tuple[int, int, int, int], Type],
-        ],
-    ] | None = None,
+    module_artifacts: ModuleArtifacts | None = None,
 ) -> CompileResult:
     """Compile a type-checked Vera Program AST to WebAssembly.
 
