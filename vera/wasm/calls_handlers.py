@@ -16,6 +16,7 @@ from vera.wasm.helpers import (
     WasmSlotEnv,
     _element_load_op,
     _element_mem_size,
+    _is_host_handle_type,
     _is_pair_element_type,
     gc_shadow_push,
 )
@@ -1361,18 +1362,27 @@ class CallsHandlersMixin:
 
         instructions: list[str] = []
 
-        # 1. Push a fresh state cell (isolates this handler from any outer
-        #    handler of the same type — fixes #417).
-        instructions.append(f"call {push_import}")
-
-        # 2. Initialize state: compile init_expr, call state_put
+        # 1. Evaluate the initial-state expression BEFORE pushing the new
+        #    cell: the init expr belongs to the ENCLOSING scope, so a
+        #    get/put inside it (an outer handler's op) must observe the
+        #    OUTER cell — pushing first made the host's top-of-stack read
+        #    hit the fresh inner cell's default 0 instead (PR #1003 panel;
+        #    pre-existing).  The init value rides the operand stack across
+        #    the zero-arg push call below.
+        init_instrs: list[str] | None = None
         if expr.state is not None:
             init_instrs = self.translate_expr(expr.state.init_expr, env)
             if init_instrs is None:
                 return None
             instructions.extend(init_instrs)
+
+        # 2. Push a fresh state cell (isolates this handler from any outer
+        #    handler of the same type — fixes #417), then store the init
+        #    value into it.  If no state clause, the cell starts at the
+        #    default (0).
+        instructions.append(f"call {push_import}")
+        if init_instrs is not None:
             instructions.append(f"call {put_import}")
-        # If no state clause, state starts at default (0)
 
         # 3. Save current effect_ops and inject handler ops.  Record `get`'s
         #    result WAT type (#914 A2: a `match get(())` inside the body needs
@@ -1386,8 +1396,13 @@ class CallsHandlersMixin:
         self._effect_op_result_wt["get"] = self._type_name_to_wasm(type_name)
         # #976 option C: register the clauses so each get/put CALL SITE in
         # the body inlines its clause body (intrinsic-hybrid semantics)
-        # instead of the bare host-cell call.  An op with no clause keeps the
-        # bare path via the `_effect_ops` entry above.
+        # instead of the bare host-cell call.  Start from an EMPTY registry:
+        # the innermost handler owns the get/put op NAMES within its body
+        # (matching the `_effect_ops` overwrite above), so an op this
+        # handler declares no clause for is the bare intrinsic op — never an
+        # OUTER handler's clause (PR #1003 review: a nested handler with
+        # only a put clause inherited the outer get transform).
+        self._state_clause_ops = {}
         for clause in expr.clauses:
             self._state_clause_ops[clause.op_name] = (
                 clause, type_name, get_import, put_import,
@@ -1447,15 +1462,34 @@ class CallsHandlersMixin:
         clause, type_name, get_import, put_import = (
             self._state_clause_ops[call.name]
         )
-        total, tail = self._clause_resume_counts(clause.body)
-        if total == 0 or total != tail:
+        if not self._clause_lowerable(clause.body):
             raise CodegenSkip(
                 call,
-                "State clause requires resume(...) in tail position "
-                "(single-shot); a missing, repeated, or non-tail resume "
-                "is not lowerable",
+                "State clause requires exactly one resume(...) as the body's "
+                "tail expression (single-shot); a missing, repeated, "
+                "non-tail, or per-branch-arm resume is not lowerable — "
+                "branch inside the argument instead: "
+                "resume(if c then a else b)",
             )
         state_wt = self._type_name_to_wasm(type_name)
+        # Composite state is a heap pointer (i32, excluding the non-pointer
+        # i32 scalars) — root the capture/argument locals on the GC shadow
+        # stack so an allocating clause body (or `with` expr) cannot free or
+        # move them: after the intrinsic store, the captured PRE-store value
+        # is unreachable from the host cell, so these locals are its only
+        # root.  Same pointer predicate as the closure GC prologue (#347:
+        # host handles are i32 indices, not heap pointers).  The pushes are
+        # reclaimed by the function's epilogue $gc_sp restore.
+        state_is_ptr = (
+            state_wt == "i32"
+            and type_name not in ("Bool", "Byte")
+            and not _is_host_handle_type(type_name)
+        )
+        if state_is_ptr:
+            # Force the enclosing function's GC prologue/epilogue so the
+            # pushes below are reclaimed at exit (same pattern as the
+            # host-produced effect-op push in context.py).
+            self.needs_alloc = True
         instructions: list[str] = []
 
         # put's argument — the clause's @T.1 (op params bind first).
@@ -1467,11 +1501,15 @@ class CallsHandlersMixin:
             arg_local = self.alloc_local(state_wt)
             instructions.extend(arg_instrs)
             instructions.append(f"local.set {arg_local}")
+            if state_is_ptr:
+                instructions.extend(gc_shadow_push(arg_local))
 
         # Capture the PRE-store state — the clause's @T.0 (bound last).
         state_local = self.alloc_local(state_wt)
         instructions.append(f"call {get_import}")
         instructions.append(f"local.set {state_local}")
+        if state_is_ptr:
+            instructions.extend(gc_shadow_push(state_local))
 
         # Intrinsic store: put stores its argument regardless of the clause.
         if call.name == "put":
@@ -1486,13 +1524,17 @@ class CallsHandlersMixin:
         saved_in_clause = self._in_state_clause
         saved_clause_ops = self._state_clause_ops
         self._in_state_clause = True
-        # A clause body performing its own handler's ops is checker-rejected
-        # (inside a clause scope, get/put resolve to the BUILTIN registry,
-        # not the handler ops), so clearing the registry here is pure
-        # defense: it makes translate-time re-entry structurally impossible
-        # instead of a RecursionError if that checker rejection ever loosens.
-        # A nested handle-expr inside a clause body still works — it installs
-        # and restores its own registry around its own body.
+        # LOAD-BEARING: a clause body's get/put resolve to the builtin State
+        # registry (not the handler ops), so a re-entrant clause is admitted
+        # by the checker whenever the enclosing fn declares
+        # ``effects(<State<T>>)`` (an outer handler discharges it).  Without
+        # this clear the re-entered op would re-inline this same clause —
+        # unbounded translate-time recursion (E602, function dropped).  With
+        # it, ops inside a clause body take the bare intrinsic path, which is
+        # the §7.5.2 lexical-scoping rule: clauses refine only the handled
+        # body's own operation sites.  A nested handle-expr inside a clause
+        # body still works — it installs and restores its own registry
+        # around its own body.
         self._state_clause_ops = {}
         try:
             body_instrs = self.translate_expr(clause.body, clause_env)
@@ -1513,18 +1555,37 @@ class CallsHandlersMixin:
             instructions.append(f"call {put_import}")
         return instructions
 
-    def _clause_resume_counts(self, body: ast.Expr) -> tuple[int, int]:
-        """(total, tail-position) ``resume(...)`` call counts in a clause
-        body.
+    def _clause_lowerable(self, body: ast.Expr) -> bool:
+        """True when the clause body has EXACTLY one ``resume(...)`` and it
+        IS the body's tail expression.
 
-        Tail positions: the body itself, a Block's trailing expression, and
-        both/all arms of a tail ``if``/``match``.  Anything else (a resume in
-        a statement, an operand, a nested handler's body, …) is non-tail:
-        the inline lowering's stack shape requires every execution path to
-        end in exactly one resume, so ``total == tail`` (and ``total >= 1``)
-        is the lowerable condition.
+        The tail chain descends only through join-free positions: a Block's
+        trailing expression and a SINGLE-arm match's arm body (no
+        alternative, so the arm's value flows straight through).  An ``if``
+        or a multi-arm ``match`` is a JOIN and is never a lowerable tail —
+        even when one or every arm resumes: ``resume`` types as ``Unit``, so
+        the checker records the branch as a VOID block, but the inline
+        lowering makes a resume push the op's result value; a value on (or
+        missing from) a void join's stack is an invalid WASM module either
+        way (PR #1003 review: both the per-arm shape and the
+        one-arm-resumes/other-arm-doesn't shape reproduced it).  The
+        canonical form branches inside the argument instead
+        (``resume(if c then a else b)``), which types the branch by the
+        value.
+
+        The total count treats a nested ``HandleExpr`` specially: its
+        CLAUSES own their resumes (they are the inner handler's, and would
+        otherwise spuriously reject this clause), but its body and
+        state-init are lexically part of THIS clause — a resume there
+        belongs here, is necessarily non-tail, and must reject the lowering
+        rather than corrupt the inner body's stack.
         """
         def total_count(node: object) -> int:
+            if isinstance(node, ast.HandleExpr):
+                n = total_count(node.body)
+                if node.state is not None:
+                    n += total_count(node.state.init_expr)
+                return n
             if isinstance(node, ast.FnCall) and node.name == "resume":
                 # resume's own arguments cannot contain another resume in a
                 # checkable program (resume returns Unit); count args anyway
@@ -1539,19 +1600,20 @@ class CallsHandlersMixin:
                 )
             return 0
 
-        def tail_count(expr: object) -> int:
-            if isinstance(expr, ast.FnCall) and expr.name == "resume":
-                return 1
-            if isinstance(expr, ast.Block):
-                return tail_count(expr.expr)
-            if isinstance(expr, ast.IfExpr):
-                return tail_count(expr.then_branch) + tail_count(
-                    expr.else_branch)
-            if isinstance(expr, ast.MatchExpr):
-                return sum(tail_count(arm.body) for arm in expr.arms)
-            return 0
-
-        return total_count(body), tail_count(body)
+        tail: ast.Expr = body
+        while True:
+            if isinstance(tail, ast.Block):
+                tail = tail.expr
+                continue
+            if isinstance(tail, ast.MatchExpr) and len(tail.arms) == 1:
+                tail = tail.arms[0].body
+                continue
+            break
+        return (
+            isinstance(tail, ast.FnCall)
+            and tail.name == "resume"
+            and total_count(body) == 1
+        )
 
     def _translate_handle_exn(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,
