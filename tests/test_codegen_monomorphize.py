@@ -3279,6 +3279,121 @@ public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
 """
         assert _run(source, fn="main") == 12
 
+    # -- PR #989 review: ability-op rewrite must recurse into grandchildren ---
+    #
+    # The #978 emission-loop fix flattens `decl.where_fns` at any depth so a
+    # grandchild's body IS handed to `_compile_fn`.  But Pass 1.6
+    # (`_rewrite_where_fns`, called from `_rewrite_ability_ops`) only rewrote
+    # each DIRECT child's body + contracts, never recursing into
+    # `wfn.where_fns`.  So a grandchild using `eq`/`compare` kept a raw FnCall
+    # to the unregistered ability op; `_compile_fn` tripped CodegenSkip and
+    # returned None, the body was silently dropped, and the parent's
+    # `return_call $grandchild` dangled (`unknown func`).  The values below are
+    # chosen so a passthrough/default can't coincide with the leaf result.
+
+    def test_nested_where_grandchild_eq_body_runs(self) -> None:
+        """#989 (probeF1): a grandchild using `eq` in its BODY must compile.
+
+        ``outer(5)`` → ``child(5)`` → ``grandchild(5)`` → ``eq(5, 5)`` = true
+        (1).  Before the ability-op recursion, ``grandchild``'s raw ``eq(...)``
+        was never rewritten, so its body was dropped and ``child``'s
+        ``return_call $grandchild`` dangled (``unknown func: $grandchild``).
+        """
+        source = """\
+public fn outer(@Int -> @Bool) requires(true) ensures(true) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Bool) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0) }
+  where {
+    fn grandchild(@Int -> @Bool) requires(true) ensures(true) effects(pure)
+    { eq(@Int.0, 5) }
+  }
+}
+public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+{ outer(5) }
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_nested_where_grandchild_compare_contract_runs(self) -> None:
+        """#989 (probeF2): a grandchild using `eq` in its CONTRACT must compile.
+
+        ``grandchild``'s ``ensures(eq(@Int.result, @Int.result))`` is a
+        contract-position ability op; the same Pass 1.6 rewrite must reach a
+        grandchild's contracts, not just its body.  ``outer(7)`` returns 7 (the
+        body is a passthrough), which is unreachable if ``grandchild``'s
+        contract ``eq`` dangles at codegen.
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0) }
+  where {
+    fn grandchild(@Int -> @Int)
+      requires(true)
+      ensures(eq(@Int.result, @Int.result))
+      effects(pure)
+    { @Int.0 }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(7) }
+"""
+        assert _run(source, fn="main") == 7
+
+    def test_nested_where_grandchild_compare_body_runs(self) -> None:
+        """#989 (probeF4): a grandchild using `compare` in its BODY must compile.
+
+        ``outer(9)`` → ``child(9)`` → ``grandchild(9)`` →
+        ``match compare(9, 5) { Less->1, Equal->2, Greater->3 }`` = 3.  The
+        ``Greater`` arm (3) is reachable only if ``compare`` lowered to the
+        three-way ``if`` inside the grandchild — a dropped body would dangle.
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0) }
+  where {
+    fn grandchild(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { match compare(@Int.0, 5) { Less -> 1, Equal -> 2, Greater -> 3 } }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(9) }
+"""
+        assert _run(source, fn="main") == 3
+
+    def test_nested_where_branching_helpers_run(self) -> None:
+        """#989 (test-analyzer): a node with TWO nested helpers emits BOTH.
+
+        ``outer(10)`` → ``ha(10)`` → ``ha1(10) + ha2(10)`` → ``20 + 30`` = 50.
+        Both sibling grandchildren are load-bearing, so the shape kills a
+        drop-non-first-nested-subtree mutant (``[:1]`` on the flatten stack →
+        ``ha2`` never emitted → ``unknown func: $ha2``) and a leftmost-path
+        mutant.
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ ha(@Int.0) }
+where {
+  fn ha(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { ha1(@Int.0) + ha2(@Int.0) }
+  where {
+    fn ha1(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { @Int.0 * 2 }
+    fn ha2(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { @Int.0 * 3 }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(10) }
+"""
+        assert _run(source, fn="main") == 50
+
 
 # =====================================================================
 # #913: monomorphization DISCOVERY misses two call shapes

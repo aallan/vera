@@ -2665,3 +2665,110 @@ public fn main(@Unit -> @Int)
 { let @Array<Int> = [hash(42), 9]; @Array<Int>.0[0] }
 """, fn="main")
         assert val == 42
+
+
+class TestImportedNestedWhereEmission989(TestCrossModuleCodegen):
+    """#989 (PR review, Edge A): an IMPORTED function's grandchild where-helper
+    must be REGISTERED for Pass-2.5 emission, not just its direct children.
+
+    ``_register_modules`` collected imported where-fns with a one-level loop
+    (``for wfn in tld.decl.where_fns or ()``), so an imported ``libfn -> child
+    -> grandchild`` chain registered ``libfn`` and ``child`` but never
+    ``grandchild``.  The checker and verifier recurse into nested ``where``
+    blocks, so ``grandchild`` is checked (E-clean) and verified (Tier-1 green)
+    — but Pass 2.5 never emitted its body, and ``child``'s call to it dangled
+    (``unknown func: $grandchild``) at WAT assembly on a check+verify-green
+    program.  Mirrors the #978 local-path emission fix, one level up in the
+    registration walk.
+    """
+
+    def test_imported_grandchild_where_fn_emitted(self) -> None:
+        """The panel repro: lib ``libfn -> child -> grandchild``, imported and
+        called as ``libfn(10)`` == 16 (``grandchild(11) == 11 + 5``).
+
+        Pins the full pipeline: check-green, verify-green, compile-green, and
+        run == 16.  Before the registration recursion, check + verify passed
+        but compile failed with ``unknown func: $grandchild``.
+        """
+        import tempfile
+
+        from vera.checker import typecheck
+        from vera.verifier import verify
+
+        lib_src = """\
+public fn libfn(@Int -> @Int)
+  requires(true) ensures(@Int.result == @Int.0 + 6) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int)
+    requires(true) ensures(@Int.result == @Int.0 + 6) effects(pure)
+  { grandchild(@Int.0 + 1) }
+  where {
+    fn grandchild(@Int -> @Int)
+      requires(true) ensures(@Int.result == @Int.0 + 5) effects(pure)
+    { @Int.0 + 5 }
+  }
+}
+"""
+        main_src = """\
+import lib(libfn);
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ libfn(10) }
+"""
+        mod = self._resolved(("lib",), lib_src)
+
+        # check-green + verify-green (the "silent" property: neither stage
+        # rejects the program — only codegen dropped the grandchild body).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(main_src)
+            f.flush()
+            path = f.name
+        try:
+            prog = transform(parse_file(path))
+            check_diags = typecheck(prog, main_src, resolved_modules=[mod])
+            check_errors = [d for d in check_diags if d.severity == "error"]
+            assert check_errors == [], [e.description for e in check_errors]
+            vres = verify(prog, main_src, resolved_modules=[mod])
+            verrors = [d for d in vres.diagnostics if d.severity == "error"]
+            assert verrors == [], [e.description for e in verrors]
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+        # compile-green + run == 16 (the flip: dangling $grandchild at head).
+        assert self._run_mod(main_src, [mod], fn="main") == 16
+
+    def test_imported_three_level_where_chain_runs(self) -> None:
+        """A deeper imported chain: ``top -> a -> b -> c`` (three nested levels).
+
+        ``top(5)`` → ``a(5)`` → ``b(6)`` → ``c(16)`` → ``16 + 100`` = 116.  The
+        registration walk must reach ``c`` (a great-grandchild), not just ``a``
+        and ``b``, or ``b``'s ``call $c`` dangles.
+        """
+        lib_src = """\
+public fn top(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ a(@Int.0) }
+where {
+  fn a(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { b(@Int.0 + 1) }
+  where {
+    fn b(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { c(@Int.0 + 10) }
+    where {
+      fn c(@Int -> @Int) requires(true) ensures(true) effects(pure)
+      { @Int.0 + 100 }
+    }
+  }
+}
+"""
+        main_src = """\
+import lib(top);
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ top(5) }
+"""
+        mod = self._resolved(("lib",), lib_src)
+        assert self._run_mod(main_src, [mod], fn="main") == 116

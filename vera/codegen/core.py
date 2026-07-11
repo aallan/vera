@@ -1340,7 +1340,8 @@ class CodeGenerator(
         where_fns: tuple[ast.FnDecl, ...] | None,
         ability_ops: dict[str, str],
     ) -> tuple[ast.FnDecl, ...] | None:
-        """Rewrite ability ops in where-block function bodies AND contracts.
+        """Rewrite ability ops in where-block function bodies AND contracts,
+        recursing into nested (grandchild) helpers.
 
         A `where`-helper carries its own full contract block, so its
         `requires` / `ensures` / `decreases` predicates hit the same
@@ -1348,6 +1349,13 @@ class CodeGenerator(
         `compare` (#874).  Rewrite both the body and the contracts through the
         same Pass 1.6 canonicalisation (PR #887 review found the first pass
         covered only `wfn.body`).
+
+        A helper's OWN `where_fns` must be rewritten too (#989): the #978
+        emission fix flattens `decl.where_fns` at any depth so a grandchild's
+        body reaches `_compile_fn`, but if its `eq` / `compare` was never
+        lowered here it stays a raw FnCall — `_compile_fn` trips CodegenSkip,
+        drops the body, and the parent's `return_call $grandchild` dangles
+        (`unknown func`).  Recurse to mirror `_flatten_where_fns`.
         """
         if not where_fns:
             return where_fns
@@ -1359,12 +1367,16 @@ class CodeGenerator(
             new_body = self._rewrite_ops_in_expr(wfn.body, ability_ops)
             new_contracts = self._rewrite_ops_in_contracts(
                 wfn.contracts, ability_ops)
+            new_nested = self._rewrite_where_fns(
+                wfn.where_fns, ability_ops)
             if (new_body is not wfn.body
-                    or new_contracts is not wfn.contracts):
+                    or new_contracts is not wfn.contracts
+                    or new_nested is not wfn.where_fns):
                 new_fns.append(_replace(
                     wfn,
                     body=new_body,  # type: ignore[arg-type]
-                    contracts=new_contracts))
+                    contracts=new_contracts,
+                    where_fns=new_nested))
                 changed = True
             else:
                 new_fns.append(wfn)

@@ -508,8 +508,8 @@ where {
         """GAP C (nesting): a grandchild helper reading its IMMEDIATE parent
         (mid)'s @Bool param slot earns the where-helper hint naming @Bool —
         the outer-tname stack top is the immediate parent's frame.  (Nested
-        where-blocks parse and CHECK fine; only the non-generic codegen path
-        is unimplemented, tracked as #978, so this check-level test is safe.)"""
+        where-blocks parse, check, and — since #978 — compile; this test pins
+        the check-level hint specifically.)"""
         errs = _check_err("""
 private fn outer(@Int -> @Int)
   requires(true) ensures(true) effects(pure)

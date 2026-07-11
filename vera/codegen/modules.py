@@ -311,7 +311,15 @@ class CrossModuleMixin:
                 # helper must reach the module's helper, not the local (#814
                 # C2).  They are private nested fns, never qualified-callable,
                 # so they never get a ``_module_qualified_targets`` entry.
-                for wfn in tld.decl.where_fns or ():
+                #
+                # Walk the FULL where-fn tree, not just direct children (#989):
+                # an imported ``libfn -> child -> grandchild`` chain registered
+                # only ``child`` under a one-level loop, so ``grandchild`` was
+                # checked + verified but never emitted in Pass 2.5, and
+                # ``child``'s call to it dangled (``unknown func``).  Reuse the
+                # same ``_flatten_where_fns`` walk the local non-generic Pass-2
+                # emission loop uses (mirrors the #978 local-path fix).
+                for wfn in self._flatten_where_fns(tld.decl):
                     if wfn.forall_vars:
                         continue
                     self._imported_fn_decls.append((mod.path, wfn))
