@@ -3186,6 +3186,100 @@ public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
         assert _run(source, fn="main") == 5
 
 
+class TestNestedWhereHelperEmission978:
+    """#978 — a where-helper's OWN where-helpers must be emitted (non-generic).
+
+    A non-generic ``fn outer { ... } where { fn child { ... } where { fn
+    grandchild ... } }`` passes ``vera check`` and ``vera verify`` but crashed
+    at codegen: the Pass-2 emission loop compiled only ONE level of
+    ``decl.where_fns`` (``child``), never a helper's OWN ``where_fns``
+    (``grandchild``).  The checker (`_check_fn`), verifier (`_verify_fn`), and
+    registration (`_register_fn`) all recurse into nested ``where`` blocks, so
+    ``grandchild``'s NAME is registered — ``child``'s body lowers its call to
+    ``return_call $grandchild`` — but the body was never emitted, so WAT
+    assembly failed with ``unknown func: $grandchild``.  The generic path was
+    unaffected: ``monomorphize._hoist_where_fns_under`` recurses.
+
+    The run-level values distinguish the leaf actually executing from any
+    default/passthrough: each level transforms its argument non-trivially.
+    """
+
+    def test_nested_where_grandchild_runs(self) -> None:
+        """The #978 repro: outer → child → grandchild, all non-generic.
+
+        ``outer(10)`` → ``child(10)`` → ``grandchild(10 + 1)`` → ``11 * 2`` =
+        22.  Before the fix this failed to compile (``unknown func:
+        $grandchild``); the ``* 2`` on ``arg + 1`` makes 22 reachable only if
+        ``grandchild`` genuinely runs (a default/passthrough would not give 22).
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0 + 1) }
+  where {
+    fn grandchild(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { @Int.0 * 2 }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(10) }
+"""
+        assert _run(source, fn="main") == 22
+
+    def test_nested_where_three_levels_run(self) -> None:
+        """Three levels of nesting: outer → a → b → c, all non-generic.
+
+        ``outer(5)`` → ``a(5)`` → ``b(5 + 1)`` → ``c(6 + 10)`` → ``16 * 3`` =
+        48.  Before the fix this failed at ``unknown func: $b`` (only ``a``,
+        outer's direct helper, was emitted).
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ a(@Int.0) }
+where {
+  fn a(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { b(@Int.0 + 1) }
+  where {
+    fn b(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { c(@Int.0 + 10) }
+    where {
+      fn c(@Int -> @Int) requires(true) ensures(true) effects(pure)
+      { @Int.0 * 3 }
+    }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(5) }
+"""
+        assert _run(source, fn="main") == 48
+
+    def test_generic_parent_nested_where_still_runs(self) -> None:
+        """Control (pin): the generic-parent path already emits nested helpers.
+
+        ``monomorphize._hoist_where_fns_under`` recurses, so a ``forall<T>``
+        parent carrying a nested ``where`` block was never affected by #978.
+        ``outer<Int>(99)`` → ``child(5)`` → ``grandchild(5 + 1)`` → ``6 * 2`` =
+        12.  This must stay green through the non-generic-path fix.
+        """
+        source = """\
+private forall<T> fn outer(@T -> @Int) requires(true) ensures(true) effects(pure)
+{ child(5) }
+where {
+  fn child(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0 + 1) }
+  where {
+    fn grandchild(@Int -> @Int) requires(true) ensures(true) effects(pure)
+    { @Int.0 * 2 }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(99) }
+"""
+        assert _run(source, fn="main") == 12
+
+
 # =====================================================================
 # #913: monomorphization DISCOVERY misses two call shapes
 # =====================================================================

@@ -1,0 +1,84 @@
+-- Conformance: nested where-blocks — a where-helper carrying its OWN
+-- where-helpers must be emitted by (non-generic) codegen (Chapter 5, #978).
+-- Tests: outer -> child -> grandchild and a three-level chain, all
+-- non-generic.  The checker (`_check_fn`), verifier (`_verify_fn`), and
+-- registration (`_register_fn`) recurse into nested `where` blocks, so a
+-- grandchild is checked/registered and the parent's call is lowered to
+-- `$grandchild` — but before #978 the non-generic emission loop compiled
+-- only ONE level of where-helpers, so a nested helper's body was never
+-- emitted and WAT assembly failed with `unknown func` (the generic path
+-- already flattened nested helpers via `_hoist_where_fns_under`).  Each
+-- helper carries a meaningful `ensures` so the leaf's contribution is
+-- threaded up the chain and the final value is proven at Tier 1 — a
+-- default/passthrough could not satisfy it.
+private fn outer(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == (@Int.0 + 1) * 2)
+  effects(pure)
+{
+  child(@Int.0)
+}
+where {
+  fn child(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == (@Int.0 + 1) * 2)
+    effects(pure)
+  {
+    grandchild(@Int.0 + 1)
+  }
+  where {
+    fn grandchild(@Int -> @Int)
+      requires(true)
+      ensures(@Int.result == @Int.0 * 2)
+      effects(pure)
+    {
+      @Int.0 * 2
+    }
+  }
+}
+
+private fn deep(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == (@Int.0 + 11) * 3)
+  effects(pure)
+{
+  a(@Int.0)
+}
+where {
+  fn a(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == (@Int.0 + 11) * 3)
+    effects(pure)
+  {
+    b(@Int.0 + 1)
+  }
+  where {
+    fn b(@Int -> @Int)
+      requires(true)
+      ensures(@Int.result == (@Int.0 + 10) * 3)
+      effects(pure)
+    {
+      c(@Int.0 + 10)
+    }
+    where {
+      fn c(@Int -> @Int)
+        requires(true)
+        ensures(@Int.result == @Int.0 * 3)
+        effects(pure)
+      {
+        @Int.0 * 3
+      }
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 70)
+  effects(pure)
+{
+  -- outer(10) -> child(10) -> grandchild(10 + 1) -> 11 * 2 = 22.
+  -- deep(5) -> a(5) -> b(5 + 1) -> c(6 + 10) -> 16 * 3 = 48.
+  -- 22 + 48 = 70; both leaves (grandchild, c) must run.
+  outer(10) + deep(5)
+}

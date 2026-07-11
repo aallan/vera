@@ -762,12 +762,21 @@ class CodeGenerator(
                     functions_wat.append(fn_wat)
                     if is_public:
                         exports.append(decl.name)
-                    # Also compile where-block functions
-                    if decl.where_fns:
-                        for wfn in decl.where_fns:
-                            wfn_wat = self._compile_fn(wfn, export=False)
-                            if wfn_wat is not None:
-                                functions_wat.append(wfn_wat)
+                    # Also compile where-block functions — recursively, so a
+                    # helper's OWN where-helpers (grandchildren) are emitted
+                    # too.  The checker, verifier, and registration paths all
+                    # recurse into nested `where` blocks (`_check_fn` /
+                    # `_verify_fn` / `_register_fn`), so a grandchild's name is
+                    # registered and the parent's body lowers its call to
+                    # `$grandchild` — but before #978 only the direct helpers
+                    # were emitted, so a nested helper's body dangled
+                    # (`unknown func` at WAT assembly).  The generic path
+                    # already flattens nested helpers via
+                    # `monomorphize._hoist_where_fns_under`.
+                    for wfn in self._flatten_where_fns(decl):
+                        wfn_wat = self._compile_fn(wfn, export=False)
+                        if wfn_wat is not None:
+                            functions_wat.append(wfn_wat)
 
         # Compile monomorphized functions.
         #
@@ -1173,6 +1182,28 @@ class CodeGenerator(
         slot-name builder agrees by construction (dedup).
         """
         return type_expr_slot_name(te)
+
+    @staticmethod
+    def _flatten_where_fns(decl: ast.FnDecl) -> list[ast.FnDecl]:
+        """Every ``where``-helper reachable from *decl*, at any depth (#978).
+
+        Pre-order, depth-first, so a helper precedes its own nested helpers.
+        WAT function order is irrelevant to assembly, but a stable order keeps
+        emitted output deterministic.  An ``id``-keyed visited guard makes the
+        walk total against a pathological (shared-node) AST shape — a plain
+        ``where``-block tree has none, so the guard is pure insurance.
+        """
+        out: list[ast.FnDecl] = []
+        seen: set[int] = set()
+        stack: list[ast.FnDecl] = list(reversed(decl.where_fns or ()))
+        while stack:
+            wfn = stack.pop()
+            if id(wfn) in seen:
+                continue
+            seen.add(id(wfn))
+            out.append(wfn)
+            stack.extend(reversed(wfn.where_fns or ()))
+        return out
 
     @staticmethod
     def _escape_wat_string(s: str) -> str:

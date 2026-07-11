@@ -835,6 +835,19 @@
     ]
   },
   {
+    "id": "ch05_nested_where_helpers",
+    "file": "ch05_nested_where_helpers.vera",
+    "chapter": 5,
+    "title": "Nested where-blocks: a helper's own where-helpers are emitted by non-generic codegen (#978)",
+    "level": "run",
+    "spec_ref": "Section 5.6.2",
+    "features": [
+      "where_block",
+      "nested_where",
+      "codegen"
+    ]
+  },
+  {
     "id": "ch06_requires",
     "file": "ch06_requires.vera",
     "chapter": 6,
