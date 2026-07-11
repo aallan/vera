@@ -151,6 +151,8 @@ def test(
     trials: int = 100,
     fn_name: str | None = None,
     resolved_modules: list[ResolvedModule] | None = None,
+    expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
+    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
 ) -> TestResult:
     """Test a type-checked Vera program by generating inputs from contracts.
 
@@ -158,6 +160,14 @@ def test(
     2. For Tier 3 functions, generate inputs via Z3 from requires() clauses.
     3. Compile to WASM and execute each trial.
     4. Report results.
+
+    ``expr_semantic_types`` / ``expr_target_types`` are the checker's
+    resolved- and target-type side-tables (``CheckerArtifacts``).  #986: they
+    are threaded into BOTH the verifier (classification) and codegen (the WASM
+    the tester executes) so the tester compiles the SAME @Nat->@Int widen guards
+    the verifier obligates — without them a tuple/array-component widen guard
+    (recovered only from the target table) silently vanished from the
+    tester-compiled WASM while the verifier still classified it tier3-guarded.
     """
     engine = _TestEngine(
         program=program,
@@ -166,6 +176,8 @@ def test(
         trials=trials,
         fn_name=fn_name,
         resolved_modules=resolved_modules,
+        expr_semantic_types=expr_semantic_types,
+        expr_target_types=expr_target_types,
     )
     return engine.run()
 
@@ -185,6 +197,10 @@ class _TestEngine:
         trials: int,
         fn_name: str | None,
         resolved_modules: list[ResolvedModule] | None,
+        expr_semantic_types: (
+            dict[tuple[int, int, int, int], Type] | None) = None,
+        expr_target_types: (
+            dict[tuple[int, int, int, int], Type] | None) = None,
     ) -> None:
         self.program = program
         self.source = source
@@ -192,6 +208,11 @@ class _TestEngine:
         self.trials = trials
         self.fn_name = fn_name
         self.resolved_modules = resolved_modules or []
+        # #986: the checker's resolved- / target-type side-tables, threaded into
+        # both `verify` and `codegen_compile` below so the tester's WASM carries
+        # the same widen guards the verifier obligates.
+        self.expr_semantic_types = expr_semantic_types
+        self.expr_target_types = expr_target_types
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
@@ -204,6 +225,8 @@ class _TestEngine:
             source=self.source,
             file=self.file,
             resolved_modules=self.resolved_modules,
+            expr_types=self.expr_semantic_types,
+            expr_target_types=self.expr_target_types,
         )
         classification = _classify_functions(
             self.program, verify_result.diagnostics,
@@ -221,6 +244,8 @@ class _TestEngine:
             source=self.source,
             file=self.file,
             resolved_modules=self.resolved_modules,
+            expr_semantic_types=self.expr_semantic_types,
+            expr_target_types=self.expr_target_types,
         )
         compile_errors = [
             d for d in compile_result.diagnostics

@@ -1222,11 +1222,12 @@ class OperatorsMixin:
         # #820: a HETEROGENEOUS @Int-join if (one @Nat arm, one genuine @Int
         # arm) widens the @Nat arm into the @Int join.  The whole-if boundary
         # guard cannot fire (it would false-trap the legitimately-negative @Int
-        # arm), so guard the @Nat arm PER-ARM here.  Gate on the join being i64
-        # and NOT wholly @Nat (`_result_is_nat` — the homogeneous case the
-        # boundary guard already covers), mirroring the verifier's
-        # `_is_hetero_int_widen_join` per-arm obligation.
-        if result_type == "i64" and not self._result_is_nat(expr):
+        # arm), so guard the @Nat arm PER-ARM here.  `_is_hetero_int_widen_join`
+        # is the shared gate: i64 join, NOT wholly @Nat (`_result_is_nat`), AND
+        # TARGET @Int (FIX-4 — without the target check this false-trapped a
+        # legal @Nat arm of a hetero join in a @Nat-RETURNING context).  The same
+        # gate drives the FIX-1 tail-call collector, so the two stay in lockstep.
+        if self._is_hetero_int_widen_join(expr):
             if self._result_is_nat(expr.then_branch):
                 then = self._emit_int_widen_guard(then)
             if (expr.else_branch is not None
@@ -1809,6 +1810,50 @@ class OperatorsMixin:
             expr = expr.expr
         return isinstance(expr, ast.IntLit) and expr.value >= 0
 
+    def _is_hetero_int_widen_join(self, expr: ast.Expr) -> bool:
+        """Codegen mirror of ``ContractVerifier._is_hetero_int_widen_join``
+        (#820) — the single source of truth for the heterogeneous @Nat -> @Int
+        per-arm widen gate, shared by both emitters (``_translate_if`` /
+        ``_translate_match``) and the FIX-1 tail-call collector so collection
+        and emission cannot desync.
+
+        True iff *expr* is an ``if`` / ``match`` whose i64 result is a
+        HETEROGENEOUS @Int join — at least one genuine @Int-*slot* arm makes the
+        join genuinely @Int (``not _result_is_nat``), so the whole-expression
+        boundary guard cannot fire without false-trapping that arm — AND whose
+        TARGET type is @Int, recovered from the threaded target-type table.  Each
+        intrinsically-@Nat arm then widens into that @Int join and is guarded
+        PER-ARM.
+
+        The target-@Int requirement mirrors the verifier's
+        ``_is_int_type(_target_type_of(expr))`` and is the FIX-4 correction: the
+        pre-existing ``result_type == "i64" and not _result_is_nat`` gate was
+        TARGET-BLIND, so a hetero i64 join in a @Nat-RETURNING context (where the
+        @Int arm narrows into the @Nat return via the #983 nat_bind machinery,
+        and the @Nat arm is a LEGAL @Nat) had its @Nat arm falsely wrapped in the
+        widen guard — trapping a verify-clean Tier-1 program on a value like
+        2^63.  When the target-type table carries no entry for the join (an
+        unverified ``transform -> compile``), there is no widen claim to honour,
+        so we do NOT guard — matching the verifier, which likewise emits no
+        per-arm obligation without the table.  ``_resolve_base_type_name`` makes
+        the target check alias-aware, as the sibling widen gates are.
+        """
+        if isinstance(expr, ast.IfExpr):
+            result_type = self._infer_block_result_type(expr.then_branch)
+            if result_type is None and expr.else_branch is not None:
+                result_type = self._infer_block_result_type(expr.else_branch)
+        elif isinstance(expr, ast.MatchExpr):
+            result_type = self._infer_match_result_type(expr)
+        else:
+            return False
+        if result_type != "i64" or self._result_is_nat(expr):
+            return False
+        target = self._target_codegen_type_full(expr)
+        if target is None:
+            return False
+        name = getattr(target, "name", None)
+        return name is not None and self._resolve_base_type_name(name) == "Int"
+
     def _has_nat_origin_codegen(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* derives from a definitely-@Nat source.
 
@@ -2054,6 +2099,72 @@ class OperatorsMixin:
         if id(expr) in self._nat_return_leaf_ids:
             return self._emit_nat_bind_guard(instrs)
         return instrs
+
+    def _collect_hetero_widen_arm_calls(self, body: ast.Expr) -> set[int]:
+        """The ``id()`` of every ``FnCall`` / ``ModuleCall`` that sits inside a
+        heterogeneous @Nat->@Int per-arm widen guard (#820, FIX-1) — collected
+        so ``CodeGenerator._compile_fn`` can subtract them from ``tail_sites``,
+        forcing those calls to lower to a plain ``call`` instead of
+        ``return_call``.
+
+        The per-arm widen guard (``_emit_int_widen_guard``) is appended AFTER the
+        arm body's WAT, so a ``return_call`` inside that arm would return before
+        the guard runs — the guard would be DEAD and a @Nat above i64.MAX would
+        silently reinterpret to a negative @Int (the same hazard the #983
+        narrowing-leaf collector defends against at the return position).  This
+        collector descends ``Block`` trailing exprs / ``IfExpr`` branches /
+        ``MatchExpr`` arms and, at each join for which
+        :py:meth:`_is_hetero_int_widen_join` holds — THE EXACT gate both emitters
+        use, so collection and emission stay in lockstep — collects EVERY call
+        under each arm that ``_result_is_nat`` marks (i.e. the arms that ARE
+        widen-guarded).  Over-collection is safe: subtraction only affects
+        ``tail_sites`` members, and any call inside a guarded arm must not be a
+        ``return_call`` (the guard is appended after the arm).  Non-@Nat arms are
+        recursed into, so a nested join is still covered.
+        """
+        ids: set[int] = set()
+        self._collect_hetero_widen_arm_calls_into(body, ids)
+        return ids
+
+    def _collect_hetero_widen_arm_calls_into(
+        self, expr: ast.Expr, ids: set[int],
+    ) -> None:
+        """Recursive worker for :py:meth:`_collect_hetero_widen_arm_calls`."""
+        if isinstance(expr, ast.Block):
+            self._collect_hetero_widen_arm_calls_into(expr.expr, ids)
+            return
+        if isinstance(expr, ast.IfExpr):
+            hetero = self._is_hetero_int_widen_join(expr)
+            branches = [expr.then_branch]
+            if expr.else_branch is not None:
+                branches.append(expr.else_branch)
+            for branch in branches:
+                if hetero and self._result_is_nat(branch):
+                    self._collect_all_call_ids(branch, ids)
+                else:
+                    self._collect_hetero_widen_arm_calls_into(branch, ids)
+            return
+        if isinstance(expr, ast.MatchExpr):
+            hetero = self._is_hetero_int_widen_join(expr)
+            for arm in expr.arms:
+                if hetero and self._result_is_nat(arm.body):
+                    self._collect_all_call_ids(arm.body, ids)
+                else:
+                    self._collect_hetero_widen_arm_calls_into(arm.body, ids)
+            return
+        # A leaf (or a non-tail-transparent construct): nothing to descend.
+
+    @staticmethod
+    def _collect_all_call_ids(expr: ast.Expr, ids: set[int]) -> None:
+        """Add ``id()`` of every ``FnCall`` / ``ModuleCall`` anywhere under
+        *expr* (a widen-guarded arm) — the whole arm body's WAT is wrapped, so
+        any call in it (not only its tail leaf) must not be a ``return_call``.
+        Generic dataclass-field walk (via :func:`walk_nodes`) so new AST call
+        shapes are covered structurally."""
+        from vera.obligations.cache import walk_nodes
+        for node in walk_nodes(expr):
+            if isinstance(node, (ast.FnCall, ast.ModuleCall)):
+                ids.add(id(node))
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
         """Codegen mirror of ``ContractVerifier._has_underflow_leaf`` (#552).

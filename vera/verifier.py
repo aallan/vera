@@ -3109,8 +3109,9 @@ class ContractVerifier:
             # as tier3 (never Tier-1 / E530): codegen guards the body's @Int
             # return value (`_compile_lifted_closure`), the definition-side dual
             # of the closure-argument obligation.  The body is deliberately NOT
-            # walked — AnonFn stays a terminal for the SMT walk (see the walk's
-            # header note), matching the closure-opacity the #984 dual shares.
+            # walked — AnonFn stays a terminal for the SMT walk (see
+            # `_walk_for_primitive_op_obligations`'s docstring for the
+            # closure-opacity rationale), matching what the #984 dual shares.
             if (self._is_int_type(self._resolve_type(expr.return_type))
                     and self._result_is_nat(expr.body)):
                 self._record_int_widen_tier3(
@@ -3269,7 +3270,9 @@ class ContractVerifier:
                         # target-type table (the #820 enabler) and guards each
                         # @Nat component AT CONSTRUCTION, so this is now
                         # runtime-guarded (`guarded=True`) rather than E531 —
-                        # the #758 widening residual the enabler unlocks.
+                        # the #813-disclosed tuple-component widening residual
+                        # (the widening dual of #758's tuple-component
+                        # narrowing) the enabler unlocks.
                         self._check_int_widening_obligation(
                             decl, arg, smt, slot_env, list(assumptions),
                             site="tuple component", guarded=True,
@@ -4421,14 +4424,15 @@ class ContractVerifier:
     ) -> None:
         """Record a Tier-3 ``nat_to_int_coerce`` outcome, the #813 dual of
         :py:meth:`_record_nat_bind_tier3`.  A codegen-guarded widening
-        (``guarded=True`` — return, let, call-arg, and the concrete @Int
-        constructor field) genuinely falls to a runtime coercion trap
-        (``tier3_runtime``).  The unguarded cases (``guarded=False`` — the
-        tuple-construction component and the generic-instantiated @Int field,
-        which erases to i64 with no per-field mono metadata) are neither
-        statically proven nor runtime-checked, so surface an E531 warning and
-        are excluded from the discharged totals rather than silently counting
-        a runtime check they never get."""
+        (``guarded=True`` — return, let, call-arg, concrete @Int constructor
+        field, and the #820 per-component sites: tuple component, array
+        element, heterogeneous if/match arm, closure argument/return/capture)
+        genuinely falls to a runtime coercion trap (``tier3_runtime``).  The
+        sole unguarded case (``guarded=False`` — the generic-instantiated @Int
+        field, which erases to i64 with no per-field mono metadata) is neither
+        statically proven nor runtime-checked, so surfaces an E531 warning and
+        is excluded from the discharged totals rather than silently counting
+        a runtime check it never gets."""
         if guarded:
             self._record_obligation(
                 decl.name, "nat_to_int_coerce", value_node, status)
@@ -4462,9 +4466,10 @@ class ContractVerifier:
                 "reinterprets to a negative @Int when widened.  The value is "
                 "outside Z3's decidable fragment (untranslatable or the solver "
                 "timed out), so the `<= i64.MAX` obligation could not be "
-                "discharged.  Codegen runtime-guards the concrete @Int "
-                "coercion sites (return, let, call-argument, concrete @Int "
-                "field) but not this one — a tuple-construction component, or a "
+                "discharged.  Codegen runtime-guards every concrete @Int "
+                "coercion site (return, let, call-argument, constructor field, "
+                "tuple component, array element, heterogeneous arm, closure "
+                "argument/return/capture) but not this one — a "
                 "generic-instantiated @Int field with no per-field mono "
                 "metadata — so here the widening is neither statically proven "
                 "nor runtime-checked."
@@ -6045,8 +6050,9 @@ class ContractVerifier:
         at the single boundary site — without needing the per-arm join type,
         which the checker's sparse side-tables do not record.  A genuine @Int arm
         (a slot/call that can be negative) is NOT @Nat-compatible: it makes the
-        result @Int, and a @Nat sibling widening into it is the architecturally
-        deferred site-2b case (tracked in #820), not a boundary widening."""
+        result @Int, and a @Nat sibling widening into it is the heterogeneous
+        per-arm case — obligated via :py:meth:`_is_hetero_int_widen_join` and
+        guarded per-arm by codegen (#820), not a boundary widening."""
         return self._result_is_nat(expr) or self._is_nonneg_int_literal(expr)
 
     @staticmethod

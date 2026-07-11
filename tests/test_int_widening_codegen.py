@@ -438,6 +438,11 @@ class TestNatToIntWideningTrap813:
     def test_hetero_if_slot_nat_arm_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_HETERO_IF_SLOT, "hif", [42, 0], 42)
 
+    def test_hetero_if_slot_nat_arm_no_trap_at_i64_max(self) -> None:
+        # Boundary control: the @Nat then-arm's per-arm guard leaves i64.MAX
+        # untouched (sign bit clear) — only the else @Int arm may go negative.
+        _assert_no_trap(_WIDEN_HETERO_IF_SLOT, "hif", [I64_MAX, 0], I64_MAX)
+
     def test_hetero_if_slot_int_arm_no_trap_on_negative(self) -> None:
         # The genuine @Int else-arm must round-trip a negative value (`if false`
         # forces it) — the per-arm guard never touches the @Int arm.
@@ -459,12 +464,21 @@ class TestNatToIntWideningTrap813:
     def test_array_elem_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_ARRAY_ELEM, "ae", [42], 42)
 
+    def test_array_elem_widening_no_trap_at_i64_max(self) -> None:
+        # Boundary control: i64.MAX (sign bit clear) is in range — the element
+        # store guard must not fire; the value round-trips exactly.
+        _assert_no_trap(_WIDEN_ARRAY_ELEM, "ae", [I64_MAX], I64_MAX)
+
     def test_tuple_construct_widening_traps(self) -> None:
         # #820: a @Nat component widened into an @Int tuple slot at construction.
         _assert_traps(_WIDEN_TUPLE_CONSTRUCT, "tc", [U64_MAX])
 
     def test_tuple_construct_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_TUPLE_CONSTRUCT, "tc", [42], 42)
+
+    def test_tuple_construct_widening_no_trap_at_i64_max(self) -> None:
+        # Boundary control: i64.MAX component widens exactly at construction.
+        _assert_no_trap(_WIDEN_TUPLE_CONSTRUCT, "tc", [I64_MAX], I64_MAX)
 
     def test_tuple_destr_widening_traps(self) -> None:
         # #820: the destructure form guards the field load at the read.
@@ -473,6 +487,10 @@ class TestNatToIntWideningTrap813:
     def test_tuple_destr_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_TUPLE_DESTR, "td", [42], 42)
 
+    def test_tuple_destr_widening_no_trap_at_i64_max(self) -> None:
+        # Boundary control: i64.MAX is guarded at construction and in range.
+        _assert_no_trap(_WIDEN_TUPLE_DESTR, "td", [I64_MAX], I64_MAX)
+
     def test_closure_arg_widening_traps(self) -> None:
         # #820: a @Nat argument widened into an @Int closure formal must trap at
         # the call_indirect boundary.  Pre-#820 this silently returned -1.
@@ -480,6 +498,11 @@ class TestNatToIntWideningTrap813:
 
     def test_closure_arg_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_CLOSURE_ARG, "f", [42], 42)
+
+    def test_closure_arg_widening_no_trap_at_i64_max(self) -> None:
+        # Boundary control: an i64.MAX argument widens into the @Int closure
+        # formal exactly — the call_indirect guard must not fire.
+        _assert_no_trap(_WIDEN_CLOSURE_ARG, "f", [I64_MAX], I64_MAX)
 
     def test_closure_nat_formal_no_trap(self) -> None:
         # Control: a @Nat argument into a genuinely @Nat closure formal is not a
@@ -493,6 +516,11 @@ class TestNatToIntWideningTrap813:
 
     def test_closure_return_widening_no_trap_in_range(self) -> None:
         _assert_no_trap(_WIDEN_CLOSURE_RETURN, "f", [42], 42)
+
+    def test_closure_return_widening_no_trap_at_i64_max(self) -> None:
+        # Boundary control: the closure's @Nat body widens into its @Int return
+        # exactly at i64.MAX — the body-return guard must not fire.
+        _assert_no_trap(_WIDEN_CLOSURE_RETURN, "f", [I64_MAX], I64_MAX)
 
     def test_closure_capture_widening_traps(self) -> None:
         # #820: a captured @Nat used as the closure's @Int return — same guard.

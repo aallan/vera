@@ -3886,3 +3886,148 @@ class TestVisitErrorUnwrapChain:
 
         assert _unwrap_visit_error(
             VisitError("RULE", None, ValueError("not ours"))) is None
+
+
+class TestNatIntWideningCliThreading820:
+    """#820 CLI threading: ``cmd_compile`` / ``cmd_run`` pass the checker's
+    ``expr_target_types`` side-table into codegen, so a @Nat -> @Int widening at
+    a per-component target site (here an ``@Array<Int>`` element) is
+    runtime-guarded.  Codegen does NOT recompute that table, so nulling either
+    kwarg drops the guard: ``vera run`` of an element-widening at u64.MAX
+    silently returns the reinterpreted -1 (exit 0) instead of trapping — a
+    soundness hole invisible to a lower-level compile helper, so these drive the
+    real CLI entry points end-to-end.
+
+    Two of the four cli.py threading sites cannot be killed by a behavioural
+    test, and their tests below are honest *surface* pins rather than
+    mutation-killers:
+
+    * ``cmd_verify`` (its ``expr_target_types`` kwarg): ``verify()`` has a #747
+      fallback (``verifier.py``: ``if expr_target_types is None: ... =
+      _arts.expr_target_types``) that recomputes the identical table from its own
+      typecheck when the caller passes ``None`` — deliberately, so a bare
+      ``verify()`` matches the CLI path.  Nulling cmd_verify's kwarg is therefore
+      behaviourally inert; ``test_verify_json_array_elem_emits_tier3_coerce``
+      pins the ``verify --json`` #820 surface but does not distinguish that
+      mutation.
+
+    * ``cmd_serve`` (its ``expr_target_types`` kwarg): a request-driven widening
+      trap is not feasible cheaply — (1) the only serve harness compiles via
+      ``_compile_ok`` (plain ``_compile``, which does not thread the table) so it
+      cannot distinguish the mutation; (2) ``cmd_serve`` blocks in
+      ``serve_forever`` with no in-process stop hook a test can reach; and (3)
+      ``handle(Request -> Response)`` has no @Nat parameter, so routing a u64.MAX
+      value to a #820 site from an HTTP request has no cheap plumbing.  No test
+      here covers it — the honest residual, reported rather than faked.
+    """
+
+    # Array-element @Nat -> @Int widening (a #820 target-type-guarded site): the
+    # element store is guarded only when codegen receives ``expr_target_types``
+    # (which recovers the ``Array<Int>`` element type).
+    _WIDEN = (
+        "public fn ae(@Nat -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }\n"
+    )
+    # Control: an @Int-source element is not a widening — no guard, no coerce
+    # obligation — so a guard assertion cannot pass via unrelated codegen.
+    _CONTROL = (
+        "public fn ae(@Int -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ let @Array<Int> = [@Int.0]; @Array<Int>.0[0] }\n"
+    )
+    _U64_MAX = 18446744073709551615
+
+    @staticmethod
+    def _write(tmp_path: Path, source: str) -> str:
+        p = tmp_path / "widen.vera"
+        p.write_text(source, encoding="utf-8")
+        return str(p)
+
+    @staticmethod
+    def _wat_function(wat: str, name: str) -> str:
+        """Slice the ``(func $name ...)`` s-expression out of a WAT module by
+        paren-matching, so a guard assertion is scoped to that function rather
+        than the runtime prelude (which has its own unrelated traps)."""
+        start = wat.index(f"(func ${name} ")
+        depth = 0
+        for i in range(start, len(wat)):
+            if wat[i] == "(":
+                depth += 1
+            elif wat[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return wat[start:i + 1]
+        raise AssertionError(f"unbalanced WAT for ${name}")
+
+    # ---- cmd_run: nulling its expr_target_types silently returns -1 ----
+
+    def test_run_array_elem_widening_traps_at_u64_max(self, tmp_path) -> None:
+        path = self._write(tmp_path, self._WIDEN)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", path,
+             "--fn", "ae", "--", str(self._U64_MAX)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        # Nulling cmd_run's expr_target_types drops the element guard: this run
+        # returns -1 with exit 0 instead of trapping.
+        assert result.returncode != 0, result.stdout
+        assert "unreachable" in (result.stdout + result.stderr).lower()
+
+    def test_run_array_elem_widening_in_range_exact(self, tmp_path) -> None:
+        # In-range control (42 -> exit 0, prints 42) so the trap test above
+        # cannot pass via an unrelated failure to run the program at all.
+        path = self._write(tmp_path, self._WIDEN)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", path,
+             "--fn", "ae", "--", "42"],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "42" in result.stdout
+
+    # ---- cmd_compile: nulling its expr_target_types drops the WAT guard ----
+
+    def test_compile_wat_array_elem_emits_widen_guard(self, tmp_path) -> None:
+        # The widen guard is a negative-i64 sign-bit check (`i64.lt_s` feeding a
+        # trapping `unreachable`); it appears in the emitted `$ae` function only
+        # when cmd_compile threads expr_target_types.
+        path = self._write(tmp_path, self._WIDEN)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat", path],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        body = self._wat_function(result.stdout, "ae")
+        assert "i64.lt_s" in body, body
+
+    def test_compile_wat_no_widening_control_lacks_guard(self, tmp_path) -> None:
+        # Control: an @Int-source array carries no `i64.lt_s` sign-bit guard in
+        # `$ae`, pinning the guard above to the widening rather than to array
+        # codegen in general (array bounds checks use i32 comparisons).
+        path = self._write(tmp_path, self._CONTROL)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat", path],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "i64.lt_s" not in self._wat_function(result.stdout, "ae")
+
+    # ---- cmd_verify: surface pin (the :270 kwarg is inert — see docstring) ----
+
+    def test_verify_json_array_elem_emits_tier3_coerce(self, tmp_path) -> None:
+        # Pins the `vera verify --json` #820 surface: the array-element widening
+        # is reported as exactly one `nat_to_int_coerce` obligation at tier3
+        # (runtime-guarded, not E531-disclosed).  This does NOT kill the
+        # cmd_verify threading mutation — verify()'s #747 fallback recomputes the
+        # table from None — but guards the reported obligation stream.
+        path = self._write(tmp_path, self._WIDEN)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "--json", path],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        parsed = json.loads(result.stdout)
+        coerce = [o for o in parsed["obligations"]
+                  if o["kind"] == "nat_to_int_coerce"]
+        assert coerce, parsed["obligations"]
+        assert all(o["status"] == "tier3" for o in coerce), coerce

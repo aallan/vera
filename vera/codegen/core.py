@@ -812,6 +812,7 @@ class CodeGenerator(
             fn_wat = self._compile_fn(
                 idecl, export=False,
                 module_renames=self._module_intra_renames.get(path, {}),
+                imported=True,  # #986: don't consult the main-file span tables
             )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
@@ -834,6 +835,7 @@ class CodeGenerator(
                 dataclasses.replace(idecl, name=mangled),
                 export=False,
                 module_renames=self._module_intra_renames.get(path, {}),
+                imported=True,  # #986: don't consult the main-file span tables
             )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)

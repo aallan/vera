@@ -193,7 +193,8 @@ public fn ae(@Nat -> @Int)
     # tuple construction: a @Nat component widening into an @Int tuple slot.
     # The Tuple carrier's layout has no per-component int flags; the target
     # type `Tuple<Int, Int>` supplies them, so construction guards each @Nat
-    # component (was E531-disclosed) — this is the #758 widening residual.
+    # component (was E531-disclosed) — the #813-disclosed widening residual,
+    # the widening dual of #758's tuple-component narrowing.
     ("tuple_construct", """
 public fn tc(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -244,6 +245,28 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 type UnitToInt = fn(Unit -> Int) effects(pure);
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 { let @UnitToInt = fn(@Unit -> @Int) effects(pure) { @Nat.0 }; apply_fn(@UnitToInt.0, ()) }
+""", "f"),
+    # #820 per-arm guard POSITION — the @Nat arm in the MIDDLE (non-terminal)
+    # slot of a flat 3-arm hetero match.  The committed hetero_match_slot always
+    # routes u64.MAX to the terminal `_` arm (a distinct codegen guard site), so
+    # the non-terminal conditional-arm widen guard is otherwise untested —
+    # neutering it lets the middle @Nat arm silently reinterpret to -1.  A local
+    # `let @Int = 1` scrutinee routes to the middle `1 -> @Nat.0` arm (the arg
+    # value can't double as the scrutinee — u64.MAX would fall to `_`); the
+    # `0 -> @Int.0` arm makes the join genuinely @Int (hetero, guarded per-arm).
+    ("hetero_match_middle_arm", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ let @Int = 1; match @Int.0 { 0 -> @Int.0, 1 -> @Nat.0, _ -> @Nat.0 } }
+""", "f"),
+    # #820 per-arm guard POSITION — the @Nat arm in the ELSE branch of a hetero
+    # if.  The committed hetero_if_slot always puts the @Nat arm in THEN (a
+    # distinct guard site), so the else-branch widen guard is otherwise untested
+    # — neutering it lets an else @Nat arm silently reinterpret to -1.  `if
+    # false` routes to the else `@Nat.0` arm; `let @Int = 0 - 1` makes the then
+    # arm a genuine (negative) @Int slot so the join is genuinely @Int (hetero).
+    ("hetero_if_else_arm", """
+public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
+{ let @Int = 0 - 1; if false then { @Int.0 } else { @Nat.0 } }
 """, "f"),
 ]
 

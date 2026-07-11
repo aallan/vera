@@ -335,7 +335,8 @@ public fn box_extract(@Nat -> @Int)
         # Codegen recovers the tuple's target component types (`Tuple<Int, Int>`)
         # from the threaded target-type table and guards each @Nat component at
         # construction, so the widening is Tier-3 (runtime-guarded), not E531 —
-        # the #758 widening residual the enabler unlocks.
+        # the #813-disclosed widening residual the enabler unlocks (the
+        # widening dual of #758's tuple-component narrowing).
         result = _verify("""
 public fn tup_construct(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -543,11 +544,11 @@ public fn f(@Nat -> @Int)
 { let @NatToInt = fn(@Nat -> @Int) effects(pure) { @Nat.0 }; apply_fn(@NatToInt.0, @Nat.0) }
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
-        # One for the closure return (the @Nat body) + one for the @Nat argument.
-        assert any(o.status == "tier3" for o in co), [
-            (o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3" for o in co), [
-            (o.kind, o.status) for o in co]
+        # The closure formal is @Nat, so the `apply_fn` argument (@Nat -> @Nat)
+        # is NOT a widening — only the closure's @Nat body widening into its
+        # @Int return is, so exactly one tier3 obligation fires.
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
 
     def test_closure_capture_nat_body_emits_tier3(self) -> None:
         # A captured @Nat used as the @Int return — the @Unit arg means the ONLY

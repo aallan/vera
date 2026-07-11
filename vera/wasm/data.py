@@ -129,17 +129,31 @@ class DataMixin:
             *gc_shadow_push(tmp),
         ]
 
-        # #820: the `Tuple` carrier is variadic — its layout has no per-field
-        # @Int flags (`int_fields` is empty, recomputed per call).  Recover the
-        # construction's target component types (`Tuple<Int, Int>`) from the
-        # threaded target-type table so a @Nat component widening into an @Int
-        # tuple slot is guarded AT CONSTRUCTION (the #758 widening residual the
-        # enabler unlocks).  A generic ADT field (`Some(@Nat.0)` -> `Option<Int>`)
-        # is NOT this path — it goes through `layout.int_fields` (empty for a
-        # generic field, so it stays E531-disclosed, #757) — so gate on `Tuple`.
+        # #820: the BUILTIN `Tuple` carrier is variadic — its registered layout
+        # has no per-field metadata (`field_offsets` / `int_fields` are `()`, the
+        # real layout being recomputed per call).  Recover the construction's
+        # target component types (`Tuple<Int, Int>`) from the threaded target-type
+        # table so a @Nat component widening into an @Int tuple slot is guarded AT
+        # CONSTRUCTION (the #813-disclosed widening residual the enabler
+        # unlocks — the widening dual of #758's tuple-component narrowing).  A
+        # generic ADT field (`Some(@Nat.0)` -> `Option<Int>`) is NOT this path —
+        # it goes through `layout.int_fields` (empty for a generic field, so it
+        # stays E531-disclosed, #757).
+        #
+        # FIX-3: a USER `data Tuple<A, B>` also matches `expr.name == "Tuple"`,
+        # but its layout is a FIXED user ADT (non-empty `field_offsets`, built
+        # parallel to its declared fields) — the verifier routes such a
+        # construction through the generic-ctor-field path and emits NO coerce
+        # obligation, so taking the tuple-target path here would emit a widen
+        # guard the verifier never obligated (an opposite-direction desync that
+        # trapped a legal @Nat).  Discriminate the builtin variadic carrier
+        # (empty `field_offsets`) from the user ADT, so only the builtin carrier
+        # uses the target table; the user Tuple's generic fields stay unguarded
+        # via the (empty) `int_fields` path, exactly like any other generic ADT.
         tuple_target = (
             self._target_codegen_type_full(expr)
-            if expr.name == "Tuple" else None
+            if (expr.name == "Tuple" and not layout.field_offsets)
+            else None
         )
 
         # Store each field at its computed offset
@@ -362,11 +376,12 @@ class DataMixin:
         # #820: a HETEROGENEOUS @Int-join match (a @Nat arm body alongside a
         # genuine @Int-slot arm body) widens each @Nat arm into the @Int join.
         # The whole-match boundary guard cannot fire (it would false-trap the
-        # @Int arm), so guard the @Nat arm(s) PER-ARM.  Gate on the join being
-        # i64 and NOT wholly @Nat (`_result_is_nat` — the homogeneous case the
-        # boundary guard covers), mirroring the verifier's per-arm obligation.
-        guard_widen_arms = (
-            result_type == "i64" and not self._result_is_nat(expr))
+        # @Int arm), so guard the @Nat arm(s) PER-ARM.  `_is_hetero_int_widen_join`
+        # is the shared gate: i64 join, NOT wholly @Nat (`_result_is_nat`), AND
+        # TARGET @Int (FIX-4 — without the target check this false-trapped a
+        # legal @Nat arm of a hetero join in a @Nat-RETURNING context).  The same
+        # gate drives the FIX-1 tail-call collector, so the two stay in lockstep.
+        guard_widen_arms = self._is_hetero_int_widen_join(expr)
 
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(

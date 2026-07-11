@@ -104,11 +104,27 @@ class FunctionCompilationMixin:
     def _compile_fn(
         self, decl: ast.FnDecl, *, export: bool = True,
         module_renames: dict[str, str] | None = None,
+        imported: bool = False,
     ) -> str | None:
         """Compile a single function to WAT.
 
         Returns the WAT function string, or None if not compilable
         (with a warning diagnostic).
+
+        *imported* is True when *decl* is an imported module body compiled into
+        this flat WASM module (Pass 2.5 / 2.6).  The checker's resolved- /
+        target-type side-tables are SINGLE-MODULE and keyed by span alone
+        (``(line, col, end_line, end_col)`` — no file identity), so they hold
+        entries for the MAIN file only.  An imported body's expression whose span
+        happens to coincide with a main-file entry would otherwise pick up the
+        WRONG type and, at a tuple/array widen site, emit a SPURIOUS @Nat -> @Int
+        guard that traps a legal @Nat (confirmed cross-module collision, #986
+        review).  So we suppress the span-keyed table lookups for imported bodies
+        — they fall back to the AST-only classifier, exactly as an unverified
+        ``transform -> compile`` does (sound, just less precise; the imported
+        module's own tables aren't threaded here — a separate follow-up).
+        Fn-type-based recovery (closure formal / return types) is NOT span-keyed
+        and is unaffected.
         """
         # #851 — diagnostics emitted while compiling a prelude-injected
         # function (or a mono clone of one — the mangler's `base$Types`
@@ -222,11 +238,18 @@ class FunctionCompilationMixin:
         )
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier (kept in lockstep with the verifier).
-        ctx.set_expr_semantic_types(self._expr_semantic_types)
+        # #986: suppressed for an imported body — these span-keyed tables hold
+        # main-file entries only, so a colliding span would mis-classify an
+        # imported operand (see the *imported* note above).
+        ctx.set_expr_semantic_types(
+            None if imported else self._expr_semantic_types)
         # #820: target-type side-table for the @Nat -> @Int widening guard's
         # per-component target-type recovery (tuple component / array element
         # / heterogeneous if-arm), the codegen dual of ``_target_type_of``.
-        ctx.set_expr_target_types(self._expr_target_types)
+        # #986: likewise suppressed for an imported body (a colliding span would
+        # emit a spurious widen guard that traps a legal @Nat).
+        ctx.set_expr_target_types(
+            None if imported else self._expr_target_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)
@@ -413,8 +436,21 @@ class FunctionCompilationMixin:
             nat_leaf_ids = ctx._collect_narrowing_return_leaves(decl.body)
         ctx._nat_return_leaf_ids = nat_leaf_ids
 
+        # #820 FIX-1 — a @Nat arm of a heterogeneous @Int-join if/match is
+        # widen-guarded PER-ARM (`_emit_int_widen_guard`, appended AFTER the arm
+        # body).  A call inside such an arm that lowered to `return_call` would
+        # return before the appended guard runs, leaving it DEAD (a @Nat above
+        # i64.MAX silently reinterprets to a negative @Int) — the widen sibling
+        # of the #983 narrowing-leaf hazard.  Subtract those call ids from
+        # `tail_sites` so they lower to a plain `call` the guard can follow.  The
+        # collector uses the SAME `_is_hetero_int_widen_join` gate as the emitters,
+        # so a call is only stripped if its arm is actually guarded.
+        hetero_widen_ids: set[int] = set()
+        if decl.body is not None:
+            hetero_widen_ids = ctx._collect_hetero_widen_arm_calls(decl.body)
+
         ctx.set_tail_call_context(
-            tail_sites - nat_leaf_ids,
+            tail_sites - nat_leaf_ids - hetero_widen_ids,
             self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
         )
 
