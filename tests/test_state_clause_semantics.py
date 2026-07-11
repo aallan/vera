@@ -549,9 +549,9 @@ public fn test(@Unit -> @Int)
   }
 }
 """
-        result = _compile(src)
-        if "test" in result.exports:
-            assert _run(src, "test") == -1
+        # The shape compiles today — assert unconditionally so a future
+        # compile regression fails loudly instead of passing vacuously.
+        assert _run(src, "test") == -1
 
 
 class TestNonTailResumeRejected:
