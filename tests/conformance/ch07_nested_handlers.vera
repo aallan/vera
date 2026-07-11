@@ -12,7 +12,7 @@ private fn state_from_three(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 3) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(get(()) + 1);
     put(get(()) + 1);
@@ -29,7 +29,7 @@ private fn state_from_zero(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 0) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(get(()) + 1);
     get(())
@@ -47,7 +47,7 @@ public fn test_exn_inside_state(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 0) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(7);
     handle[Exn<Int>] {
@@ -73,7 +73,7 @@ public fn test_state_inside_exn(@Unit -> @Int)
   } in {
     handle[State<Int>](@Int = 0) {
       get(@Unit) -> { resume(@Int.0) },
-      put(@Int) -> { resume(()) } with @Int = @Int.0
+      put(@Int) -> { resume(()) }
     } in {
       put(5);
       get(())

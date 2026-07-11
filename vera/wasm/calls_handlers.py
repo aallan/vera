@@ -7,6 +7,8 @@ and effect handlers (State<T>, Exn<E>).
 
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
+
 from vera import ast
 from vera.monomorphize import mangle_type_name
 from vera.skip import CodegenSkip
@@ -1378,16 +1380,26 @@ class CallsHandlersMixin:
         #    the checker, so `_type_name_to_wasm` yields the op's result WT).
         saved_ops = dict(self._effect_ops)
         saved_result_wt = dict(self._effect_op_result_wt)
+        saved_clause_ops = dict(self._state_clause_ops)
         self._effect_ops["get"] = (get_import, False)
         self._effect_ops["put"] = (put_import, True)
         self._effect_op_result_wt["get"] = self._type_name_to_wasm(type_name)
+        # #976 option C: register the clauses so each get/put CALL SITE in
+        # the body inlines its clause body (intrinsic-hybrid semantics)
+        # instead of the bare host-cell call.  An op with no clause keeps the
+        # bare path via the `_effect_ops` entry above.
+        for clause in expr.clauses:
+            self._state_clause_ops[clause.op_name] = (
+                clause, type_name, get_import, put_import,
+            )
 
         # 4. Compile handler body
         body_instrs = self.translate_block(expr.body, env)
 
-        # 5. Restore effect_ops
+        # 5. Restore effect_ops (and the clause registry — nested handlers)
         self._effect_ops = saved_ops
         self._effect_op_result_wt = saved_result_wt
+        self._state_clause_ops = saved_clause_ops
 
         if body_instrs is None:
             return None
@@ -1400,6 +1412,136 @@ class CallsHandlersMixin:
         instructions.append(f"call {pop_import}")
 
         return instructions
+
+    def _translate_state_clause_op(
+        self, call: ast.FnCall, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Inline a ``handle[State<T>]`` clause at a get/put call site (#976).
+
+        The pinned intrinsic-hybrid semantics:
+
+        1. ``put(x)`` stores ``x`` intrinsically; ``get`` reads intrinsically.
+        2. The clause body EXECUTES; its ``resume(v)`` value IS the op's
+           result at this call site (single-shot, tail position — enforced
+           below).
+        3. ``with @T = <expr>`` OVERRIDES the intrinsic store.
+        4. The clause's ``@T.0`` is captured BEFORE the intrinsic store, so
+           ``with @T = @T.0`` means *keep the old state*.
+
+        Emission per site (all over the existing host-cell imports — no host
+        changes): eval put's argument to a local; ``call get`` into a capture
+        local (the clause's ``@T.0``); for put, ``call put`` with the
+        argument (intrinsic store); inline the clause body with the op param
+        bound FIRST and the captured state LAST (checker binding order:
+        ``@T.0`` = state, ``@T.1`` = put's argument); then, if the clause
+        carries ``with``, eval the override in the same scope and ``call
+        put``.  Stack discipline: the body's net effect is exactly resume's
+        value (``[]`` for put — ``resume(())`` is a ``UnitLit``; one ``T``
+        for get), and the override's value is consumed by its own put, so
+        the site's net stack effect equals the bare host-call it replaces.
+
+        A get clause's ``@Unit`` op param carries no value and gets no env
+        binding — a body referencing it fails slot resolution loudly rather
+        than resolving to something wrong.
+        """
+        clause, type_name, get_import, put_import = (
+            self._state_clause_ops[call.name]
+        )
+        total, tail = self._clause_resume_counts(clause.body)
+        if total == 0 or total != tail:
+            raise CodegenSkip(
+                call,
+                "State clause requires resume(...) in tail position "
+                "(single-shot); a missing, repeated, or non-tail resume "
+                "is not lowerable",
+            )
+        state_wt = self._type_name_to_wasm(type_name)
+        instructions: list[str] = []
+
+        # put's argument — the clause's @T.1 (op params bind first).
+        arg_local: int | None = None
+        if call.name == "put":
+            arg_instrs = self.translate_expr(call.args[0], env)
+            if arg_instrs is None:
+                return None
+            arg_local = self.alloc_local(state_wt)
+            instructions.extend(arg_instrs)
+            instructions.append(f"local.set {arg_local}")
+
+        # Capture the PRE-store state — the clause's @T.0 (bound last).
+        state_local = self.alloc_local(state_wt)
+        instructions.append(f"call {get_import}")
+        instructions.append(f"local.set {state_local}")
+
+        # Intrinsic store: put stores its argument regardless of the clause.
+        if call.name == "put":
+            instructions.append(f"local.get {arg_local}")
+            instructions.append(f"call {put_import}")
+
+        clause_env = env
+        if arg_local is not None:
+            clause_env = clause_env.push(type_name, arg_local)
+        clause_env = clause_env.push(type_name, state_local)
+
+        saved_in_clause = self._in_state_clause
+        self._in_state_clause = True
+        try:
+            body_instrs = self.translate_expr(clause.body, clause_env)
+            upd_instrs = (
+                self.translate_expr(clause.state_update[1], clause_env)
+                if clause.state_update is not None else None
+            )
+        finally:
+            self._in_state_clause = saved_in_clause
+        if body_instrs is None:
+            return None
+        instructions.extend(body_instrs)
+        if clause.state_update is not None:
+            if upd_instrs is None:
+                return None
+            instructions.extend(upd_instrs)
+            instructions.append(f"call {put_import}")
+        return instructions
+
+    def _clause_resume_counts(self, body: ast.Expr) -> tuple[int, int]:
+        """(total, tail-position) ``resume(...)`` call counts in a clause
+        body.
+
+        Tail positions: the body itself, a Block's trailing expression, and
+        both/all arms of a tail ``if``/``match``.  Anything else (a resume in
+        a statement, an operand, a nested handler's body, …) is non-tail:
+        the inline lowering's stack shape requires every execution path to
+        end in exactly one resume, so ``total == tail`` (and ``total >= 1``)
+        is the lowerable condition.
+        """
+        def total_count(node: object) -> int:
+            if isinstance(node, ast.FnCall) and node.name == "resume":
+                # resume's own arguments cannot contain another resume in a
+                # checkable program (resume returns Unit); count args anyway
+                # so a pathological nesting is rejected, not miscounted.
+                return 1 + sum(total_count(a) for a in node.args)
+            if isinstance(node, (list, tuple)):
+                return sum(total_count(item) for item in node)
+            if is_dataclass(node) and not isinstance(node, type):
+                return sum(
+                    total_count(getattr(node, f.name))
+                    for f in fields(node)
+                )
+            return 0
+
+        def tail_count(expr: object) -> int:
+            if isinstance(expr, ast.FnCall) and expr.name == "resume":
+                return 1
+            if isinstance(expr, ast.Block):
+                return tail_count(expr.expr)
+            if isinstance(expr, ast.IfExpr):
+                return tail_count(expr.then_branch) + tail_count(
+                    expr.else_branch)
+            if isinstance(expr, ast.MatchExpr):
+                return sum(tail_count(arm.body) for arm in expr.arms)
+            return 0
+
+        return total_count(body), tail_count(body)
 
     def _translate_handle_exn(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,

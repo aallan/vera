@@ -1070,6 +1070,20 @@
     ]
   },
   {
+    "id": "ch07_state_clause_transform",
+    "file": "ch07_state_clause_transform.vera",
+    "chapter": 7,
+    "title": "State clause bodies execute \u2014 intrinsic-hybrid semantics (#976)",
+    "level": "run",
+    "spec_ref": "Section 7.5.2",
+    "features": [
+      "effect_handler",
+      "handler_state",
+      "handler_clause",
+      "state_update"
+    ]
+  },
+  {
     "id": "ch07_exn_handler",
     "file": "ch07_exn_handler.vera",
     "chapter": 7,

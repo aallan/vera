@@ -9,7 +9,7 @@ public fn test_option_state(@Unit -> @Int)
 {
   handle[State<Option<Int>>](@Option<Int> = Some(5)) {
     get(@Unit) -> { resume(@Option<Int>.0) },
-    put(@Option<Int>) -> { resume(()) } with @Option<Int> = @Option<Int>.0
+    put(@Option<Int>) -> { resume(()) }
   } in {
     put(Some(9));
     option_unwrap_or(get(()), 0)
@@ -22,7 +22,7 @@ public fn test_tuple_state(@Unit -> @Int)
   effects(pure)
 {
   handle[State<Tuple<Int, Int>>](@Tuple<Int, Int> = Tuple(20, 22)) {
-    put(@Tuple<Int, Int>) -> { resume(()) } with @Tuple<Int, Int> = @Tuple<Int, Int>.0
+    put(@Tuple<Int, Int>) -> { resume(()) }
   } in {
     0
   }

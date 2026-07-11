@@ -13,7 +13,7 @@ public fn probe(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 7) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     @Int.0
   }

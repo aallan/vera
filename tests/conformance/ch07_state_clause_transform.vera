@@ -1,0 +1,58 @@
+-- Conformance: State clause bodies execute, intrinsic-hybrid (Chapter 7, #976)
+-- Tests: the three observable pieces of the §7.5.2 intrinsic-hybrid semantics:
+--   * a get clause's resume(value) IS the op's result (transform: 5 -> 105);
+--   * `with @T = expr` OVERRIDES the intrinsic store (put 5, store 10);
+--   * the clause state slot is captured PRE-store, so `with @T = @T.0` keeps
+--     the old state (put 99 over init 7 -> still 7).
+-- The main sentinel is ENFORCED (`ensures(@Int.result == 0)`, Tier-3 runtime
+-- check): a wrong value from any handler traps and the harness sees a
+-- nonzero exit.
+private fn transform_get(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0 + 100) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(5);
+    get(())
+  }
+}
+
+private fn override_store(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.1 * 2
+  } in {
+    put(5);
+    get(())
+  }
+}
+
+private fn keep_old(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 7) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(99);
+    get(())
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  transform_get(()) - 105 + (override_store(()) - 10) + (keep_old(()) - 7)
+}

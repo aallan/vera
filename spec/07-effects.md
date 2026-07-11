@@ -164,7 +164,7 @@ Components:
 - `resume(value)`: a built-in that continues execution of the handled body with a return value
 - `in { ... }`: the body in which the effect is handled
 
-The handler state is in scope as a `@T` slot **only inside the operation clauses** — for example `get(@Unit) -> { resume(@Int.0) }` reads the current `Int` state as `@Int.0`, and `with @Int = @Int.0` reads it to compute an update. The **handled body reaches state only through the typed operations** `get(())` and `put(...)`; it has no state slot. A slot reference to the state type in the handled body (e.g. `@Int.0` where the only `Int` in scope would be the state) is a checker error (E130) — state access there must go through `get(())`.
+The handler state is in scope as a `@T` slot **only inside the operation clauses** — for example `get(@Unit) -> { resume(@Int.0) }` reads the current `Int` state as `@Int.0`. Inside a clause the state slot holds the value **captured before the operation's intrinsic effect** (see §7.5.2): in a `put` clause, `@Int.0` is the state as it was *before* the store, and the put **argument** is `@Int.1` (operation parameters bind first, state last — most-recent wins). The **handled body reaches state only through the typed operations** `get(())` and `put(...)`; it has no state slot. A slot reference to the state type in the handled body (e.g. `@Int.0` where the only `Int` in scope would be the state) is a checker error (E130) — state access there must go through `get(())`.
 
 ### 7.5.2 Handler Semantics
 
@@ -174,9 +174,17 @@ When an effect operation is performed in the handled body:
 2. Control transfers to the corresponding operation clause in the handler.
 3. The handler may inspect the operation's arguments and the current state.
 4. The handler calls `resume(value)` to continue the handled body, providing the return value of the operation.
-5. Optionally, the handler updates its state with `with @T = expr`.
+5. Optionally, the handler overrides its state with `with @T = expr`.
 
-The handler may also choose NOT to call `resume`, which aborts the handled body. This is how exceptions are implemented.
+For **`State<T>`** these steps have *intrinsic-hybrid* semantics: the operations carry their declared meaning independently of the clauses, and the clauses refine what the body observes.
+
+- **Intrinsic effect first.** `put(x)` stores `x` into the state; `get` reads the state. This happens whether or not the clause transforms anything — the operations' declared meaning is not the clause's to redefine.
+- **The clause body executes**, with the operation's parameters and the state in scope, and its `resume(value)` **is the operation's result** at the call site — a `get` clause that resumes `@Int.0 * 3` makes `get(())` return three times the stored state.
+- **The state slot is captured before the intrinsic effect.** In a `put` clause, `@T.0` is the state as it was *before* the store (`@T.1` is the argument being stored).
+- **`with @T = expr` overrides the intrinsic store**, evaluated in the clause scope after the body. Because `@T.0` is the pre-store capture, `with @T = @T.0` means *keep the old state* — it undoes the `put`. A clause with no `with` leaves the intrinsic effect in place, so the canonical clauses (`get(@Unit) -> { resume(@T.0) }`, `put(@T) -> { resume(()) }`) are exact identity transforms.
+- **`resume` is single-shot and tail-position** in a `State` clause: every execution path through the clause body must end in exactly one `resume(...)`. A missing, repeated, or non-tail `resume` is not compilable (the function is skipped with a diagnostic). Multi-shot resumption is a FUTURE feature (§7.5.3's `Choice` sketch).
+
+The handler may also choose NOT to call `resume`, which aborts the handled body. This is how exceptions are implemented (`Exn` clauses run at the catch boundary and never resume).
 
 ![Handler dispatch: an effect operation suspends the handled body, control transfers to the matching clause with the arguments and handler state in scope, and resume(value) continues the body — omitting resume aborts it.](../assets/diagrams/effect-handlers.svg)
 

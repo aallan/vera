@@ -43,7 +43,7 @@ public fn probe(@Int -> @Int)
 {
   handle[State<Int>](@Int = 99) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(7);
     @Int.0
@@ -62,7 +62,7 @@ public fn probe(-> @Int)
 {
   handle[State<Int>](@Int = 2) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) } with @Int = @Int.0
+    put(@Int) -> { resume(()) }
   } in {
     put(8);
     get(())
@@ -1596,7 +1596,6 @@ public fn main(@Unit -> @Int)
   handle[State<Box>](@Box = Box(0)) {
     get(@Unit) -> { resume(@Box.0) },
     put(@Box) -> { resume(()) }
-    with @Box = @Box.0
   } in {
     match get(()) {
       Box(@Int) -> @Int.0
@@ -1624,7 +1623,6 @@ public fn main(@Unit -> @Int)
 {
   handle[State<Tuple<Int, Int>>](@Tuple<Int, Int> = Tuple(20, 22)) {
     put(@Tuple<Int, Int>) -> { resume(()) }
-    with @Tuple<Int, Int> = @Tuple<Int, Int>.0
   } in {
     0
   }
@@ -1645,7 +1643,6 @@ public fn main(@Unit -> @Int)
   handle[State<Option<Int>>](@Option<Int> = Some(5)) {
     get(@Unit) -> { resume(@Option<Int>.0) },
     put(@Option<Int>) -> { resume(()) }
-    with @Option<Int> = @Option<Int>.0
   } in {
     get(());
     7
@@ -1816,7 +1813,6 @@ private fn use_int_pair(@Unit -> @Int)
   handle[State<Option<Tuple<Int, Int>>>](@Option<Tuple<Int, Int>> = Some(Tuple(3, 4))) {
     get(@Unit) -> { resume(@Option<Tuple<Int, Int>>.0) },
     put(@Option<Tuple<Int, Int>>) -> { resume(()) }
-    with @Option<Tuple<Int, Int>> = @Option<Tuple<Int, Int>>.0
   } in {
     match get(()) {
       Some(@Tuple<Int, Int>) -> match @Tuple<Int, Int>.0 { Tuple(@Int) -> @Int.0 },
@@ -1831,7 +1827,6 @@ private fn use_bool_pair(@Unit -> @Int)
   handle[State<Option<Tuple<Bool, Bool>>>](@Option<Tuple<Bool, Bool>> = Some(Tuple(true, false))) {
     get(@Unit) -> { resume(@Option<Tuple<Bool, Bool>>.0) },
     put(@Option<Tuple<Bool, Bool>>) -> { resume(()) }
-    with @Option<Tuple<Bool, Bool>> = @Option<Tuple<Bool, Bool>>.0
   } in {
     100
   }

@@ -1660,7 +1660,6 @@ public fn main(@Unit -> @Int)
   handle[State<Option<Int>>](@Option<Int> = Some(5)) {
     get(@Unit) -> { resume(@Option<Int>.0) },
     put(@Option<Int>) -> { resume(()) }
-    with @Option<Int> = @Option<Int>.0
   } in {
     put(Some(9));
     option_unwrap_or(get(()), 0)

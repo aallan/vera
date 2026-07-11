@@ -432,6 +432,18 @@ class CallsMixin:
         if call.name == "apply_fn" and len(call.args) >= 2:
             return self._translate_apply_fn(call, env)
 
+        # #976 option C: a get/put under a handle with registered clauses
+        # inlines the clause body at the call site (intrinsic-hybrid
+        # semantics) instead of the bare host-cell call below.
+        if call.name in self._state_clause_ops:
+            return self._translate_state_clause_op(call, env)
+        # Inside an inlined State clause, resume(v)'s value IS the op's
+        # result at the original call site (single-shot, tail position —
+        # enforced before inlining).  resume(()) is a UnitLit: no value,
+        # matching put's void result.
+        if call.name == "resume" and self._in_state_clause:
+            return self.translate_expr(call.args[0], env)
+
         # Check if this is an effect operation (e.g. get/put/throw)
         if call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]

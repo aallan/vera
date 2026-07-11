@@ -115,6 +115,21 @@ class WasmContext(
         self._effect_op_result_wt: dict[str, str | None] = (
             effect_op_result_wt or {}
         )
+        # #976 option C: op_name -> (HandlerClause, state type name,
+        # get import, put import) for the innermost enclosing
+        # ``handle[State<T>]``.  When a get/put call site has an entry here,
+        # the clause BODY is inlined at the site (intrinsic-hybrid
+        # semantics: intrinsic store/read, clause executes, ``resume(v)`` is
+        # the op's result, ``with`` overrides the store).  Empty for a
+        # declared-``effects(<State<T>>)`` function with no handler — those
+        # keep the bare host-cell call.  Saved/restored around each handler
+        # body exactly like ``_effect_ops`` (nested handlers).
+        self._state_clause_ops: dict[
+            str, tuple[ast.HandlerClause, str, str, str]
+        ] = {}
+        # True while translating an inlined State clause body/`with` expr —
+        # gates the ``resume(v)`` lowering (v IS the op's result value).
+        self._in_state_clause: bool = False
         # Constructor layout mapping: ctor_name -> ConstructorLayout
         self._ctor_layouts: dict[str, ConstructorLayout] = ctor_layouts or {}
         # ADT type names for slot/param type resolution
