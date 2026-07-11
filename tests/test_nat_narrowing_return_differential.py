@@ -136,6 +136,22 @@ def _run(source: str, fn: str, arg: int) -> int | None:
         return exec_result.value
 
 
+def _trap_kind(source: str, fn: str, arg: int) -> str | None:
+    """The normalized trap kind for running *fn(arg)*, or ``None`` if no trap
+    — so trap assertions can pin the narrowing guard's bare ``unreachable``
+    net specifically (the widen dual's convention), not just "some trap"."""
+    with _resolved_pipeline(source) as (program, arts, resolved, path):
+        result = codegen_compile(
+            program, source=source, file=path, resolved_modules=resolved,
+            expr_semantic_types=arts.expr_semantic_types,
+        )
+        try:
+            execute(result, fn_name=fn, args=[arg])
+        except WasmTrapError as exc:
+            return exc.kind
+        return None
+
+
 # (label, source, fn, neg_input) — an @Int -> @Nat narrowing at the return
 # position where the value CAN be negative.  The verifier leaves the return
 # nat_bind undischarged (not "verified"), and codegen guards it so
@@ -397,9 +413,12 @@ class TestClosureReturnNarrowingDifferential984:
         assert statuses == ["tier3"], f"{label}: {statuses}"
         # ...and codegen makes good on the promise: a negative input traps
         # rather than returning it silently through the @Nat slot (the #984 bug).
-        assert _run(source, "go", neg) is None, (
+        kind = _trap_kind(source, "go", neg)
+        assert kind == "unreachable", (
             f"{label}: the verifier obligated this closure return, but "
-            f"run({neg}) did NOT trap — an unsound silent negative @Nat"
+            f"run({neg}) gave trap kind {kind!r} — expected the narrowing "
+            f"guard's bare `unreachable` net (None = no trap at all: an "
+            f"unsound silent negative @Nat)"
         )
         # ...while a non-negative input passes the per-leaf guard unharmed.
         assert _run(source, "go", 7) is not None, (
@@ -462,3 +481,73 @@ class TestClosureReturnNarrowingDifferential984:
         assert _run(_NESTED_CLOSURE, "go", 7) is not None, (
             "nested: a valid (non-negative) input must pass the guard"
         )
+
+_CLOSURE_BOUNDARY = """\
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Unit -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { @Int.0 } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(()); apply_fn(@F.0, @Int.0) }
+"""
+
+_CLOSURE_REFINED = """\
+type Pos = { @Nat | @Nat.0 > 0 };
+type F = fn(Int -> Pos) effects(pure);
+private fn mk(@Unit -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Pos) effects(pure) { if @Int.0 > 0 then { @Int.0 } else { 1 } } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(()); apply_fn(@F.0, @Int.0) }
+"""
+
+
+class TestClosureNarrowingBoundary984:
+    """Sign-boundary behavior of the closure return guard (`result >= 0`):
+    zero must SURVIVE (an off-by-one `i64.le_s` mutant would false-trap it),
+    the tightest negative and i64.MIN must trap with the bare `unreachable`
+    net.  Behavioral pins — not WAT-string matches — so a guard-comparison
+    regression is caught by execution, not by implementation coupling."""
+
+    def test_zero_survives_the_guard(self) -> None:
+        assert _run(_CLOSURE_BOUNDARY, "go", 0) == 0
+
+    def test_minus_one_traps(self) -> None:
+        assert _trap_kind(_CLOSURE_BOUNDARY, "go", -1) == "unreachable"
+
+    def test_i64_min_traps(self) -> None:
+        assert _trap_kind(_CLOSURE_BOUNDARY, "go", -(2 ** 63)) == "unreachable"
+
+    def test_i64_max_passes(self) -> None:
+        assert _run(_CLOSURE_BOUNDARY, "go", 2 ** 63 - 1) == 2 ** 63 - 1
+
+    def test_refined_return_single_guard_no_double(self) -> None:
+        """A refinement-over-@Nat closure return stays on the refinement
+        boundary — the #984 narrowing gate must NOT add a second guard
+        (`_refinement_guard_parts is None` exclusion, previously untested:
+        removing it compiles a redundant second sign check).  Pin by guard
+        count in the lifted closure's WAT, plus behavior: 5 round-trips,
+        0 violates the refinement and traps."""
+        statuses, wat = _statuses_and_wat(_CLOSURE_REFINED)
+        anon = wat[wat.index("(func $anon_"):]
+        depth = 0
+        for i, ch in enumerate(anon):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    anon = anon[: i + 1]
+                    break
+        # Exactly ZERO sign checks in the lifted body: the refinement's own
+        # boundary guard lives at the call/return boundary, not in the anon
+        # body — so ANY i64.lt_s here is the #984 narrowing gate wrongly
+        # firing on a refined return (measured: 0 at head, 1 with the
+        # `_refinement_guard_parts is None` exclusion removed).
+        assert anon.count("i64.lt_s") == 0, (
+            f"refined closure return picked up a narrowing guard: "
+            f"{anon.count('i64.lt_s')} sign checks in the lifted body"
+        )
+        assert _run(_CLOSURE_REFINED, "go", 5) == 5
+        # 0 takes the else arm and returns the clamped 1 — the body never
+        # produces a refinement-violating value, so no trap is expected here;
+        # the guard-count pin above is what this test exists for.
+        assert _run(_CLOSURE_REFINED, "go", 0) == 1

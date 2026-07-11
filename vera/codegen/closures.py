@@ -489,6 +489,12 @@ class ClosureLiftingMixin:
                 and self._refinement_guard_parts(anon_fn.return_type) is None):
             ctx._nat_return_leaf_ids = ctx._collect_narrowing_return_leaves(
                 anon_fn.body)
+        else:
+            # Reset unconditionally, as `_compile_fn` does for the top-level
+            # return: each closure gets a fresh WasmContext today, so this
+            # branch is insurance against a future shared-ctx refactor
+            # leaking a @Nat closure's leaf set into a non-@Nat sibling.
+            ctx._nat_return_leaf_ids = set()
 
         # Compile the body.  Three failure modes are handled:
         #   1. CodegenSkip — translator hit unsupported shape (#626 L3)

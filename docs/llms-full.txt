@@ -2363,6 +2363,7 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 | Shape | Bug summary | Workaround | Issue |
 |---|---|---|---|
 | `handle[State<T>]` custom clauses | Clause bodies and `with` state-update expressions are type-checked but not executed — the runtime always applies builtin cell semantics (`get` returns the cell, `put` stores its argument). | Write `State` clauses only in the canonical form (`get(@Unit) -> { resume(@T.0) }`, `put(@T) -> { resume(()) } with @T = @T.0`); do not rely on custom handler logic for `State`. | [#976](https://github.com/aallan/vera/issues/976) |
+| Rare conformance-gate flake | `ch05_closure_nat_return` trapped once in a full conformance run and never again (~960 clean attempts) — suspected runtime/GC timing interaction, not a compiler defect. | If CI reds on this program with `Reached unreachable` in `main`, re-run and report on the issue with wasmtime version + load conditions — do not chase the compiler. | [#996](https://github.com/aallan/vera/issues/996) |
 | Bare `None` as a call argument | A `None` passed as a call argument is rejected (E202 in generic calls, E241 in `eq(...)` even at concrete types) — argument inference never feeds the expected type into a bare nullary constructor; same bucket: `MkA(None)` as `@A<T>` (bare forall var, E121) and both-ctor comparisons (`Some(5) == None`, E142). | Bind first (`let @Option<Int> = None;` and pass the slot), or use the operator form (`x == None`) for comparisons — both check clean. | [#993](https://github.com/aallan/vera/issues/993) |
 | Generic `where`-helper under a non-generic parent | A `forall<T>` helper inside a non-generic function's `where` block is never monomorphized — `vera check`/`verify` pass but `vera compile` fails with an internal unknown-func error. | Hoist the generic helper to a top-level `private fn` (top-level generics monomorphize correctly), or make the parent `forall<T>` too. | [#990](https://github.com/aallan/vera/issues/990) |
 | Duplicate `where`-helper names | Two helpers sharing a name (sibling subtrees, or a helper named like a top-level fn) crash `vera compile` with a raw `duplicate func identifier` WAT error on a check-green program. | Give every helper in a function's `where` tree a unique name, distinct from all top-level function names. | [#991](https://github.com/aallan/vera/issues/991) |
@@ -3065,7 +3066,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 7,231 tests, including a 153-program conformance suite
+- 7,236 tests, including a 153-program conformance suite
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
