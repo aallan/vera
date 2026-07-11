@@ -223,6 +223,10 @@ class FunctionCompilationMixin:
         # #798: resolved-type side-table for the integer-overflow guard's
         # Int/Nat operand classifier (kept in lockstep with the verifier).
         ctx.set_expr_semantic_types(self._expr_semantic_types)
+        # #820: target-type side-table for the @Nat -> @Int widening guard's
+        # per-component target-type recovery (tuple component / array element
+        # / heterogeneous if-arm), the codegen dual of ``_target_type_of``.
+        ctx.set_expr_target_types(self._expr_target_types)
         # #747: per-parameter concrete-@Nat flags for the call-site
         # runtime narrowing guard.
         ctx.set_fn_nat_params(self._fn_nat_params)

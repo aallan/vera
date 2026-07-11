@@ -12,13 +12,13 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-7,058 tests, 150 conformance programs, 37 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+7,091 tests, 150 conformance programs, 37 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
 *`vera verify` tells the whole truth.*
 
-KNOWN_ISSUES carries a family of verification-completeness gaps — an obligation not emitted, a guard not planted — individually small, sharing machinery, and exactly the shape the burndown model handles well.  The bug-labelled member of the family ([#820](https://github.com/aallan/vera/issues/820)) lives in KNOWN_ISSUES' Bugs table rather than in this stage's rows — bugs are burndown material, not stage work — and the guard wave's shared architectural enabler (per-component target-type metadata in codegen) unblocks it alongside the staged rows.
+KNOWN_ISSUES carries a family of verification-completeness gaps — an obligation not emitted, a guard not planted — individually small, sharing machinery, and exactly the shape the burndown model handles well.  The guard wave's shared architectural enabler — per-component target-type metadata in codegen (the checker's target-type table threaded into code generation) — landed with the bug-labelled member of the family ([#820](https://github.com/aallan/vera/issues/820)), which is now retired: the `@Nat` → `@Int` widening is guarded at the array-element, tuple-component, heterogeneous-arm, and closure argument/return sites.  The same enabler now unblocks the staged narrowing rows below.
 
 Exit criterion: every verification-completeness and guard-deferral row in KNOWN_ISSUES is retired.
 

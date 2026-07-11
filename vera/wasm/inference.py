@@ -1651,6 +1651,43 @@ class InferenceMixin:
             return closure_arg.return_type
         return None
 
+    def _closure_arg_param_types(
+        self, closure_arg: ast.Expr,
+    ) -> tuple[ast.TypeExpr, ...] | None:
+        """Declared *parameter* TypeExprs of the closure an ``apply_fn`` applies
+        (#820) — the formal-type recovery the @Nat -> @Int argument widening
+        guard needs, the parameter dual of :py:meth:`_closure_arg_return_type`.
+
+        A ``SlotRef`` is resolved through the shared
+        :func:`resolve_fn_type_alias` (transitively to the terminal ``FnType``),
+        an inline ``AnonFn`` yields its declared params directly; any other
+        shape yields ``None``.  Designed so the closure *return* direction
+        (#984, deferred) can hook into the same recovery later.
+        """
+        if isinstance(closure_arg, ast.SlotRef):
+            fn_type = resolve_fn_type_alias(
+                ast.NamedType(
+                    name=closure_arg.type_name,
+                    type_args=closure_arg.type_args,
+                ),
+                self._type_aliases,
+                self._type_alias_params,
+            )
+            return tuple(fn_type.params) if fn_type is not None else None
+        if isinstance(closure_arg, ast.AnonFn):
+            return tuple(closure_arg.params)
+        return None
+
+    def _type_expr_base_is_int(self, te: ast.TypeExpr) -> bool:
+        """True iff *te* resolves (through aliases / refinements) to ``@Int``
+        (#820).  Alias-aware (`type Age = Int`), so a closure formal declared
+        with an @Int alias is guarded like a bare @Int.  Deliberately narrow —
+        a @Nat / generic / other formal is not @Int and must not be guarded."""
+        name = self._type_expr_to_slot_name(te)
+        if name is None:
+            return False
+        return self._resolve_base_type_name(name) == "Int"
+
     def _infer_apply_fn_return_type(
         self, closure_arg: ast.Expr,
     ) -> str | None:

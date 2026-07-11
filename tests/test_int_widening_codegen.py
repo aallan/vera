@@ -62,6 +62,7 @@ def _compile_with_types(source: str):
             ast, source=source, file=path,
             resolved_modules=resolved,
             expr_semantic_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
         )
         errs = [d for d in result.diagnostics if d.severity == "error"]
         assert not errs, f"codegen errors: {[d.description for d in errs]}"
@@ -208,8 +209,8 @@ public fn ntoi(@Nat -> @Int)
 # compatible: `_result_is_nat` keeps the whole if @Nat (`_arm_nat_compatible`),
 # and the single boundary guard fires on the real @Nat arm.  `if true` forces
 # the @Nat then-arm; `else { 0 }` is the literal arm (never out-of-range).
-# (Site 2b — a genuine @Int *slot* sibling arm — needs the join type the sparse
-# side-tables don't record and codegen lacks entirely; deferred to #820.)
+# (Site 2b — a genuine @Int *slot* sibling arm — is guarded per-arm since #820;
+# see `_WIDEN_HETERO_IF_SLOT` below.)
 _WIDEN_HETERO_IF = """
 public fn hif(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -226,15 +227,102 @@ public fn hmatch(@Nat -> @Int)
 { match @Nat.0 { 0 -> 0, _ -> @Nat.0 } }
 """
 
-# Control (site 2b is unguarded, not false-trapping): an if with a genuine @Int
-# *slot* arm is NOT classified @Nat (`_arm_nat_compatible` rejects a genuine
-# @Int arm), so it is left unguarded — a negative @Int value must round-trip
-# rather than trap.  `if false` forces the @Int else-arm (`@Int.0`).  (The @Nat
-# then-arm here is the deferred site-2b silent gap, tracked in #820.)
+# Control: the genuine @Int *slot* arm of a heterogeneous if must NOT trap on a
+# negative value — the per-arm guard fires only on the @Nat arm, never the @Int
+# arm (which can be legitimately negative).  `if false` forces the @Int else-arm.
 _HETERO_IF_INT_ARM_CONTROL = """
 public fn hctrl(@Nat, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if false then { @Nat.0 } else { @Int.0 } }
+"""
+
+# #820 site 2b: a heterogeneous if whose alternative is a genuine @Int *slot*
+# (not the #813 non-negative literal).  The join is genuinely @Int, so the
+# boundary guard cannot fire — the @Nat then-arm is guarded PER-ARM.  `if true`
+# forces the @Nat arm; u64.MAX must trap.
+_WIDEN_HETERO_IF_SLOT = """
+public fn hif(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if true then { @Nat.0 } else { @Int.0 } }
+"""
+
+# #820 site 2b (match form): the `_ -> @Nat.0` arm is guarded per-arm because the
+# `0 -> @Int.0` arm makes the join genuinely @Int.  u64.MAX falls to `_`.
+_WIDEN_HETERO_MATCH_SLOT = """
+public fn hmatch(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { 0 -> @Int.0, _ -> @Nat.0 } }
+"""
+
+# #820: a @Nat element widening into an @Array<Int> literal.  Codegen recovers
+# the target element type (`Array<Int>`) and guards the element store.
+_WIDEN_ARRAY_ELEM = """
+public fn ae(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+"""
+
+# #820: a @Nat component widening into an @Int tuple slot at construction.  The
+# Tuple carrier's target component types (`Tuple<Int, Int>`) supply the guard.
+_WIDEN_TUPLE_CONSTRUCT = """
+public fn tc(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Tuple<Int, Int> = Tuple(@Nat.0, 0); match @Tuple<Int, Int>.0 { Tuple(@Int, @Int) -> @Int.1 } }
+"""
+
+# #820: the destructure form — the field load is guarded at the destructure read.
+_WIDEN_TUPLE_DESTR = """
+public fn td(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Int, @Int> = Tuple(@Nat.0, @Nat.0); @Int.0 }
+"""
+
+# #820: `apply_fn(closure, @Nat.0)` widens a @Nat into the closure's @Int formal.
+# The formal type is recovered from the closure's function-type; the
+# call_indirect argument is guarded.
+_WIDEN_CLOSURE_ARG = """
+type IntToInt = fn(Int -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 }; apply_fn(@IntToInt.0, @Nat.0) }
+"""
+
+# Control: a @Nat argument into a closure whose formal is genuinely @Nat is NOT
+# a widening — the closure body may legitimately receive u64.MAX, so no trap.
+_CLOSURE_NAT_FORMAL_CONTROL = """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+public fn f(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let @NatToNat = fn(@Nat -> @Nat) effects(pure) { @Nat.0 }; apply_fn(@NatToNat.0, @Nat.0) }
+"""
+
+# #820: a @Nat closure body widening into the closure's @Int RETURN — the
+# definition-side dual of the closure argument.  Guarded in
+# _compile_lifted_closure; obligated shallow-syntactically (tier3).
+_WIDEN_CLOSURE_RETURN = """
+type NatToInt = fn(Nat -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @NatToInt = fn(@Nat -> @Int) effects(pure) { @Nat.0 }; apply_fn(@NatToInt.0, @Nat.0) }
+"""
+
+# #820: a CAPTURED @Nat used as the closure's @Int return — same body-return
+# guard (the captured @Nat.0 is the body's trailing value).  `@Unit` arg so the
+# only widening is the return.
+_WIDEN_CLOSURE_CAPTURE = """
+type UnitToInt = fn(Unit -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @UnitToInt = fn(@Unit -> @Int) effects(pure) { @Nat.0 }; apply_fn(@UnitToInt.0, ()) }
+"""
+
+# Control: a genuinely @Int closure body/return must NOT trap on a negative
+# value — the closure-return guard fires only on a @Nat body.
+_CLOSURE_INT_BODY_CONTROL = """
+type IntToInt = fn(Int -> Int) effects(pure);
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 }; apply_fn(@IntToInt.0, @Int.0) }
 """
 
 
@@ -338,3 +426,82 @@ class TestNatToIntWideningTrap813:
         # Control: the genuine @Int arm of a heterogeneous if must NOT trap on a
         # negative value — the per-arm guard fires only on the @Nat arm.
         _assert_no_trap(_HETERO_IF_INT_ARM_CONTROL, "hctrl", [0, -5], -5)
+
+    # ---- #820 sites: per-component target-type widening guards ----
+
+    def test_hetero_if_slot_nat_arm_traps(self) -> None:
+        # #820 site 2b: the @Nat then-arm of a heterogeneous @Int-slot-join if
+        # must trap on u64.MAX (the boundary guard can't fire — the @Int else arm
+        # can be negative).  Pre-#820 this silently returned -1.
+        _assert_traps(_WIDEN_HETERO_IF_SLOT, "hif", [U64_MAX, 0])
+
+    def test_hetero_if_slot_nat_arm_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_HETERO_IF_SLOT, "hif", [42, 0], 42)
+
+    def test_hetero_if_slot_int_arm_no_trap_on_negative(self) -> None:
+        # The genuine @Int else-arm must round-trip a negative value (`if false`
+        # forces it) — the per-arm guard never touches the @Int arm.
+        _WIDEN_HETERO_IF_SLOT_ELSE = _WIDEN_HETERO_IF_SLOT.replace(
+            "if true", "if false")
+        _assert_no_trap(_WIDEN_HETERO_IF_SLOT_ELSE, "hif", [0, -5], -5)
+
+    def test_hetero_match_slot_nat_arm_traps(self) -> None:
+        # #820 site 2b (match): u64.MAX falls to `_ -> @Nat.0`, guarded per-arm.
+        _assert_traps(_WIDEN_HETERO_MATCH_SLOT, "hmatch", [U64_MAX, 0])
+
+    def test_hetero_match_slot_nat_arm_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_HETERO_MATCH_SLOT, "hmatch", [42, 0], 42)
+
+    def test_array_elem_widening_traps(self) -> None:
+        # #820: a @Nat element widened into an @Array<Int> literal must trap.
+        _assert_traps(_WIDEN_ARRAY_ELEM, "ae", [U64_MAX])
+
+    def test_array_elem_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_ARRAY_ELEM, "ae", [42], 42)
+
+    def test_tuple_construct_widening_traps(self) -> None:
+        # #820: a @Nat component widened into an @Int tuple slot at construction.
+        _assert_traps(_WIDEN_TUPLE_CONSTRUCT, "tc", [U64_MAX])
+
+    def test_tuple_construct_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_TUPLE_CONSTRUCT, "tc", [42], 42)
+
+    def test_tuple_destr_widening_traps(self) -> None:
+        # #820: the destructure form guards the field load at the read.
+        _assert_traps(_WIDEN_TUPLE_DESTR, "td", [U64_MAX])
+
+    def test_tuple_destr_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_TUPLE_DESTR, "td", [42], 42)
+
+    def test_closure_arg_widening_traps(self) -> None:
+        # #820: a @Nat argument widened into an @Int closure formal must trap at
+        # the call_indirect boundary.  Pre-#820 this silently returned -1.
+        _assert_traps(_WIDEN_CLOSURE_ARG, "f", [U64_MAX])
+
+    def test_closure_arg_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_CLOSURE_ARG, "f", [42], 42)
+
+    def test_closure_nat_formal_no_trap(self) -> None:
+        # Control: a @Nat argument into a genuinely @Nat closure formal is not a
+        # widening — u64.MAX must round-trip, never trap.
+        _assert_no_trap(_CLOSURE_NAT_FORMAL_CONTROL, "f", [U64_MAX], U64_MAX)
+
+    def test_closure_return_widening_traps(self) -> None:
+        # #820: a @Nat closure body widened into the closure's @Int return must
+        # trap on u64.MAX (guarded in _compile_lifted_closure).  Pre-#820 silent.
+        _assert_traps(_WIDEN_CLOSURE_RETURN, "f", [U64_MAX])
+
+    def test_closure_return_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_CLOSURE_RETURN, "f", [42], 42)
+
+    def test_closure_capture_widening_traps(self) -> None:
+        # #820: a captured @Nat used as the closure's @Int return — same guard.
+        _assert_traps(_WIDEN_CLOSURE_CAPTURE, "f", [U64_MAX])
+
+    def test_closure_capture_widening_no_trap_in_range(self) -> None:
+        _assert_no_trap(_WIDEN_CLOSURE_CAPTURE, "f", [42], 42)
+
+    def test_closure_int_body_no_trap_on_negative(self) -> None:
+        # Control: a genuinely @Int closure body must round-trip a negative value
+        # — the closure-return guard fires only on a @Nat body.
+        _assert_no_trap(_CLOSURE_INT_BODY_CONTROL, "f", [-5], -5)

@@ -1219,6 +1219,20 @@ class OperatorsMixin:
                 + ["end"]
             )
 
+        # #820: a HETEROGENEOUS @Int-join if (one @Nat arm, one genuine @Int
+        # arm) widens the @Nat arm into the @Int join.  The whole-if boundary
+        # guard cannot fire (it would false-trap the legitimately-negative @Int
+        # arm), so guard the @Nat arm PER-ARM here.  Gate on the join being i64
+        # and NOT wholly @Nat (`_result_is_nat` — the homogeneous case the
+        # boundary guard already covers), mirroring the verifier's
+        # `_is_hetero_int_widen_join` per-arm obligation.
+        if result_type == "i64" and not self._result_is_nat(expr):
+            if self._result_is_nat(expr.then_branch):
+                then = self._emit_int_widen_guard(then)
+            if (expr.else_branch is not None
+                    and self._result_is_nat(expr.else_branch)):
+                else_ = self._emit_int_widen_guard(else_)
+
         # i32_pair → two i32 results (ptr, len)
         if result_type == "i32_pair":
             result_annot = "if (result i32 i32)"
@@ -2155,6 +2169,43 @@ class OperatorsMixin:
         if name == "Int":
             return "Int"
         return None
+
+    def _target_codegen_type_full(self, expr: ast.Expr) -> object | None:
+        """The checker-recorded *target* type of *expr* (the ``expected`` it was
+        checked against), unwrapping any refinement to its base — the codegen
+        dual of ``ContractVerifier._target_type_of`` (#820).
+
+        Returns the raw ``Type`` so callers can inspect an ``AdtType``'s
+        ``type_args`` (a ``Tuple<Int, Int>`` component target, an ``Array<Int>``
+        element target).  ``None`` when the target-type table was not threaded
+        (an unverified ``transform -> compile``) or the span carries no target,
+        so those component sites stay E531-disclosed rather than falsely guarded.
+        """
+        table = self._expr_target_types
+        if table is None:
+            return None
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        ty = table.get(key)
+        if ty is None:
+            return None
+        return getattr(ty, "base", ty)
+
+    @staticmethod
+    def _adt_arg_is_int(target: object | None, index: int) -> bool:
+        """True iff *target* is an ``AdtType`` whose ``index``-th type argument
+        resolves (through a refinement) to ``@Int`` — used to decide the
+        @Nat -> @Int widening guard at a tuple component / array element from
+        the per-component *target* type recovered by ``_target_codegen_type_full``
+        (#820).  Deliberately narrow (concrete ``Int`` only): a generic ``T`` or
+        a ``@Nat`` slot is not ``Int`` and must not be guarded here."""
+        args = getattr(target, "type_args", None)
+        if not args or index >= len(args):
+            return False
+        arg = args[index]
+        base = getattr(arg, "base", arg)
+        return getattr(base, "name", None) == "Int"
 
     def _is_static_int_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Int by AST shape alone.

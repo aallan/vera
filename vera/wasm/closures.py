@@ -147,12 +147,23 @@ class ClosuresMixin:
         # Push closure pointer as first arg (env for lifted function)
         instructions.append(f"local.get {tmp}")
 
+        # #820: recover the closure's declared formal types so a @Nat argument
+        # widening into an @Int formal is runtime-guarded at the call boundary
+        # (the call_indirect has no per-formal coercion otherwise).  The formal
+        # types come from the closure's function-type (a `SlotRef` alias chain
+        # or an inline `AnonFn`); `None`/short lists leave an argument unguarded.
+        formal_types = self._closure_arg_param_types(closure_arg)
+
         # Translate and push remaining arguments
         arg_wasm_types: list[str] = []
-        for arg in value_args:
+        for i, arg in enumerate(value_args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            if (formal_types is not None and i < len(formal_types)
+                    and self._type_expr_base_is_int(formal_types[i])
+                    and self._result_is_nat(arg)):
+                arg_instrs = self._emit_int_widen_guard(arg_instrs)
             instructions.extend(arg_instrs)
             # Infer WASM type for call_indirect type signature.
             # Pair types (String, Array) push two i32 values onto the stack.

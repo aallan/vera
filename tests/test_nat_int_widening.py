@@ -247,11 +247,11 @@ public fn opt_field(@Nat -> @Int)
             d.error_code for d in result.diagnostics
         ]
 
-    def test_array_element_widening_unguarded_disclosed_E531(self) -> None:
-        # `[@Nat.0]` into an `@Array<Int>` widens each @Nat element.  The array
-        # literal is typed by its element values (source) and the let binding is
-        # a pointer-pair copy, so the element coercion is NOT runtime-guarded —
-        # disclosed UNGUARDED (E531), not a silent false Tier-1.
+    def test_array_element_widening_tier3_guarded(self) -> None:
+        # #820: `[@Nat.0]` into an `@Array<Int>` widens each @Nat element.
+        # Codegen recovers the target element type (`Array<Int>`) from the
+        # threaded target-type table and guards the element store, so the
+        # unbounded widening is Tier-3 (runtime-guarded), not E531-disclosed.
         result = _verify("""
 public fn arr_elem(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -259,10 +259,10 @@ public fn arr_elem(@Nat -> @Int)
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert co, [(o.kind, o.status) for o in result.obligations]
-        assert any(o.status == "tier3_unguarded" for o in co), [
+        assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]
-        assert any(d.error_code == "E531" for d in result.diagnostics), [
+        assert not any(d.error_code == "E531" for d in result.diagnostics), [
             d.error_code for d in result.diagnostics
         ]
 
@@ -279,10 +279,11 @@ public fn mb(@Nat -> @Int)
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
 
-    def test_tuple_destructure_literal_unguarded_disclosed_E531(self) -> None:
-        # `let Tuple<@Int,@Int> = Tuple(@Nat.0, @Nat.0)` widens each @Nat
-        # component into an @Int slot.  Codegen does not guard a tuple-component
-        # coercion (like construction), so it is disclosed UNGUARDED (E531).
+    def test_tuple_destructure_literal_tier3_guarded(self) -> None:
+        # #820: `let Tuple<@Int,@Int> = Tuple(@Nat.0, @Nat.0)` widens each @Nat
+        # component into an @Int slot.  Codegen guards the field load at the
+        # destructure read (mirroring the literal-source obligation), so the
+        # widening is Tier-3 (runtime-guarded), not E531-disclosed.
         result = _verify("""
 public fn tup_destr(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -290,10 +291,10 @@ public fn tup_destr(@Nat -> @Int)
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert co, [(o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3_unguarded" for o in co), [
+        assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]
-        assert any(d.error_code == "E531" for d in result.diagnostics), [
+        assert not any(d.error_code == "E531" for d in result.diagnostics), [
             d.error_code for d in result.diagnostics
         ]
 
@@ -329,11 +330,12 @@ public fn box_extract(@Nat -> @Int)
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
 
-    def test_tuple_construction_component_unguarded_disclosed_E531(self) -> None:
-        # `Tuple(@Nat.0, ...)` widens a @Nat into an @Int tuple component.
-        # Codegen does not component-guard a tuple at construction (the boundary
-        # guard is a separate site), so the widening is disclosed UNGUARDED
-        # (E531), mirroring the @Nat tuple-component narrowing's E504.
+    def test_tuple_construction_component_tier3_guarded(self) -> None:
+        # #820: `Tuple(@Nat.0, ...)` widens a @Nat into an @Int tuple component.
+        # Codegen recovers the tuple's target component types (`Tuple<Int, Int>`)
+        # from the threaded target-type table and guards each @Nat component at
+        # construction, so the widening is Tier-3 (runtime-guarded), not E531 —
+        # the #758 widening residual the enabler unlocks.
         result = _verify("""
 public fn tup_construct(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -341,10 +343,10 @@ public fn tup_construct(@Nat -> @Int)
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert co, [(o.kind, o.status) for o in result.obligations]
-        assert all(o.status == "tier3_unguarded" for o in co), [
+        assert all(o.status == "tier3" for o in co), [
             (o.kind, o.status) for o in co
         ]
-        assert any(d.error_code == "E531" for d in result.diagnostics), [
+        assert not any(d.error_code == "E531" for d in result.diagnostics), [
             d.error_code for d in result.diagnostics
         ]
 
@@ -442,5 +444,132 @@ public fn f(@Nat -> @Int)
 public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 > 5 then { @Int.0 } else { 0 } }
+""")
+        assert [o for o in result.obligations if o.kind == _KIND] == []
+
+
+class TestHeterogeneousIntSlotArmWidening820:
+    """#820: a heterogeneous if/match whose alternative is a genuine @Int-*slot*
+    (not the #813 non-negative literal) joins to genuinely @Int — the boundary
+    guard cannot fire (it would false-trap the negative @Int arm), so the @Nat
+    arm must be obligated/guarded PER-ARM.  Pre-fix: the join was @Int, no
+    obligation fired, and the @Nat arm widened silently (`run(u64.MAX)` -> -1)."""
+
+    def test_hetero_if_genuine_int_slot_arm_emits_tier3(self) -> None:
+        result = _verify("""
+public fn hif(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if true then { @Nat.0 } else { @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_hetero_match_genuine_int_slot_arm_emits_tier3(self) -> None:
+        result = _verify("""
+public fn hmatch(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Nat.0 { 0 -> @Int.0, _ -> @Nat.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_hetero_if_int_slot_arm_itself_not_obligated(self) -> None:
+        # Only the @Nat arm is obligated: the genuine @Int arm can be
+        # legitimately negative and must NEVER be range-trapped.  Forcing the
+        # @Int arm (`if false`) still emits exactly the one @Nat-arm obligation,
+        # never a second one keyed on the @Int arm.
+        result = _verify("""
+public fn hif(@Nat, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if false then { @Nat.0 } else { @Int.0 } }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in co]
+
+
+class TestClosureArgumentWidening820:
+    """#820: `apply_fn(closure, @Nat.0)` widens a @Nat argument into an @Int
+    closure formal.  apply_fn is a checker special form excluded from the
+    call-arg path, and the call_indirect has no coercion — pre-fix the widening
+    was silent (`run(u64.MAX)` -> -1).  The formal type is recovered from the
+    closure's function-type and the argument obligated/guarded."""
+
+    def test_slotref_closure_arg_emits_tier3(self) -> None:
+        result = _verify("""
+type IntToInt = fn(Int -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 }; apply_fn(@IntToInt.0, @Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_inline_anon_closure_arg_emits_tier3(self) -> None:
+        result = _verify("""
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_int_arg_into_int_formal_no_obligation(self) -> None:
+        # Control: an @Int argument into an @Int formal is not a widening — no
+        # coerce obligation fires.
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ apply_fn(fn(@Int -> @Int) effects(pure) { @Int.0 }, @Int.0) }
+""")
+        assert [o for o in result.obligations if o.kind == _KIND] == []
+
+
+class TestClosureReturnWidening820:
+    """#820: a @Nat closure body widening into the closure's @Int RETURN.  The
+    closure body is opaque to the verifier's SMT layer, so it is obligated
+    SHALLOW-syntactically (always tier3, never Tier-1/E530 — translating the body
+    against the outer slot env could mis-resolve a closure param and prove a
+    FALSE Tier-1).  Codegen guards the closure body's @Int return value."""
+
+    def test_closure_return_nat_body_emits_tier3(self) -> None:
+        result = _verify("""
+type NatToInt = fn(Nat -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @NatToInt = fn(@Nat -> @Int) effects(pure) { @Nat.0 }; apply_fn(@NatToInt.0, @Nat.0) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        # One for the closure return (the @Nat body) + one for the @Nat argument.
+        assert any(o.status == "tier3" for o in co), [
+            (o.kind, o.status) for o in result.obligations]
+        assert all(o.status == "tier3" for o in co), [
+            (o.kind, o.status) for o in co]
+
+    def test_closure_capture_nat_body_emits_tier3(self) -> None:
+        # A captured @Nat used as the @Int return — the @Unit arg means the ONLY
+        # widening is the return, so exactly one tier3 obligation.
+        result = _verify("""
+type UnitToInt = fn(Unit -> Int) effects(pure);
+public fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @UnitToInt = fn(@Unit -> @Int) effects(pure) { @Nat.0 }; apply_fn(@UnitToInt.0, ()) }
+""")
+        co = [o for o in result.obligations if o.kind == _KIND]
+        assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
+
+    def test_closure_int_body_no_obligation(self) -> None:
+        # Control: a genuinely @Int closure body is not a widening — no closure
+        # return obligation (only the @Int body, which can be legitimately
+        # negative and must never be range-trapped).
+        result = _verify("""
+type IntToInt = fn(Int -> Int) effects(pure);
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 }; apply_fn(@IntToInt.0, @Int.0) }
 """)
         assert [o for o in result.obligations if o.kind == _KIND] == []

@@ -129,6 +129,19 @@ class DataMixin:
             *gc_shadow_push(tmp),
         ]
 
+        # #820: the `Tuple` carrier is variadic — its layout has no per-field
+        # @Int flags (`int_fields` is empty, recomputed per call).  Recover the
+        # construction's target component types (`Tuple<Int, Int>`) from the
+        # threaded target-type table so a @Nat component widening into an @Int
+        # tuple slot is guarded AT CONSTRUCTION (the #758 widening residual the
+        # enabler unlocks).  A generic ADT field (`Some(@Nat.0)` -> `Option<Int>`)
+        # is NOT this path — it goes through `layout.int_fields` (empty for a
+        # generic field, so it stays E531-disclosed, #757) — so gate on `Tuple`.
+        tuple_target = (
+            self._target_codegen_type_full(expr)
+            if expr.name == "Tuple" else None
+        )
+
         # Store each field at its computed offset
         for i, (fo, wt) in enumerate(field_offsets):
             if wt == "unit":
@@ -164,8 +177,11 @@ class DataMixin:
                 # #813: dual — runtime-guard a @Nat -> @Int widening into a
                 # concrete @Int constructor field (`WrapI(@Nat.0)` where
                 # `WrapI(Int)`); a @Nat above i64.MAX would otherwise be stored
-                # and later extracted as a reinterpreted negative @Int.
-                elif (i < len(layout.int_fields) and layout.int_fields[i]
+                # and later extracted as a reinterpreted negative @Int.  #820
+                # extends this to a `Tuple<..., Int, ...>` component, whose @Int
+                # target comes from `tuple_target` rather than `int_fields`.
+                elif (((i < len(layout.int_fields) and layout.int_fields[i])
+                        or self._adt_arg_is_int(tuple_target, i))
                         and self._result_is_nat(expr.args[i])):
                     field_val = self._emit_int_widen_guard(field_val)
                 instructions.extend(field_val)
@@ -199,13 +215,28 @@ class DataMixin:
         instrs: list[str] = list(val_instrs)
         instrs.append(f"local.set {scr_local}")
 
+        # #820: a @Nat component destructured into an @Int binding
+        # (`let Tuple<@Int> = Tuple(@Nat.0)`) widens it — the tuple-component
+        # dual of construction.  The widening reinterprets its bit pattern above
+        # i64.MAX (u64.MAX -> -1) at the read into the @Int slot.  Mirror the
+        # verifier's literal-source tuple-destructure path EXACTLY (a literal
+        # ``Tuple(...)`` whose i-th arg `_result_is_nat` and whose i-th binding
+        # is @Int): guard the field load.  A non-literal source is NOT obligated
+        # by the verifier here, so codegen leaves it unguarded (no mismatch).
+        destr_lit_args: tuple[ast.Expr, ...] = (
+            stmt.value.args
+            if isinstance(stmt.value, ast.ConstructorCall)
+            and stmt.value.name == stmt.constructor
+            else ()
+        )
+
         # Extract each field using the same offset algorithm as constructors
         _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
         _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # skip past tag (i32, 4 bytes)
         new_env = env
 
-        for te in stmt.type_bindings:
+        for idx, te in enumerate(stmt.type_bindings):
             type_name = self._type_expr_to_slot_name(te)
             if type_name is None:
                 raise CodegenSkip(
@@ -261,12 +292,15 @@ class DataMixin:
             # call-arg / ctor-field metadata.
             if self._resolve_base_type_name(type_name) == "Nat":
                 load = self._emit_nat_bind_guard(load)
-            # #813: a @Nat component destructured into an @Int slot
-            # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component widening.
-            # Like tuple *construction*, codegen does not guard it here (the
-            # component coercion has no per-element guard site); the verifier
-            # discloses it UNGUARDED (E531).  A future codegen guard for these
-            # is tracked as a follow-up.
+            # #820: a @Nat component destructured into an @Int slot
+            # (`let Tuple<@Int> = Tuple(@Nat.0)`) is a tuple-component widening —
+            # guard the field load when the target binding is @Int and the
+            # literal source arg is provably @Nat, mirroring the verifier's
+            # literal-source tuple-destructure obligation (was E531-disclosed).
+            elif (self._resolve_base_type_name(type_name) == "Int"
+                    and idx < len(destr_lit_args)
+                    and self._result_is_nat(destr_lit_args[idx])):
+                load = self._emit_int_widen_guard(load)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
             # PR #707 review: same heap-pointer rooting
@@ -325,10 +359,19 @@ class DataMixin:
         # Infer result type of the match
         result_type = self._infer_match_result_type(expr)
 
+        # #820: a HETEROGENEOUS @Int-join match (a @Nat arm body alongside a
+        # genuine @Int-slot arm body) widens each @Nat arm into the @Int join.
+        # The whole-match boundary guard cannot fire (it would false-trap the
+        # @Int arm), so guard the @Nat arm(s) PER-ARM.  Gate on the join being
+        # i64 and NOT wholly @Nat (`_result_is_nat` — the homogeneous case the
+        # boundary guard covers), mirroring the verifier's per-arm obligation.
+        guard_widen_arms = (
+            result_type == "i64" and not self._result_is_nat(expr))
+
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
             expr.arms, scr_local, scr_wasm_type, result_type, env,
-            expr.scrutinee,
+            expr.scrutinee, guard_widen_arms=guard_widen_arms,
         )
         if arm_instrs is None:
             return None
@@ -354,12 +397,18 @@ class DataMixin:
         result_type: str | None,
         env: WasmSlotEnv,
         scrutinee: ast.Expr | None = None,
+        *,
+        guard_widen_arms: bool = False,
     ) -> list[str] | None:
         """Compile match arms as a chained if-else cascade.
 
         *scrutinee* is the match scrutinee expression (#813): threaded so a
         top-level binding pattern can tell whether the bound value is @Nat
         (`_result_is_nat`) and thus needs the @Nat -> @Int widening guard.
+
+        *guard_widen_arms* (#820) is True for a heterogeneous @Int-join match:
+        each arm body that is intrinsically @Nat (`_result_is_nat`) widens into
+        the @Int join and is wrapped with the boundary guard PER-ARM.
         """
         if not arms:
             return None
@@ -387,6 +436,8 @@ class DataMixin:
             # arm body IS the leaf; a Block arm body's leaf is its trailing expr,
             # guarded in `translate_block`, so this no-ops on that id).
             body = self._guard_nat_return_leaf(arm.body, body)
+            if guard_widen_arms and self._result_is_nat(arm.body):
+                body = self._emit_int_widen_guard(body)
             return setup_instrs + body
 
         # Conditional arm with more arms following
@@ -402,10 +453,13 @@ class DataMixin:
         # #758/#983 — per-leaf narrowing @Nat-return guard (see the catch-all
         # arm above); no-ops unless this arm body is a collected narrowing leaf.
         body = self._guard_nat_return_leaf(arm.body, body)
+        if guard_widen_arms and self._result_is_nat(arm.body):
+            body = self._emit_int_widen_guard(body)
 
         # Compile remaining arms (else branch)
         else_instrs = self._compile_match_arms(
-            remaining, scr_local, scr_wasm_type, result_type, env, scrutinee
+            remaining, scr_local, scr_wasm_type, result_type, env, scrutinee,
+            guard_widen_arms=guard_widen_arms,
         )
         if else_instrs is None:
             return None
@@ -880,6 +934,16 @@ class DataMixin:
         total_bytes = n * elem_size
         tmp_ptr = self.alloc_local("i32")
 
+        # #820: a @Nat element widening into an @Array<Int> literal reinterprets
+        # its bit pattern above i64.MAX (u64.MAX -> -1).  The literal is typed by
+        # its element *values* (source), so recover the *target* element type
+        # (`Array<Int>`) from the threaded target-type table (the enabler) to
+        # decide the widening guard — the dual of the concrete @Int constructor
+        # field.  Guard only when the target element is genuinely @Int, never a
+        # @Nat / generic element (which must not be range-trapped).
+        target_elem_is_int = self._adt_arg_is_int(
+            self._target_codegen_type_full(expr), 0)
+
         instructions: list[str] = []
         # Allocate
         instructions.append(f"i32.const {total_bytes}")
@@ -892,6 +956,8 @@ class DataMixin:
             elem_instrs = self.translate_expr(elem, env)
             if elem_instrs is None:
                 return None
+            if target_elem_is_int and self._result_is_nat(elem):
+                elem_instrs = self._emit_int_widen_guard(elem_instrs)
             offset = i * elem_size
             if is_pair:
                 # Pair type (String, Array<T>): element pushes (ptr, len)

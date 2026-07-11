@@ -385,6 +385,15 @@ class WasmContext(
         self._expr_semantic_types: (
             dict[tuple[int, int, int, int], object] | None
         ) = None
+        # #820: the checker's TARGET-type side-table (``expected`` per expr
+        # span).  Consulted by ``_target_codegen_type`` — the codegen dual of
+        # the verifier's ``_target_type_of`` — so the @Nat -> @Int widening
+        # guard fires at a tuple component / array element / heterogeneous
+        # if-arm exactly where the verifier obligates it.  ``None`` when
+        # typecheck was skipped (those component sites stay E531-disclosed).
+        self._expr_target_types: (
+            dict[tuple[int, int, int, int], object] | None
+        ) = None
 
     def set_expr_semantic_types(
         self,
@@ -394,6 +403,16 @@ class WasmContext(
         guard's Int/Nat operand classifier (mirrors the verifier's
         ``_resolved_type_of`` / ``_overflow_int_type``)."""
         self._expr_semantic_types = types
+
+    def set_expr_target_types(
+        self,
+        types: dict[tuple[int, int, int, int], object] | None,
+    ) -> None:
+        """Seed the checker's TARGET-type side-table (#820) for the
+        @Nat -> @Int widening guard's per-component target-type recovery
+        (``_target_codegen_type`` — the dual of the verifier's
+        ``_target_type_of``)."""
+        self._expr_target_types = types
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],

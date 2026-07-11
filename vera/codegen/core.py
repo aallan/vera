@@ -93,6 +93,9 @@ class CodeGenerator(
         expr_semantic_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = None,
+        expr_target_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = None,
     ) -> None:
         self.source = source
         self.file = file
@@ -107,6 +110,15 @@ class CodeGenerator(
         self._expr_semantic_types: (
             dict[tuple[int, int, int, int], Type] | None
         ) = expr_semantic_types
+        # #820: the checker's TARGET-type side-table (``expected`` per expr
+        # span).  Threaded into every ``WasmContext`` so the @Nat -> @Int
+        # widening guard can recover the per-component target type at a tuple
+        # component / array element / heterogeneous if-arm — the codegen dual
+        # of the verifier's ``_target_type_of``.  ``None`` when a caller
+        # skipped typecheck (those component sites then stay E531-disclosed).
+        self._expr_target_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = expr_target_types
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}

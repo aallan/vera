@@ -420,6 +420,7 @@ def cmd_compile(
         result = codegen_compile(
             ast, source=source, file=str(p), resolved_modules=resolved,
             expr_semantic_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
         )
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -584,6 +585,7 @@ def cmd_serve(
         result = codegen_compile(
             ast, source=source, file=str(p), resolved_modules=resolved,
             expr_semantic_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
         )
         errors = [d for d in result.diagnostics if d.severity == "error"]
         if errors:  # pragma: no cover — codegen errors after typecheck pass
@@ -717,6 +719,7 @@ def cmd_run(
         result = codegen_compile(
             ast, source=source, file=str(p), resolved_modules=resolved,
             expr_semantic_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
         )
 
         if not result.ok:  # pragma: no cover — codegen errors after typecheck pass

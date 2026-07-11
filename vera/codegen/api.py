@@ -202,6 +202,7 @@ def compile(
     file: str | None = None,
     resolved_modules: list[ResolvedModule] | None = None,
     expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
+    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
 ) -> CompileResult:
     """Compile a type-checked Vera Program AST to WebAssembly.
 
@@ -221,12 +222,24 @@ def compile(
     which is sound for slot-/call-typed operands but cannot disambiguate a
     bare-literal operand's Int-vs-Nat context — such callers should thread
     the table to stay precise.
+
+    ``expr_target_types`` is the checker's *target*-type side-table
+    (``CheckerArtifacts.expr_target_types``): the ``expected`` type each
+    expression was checked against, keyed by ``ast.span_key``.  It is the
+    codegen dual of the verifier's ``_target_type_of`` (#747), and the #820
+    enabler: it lets code generation recover the per-component *target* type
+    at a construction / array / if-join site — which the erased WASM layout
+    cannot — so the @Nat -> @Int widening guard (#813) fires at a tuple
+    component, array element, and heterogeneous-arm slot exactly where the
+    verifier obligates it.  Omitted callers keep the pre-#820 behaviour (those
+    per-component sites stay E531-disclosed, never falsely runtime-counted).
     """
     from vera.codegen.core import CodeGenerator
 
     gen = CodeGenerator(
         source=source, file=file, resolved_modules=resolved_modules,
         expr_semantic_types=expr_semantic_types,
+        expr_target_types=expr_target_types,
     )
     return gen.compile_program(program)
 
