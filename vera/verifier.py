@@ -3117,10 +3117,28 @@ class ContractVerifier:
             # of the closure-argument obligation.  The body is deliberately NOT
             # walked — AnonFn stays a terminal for the SMT walk (see
             # `_walk_for_primitive_op_obligations`'s docstring for the
-            # closure-opacity rationale), matching what the #984 dual shares.
-            if (self._is_int_type(self._resolve_type(expr.return_type))
+            # closure-opacity rationale), matching what the #984 narrowing dual
+            # below shares.
+            resolved_ret = self._resolve_type(expr.return_type)
+            if (self._is_int_type(resolved_ret)
                     and self._result_is_nat(expr.body)):
                 self._record_int_widen_tier3(
+                    decl, expr.body, "closure return", "tier3", guarded=True)
+            # #984: the @Int -> @Nat NARROWING dual of the widen arm above — a
+            # bare @Int closure body narrowing into a @Nat closure RETURN can be
+            # negative (`fn(@Int -> @Nat) { @Int.0 }` applied to -5 returned -5
+            # through the @Nat slot on a verify-clean program: the #758 return
+            # nat-bind hole reachable only through `_compile_lifted_closure`).
+            # Same shallow-syntactic, opacity-forced treatment as the widen arm
+            # (never a FALSE Tier-1): record tier3 guarded, backed by codegen's
+            # per-narrowing-leaf `>= 0` guard in `_compile_lifted_closure`.  A
+            # refinement OVER @Nat is a RefinedType with its own boundary
+            # predicate (7b at the top level), so gate on the bare @Nat
+            # primitive — the two never co-fire on one site.
+            elif (self._is_nat_type(resolved_ret)
+                    and not self._is_refined_type(resolved_ret)
+                    and self._return_narrows_into_nat(expr.body)):
+                self._record_nat_bind_tier3(
                     decl, expr.body, "closure return", "tier3", guarded=True)
             return
 

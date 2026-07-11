@@ -1661,8 +1661,10 @@ class InferenceMixin:
         A ``SlotRef`` is resolved through the shared
         :func:`resolve_fn_type_alias` (transitively to the terminal ``FnType``),
         an inline ``AnonFn`` yields its declared params directly; any other
-        shape yields ``None``.  Designed so the closure *return* direction
-        (#984, deferred) can hook into the same recovery later.
+        shape yields ``None``.  The closure *return* direction (widening #820,
+        narrowing #984) is handled separately — those gates read the
+        ``AnonFn``'s own ``return_type`` in ``_compile_lifted_closure``, not a
+        recovered formal — so this argument-side recovery stands alone.
         """
         if isinstance(closure_arg, ast.SlotRef):
             fn_type = resolve_fn_type_alias(
@@ -1687,6 +1689,19 @@ class InferenceMixin:
         if name is None:
             return False
         return self._resolve_base_type_name(name) == "Int"
+
+    def _type_expr_base_is_nat(self, te: ast.TypeExpr) -> bool:
+        """True iff *te* resolves (through aliases) to ``@Nat`` (#984) — the
+        narrowing dual of :py:meth:`_type_expr_base_is_int`.  Alias-aware
+        (`type Count = Nat`), so a closure return declared with a @Nat alias is
+        guarded like a bare @Nat.  A refinement over @Nat also resolves to
+        ``Nat`` here; the closure-return narrow gate additionally excludes
+        refinements (`_refinement_guard_parts`), leaving them to the refinement
+        boundary path, exactly as the top-level narrow-return gate does."""
+        name = self._type_expr_to_slot_name(te)
+        if name is None:
+            return False
+        return self._resolve_base_type_name(name) == "Nat"
 
     def _infer_apply_fn_return_type(
         self, closure_arg: ast.Expr,

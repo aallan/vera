@@ -471,6 +471,25 @@ class ClosureLiftingMixin:
         else:
             result_part = ""  # pragma: no cover — Unit closure return
 
+        # #984: an @Int body narrowing into a @Nat closure RETURN can be
+        # negative (`fn(@Int -> @Nat) { @Int.0 }` applied to -5 returned -5
+        # through the @Nat slot on a verify-clean program — the #758 return
+        # nat-bind hole reachable only through this closure path).  Guard it
+        # PER NARROWING LEAF, exactly as `_compile_fn` does for the top-level
+        # return (`_nat_return_leaf_ids` threaded into the body translation,
+        # applied by `_guard_nat_return_leaf` at each Block / if-branch / match
+        # arm leaf): a whole-body wrap would false-trap a legitimate @Nat leaf
+        # of a heterogeneous body (a captured @Nat above i64.MAX reads as a
+        # negative i64), and closures emit no `return_call` so no TCO revert is
+        # needed.  Alias-aware + refinement-excluded gate (a refinement over
+        # @Nat stays on the refinement-boundary path), mirroring the top-level
+        # narrow-return gate.  MUST run before `translate_block` so the leaf
+        # ids are in place when the body is lowered.
+        if (ctx._type_expr_base_is_nat(anon_fn.return_type)
+                and self._refinement_guard_parts(anon_fn.return_type) is None):
+            ctx._nat_return_leaf_ids = ctx._collect_narrowing_return_leaves(
+                anon_fn.body)
+
         # Compile the body.  Three failure modes are handled:
         #   1. CodegenSkip — translator hit unsupported shape (#626 L3)
         #   2. CodegenInvariantError — codegen bug (#626 L3)
@@ -554,8 +573,9 @@ class ClosureLiftingMixin:
         # SMT layer, so it records tier3), and codegen guards the body's @Int
         # return value here.  Fires only when the declared return is @Int and the
         # body is intrinsically @Nat (`_result_is_nat`) — never a genuine @Int
-        # body (which may be legitimately negative).  This is the closure-body
-        # return-guard hook the #984 narrowing dual will extend later.
+        # body (which may be legitimately negative).  The #984 narrowing dual
+        # is guarded per-leaf during body translation above (`_nat_return_leaf_ids`),
+        # not as a whole-body wrap here — see that block for why.
         if (ctx._type_expr_base_is_int(anon_fn.return_type)
                 and ctx._result_is_nat(anon_fn.body)):
             body_instrs = ctx._emit_int_widen_guard(body_instrs)

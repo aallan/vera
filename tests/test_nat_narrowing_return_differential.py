@@ -48,6 +48,10 @@ from vera.verifier import verify
 
 _KIND = "nat_bind"
 
+# u64.MAX stored in an i64 slot reads back as -1; used by the #984 closure
+# controls to prove an @Nat -> @Nat closure return is NOT false-trapped.
+U64_MAX = 18446744073709551615
+
 
 @contextmanager
 def _resolved_pipeline(
@@ -271,4 +275,190 @@ class TestNatReturnNarrowingDifferential758:
         assert "i64.lt_s" in body and "unreachable" in body, (
             f"{label}: the verifier promised a tier3 runtime guard, but codegen "
             f"emitted none:\n{body}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #984 — the @Int -> @Nat narrowing at a LIFTED CLOSURE's return.  The #758
+# return nat-bind hole reachable only through `_compile_lifted_closure`: pre-fix
+# `fn(@Int -> @Nat) { @Int.0 }` applied to -5 returned -5 through the @Nat slot
+# on a verify-clean program (no obligation, no guard).  The closure body is
+# opaque to the verifier's SMT layer, so — like the #820 widening dual — the
+# return narrowing is obligated SHALLOW-syntactically (always `tier3`, never a
+# false Tier-1 / E503) and codegen guards it PER NARROWING LEAF in the lifted
+# body (the whole-body wrap would false-trap a legitimate @Nat leaf).  Each
+# program wraps the closure in a `mk` producer and a `go` driver that
+# `apply_fn`s it, so `_run(source, "go", arg)` exercises the real closure path
+# end to end.
+# ---------------------------------------------------------------------------
+
+# (label, source, neg_input) — a closure whose return genuinely narrows: the
+# verifier records the closure-return nat_bind `tier3` (opaque -> guarded), and
+# codegen's per-leaf guard traps on the negative; a non-negative input passes.
+_CLOSURE_TRAP = [
+    ("closure_bare", """
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { @Int.0 } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+""", -5),
+    # A per-leaf narrowing: only the else-arm @Int.0 leaf is a genuine narrowing
+    # (the then-arm literal 0 is not), so the guard must sit on the else leaf, not
+    # wrap the whole body.  -5 routes to else -> traps; +7 routes to then -> 0.
+    ("closure_if_else_leaf", """
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { if @Int.0 >= 0 then { 0 } else { @Int.0 } } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+""", -5),
+    # A @Nat-alias return must behave identically to the bare-@Nat case: the
+    # verifier's `_is_nat_type` resolves the alias and codegen's alias-aware
+    # `_type_expr_base_is_nat` guards it.
+    ("closure_alias", """
+type Count = Nat;
+type F = fn(Int -> Count) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Count) effects(pure) { @Int.0 } }
+public fn go(@Int -> @Count) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+""", -5),
+]
+
+# (label, source, neg_input, expect) — an abs-style closure body: BOTH leaves
+# narrow (both guarded; tier3 because the closure is opaque, never proven
+# Tier-1), yet the abs logic keeps every returned value non-negative, so the
+# live guard never trips — sound over-guarding, no spurious trap.
+_CLOSURE_SAFE = [
+    ("closure_abs", """
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 } } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+""", -5, 5),
+]
+
+# (label, source, input, expect) — a closure whose return does NOT narrow: no
+# closure-return nat_bind obligation, no guard, and no false trap.
+_CLOSURE_UNOBLIGATED = [
+    # @Nat -> @Nat: the return is already @Nat, so no narrowing; a u64.MAX value
+    # (reads as -1 i64) MUST pass through without a guard false-trapping it.
+    ("closure_natnat", """
+type F = fn(Nat -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { @Nat.0 } }
+public fn go(@Nat -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(0); apply_fn(@F.0, @Nat.0) }
+""", U64_MAX, -1),
+    # @Int -> @Int: no @Nat slot in sight; a negative flows through untouched.
+    ("closure_intint", """
+type F = fn(Int -> Int) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Int) effects(pure) { @Int.0 } }
+public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ let @F = mk(0); apply_fn(@F.0, @Int.0) }
+""", -5, -5),
+    # An intrinsically-@Nat body (`let @Nat = 5` bound, then returned): the
+    # trailing @Nat.0 does not narrow, so the closure-return gate adds NO second
+    # guard on top of the already-clean value.
+    ("closure_intrinsic_nat", """
+type F = fn(Int -> Nat) effects(pure);
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Nat) effects(pure) { let @Nat = 5; @Nat.0 } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @F = mk(@Int.0); apply_fn(@F.0, @Int.0) }
+""", -5, 5),
+]
+
+# A closure nested inside ANOTHER closure's body — the #985 reporting gap, now
+# confirmed for the narrowing direction.
+_NESTED_CLOSURE = """
+type Inner = fn(Int -> Nat) effects(pure);
+type Outer = fn(Int -> Inner) effects(pure);
+private fn mk(@Int -> @Outer) requires(true) ensures(true) effects(pure)
+{ fn(@Int -> @Inner) effects(pure) { fn(@Int -> @Nat) effects(pure) { @Int.0 } } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @Outer = mk(@Int.0); let @Inner = apply_fn(@Outer.0, @Int.0); apply_fn(@Inner.0, @Int.0) }
+"""
+
+
+class TestClosureReturnNarrowingDifferential984:
+    @pytest.mark.parametrize("label,source,neg", _CLOSURE_TRAP,
+                             ids=[c[0] for c in _CLOSURE_TRAP])
+    def test_closure_narrowing_obligated_tier3_and_run_traps(
+        self, label: str, source: str, neg: int,
+    ) -> None:
+        statuses = _return_nat_bind_statuses(source)
+        # The closure body is opaque, so the return narrowing is obligated
+        # shallow-syntactically — exactly ONE tier3 (a runtime-guard promise),
+        # NEVER a false Tier-1 "verified" (which would silence a real negative).
+        assert statuses == ["tier3"], f"{label}: {statuses}"
+        # ...and codegen makes good on the promise: a negative input traps
+        # rather than returning it silently through the @Nat slot (the #984 bug).
+        assert _run(source, "go", neg) is None, (
+            f"{label}: the verifier obligated this closure return, but "
+            f"run({neg}) did NOT trap — an unsound silent negative @Nat"
+        )
+        # ...while a non-negative input passes the per-leaf guard unharmed.
+        assert _run(source, "go", 7) is not None, (
+            f"{label}: a valid (non-negative) input must pass the guard"
+        )
+
+    @pytest.mark.parametrize("label,source,neg,expect", _CLOSURE_SAFE,
+                             ids=[c[0] for c in _CLOSURE_SAFE])
+    def test_closure_overguard_tier3_but_no_spurious_trap(
+        self, label: str, source: str, neg: int, expect: int,
+    ) -> None:
+        # The closure is opaque, so even a provably-abs body is tier3 (over-
+        # guarded, never proven Tier-1)...
+        assert _return_nat_bind_statuses(source) == ["tier3"], label
+        # ...but every returned value stays non-negative, so the live guard
+        # never trips — over-guarding is sound, not a false-positive trap.
+        assert _run(source, "go", neg) == expect, (
+            f"{label}: run({neg}) trapped or gave the wrong value — a spurious "
+            f"trap on a value the abs body keeps non-negative"
+        )
+        assert _run(source, "go", 5) == 5, f"{label}: +5 path altered"
+
+    @pytest.mark.parametrize("label,source,inp,expect", _CLOSURE_UNOBLIGATED,
+                             ids=[c[0] for c in _CLOSURE_UNOBLIGATED])
+    def test_closure_non_narrowing_unobligated_and_not_trapped(
+        self, label: str, source: str, inp: int, expect: int,
+    ) -> None:
+        # No @Nat narrowing at the closure return -> the verifier records NO
+        # nat_bind, so codegen must emit no guard: the value flows through
+        # unchanged.  A false guard on `closure_natnat` would trap a legitimate
+        # @Nat above i64.MAX (the widen dual's false-trap hazard).
+        assert _return_nat_bind_statuses(source) == [], (
+            f"{label}: a non-narrowing closure return must carry no obligation"
+        )
+        assert _run(source, "go", inp) == expect, (
+            f"{label}: the value was altered or trapped — a spurious guard on a "
+            f"non-narrowing closure return"
+        )
+
+    def test_nested_closure_guarded_by_codegen_but_verifier_underreports_985(
+        self,
+    ) -> None:
+        """A closure nested inside ANOTHER closure's body: codegen guards its
+        @Int -> @Nat return (every lifted closure passes through
+        ``_compile_lifted_closure``) but the verifier's ``AnonFn`` walk is
+        terminal — it does not recurse into the outer closure's body — so the
+        nested return narrowing carries NO obligation.  Sound OVER-guarding (an
+        extra real trap, never a false proof), but a reporting-completeness gap:
+        the narrowing dual of the #985 widening residual.  Pinned so a future
+        change that DROPS the guard (unsound silent negative) or that STARTS
+        obligating (closing #985) is caught here and this test updated."""
+        # The verifier under-reports: no nat_bind for the nested closure return.
+        assert _return_nat_bind_statuses(_NESTED_CLOSURE) == [], (
+            "nested: an obligation appeared — did #985 close?  Update this test."
+        )
+        # ...yet codegen still guards it, so a negative traps (sound).
+        assert _run(_NESTED_CLOSURE, "go", -5) is None, (
+            "nested: codegen guard missing -> a silent negative @Nat"
+        )
+        assert _run(_NESTED_CLOSURE, "go", 7) is not None, (
+            "nested: a valid (non-negative) input must pass the guard"
         )

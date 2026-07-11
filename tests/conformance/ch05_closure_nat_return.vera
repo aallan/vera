@@ -1,0 +1,57 @@
+-- Conformance: @Int -> @Nat narrowing at a CLOSURE's return (Chapter 5)
+--
+-- Tests the proof obligation and runtime guard introduced by #984: a lifted
+-- closure whose declared return type is `@Nat` but whose body tail narrows an
+-- `@Int` value.  This is the closure dual of #758's top-level/where-helper
+-- return narrowing (ch04_nat_return_obligation) — the same #758 hole, reachable
+-- only through the closure-compilation path (`_compile_lifted_closure`).
+--
+-- Pre-#984 `fn(@Int -> @Nat) { @Int.0 }` applied to a negative returned it
+-- through the `@Nat` slot with no obligation and no trap.  The closure body is
+-- opaque to the verifier's SMT layer, so — like the #820 `@Nat -> @Int` widening
+-- dual — the narrowing is obligated shallow-syntactically (Tier 3) and codegen
+-- guards the closure's return PER NARROWING LEAF; per spec/05 §5.4 and spec/11
+-- §11.2.1 the guard traps a negative rather than storing it in the `@Nat` slot.
+-- A closure whose body narrows @Int -> @Nat at its return.  The abs shape keeps
+-- every returned value non-negative, so the (live) return guard never trips —
+-- applied to -42 the else leaf `0 - @Int.0` = 42 passes `>= 0` unchanged.
+type IntToNat = fn(Int -> Nat) effects(pure);
+
+private fn make_abs(@Unit -> @IntToNat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Nat) effects(pure) { if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 } }
+}
+
+-- A passing control: an already-@Nat closure return is NOT a narrowing, so it
+-- carries no obligation and codegen emits no guard — a @Nat value (even one
+-- above i64.MAX) flows through untouched, never false-trapped.
+type NatToNat = fn(Nat -> Nat) effects(pure);
+
+private fn make_id(@Unit -> @NatToNat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Nat -> @Nat) effects(pure) { @Nat.0 }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Exercise the guarded narrowing closure with a NEGATIVE input on a path
+  -- that stays valid: abs(-42) = 42 passes the return guard (42 >= 0).  The
+  -- assert is the enforced sentinel — it traps if the guarded closure ever
+  -- returned something other than 42, so the run level catches a broken guard.
+  let @IntToNat = make_abs(());
+  let @Nat = apply_fn(@IntToNat.0, -42);
+  assert(@Nat.0 == 42);
+  -- Exercise the control: identity on the already-@Nat value, unobligated and
+  -- unguarded, returns it unchanged.
+  let @NatToNat = make_id(());
+  apply_fn(@NatToNat.0, @Nat.0)
+}

@@ -724,6 +724,21 @@
     ]
   },
   {
+    "id": "ch05_closure_nat_return",
+    "file": "ch05_closure_nat_return.vera",
+    "chapter": 5,
+    "title": "@Int -> @Nat narrowing at a closure's return (#984)",
+    "level": "run",
+    "spec_ref": "Section 5.4 / Section 11.2.1",
+    "features": [
+      "closure",
+      "higher_order",
+      "nat_binding",
+      "return_narrowing",
+      "apply_fn"
+    ]
+  },
+  {
     "id": "ch05_unit_arg_closure",
     "file": "ch05_unit_arg_closure.vera",
     "chapter": 5,

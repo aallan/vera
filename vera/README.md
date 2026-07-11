@@ -732,7 +732,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Verification gaps that downgrade silently** | the effect-operation argument and the generic-instantiated constructor field have no codegen runtime guard, so an unverified compile can store a negative `@Nat` at one of those sites — every other narrowing **binding site** and the top-level/where-helper function **return** position are statically obligated (#552, #747, #758) and codegen-guarded (closure returns are #984) | [#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757) |
+| **Verification gaps that downgrade silently** | the effect-operation argument and the generic-instantiated constructor field have no codegen runtime guard, so an unverified compile can store a negative `@Nat` at one of those sites — every other narrowing **binding site** and the top-level/where-helper AND closure function **return** positions are statically obligated (#552, #747, #758, #984) and codegen-guarded | [#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
