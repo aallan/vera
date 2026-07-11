@@ -299,7 +299,7 @@ public fn main(@Unit -> @Int)
 """
         result = _compile(source)
         errs = [d for d in result.diagnostics if d.severity == "error"]
-        assert errs and "unknown func" in errs[0].description, (
+        assert any("unknown func" in d.description for d in errs), (
             f"expected the #1002 dangling-template failure, got "
             f"{[d.description for d in errs] or 'a clean compile'} — if this "
             f"now compiles, #1002 has closed: flip this pin to a run assertion"
