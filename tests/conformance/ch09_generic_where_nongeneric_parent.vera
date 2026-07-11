@@ -1,0 +1,74 @@
+-- Conformance: generic where-helper under a NON-generic parent (Chapter 9, #990)
+-- Tests: a forall<T> where-helper nested in a non-generic function is a
+-- monomorphization base — its concrete call sites get clones emitted exactly
+-- like a top-level generic's.  Before #990 the nested helper was invisible to
+-- instantiation discovery (`vera check` accepted, but compile dangled at
+-- `unknown func $gid`).  Covers three shapes:
+--   * a direct instantiation from the parent body (T=Int);
+--   * a second instantiation at a different type (T=Bool) from a sibling
+--     plain helper;
+--   * a generic grandchild under a plain where-child (all-non-generic chain).
+-- The main sentinel is ENFORCED (`ensures(@Int.result == 0)`, Tier-3 runtime
+-- check): a wrong value traps and the harness sees a nonzero exit.
+private fn parent(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 5)
+  effects(pure)
+{
+  if flag(true) then {
+    gid(@Int.0) + 5
+  } else {
+    @Int.0 + 5
+  }
+}
+where {
+  forall<T> fn gid(@T -> @T)
+    requires(true)
+    ensures(@T.result == @T.0)
+    effects(pure)
+  {
+    @T.0
+  }
+
+  fn flag(@Bool -> @Bool)
+    requires(true)
+    ensures(@Bool.result == @Bool.0)
+    effects(pure)
+  {
+    gid(@Bool.0)
+  }
+}
+
+private fn deep(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 2)
+  effects(pure)
+{
+  child(@Int.0)
+}
+where {
+  fn child(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == @Int.0 * 2)
+    effects(pure)
+  {
+    dbl(@Int.0) + @Int.0
+  }
+  where {
+    forall<T> fn dbl(@T -> @T)
+      requires(true)
+      ensures(@T.result == @T.0)
+      effects(pure)
+    {
+      @T.0
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  parent(10) - 15 + (deep(21) - 42)
+}

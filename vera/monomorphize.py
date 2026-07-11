@@ -301,6 +301,35 @@ def mangle_type_name(type_name: str) -> str:
 _UNMANGLE_CODES = {"_": "_", "L": "<", "R": ">", "C": ", ", "S": " "}
 
 
+def collect_nested_generic_decls(
+    decl: ast.FnDecl,
+    out: dict[str, ast.FnDecl],
+) -> None:
+    """Collect ``forall<T>`` where-helpers under an all-NON-generic ancestor
+    chain into *out* (#990).
+
+    A generic helper nested in a non-generic function's ``where`` block is a
+    monomorphization base exactly like a top-level generic: its concrete call
+    sites need clones emitted (codegen Pass 1.5) and verified per
+    instantiation (the #732 loop).  This is the SHARED collector both sides
+    build their base set with, so they collect the identical set by
+    construction — the verifier⊇codegen differential
+    (``tests/test_monomorphize_differential.py``) pins the lockstep.
+
+    Stops at the first generic node: a generic helper's own subtree is NOT
+    descended (each clone carries it and codegen hoists it per-instantiation,
+    #904 — collecting it here would double-emit), and callers only pass
+    non-generic roots.  ``setdefault`` keeps first-seen-wins on a bare-name
+    collision, matching how plain where-helpers flatten into the bare WASM
+    namespace; per-scope duplicate-name semantics are #991's subject.
+    """
+    for wfn in decl.where_fns or ():
+        if wfn.forall_vars:
+            out.setdefault(wfn.name, wfn)
+        else:
+            collect_nested_generic_decls(wfn, out)
+
+
 def unmangle_type_name(mangled: str) -> str:
     """Inverse of :func:`mangle_type_name` over canonical type names.
 

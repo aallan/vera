@@ -22,6 +22,7 @@ from vera import ast
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    collect_nested_generic_decls,
     declared_return_clone_key,
 )
 from vera.skip import DERIVED_HELPER_DEPTH_CAP
@@ -134,25 +135,42 @@ class MonomorphizationMixin:
         Returns a list of new FnDecl nodes with type variables replaced
         by concrete types and names mangled.
         """
-        # Identify generic function declarations
+        # Identify generic function declarations.  #990: a ``forall<T>``
+        # where-helper under an all-NON-generic ancestor chain is a mono base
+        # too — without collecting it here, no clone is emitted and the
+        # parent's concrete call lowers to a dangling unmangled name.
         generic_decls: dict[str, ast.FnDecl] = {}
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
-                generic_decls[decl.name] = decl
+            if isinstance(decl, ast.FnDecl):
+                if decl.forall_vars:
+                    generic_decls[decl.name] = decl
+                else:
+                    collect_nested_generic_decls(decl, generic_decls)
 
         # #774: cross-module generic monomorphization.  An imported PUBLIC
         # generic whose bare name is NOT locally shadowed joins `generic_decls`
         # so the importer discovers its instantiations and emits the clones;
         # both a bare call and a qualified `m::g` (which desugars to the bare
         # target) then route through `_generic_fn_info` to the emitted clone.
-        # A LOCAL generic of the same name wins (already inserted above; the
-        # `setdefault`-populated import registry keeps local-shadows-import).
+        # A LOCAL generic of the same name wins (already inserted above).
+        # #998: bases that DID enter from the import registry are recorded with
+        # their origin module path, so every clone emitted from them (main
+        # worklist, shadowed-body transitive chase, and their hoisted
+        # where-helpers) can be compiled against that module's own span-keyed
+        # tables rather than the importer's.
         imported_generic_decls = getattr(
             self, "_imported_generic_decls", {},
         )
+        imported_origins = getattr(self, "_imported_generic_origins", {})
+        self._imported_generic_base_origins: dict[str, tuple[str, ...]] = {}
         for gname, gdecl in imported_generic_decls.items():
-            generic_decls.setdefault(gname, gdecl)
+            if gname not in generic_decls:
+                generic_decls[gname] = gdecl
+                if gname in imported_origins:
+                    self._imported_generic_base_origins[gname] = (
+                        imported_origins[gname]
+                    )
 
         # Shadowed imported generics (a local non-generic owns the bare name,
         # #814) are monomorphized under a distinct per-module mono base, driven
@@ -236,6 +254,7 @@ class MonomorphizationMixin:
                 continue  # constraint violation — error emitted
             mono_fn = mono.monomorphize_fn(decl, concrete_types)
             mono_decls.append(mono_fn)
+            self._record_clone_origin(fn_name, mono_fn.name)
             # #932: a transitively-reached nested-generic constrained call in
             # this clone body carries the same truncated constrained-var name —
             # record its full recovery so the next round's `_check_constraints`
@@ -343,6 +362,12 @@ class MonomorphizationMixin:
             )
             result.append(rewritten)
             result.extend(hoisted)
+            # #998: a hoisted helper's body is the same module's code as the
+            # clone it was hoisted from — it needs the same span tables.
+            origin = self._mono_clone_origins.get(decl.name)
+            if origin is not None:
+                for h in hoisted:
+                    self._mono_clone_origins[h.name] = origin
         return result
 
     def _hoist_where_fns_under(
@@ -381,6 +406,19 @@ class MonomorphizationMixin:
         rewritten = self._rewrite_call_names(stripped, rename)
         assert isinstance(rewritten, ast.FnDecl)  # noqa: S101
         return rewritten
+
+    def _record_clone_origin(self, base_name: str, clone_name: str) -> None:
+        """Record *clone_name*'s origin module when its base is an imported
+        generic (#998).
+
+        Local bases (including #990 nested helpers) are absent from
+        ``_imported_generic_base_origins`` and record nothing — their clones
+        keep reading the main-file span tables, which is where their template
+        spans live.
+        """
+        origin = self._imported_generic_base_origins.get(base_name)
+        if origin is not None:
+            self._mono_clone_origins[clone_name] = origin
 
     def _register_shadowed_generic_bases(
         self,
@@ -517,6 +555,9 @@ class MonomorphizationMixin:
             }
             clone = self._rewrite_sibling_generic_calls(clone, sibling_bases)
             mono_decls.append(_replace(clone, name=mangled))
+            # #998: a shadowed module generic's clone body is the MODULE's
+            # code — compile it against that module's own span tables.
+            self._mono_clone_origins[mangled] = path
             # Record the shadowed MODULE clone under its `mod$…` base, NOT the
             # bare `gen_name` — a same-named LOCAL generic owns the bare key, and
             # collapsing both onto it would let the verifier's #732 differential
@@ -563,6 +604,7 @@ class MonomorphizationMixin:
                         continue
                     t_fn = mono.monomorphize_fn(t_decl, t_ct)
                     mono_decls.append(t_fn)
+                    self._record_clone_origin(t_name, t_fn.name)
                     self._emitted_instances.add((t_name, t_ct))
                     stack.append(t_fn)
 

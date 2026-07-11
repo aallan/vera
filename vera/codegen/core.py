@@ -375,6 +375,19 @@ class CodeGenerator(
         self._shadowed_imported_generic_decls: dict[
             tuple[str, ...], dict[str, ast.FnDecl]
         ] = {}
+        # #998: bare name → origin module path for `_imported_generic_decls`
+        # entries (same first-seen-wins order), and clone WASM name → origin
+        # module path for every emitted clone of an imported generic
+        # (unshadowed, shadowed `mod$…`, and their hoisted where-helpers).
+        # Monomorphization preserves node spans, so a clone's body is keyed by
+        # its TEMPLATE module's span tables — the mono compile loop threads
+        # `_module_artifacts[origin]` for these so the #820 widen guards fire
+        # (a local generic's clones are absent and keep the main-file tables).
+        self._imported_generic_origins: dict[str, tuple[str, ...]] = {}
+        self._mono_clone_origins: dict[str, tuple[str, ...]] = {}
+        # Reset per-`_monomorphize` run; declared here so the type is stated
+        # once (imported bases that actually entered `generic_decls`).
+        self._imported_generic_base_origins: dict[str, tuple[str, ...]] = {}
         # #814/#774: (module path, generic name) → mono base name the qualified
         # call must mangle against, for a generic whose bare name a local
         # shadows.  The ModuleCall desugar consults this so `m::gen(5)` resolves
@@ -808,7 +821,20 @@ class CodeGenerator(
         for mdecl in mono_decls:
             orig_name = mdecl.name.split("$")[0]
             is_public = fn_visibility.get(orig_name) == "public"
-            fn_wat = self._compile_fn(mdecl, export=is_public)
+            # #998: a clone of an IMPORTED generic is the module's own code —
+            # compile it against that module's span tables (or, absent tables,
+            # the #986 suppressed lookups), exactly like Pass 2.5/2.6 bodies.
+            # A local generic's clone has no recorded origin and keeps the
+            # main-file tables its template spans live in.
+            origin = self._mono_clone_origins.get(mdecl.name)
+            fn_wat = self._compile_fn(
+                mdecl, export=is_public,
+                imported=origin is not None,
+                module_tables=(
+                    self._module_artifacts.get(origin)
+                    if origin is not None else None
+                ),
+            )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
                 compiled_mono_bases.add(orig_name)
@@ -918,9 +944,10 @@ class CodeGenerator(
         #     template warning could be emitted.
         #   * `compiled_mono_bases` is keyed on the mangler's
         #     `<base>$<types>` split — colliding bases across
-        #     modules would resolve to the same mono clone (the
-        #     mono pipeline doesn't carry module attribution today,
-        #     a separate latent gap also tracked in `#661`).
+        #     modules would resolve to the same mono clone.  (#998
+        #     added module attribution for span-TABLE selection —
+        #     `_mono_clone_origins` — but clone NAMING/resolution is
+        #     still bare-name, the latent gap tracked in `#661`.)
         # Net effect: at most one template warning per base name
         # ever lands in `self.diagnostics`, so a bare-name match in
         # the suppression filter cannot cross-suppress between
@@ -942,10 +969,22 @@ class CodeGenerator(
         forall_decl_spans: dict[str, ast.Span] = {}
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+            if not isinstance(decl, ast.FnDecl):
+                continue
+            if decl.forall_vars:
                 forall_decl_names.add(decl.name)
                 if decl.span is not None:
                     forall_decl_spans[decl.name] = decl.span
+            else:
+                # #990: a nested generic where-helper is a mono base too — its
+                # template goes through `_compile_fn` in the Pass-2 where-fn
+                # sweep and warns exactly like a top-level template, so it
+                # joins the same clone-compiled suppression set.
+                for wfn in self._flatten_where_fns(decl):
+                    if wfn.forall_vars:
+                        forall_decl_names.add(wfn.name)
+                        if wfn.span is not None:
+                            forall_decl_spans[wfn.name] = wfn.span
         if forall_decl_names:
             mono_compiled = compiled_mono_bases & forall_decl_names
             if mono_compiled:
@@ -1225,7 +1264,16 @@ class CodeGenerator(
                 continue
             seen.add(id(wfn))
             out.append(wfn)
-            stack.extend(reversed(wfn.where_fns or ()))
+            # #990: do NOT descend into a GENERIC helper's subtree.  The
+            # helper itself is appended so `_compile_fn` surfaces the same
+            # template warning a top-level generic gets (suppressed when a
+            # clone compiled), but everything under it belongs to the mono
+            # path — each clone carries the subtree and
+            # `_hoist_clone_where_fns` emits it per-instantiation; emitting
+            # the children standalone here would duplicate them (and a
+            # T-dependent child is uncompilable outside a clone anyway).
+            if not wfn.forall_vars:
+                stack.extend(reversed(wfn.where_fns or ()))
         return out
 
     @staticmethod

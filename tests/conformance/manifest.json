@@ -1987,6 +1987,21 @@
     ]
   },
   {
+    "id": "ch09_generic_where_nongeneric_parent",
+    "file": "ch09_generic_where_nongeneric_parent.vera",
+    "chapter": 9,
+    "title": "Generic where-helper under a non-generic parent (#990)",
+    "level": "run",
+    "spec_ref": "Section 11.10.3",
+    "features": [
+      "generic_function",
+      "monomorphization",
+      "forall_where",
+      "where_block",
+      "nested_where"
+    ]
+  },
+  {
     "id": "ch09_ctor_inferred_eq",
     "file": "ch09_ctor_inferred_eq.vera",
     "chapter": 9,

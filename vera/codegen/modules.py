@@ -298,6 +298,12 @@ class CrossModuleMixin:
                             self._imported_generic_decls.setdefault(
                                 tld.decl.name, tld.decl,
                             )
+                            # #998: same first-seen-wins order as the decl
+                            # registry, so a clone of this generic compiles
+                            # against ITS module's span tables.
+                            self._imported_generic_origins.setdefault(
+                                tld.decl.name, mod.path,
+                            )
                     continue
                 is_public = (tld.visibility or "private") == "public"
                 in_filter = name_filter is None or tld.decl.name in name_filter

@@ -23,6 +23,7 @@ from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    collect_nested_generic_decls,
     declared_return_clone_key,
 )
 
@@ -1114,12 +1115,21 @@ class ContractVerifier:
         inject_prelude(disc)
 
         generic_decls: dict[str, ast.FnDecl] = {}
-        local_generic_names: set[str] = set()
         for tld in disc.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
-                generic_decls[decl.name] = decl
-                local_generic_names.add(decl.name)
+            if isinstance(decl, ast.FnDecl):
+                if decl.forall_vars:
+                    generic_decls[decl.name] = decl
+                else:
+                    # #990: nested generic where-helpers are mono bases too —
+                    # the SHARED collector keeps this build in lockstep with
+                    # codegen Pass 1.5 (identical set by construction).  Their
+                    # instances then flow through the same `_verify_fn`
+                    # per-instantiation dispatch when the parent's where-tree
+                    # is verified.
+                    collect_nested_generic_decls(decl, generic_decls)
+        # Everything collected so far — top-level AND nested — is local.
+        local_generic_names: set[str] = set(generic_decls)
         # #774: merge imported (unshadowed) generics so the verifier discovers
         # the cross-module instantiations codegen emits, in lockstep.  A LOCAL
         # generic of the same name wins (inserted above); `setdefault` keeps it.
