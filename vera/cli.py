@@ -397,6 +397,7 @@ def cmd_compile(
         # lockstep with the verifier.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -575,6 +576,7 @@ def cmd_serve(
 
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -700,6 +702,7 @@ def cmd_run(
         # the verifier.
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
@@ -1196,6 +1199,7 @@ def cmd_test(
         # the verifier had classified tier3-guarded (a `vera test` desync).
         check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
+            collect_module_artifacts=True,
         )
         type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]

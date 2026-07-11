@@ -7,8 +7,10 @@ import ch08_xmod_widen_lib;
 -- boundary.  main exercises `widen_elem` at 2^63 - 1 -- the largest value where
 -- @Nat and @Int coincide, so it round-trips bit-exactly and the widening guard
 -- must NOT over-fire.  The `assert` is the enforced sentinel: it traps if the
--- cross-module widening ever returned the wrong value, so the run level catches
--- a dropped or mis-emitted guard.
+-- cross-module widening ever returns a corrupted value or the guard over-fires
+-- at the coincidence boundary.  A silently DROPPED guard is invisible here
+-- (at 2^63 - 1 the guard is a no-op) — that regression is owned by the
+-- u64.MAX cases in tests/test_xmod_widening_differential.py.
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(true)

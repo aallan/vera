@@ -31,6 +31,7 @@ import wasmtime
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
+from vera.codegen.api import WasmTrapError
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.verifier import verify
@@ -157,6 +158,7 @@ def _compile_main(tmp_path, files: dict[str, str], main_name: str):
     resolved = resolver.resolve_imports(program, main_path)
     diags, arts = typecheck_with_artifacts(
         program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,  # opt-in (PR #997): codegen path
     )
     errors = [d for d in diags if d.severity == "error"]
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
@@ -179,6 +181,22 @@ def _run(result, fn: str, arg: int) -> int | None:
         return None
 
 
+def _trap_kind(result, fn: str, arg: int) -> str | None:
+    """The normalized trap kind for running *fn(arg)*, or ``None`` if no trap.
+
+    Pins the import-door widen guard's bare ``unreachable`` net specifically
+    (the same convention as ``test_nat_narrowing_return_differential``'s
+    ``_trap_kind``), not merely "some trap" — a divide-by-zero or out-of-bounds
+    trap at ``u64.MAX`` would be a different, wrong guard."""
+    try:
+        execute(result, fn_name=fn, args=[arg])
+    except WasmTrapError as exc:
+        return exc.kind
+    except (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError):
+        return "unknown"
+    return None
+
+
 @pytest.mark.parametrize(
     "label,files,main_name,fn,lib_name",
     _scenarios(),
@@ -199,11 +217,14 @@ class TestCrossModuleWideningDifferential:
         self, label, files, main_name, fn, lib_name, tmp_path,
     ) -> None:
         # The fix: the importer's artifact must HONOUR that promise — a @Nat
-        # above i64.MAX traps through the import door, never the silent -1.
+        # above i64.MAX traps through the import door, never the silent -1, and
+        # with the widen guard's bare ``unreachable`` net (not some other trap).
         result = _compile_main(tmp_path, files, main_name)
-        assert _run(result, fn, U64_MAX) is None, (
-            f"{label}: importer returned a value at u64.MAX — the widen guard "
-            f"is absent through the import door (regression of #987)"
+        kind = _trap_kind(result, fn, U64_MAX)
+        assert kind == "unreachable", (
+            f"{label}: importer at u64.MAX gave trap kind {kind!r} — expected "
+            f"the widen guard's `unreachable` (None = no trap = the guard is "
+            f"absent through the import door, a regression of #987)"
         )
 
     def test_importer_passes_in_range_values(
@@ -213,3 +234,58 @@ class TestCrossModuleWideningDifferential:
         result = _compile_main(tmp_path, files, main_name)
         assert _run(result, fn, INT63_MAX) == INT63_MAX, f"{label}: 2^63-1"
         assert _run(result, fn, 42) == 42, f"{label}: 42"
+
+
+# Two independent libraries, each with its own widen body, both imported and
+# called from main.  Every resolved module must get ITS table threaded — not
+# just the first.  A ``mods[:1]``-style partial-collection mutant (collect only
+# the first resolved module's artifacts) leaves the OTHER library's imported
+# body guard-free, so one of the two calls would silently reinterpret u64.MAX
+# to -1.  Asserting BOTH trap kills that mutant.
+_ALIB = """\
+public fn awiden(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+"""
+_BLIB = """\
+public fn bwiden(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+"""
+_TWO_LIB_MAIN = """\
+import alib(awiden);
+import blib(bwiden);
+public fn c1(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ awiden(@Nat.0) }
+public fn c2(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ bwiden(@Nat.0) }
+"""
+
+
+class TestTwoLibrariesBothWiden:
+    _FILES = {"alib.vera": _ALIB, "blib.vera": _BLIB, "main.vera": _TWO_LIB_MAIN}
+
+    def test_both_libraries_promise_tier3(self) -> None:
+        # Each library's standalone verify promises a Tier-3 widen.
+        assert _lib_tier3_count(_ALIB) >= 1, "alib did not promise Tier-3"
+        assert _lib_tier3_count(_BLIB) >= 1, "blib did not promise Tier-3"
+
+    def test_both_import_doors_trap_at_u64_max(self, tmp_path) -> None:
+        # BOTH imported bodies must be guarded — a partial (first-module-only)
+        # collection would leave one silently reinterpreting u64.MAX to -1.
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        for fn in ("c1", "c2"):
+            kind = _trap_kind(result, fn, U64_MAX)
+            assert kind == "unreachable", (
+                f"{fn} at u64.MAX gave trap kind {kind!r} — expected the widen "
+                f"guard's `unreachable`; a partial module-artifact collection "
+                f"dropped this library's guard through the import door"
+            )
+
+    def test_both_pass_in_range_values(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        for fn in ("c1", "c2"):
+            assert _run(result, fn, INT63_MAX) == INT63_MAX, f"{fn}: 2^63-1"
+            assert _run(result, fn, 42) == 42, f"{fn}: 42"

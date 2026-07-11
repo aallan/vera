@@ -94,6 +94,7 @@ def _compile_main(tmp_path, *, thread_modules: bool = True):
     resolved = resolver.resolve_imports(program, main_path)
     diags, arts = typecheck_with_artifacts(
         program, _MAIN, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,  # opt-in (PR #997): codegen path
     )
     errors = [d for d in diags if d.severity == "error"]
     assert not errors, f"typecheck errors: {[d.description for d in errors]}"
