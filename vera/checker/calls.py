@@ -340,6 +340,24 @@ class CallsMixin:
                     if is_subtype(re, param_ty):
                         arg_ty = re
                         arg_types[i] = re
+            # #1010: a constructor argument against a PARTIALLY-generic
+            # param (`MkPair(0 - 5, None)` as `@Pair<Nat, T>`) was never
+            # re-synthesized — every re-synth above is gated on the WHOLE
+            # param being typevar-free — so the concrete `Nat` component's
+            # narrowing target went unrecorded and the E503 obligation was
+            # silently lost (the fully-concrete analogue obligates).
+            # Re-synth ctor expressions against the instantiated param:
+            # the #971 fill adopts component-wise, typevar components stay
+            # unconstrained, and the ctor check records each field's
+            # target exactly as on the concrete path.
+            if (contains_typevar(param_ty)
+                    and isinstance(param_ty, AdtType)
+                    and isinstance(args[i], (
+                        ast.ConstructorCall, ast.NullaryConstructor))):
+                re = self._synth_expr(args[i], expected=param_ty)
+                if re is not None and not isinstance(re, UnknownType):
+                    arg_ty = re
+                    arg_types[i] = re
             if not is_subtype(arg_ty, param_ty):
                 # #993: when unresolved variables remain on either side
                 # (e.g. `option_unwrap_or(nothing(()), None)` — the callee's

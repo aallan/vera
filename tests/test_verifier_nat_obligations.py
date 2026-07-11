@@ -1523,3 +1523,90 @@ public fn f(@Unit -> @Nat)
         assert [d for d in result.diagnostics if d.severity == "error"] == []
         assert [o.status for o in result.obligations
                 if o.kind == "nat_bind"] == ["tier3"]
+
+
+# =====================================================================
+# @Nat component of a partially-generic ctor argument (#1010)
+# =====================================================================
+
+class TestGenericCtorParamNatObligation1010:
+    """#1010: the E503 narrowing obligation was lost when a constructor
+    argument's parameter type contains a type variable — the argument loop's
+    re-synth and target recording were gated all-or-nothing on the whole
+    parameter containing a typevar, so the concrete `Nat` component of
+    `Pair<Nat, T>` never obligated and a provably-negative value verified
+    clean and silently stored.  Found by the PR #1009 review."""
+
+    _PAIR = """
+private data Pair<A, B> { MkPair(A, B) }
+
+private forall<T> fn wants(@Pair<Nat, T> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  0
+}
+"""
+
+    def test_generic_ctor_param_negative_nat_component_e503(self) -> None:
+        """Provably-negative into the concrete Nat component of a
+        partially-generic param is a loud E503 (was verify-clean)."""
+        _verify_err(self._PAIR + """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  wants(MkPair(0 - 5, None))
+}
+""", "narrowing into a @Nat constructor field")
+
+    def test_generic_ctor_param_opaque_int_component_obligated(self) -> None:
+        """An unconstrained @Int param into the Nat component obligates and
+        is E503 (the `requires(true)` domain admits negatives) — exactly the
+        concrete path's verdict; was silent verify-clean."""
+        _verify_err(self._PAIR + """
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  wants(MkPair(@Int.0, None))
+}
+""", "narrowing into a @Nat constructor field")
+
+    def test_generic_ctor_param_proved_int_component_tier1(self) -> None:
+        """The same shape under `requires(@Int.0 >= 0)` discharges Tier-1 —
+        the obligation is provable, not blanket-rejected."""
+        _verify_ok(self._PAIR + """
+public fn main(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{
+  wants(MkPair(@Int.0, None))
+}
+""")
+
+    def test_generic_ctor_param_nat_component_ok(self) -> None:
+        """A genuine Nat into the component verifies clean — no false E503
+        from the new re-synth."""
+        _verify_ok(self._PAIR + """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  wants(MkPair(5, None))
+}
+""")
+
+    def test_concrete_ctor_param_negative_nat_component_e503(self) -> None:
+        """Control: the fully-concrete analogue already obligates — pins
+        that the generic fix reuses the same path, not a parallel one."""
+        _verify_err("""
+private data Pair<A, B> { MkPair(A, B) }
+
+private fn wants(@Pair<Nat, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  wants(MkPair(0 - 5, 7))
+}
+""", "narrowing into a @Nat constructor field")
