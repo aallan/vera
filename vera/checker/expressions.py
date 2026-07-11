@@ -449,6 +449,15 @@ class ExpressionsMixin:
 
         op = expr.op
 
+        # #981: a bare nullary constructor operand of `==`/`!=` (e.g. `None`)
+        # is synthesized with no expected type, so `@Option<T>.result == None`
+        # compares Option<T> with an unrelated Option<T$1> and is rejected
+        # E142 — for both operand orders, and even at a concrete Option<Int>.
+        # Give the constructor operand its sibling's known ADT type as expected
+        # so the #971 fill in `_ctor_result_type` adopts the declared var.
+        left_ty, right_ty = self._resynth_eq_ctor_operand(
+            op, expr, left_ty, right_ty)
+
         # Arithmetic: +, -, *, /, %
         if op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
                   ast.BinOp.DIV, ast.BinOp.MOD):
@@ -614,6 +623,55 @@ class ExpressionsMixin:
             return BOOL
 
         return UnknownType()
+
+    def _resynth_eq_ctor_operand(
+        self, op: ast.BinOp, expr: ast.BinaryExpr,
+        left_ty: Type, right_ty: Type,
+    ) -> tuple[Type, Type]:
+        """Re-synth a bare constructor operand of `==`/`!=` bidirectionally.
+
+        #981: the operands of a comparison are each synthesized with no
+        expected type, so a nullary constructor (`None`) mints a fresh ctor var
+        that never unifies with its sibling's declared type — `Option<T>` vs
+        `Option<T$1>` (a `forall<T>` postcondition) or even `Option<Int>` vs
+        `Option<T$1>` (a concrete comparison), both rejected E142.  When exactly
+        one operand is a constructor expression whose type still carries an
+        unresolved var and the other operand has a concrete ADT type, re-synth
+        the constructor operand against that type so the #971 bidirectional fill
+        can adopt the sibling's type arguments.  Restricting to `==`/`!=` (ADTs
+        are neither numeric nor orderable), to a single constructor operand, and
+        to a still-unresolved ctor type keeps this from re-typing (and possibly
+        re-diagnosing) any operand that was already well-typed, and the fill's
+        `expected.name == ci.parent_type` guard rejects a genuinely cross-ADT
+        comparison (`Result<..> == None`) exactly as before.
+        """
+        if op not in (ast.BinOp.EQ, ast.BinOp.NEQ):
+            return left_ty, right_ty
+        left_base = base_type(left_ty)
+        right_base = base_type(right_ty)
+        if is_subtype(left_base, right_base) or is_subtype(
+            right_base, left_base
+        ):
+            return left_ty, right_ty  # already compatible — nothing to fix
+        left_ctor = isinstance(
+            expr.left, (ast.ConstructorCall, ast.NullaryConstructor))
+        right_ctor = isinstance(
+            expr.right, (ast.ConstructorCall, ast.NullaryConstructor))
+        if (right_ctor and not left_ctor
+                and contains_typevar(right_ty)
+                and isinstance(left_ty, AdtType)):
+            new_right = self._synth_expr(expr.right, expected=left_ty)
+            if new_right is not None and not isinstance(
+                    new_right, UnknownType):
+                right_ty = new_right
+        elif (left_ctor and not right_ctor
+                and contains_typevar(left_ty)
+                and isinstance(right_ty, AdtType)):
+            new_left = self._synth_expr(expr.left, expected=right_ty)
+            if new_left is not None and not isinstance(
+                    new_left, UnknownType):
+                left_ty = new_left
+        return left_ty, right_ty
 
     def _check_eq_ability(
         self, node: ast.Node, left_ty: Type, right_ty: Type,

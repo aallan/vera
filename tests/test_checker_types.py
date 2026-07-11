@@ -713,6 +713,265 @@ private forall<T> fn bad_mixed_match(@Bool -> @Option<T>)
             f"Expected E121, got: {[e.error_code for e in errs]}"
 
 
+class TestForallNullaryCtorNested979:
+    """#979: a NESTED bare nullary constructor under `forall<T>` — `Some(None)`
+    where the declared type is `Option<Option<T>>` — must thread the declared
+    forall var through the nested-constructor FIELD propagation path, instead
+    of the inner `None` minting an unrelated `T$n` one level down.  #971 fixed
+    only the top-level result/let/match positions; the inner ctor's expected
+    field type (`Option<T>`) still carries the declared var, and the
+    field-propagation guard (`not contains_typevar(ft)`) suppressed it, so the
+    inner `None` was typed with no expected and the well-typed program was
+    rejected (return -> E121, let -> E170, match -> E302).
+    """
+
+    def test_nested_none_return_position(self) -> None:
+        """`Some(None)` returned where the declared type is Option<Option<T>>."""
+        _check_ok("""
+private forall<T> fn pick(@Unit -> @Option<Option<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(None)
+}
+""")
+
+    def test_nested_none_three_levels(self) -> None:
+        """Deeper nesting: `Some(Some(None))` at Option<Option<Option<T>>> —
+        the fill must descend through every level, not just one."""
+        _check_ok("""
+private forall<T> fn pick3(@Unit -> @Option<Option<Option<T>>>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(Some(None))
+}
+""")
+
+    def test_nested_none_alt_param_name(self) -> None:
+        """The declared var is E, not T — a fix keyed on the literal name "T"
+        (or on Option's own param name) would leave this failing E121."""
+        _check_ok("""
+private forall<E> fn pick_e(@Unit -> @Option<Option<E>>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(None)
+}
+""")
+
+    def test_nested_none_let_position(self) -> None:
+        """`let @Option<Option<T>> = Some(None)` under forall<T> (was E170)."""
+        _check_ok("""
+private forall<T> fn pick_let(@Unit -> @Option<Option<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Option<T>> = Some(None);
+  @Option<Option<T>>.0
+}
+""")
+
+    def test_nested_none_match_arm_position(self) -> None:
+        """Both match arms are `Some(None)`; they must agree at
+        Option<Option<T>> instead of each minting its own T$n (was E302)."""
+        _check_ok("""
+private forall<T> fn pick_match(@Bool -> @Option<Option<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> Some(None),
+    false -> Some(None)
+  }
+}
+""")
+
+    def test_nested_none_concrete_control(self) -> None:
+        """Control — a monomorphic Option<Option<Int>> already checked clean
+        before the fix (there is no declared var to adopt) and must stay OK."""
+        _check_ok("""
+private fn pick_concrete(@Unit -> @Option<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(None)
+}
+""")
+
+    def test_nested_cross_adt_resolves_each_to_own_parent(self) -> None:
+        """The nested fill must resolve each ctor to ITS OWN parent: `ACons`
+        stays Alpha, the inner `BNil` stays Beta, and the shared param name T
+        threads through both.  A miss would re-raise E121/E213."""
+        _check_ok("""
+private data Alpha<T> { ANil, ACons(T) }
+private data Beta<T> { BNil, BCons(T) }
+
+private forall<T> fn mix(@Unit -> @Alpha<Beta<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  ACons(BNil)
+}
+""")
+
+    def test_nested_cross_adt_no_cross_contamination(self) -> None:
+        """Cross-contamination pin: the inner `BNil` (parent Beta) cannot adopt
+        Alpha's var to satisfy an Alpha<Alpha<T>> field.  The per-level
+        `expected.name == ci.parent_type` guard makes it mint fresh, and the
+        field-type check then rejects the genuinely ill-typed nesting."""
+        errs = _check_err("""
+private data Alpha<T> { ANil, ACons(T) }
+private data Beta<T> { BNil, BCons(T) }
+
+private forall<T> fn bad(@Unit -> @Alpha<Alpha<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  ACons(BNil)
+}
+""", "Alpha")
+        assert any(e.error_code in ("E121", "E213") for e in errs), \
+            f"Expected E121/E213, got: {[e.error_code for e in errs]}"
+
+    def test_nested_some_literal_still_rejected(self) -> None:
+        """Ill-typed pin: `Some(Some(5))` is Option<Option<Nat>>, not
+        Option<Option<T>>; the fill ties only a bare nullary ctor to the
+        declared var, never launders a concrete payload, so this stays E121."""
+        errs = _check_err("""
+private forall<T> fn bad2(@Unit -> @Option<Option<T>>)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(Some(5))
+}
+""", "Option<Option<Nat>>")
+        assert any(e.error_code == "E121" for e in errs), \
+            f"Expected E121, got: {[e.error_code for e in errs]}"
+
+
+class TestForallNullaryCtorComparison981:
+    """#981: a bare `None` used as a `==` / `!=` operand against a known Option
+    type must adopt that type instead of minting a fresh `T$n`.  The
+    comparison-synthesis path typed each operand with no expected type, so
+    `@Option<T>.result == None` compared Option<T> with Option<T$1> and was
+    rejected E142 — for BOTH operand orders, and (the bug is wider than the
+    forall case) even at a concrete Option<Int>, which also failed at HEAD.
+    """
+
+    def test_eq_result_left(self) -> None:
+        """`@Option<T>.result == None` in an ensures under forall<T> (was E142)."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(@Option<T>.result == None)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_eq_none_left(self) -> None:
+        """Reversed operand order: `None == @Option<T>.result` (was E142)."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(None == @Option<T>.result)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_neq_result_left(self) -> None:
+        """`!=` must also type-check (was E142).  The postcondition is FALSE
+        here, so verify correctly defers it to a Tier-3 runtime check — this
+        pins only that the comparison is well-typed."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(@Option<T>.result != None)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_neq_none_left(self) -> None:
+        """Reversed order with `!=`: `None != @Option<T>.result` (was E142)."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(None != @Option<T>.result)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_requires_position(self) -> None:
+        """A `requires` comparison over a parameter: `@Option<T>.0 == None`
+        (was E142) — the fix point is operand typing, not the clause kind."""
+        _check_ok("""
+private forall<T> fn is_none(@Option<T> -> @Bool)
+  requires(@Option<T>.0 == None)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+""")
+
+    def test_concrete_option_int_eq_none(self) -> None:
+        """Wider-than-forall: a monomorphic `@Option<Int>.result == None` ALSO
+        failed E142 at HEAD (None mints a fresh var regardless of forall), so
+        this is a RED->GREEN case, not a control."""
+        _check_ok("""
+private fn nothing_int(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == None)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_concrete_option_int_none_eq(self) -> None:
+        """Reversed order at a concrete type: `None == @Option<Int>.result`."""
+        _check_ok("""
+private fn nothing_int(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(None == @Option<Int>.result)
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_eq_option_vs_non_option_still_rejected(self) -> None:
+        """Over-admission pin: comparing an Option against a non-Option value
+        (`None == 5`) stays E142 — the re-synth only fires when the sibling is
+        an AdtType, and `5` is Nat."""
+        errs = _check_err("""
+private forall<T> fn bad(@Unit -> @Bool)
+  requires(None == 5)
+  ensures(true)
+  effects(pure)
+{
+  true
+}
+""", "compare")
+        assert any(e.error_code == "E142" for e in errs), \
+            f"Expected E142, got: {[e.error_code for e in errs]}"
+
+    def test_eq_cross_adt_still_rejected(self) -> None:
+        """Cross-ADT pin: `@Result<T, Int>.result == None` stays E142 — the
+        `expected.name == ci.parent_type` guard blocks None (parent Option)
+        from adopting Result's type args, so the operands never unify."""
+        errs = _check_err("""
+private forall<T> fn bad(@Unit -> @Result<T, Int>)
+  requires(true)
+  ensures(@Result<T, Int>.result == None)
+  effects(pure)
+{
+  Err(0)
+}
+""", "compare")
+        assert any(e.error_code == "E142" for e in errs), \
+            f"Expected E142, got: {[e.error_code for e in errs]}"
+
+
 # =====================================================================
 # Refinement types
 # =====================================================================

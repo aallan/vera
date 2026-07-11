@@ -852,6 +852,24 @@ class CallsMixin:
                 ft = field_types_for_expected[i]
                 if not contains_typevar(ft):
                     field_expected = ft
+                elif isinstance(
+                    arg, (ast.ConstructorCall, ast.NullaryConstructor)
+                ):
+                    # #979: a NESTED constructor argument whose expected field
+                    # type still carries the declared forall var (`Some(None)`
+                    # where the field resolves to `Option<T>`) must receive that
+                    # expected type so its OWN bidirectional fill can adopt the
+                    # declared var — otherwise the inner ctor mints an unrelated
+                    # `T$n` and the well-typed program is rejected (E121/E170/
+                    # E302).  Feeding a typevar-bearing expected is safe ONLY
+                    # into a nested constructor: `_ctor_result_type`'s per-level
+                    # `expected.name == ci.parent_type` guard means the inner
+                    # ctor adopts a var solely from ITS OWN parent's declared
+                    # position, so two ADTs sharing a param name still cannot
+                    # cross-contaminate (an inner ctor of a different parent
+                    # sees a name mismatch, mints fresh, and the field-type
+                    # check then rejects the genuinely ill-typed nesting).
+                    field_expected = ft
             arg_types.append(self._synth_expr(arg, expected=field_expected))
 
         if ci.field_types is None:

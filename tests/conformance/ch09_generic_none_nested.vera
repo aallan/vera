@@ -1,0 +1,94 @@
+-- Conformance: nested and comparison-operand bare None under forall<T>
+--   resolve their type argument from the declared context (Chapter 9)
+-- Tests: generic_type_inference, forall, option, monomorphization, combinator
+-- Regression test for #979 and #981, the two nested-mechanism siblings of the
+-- #971 result-position fix. A bare nullary constructor (None) whose type
+-- argument is fixed by the enclosing declaration must unify its fresh
+-- constructor type variable with the declared forall var instead of minting an
+-- unrelated T$n and rejecting the well-typed program.
+--
+-- #979: a NESTED nullary ctor. Some(None) returned as @Option<Option<T>> flows
+-- the inner None's expected type (Option<T>) through the nested-constructor
+-- field-propagation path; before the fix the inner ctor minted a fresh var and
+-- the body was rejected (E121 / E170 / E302). nest3 pins deeper nesting.
+--
+-- #981: a bare None as a == operand in a postcondition. ensures(result == None)
+-- gives the None operand no expected type unless the sibling operand's known
+-- Option type is threaded in; before the fix the two operands compared
+-- Option<T> with Option<T$1> (E142), for both operand orders.
+--
+-- Every generic below is monomorphized at T = Int by main and run, so the
+-- whole pipeline (check + verify + monomorphize + run) is pinned. Distinct
+-- sentinels (55, 66, 77, 88) avoid type-default coincidence: all are non-zero
+-- and distinct, so a miswired unwrap changes the observed value.
+-- #979: Some(None) : Option<Option<T>> under forall<T>.
+private forall<T> fn nest(@Unit -> @Option<Option<T>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(None)
+}
+
+-- #979 deeper: Some(Some(None)) : Option<Option<Option<T>>>.
+private forall<T> fn nest3(@Unit -> @Option<Option<Option<T>>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(Some(None))
+}
+
+-- #981: bare None as the right == operand of a postcondition. The body returns
+-- None, so result == None holds and the clause verifies.
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(@Option<T>.result == None)
+  effects(pure)
+{
+  None
+}
+
+-- #981 reversed operand order: None == result.
+private forall<T> fn nothing_rev(@Unit -> @Option<T>)
+  requires(true)
+  ensures(None == @Option<T>.result)
+  effects(pure)
+{
+  None
+}
+
+-- main: instantiate every generic at Int and observe a distinct sentinel.
+-- nest(()) is Some(None): matching the outer Some binds the inner None, whose
+-- None arm yields sentinel 55 (a Some arm would yield the wrong 1). nest3(())
+-- is Some(Some(None)): three nested matches reach the innermost None, sentinel
+-- 66. nothing / nothing_rev both return None, so option_unwrap_or with an Int
+-- default yields sentinels 77 and 88.
+-- De Bruijn (after the four @Int lets): @Int.3 is the first, @Int.0 the last.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = match nest(()) { Some(@Option<Int>) -> match @Option<Int>.0 { Some(@Int) -> 1, None -> 55 }, None -> 2 };
+  let @Int = match nest3(()) { Some(@Option<Option<Int>>) -> match @Option<Option<Int>>.0 { Some(@Option<Int>) -> match @Option<Int>.0 { Some(@Int) -> 3, None -> 66 }, None -> 4 }, None -> 5 };
+  let @Int = option_unwrap_or(nothing(()), 77);
+  let @Int = option_unwrap_or(nothing_rev(()), 88);
+  if @Int.3 == 55 then {
+    if @Int.2 == 66 then {
+      if @Int.1 == 77 then {
+        if @Int.0 == 88 then {
+          0
+        } else {
+          1
+        }
+      } else {
+        1
+      }
+    } else {
+      1
+    }
+  } else {
+    1
+  }
+}
