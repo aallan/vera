@@ -1484,7 +1484,16 @@ class CallsHandlersMixin:
         clause_env = clause_env.push(type_name, state_local)
 
         saved_in_clause = self._in_state_clause
+        saved_clause_ops = self._state_clause_ops
         self._in_state_clause = True
+        # A clause body performing its own handler's ops is checker-rejected
+        # (inside a clause scope, get/put resolve to the BUILTIN registry,
+        # not the handler ops), so clearing the registry here is pure
+        # defense: it makes translate-time re-entry structurally impossible
+        # instead of a RecursionError if that checker rejection ever loosens.
+        # A nested handle-expr inside a clause body still works — it installs
+        # and restores its own registry around its own body.
+        self._state_clause_ops = {}
         try:
             body_instrs = self.translate_expr(clause.body, clause_env)
             upd_instrs = (
@@ -1493,6 +1502,7 @@ class CallsHandlersMixin:
             )
         finally:
             self._in_state_clause = saved_in_clause
+            self._state_clause_ops = saved_clause_ops
         if body_instrs is None:
             return None
         instructions.extend(body_instrs)
