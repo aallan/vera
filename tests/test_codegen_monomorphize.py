@@ -3315,7 +3315,7 @@ public fn main(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 """
         assert _run(source, fn="main") == 1
 
-    def test_nested_where_grandchild_compare_contract_runs(self) -> None:
+    def test_nested_where_grandchild_eq_contract_runs(self) -> None:
         """#989 (probeF2): a grandchild using `eq` in its CONTRACT must compile.
 
         ``grandchild``'s ``ensures(eq(@Int.result, @Int.result))`` is a
@@ -3342,6 +3342,36 @@ public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
 { outer(7) }
 """
         assert _run(source, fn="main") == 7
+
+    def test_nested_where_grandchild_compare_contract_runs(self) -> None:
+        """#989: a grandchild using `compare` in its CONTRACT must compile.
+
+        Completes the ``{eq, compare} x {body, contract}`` matrix:
+        ``compare``'s rewrite builds a nested ``IfExpr`` chain (a materially
+        different AST than ``eq``'s single ``BinaryExpr``), and the contract
+        position routes through ``_rewrite_ops_in_contracts`` — a different
+        entry point than body rewriting — so neither sibling test proves this
+        cell.  ``outer(7)`` returns 8, unreachable if ``grandchild``'s
+        contract ``compare`` dangles at codegen.
+        """
+        source = """\
+public fn outer(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{ child(@Int.0) }
+where {
+  fn child(@Int -> @Int) requires(true) ensures(true) effects(pure)
+  { grandchild(@Int.0) }
+  where {
+    fn grandchild(@Int -> @Int)
+      requires(true)
+      ensures(match compare(@Int.result, 0) { Greater -> true, Equal -> false, Less -> false })
+      effects(pure)
+    { @Int.0 + 1 }
+  }
+}
+public fn main(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+{ outer(7) }
+"""
+        assert _run(source, fn="main") == 8
 
     def test_nested_where_grandchild_compare_body_runs(self) -> None:
         """#989 (probeF4): a grandchild using `compare` in its BODY must compile.
