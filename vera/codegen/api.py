@@ -203,6 +203,13 @@ def compile(
     resolved_modules: list[ResolvedModule] | None = None,
     expr_semantic_types: dict[tuple[int, int, int, int], Type] | None = None,
     expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
+    module_artifacts: dict[
+        tuple[str, ...],
+        tuple[
+            dict[tuple[int, int, int, int], Type],
+            dict[tuple[int, int, int, int], Type],
+        ],
+    ] | None = None,
 ) -> CompileResult:
     """Compile a type-checked Vera Program AST to WebAssembly.
 
@@ -233,6 +240,18 @@ def compile(
     component, array element, and heterogeneous-arm slot exactly where the
     verifier obligates it.  Omitted callers keep the pre-#820 behaviour (those
     per-component sites stay E531-disclosed, never falsely runtime-counted).
+
+    ``module_artifacts`` (#987) maps each resolved module's path to ITS own
+    ``(expr_semantic_types, expr_target_types)`` pair (from
+    ``CheckArtifacts.module_artifacts``).  The two tables above are keyed by
+    bare span with no file identity, so an imported body compiled into this flat
+    WASM module (Pass 2.5 / 2.6) cannot recover its component targets from them.
+    Codegen threads the matching entry when compiling each module's body, so the
+    @Nat -> @Int widening guard fires at the array-element / tuple-construction
+    sites through the import door.  A module absent from this map (or an omitted
+    argument) falls back to the pre-#987 behaviour: that imported body's
+    span-keyed lookups are suppressed (never wrong-file-keyed), so those
+    component sites stay unguarded rather than risk a spurious guard.
     """
     from vera.codegen.core import CodeGenerator
 
@@ -240,6 +259,7 @@ def compile(
         source=source, file=file, resolved_modules=resolved_modules,
         expr_semantic_types=expr_semantic_types,
         expr_target_types=expr_target_types,
+        module_artifacts=module_artifacts,
     )
     return gen.compile_program(program)
 

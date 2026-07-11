@@ -11,9 +11,13 @@ imported ``Tuple(@Nat.0, @Nat.0)`` construction, colliding with a main-file
 ``Tuple<Int, Int>`` target and emitted a SPURIOUS @Nat -> @Int widen guard that
 traps a legal @Nat — while the imported function is verify-clean (no widen).
 
-The fix suppresses the span-keyed table lookups for imported bodies, so they
-fall back to the AST-only classifier (no spurious guard).  Same-file top-level
-guards are unaffected.
+The #986 fix suppressed the span-keyed table lookups for imported bodies, so
+they fell back to the AST-only classifier (no spurious guard).  #987 supersedes
+that with the *correct* mechanism: each imported body is now compiled against
+its OWN module's span-keyed table (threaded via ``module_artifacts``), so the
+colliding span resolves to ``collidelib``'s real ``Tuple<Nat, Nat>`` target —
+no guard because it is genuinely all-@Nat, not because the table was ignored.
+Same-file top-level guards are unaffected.  Both properties are pinned below.
 
 The two fixtures are engineered line-for-line so the ``Tuple(...)`` constructions
 land at the identical span — the test asserts that coincidence up front, so a
@@ -65,9 +69,22 @@ def _tuple_ctor_spans(source: str) -> set:
     }
 
 
-def _compile_main(tmp_path):
+def _compile_main(tmp_path, *, thread_modules: bool = True):
     """Write both fixtures, resolve + artifact-typecheck main, compile the
-    flat module the way ``cmd_run`` does (target table threaded)."""
+    flat module the way ``cmd_run`` does.
+
+    *thread_modules* selects which no-false-guard mechanism is exercised:
+
+    * ``True`` (the real ``vera run`` / ``vera compile`` path, #987) — the
+      per-module tables are threaded, so ``collidelib``'s imported body resolves
+      the colliding span in its OWN table (``Tuple<Nat, Nat>``) and emits no
+      guard by CORRECTNESS.
+    * ``False`` (a caller that threads no module artifacts) — the imported body
+      falls back to SUPPRESSION (#986): span-keyed lookups return ``None``, so
+      the colliding main-file ``Tuple<Int, Int>`` target can never leak in.
+
+    Both must yield no false guard; the two paths are pinned by separate tests.
+    """
     (tmp_path / "collidelib.vera").write_text(_COLLIDE_LIB, encoding="utf-8")
     main_path = tmp_path / "main.vera"
     main_path.write_text(_MAIN, encoding="utf-8")
@@ -84,6 +101,7 @@ def _compile_main(tmp_path):
         program, source=_MAIN, file=str(main_path), resolved_modules=resolved,
         expr_semantic_types=arts.expr_semantic_types,
         expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts if thread_modules else None,
     )
     errs = [d for d in result.diagnostics if d.severity == "error"]
     assert not errs, f"codegen errors: {[d.description for d in errs]}"
@@ -101,15 +119,29 @@ class TestCrossModuleSpanCollision:
         )
 
     def test_imported_body_not_false_guarded_by_collision(self, tmp_path) -> None:
-        # BUG at head: the imported all-@Nat `lw` picked up main's
+        # BUG at the #986-base head: the imported all-@Nat `lw` picked up main's
         # `Tuple<Int, Int>` target at the colliding span and emitted a spurious
         # widen guard, so `callit` (which calls `lw(u64.MAX)`) trapped.  After
-        # the fix the imported body ignores the main span table — no trap.
+        # #987 the imported body resolves the colliding span in `collidelib`'s
+        # OWN table (`Tuple<Nat, Nat>`) — genuinely no widen, so no trap.
         result = _compile_main(tmp_path)
         exec_result = execute(result, fn_name="callit", args=[])
         # `lw` is the @Nat identity, so u64.MAX must round-trip bit-exactly
         # (read back as a signed i64: compare under the u64 mask) — "no trap"
         # alone would miss a silent truncation.
+        assert exec_result.value is not None
+        assert exec_result.value & ((1 << 64) - 1) == U64_MAX
+
+    def test_imported_body_not_false_guarded_without_module_tables(
+        self, tmp_path,
+    ) -> None:
+        # Pin the FALLBACK (#986): a caller that threads no module artifacts must
+        # still not false-guard the imported all-@Nat `lw` — the imported body's
+        # span-keyed lookups are suppressed, so the colliding main-file
+        # `Tuple<Int, Int>` target cannot leak in.  Without this suppression
+        # fallback, `callit` would trap on a legal @Nat.
+        result = _compile_main(tmp_path, thread_modules=False)
+        exec_result = execute(result, fn_name="callit", args=[])
         assert exec_result.value is not None
         assert exec_result.value & ((1 << 64) - 1) == U64_MAX
 

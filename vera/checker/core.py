@@ -20,7 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -111,6 +111,21 @@ class CheckArtifacts:
     # #747: semantic-type side-tables for the verifier (see TypeChecker).
     expr_semantic_types: dict[tuple[int, int, int, int], Type]
     expr_target_types: dict[tuple[int, int, int, int], Type]
+    # #987: per-resolved-module span-keyed side-tables, keyed by module path.
+    # Each entry is that module's OWN ``(expr_semantic_types,
+    # expr_target_types)`` — the top-level tables above are keyed by bare span
+    # with no file identity, so an imported body compiled into the flat WASM
+    # module (Pass 2.5 / 2.6) cannot recover its component targets from them.
+    # Codegen threads the matching entry when compiling each module's body, so
+    # the #820 @Nat -> @Int widening guard fires at the array-element /
+    # tuple-construction sites through the import door, not just same-file.
+    module_artifacts: dict[
+        tuple[str, ...],
+        tuple[
+            dict[tuple[int, int, int, int], Type],
+            dict[tuple[int, int, int, int], Type],
+        ],
+    ]
 
 
 def typecheck_with_artifacts(
@@ -140,7 +155,70 @@ def typecheck_with_artifacts(
         holes=checker.hole_sites,
         expr_semantic_types=checker.expr_semantic_types,
         expr_target_types=checker.expr_target_types,
+        module_artifacts=_collect_module_artifacts(resolved_modules),
     )
+
+
+def _collect_module_artifacts(
+    resolved_modules: list[ResolvedModule] | None,
+) -> dict[
+    tuple[str, ...],
+    tuple[
+        dict[tuple[int, int, int, int], Type],
+        dict[tuple[int, int, int, int], Type],
+    ],
+]:
+    """Collect each resolved module's OWN span-keyed side-tables (#987).
+
+    The top-level program's ``expr_target_types`` / ``expr_semantic_types`` are
+    keyed by bare span ``(line, col, end_line, end_col)`` with no file identity,
+    so an imported body compiled into the flat WASM module (Pass 2.5 / 2.6) has
+    no entries there — codegen dropped the #820 @Nat -> @Int widening guard at
+    the array-element / tuple-construction sites through the import door, while
+    the library's own ``vera verify`` reported them Tier-3-guarded (the broken
+    promise).  Run the full check over each module in isolation to collect ITS
+    table, keyed by module path, so codegen can thread the right one when it
+    compiles that module's body.
+
+    Each module's ``direct`` flags are re-derived from its OWN ``import``
+    declarations — the closure ``resolved_modules`` was tagged relative to the
+    top-level program (a module the program reaches only transitively is
+    ``direct=False`` there, but is a DIRECT import of whichever module imports
+    it) — so name injection (gated on ``mod.direct``) and qualified-call
+    resolution match a standalone check of that module.  Over-inclusion of
+    modules the checked one never imports is inert: they are registered but,
+    tagged ``direct=False`` and absent from its ``program.imports``, never
+    injected or qualified-callable.
+    """
+    mods = resolved_modules or []
+    result: dict[
+        tuple[str, ...],
+        tuple[
+            dict[tuple[int, int, int, int], Type],
+            dict[tuple[int, int, int, int], Type],
+        ],
+    ] = {}
+    for mod in mods:
+        mod_direct = {imp.path for imp in mod.program.imports}
+        sub_resolved = [
+            replace(other, direct=(other.path in mod_direct))
+            for other in mods
+            if other.path != mod.path
+        ]
+        sub_semantic: dict[tuple[int, int, int, int], Type] = {}
+        sub_target: dict[tuple[int, int, int, int], Type] = {}
+        sub = TypeChecker(
+            source=mod.source,
+            file=str(mod.file_path),
+            resolved_modules=sub_resolved,
+        )
+        sub.expr_types = {}
+        sub.expr_semantic_types = sub_semantic
+        sub.expr_target_types = sub_target
+        sub.hole_sites = []
+        sub.check_program(mod.program)
+        result[mod.path] = (sub_semantic, sub_target)
+    return result
 
 
 # =====================================================================

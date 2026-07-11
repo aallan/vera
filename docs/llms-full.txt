@@ -2368,7 +2368,6 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 | Generic `where`-helper under a non-generic parent | A `forall<T>` helper inside a non-generic function's `where` block is never monomorphized — `vera check`/`verify` pass but `vera compile` fails with an internal unknown-func error. | Hoist the generic helper to a top-level `private fn` (top-level generics monomorphize correctly), or make the parent `forall<T>` too. | [#990](https://github.com/aallan/vera/issues/990) |
 | Duplicate `where`-helper names | Two helpers sharing a name (sibling subtrees, or a helper named like a top-level fn) crash `vera compile` with a raw `duplicate func identifier` WAT error on a check-green program. | Give every helper in a function's `where` tree a unique name, distinct from all top-level function names. | [#991](https://github.com/aallan/vera/issues/991) |
 | `eq`/`compare` in an imported function | Any imported function whose body (or helper) calls `eq(...)`/`compare(...)` fails `vera compile` with an internal unknown-func error — the ability-op rewrite never runs over imported bodies. | Replace `eq(a, b)` with `==` (lowers directly). `compare(...)` has no drop-in operator — it returns `Ordering` — so imported code that matches on `Less`/`Equal`/`Greater` must build the `Ordering` another way (an explicit `<`/`==` if-chain) or stay out of imported modules until this is fixed. | [#992](https://github.com/aallan/vera/issues/992) |
-| `@Nat` → `@Int` widening in an **imported** function | The #820 array-element and tuple-component widen guards are not emitted for imported module bodies (the target-type table is single-module): the library's own `vera verify` reports the widening Tier-3 runtime-guarded, but the importing program's compiled artifact drops the guard and a `@Nat` above `2^63 - 1` reinterprets to a negative `@Int` silently. | Constrain the widening in the library with `requires(... <= 9223372036854775807)` (Tier-1-provable, no runtime guard needed), or bind through `let @Int` before the array/tuple component (the `let`-site guard survives cross-module). | [#987](https://github.com/aallan/vera/issues/987) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation, and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
@@ -2408,7 +2407,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 153 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exceptions are `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the nine negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 155 small, self-contained programs — often one per language feature — that serve as minimal working examples (the exceptions are `ch07_cross_module_contracts.vera` and `ch08_cross_module_generic.vera`, which import their `ch07_cross_module_contracts_lib.vera` companion to exercise cross-module contracts). Each positive program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`); the nine negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) instead must *fail* `check` with the E-code in their `expected_error` field. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2583,7 +2582,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 153 conformance programs hold (positives pass; negatives fail with their E-code)
+python scripts/check_conformance.py    # All 155 conformance programs hold (positives pass; negatives fail with their E-code)
 python scripts/check_examples.py       # All 37 examples must pass
 ```
 
@@ -2593,7 +2592,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 153 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) must *fail* `check` with their `expected_error` E-code
+- All 155 conformance programs in `tests/conformance/` must hold at their declared level — positive entries pass, and the negative fixtures (`ch02_generic_over_unit_rejected`, `ch05_apply_fn_arity`, `ch05_where_helper_outer_slot_rejected`, `ch07_handler_state_body_scope_rejected`, `ch08_circular_import`, `ch08_visibility_private`, `ch09_builtin_redefinition`, `ch09_ord_adt_rejected`, `ch09_eq_non_derivable_rejected`) must *fail* `check` with their `expected_error` E-code
 - All 37 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -3023,7 +3022,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (153 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrated the same point in practice: a comprehensive conformance suite let an LLM build a working implementation of a spec it had little training data for — models can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (155 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison's December 2025 JustHTML write-up illustrated the same point in practice: a comprehensive conformance suite let an LLM build a working implementation of a spec it had little training data for — models can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -3066,7 +3065,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 7,236 tests, including a 153-program conformance suite
+- 7,267 tests, including a 155-program conformance suite
 - 37 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

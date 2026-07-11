@@ -1,0 +1,20 @@
+import ch08_xmod_widen_lib;
+
+-- Conformance: cross-module @Nat -> @Int widening at run level (Chapter 8, #987)
+-- Features: cross_module, nat_int_widening, imported_widen_guard
+--
+-- The imported widening body must compile AND run correctly across the module
+-- boundary.  main exercises `widen_elem` at 2^63 - 1 -- the largest value where
+-- @Nat and @Int coincide, so it round-trips bit-exactly and the widening guard
+-- must NOT over-fire.  The `assert` is the enforced sentinel: it traps if the
+-- cross-module widening ever returned the wrong value, so the run level catches
+-- a dropped or mis-emitted guard.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = widen_elem(9223372036854775807);
+  assert(@Int.0 == 9223372036854775807);
+  @Int.0
+}
