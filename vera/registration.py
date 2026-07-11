@@ -52,6 +52,44 @@ def _forall_vars_read(decl: ast.FnDecl) -> frozenset[str]:
     )
 
 
+def build_fn_info(
+    env: TypeEnv,
+    decl: ast.FnDecl,
+    resolve_type: Callable[[ast.TypeExpr], Type],
+    resolve_effect_row: Callable[[ast.EffectRow], EffectRowType],
+    visibility: str | None = None,
+) -> FunctionInfo:
+    """Resolve ``decl``'s signature into a :class:`FunctionInfo` without storing
+    it in ``env.functions``.
+
+    Factored out of :func:`register_fn` so a caller that needs a *scoped* lookup
+    (the verifier resolving a bare ``where``-helper call to the nearest same-named
+    helper, #991) can construct the right helper's info on demand instead of
+    reading the flat, last-wins registry.  ``decl``'s forall vars are bound into
+    ``env.type_params`` for the duration of type resolution, then restored.
+    """
+    saved_params = dict(env.type_params)
+    if decl.forall_vars:
+        for tv in decl.forall_vars:
+            env.type_params[tv] = TypeVar(tv)
+    try:
+        return FunctionInfo(
+            name=decl.name,
+            forall_vars=decl.forall_vars,
+            param_types=tuple(resolve_type(p) for p in decl.params),
+            return_type=resolve_type(decl.return_type),
+            effect=resolve_effect_row(decl.effect),
+            span=decl.span,
+            contracts=decl.contracts,
+            param_type_exprs=decl.params,
+            visibility=visibility,
+            forall_constraints=decl.forall_constraints or (),
+            forall_vars_read=_forall_vars_read(decl),
+        )
+    finally:
+        env.type_params = saved_params
+
+
 def register_fn(
     env: TypeEnv,
     decl: ast.FnDecl,
@@ -65,27 +103,20 @@ def register_fn(
     row using the provided callbacks, then stores the FunctionInfo.
     Recursively registers where-block functions.
     """
+    # Bind this function's forall vars for the duration of BOTH its own
+    # signature resolution AND its where-helper registration: a helper of a
+    # generic parent is written over the parent's ``@T`` (spec §5), so it must
+    # be registered with the parent's type params still in scope.  ``build_fn_info``
+    # re-binds/restores the same names internally (a no-op net of our binding,
+    # since ``TypeVar`` equality is by name), leaving our binding live for the
+    # recursion below.
     saved_params = dict(env.type_params)
     if decl.forall_vars:
         for tv in decl.forall_vars:
             env.type_params[tv] = TypeVar(tv)
 
-    param_types = tuple(resolve_type(p) for p in decl.params)
-    ret_type = resolve_type(decl.return_type)
-    eff = resolve_effect_row(decl.effect)
-
-    env.functions[decl.name] = FunctionInfo(
-        name=decl.name,
-        forall_vars=decl.forall_vars,
-        param_types=param_types,
-        return_type=ret_type,
-        effect=eff,
-        span=decl.span,
-        contracts=decl.contracts,
-        param_type_exprs=decl.params,
-        visibility=visibility,
-        forall_constraints=decl.forall_constraints or (),
-        forall_vars_read=_forall_vars_read(decl),
+    env.functions[decl.name] = build_fn_info(
+        env, decl, resolve_type, resolve_effect_row, visibility,
     )
 
     if decl.where_fns:

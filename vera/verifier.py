@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import z3
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from typing import TYPE_CHECKING
@@ -245,6 +246,16 @@ class ContractVerifier:
         # function name to the set of concrete type-name tuples it is
         # instantiated at; empty when the program has no generics.
         self._instances: dict[str, set[tuple[str, ...]]] = {}
+        # #991: lexically-scoped where-helper resolution.  ``env.functions`` is
+        # flat and last-wins, so a bare call to a same-named helper in a
+        # different parent tree (the diamond shape) resolved to the WRONG
+        # helper's contract — a false E500.  `_top_level_fn_infos` pins each
+        # top-level function's own info (a nested helper of the same name would
+        # otherwise clobber it in the flat registry, since helpers register
+        # last), and `_scoped_fn_info_cache` memoizes per-helper infos built on
+        # demand for the scoped lookup (`_scoped_fn_lookup`).
+        self._top_level_fn_infos: dict[str, FunctionInfo] = {}
+        self._scoped_fn_info_cache: dict[int, FunctionInfo] = {}
         self._mono: Monomorphizer | None = None
         # #820: raw type-alias TypeExprs (populated in `_build_mono_context`),
         # so the @Nat -> @Int closure-argument widening obligation can recover a
@@ -548,6 +559,57 @@ class ContractVerifier:
             visibility=visibility,
         )
 
+    def _fn_info_for_decl(
+        self, decl: ast.FnDecl, visibility: str | None = None,
+    ) -> FunctionInfo:
+        """Build (memoized) the :class:`FunctionInfo` for a specific FnDecl,
+        bypassing the flat, last-wins ``env.functions`` registry (#991).
+
+        Used by the scoped lookup so a same-named ``where``-helper resolves to
+        the exact decl in scope, not whichever one registered last.  Reuses the
+        shared ``build_fn_info`` so a helper's resolved signature is byte-for-byte
+        what ``register_fn`` would have stored.
+        """
+        info = self._scoped_fn_info_cache.get(id(decl))
+        if info is None:
+            from vera.registration import build_fn_info
+            info = build_fn_info(
+                self.env, decl,
+                self._resolve_type, self._resolve_effect_row,
+                visibility=visibility,
+            )
+            self._scoped_fn_info_cache[id(decl)] = info
+        return info
+
+    def _scoped_fn_lookup(
+        self, decl: ast.FnDecl, enclosing: tuple[ast.FnDecl, ...],
+    ) -> Callable[[str], FunctionInfo | None]:
+        """A lexically-scoped ``fn_lookup`` for the SMT translator (#991).
+
+        Resolves a bare call name to the nearest same-named ``where``-helper
+        visible from ``decl``'s body: ``decl``'s own helpers first, then each
+        enclosing parent's helpers (innermost first), then the top-level
+        function of that name, and finally the flat registry (built-ins /
+        imports).  This makes the verifier resolve helper calls the same way
+        codegen does after parent-qualified mangling — so a diamond of
+        same-named helpers proves each parent against its OWN helper's contract.
+        """
+        # Nearest scope first: decl's own where_fns, then each ancestor's,
+        # innermost (direct parent) before outermost.
+        visible_groups = (decl, *reversed(enclosing))
+
+        def _lookup(name: str) -> FunctionInfo | None:
+            for group in visible_groups:
+                for wfn in group.where_fns or ():
+                    if wfn.name == name:
+                        return self._fn_info_for_decl(wfn)
+            top = self._top_level_fn_infos.get(name)
+            if top is not None:
+                return top
+            return self.env.lookup_function(name)
+
+        return _lookup
+
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT with constructor info for SMT translation."""
         from vera.environment import AdtInfo, ConstructorInfo
@@ -810,6 +872,17 @@ class ContractVerifier:
         """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+        # #991: pin each LOCAL top-level function's own info so the scoped
+        # helper lookup can prefer it over a nested helper of the same name that
+        # clobbered the flat registry (nested helpers register last).  This
+        # mirrors codegen, which keeps top-level names bare and mangles nested
+        # helpers — so a call that escapes every enclosing where-scope resolves
+        # to the top-level function on both sides.
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                self._top_level_fn_infos[tld.decl.name] = self._fn_info_for_decl(
+                    tld.decl, visibility=tld.visibility,
+                )
         # #732: discover every concrete instantiation of each generic NOW, off
         # the registered env, so both verify_program (cold) and the warm
         # incremental session — which both go through register_program — verify
@@ -1669,8 +1742,15 @@ class ContractVerifier:
         self,
         decl: ast.FnDecl,
         parent_where_group: ast.FnDecl | None = None,
+        enclosing: tuple[ast.FnDecl, ...] = (),
     ) -> None:
-        """Verify all contracts on a single function."""
+        """Verify all contracts on a single function.
+
+        *enclosing* is the chain of ancestor functions whose ``where`` blocks
+        are lexically in scope for *decl*'s body, outermost first — threaded so a
+        bare helper call resolves to the nearest same-named helper (#991) rather
+        than through the flat, last-wins registry.
+        """
         if decl.forall_vars:
             instances = tuple(sorted(self._instances.get(decl.name, set())))
             if instances:
@@ -1725,6 +1805,10 @@ class ContractVerifier:
                 self._check_generic_refined_return(decl, generic_ret)
             return
 
+        # #991: resolve bare calls in this body through the lexically-scoped
+        # where-helper lookup, so a same-named helper in a sibling subtree can't
+        # be assumed at this call site (the diamond false-E500).
+        fn_lookup = self._scoped_fn_lookup(decl, enclosing)
         if self._shared_smt is not None:
             # Warm session (#222 Phase A): reuse one z3.Solver across
             # functions.  reset() clears all per-function state (vars,
@@ -1733,12 +1817,12 @@ class ContractVerifier:
             # rebound because they close over this verifier's env.
             smt = self._shared_smt
             smt.reset()
-            smt._fn_lookup = self.env.lookup_function
+            smt._fn_lookup = fn_lookup
             smt._module_fn_lookup = self._lookup_module_function
         else:
             smt = SmtContext(
                 timeout_ms=self.timeout_ms,
-                fn_lookup=self.env.lookup_function,
+                fn_lookup=fn_lookup,
                 module_fn_lookup=self._lookup_module_function,
             )
         # CR PR-review: let the SMT match translation assume a constructor
@@ -2228,7 +2312,10 @@ class ContractVerifier:
         # 9. Verify where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:
-                self._verify_fn(wfn, parent_where_group=decl)
+                self._verify_fn(
+                    wfn, parent_where_group=decl,
+                    enclosing=(*enclosing, decl),
+                )
 
     # -----------------------------------------------------------------
     # Decreases verification (termination)
