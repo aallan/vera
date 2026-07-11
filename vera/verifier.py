@@ -1507,7 +1507,10 @@ class ContractVerifier:
     # -- #732: per-monomorphization verification + aggregation -------------
 
     def _verify_generic_instances(
-        self, decl: ast.FnDecl, instances: tuple[tuple[str, ...], ...],
+        self,
+        decl: ast.FnDecl,
+        instances: tuple[tuple[str, ...], ...],
+        enclosing: tuple[ast.FnDecl, ...] = (),
     ) -> None:
         """Verify each concrete instantiation of a generic, then aggregate.
 
@@ -1518,6 +1521,13 @@ class ContractVerifier:
         are then aggregated one-per-source-site with meet semantics, so a
         generic-body bug surfaces once (naming the failing instantiation)
         rather than once per instantiation.
+
+        *enclosing* is the generic's ancestor chain (non-empty exactly when it
+        is a nested where-helper), threaded into each clone's ``_verify_fn`` so
+        the clone's scoped helper lookup sees the ancestors' helpers (#991 /
+        PR #1013 review).  The top-level call sites (shadowed / imported
+        generic verification) pass nothing — those generics are genuinely
+        top-level and an empty chain is correct there.
         """
         assert self._mono is not None  # set by register_program  # noqa: S101
         per_instance: list[
@@ -1547,7 +1557,10 @@ class ContractVerifier:
                 for tv, cn in zip(decl.forall_vars, concrete)
             }
             try:
-                self._verify_fn(clone)  # forall_vars=None → normal path
+                # forall_vars=None → normal path; the ancestor chain rides
+                # along so a nested generic's clone resolves helper calls
+                # lexically (PR #1013 review).
+                self._verify_fn(clone, enclosing=enclosing)
             finally:
                 self._instance_subst = saved_subst
                 inst_obl, inst_err = self.obligations, self.errors
@@ -1759,7 +1772,12 @@ class ContractVerifier:
                 # obligation (meet across instantiations).  Strictly stronger
                 # than the Tier-3 fallback below, and it subsumes the #746
                 # concrete-refined-return fast path for instantiated generics.
-                self._verify_generic_instances(decl, instances)
+                # The `enclosing` chain rides along (PR #1013 review): a
+                # generic where-helper's clone must resolve a bare call to an
+                # ancestor's helper lexically, not through the flat last-wins
+                # registry (where a same-named decoy helper under any other
+                # function could capture it — a wrong-body verification).
+                self._verify_generic_instances(decl, instances, enclosing)
                 return
             # Never instantiated in this program: the body's type variables
             # can't be represented in Z3, so non-trivial contracts fall to

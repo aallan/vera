@@ -25,6 +25,7 @@ import re
 
 import wasmtime
 
+from tests.verifier_helpers import _verify
 from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen import execute
@@ -200,6 +201,127 @@ public fn compute(@Int -> @Int)
 """
 
 
+# PR #1013 review: the Pass-0.5 rewrite must be SHADOW-AWARE when it descends
+# into a RETAINED generic subtree.  A generic helper's body call to a name its
+# OWN nested helper defines — which ALSO exists as a non-generic ancestor
+# helper — must stay bare (the mono path redirects it per-clone to the clone's
+# own helper), not be captured onto the ancestor's hoisted name.
+
+# `gen`'s body calls `shared(5)`; gen's OWN nested `shared` is +20, the
+# ancestor's is +10.  Correct p(0) = shared(0) + gen(0) = 10 + 25 = 35 (base
+# 1fd4043 returns 35); the capture bug bound gen's call to the ancestor's
+# shared and returned 25 silently — check-green, verify-green, exit 0.
+_GENERIC_HELPER_OWN_SHADOW = """\
+public fn p(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  shared(@Int.0) + gen(@Int.0)
+} where {
+  fn shared(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0 + 10
+  }
+  forall<T> fn gen(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    shared(5)
+  } where {
+    fn shared(@Int -> @Int)
+      requires(true) ensures(true) effects(pure)
+    {
+      @Int.0 + 20
+    }
+  }
+}
+"""
+
+# The FALSE-TIER-1 differential: same shape with pinning contracts.  The
+# verifier's scoped lookup resolves gen's `shared(5)` to gen's OWN shared
+# (5 + 20 == 25) and proves `ensures(@Int.result == 25)` Tier-1 — while the
+# captured codegen ran the ancestor's shared (15) and TRAPPED on the runtime
+# postcondition check.  Verifier↔codegen agreement is pinned by asserting BOTH
+# the verify verdict AND the run value.
+_GENERIC_HELPER_OWN_SHADOW_ENSURES = """\
+public fn p(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  shared(@Int.0) + gen(@Int.0)
+} where {
+  fn shared(@Int -> @Int)
+    requires(true) ensures(@Int.result == @Int.0 + 10) effects(pure)
+  {
+    @Int.0 + 10
+  }
+  forall<T> fn gen(@Int -> @Int)
+    requires(true) ensures(@Int.result == 25) effects(pure)
+  {
+    shared(5)
+  } where {
+    fn shared(@Int -> @Int)
+      requires(true) ensures(@Int.result == @Int.0 + 20) effects(pure)
+    {
+      @Int.0 + 20
+    }
+  }
+}
+"""
+
+# NO-REGRESSION GUARD: a generic helper legitimately calling an ancestor
+# helper it does NOT shadow — that call MUST still be redirected to the
+# hoisted mangled name.  q(0) = aunt(0) + gen(0) = 7 + 107 = 114.
+_GENERIC_LEGIT_ANCESTOR_CALL = """\
+public fn q(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  aunt(@Int.0) + gen(@Int.0)
+} where {
+  fn aunt(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0 + 7
+  }
+  forall<T> fn gen(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    aunt(@Int.0) + 100
+  }
+}
+"""
+
+# The generic-CHILD-shadows-ancestor variant: `child`'s nested GENERIC `foo`
+# shadows the ancestor's non-generic `foo` for child's body, so `foo(5)` must
+# stay bare and route through mono to the clone (+20): r(0) == 25 (the
+# checker's last-wins resolution agrees).  At base this shape was a LOUD
+# #991-family `duplicate func identifier` crash; a shadow map built from
+# non-generic names only silently captured the call onto the ancestor's foo
+# (15) — a loud failure downgraded to a silent wrong value.
+_GENERIC_CHILD_SHADOWS_ANCESTOR = """\
+public fn r(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  child(@Int.0)
+} where {
+  fn foo(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    @Int.0 + 10
+  }
+  fn child(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    foo(5)
+  } where {
+    forall<T> fn foo(@Int -> @Int)
+      requires(true) ensures(true) effects(pure)
+    {
+      @Int.0 + 20
+    }
+  }
+}
+"""
+
+
 def _compile(source: str):
     program = parse_to_ast(source)
     diags, arts = typecheck_with_artifacts(program, source)
@@ -292,3 +414,56 @@ class TestWhereHelperNameCollision991:
             f"the nested generic clone must still be emitted, got "
             f"{[n for n in names if 'gid' in n]}"
         )
+
+
+class TestGenericSubtreeShadowing1013:
+    """PR #1013 review: the ancestor-scope rewrite must honour a retained
+    generic subtree's OWN shadowing.
+
+    The blunt full-subtree `_rewrite_call_names(stripped, combined)` descended
+    into retained generic helpers' bodies and rewrote bare calls against the
+    ancestor scope without re-applying the subtree's inner shadowing — so a
+    generic helper's call to its OWN nested `shared` was captured onto the
+    ancestor's `p$where$shared`.  Mono then cloned the generic with the call
+    already rewritten, so `_hoist_clone_where_fns` never redirected it to the
+    clone's own helper: a silent wrong value, and — with contracts — a false
+    Tier-1 (the verifier's scoped lookup resolves the call correctly while the
+    compiled program runs the ancestor's body and traps on the runtime
+    postcondition check).
+    """
+
+    def test_generic_helper_own_shadow_runs_own_body(self) -> None:
+        # SILENT WRONG VALUE: base 1fd4043 returns 35; the capture bug
+        # returned 25 (gen's `shared(5)` bound to the ancestor's +10 body).
+        assert _run(_GENERIC_HELPER_OWN_SHADOW, "p", [0]) == 35
+
+    def test_generic_helper_own_shadow_verify_run_agree(self) -> None:
+        # FALSE TIER-1 differential: verify must prove gen's
+        # `ensures(@Int.result == 25)` statically (no E500, every ensures
+        # obligation Tier-1 verified) AND the compiled program must run to 35
+        # with gen returning 25 from its OWN shared — the capture bug passed
+        # verify identically but TRAPPED at runtime on gen's postcondition.
+        result = _verify(_GENERIC_HELPER_OWN_SHADOW_ENSURES)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], (
+            f"verify must be clean: {[e.description for e in errors]}"
+        )
+        ensures = [o for o in result.obligations if o.kind == "ensures"]
+        assert ensures and all(o.status == "verified" for o in ensures), (
+            f"every ensures must be Tier-1 verified, got "
+            f"{[(o.description, o.status) for o in ensures]}"
+        )
+        assert _run(_GENERIC_HELPER_OWN_SHADOW_ENSURES, "p", [0]) == 35
+
+    def test_generic_helper_unshadowed_ancestor_call_still_redirected(
+        self,
+    ) -> None:
+        # NO-REGRESSION GUARD: a generic helper calling an ancestor helper it
+        # does NOT shadow must keep resolving to the hoisted mangled name.
+        assert _run(_GENERIC_LEGIT_ANCESTOR_CALL, "q", [0]) == 114
+
+    def test_generic_child_shadows_ancestor_name(self) -> None:
+        # A GENERIC helper's name must also shadow an ancestor's non-generic
+        # entry for its level's subtree: child's `foo(5)` routes through mono
+        # to child's own generic foo (+20), not the ancestor's +10 body.
+        assert _run(_GENERIC_CHILD_SHADOWS_ANCESTOR, "r", [0]) == 25
