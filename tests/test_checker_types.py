@@ -2474,3 +2474,128 @@ class TestArrayZeroSizeElementRejected945:
             "  nat_to_int(array_length(@Array<Int>.0))\n"
             "}\n"
         )
+
+
+class TestForallNullaryCtorCallArg993:
+    """#993: a bare ``None`` in the remaining fresh-ctor-var positions must
+    adopt the expected type instead of minting an unresolvable ``T$n``.
+    Fifth mechanism of the family after #971 (return/let/match), #979
+    (nested fields), and #981 (comparison operands): call arguments, ability
+    op arguments, effect op arguments, constructor arguments under a bare
+    forall var, and both-constructor comparisons.
+    """
+
+    def test_generic_call_arg_sibling_unresolved(self) -> None:
+        """`option_unwrap_or(nothing(()), None)` — both arguments carry
+        fresh/instantiation vars; the polymorphic None must not reject
+        against the (still-generic) parameter type (was E202)."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(nothing(()), None);
+  0
+}
+""")
+
+    def test_eq_call_arg_concrete_expected(self) -> None:
+        """`ensures(eq(@Option<Int>.result, None))` at a fully concrete
+        expected type (was E241 — the operator form `== None` of the same
+        comparison already checks clean via #981)."""
+        _check_ok("""
+private fn nothing(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(eq(@Option<Int>.result, None))
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_eq_call_arg_under_forall(self) -> None:
+        """The same eq-call shape under forall<T> (was E241)."""
+        _check_ok("""
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(eq(@Option<T>.result, None))
+  effects(pure)
+{
+  None
+}
+""")
+
+    def test_effect_op_arg_adopts_state_type(self) -> None:
+        """`handle[State<Option<Int>>](@Option<Int> = None)` with a
+        `put(None)` in the body — the handler-state initializer synths with
+        the declared state type (was E331; the effect-op argument loop
+        already synthesizes against the resolved param type)."""
+        _check_ok("""
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = None) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    put(None);
+    0
+  }
+}
+""")
+
+    def test_ctor_arg_under_bare_forall_var(self) -> None:
+        """`MkA(None)` where the field type is Option<T> with T the
+        enclosing forall var (was E121; the concrete-nested-outer-arg form
+        was fixed by #994/#979)."""
+        _check_ok("""
+private data A<T> { MkA(Option<T>) }
+
+private forall<T> fn make(@Unit -> @A<T>)
+  requires(true) ensures(true) effects(pure)
+{
+  MkA(None)
+}
+""")
+
+    def test_both_ctor_comparison_concrete(self) -> None:
+        """`Some(5) == None` — both sides constructors, one nullary-fresh;
+        the fresh side must adopt the other side's type (was E142)."""
+        _check_ok("""
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  Some(5) == None
+}
+""")
+
+    def test_cross_adt_call_arg_still_rejected(self) -> None:
+        """Guardrail: the typevar-wildcard skip is structural — a cross-ADT
+        argument (Box vs Option) is still E202 even with unresolved vars on
+        both sides and matching inner structure."""
+        _check_err("""
+private data Box<T> { MkBox(Option<T>) }
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(MkBox(None), None);
+  0
+}
+""", "Argument 0 of 'option_unwrap_or'")
+
+    def test_none_eq_none_still_rejected(self) -> None:
+        """Guardrail: two unresolved ctor operands have no side to adopt
+        from — `None == None` stays rejected."""
+        _check_err("""
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  None == None
+}
+""", "Cannot compare")

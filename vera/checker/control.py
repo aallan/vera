@@ -425,7 +425,12 @@ class ControlFlowMixin:
         if expr.state:
             self._check_refinement_predicates(expr.state.type_expr)  # #861
             state_type = self._resolve_type(expr.state.type_expr)
-            init_type = self._synth_expr(expr.state.init_expr)
+            # #993: synth WITH the declared state type as expected — a bare
+            # nullary constructor init (`@Option<Int> = None`) mints a fresh
+            # ctor var without it, and the #971 bidirectional fill needs the
+            # expected type to adopt the declared type arguments.
+            init_type = self._synth_expr(
+                expr.state.init_expr, expected=state_type)
             if init_type and not isinstance(init_type, UnknownType):
                 if not is_subtype(init_type, state_type):
                     self._error(

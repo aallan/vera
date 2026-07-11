@@ -634,14 +634,17 @@ class ExpressionsMixin:
         expected type, so a nullary constructor (`None`) mints a fresh ctor var
         that never unifies with its sibling's declared type — `Option<T>` vs
         `Option<T$1>` (a `forall<T>` postcondition) or even `Option<Int>` vs
-        `Option<T$1>` (a concrete comparison), both rejected E142.  When exactly
-        one operand is a constructor expression whose type still carries an
-        unresolved var and the other operand has a concrete ADT type, re-synth
+        `Option<T$1>` (a concrete comparison), both rejected E142.  When an
+        operand is a constructor expression whose type still carries an
+        unresolved var and the other operand has a resolved ADT type, re-synth
         the constructor operand against that type so the #971 bidirectional fill
-        can adopt the sibling's type arguments.  Restricting to `==`/`!=` (ADTs
-        are neither numeric nor orderable), to a single constructor operand, and
-        to a still-unresolved ctor type keeps this from re-typing (and possibly
-        re-diagnosing) any operand that was already well-typed, and the fill's
+        can adopt the sibling's type arguments.  The sibling may itself be a
+        constructor (`Some(5) == None`, #993) — what matters is that the
+        adopted-FROM side is resolved: two unresolved ctor operands
+        (`None == None`) still fall through to E142.  Restricting to `==`/`!=`
+        (ADTs are neither numeric nor orderable) and to a still-unresolved ctor
+        type keeps this from re-typing (and possibly re-diagnosing) any operand
+        that was already well-typed, and the fill's
         `expected.name == ci.parent_type` guard rejects a genuinely cross-ADT
         comparison (`Result<..> == None`) exactly as before.
         """
@@ -657,16 +660,18 @@ class ExpressionsMixin:
             expr.left, (ast.ConstructorCall, ast.NullaryConstructor))
         right_ctor = isinstance(
             expr.right, (ast.ConstructorCall, ast.NullaryConstructor))
-        if (right_ctor and not left_ctor
+        if (right_ctor
                 and contains_typevar(right_ty)
-                and isinstance(left_ty, AdtType)):
+                and isinstance(left_ty, AdtType)
+                and not (left_ctor and contains_typevar(left_ty))):
             new_right = self._synth_expr(expr.right, expected=left_ty)
             if new_right is not None and not isinstance(
                     new_right, UnknownType):
                 right_ty = new_right
-        elif (left_ctor and not right_ctor
+        elif (left_ctor
                 and contains_typevar(left_ty)
-                and isinstance(right_ty, AdtType)):
+                and isinstance(right_ty, AdtType)
+                and not (right_ctor and contains_typevar(right_ty))):
             new_left = self._synth_expr(expr.left, expected=right_ty)
             if new_left is not None and not isinstance(
                     new_left, UnknownType):

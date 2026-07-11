@@ -281,6 +281,17 @@ class CallsMixin:
                         arg_ty = re
                         arg_types[i] = re
             if not is_subtype(arg_ty, param_ty):
+                # #993: when unresolved variables remain on either side
+                # (e.g. `option_unwrap_or(nothing(()), None)` — the callee's
+                # instantiation never resolves because every argument is
+                # itself polymorphic), a structural match treating type
+                # variables as wildcards means the call is satisfiable at
+                # SOME instantiation — rejecting it is a false E202.  Fully
+                # concrete mismatches are unaffected.
+                if ((contains_typevar(arg_ty) or contains_typevar(param_ty))
+                        and self._compatible_modulo_typevars(
+                            arg_ty, param_ty)):
+                    continue
                 self._error(
                     args[i],
                     f"Argument {i} of '{fn_info.name}' has type "
@@ -331,6 +342,39 @@ class CallsMixin:
                 )
 
         return return_type
+
+    def _compatible_modulo_typevars(self, a: Type, b: Type) -> bool:
+        """Structural compatibility treating any TypeVar as a wildcard (#993).
+
+        Used only when a subtype check between two types has failed AND at
+        least one side still carries unresolved type variables — i.e. the
+        call's instantiation could not be pinned down (every argument is
+        itself polymorphic, e.g. `option_unwrap_or(nothing(()), None)`).
+        A TypeVar on either side matches anything: there EXISTS an
+        instantiation making the two sides agree, so rejecting would be a
+        false E202.  Concrete structure must still line up — `Option<...>`
+        never matches `Result<...>`, and a genuinely concrete leaf mismatch
+        (`Int` vs `String`) is still rejected via the subtype fallback.
+        """
+        if isinstance(a, (TypeVar, UnknownType)) or isinstance(
+                b, (TypeVar, UnknownType)):
+            return True
+        a = base_type(a)
+        b = base_type(b)
+        if isinstance(a, AdtType) and isinstance(b, AdtType):
+            return (a.name == b.name
+                    and len(a.type_args) == len(b.type_args)
+                    and all(self._compatible_modulo_typevars(x, y)
+                            for x, y in zip(a.type_args, b.type_args)))
+        if isinstance(a, FunctionType) and isinstance(b, FunctionType):
+            return (len(a.params) == len(b.params)
+                    and all(self._compatible_modulo_typevars(x, y)
+                            for x, y in zip(a.params, b.params))
+                    and self._compatible_modulo_typevars(
+                        a.return_type, b.return_type))
+        # Leaves (primitives): the instantiation direction is unknown, so
+        # accept a subtype relationship either way (Nat vs Int).
+        return is_subtype(a, b) or is_subtype(b, a)
 
     def _check_apply_fn(self, args: tuple[ast.Expr, ...],
                         node: ast.Node) -> Type | None:
@@ -680,6 +724,24 @@ class CallsMixin:
             if isinstance(param_ty, (TypeVar, UnknownType)):
                 continue
             if not is_subtype(arg_ty, param_ty):
+                # #993: the args were synthesized with no expected type, so
+                # a bare constructor argument (`eq(x, None)`) minted a fresh
+                # ctor var that never met the parameter type.  Re-synth the
+                # ctor argument against the resolved param so the #971
+                # bidirectional fill can adopt it (works for concrete AND
+                # forall-var parameter args).  Restricted to constructor
+                # expressions — re-synthesizing an arbitrary expression
+                # could re-emit its own diagnostics.
+                if (contains_typevar(arg_ty)
+                        and isinstance(args[i], (
+                            ast.ConstructorCall, ast.NullaryConstructor))):
+                    resynth = self._synth_expr(args[i], expected=param_ty)
+                    if (resynth is not None
+                            and not isinstance(resynth, UnknownType)):
+                        arg_ty = resynth
+                        arg_types[i] = resynth
+                        if is_subtype(arg_ty, param_ty):
+                            continue
                 self._error(
                     args[i],
                     f"Argument {i} of '{op_info.name}' has type "
@@ -1053,7 +1115,16 @@ class CallsMixin:
                     and len(expected.type_args) == len(ci.parent_type_params)):
                 for tv, exp_arg in zip(ci.parent_type_params,
                                        expected.type_args):
-                    if tv not in mapping:
+                    # #993: a binding whose value is a bare FRESH var is a
+                    # tentative non-answer (a nested nullary ctor leaked its
+                    # own placeholder, e.g. MkA(None) binding A's param to
+                    # None's T$n) — the declared expected arg overrides it,
+                    # exactly the #293 fresh-is-tentative precedence
+                    # `_unify_for_inference` applies between arguments.
+                    existing = mapping.get(tv)
+                    if existing is None or (
+                            isinstance(existing, TypeVar)
+                            and "$" in existing.name):
                         mapping[tv] = exp_arg
 
             # Use fresh TypeVars for any that remain unresolved — prevents
