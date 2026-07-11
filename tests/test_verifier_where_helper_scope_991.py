@@ -144,7 +144,7 @@ public fn host(@Int -> @Int)
 }
 
 public fn decoy(@Int -> @Int)
-  requires(true) ensures(true) effects(pure)
+  requires(true) ensures(@Int.result == 0) effects(pure)
 {
   aunt(@Int.0)
 } where {
@@ -190,15 +190,46 @@ class TestGenericCloneEnclosingScope1013:
             f"gen must verify against host's OWN aunt, got: "
             f"{[e.description for e in errors]}"
         )
+        # Targeted obligation check (CR 3565053529): gen's and both aunts'
+        # ensures are Tier-1 verified — present AND proved, not skipped.
+        # (host's own ensures is honestly Tier-3 — its body is a generic
+        # call, outside the decidable fragment — so it is excluded here.)
+        gen_ens = [
+            o for o in result.obligations
+            if o.kind == "ensures" and o.fn_name == "gen"
+        ]
+        aunt_ens = [
+            o for o in result.obligations
+            if o.kind == "ensures" and o.fn_name == "aunt"
+        ]
+        assert gen_ens and all(o.status == "verified" for o in gen_ens), (
+            f"gen's ensures must be Tier-1 verified, got "
+            f"{[(o.expr_text, o.status) for o in gen_ens]}"
+        )
+        assert len(aunt_ens) == 2 and all(
+            o.status == "verified" for o in aunt_ens
+        ), (
+            f"both aunts' ensures must be Tier-1 verified, got "
+            f"{[(o.expr_text, o.status) for o in aunt_ens]}"
+        )
         # Codegen agreement: the compiled program runs the real aunt (+7).
         assert _run(_GENERIC_HELPER_ANCESTOR_DECOY, "host", [1]) == 8
 
-    def test_decoy_still_verified_against_its_own_helper(self) -> None:
-        # Control: the decoy function's own aunt (result == 0) is a correct
-        # contract for its own body — no error anywhere in the program.
+    def test_decoy_verified_and_runs_its_own_helper(self) -> None:
+        # Control (CR 3565053529 hardening): the decoy carries a NON-trivial
+        # postcondition (`result == 0`) discharged against its OWN aunt —
+        # its obligation must be present and Tier-1 verified, and the
+        # compiled decoy must run its own aunt's body (0), so this test
+        # cannot pass via a skipped obligation or a misresolved aunt.
         result = _verify(_GENERIC_HELPER_ANCESTOR_DECOY)
-        decoy_errors = [
-            d for d in result.diagnostics
-            if d.severity == "error" and "decoy" in d.description
+        decoy_ens = [
+            o for o in result.obligations
+            if o.kind == "ensures" and o.fn_name == "decoy"
         ]
-        assert decoy_errors == []
+        assert decoy_ens and all(
+            o.status == "verified" for o in decoy_ens
+        ), (
+            f"decoy's ensures must be present and Tier-1 verified, got "
+            f"{[(o.expr_text, o.status) for o in decoy_ens]}"
+        )
+        assert _run(_GENERIC_HELPER_ANCESTOR_DECOY, "decoy", [5]) == 0

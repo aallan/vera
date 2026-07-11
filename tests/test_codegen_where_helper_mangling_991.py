@@ -322,6 +322,47 @@ public fn r(@Int -> @Int)
 """
 
 
+# PR #1013 round 3 (CodeRabbit outside-diff): the CHECKER leg of #991.  The
+# checker resolved bare calls through the flat, last-wins `env.functions`, so
+# a diamond whose two same-named `leaf`s differ in SIGNATURE was falsely
+# REJECTED: branchA's `leaf(@Int.0)` synthesized against branchB's
+# `@Int -> @String` leaf (registered last) and E121'd branchA's body ("has
+# type String, expected Int") on a valid program.  compute(1) =
+# branchA(1) + branchB(1) = (1 + 1) + string_length("ab") = 4 — a value only
+# reachable when ALL THREE subsystems (checker, verifier, codegen) resolve
+# each `leaf` to its own parent's helper.
+_SIBLING_LEAF_DIFFERENT_SIGNATURES = """\
+public fn compute(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  branchA(@Int.0) + branchB(@Int.0)
+} where {
+  fn branchA(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    leaf(@Int.0)
+  } where {
+    fn leaf(@Int -> @Int)
+      requires(true) ensures(true) effects(pure)
+    {
+      @Int.0 + 1
+    }
+  }
+  fn branchB(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  {
+    string_length(leaf(@Int.0))
+  } where {
+    fn leaf(@Int -> @String)
+      requires(true) ensures(true) effects(pure)
+    {
+      "ab"
+    }
+  }
+}
+"""
+
+
 def _compile(source: str):
     program = parse_to_ast(source)
     diags, arts = typecheck_with_artifacts(program, source)
@@ -451,7 +492,7 @@ class TestGenericSubtreeShadowing1013:
         ensures = [o for o in result.obligations if o.kind == "ensures"]
         assert ensures and all(o.status == "verified" for o in ensures), (
             f"every ensures must be Tier-1 verified, got "
-            f"{[(o.description, o.status) for o in ensures]}"
+            f"{[(o.fn_name, o.expr_text, o.status) for o in ensures]}"
         )
         assert _run(_GENERIC_HELPER_OWN_SHADOW_ENSURES, "p", [0]) == 35
 
@@ -467,3 +508,37 @@ class TestGenericSubtreeShadowing1013:
         # entry for its level's subtree: child's `foo(5)` routes through mono
         # to child's own generic foo (+20), not the ancestor's +10 body.
         assert _run(_GENERIC_CHILD_SHADOWS_ANCESTOR, "r", [0]) == 25
+
+
+class TestCheckerHelperScope991:
+    """PR #1013 round 3: the CHECKER leg of #991's "checker, verifier, and
+    codegen must agree on helper-name scoping".
+
+    The checker resolved bare calls through the flat, last-wins
+    ``env.functions`` registry, so a diamond whose two same-named `leaf`s
+    differ in SIGNATURE was falsely rejected — branchA's `leaf(@Int.0)` call
+    synthesized against branchB's `@Int -> @String` leaf (registered last),
+    E121 "branchA body has type String, expected Int" on a valid program.
+    The scoped lookup (`_lookup_function_scoped`) resolves the nearest
+    same-named helper in the `_fn_scope_stack` (innermost-out), then the
+    top-level function, then the flat registry — mirroring the verifier's
+    `_scoped_fn_lookup` and codegen's parent-qualified hoist.
+    """
+
+    def test_diamond_different_signatures_checks_clean(self) -> None:
+        # THE BUG: false E121 on branchA (its `leaf` call resolved against
+        # branchB's String-returning leaf).  The valid program must check.
+        program = parse_to_ast(_SIBLING_LEAF_DIFFERENT_SIGNATURES)
+        diags, _arts = typecheck_with_artifacts(
+            program, _SIBLING_LEAF_DIFFERENT_SIGNATURES,
+        )
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], (
+            f"check must be clean: {[e.description for e in errors]}"
+        )
+
+    def test_diamond_different_signatures_runs(self) -> None:
+        # All three subsystems agree: compute(1) == (1 + 1) +
+        # string_length("ab") == 4, each `leaf` call reaching its own
+        # parent's helper end-to-end.
+        assert _run(_SIBLING_LEAF_DIFFERENT_SIGNATURES, "compute", [1]) == 4

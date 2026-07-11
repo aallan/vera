@@ -118,8 +118,12 @@ class CallsMixin:
         if name == "apply_fn":
             return self._check_apply_fn(args, node)
 
-        # Look up function
-        fn_info = self.env.lookup_function(name)
+        # Look up function — lexically (#991): the nearest same-named
+        # where-helper in the enclosing scope stack wins over the flat
+        # last-wins registry, so a diamond of same-named helpers with
+        # DIFFERENT signatures checks each parent against its OWN helper
+        # (the flat lookup falsely E121'd a valid program).
+        fn_info = self._lookup_function_scoped(name)
         if fn_info:
             return self._check_fn_call_with_info(fn_info, args, node)
 
@@ -643,7 +647,10 @@ class CallsMixin:
             if op_info is not None:
                 acc.add(op_info.parent_effect)
             else:
-                fn_info = self.env.lookup_function(node.name)
+                # #991: resolve lexically like the call checker above, so a
+                # same-named helper in a sibling tree can't contribute the
+                # WRONG effect row to the commutativity analysis.
+                fn_info = self._lookup_function_scoped(node.name)
                 if fn_info is None:
                     acc.add(f"<{node.name}>")
                 elif isinstance(fn_info.effect, ConcreteEffectRow):

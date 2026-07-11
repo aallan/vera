@@ -796,8 +796,16 @@ class CodeGenerator(
         # T-unused-template emission in the where-fn sweep below (PR #1013
         # review).  Registered, not compiled: the sweep runs before the mono
         # compile loop, and a clone that later fails to compile is a loud
-        # diagnostic either way.
-        mono_base_names = {m.name.split("$")[0] for m in mono_decls}
+        # diagnostic either way.  The base is the name minus the LAST
+        # `$`-suffix (the single type-args vector `_mangle_fn_name` appends;
+        # the vector itself can't contain `$` — type names can't lex it), so
+        # an entry whose base is itself `$`-qualified (a shadowed module
+        # clone `mod$path$gen$Int`, a per-clone hoisted helper
+        # `gen$Int$where$h$…`) reduces to that qualified base, which can
+        # never equal a bare helper name — a first-`$` split would collapse
+        # them all to their first segment and could false-match a bare
+        # helper coincidentally named `mod`/`gen` (Greptile PR #1013 review).
+        mono_base_names = {m.name.rsplit("$", 1)[0] for m in mono_decls}
 
         for tld in program.declarations:
             decl = tld.decl

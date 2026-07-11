@@ -253,9 +253,12 @@ class ContractVerifier:
         # top-level function's own info (a nested helper of the same name would
         # otherwise clobber it in the flat registry, since helpers register
         # last), and `_scoped_fn_info_cache` memoizes per-helper infos built on
-        # demand for the scoped lookup (`_scoped_fn_lookup`).
+        # demand for the scoped lookup (`_scoped_fn_lookup`), keyed
+        # (id, visibility) so a hit never returns another visibility's info.
         self._top_level_fn_infos: dict[str, FunctionInfo] = {}
-        self._scoped_fn_info_cache: dict[int, FunctionInfo] = {}
+        self._scoped_fn_info_cache: dict[
+            tuple[int, str | None], FunctionInfo
+        ] = {}
         self._mono: Monomorphizer | None = None
         # #820: raw type-alias TypeExprs (populated in `_build_mono_context`),
         # so the @Nat -> @Int closure-argument widening obligation can recover a
@@ -568,9 +571,13 @@ class ContractVerifier:
         Used by the scoped lookup so a same-named ``where``-helper resolves to
         the exact decl in scope, not whichever one registered last.  Reuses the
         shared ``build_fn_info`` so a helper's resolved signature is byte-for-byte
-        what ``register_fn`` would have stored.
+        what ``register_fn`` would have stored.  Keyed on ``(id, visibility)``
+        so a cache hit can never return an info built for another visibility
+        (Greptile PR #1013 review — latent today, since each decl object is
+        looked up under one visibility, but cheap to make impossible).
         """
-        info = self._scoped_fn_info_cache.get(id(decl))
+        key = (id(decl), visibility)
+        info = self._scoped_fn_info_cache.get(key)
         if info is None:
             from vera.registration import build_fn_info
             info = build_fn_info(
@@ -578,7 +585,7 @@ class ContractVerifier:
                 self._resolve_type, self._resolve_effect_row,
                 visibility=visibility,
             )
-            self._scoped_fn_info_cache[id(decl)] = info
+            self._scoped_fn_info_cache[key] = info
         return info
 
     def _scoped_fn_lookup(

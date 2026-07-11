@@ -30,6 +30,7 @@ from vera import ast
 from vera.errors import Diagnostic, SourceLocation
 from vera.environment import (
     AdtInfo,
+    FunctionInfo,
     TypeEnv,
 )
 from vera.types import (
@@ -302,6 +303,23 @@ class TypeChecker(
         # check phase skips them — re-checking would resolve their own body
         # against the built-in and emit bogus secondary diagnostics.
         self._rejected_builtin_redefs: set[int] = set()
+        # #991 checker leg (PR #1013 review): lexically-scoped where-helper
+        # resolution, mirroring the verifier and codegen.  ``env.functions``
+        # is flat and last-wins, so a bare call to a same-named helper in a
+        # DIFFERENT parent tree resolved against whichever helper registered
+        # last — a diamond whose two `leaf`s differ in signature was falsely
+        # REJECTED (E121 against the wrong leaf's return type) on a valid
+        # program.  `_fn_scope_stack` holds the chain of functions whose
+        # `where` blocks are lexically in scope (outermost first; maintained
+        # by `_check_fn`); `_top_level_fn_infos` pins each top-level
+        # function's own info (a nested same-named helper would otherwise
+        # clobber it in the flat registry); `_scoped_fn_info_cache` memoizes
+        # per-decl infos for the scoped lookup.
+        self._fn_scope_stack: list[ast.FnDecl] = []
+        self._top_level_fn_infos: dict[str, FunctionInfo] = {}
+        self._scoped_fn_info_cache: dict[
+            tuple[int, str | None], FunctionInfo
+        ] = {}
         # #222 Phase D: opt-in artifact collection for LSP features.
         # None = off (the default for every existing caller; zero
         # cost).  When dicts are installed by typecheck_with_artifacts,
@@ -420,6 +438,19 @@ class TypeChecker(
         """Entry point: register modules, then local declarations, then check."""
         self._register_modules(program)  # C7b: cross-module imports
         self._register_all(program)  # local declarations shadow imports
+        # #991 checker leg: pin each LOCAL top-level function's own info so
+        # the scoped lookup prefers it over a nested helper of the same name
+        # that clobbered the flat registry (helpers register last) — the
+        # checker then resolves helper calls exactly as the verifier and
+        # codegen do.  Rejected built-in redefinitions stay out (the built-in
+        # is canonical, #815).
+        for tld in program.declarations:
+            decl = tld.decl
+            if (isinstance(decl, ast.FnDecl)
+                    and id(decl) not in self._rejected_builtin_redefs):
+                self._top_level_fn_infos[decl.name] = self._fn_info_for_decl(
+                    decl, visibility=tld.visibility,
+                )
         for tld in program.declarations:
             # #815: a built-in redefinition (E151) is already reported and not
             # registered; skip checking its body so it isn't re-checked against
@@ -522,6 +553,14 @@ class TypeChecker(
         saved_params = dict(self.env.type_params)
         saved_return = self.env.current_return_type
         saved_effect = self.env.current_effect_row
+        # #991 checker leg: this function's frame joins the lexical scope
+        # stack for the duration of its body, contracts, AND its where-helper
+        # recursion (step 8) — a helper's body must see this function's
+        # helpers as ancestors.  Popped alongside the step-9 restores below
+        # (the same non-finally discipline as the type-param save/restore:
+        # an exception here aborts check_program entirely, so a leaked frame
+        # is unobservable).
+        self._fn_scope_stack.append(decl)
 
         # 1. Bind forall type parameters
         if decl.forall_vars:
@@ -660,9 +699,59 @@ class TypeChecker(
                 self._where_helper_outer_tnames.pop()
 
         # 9. Restore context
+        self._fn_scope_stack.pop()
         self.env.type_params = saved_params
         self.env.current_return_type = saved_return
         self.env.current_effect_row = saved_effect
+
+    def _fn_info_for_decl(
+        self, decl: ast.FnDecl, visibility: str | None = None,
+    ) -> FunctionInfo:
+        """Build (memoized) the :class:`FunctionInfo` for a specific FnDecl,
+        bypassing the flat, last-wins ``env.functions`` registry (#991).
+
+        The checker twin of the verifier's method of the same name: the
+        scoped lookup resolves a same-named ``where``-helper to the exact
+        decl in scope, not whichever one registered last.  Reuses the shared
+        ``build_fn_info`` so the resolved signature is byte-for-byte what
+        ``register_fn`` would have stored.  Keyed on ``(id, visibility)`` so
+        a cache hit can never return an info built for another visibility.
+        """
+        key = (id(decl), visibility)
+        info = self._scoped_fn_info_cache.get(key)
+        if info is None:
+            from vera.registration import build_fn_info
+            info = build_fn_info(
+                self.env, decl,
+                self._resolve_type, self._resolve_effect_row,
+                visibility=visibility,
+            )
+            self._scoped_fn_info_cache[key] = info
+        return info
+
+    def _lookup_function_scoped(self, name: str) -> FunctionInfo | None:
+        """Resolve a bare call name lexically (#991 checker leg).
+
+        The nearest same-named ``where``-helper visible from the function
+        currently being checked wins: the innermost stack frame's helpers
+        first, then each ancestor's, then the top-level function of that
+        name, and finally the flat registry (built-ins / prelude / imports).
+        Matches the verifier's ``_scoped_fn_lookup`` and codegen's
+        parent-qualified hoist, so all three subsystems agree on
+        helper-name scoping.  A helper rejected for redefining a built-in
+        (E151, #815) is skipped — the built-in stays canonical.  With an
+        empty stack (data invariants, op signatures) this is exactly the
+        old flat lookup.
+        """
+        for frame in reversed(self._fn_scope_stack):
+            for wfn in frame.where_fns or ():
+                if (wfn.name == name
+                        and id(wfn) not in self._rejected_builtin_redefs):
+                    return self._fn_info_for_decl(wfn)
+        top = self._top_level_fn_infos.get(name)
+        if top is not None:
+            return top
+        return self.env.lookup_function(name)
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str:
         """Extract the canonical slot name from a type expression used as a
