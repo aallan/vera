@@ -318,10 +318,15 @@ def collect_nested_generic_decls(
 
     Stops at the first generic node: a generic helper's own subtree is NOT
     descended (each clone carries it and codegen hoists it per-instantiation,
-    #904 — collecting it here would double-emit), and callers only pass
-    non-generic roots.  ``setdefault`` keeps first-seen-wins on a bare-name
-    collision, matching how plain where-helpers flatten into the bare WASM
-    namespace; per-scope duplicate-name semantics are #991's subject.
+    #904 — collecting it here would double-emit the NON-generic descendants),
+    and callers only pass non-generic roots.  Note the hoisting path only
+    substitutes the generic ANCESTOR's type variables — a descendant with its
+    own ``forall`` is hoisted as a still-generic template and never
+    instantiated, so that shape still dangles at compile (#1002); this
+    collector deliberately does not paper over it.  ``setdefault`` keeps
+    first-seen-wins on a bare-name collision, matching how plain where-helpers
+    flatten into the bare WASM namespace; per-scope duplicate-name semantics
+    are #991's subject.
     """
     for wfn in decl.where_fns or ():
         if wfn.forall_vars:

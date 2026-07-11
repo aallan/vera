@@ -271,6 +271,130 @@ class TestHoistedHelperWidenDifferential:
             assert _run(result, fn, 42) == 42, f"{fn}: 42"
 
 
+class TestTransitiveImportedGenericWiden:
+    """A top-level imported generic reached TRANSITIVELY through another
+    imported generic's clone body: the transitive clone is tagged at the
+    chase site, so it must get the module's table exactly like a direct
+    clone.  At the pre-#998 base this shape silently returned -1.
+
+    Whole-module ``import lib;`` is deliberate: the filtered form
+    ``import lib(outer)`` hits the pre-existing #999-family harvest wall
+    (the un-named transitive generic is not a clone base at all).
+    """
+
+    _LIB = """\
+public forall<T> fn inner(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+public forall<T> fn outer(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@T.0, @Nat.0) }
+"""
+    _MAIN = """\
+import lib;
+public fn callOuter(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(true, @Nat.0) }
+"""
+    _FILES = {"lib.vera": _LIB, "main.vera": _MAIN}
+
+    def test_transitive_clone_traps_at_u64_max(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        kind = _trap_kind(result, "callOuter", U64_MAX)
+        assert kind == "unreachable", (
+            f"callOuter(u64.MAX) trap kind {kind!r} — the TRANSITIVE clone "
+            f"(chase-site tagging) compiled without its module table"
+        )
+
+    def test_transitive_in_range_passes(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        assert _run(result, "callOuter", INT63_MAX) == INT63_MAX
+        assert _run(result, "callOuter", 42) == 42
+
+
+class TestShadowedTransitiveGenericWiden:
+    """The chase path specifically: a SHADOWED imported generic whose clone
+    body calls an unshadowed same-module generic that widens.  The inner
+    clone is emitted by ``_chase_normal_transitive`` (the main worklist has
+    already drained when shadowed emission runs), so ITS origin tagging is
+    exercised nowhere else — the main-worklist transitive shapes above
+    resolve their inner clones on the main worklist instead."""
+
+    _FILES = {
+        "lib.vera": """\
+public forall<T> fn inner(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+public forall<T> fn wrap(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ inner(@T.0, @Nat.0) }
+""",
+        "main.vera": """\
+import lib;
+public fn wrap(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn callQualified(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ lib::wrap(7, @Nat.0) }
+""",
+    }
+
+    def test_chase_emitted_clone_traps_at_u64_max(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        kind = _trap_kind(result, "callQualified", U64_MAX)
+        assert kind == "unreachable", (
+            f"callQualified(u64.MAX) trap kind {kind!r} — the chase-emitted "
+            f"inner clone (shadowed-body transitive) compiled without its "
+            f"module table"
+        )
+
+    def test_chase_in_range_passes(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        assert _run(result, "callQualified", INT63_MAX) == INT63_MAX
+        assert _run(result, "callQualified", 42) == 42
+
+
+class TestCrossModuleTransitiveGenericWiden:
+    """Three-module chain (main -> lib_outer -> lib_inner, the widen lives in
+    the leaf): the transitive clone must read the ORIGINATING module's table
+    (lib_inner's), not the importer's nor the intermediate's."""
+
+    _FILES = {
+        "lib_inner.vera": """\
+public forall<T> fn deepwiden(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
+""",
+        "lib_outer.vera": """\
+import lib_inner;
+public forall<T> fn relay(@T, @Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ deepwiden(@T.0, @Nat.0) }
+""",
+        "main.vera": """\
+import lib_outer;
+public fn callRelay(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ relay(true, @Nat.0) }
+""",
+    }
+
+    def test_leaf_clone_traps_at_u64_max(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        kind = _trap_kind(result, "callRelay", U64_MAX)
+        assert kind == "unreachable", (
+            f"callRelay(u64.MAX) trap kind {kind!r} — the leaf module's "
+            f"transitive clone lost its originating-module table through "
+            f"the 3-module chain"
+        )
+
+    def test_leaf_in_range_passes(self, tmp_path) -> None:
+        result = _compile_main(tmp_path, self._FILES, "main.vera")
+        assert _run(result, "callRelay", INT63_MAX) == INT63_MAX
+        assert _run(result, "callRelay", 42) == 42
+
+
 class TestLocalGenericCloneControl:
     """A LOCAL generic's clones are guarded today via the main-file tables;
     the #998 provenance tagging must not mis-route them."""

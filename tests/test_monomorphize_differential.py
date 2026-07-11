@@ -249,6 +249,37 @@ public fn use_nested(@Unit -> @Int)
   parent(10)
 }
 """,
+    # #990 + PR #1001 review: a nested generic reached ONLY from contract
+    # clauses (requires/ensures, never a body).  Contract reachability flows
+    # through the same shared node-level walk, and Vera lowers contracts to
+    # runtime checks — so codegen must emit the clone and the verifier must
+    # discover the identical instantiation set.
+    "nested_generic_contract_only": """
+private fn parent(@Int -> @Int)
+  requires(gok(@Int.0))
+  ensures(gok(@Int.result))
+  effects(pure)
+{
+  @Int.0 + 5
+}
+where {
+  forall<T> fn gok(@T -> @Bool)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    true
+  }
+}
+
+public fn use_contract_only(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  parent(10)
+}
+""",
 }
 
 

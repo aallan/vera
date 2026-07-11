@@ -1247,7 +1247,9 @@ class CodeGenerator(
 
     @staticmethod
     def _flatten_where_fns(decl: ast.FnDecl) -> list[ast.FnDecl]:
-        """Every ``where``-helper reachable from *decl*, at any depth (#978).
+        """Every ``where``-helper reachable from *decl*, at any depth (#978),
+        except the subtree of a generic helper (carried per-clone by the mono
+        path instead, #990).
 
         Pre-order, depth-first, so a helper precedes its own nested helpers.
         WAT function order is irrelevant to assembly, but a stable order keeps

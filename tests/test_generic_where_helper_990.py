@@ -162,6 +162,74 @@ class TestNestedGenericWhereHelper990:
             f"expected both instantiation clones, got {clones}"
         )
 
+    def test_contract_only_instantiation_runs(self) -> None:
+        # The nested generic is reached ONLY from contract clauses (never the
+        # body): contract reachability flows through a distinct discovery walk
+        # (collect_calls_in_node includes requires/ensures), and Vera lowers
+        # contracts to runtime checks, so the clone must exist at run time.
+        source = """\
+private fn parent(@Int -> @Int)
+  requires(gok(@Int.0)) ensures(gok(@Int.result)) effects(pure)
+{ @Int.0 + 5 }
+where {
+  forall<T> fn gok(@T -> @Bool)
+    requires(true) ensures(true) effects(pure)
+  { true }
+}
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 15) effects(pure)
+{ parent(10) }
+"""
+        _assert_compiles_and_runs(source, 15)
+
+    def test_nested_to_nested_transitive_runs(self) -> None:
+        # One nested generic calling ANOTHER nested generic sibling: the
+        # transitive worklist must emit inner<Int>, reached only through
+        # outer<Int>'s clone body.
+        source = """\
+private fn parent(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(@Int.0) + 5 }
+where {
+  forall<T> fn outer(@T -> @T)
+    requires(true) ensures(@T.result == @T.0) effects(pure)
+  { inner(@T.0) }
+  forall<T> fn inner(@T -> @T)
+    requires(true) ensures(@T.result == @T.0) effects(pure)
+  { @T.0 }
+}
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 15) effects(pure)
+{ parent(10) }
+"""
+        _assert_compiles_and_runs(source, 15)
+        result = _compile(source)
+        names = _func_names(result.wat)
+        assert "outer$Int" in names and "inner$Int" in names, (
+            f"transitive nested-to-nested clones missing: "
+            f"{[n for n in names if '$' in n]}"
+        )
+
+    def test_recursive_nested_generic_runs(self) -> None:
+        # A self-recursive nested generic: the clone's return_call must
+        # resolve to the mangled clone name.  Compile+run harness only — an
+        # exact-value ensures over the opaque recursive call is E500 at the
+        # verifier (pre-existing, not nested-generic-specific).
+        source = """\
+private fn parent(@Int -> @Int)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ sumdown(@Int.0) }
+where {
+  forall<T> fn sumdown(@Int -> @Int)
+    requires(@Int.0 >= 0) ensures(true) decreases(@Int.0) effects(pure)
+  { if @Int.0 == 0 then { 0 } else { @Int.0 + sumdown(@Int.0 - 1) } }
+}
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 6) effects(pure)
+{ parent(3) }
+"""
+        _assert_compiles_and_runs(source, 6)
+
     def test_nested_generic_with_own_where_child_runs(self) -> None:
         # The nested generic carries its OWN where-child: the child is emitted
         # per-clone by the hoisting path (`gid$Int$where$dbl`), and the Pass-2
@@ -204,6 +272,38 @@ public fn main(@Unit -> @Int)
                 f"the generic's child '{bare}' must not ALSO be emitted "
                 f"standalone by the Pass-2 where-fn sweep (dead duplicate)"
             )
+
+    def test_generic_under_generic_ancestor_still_dangles_1002(self) -> None:
+        # HONEST PIN (#1002, pre-existing): a generic grandchild under a
+        # GENERIC child is hoisted as a still-generic template (hoisting
+        # substitutes only the ancestor's type vars) and never instantiated —
+        # the clone's call dangles at WAT assembly while check AND verify are
+        # green.  When #1002 closes this pin flips to a run assertion.
+        source = """\
+private fn parent(@Int -> @Int)
+  requires(true) ensures(@Int.result == @Int.0 + 5) effects(pure)
+{ outer(@Int.0) + 5 }
+where {
+  forall<T> fn outer(@T -> @T)
+    requires(true) ensures(@T.result == @T.0) effects(pure)
+  { ginner(@T.0) }
+  where {
+    forall<U> fn ginner(@U -> @U)
+      requires(true) ensures(@U.result == @U.0) effects(pure)
+    { @U.0 }
+  }
+}
+public fn main(@Unit -> @Int)
+  requires(true) ensures(@Int.result == 15) effects(pure)
+{ parent(10) }
+"""
+        result = _compile(source)
+        errs = [d for d in result.diagnostics if d.severity == "error"]
+        assert errs and "unknown func" in errs[0].description, (
+            f"expected the #1002 dangling-template failure, got "
+            f"{[d.description for d in errs] or 'a clean compile'} — if this "
+            f"now compiles, #1002 has closed: flip this pin to a run assertion"
+        )
 
     def test_helper_under_generic_parent_hoisting_unchanged(self) -> None:
         # CONTROL (#904): the helper is cloned INTO the parent instantiation
