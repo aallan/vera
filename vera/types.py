@@ -452,6 +452,25 @@ def _is_fresh_typevar(ty: Type) -> bool:
     return isinstance(ty, TypeVar) and "$" in ty.name
 
 
+def contains_fresh_typevar(ty: Type) -> bool:
+    """True if *ty* contains a FRESH inference placeholder (`T$n`) anywhere.
+
+    Distinct from :func:`contains_typevar`, which also matches rigid forall
+    vars: a rigid `T` is a valid, fully-resolved type inside its own forall
+    body, while a `$`-marked var is a hole inference has not filled (#993).
+    """
+    if isinstance(ty, TypeVar):
+        return "$" in ty.name
+    if isinstance(ty, AdtType):
+        return any(contains_fresh_typevar(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_fresh_typevar(p) for p in ty.params)
+                or contains_fresh_typevar(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_fresh_typevar(ty.base)
+    return False
+
+
 def merge_inferred_types(
     a: Type, b: Type, nested: bool = False,
 ) -> tuple[Type, bool]:
