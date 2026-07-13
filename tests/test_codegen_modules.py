@@ -777,6 +777,27 @@ public forall<T> fn gid(@T -> @T)
 { @T.0 }
 """
 
+    def test_private_generic_reached_by_imported_public_generic_executes(self) -> None:
+        """A private generic helper called by an imported public generic is
+        harvested for transitive monomorphization, but remains non-importable.
+        """
+        mod = self._resolved(("priv",), """\
+module priv;
+private forall<T> fn inner(@T -> @T)
+  requires(true) ensures(@T.result == @T.0) effects(pure)
+{ @T.0 }
+public forall<T> fn outer(@T -> @T)
+  requires(true) ensures(@T.result == @T.0) effects(pure)
+{ inner(@T.0) }
+""")
+        val = self._run_mod("""\
+import priv(outer);
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(7) }
+""", [mod], fn="main")
+        assert val == 7
+
     def test_imported_generic_bare_call_executes(self) -> None:
         """`gid(42)` (bare) runs, returning 42 — the importer emits gid$Int.
 
