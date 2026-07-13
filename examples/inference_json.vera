@@ -1,0 +1,70 @@
+-- Inference + JSON composition: turn an LLM response into verified typed data.
+--
+-- The model is asked for a JSON object such as {"score":82}.  The response
+-- flows through Inference.complete, json_parse, json_get_int, and a pure
+-- normalization step whose 0..100 result contract is proved statically.
+--
+-- Note: requires an LLM API key. Run with:
+--   VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference_json.vera
+--   VERA_OPENAI_API_KEY=sk-...       vera run examples/inference_json.vera
+--   VERA_MOONSHOT_API_KEY=sk-...     vera run examples/inference_json.vera
+--   VERA_MISTRAL_API_KEY=sk-...      vera run examples/inference_json.vera
+-- Clamp an arbitrary model-provided score to the documented range.  This
+-- postcondition is discharged at Tier 1, independently of the LLM response.
+private fn normalize_score(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0 && @Int.result <= 100)
+  effects(pure)
+{
+  if @Int.0 < 0 then {
+    0
+  } else {
+    if @Int.0 > 100 then {
+      100
+    } else {
+      @Int.0
+    }
+  }
+}
+
+-- The only effect is the model call. JSON parsing and typed field extraction
+-- are pure operations, so no second effect is needed in this signature.
+private fn score_clarity(@String -> @Result<Int, String>)
+  requires(true)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = string_concat("Score the clarity of the following text from 0 to 100. Respond with JSON only, exactly {\"score\": <integer>}. Text: ", @String.0);
+  match Inference.complete(@String.0) {
+    Err(@String) -> Err(@String.0),
+    Ok(@String) -> {
+      -- Models sometimes add a tagged or untagged Markdown fence despite the
+      -- prompt. Removing those conventional markers keeps the JSON path pure.
+      let @String = string_strip(string_replace(string_replace(@String.0, "```json", ""), "```", ""));
+      -- In the parse-error arm, @String.2 is the original raw completion.
+      match json_parse(@String.0) {
+        Err(@String) -> Err("Invalid JSON response: \(@String.0). Raw response: \(@String.2)"),
+        Ok(@Json) -> match json_get_int(@Json.0, "score") { None -> Err("Response has no integer \"score\" field"), Some(@Int) -> Ok(normalize_score(@Int.0)) }
+      }
+    }
+  }
+}
+
+-- Main prints the normalized typed result and returns a conventional status.
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Inference, IO>)
+{
+  let @Result<Int, String> = score_clarity("Vera makes every effect visible in the function signature.");
+  match @Result<Int, String>.0 {
+    Ok(@Int) -> {
+      IO.print("Clarity score: \(@Int.0)/100");
+      0
+    },
+    Err(@String) -> {
+      IO.print(string_concat("Could not score text: ", @String.0));
+      1
+    }
+  }
+}

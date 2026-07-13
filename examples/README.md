@@ -1,6 +1,6 @@
 # Vera Examples
 
-37 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+38 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -55,6 +55,7 @@ Examples that use only the IO and Random host families (e.g. `hello_world.vera`,
 | `http_server.vera` | `vera serve examples/http_server.vera` | <HttpServer> verified request handler: Request/Response ADTs, Tier-1 status-range contract (serve, then curl it); also compiles to a `wasi:http` component with `vera compile --target wasi-p2 --world server` for `wasmtime serve` |
 | `read_char.vera` | `vera run examples/read_char.vera` | IO.read_char, single-character input (reads stdin) |
 | `inference.vera` | `vera run examples/inference.vera` | Inference.complete LLM calls as a typed effect (requires an API key) |
+| `inference_json.vera` | `vera run examples/inference_json.vera` | Inference.complete, raw or fenced JSON parsing, typed extraction, and a verified transform (requires an API key) |
 
 ### Data Structures
 

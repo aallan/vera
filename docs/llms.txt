@@ -39,7 +39,7 @@ Current version: 0.1.4. The reference compiler is written in Python. Install wit
 
 ## Examples
 
-- [examples/](https://github.com/aallan/vera/tree/main/examples): 37 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, JSON, HTML, HTTP, inference, regex, modules, and more.
+- [examples/](https://github.com/aallan/vera/tree/main/examples): 38 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, JSON, HTML, HTTP, inference, regex, modules, and more.
 
 ## Compiler and Tooling
 

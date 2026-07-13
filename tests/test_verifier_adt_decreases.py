@@ -343,7 +343,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 284 T1 / 96 T3 / 380 total (current).
+        """All examples together: 290 T1 / 96 T3 / 386 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -567,11 +567,11 @@ private fn sum(@List<Int> -> @Int)
         # imported-function obligations therefore read Tier-3 here while
         # `vera verify` proves them Tier-1 (the bare-call figures were
         # 281/97/378 pre-#758).  The loop now resolves imports and threads
-        # the artifacts (CLI parity), so the pin matches what
-        # `vera verify --json` reports: 283/95/378 -> 284/96/380.
-        assert t1 == 284, f"Expected 284 T1, got {t1}"
+        # CLI parity ends at 284/96/380; #379's Inference + JSON example adds
+        # six Tier-1 obligations, producing 290/96/386.
+        assert t1 == 290, f"Expected 290 T1, got {t1}"
         assert t3 == 96, f"Expected 96 T3, got {t3}"
-        assert total == 380, f"Expected 380 total, got {total}"
+        assert total == 386, f"Expected 386 total, got {total}"
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

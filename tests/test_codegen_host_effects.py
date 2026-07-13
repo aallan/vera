@@ -10,6 +10,7 @@ from vera.codegen import (
 )
 
 from tests.codegen_helpers import (
+    _compile_example,
     _compile_ok,
     _run,
     _run_float,
@@ -631,6 +632,41 @@ public fn main(-> @Int)
         ):
             exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
             assert exec_result.value == 0  # Err branch returns 0
+
+    def test_inference_json_example_response_shapes(self) -> None:
+        """The runnable example accepts raw or fenced JSON and reports bad text."""
+        from unittest.mock import patch
+
+        result = _compile_example("inference_json.vera")
+        completions = (
+            ('{"score": 82}', 82),
+            ('```json\n{"score": 82}\n```', 82),
+            ('```\n{"score": 82}\n```', 82),
+            ('{"score": -7}', 0),
+            ('{"score": 140}', 100),
+        )
+        for completion, expected_score in completions:
+            with patch(
+                "vera.runtime.inference._call_inference_provider",
+                return_value=completion,
+            ):
+                exec_result = execute(
+                    result,
+                    env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"},
+                )
+            assert exec_result.value == 0
+            assert exec_result.stdout == f"Clarity score: {expected_score}/100"
+
+        with patch(
+            "vera.runtime.inference._call_inference_provider",
+            return_value="definitely not json",
+        ):
+            exec_result = execute(
+                result,
+                env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"},
+            )
+        assert exec_result.value == 1
+        assert "Raw response: definitely not json" in exec_result.stdout
 
     def test_inference_no_api_key_returns_err(self) -> None:
         """Inference.complete with no API key configured returns Err."""

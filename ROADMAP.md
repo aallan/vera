@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-7,391 tests, 157 conformance programs, 37 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+7,400 tests, 157 conformance programs, 38 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -89,7 +89,6 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 | [#425](https://github.com/aallan/vera/issues/425) | Provider: xAI Grok. |
 | [#450](https://github.com/aallan/vera/issues/450) | Provider: DeepSeek V3/R1. |
 | [#451](https://github.com/aallan/vera/issues/451) | Provider: Google Gemini. |
-| [#379](https://github.com/aallan/vera/issues/379) | Example: Inference + JSON composition. |
 | [#380](https://github.com/aallan/vera/issues/380) | Example: handler mocking for Inference (unblocked by #372). |
 
 ## Stage 22 — The verified tool server
