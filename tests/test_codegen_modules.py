@@ -798,6 +798,46 @@ public fn main(@Unit -> @Int)
 """, [mod], fn="main")
         assert val == 7
 
+    def test_private_generic_with_lying_contract_is_caught_at_verify(self) -> None:
+        """A private helper reached by an imported public generic is verified
+        at the importer's instantiation, not only emitted by codegen.
+        """
+        from vera.verifier import verify
+
+        mod = self._resolved(("priv",), """\
+module priv;
+private forall<T> fn inner(@T -> @T)
+  requires(true) ensures(@T.result == 9) effects(pure)
+{ @T.0 }
+public forall<T> fn outer(@T -> @T)
+  requires(true) ensures(@T.result == @T.0) effects(pure)
+{ inner(@T.0) }
+""")
+        main_src = """\
+import priv(outer);
+public fn probe(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ outer(7) }
+"""
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False, encoding="utf-8",
+        ) as f:
+            f.write(main_src)
+            f.flush()
+            path = f.name
+        try:
+            prog = transform(parse_file(path))
+            vres = verify(prog, main_src, resolved_modules=[mod])
+            errors = [d for d in vres.diagnostics if d.severity == "error"]
+            assert any(e.error_code == "E500" for e in errors), (
+                "the private helper's lying contract must be caught at verify "
+                f"(E500), got diagnostics {[e.error_code for e in errors]}"
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
     def test_imported_generic_bare_call_executes(self) -> None:
         """`gid(42)` (bare) runs, returning 42 — the importer emits gid$Int.
 

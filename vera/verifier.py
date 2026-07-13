@@ -1139,17 +1139,17 @@ class ContractVerifier:
     def _imported_generic_decls(
         self, program: ast.Program,
     ) -> dict[str, ast.FnDecl]:
-        """Imported PUBLIC generics whose bare name is NOT locally shadowed.
+        """Imported generics needed for importer-side verification.
 
         The verifier-side mirror of codegen's ``_imported_generic_decls`` split
         (#774): an unshadowed imported generic is monomorphized by the importer,
         so the verifier must discover the SAME instantiations codegen emits (a
         cross-module clone verified by neither side would be a false Tier-1).
-        Same public + import-filter gating and first-seen-wins ``setdefault`` as
-        codegen's ``_register_modules``; a shadowed generic (a local owns the
-        bare name) is excluded here — its qualified-only routing is a separate
-        codegen-side concern the verifier already resolves via the module's
-        contract, so no extra discovery is needed for the bare namespace.
+        Public generics use import-filter gating; private generics are included
+        because an imported public generic may reach them transitively. A
+        shadowed generic (a local owns the bare name) is excluded here — its
+        qualified-only routing is a separate codegen-side concern the verifier
+        already resolves via the module's contract.
         """
         local_fn_names = self._local_fn_names(program)
         out: dict[str, ast.FnDecl] = {}
@@ -1161,8 +1161,9 @@ class ContractVerifier:
                     continue
                 is_public = (tld.visibility or "private") == "public"
                 in_filter = name_filter is None or decl.name in name_filter
-                if is_public and in_filter and (
-                    decl.name not in local_fn_names
+                if (
+                    (is_public and in_filter and decl.name not in local_fn_names)
+                    or not is_public
                 ):
                     out.setdefault(decl.name, decl)
         return out
