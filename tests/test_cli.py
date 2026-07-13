@@ -770,7 +770,7 @@ class TestCmdCompile:
         assert rc == 1
         err = capsys.readouterr().err
         assert "unknown func" in err  # the downstream error still shows
-        assert "skipped" in err  # the E602 skip warning that explains it (#1004)
+        assert "[E602]" in err  # the E602 skip warning that explains it (#1004)
 
     def test_compile_skip_warning_in_json_error_output_1004(
         self,
@@ -788,6 +788,32 @@ class TestCmdCompile:
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
         assert any(w.get("error_code") == "E602" for w in data["warnings"])
+
+    _TYPE_ERROR_WITH_WARNING = (
+        "public fn bad(@Int -> @Int) "
+        "requires(true) ensures(true) effects(pure) { true }\n"
+        "public fn main(@Unit -> @Int) "
+        "requires(true) ensures(true) effects(pure) { no_such_fn(1) }\n"
+    )
+
+    def test_compile_type_warnings_shown_on_error_path_1004(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """#1004 review: type_warnings print on the text type-error path.
+
+        ``bad`` has a type error (E121, Bool body vs Int return); ``main`` has
+        an unresolved bare call (E200 warning).  The text error path prints the
+        warning too, not just the error — the sibling of the codegen-error
+        branch the #1004 fix corrected.  (The JSON envelope already carried it.)
+        """
+        path = _bad_vera(tmp_path, self._TYPE_ERROR_WITH_WARNING)
+        rc = cmd_compile(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "[E121]" in err  # the type error still shows
+        assert "[E200]" in err  # the type warning previously dropped in text mode
 
     def test_compile_syntax_error(
         self,

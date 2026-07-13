@@ -413,6 +413,12 @@ def cmd_compile(
                 }
                 print(json.dumps(result_dict, indent=2))
                 return 1
+            # Print warnings on the error path too (#1004 review): the text
+            # branch must not silently drop type_warnings when a type error is
+            # also present, mirroring the codegen-error branch below.  (The JSON
+            # branch already includes them.)
+            for w in type_warnings:
+                print(f"warning: {w.format()}", file=sys.stderr)
             for e in type_errors:
                 print(e.format(), file=sys.stderr)
             return 1

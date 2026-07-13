@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`vera compile` prints the E602 "function skipped" warning on the text error path** ([#1004](https://github.com/aallan/vera/issues/1004)). When a `CodegenSkip` drops a *called* function, the caller's dangling `call $f` fails WAT assembly with an opaque `unknown func`; the warning explaining *why* the function was dropped was suppressed on the text error path (the `--json` envelope already carried it) and is now printed alongside the error.
+- **`vera compile` prints the E602 "function skipped" warning on the text error path** ([#1004](https://github.com/aallan/vera/issues/1004)). When a `CodegenSkip` drops a *called* function, the caller's dangling `call $f` fails WAT assembly with an opaque `unknown func`; the warning explaining *why* the function was dropped was suppressed on the text error path (the `--json` envelope already carried it) and is now printed alongside the error. The type-error text path is corrected the same way, so a warning alongside a type error is no longer dropped.
 
 ## [0.1.4] - 2026-07-11
 
