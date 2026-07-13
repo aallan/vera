@@ -3217,7 +3217,21 @@ class ContractVerifier:
             formals = self._closure_arg_param_types(expr.args[0])
             if formals is not None:
                 for arg, formal in zip(expr.args[1:], formals):
-                    if (self._is_int_type(self._resolve_type(formal))
+                    resolved_formal = self._resolve_type(formal)
+                    # #1017: the @Int -> @Nat NARROWING dual of the widening arm
+                    # below.  A provably-negative @Int argument narrowing into a
+                    # @Nat closure formal was a false Tier-1 (no obligation) with
+                    # no runtime backstop — mirror the generic call-argument
+                    # narrowing (Site 2 below): obligate the argument against its
+                    # recovered @Nat formal.  Codegen guards the call_indirect
+                    # argument (`_translate_apply_fn`), so `guarded=True`.
+                    if (self._nat_binding_target(arg, resolved_formal)
+                            and self._narrows_into_nat(arg)):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="closure argument", guarded=True,
+                        )
+                    elif (self._is_int_type(resolved_formal)
                             and self._result_is_nat(arg)):
                         self._check_int_widening_obligation(
                             decl, arg, smt, slot_env, list(assumptions),

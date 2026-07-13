@@ -551,3 +551,195 @@ class TestClosureNarrowingBoundary984:
         # produces a refinement-violating value, so no trap is expected here;
         # the guard-count pin above is what this test exists for.
         assert _run(_CLOSURE_REFINED, "go", 0) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1017 — the @Int -> @Nat narrowing at an apply_fn ARGUMENT position (into the
+# closure's @Nat FORMAL), the narrowing dual of the #820 apply_fn @Nat -> @Int
+# argument WIDENING.  Pre-fix `apply_fn(clo_with_nat_formal, 0 - 5)` verified
+# clean (the verifier's apply_fn branch obligated only the widening direction)
+# AND `_translate_apply_fn` emitted only the widen guard — so a provably-
+# negative @Int flowed into the @Nat formal with NO obligation and NO runtime
+# backstop: a false Tier-1 AND a silent negative (`apply_fn(clo, @Int.0)` on -5
+# returned the body value rather than trapping).  The verifier now obligates the
+# argument narrowing at its apply_fn branch (mirroring the generic call-argument
+# narrowing) and codegen guards the call_indirect argument (mirroring its
+# @Int-formal widen guard).  Every closure body below returns a CONSTANT, so the
+# ONLY narrowing/guard in play is the ARGUMENT — any trap is the arg guard, not
+# a closure-return guard (the #984 corpus above covers that dual).
+# ---------------------------------------------------------------------------
+
+# (label, source) — a provably-NEGATIVE apply_fn arg narrowing into a @Nat
+# formal: the verifier witnesses the negative constant and reports the arg
+# nat_bind `violated` (a loud E503), never the pre-fix empty obligation list.
+_APPLYFN_ARG_VIOLATED = [
+    # The #1017 issue repro verbatim: a @NatToInt closure PARAMETER (formal
+    # recovered from its declared fn-type) applied to a constant-negative arg.
+    ("issue_param_closure", """
+type NatToInt = fn(Nat -> Int) effects(pure);
+private fn f(@NatToInt -> @Int) requires(true) ensures(true) effects(pure)
+{ apply_fn(@NatToInt.0, 0 - 5) }
+"""),
+    # A locally-constructed closure literal applied to a constant-negative arg —
+    # the formal is recovered from the inline AnonFn's declared parameter type.
+    ("literal_closure_const_neg", """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { 5 } }
+public fn go(@Unit -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @NatToNat = mk(()); apply_fn(@NatToNat.0, 0 - 5) }
+"""),
+]
+
+# (label, source, fn) — a RUNTIME @Int argument (unknown sign) narrowing into a
+# @Nat formal.  The verifier obligates it (never "verified"), and codegen guards
+# the call_indirect argument, so run(-5) TRAPS (pre-fix it silently returned the
+# closure body's constant) while run(4) passes the guard.
+_APPLYFN_ARG_TRAP = [
+    ("runtime_arg", """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { 5 } }
+public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @NatToNat = mk(()); apply_fn(@NatToNat.0, @Int.0) }
+""", "go"),
+]
+
+# (label, source, fn, arg, expect) — a PROVABLY non-negative narrowing (a
+# `requires(@Int.0 >= 0)` bound): the verifier discharges the arg nat_bind at
+# Tier 1, codegen's guard is dead, and run returns the body constant, no trap.
+_APPLYFN_ARG_PROVEN = [
+    ("requires_bound", """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { 5 } }
+public fn go(@Int -> @Nat) requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ let @NatToNat = mk(()); apply_fn(@NatToNat.0, @Int.0) }
+""", "go", 4, 5),
+]
+
+# (label, source, fn, arg, expect) — a @Nat argument into a @Nat formal: NO
+# narrowing, so no obligation and no guard.  A u64.MAX value (reads as -1 in the
+# i64 slot) must pass through unguarded — the narrowing-side dual of the widen
+# guard's false-trap hazard.
+_APPLYFN_ARG_UNOBLIGATED = [
+    ("nat_arg_nat_formal", """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { 5 } }
+public fn go(@Nat -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @NatToNat = mk(()); apply_fn(@NatToNat.0, @Nat.0) }
+""", "go", U64_MAX, 5),
+]
+
+# (label, source, fn) — the TIER-3 quadrant: an OPAQUE @Int argument the solver
+# cannot translate (`float_to_int` parses a machine float, which Z3 does not
+# model) narrowing into a @Nat formal, so the verifier records the arg nat_bind
+# `tier3` — a PROMISE that codegen guards it at run time — and codegen MUST emit
+# the guard.  Directly exercises the `guarded=True` deferral path (the crux of
+# the cross-component soundness argument); the mirror of the #758 return `_TIER3`
+# quadrant.  Not run (the int-arg `_run` helper cannot drive a @Float64 param).
+_APPLYFN_ARG_TIER3 = [
+    ("opaque_float_arg", """
+type NatToNat = fn(Nat -> Nat) effects(pure);
+private fn mk(@Unit -> @NatToNat) requires(true) ensures(true) effects(pure)
+{ fn(@Nat -> @Nat) effects(pure) { 5 } }
+public fn go(@Float64 -> @Nat) requires(true) ensures(true) effects(pure)
+{ let @NatToNat = mk(()); apply_fn(@NatToNat.0, float_to_int(@Float64.0)) }
+""", "go"),
+]
+
+
+class TestApplyFnArgNarrowingDifferential1017:
+    @pytest.mark.parametrize("label,source", _APPLYFN_ARG_VIOLATED,
+                             ids=[c[0] for c in _APPLYFN_ARG_VIOLATED])
+    def test_provably_negative_arg_obligated_violated(
+        self, label: str, source: str,
+    ) -> None:
+        # The verifier now emits the argument nat_bind and Z3 witnesses the
+        # negative constant, so it is `violated` (E503) — never the pre-fix
+        # empty obligation list (the #1017 silent Tier-1 pass).
+        statuses = _return_nat_bind_statuses(source)
+        assert statuses == ["violated"], (
+            f"{label}: expected one violated arg nat_bind, got {statuses} "
+            f"(pre-fix: [] — the #1017 false Tier-1)"
+        )
+
+    @pytest.mark.parametrize("label,source,fn", _APPLYFN_ARG_TRAP,
+                             ids=[c[0] for c in _APPLYFN_ARG_TRAP])
+    def test_runtime_arg_obligated_and_run_traps(
+        self, label: str, source: str, fn: str,
+    ) -> None:
+        statuses = _return_nat_bind_statuses(source)
+        assert statuses and all(s != "verified" for s in statuses), (
+            f"{label}: an unprovable arg narrowing must be obligated, not "
+            f"verified: {statuses}"
+        )
+        # ...and codegen makes good on it: a negative argument traps at the
+        # call_indirect boundary rather than entering the @Nat formal silently.
+        assert _trap_kind(source, fn, -5) == "unreachable", (
+            f"{label}: the verifier obligated this arg, but run(-5) did not trap "
+            f"with the narrowing guard's bare `unreachable` net — a silent "
+            f"negative @Nat (the #1017 hole)"
+        )
+        # ...while a non-negative argument passes the guard unharmed.
+        assert _run(source, fn, 4) is not None, (
+            f"{label}: a valid (non-negative) argument must pass the guard"
+        )
+
+    @pytest.mark.parametrize("label,source,fn,arg,expect", _APPLYFN_ARG_PROVEN,
+                             ids=[c[0] for c in _APPLYFN_ARG_PROVEN])
+    def test_proven_arg_verified_and_run_no_trap(
+        self, label: str, source: str, fn: str, arg: int, expect: int,
+    ) -> None:
+        # A requires-bounded argument proves the narrowing at Tier 1 (exactly one
+        # nat_bind, discharged)...
+        assert _return_nat_bind_statuses(source) == ["verified"], (
+            f"{label}: a requires-bounded arg narrowing must prove Tier-1"
+        )
+        # ...and codegen's guard is dead — run returns the value, never traps.
+        assert _run(source, fn, arg) == expect, (
+            f"{label}: verifier proved Tier-1 but run({arg}) trapped or gave the "
+            f"wrong value — a spurious trap or codegen<->verifier desync"
+        )
+
+    @pytest.mark.parametrize("label,source,fn,arg,expect",
+                             _APPLYFN_ARG_UNOBLIGATED,
+                             ids=[c[0] for c in _APPLYFN_ARG_UNOBLIGATED])
+    def test_nat_arg_unobligated_and_not_trapped(
+        self, label: str, source: str, fn: str, arg: int, expect: int,
+    ) -> None:
+        # A @Nat->@Nat argument does not narrow -> no obligation, no guard: the
+        # value flows through unchanged.  A false guard here would trap a
+        # legitimate @Nat above i64.MAX (the widen dual's false-trap hazard).
+        assert _return_nat_bind_statuses(source) == [], (
+            f"{label}: a @Nat->@Nat argument does not narrow — no obligation"
+        )
+        assert _run(source, fn, arg) == expect, (
+            f"{label}: a non-narrowing @Nat argument was altered or trapped — a "
+            f"spurious guard (u64.MAX reads as -1 in the i64 slot)"
+        )
+
+    @pytest.mark.parametrize("label,source,fn", _APPLYFN_ARG_TIER3,
+                             ids=[c[0] for c in _APPLYFN_ARG_TIER3])
+    def test_tier3_arg_promised_guard_is_emitted(
+        self, label: str, source: str, fn: str,
+    ) -> None:
+        """The tier-3 quadrant, cross-checked in ONE pipeline run: an opaque @Int
+        argument the solver cannot translate records the arg narrowing `tier3` (a
+        runtime-guard promise) AND the SAME compiled program carries the codegen
+        guard in the applying function — so `guarded=True` can never mean
+        "promised but never emitted" (the false-tier3 soundness hole this whole
+        differential exists to catch)."""
+        statuses, wat = _statuses_and_wat(source)
+        assert statuses == ["tier3"], (
+            f"{label}: expected a single tier3 arg nat_bind, got {statuses}"
+        )
+        idx = wat.find(f"(func ${fn} ")
+        assert idx >= 0, f"{label}: function {fn} not found in WAT"
+        end = wat.find("\n  (func ", idx + 1)
+        body = wat[idx:end if end >= 0 else len(wat)]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"{label}: the verifier promised a tier3 runtime guard, but codegen "
+            f"emitted none in {fn}:\n{body}"
+        )
