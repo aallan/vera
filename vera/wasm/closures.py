@@ -160,7 +160,16 @@ class ClosuresMixin:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            # #1017: the @Int -> @Nat NARROWING dual of the widen guard below.
+            # A negative @Int argument narrowing into a @Nat closure formal would
+            # otherwise enter the formal reinterpreted (silently) — guard it at
+            # the call_indirect boundary, exactly as the verifier's apply_fn
+            # branch now obligates it.
             if (formal_types is not None and i < len(formal_types)
+                    and self._type_expr_base_is_nat(formal_types[i])
+                    and self._narrows_into_nat(arg)):
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
+            elif (formal_types is not None and i < len(formal_types)
                     and self._type_expr_base_is_int(formal_types[i])
                     and self._result_is_nat(arg)):
                 arg_instrs = self._emit_int_widen_guard(arg_instrs)

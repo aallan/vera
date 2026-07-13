@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-7,405 tests, 157 conformance programs, 38 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+7,411 tests, 157 conformance programs, 38 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -26,7 +26,7 @@ Ten bugs span the monomorphizer/import pipeline, the verifier's obligation walke
 
 **PR B — effect-op positional lowering (2).** [#1005](https://github.com/aallan/vera/issues/1005) a `get` clause's `@Unit` op-parameter read is check-green but E699 at codegen; [#1006](https://github.com/aallan/vera/issues/1006) effect ops in array-literal-element / `let @Unit` positions `CodegenSkip` the enclosing fn. Same translator region; both must route through the post-#976 clause-aware effect-op dispatch, not the raw host cell.
 
-**PR C — verifier narrowing dual (1).** [#1017](https://github.com/aallan/vera/issues/1017) the `@Int -> @Nat` narrowing into an `apply_fn` closure formal is not obligated (false Tier-1) — mirror the #820 widening handler's dual at this site. Groups with the verification-completeness rows below.
+**PR C — verifier narrowing dual (1).** [#1024](https://github.com/aallan/vera/issues/1024) the refinement-predicate narrowing into an `apply_fn` closure formal is not obligated (false Tier-1) — the `@Nat` base (`>= 0`) was obligated + guarded by #1017; this adds the generic call path's refined arm (`_refined_binding_target` + the runtime refinement guard) at the same site. Groups with the verification-completeness rows below.
 
 [#996](https://github.com/aallan/vera/issues/996) stays a watch-only row — an unreproducible conformance flake, not a fix target.
 

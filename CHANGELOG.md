@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`vera compile` prints the E602 "function skipped" warning on the text error path** ([#1004](https://github.com/aallan/vera/issues/1004)). When a `CodegenSkip` drops a *called* function, the caller's dangling `call $f` fails WAT assembly with an opaque `unknown func`; the warning explaining *why* the function was dropped was suppressed on the text error path (the `--json` envelope already carried it) and is now printed alongside the error. The type-error and `--target wasi-p2` family-gate text paths are corrected the same way, so a warning alongside those errors is no longer dropped.
+- **The `@Int -> @Nat` narrowing into an `apply_fn` closure formal is now obligated and runtime-guarded** ([#1017](https://github.com/aallan/vera/issues/1017)). A provably-negative `@Int` argument narrowing into a `@Nat` closure formal via `apply_fn` verified clean (a false Tier 1) and, for a runtime value, entered the formal reinterpreted with no trap. The verifier's `apply_fn` branch now emits the `@Nat` narrowing obligation (mirroring the generic call-argument path — E503 for a provable negative, a guarded Tier 3 otherwise) and code generation guards the `call_indirect` argument — the narrowing dual of the #820 argument-widening handler at this site.
 
 ### Documentation
 
