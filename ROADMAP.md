@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-7,400 tests, 157 conformance programs, 38 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+7,402 tests, 157 conformance programs, 38 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -20,15 +20,13 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ### Bug sprint — monomorphizer and verifier gaps first
 
-Eleven bugs span the monomorphizer/import pipeline, the verifier's obligation walkers, effect-op codegen lowering, and CLI diagnostics. Clear them as a short sprint before the verification-completeness rows below, grouped by shared fix machinery so each PR touches one code path:
+Ten bugs span the monomorphizer/import pipeline, the verifier's obligation walkers, and effect-op codegen lowering. Clear them as a short sprint before the verification-completeness rows below, grouped by shared fix machinery so each PR touches one code path:
 
 **PR A — the mono/import-door cluster (7).** All seven are passes that only cover top-level or local declarations, so imported and monomorphized bodies fall through — one provenance-carrying fix (hoist/discovery/rewrite/keying threaded through resolved-module programs and clone bases) serves the family. [#999](https://github.com/aallan/vera/issues/999) imported bodies get no generic-instantiation discovery; [#1000](https://github.com/aallan/vera/issues/1000) a private module generic reached transitively is never harvested; [#1002](https://github.com/aallan/vera/issues/1002) a generic helper under a generic ancestor is never monomorphized; [#1008](https://github.com/aallan/vera/issues/1008) a module fn's own ADT layouts are gated on the importer's type import; [#1012](https://github.com/aallan/vera/issues/1012) the generic clone hoister lacks ancestor-scope call rewriting (aunt-call dangles); [#1014](https://github.com/aallan/vera/issues/1014) nested generic where-helpers are keyed flat first-seen-wins (silent wrong body); [#1015](https://github.com/aallan/vera/issues/1015) imported module where-helpers aren't parent-qualified (silent wrong body). Fix #1014's keying **first** — expanding discovery multiplies clone bases, and every new base is another first-seen-wins collision candidate.
 
 **PR B — effect-op positional lowering (2).** [#1005](https://github.com/aallan/vera/issues/1005) a `get` clause's `@Unit` op-parameter read is check-green but E699 at codegen; [#1006](https://github.com/aallan/vera/issues/1006) effect ops in array-literal-element / `let @Unit` positions `CodegenSkip` the enclosing fn. Same translator region; both must route through the post-#976 clause-aware effect-op dispatch, not the raw host cell.
 
-**PR C — CLI diagnostic surfacing (1).** [#1004](https://github.com/aallan/vera/issues/1004) `CodegenSkip` of a called fn surfaces as an opaque `unknown func`; print warnings on `cmd_compile`'s error path so the E602 skip diagnostic is not suppressed.
-
-**PR D — verifier narrowing dual (1).** [#1017](https://github.com/aallan/vera/issues/1017) the `@Int -> @Nat` narrowing into an `apply_fn` closure formal is not obligated (false Tier-1) — mirror the #820 widening handler's dual at this site. Groups with the verification-completeness rows below.
+**PR C — verifier narrowing dual (1).** [#1017](https://github.com/aallan/vera/issues/1017) the `@Int -> @Nat` narrowing into an `apply_fn` closure formal is not obligated (false Tier-1) — mirror the #820 widening handler's dual at this site. Groups with the verification-completeness rows below.
 
 [#996](https://github.com/aallan/vera/issues/996) stays a watch-only row — an unreproducible conformance flake, not a fix target.
 

@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 7,400 across 120 files (~104,000 lines of test code; 7,304 passed + 26 stress, 70 skipped) |
+| **Tests** | 7,402 across 120 files (~104,000 lines of test code; 7,306 passed + 26 stress, 70 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 157 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 38, all validated through `vera check` + `vera verify` |
@@ -138,7 +138,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_errors.py` | 62 | 657 | Error code registry, diagnostic formatting, serialisation, SourceLocation, and error display sync — the canonical `E001` diagnostic must match each of its mirrors: `README.md`, `docs/index.html`, `spec/00-introduction.md`, `AGENTS.md`'s example `--json` block, and the hardcoded example in `scripts/build_site.py` that generates `docs/index.md` (#829; `AGENTS.md`'s ellipsis-truncated description/rationale are prefix-compared, its `error_code`/`spec_ref`/`fix` exactly) |
 | `test_eq_contract_874.py` | 11 |      378 | `eq`/`compare` ability ops in contract position: codegen canonicalization + verifier Tier-1 discharge/counterexample, where-fn contracts, compare Ordering-sort materialization, shadowing guard (#874) |
 | `test_formatter.py` | 130 | 1,074 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 260 | 4,033 | CLI commands (check, verify, compile, run, serve, test, fmt, version, quiet), subprocess integration, JSON error paths (including the `verify --json` `obligations` array and its summary-reproducibility pin, #967), runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch, and a USAGE-completeness guard (every dispatched `cmd_<name>` handler has a help row) |
+| `test_cli.py` | 262 | 4,083 | CLI commands (check, verify, compile, run, serve, test, fmt, version, quiet), subprocess integration, JSON error paths (including the `verify --json` `obligations` array and its summary-reproducibility pin, #967), runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots, `builtins`/`effects`/`errors` introspection dispatch, and a USAGE-completeness guard (every dispatched `cmd_<name>` handler has a help row) |
 | `test_introspect.py` | 38 | 192 | `vera builtins/effects/errors --json` registry introspection (#539): the `{schema, items}` envelope, count-equals-registry differential per registry, error-phase derivation, effect/ability `kind` tagging, the parameterised `Exn<T>` effect, and best-effort `since` attribution with full-coverage guards |
 | `test_resolver.py` | 20 | 602 | Module resolution, path lookup, parse caching, circular import detection, the E011/E012/E013 diagnostic contract, internal-error isolation (a compiler bug is not masked as E013), and the transitive-closure return of `resolve_imports` (#890 — a diamond yields each reachable module once, direct imports tagged `direct`, the transitive one not) |
 | `test_types.py` | 73 | 388 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |

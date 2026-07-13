@@ -739,6 +739,56 @@ class TestCmdCompile:
         err = capsys.readouterr().err
         assert len(err) > 0
 
+    # A CodegenSkip drops a function with an explanatory E602 warning; if that
+    # function has a CALLER, the caller's `call $f` then dangles and WAT
+    # assembly fails with an opaque `unknown func`.  `h` skips (`hash(@Decimal)`
+    # is unsupported in codegen), `main` calls it.  The program is check-green,
+    # so this exercises the codegen-error branch that type/syntax errors return
+    # before reaching.
+    _SKIP_WITH_CALLER = (
+        "private fn h(@Decimal -> @Int) "
+        "requires(true) ensures(hash(@Decimal.0) == 0) effects(pure) { 0 }\n"
+        "public fn main(@Unit -> @Int) "
+        "requires(true) ensures(true) effects(pure) { h(decimal_from_int(1)) }\n"
+    )
+
+    def test_compile_skip_warning_shown_on_error_path_1004(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """#1004: the E602 skip warning prints on the text error path.
+
+        Before the fix, ``cmd_compile`` returned after printing only the
+        errors, dropping the E602 "function skipped" warning that explains
+        *why* ``$h`` is missing — the user saw the opaque ``unknown func``
+        alone.  The warning is in ``result.diagnostics`` (the JSON path
+        already emitted it); only the text presentation dropped it.
+        """
+        path = _bad_vera(tmp_path, self._SKIP_WITH_CALLER)
+        rc = cmd_compile(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "unknown func" in err  # the downstream error still shows
+        assert "skipped" in err  # the E602 skip warning that explains it (#1004)
+
+    def test_compile_skip_warning_in_json_error_output_1004(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """#1004 control: the JSON error envelope already carries the warning.
+
+        Confirms the diagnostic reaches the CLI (so the text-path drop was
+        presentation-only) and covers the JSON leg of the codegen-error branch.
+        """
+        path = _bad_vera(tmp_path, self._SKIP_WITH_CALLER)
+        rc = cmd_compile(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert any(w.get("error_code") == "E602" for w in data["warnings"])
+
     def test_compile_syntax_error(
         self,
         tmp_path: Path,

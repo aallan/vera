@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Inference + JSON composition example** ([#379](https://github.com/aallan/vera/issues/379)) demonstrates an effectful model call flowing through pure JSON parsing, typed integer extraction, and a statically proved 0–100 normalization contract. Raw JSON and tagged or untagged fenced responses are accepted, with the original completion retained in malformed-response diagnostics.
 
+### Fixed
+
+- **`vera compile` prints the E602 "function skipped" warning on the text error path** ([#1004](https://github.com/aallan/vera/issues/1004)). When a `CodegenSkip` drops a *called* function, the caller's dangling `call $f` fails WAT assembly with an opaque `unknown func`; the warning explaining *why* the function was dropped was suppressed on the text error path (the `--json` envelope already carried it) and is now printed alongside the error.
+
 ## [0.1.4] - 2026-07-11
 
 ### Fixed
