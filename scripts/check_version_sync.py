@@ -94,7 +94,7 @@ def main() -> int:
         print("ERROR: Could not find version string in README.md", file=sys.stderr)
         return 1
 
-    # uv.lock — the editable ``[[package]] name = "vera"`` entry holds
+    # uv.lock — the editable ``[[package]] name = "veralang"`` entry holds
     # the same version as ``pyproject.toml``.  CI runs ``uv lock --check``
     # in the lint job (`.github/workflows/ci.yml`); a stale lockfile
     # fails CI with a generic "lockfile needs to be updated" message
@@ -106,7 +106,7 @@ def main() -> int:
     if not lock.is_file():
         print("ERROR: uv.lock not found", file=sys.stderr)
         return 1
-    # Match ``name = "vera"`` followed by ``version = "X.Y.Z"`` on the
+    # Match ``name = "veralang"`` followed by ``version = "X.Y.Z"`` on the
     # next non-blank line.  Anchored on the package boundary
     # (``[[package]]``) so we don't accidentally pick up a transitive
     # dependency that happens to be named ``vera`` in some far-future
@@ -114,13 +114,13 @@ def main() -> int:
     # with ``source = { editable = "." }``.
     lock_match = re.search(
         r'\[\[package\]\]\s*\n'
-        r'name\s*=\s*"vera"\s*\n'
+        r'name\s*=\s*"veralang"\s*\n'
         r'version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
         lock.read_text(encoding="utf-8"),
     )
     if not lock_match:
         print(
-            'ERROR: Could not find ``[[package]] name = "vera"`` block '
+            'ERROR: Could not find ``[[package]] name = "veralang"`` block '
             "with a version field in uv.lock — has the lockfile shape "
             "changed?",
             file=sys.stderr,

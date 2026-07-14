@@ -86,7 +86,8 @@ All side effects (IO, Http, HttpServer, State, Exceptions, Async, Inference, \
 Random) are tracked in the type system via algebraic effects.
 
 Current version: {version}. The reference compiler is written in Python. \
-Install with `pip install -e .` from the repository.
+Install the `veralang` distribution from PyPI or use `pip install -e ".[dev]"` from \
+the repository.
 
 ## Homepage
 
@@ -605,17 +606,25 @@ Serving HTTP on http://0.0.0.0:8080/
 
 ## Get Started
 
-Python 3.11+ and Git. Everything else installs into a virtual environment.
+Python 3.11+. Everything else installs into a virtual environment.
 
 ```bash
-# Clone and install
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install veralang
+```
+
+Or install the current GitHub source for development:
+
+```bash
 git clone {REPO}.git
 cd vera
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
+```
 
-# Check, verify, run, compile
+```bash
 vera check examples/absolute_value.vera
 vera verify examples/safe_divide.vera
 vera run examples/hello_world.vera

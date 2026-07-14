@@ -9,15 +9,30 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 
 ## Installation
 
-Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests). Install from the repository:
+Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests). Install the released `veralang` distribution from PyPI:
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install veralang
+```
+
+This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). For editor/agent integration via the Language Server Protocol, install `python -m pip install "veralang[lsp]"` — see [LSP_SERVER.md](https://github.com/aallan/vera/blob/main/LSP_SERVER.md).
+
+The GitHub source route remains supported for unreleased changes and compiler development:
 
 ```bash
 git clone https://github.com/aallan/vera.git && cd vera
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -e .
 ```
 
-This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). For editor/agent integration via the Language Server Protocol, install the optional extra instead: `pip install -e ".[lsp]"` — see [LSP_SERVER.md](https://github.com/aallan/vera/blob/main/LSP_SERVER.md). After installation, verify it works:
+For an editable source install with the language server, use `python -m pip install -e ".[lsp]"`. Verify the installed CLI — works for either route, with no checkout required:
+
+```bash
+vera version
+```
+
+From a source checkout you can also run the bundled example end to end:
 
 ```bash
 vera check examples/hello_world.vera    # should print "OK: examples/hello_world.vera"
@@ -27,14 +42,14 @@ vera run examples/hello_world.vera      # should print "Hello, World!"
 If you are working on the compiler itself, install development dependencies too:
 
 ```bash
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 > **Platform support**: Vera is tested in CI on macOS 15+ (Apple Silicon), Ubuntu 24.04 LTS (x86_64), and Windows Server 2022, against Python 3.11–3.13. macOS 14 (Sonoma) and earlier, and Ubuntu 22.04 LTS aarch64, are out of scope — install will fail at dependency resolution. See [README §Supported platforms](https://github.com/aallan/vera/blob/main/README.md#supported-platforms) for the full matrix, workarounds, and the data behind the baseline.
 >
 > **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
 >
-> One caveat: `pip install vera` (no source) installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Always install from the GitHub source clone shown above.
+> One caveat: `pip install vera` installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Use the `veralang` distribution or the GitHub source clone shown above; both install the `vera` command.
 
 ## Toolchain
 

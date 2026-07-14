@@ -1545,7 +1545,7 @@ wheels = [
 ]
 
 [[package]]
-name = "vera"
+name = "veralang"
 version = "0.1.4"
 source = { editable = "." }
 dependencies = [
@@ -1600,8 +1600,8 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'mutation'", specifier = ">=2.4" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.21" },
-    { name = "vera", extras = ["dev"], marker = "extra == 'mutation'" },
-    { name = "vera", extras = ["lsp"], marker = "extra == 'dev'" },
+    { name = "veralang", extras = ["dev"], marker = "extra == 'mutation'" },
+    { name = "veralang", extras = ["lsp"], marker = "extra == 'dev'" },
     { name = "wasmtime", specifier = ">=46.0.1" },
     { name = "z3-solver", specifier = ">=4.15.5" },
 ]

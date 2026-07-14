@@ -255,6 +255,48 @@ jobs:
       - name: Check wheel availability across supported platforms
         run: python scripts/check_wheel_availability.py
 
+  package-distribution:
+    # Build the exact artifacts that will eventually be uploaded under
+    # the `veralang` distribution name (#737).  This stays separate from
+    # release automation (#481): PR CI validates artifacts but publishes
+    # nothing.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install packaging tools
+        run: pip install build twine
+
+      - name: Build and inspect distribution archives
+        run: |
+          python -m build
+          python -m twine check dist/*
+          python scripts/check_distribution.py dist
+
+      - name: Install and smoke-test the wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/veralang-wheel-smoke"
+          "$RUNNER_TEMP/veralang-wheel-smoke/bin/python" -m pip install dist/*.whl
+          cp examples/hello_world.vera "$RUNNER_TEMP/hello_world.vera"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/veralang-wheel-smoke/bin/vera" version
+          "$RUNNER_TEMP/veralang-wheel-smoke/bin/vera" check hello_world.vera
+          run_out="$("$RUNNER_TEMP/veralang-wheel-smoke/bin/vera" run hello_world.vera)"
+          printf '%s\n' "$run_out"
+          case "$run_out" in
+            *"Hello, World!"*) ;;
+            *) echo "::error::wheel smoke: unexpected 'vera run' output"; exit 1 ;;
+          esac
+
   sbom:
     permissions:
       contents: read

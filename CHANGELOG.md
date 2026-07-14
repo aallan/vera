@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **PyPI publication readiness** ([#737](https://github.com/aallan/vera/issues/737)) renames the Python distribution to `veralang` while preserving the `vera` command and import package, adds a dedicated registry README, and gates the built sdist/wheel contents plus an installed-wheel CLI smoke test in CI. The existing GitHub-source installation path remains supported; automated publication is still gated on [#481](https://github.com/aallan/vera/issues/481).
 - **Inference + JSON composition example** ([#379](https://github.com/aallan/vera/issues/379)) demonstrates an effectful model call flowing through pure JSON parsing, typed integer extraction, and a statically proved 0–100 normalization contract. Raw JSON and tagged or untagged fenced responses are accepted, with the original completion retained in malformed-response diagnostics.
 
 ### Fixed

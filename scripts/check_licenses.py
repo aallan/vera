@@ -41,7 +41,7 @@ _COMPATIBLE_PATTERNS: list[str] = [
 ]
 
 # Packages to exclude from checking (this project itself).
-_SELF_PACKAGES: set[str] = {"vera"}
+_SELF_PACKAGES: set[str] = {"veralang"}
 
 
 def _is_compatible(license_str: str) -> bool:

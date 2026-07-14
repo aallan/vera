@@ -28,10 +28,17 @@ The server lives behind the optional `[lsp]` extra (pure-Python
 dependencies: `pygls`, `lsprotocol`):
 
 ```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install "veralang[lsp]"
+```
+
+To install the current GitHub source instead:
+
+```bash
 git clone https://github.com/aallan/vera.git
 cd vera
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[lsp]"     # or ".[dev]", which includes it
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -e ".[lsp]"     # or ".[dev]", which includes it
 ```
 
 Then:

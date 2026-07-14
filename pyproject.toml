@@ -1,8 +1,8 @@
 [project]
-name = "vera"
+name = "veralang"
 version = "0.1.4"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
-readme = "README.md"
+readme = "PYPI_README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
@@ -14,6 +14,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Compilers",
 ]
 dependencies = [
@@ -73,7 +74,7 @@ dev = [
     # `pip install -e ".[dev]"` can run tests/test_lsp.py without a
     # second pin list to keep in sync (PEP 508 extras self-reference;
     # supported by pip >= 21.2 and uv).
-    "vera[lsp]",
+    "veralang[lsp]",
 ]
 mutation = [
     # Mutation testing (#387).  Kept separate from [dev] so the
@@ -82,7 +83,7 @@ mutation = [
     # was chosen over cosmic-ray: its coverage-guided test selection
     # is ~90x faster on this Z3/WASM suite, and its copy-based model
     # never mutates the working tree in place.  See MUTATION.md.
-    "vera[dev]",
+    "veralang[dev]",
     "mutmut>=3.6",
     "pytest-timeout>=2.4",
     # scripts/mutation_report.py renders the per-module chart with matplotlib;

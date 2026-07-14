@@ -115,15 +115,33 @@ Every diagnostic has a stable error code (`E001`–`E702`) and is available as s
 
 ### Installation
 
+Install the released `veralang` distribution from PyPI:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install veralang
+```
+
+The distribution is named `veralang`, but the installed command remains
+`vera`, and Python code still imports it as `import vera`. For editor and agent integration through the language server, install
+`python -m pip install "veralang[lsp]"`. Do not run `pip install vera`: that
+name belongs to an unrelated project on PyPI.
+
+The GitHub source route remains supported for compiler development, unreleased
+changes, and testing the current `main` branch:
+
 ```bash
 git clone https://github.com/aallan/vera.git
 cd vera
 python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -e ".[dev]"
 ```
 
-`[dev]` includes everything (tests, linters, the language server). For a lighter install that only adds editor/agent support to the base toolchain, use `pip install -e ".[lsp]"` — see [LSP_SERVER.md](LSP_SERVER.md).
+`[dev]` includes everything (tests, linters, the language server). For a lighter
+source install that only adds editor/agent support to the base toolchain, use
+`python -m pip install -e ".[lsp]"` — see [LSP_SERVER.md](LSP_SERVER.md).
 
 
 #### Supported platforms
