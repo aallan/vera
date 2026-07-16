@@ -594,28 +594,47 @@ class ClosureLiftingMixin:
         # refined return (it assumed the refinement boundary owned the check), so
         # without this the boundary went unchecked: `fn(@Int -> @Pos) { @Int.0 }`
         # applied to -5 returned -5 through the @Pos slot on a verify-clean
-        # program.  Save the body result, run the predicate guard, push it back —
-        # the same shape the whole-body refined-return guard uses.  Scalar
-        # returns only; a refined pair (String / Array) return keeps its current
-        # behavior (`_emit_refinement_check` reads the value from a single local).
+        # program.  Save the body result, run the predicate guard, and push it
+        # back — the same shape AND String/Array pair handling the
+        # named-function refined-return guard uses, so a refined pair return
+        # (`{ @String | ... }` / `{ @Array | ... }`) is guarded too rather than
+        # silently trusted while the verifier reports it runtime-checked.
         refined_ret = self._refinement_guard_parts(anon_fn.return_type)
-        if refined_ret is not None and ret_wt not in (None, "i32_pair"):
+        if refined_ret is not None and ret_wt is not None:
             predicate, base_name = refined_ret
-            result_local = ctx.alloc_local(ret_wt)
             pred_text = ast.format_expr(predicate)
             msg = (
                 "Refinement violation in closure return value: "
                 f"{pred_text} failed"
             )
-            guard = self._emit_refinement_check(
-                ctx, predicate, base_name, result_local, msg, env)
-            if guard is not None:
-                body_instrs = [
-                    *body_instrs,
-                    f"local.set {result_local}",
-                    *guard,
-                    f"local.get {result_local}",
-                ]
+            if ret_wt == "i32_pair":
+                # Pair result is (ptr, len) with len on top; the guard needs only
+                # the primary local (the ptr — the length is read from memory, as
+                # the named-function pair-return guard does).
+                ptr_local = ctx.alloc_local("i32")
+                len_local = ctx.alloc_local("i32")
+                guard = self._emit_refinement_check(
+                    ctx, predicate, base_name, ptr_local, msg, env)
+                if guard is not None:
+                    body_instrs = [
+                        *body_instrs,
+                        f"local.set {len_local}",
+                        f"local.set {ptr_local}",
+                        *guard,
+                        f"local.get {ptr_local}",
+                        f"local.get {len_local}",
+                    ]
+            else:
+                result_local = ctx.alloc_local(ret_wt)
+                guard = self._emit_refinement_check(
+                    ctx, predicate, base_name, result_local, msg, env)
+                if guard is not None:
+                    body_instrs = [
+                        *body_instrs,
+                        f"local.set {result_local}",
+                        *guard,
+                        f"local.get {result_local}",
+                    ]
 
         # Propagate host-import tracking from closure ctx to module level
         self._map_ops_used.update(ctx._map_ops_used)

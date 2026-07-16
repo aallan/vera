@@ -129,6 +129,27 @@ public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
 """),
 ]
 
+# A refined PAIR-base (String) closure return: codegen represents `@String` as
+# an `(i32 ptr, i32 len)` pair, so the guard must save/reload both halves and
+# check the predicate on the ptr (the length is read from memory).  Proves the
+# `guarded` promise is honest for pair bases too, not only scalars — the guard
+# mirrors the named-function `_compile_postconditions` i32_pair return guard.
+_PAIR_STRING = """
+type NonEmptyStr = { @String | string_length(@String.0) > 0 };
+type F = fn(String -> NonEmptyStr) effects(pure);
+
+private fn mk(@Int -> @F) requires(true) ensures(true) effects(pure)
+{ fn(@String -> @NonEmptyStr) effects(pure) { @String.0 } }
+
+public fn go(@Int -> @Int) requires(true) ensures(true) effects(pure)
+{
+  let @String = if @Int.0 > 0 then { "ok" } else { "" };
+  let @F = mk(0);
+  let @NonEmptyStr = apply_fn(@F.0, @String.0);
+  nat_to_int(string_length(@NonEmptyStr.0))
+}
+"""
+
 
 class TestRefinedClosureReturnDifferential1032:
     @pytest.mark.parametrize("label,source", _CLOSURE_TRAP,
@@ -169,4 +190,20 @@ class TestRefinedClosureReturnDifferential1032:
         assert _run(source, "go", -5) == -5, (
             f"{label}: the value was altered or trapped — a spurious guard on a "
             f"non-refined closure return"
+        )
+
+    def test_refined_pair_closure_return_obligated_and_guarded(self) -> None:
+        # A refined PAIR base (String) closure return is obligated `tier3` just
+        # like a scalar, and codegen now emits the i32_pair boundary guard, so
+        # the verifier's guarded promise is honest for pairs (not a false
+        # `tier3_runtime` over an unguarded passthrough).
+        assert _refine_bind_statuses(_PAIR_STRING) == ["tier3"]
+        # An empty string violates `string_length > 0` and traps at the closure
+        # boundary; a non-empty string passes and its length flows out.
+        assert _run(_PAIR_STRING, "go", -1) is None, (
+            "an empty-string refined closure return was not guarded — the "
+            "i32_pair boundary guard is missing"
+        )
+        assert _run(_PAIR_STRING, "go", 1) == 2, (
+            "a satisfying (non-empty) string must pass the pair guard"
         )
