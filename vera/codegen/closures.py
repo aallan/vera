@@ -586,6 +586,37 @@ class ClosureLiftingMixin:
                 and ctx._result_is_nat(anon_fn.body)):
             body_instrs = ctx._emit_int_widen_guard(body_instrs)
 
+        # #1032: a closure whose declared return is a refinement `{ @Base | P }`
+        # can return a raw @Base value that violates P — the return-side dual of
+        # the closure-argument refinement guard and the closure analogue of the
+        # named-function refined return guarded in `_compile_postconditions`.
+        # The per-leaf @Nat narrow guard above is deliberately excluded for a
+        # refined return (it assumed the refinement boundary owned the check), so
+        # without this the boundary went unchecked: `fn(@Int -> @Pos) { @Int.0 }`
+        # applied to -5 returned -5 through the @Pos slot on a verify-clean
+        # program.  Save the body result, run the predicate guard, push it back —
+        # the same shape the whole-body refined-return guard uses.  Scalar
+        # returns only; a refined pair (String / Array) return keeps its current
+        # behavior (`_emit_refinement_check` reads the value from a single local).
+        refined_ret = self._refinement_guard_parts(anon_fn.return_type)
+        if refined_ret is not None and ret_wt not in (None, "i32_pair"):
+            predicate, base_name = refined_ret
+            result_local = ctx.alloc_local(ret_wt)
+            pred_text = ast.format_expr(predicate)
+            msg = (
+                "Refinement violation in closure return value: "
+                f"{pred_text} failed"
+            )
+            guard = self._emit_refinement_check(
+                ctx, predicate, base_name, result_local, msg, env)
+            if guard is not None:
+                body_instrs = [
+                    *body_instrs,
+                    f"local.set {result_local}",
+                    *guard,
+                    f"local.get {result_local}",
+                ]
+
         # Propagate host-import tracking from closure ctx to module level
         self._map_ops_used.update(ctx._map_ops_used)
         self._map_imports.update(ctx._map_imports)

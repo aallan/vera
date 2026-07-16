@@ -3549,6 +3549,24 @@ class ContractVerifier:
                     and self._return_narrows_into_nat(expr.body)):
                 self._record_nat_bind_tier3(
                     decl, expr.body, "closure return", "tier3", guarded=True)
+            # #1032: a REFINED closure RETURN `{ @Base | P }` is the refinement
+            # dual of the #820 widen / #984 narrow arms above and the return-side
+            # analogue of the closure-ARGUMENT refinement obligation.  A closure
+            # body returning a raw @Base value that violates P verified CLEAN (a
+            # false Tier-1) with no runtime backstop: `fn(@Int -> @Pos) { @Int.0
+            # }` applied to -5 returned -5 through the @Pos slot.  The closure
+            # body is opaque to the SMT layer (same rationale as the arms above),
+            # so obligate SHALLOW-syntactically — always `tier3`, never a Tier-1
+            # — backed by codegen's refinement-return guard in
+            # `_compile_lifted_closure`.  The bare-@Nat narrow arm is excluded
+            # for a refined return (guarded above), so a refinement OVER @Nat
+            # lands here, not there.
+            elif (self._is_refined_type(resolved_ret)
+                    and self._return_narrows_into_refined(
+                        expr.body, resolved_ret)):
+                self._record_refined_bind_tier3(
+                    decl, expr.body, "closure return",
+                    guarded=not self._is_unit_refinement(resolved_ret))
             return
 
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
@@ -6624,6 +6642,34 @@ class ContractVerifier:
             return any(self._return_narrows_into_nat(arm.body)
                        for arm in body.arms)
         return self._narrows_into_nat(body)
+
+    def _return_narrows_into_refined(
+        self, body: ast.Expr, target_ty: Type,
+    ) -> bool:
+        """Whether a refined return slot receives a value that needs a predicate
+        obligation — the refinement analogue of
+        :py:meth:`_return_narrows_into_nat` (#1032).
+
+        The closure body is target-typed to the refined return, so consulting
+        :py:meth:`_narrows_into_refined` on the whole expression would miss a
+        join arm whose raw leaf violates the predicate.  Descend the ``Block`` /
+        ``IfExpr`` / ``MatchExpr`` join to each leaf and apply the per-value
+        refinement narrowing check there — the value narrows iff ANY leaf does,
+        exactly as the @Nat sibling folds each arm."""
+        if isinstance(body, ast.Block):
+            return (body.expr is not None
+                    and self._return_narrows_into_refined(body.expr, target_ty))
+        if isinstance(body, ast.IfExpr):
+            if body.else_branch is None:
+                return False
+            return (self._return_narrows_into_refined(
+                        body.then_branch, target_ty)
+                    or self._return_narrows_into_refined(
+                        body.else_branch, target_ty))
+        if isinstance(body, ast.MatchExpr):
+            return any(self._return_narrows_into_refined(arm.body, target_ty)
+                       for arm in body.arms)
+        return self._narrows_into_refined(body, target_ty)
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
         """True iff a statically-@Nat *value* can still be negative
