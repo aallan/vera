@@ -91,6 +91,7 @@ class WasmContext(
             dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
         ) = None,
         generic_constrained_vars: dict[str, frozenset[str]] | None = None,
+        skipped_fns: set[str] | None = None,
         ctor_to_adt: dict[str, str] | None = None,
         known_fns: set[str] | None = None,
         ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] | None = None,
@@ -163,6 +164,9 @@ class WasmContext(
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
         # Known locally-defined function names (for cross-module guard rail)
         self._known_fns: set[str] = known_fns or set()
+        # Locally-defined functions already dropped by codegen. Calls to these
+        # targets must stay source-located instead of dangling into WAT assembly.
+        self._skipped_fns: set[str] = skipped_fns or set()
         # Per-field ADT type-param indices for sparse constructors (e.g. Err → (1,))
         self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = (
             ctor_adt_tp_indices or {}

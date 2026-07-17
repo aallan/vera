@@ -139,6 +139,10 @@ class CodeGenerator(
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
+        # Function bodies that were registered but did not emit WAT. Later
+        # callers use this to produce a source-located E602 instead of a
+        # dangling call that fails during WAT assembly.
+        self._skipped_fns: set[str] = set()
         # Registered function return Vera-type expressions (#614).
         # Carries the full NamedType (with type_args) alongside the WAT
         # type kept in `_fn_sigs`, so inference paths that need to
@@ -613,6 +617,8 @@ class CodeGenerator(
 
     def compile_program(self, program: ast.Program) -> CompileResult:
         """Compile a complete Vera program to WebAssembly."""
+        self._skipped_fns.clear()
+
         # Pass 0a: reject programs with typed holes
         holes = _find_holes(program)
         if holes:
@@ -884,6 +890,10 @@ class CodeGenerator(
                                     and wfn.name in mono_base_names):
                                 continue
                             functions_wat.append(wfn_wat)
+                        else:
+                            self._skipped_fns.add(wfn.name)
+                else:
+                    self._skipped_fns.add(decl.name)
 
         # Compile monomorphized functions.
         #
@@ -925,6 +935,8 @@ class CodeGenerator(
                 compiled_mono_bases.add(orig_name)
                 if is_public:
                     exports.append(mdecl.name)
+            else:
+                self._skipped_fns.add(mdecl.name)
 
         # Pass 2.5: compile imported function bodies (C7e)
         imported_seen: set[str] = set()
@@ -955,6 +967,8 @@ class CodeGenerator(
             )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
+            else:
+                self._skipped_fns.add(idecl.name)
 
         # Pass 2.6: emit shadowed module functions under their qualified
         # ('mod$…') WASM name (#814 §8.5.3).  The plain Pass 2.5 above skips
@@ -982,6 +996,8 @@ class CodeGenerator(
             )
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
+            else:
+                self._skipped_fns.add(mangled)
 
         # #851 — all function compilation is done; any diagnostic
         # emitted from here on is module-level, not prelude-origin.

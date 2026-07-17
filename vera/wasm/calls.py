@@ -482,6 +482,12 @@ class CallsMixin:
         if call_target in self._intra_module_renames:
             call_target = self._intra_module_renames[call_target]
 
+        if call_target in self._skipped_fns:
+            raise CodegenSkip(
+                call,
+                f"call target {call_target!r} was skipped during code generation",
+            )
+
         # Guard rail: reject calls to functions not defined in this module.
         # In practice the cross-module check upstream has already emitted
         # a diagnostic for genuine unknown-fn cases.  This path also fires

@@ -238,6 +238,7 @@ class FunctionCompilationMixin:
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             generic_constrained_vars=getattr(
                 self, "_generic_constrained_vars", None),
+            skipped_fns=getattr(self, "_skipped_fns", set()),
             ctor_to_adt=ctor_to_adt,
             known_fns=set(self._fn_sigs.keys()),
             ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
@@ -600,16 +601,30 @@ class FunctionCompilationMixin:
         except CodegenSkip as skip:
             # #626 Layer 3 — structured skip with node-level span.
             self._harvest_interp_inference_failures(ctx)
-            self._warning(
-                skip.node if getattr(skip.node, "span", None) else decl,
+            diag_node = skip.node if getattr(skip.node, "span", None) else decl
+            description = (
                 f"Function '{decl.name}' body contains unsupported "
                 f"{type(skip.node).__name__}: {skip.reason} — "
-                f"function skipped.",
-                rationale="The WASM backend does not yet support all "
-                "Vera expression types. This function will not appear "
-                "in the compiled output.",
-                error_code="E602",
+                f"function skipped."
             )
+            rationale = (
+                "The WASM backend does not yet support all Vera expression "
+                "types. This function will not appear in the compiled output."
+            )
+            if "was skipped during code generation" in skip.reason:
+                self._error(
+                    diag_node,
+                    description,
+                    rationale=rationale,
+                    error_code="E602",
+                )
+            else:
+                self._warning(
+                    diag_node,
+                    description,
+                    rationale=rationale,
+                    error_code="E602",
+                )
             return None
         except RecursionError:
             # #933 belt-and-suspenders: the structural derived-helper

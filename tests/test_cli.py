@@ -739,10 +739,11 @@ class TestCmdCompile:
         err = capsys.readouterr().err
         assert len(err) > 0
 
-    # A CodegenSkip drops a function with an explanatory E602 warning; if that
-    # function has a CALLER, the caller's `call $f` then dangles and WAT
-    # assembly fails with an opaque `unknown func`.  `h` skips (`hash(@Decimal)`
-    # is unsupported in codegen), `main` calls it.  The program is check-green,
+    # A CodegenSkip drops a function with an explanatory E602 warning. If that
+    # function has a CALLER, the caller must now fail at the call site with a
+    # second E602 instead of emitting a dangling `call $f` and letting WAT
+    # assembly fail with an opaque `unknown func`. `h` skips (`hash(@Decimal)`
+    # is unsupported in codegen), `main` calls it. The program is check-green,
     # so this exercises the codegen-error branch that type/syntax errors return
     # before reaching.
     _SKIP_WITH_CALLER = (
@@ -752,25 +753,25 @@ class TestCmdCompile:
         "requires(true) ensures(true) effects(pure) { h(decimal_from_int(1)) }\n"
     )
 
-    def test_compile_skip_warning_shown_on_error_path_1004(
+    def test_compile_skipped_callee_reports_clean_call_site_diagnostic_1100(
         self,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """#1004: the E602 skip warning prints on the text error path.
+        """#1100: a caller of an E602-skipped function reports cleanly.
 
-        Before the fix, ``cmd_compile`` returned after printing only the
-        errors, dropping the E602 "function skipped" warning that explains
-        *why* ``$h`` is missing — the user saw the opaque ``unknown func``
-        alone.  The warning is in ``result.diagnostics`` (the JSON path
-        already emitted it); only the text presentation dropped it.
+        The callee's skip still prints, but the caller now emits a second E602
+        at the call site and codegen stops before WAT assembly. Users should
+        see the source-level unsupported callee, never a backend
+        ``unknown func``.
         """
         path = _bad_vera(tmp_path, self._SKIP_WITH_CALLER)
         rc = cmd_compile(path)
         assert rc == 1
         err = capsys.readouterr().err
-        assert "unknown func" in err  # the downstream error still shows
-        assert "[E602]" in err  # the E602 skip warning that explains it (#1004)
+        assert "unknown func" not in err
+        assert "[E602]" in err
+        assert "call target 'h' was skipped during code generation" in err
 
     def test_compile_skip_warning_in_json_error_output_1004(
         self,
@@ -787,7 +788,19 @@ class TestCmdCompile:
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
-        assert any(w.get("error_code") == "E602" for w in data["warnings"])
+        e602_warnings = [
+            w for w in data["warnings"] if w.get("error_code") == "E602"
+        ]
+        assert e602_warnings
+        e602_errors = [
+            d for d in data["diagnostics"] if d.get("error_code") == "E602"
+        ]
+        assert e602_errors
+        assert any(
+            "call target 'h' was skipped during code generation"
+            in d.get("description", "")
+            for d in e602_errors
+        )
 
     _TYPE_ERROR_WITH_WARNING = (
         "public fn bad(@Int -> @Int) "
