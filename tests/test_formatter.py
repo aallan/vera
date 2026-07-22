@@ -566,6 +566,32 @@ class TestCommentExtraction:
         explain = next(ln for ln in out.splitlines() if "explain the sum" in ln)
         assert explain.strip() == "-- explain the sum"
 
+    def test_own_line_comments_stay_above_contract_clauses(self) -> None:
+        """Contract comments must not move into the function body (#1136)."""
+        out = format_source(dedent("""\
+            public fn demo(@Int -> @Int)
+              -- before requires
+              requires(true)
+              ensures(true) -- after ensures
+              -- before effects
+              effects(pure)
+            {
+              @Int.0
+            }
+        """))
+        assert out.splitlines() == [
+            "public fn demo(@Int -> @Int)",
+            "  -- before requires",
+            "  requires(true)",
+            "  ensures(true)  -- after ensures",
+            "  -- before effects",
+            "  effects(pure)",
+            "{",
+            "  @Int.0",
+            "}",
+        ]
+        assert format_source(out) == out
+
     def test_unlabelled_signature_gains_no_annotation(self) -> None:
         """The negative direction — no label must mean no emitted `/* */`."""
         out = format_source(dedent("""\

@@ -284,6 +284,11 @@ def _collect_interior_anchors(node: object, anchors: list[int]) -> None:
     elif isinstance(node, HandleExpr):
         _collect_interior_anchors(node.body, anchors)
     elif isinstance(node, FnDecl):
+        for contract in node.contracts:
+            if contract.span:
+                anchors.append(contract.span.line)
+        if node.effect.span:
+            anchors.append(node.effect.span.line)
         _collect_interior_anchors(node.body, anchors)
         if node.where_fns:
             for wfn in node.where_fns:
@@ -658,10 +663,14 @@ class Formatter:
         # Contract clauses — each on its own line, indented 2 spaces
         self._indent_inc()
         for c in fn.contracts:
+            if c.span:
+                self._emit_comments(c.span.line)
             self._emit_contract(c)
             self._claim_inline(c)
 
         # Effects clause
+        if fn.effect.span:
+            self._emit_comments(fn.effect.span.line)
         self._line(f"effects({self._fmt_effect_row(fn.effect)})")
         self._claim_inline(fn.effect)
         self._indent_dec()
