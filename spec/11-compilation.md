@@ -206,6 +206,8 @@ Functions that fail any of these criteria are skipped with a diagnostic warning.
 
 A skip propagates to callers: every function that calls a skipped function — directly, transitively, or from a lifted closure body — is itself dropped from the emitted module with an `[E620]` warning naming the root skipped function and its skip location, so the module always assembles (a call to an absent function can never reach WebAssembly validation) and exported functions outside the dropped call subgraph are unaffected.
 
+Indirect calls propagate on the same rule. A closure is applied through the module's function table, which exists only while at least one closure compiles; if every closure in a program is dropped — or the program applies a closure-typed parameter while writing no closure literal at all, so no table was ever populated — a function that applies one, through `apply_fn` on a closure-typed parameter or through a monomorphized combinator, has no reachable target and is dropped with its own `[E620]`. A module therefore never contains an indirect call without a function table to dispatch on: the refusal names the construct to fix rather than deferring to a WebAssembly error at load time.
+
 ### 11.4.2 Two-Pass Compilation
 
 The code generator uses a two-pass approach:

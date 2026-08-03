@@ -21,6 +21,8 @@ from vera.codegen import (
 from vera.parser import parse_file
 from vera.transform import transform
 
+from tests.codegen_helpers import _assert_no_orphan_call_indirect
+
 
 # =====================================================================
 # Helpers
@@ -41,7 +43,13 @@ def _compile(source: str) -> CompileResult:
 
     tree = parse_file(path)
     ast = transform(tree)
-    return compile(ast, source=source, file=path)
+    result = compile(ast, source=source, file=path)
+    # #1185: this module owns a local `_compile`, so it does not inherit
+    # the gate in `tests/codegen_helpers.py` — and it is the module with
+    # the densest closure / `call_indirect` coverage, where an orphaned
+    # indirect call is likeliest to be introduced.
+    _assert_no_orphan_call_indirect(result.wat)
+    return result
 
 
 def _compile_ok(source: str) -> CompileResult:
@@ -298,7 +306,21 @@ public fn test(@Unit -> @Int)
         assert _run(src, "test") == -1
 
     def test_fn_type_param_compiles(self) -> None:
-        """A function with a function-type parameter is not skipped."""
+        """A function with a function-type parameter is not skipped.
+
+        #1185 added the closure the fixture was missing.  `apply_fn`
+        lowers to `call_indirect`, which dispatches on the module's
+        function table — and that table is emitted only when a closure
+        lift commits.  With no closure anywhere the module declared
+        neither a table nor a memory, so the export this pins could never
+        be instantiated: `execute` raised a raw wasmtime error.  The
+        fixture now contains one, which pins the property the test is
+        named for (a `@IntToInt` parameter does not itself cause a skip)
+        against output that actually loads and runs — 99 passes through
+        the identity closure, a value no fallback produces.  The
+        no-closure-anywhere shape is now a located drop, pinned in
+        `tests/test_codegen_orphan_call_indirect_1185.py`.
+        """
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
 public fn apply(@IntToInt, @Int -> @Int)
@@ -306,9 +328,21 @@ public fn apply(@IntToInt, @Int -> @Int)
 {
   apply_fn(@IntToInt.0, @Int.0)
 }
+public fn make_fn(@Unit -> @IntToInt)
+  requires(true) ensures(true) effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 }
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @IntToInt = make_fn(());
+  apply(@IntToInt.0, 99)
+}
 """
         result = _compile_ok(src)
         assert "apply" in result.exports
+        assert execute(result, fn_name="test").value == 99
 
     def test_table_in_wat(self) -> None:
         """WAT output includes a funcref table when closures are used."""

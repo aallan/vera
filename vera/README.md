@@ -129,7 +129,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  modules.py` | 1,017 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) | |
 | `  registration.py` | 479 | | Pass 1 forward declarations, ADT layout | |
 | `  monomorphize.py` | 1,369 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
-| `  functions.py` | 1,073 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `  functions.py` | 1,202 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
 | `  tail_position.py` | 106 | | Tail-position analysis for the function body compiler | |
 | `  closures.py` | 876 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 1,262 | | Runtime pre/postconditions, old state snapshots, decreases termination guard (entry check-and-set, per-function chain state, ADT rank helpers, self-tail site checks) | |

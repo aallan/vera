@@ -799,6 +799,20 @@ class FunctionCompilationMixin:
             # #922: also degrade a `CodegenSkip` (an unsupported `hash`/`show`
             # inside a closure) to a clean E602 rather than an uncaught
             # traceback, via the shared contract-predicate dispatcher.
+            # #1185 (PR #1192 review): record the failed lift here too — an
+            # escape from `_lift_pending_closures` leaves `_closure_table`
+            # empty exactly as the rolled-back `closure_failed` path below
+            # does, so the orphan-carrier blame chain must be able to select
+            # THIS function as the [E602] root; without the record, the
+            # carrier's [E620] falls back to the no-closure-in-program
+            # wording, which is false for this shape.  No check-green
+            # program reaches this branch today (a closure-body skip is
+            # caught inside `_compile_lifted_closure`, and non-Eq `==` is
+            # E243-gated in body and refinement position since #928) — it
+            # is the defensive sibling of the append below, pinned by the
+            # stubbed-lift regression in
+            # tests/test_codegen_orphan_call_indirect_1185.py.
+            self._closure_lift_skips.append(decl.name)
             self._emit_contract_predicate_degradation(ctx, exc, decl)
             return None
         except CodegenInvariantError as inv:  # #657: a closure-body invariant
@@ -810,6 +824,15 @@ class FunctionCompilationMixin:
             # behaviour) mixed the compiler-bug and user-skip signals: the
             # helper emitted [E699] AND returned None, so this path then also
             # emitted [E602].  Covered by tests/test_codegen_invariant_e699.py.
+            # #1185 (PR #1192 review, outside-diff): record the failed lift
+            # on THIS route too — the [E699] is an error, but the module is
+            # still assembled (compilation degrades, it does not abort), so
+            # the orphan-carrier blame chain runs and must be able to name
+            # this function as the root instead of falling back to the
+            # false no-closure-in-program wording.  Pinned by the
+            # `invariant_error` leg of the stubbed-lift regression in
+            # tests/test_codegen_orphan_call_indirect_1185.py.
+            self._closure_lift_skips.append(decl.name)
             self._harvest_interp_inference_failures(ctx)
             self._error(
                 inv.node if inv.node is not None else decl,
@@ -822,6 +845,12 @@ class FunctionCompilationMixin:
             )
             return None
         if closure_failed:
+            # #1185: record the rolled-back lift.  A lift that rolls back
+            # is what leaves `_closure_table` empty, and an empty table
+            # orphans every `call_indirect` elsewhere in the module — the
+            # drop-propagation pass blames this function for those
+            # carriers, so the user gets one root cause, not two.
+            self._closure_lift_skips.append(decl.name)
             self._warning(
                 decl,
                 f"Function '{decl.name}' contains a closure whose "

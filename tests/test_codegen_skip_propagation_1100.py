@@ -22,7 +22,9 @@ sibling's own body executed.
 """
 from __future__ import annotations
 
+
 from vera.codegen import CompileResult, execute
+from tests.codegen_helpers import _assert_no_raw_wat_error
 from vera.errors import Diagnostic
 
 from tests.codegen_helpers import _compile
@@ -36,20 +38,6 @@ private fn tally(-> @Int) requires(true) ensures(true) effects(pure) {
   map_size(@Map<String, Array<Int>>.0)
 }
 """
-
-
-def _assert_no_raw_wat_error(result: CompileResult) -> None:
-    """The #1100 acceptance bar: no raw wasmtime/WAT text ever surfaces."""
-    for d in result.diagnostics:
-        assert "WAT compilation failed" not in d.description, (
-            f"raw wasmtime error leaked to the user: {d.description}"
-        )
-        assert "unknown func" not in d.description, (
-            f"raw WAT symbol dump leaked to the user: {d.description}"
-        )
-    errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert not errors, f"expected a warning-only drop, got errors: {errors}"
-    assert result.wasm_bytes, "module must still assemble (minus the subgraph)"
 
 
 def _e620s(result: CompileResult) -> list[Diagnostic]:

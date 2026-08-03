@@ -799,7 +799,7 @@ ERROR_CODES: dict[str, str] = {
     "E617": "Refinement predicate not compilable to runtime guard",
     "E618": "Nested refinement base unsupported",
     "E619": "Cannot infer type argument for ability-constrained parameter",
-    "E620": "Caller of a skipped function",
+    "E620": "Function dropped: skipped callee or no function table",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

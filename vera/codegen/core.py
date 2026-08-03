@@ -61,6 +61,11 @@ if TYPE_CHECKING:
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
+# #1185: an INDIRECT call names no function symbol at all — it dispatches
+# on the module's function table — so `_WAT_CALL_RE` is blind to it and
+# the propagation needs its own probe.  Anchored at line start so a `;;`
+# comment naming the instruction can never be read as an emission.
+_WAT_CALL_INDIRECT_RE = re.compile(r"(?m)^\s*call_indirect\b")
 
 
 def _find_holes(program: ast.Program) -> list[ast.HoleExpr]:
@@ -295,6 +300,11 @@ class CodeGenerator(
         #     references its closures only via a function-table INDEX
         #     (never by `$anon_N` name), so the caller-drop scan needs
         #     this explicit construction edge.
+        #   _closure_lift_skips (#1185): WAT symbol names of the functions
+        #     `_compile_fn` dropped because their closure LIFT rolled back.
+        #     Those rollbacks are what leave `_closure_table` empty, so an
+        #     orphaned `call_indirect` elsewhere in the module is
+        #     attributed to the first of them.
         self._skipped_fn_roots: dict[str, Diagnostic | None] = {}
         self._fn_decl_by_wat_name: dict[str, ast.FnDecl] = {}
         self._closure_parents: dict[str, str] = {}
@@ -307,6 +317,10 @@ class CodeGenerator(
         # dropped" from "this entry was never written" instead of silently
         # substituting whatever export happens to be first.
         self._dropped_fn_diags: dict[str, Diagnostic | None] = {}
+        # #1185: WAT names of functions whose closure lift rolled back —
+        # the blame chain for orphaned `call_indirect` carriers when the
+        # table is suppressed (see `_drop_dangling_callers`).
+        self._closure_lift_skips: list[str] = []
         # #773: generated structural-Eq helper functions, keyed by their
         # `$eq_<type>` name → WAT text.  Accumulated across every function /
         # closure body (merged from each WasmContext) and emitted once at
@@ -536,6 +550,7 @@ class CodeGenerator(
         description: str,
         *,
         rationale: str = "",
+        spec_ref: str = "",
         error_code: str = "",
     ) -> None:
         """Record a compilation warning (function skipped)."""
@@ -545,6 +560,7 @@ class CodeGenerator(
             location=loc,
             source_line=source_line,
             rationale=rationale,
+            spec_ref=spec_ref,
             severity="warning",
             error_code=error_code,
         ))
@@ -766,6 +782,23 @@ class CodeGenerator(
         a fixed point because `doomed` only grows and is bounded by the
         node count, so call-graph cycles (mutual recursion) terminate.
 
+        **Indirect calls (#1185).**  A `call_indirect` names no symbol, so
+        the scan below cannot see it: it dispatches on the module's
+        function table, which `_assemble_module` emits only when at least
+        one closure lift committed.  When an [E602] skip swallowed a
+        module's ONLY closure the lift rolled back, the `(table)`/`(elem)`
+        sections were suppressed, and every surviving carrier — an
+        `apply_fn` on a closure-typed parameter, or a monomorphized clone
+        of a prelude combinator — kept an indirect call into a table that
+        no longer existed.  That module assembled with zero error
+        diagnostics and then failed to load with a raw
+        ``unknown table 0`` as soon as ANY unrelated export ran.  Such a
+        carrier can only ever have targeted a dropped closure, so it is
+        seeded into the same fixed point as an ordinary dangling caller
+        and dropped with its own [E620] naming the [E602] root.  Emitting
+        an empty table instead would trade a located compile-time refusal
+        for an opaque runtime trap (DESIGN.md: fail loud).
+
         Functions outside the doomed subgraph — including their exports —
         are untouched.  Mutates *exports* in place; returns the pruned
         *functions_wat*.
@@ -774,7 +807,20 @@ class CodeGenerator(
         # module — record it before the early return so a program whose
         # ONLY drop is the root still reports it.
         self._dropped_fn_diags.update(self._skipped_fn_roots)
-        if not self._skipped_fn_roots:
+        # #1185: `_needs_table` is set in the same commit block that
+        # extends `_closure_table` / `_closure_fns_wat`, so "the table is
+        # suppressed" and "no closure survived the lift" are the same
+        # condition — which also means no *closure* body can be carrying
+        # an orphaned indirect call, and scanning `functions_wat` is
+        # complete.  The cheap substring pre-check keeps the common
+        # closure-free program on the existing early-out.  The early
+        # return fires only when NEITHER mechanism has work: no skipped
+        # roots to propagate and no orphaned indirect calls to seed.
+        table_suppressed = not (self._needs_table and self._closure_table)
+        maybe_orphaned = table_suppressed and any(
+            "call_indirect" in fn_wat for fn_wat in functions_wat
+        )
+        if not self._skipped_fn_roots and not maybe_orphaned:
             return functions_wat
 
         # Node tables: WAT symbol name -> referenced symbol names, in
@@ -783,6 +829,7 @@ class CodeGenerator(
         top_names: list[str] = []       # functions_wat order
         refs_by_name: dict[str, list[str]] = {}
         closure_names: set[str] = set()
+        indirect_carriers: list[str] = []   # #1185, emission order
         for fn_wat in functions_wat:
             match = _WAT_FN_NAME_RE.match(fn_wat)
             if match is None:  # pragma: no cover — every emission is a (func
@@ -792,6 +839,8 @@ class CodeGenerator(
             refs_by_name[name] = list(
                 dict.fromkeys(_WAT_CALL_RE.findall(fn_wat))
             )
+            if maybe_orphaned and _WAT_CALL_INDIRECT_RE.search(fn_wat):
+                indirect_carriers.append(name)
         for closure_wat in self._closure_fns_wat:
             match = _WAT_FN_NAME_RE.match(closure_wat)
             if match is None:  # pragma: no cover — every lift is a (func
@@ -815,6 +864,25 @@ class CodeGenerator(
             name: name for name in self._skipped_fn_roots
         }
         direct_cause: dict[str, str] = {}
+        # #1185: seed the orphaned `call_indirect` carriers BEFORE the
+        # fixed point, so their own callers drop transitively through the
+        # ordinary `call $carrier` edge.  Every such carrier is doomed by
+        # the same absent table, and the blame is the first closure lift
+        # that rolled back — the skip that emptied it.  With no lift
+        # failure at all (a program that applies a closure-typed parameter
+        # but never writes a closure) there is no root to name, and the
+        # carrier is its own root.
+        orphaned: dict[str, None] = {}
+        if indirect_carriers:
+            blame = next(
+                (n for n in self._closure_lift_skips if n in doomed), None,
+            )
+            for name in indirect_carriers:
+                if name in doomed:
+                    continue  # already dropped for a direct-call reason
+                doomed[name] = doomed[blame] if blame is not None else None
+                root_of[name] = root_of[blame] if blame is not None else name
+                orphaned[name] = None
         changed = True
         while changed:
             changed = False
@@ -829,9 +897,19 @@ class CodeGenerator(
                 direct_cause[name] = hit
                 changed = True
 
-        dropped_tops = [n for n in top_names if n in direct_cause]
+        dropped_tops = [
+            n for n in top_names if n in direct_cause or n in orphaned
+        ]
         if not dropped_tops and not (closure_names & direct_cause.keys()):
             return functions_wat
+
+        def _where(diag: Diagnostic) -> str:
+            """Render a root diagnostic's position for an [E620] chain."""
+            at = f"line {diag.location.line}, column {diag.location.column}"
+            return (
+                at if diag.location.file == self.file
+                else f"{diag.location.file}, {at}"
+            )
 
         # Emit one [E620] per dropped top-level function, in emission
         # order.  Closures carry no separate diagnostic — the parent's
@@ -839,6 +917,52 @@ class CodeGenerator(
         for name in dropped_tops:
             decl = self._fn_decl_by_wat_name.get(name)
             if decl is None:  # pragma: no cover — tracked at every compile
+                continue
+            if name in orphaned:
+                # #1185: no callee to name — this function reaches its
+                # target through the function table, and there is no table.
+                orphan_diag = doomed[name]
+                if orphan_diag is not None:
+                    # `table_suppressed` means NO lift committed, so "no
+                    # closure survived" is exact; the named function is
+                    # one of the rolled-back lifts, not necessarily the
+                    # only one — hence the parenthetical rather than a
+                    # "because X" claim.
+                    why = (
+                        f"the module's function table is empty: no "
+                        f"closure survived codegen (function "
+                        f"'{root_of[name]}' was skipped — see the "
+                        f"[{orphan_diag.error_code}] diagnostic at "
+                        f"{_where(orphan_diag)})"
+                    )
+                else:
+                    why = (
+                        "the module declares no function table: this "
+                        "program creates no closure for it to hold"
+                    )
+                self._warning(
+                    decl,
+                    f"Function '{name}' applies a closure via "
+                    f"call_indirect, but {why} — function dropped from "
+                    f"the compiled output.",
+                    rationale="An indirect call dispatches through the "
+                    "module's function table. With no closure in the "
+                    "table, the table is not emitted and this function's "
+                    "call_indirect has no target — the module would fail "
+                    "to load with a raw WebAssembly 'unknown table' error "
+                    "naming no Vera source, on the first call to ANY "
+                    "export. It is dropped with this diagnostic instead. "
+                    "Fix the root cause at the referenced location, or "
+                    "pass this function a closure the compiler can lift, "
+                    "to restore it and its callers.",
+                    spec_ref='Chapter 11, Section 11.4.1 "Compilable Subset"',
+                    error_code="E620",
+                )
+                # #1183: the [E620] just appended IS this carrier's
+                # explanation — record it so `vera run --fn <carrier>`
+                # refuses with it instead of falling back to the
+                # silent-substitution class (PR #1192 review).
+                self._dropped_fn_diags[name] = self.diagnostics[-1]
                 continue
             cause = direct_cause[name]
             via_closure = cause in closure_names
@@ -850,13 +974,10 @@ class CodeGenerator(
             root_name = root_of[name]
             root_diag = doomed[name]
             if root_diag is not None:
-                where = f"line {root_diag.location.line}, " \
-                    f"column {root_diag.location.column}"
-                if root_diag.location.file != self.file:
-                    where = f"{root_diag.location.file}, {where}"
+                where = _where(root_diag)
                 root_part = (
                     f"which was skipped by codegen (see the "
-                    f"[{root_diag.error_code}] warning at {where})"
+                    f"[{root_diag.error_code}] diagnostic at {where})"
                 )
             else:
                 root_part = (
@@ -872,7 +993,7 @@ class CodeGenerator(
                     if root_diag is None else
                     f"function '{cause}', which was dropped because "
                     f"function '{root_name}' was skipped by codegen (see "
-                    f"the [{root_diag.error_code}] warning at {where})"
+                    f"the [{root_diag.error_code}] diagnostic at {where})"
                 )
             verb = (
                 "contains a closure that calls" if via_closure else "calls"
@@ -888,6 +1009,7 @@ class CodeGenerator(
                 "raw WebAssembly error naming a missing symbol. Fix "
                 "the root cause at the referenced location to restore "
                 "this function and its callers.",
+                spec_ref='Chapter 11, Section 11.4.1 "Compilable Subset"',
                 error_code="E620",
             )
             # #1183: the [E620] just appended IS this function's
