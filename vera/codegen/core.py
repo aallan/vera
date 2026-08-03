@@ -345,17 +345,24 @@ class CodeGenerator(
         # Maps WAT function name (without leading `$`) → (file, start_line,
         # end_line) so wasmtime trap frames can be resolved to a source
         # location at runtime.  Populated by `_register_fn` for top-level
-        # user functions and by the closure-lifting pass for `$anon_N`
+        # user functions (including monomorphized clones, registered in
+        # Pass 1.5) and by the closure-lifting pass for `$anon_N`
         # helpers; entries for prelude-injected FnDecls are removed
         # immediately after registration in `compile_program` (see the
         # post-`inject_prelude` loop) and migrated to
-        # `_prelude_fn_names`.  Monomorphized names like `identity$Int`
-        # are NOT registered explicitly — the trap-time resolver
-        # (`_resolve_trap_frames` in `vera/codegen/api.py`) strips the
-        # rightmost `$` suffix and looks up the base name, since `$`
-        # cannot appear in user-written Vera identifiers and so any
-        # `$` in a WAT name was inserted by the monomorphization
-        # mangler.  Built-in WASM helpers (`$alloc`, `$gc_collect`,
+        # `_prelude_fn_names`.  #1189: IMPORTED functions never reach this
+        # generator's `_register_fn` at all — Pass 0.5 registers each
+        # module's declarations into a throwaway `CodeGenerator` — so
+        # `_register_modules` harvests that generator's map (stamped with
+        # the MODULE's own file), and `_register_shadowed_import` mirrors
+        # the entry onto the `mod$…` name a locally-shadowed import is
+        # emitted under.  Every other mangled name — a mono clone whose
+        # own entry was dropped, say — falls back at trap time: the
+        # resolver (`_resolve_trap_frames` in `vera/runtime/traps.py`)
+        # strips the rightmost `$` suffix and looks up the base name,
+        # since `$` cannot appear in user-written Vera identifiers and so
+        # any `$` in a WAT name was inserted by the compiler's manglers.
+        # Built-in WASM helpers (`$alloc`, `$gc_collect`,
         # `$contract_fail`, `$exn_*`, `$vera.*`) never appear here at
         # all — they're emitted directly into WAT by the assembly
         # module without going through `_register_fn`, and the
@@ -1239,8 +1246,20 @@ class CodeGenerator(
             # harvested bare-name entry.  The scope keeps the registry
             # truthful rather than relying on every future consumer to
             # repeat those fallbacks.
+            # #1189: the clone's spans are its DEFINING module's coordinates,
+            # so `_register_fn` — which stamps `_fn_source_map` with
+            # `self.file` — must run under that module's source scope too.
+            # Pre-fix the clone's entry paired the importer's path with the
+            # module's line range; in the #1189 repro those coordinates named a
+            # real-but-unrelated function in the importer, so the backtrace
+            # read as correct and was not.  Same `_module_source_scope` (#1190)
+            # Pass 2.5/2.6 use, so registration and emission agree; a LOCAL
+            # clone has no recorded origin and the scope is a no-op.
             origin_path = self._mono_clone_origins.get(mdecl.name)
-            with self._module_alias_scope(origin_path):
+            with (
+                self._module_alias_scope(origin_path),
+                self._module_source_scope(origin_path),
+            ):
                 self._register_fn(mdecl)
                 if origin_path is not None:
                     # #1111 (PR #1175 review): `_register_fn` just stored

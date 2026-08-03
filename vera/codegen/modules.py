@@ -216,7 +216,18 @@ class CrossModuleMixin:
 
         # 2. Register each module in isolation
         for mod in self._resolved_modules:
-            temp = CodeGenerator(source=mod.source)
+            # #1189: hand the throwaway registrar the module's OWN file.
+            # ``_register_fn`` stamps every ``_fn_source_map`` entry with
+            # ``self.file``, so without this the harvest below would carry
+            # ``"<unknown>"`` — and the main generator, which registers only
+            # LOCAL declarations, would stamp the importer's path onto
+            # module-local coordinates.  ``ResolvedModule.file_path`` is the
+            # same attribution source ``_module_source_scope`` (#1190) reads,
+            # so the source map and the diagnostics can never disagree about
+            # which file an imported body belongs to.
+            temp = CodeGenerator(
+                source=mod.source, file=str(mod.file_path),
+            )
             temp._register_all(mod.program)
 
             # Build visibility map for this module
@@ -340,6 +351,21 @@ class CrossModuleMixin:
             # coerces the int-literal argument to i32.const.
             for fn_name, byte_params in temp._fn_byte_params.items():
                 self._fn_byte_params.setdefault(fn_name, byte_params)
+
+            # #1189: same harvest for the trap source map.  An imported body
+            # is compiled into this WASM module (Pass 2.5/2.6) and can trap at
+            # runtime, but only LOCAL declarations reach the main generator's
+            # `_register_fn` — so pre-fix an imported frame missed
+            # `fn_source_map` entirely and `_resolve_trap_frames` surfaced it
+            # as `<unknown>`.  The entries carry the MODULE's file (stamped by
+            # the `temp` generator above) with the module-local coordinates the
+            # spans already held.  `setdefault` matches the sibling harvests;
+            # Pass 1's `_register_all` later OVERWRITES any name a local also
+            # defines, which is right — the local owns the bare `$name`
+            # emission, and the module's shadowed body is emitted under
+            # `mod$…` and mirrored in `_register_shadowed_import`.
+            for fn_name, fn_loc in temp._fn_source_map.items():
+                self._fn_source_map.setdefault(fn_name, fn_loc)
 
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
@@ -663,6 +689,15 @@ class CrossModuleMixin:
             mangled, temp._fn_int_params.get(fn_name, ()))
         self._fn_byte_params.setdefault(  # #865: byte-literal coercion bitmap
             mangled, temp._fn_byte_params.get(fn_name, ()))
+        # #1189: and the trap source map, keyed on the MANGLED name.  A trap
+        # inside this emission surfaces `mod$<path>$name` in the wasmtime
+        # frame; the resolver's rightmost-`$` strip yields `mod$<path>`, which
+        # is nobody's entry, so the bare-name harvest cannot cover it and the
+        # frame resolved to `<unknown>`.  The location is the module's own
+        # (`temp` carries the module's file), unchanged by the rename.
+        fn_loc = temp._fn_source_map.get(fn_name)
+        if fn_loc is not None:
+            self._fn_source_map.setdefault(mangled, fn_loc)
         ret_te = temp._fn_ret_type_exprs.get(fn_name)
         if ret_te is not None:
             # #1111 (PR #1175 review): the shadowed door's mirror of the

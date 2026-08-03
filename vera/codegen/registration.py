@@ -79,6 +79,17 @@ class RegistrationMixin:
         # `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) never go
         # through this method at all — they're emitted directly into WAT
         # by the assembly module.
+        #
+        # #1189: `self.file` is the file the ENCLOSING generator was
+        # constructed for, so an imported declaration must be registered
+        # by a generator that already holds its module's path — Pass 0.5
+        # builds one per resolved module (`_register_modules`) and
+        # harvests its map — or under `_module_source_scope`, which swaps
+        # the field for the duration (the Pass-1.5 clone registration).
+        # Registering an imported decl on the main generator without
+        # either would pair the importer's path with module-local
+        # coordinates: a location that resolves to real but unrelated
+        # source.
         if decl.span is not None:
             self._fn_source_map[decl.name] = (
                 self.file or "<unknown>",
