@@ -962,29 +962,22 @@ class TestReservedFnName:
     functions) and E152 (built-in effects), and the same DESIGN.md "one
     canonical form" / fail-loud rule.
 
-    **Why the set is exactly** ``{old, new}``.  Every candidate below was
-    probed by declaring ``private fn <name>(@Int -> @Int)`` and then calling
+    **Where the state-form piece sits.**  Every candidate below was probed by
+    declaring ``private fn <name>(@Int -> @Int)`` and then calling
     ``<name>(3)`` from ``main``:
 
     * ``old``, ``new`` — declaration accepted, call rejected (E030 / E031).
-      Reserved here.
+      Reserved here, as ``_STATE_FORM_FN_NAMES``.
     * ``resume``, ``throw``, ``with``, ``in``, ``effect``, ``op``, ``data``,
       ``type``, ``import``, ``public``, ``private``, ``requires``,
       ``ensures``, ``effects``, ``decreases``, ``where``, ``then``, ``else``,
       ``pure``, ``invariant`` — declaration *and* call both accepted.  Not
       reserved; nothing is wrong with them.
-    * ``assert``, ``assume``, ``forall``, ``exists``, ``handle``, ``match``,
-      ``if``, ``let``, ``fn``, ``true``, ``false`` — Lark's contextual lexer
-      re-lexes these keywords as ``LOWER_IDENT`` in declaration position, so
-      they declare fine, and a bare ``<name>(3)`` does not parse as a call
-      either.  They are deliberately **not** in the set: ``handle`` disproves
-      "uncallable from expression position" as a sufficient criterion on its
-      own, because ``public fn handle(@Request -> @Response)`` is the
-      ``vera serve`` entry point (spec §9.5.6, ``examples/http_server.vera``)
-      — invoked by the host, never from Vera source, and entirely legitimate.
-      Banning keywords as function names is a separate, broader rule that
-      would need its own carve-outs; #1181 is about the two names the
-      *contract state forms* reserve.
+    * ``assert``, ``assume``, ``forall``, ``exists``, ``match``, ``if``,
+      ``let``, ``fn``, ``true``, ``false`` — the keyword class, reserved by
+      #1187 as ``_KEYWORD_FN_NAMES``; ``handle`` is carved back out as a
+      host-invoked entry point.  :class:`TestReservedKeywordFnName` below
+      owns that half of the gate.
     """
 
     @staticmethod
@@ -1208,6 +1201,269 @@ effect Renamer {
 }
 """)
         assert exc.value.diagnostic.error_code == "E030"
+
+
+# =====================================================================
+# Reserved keyword function names (E153) — #1187
+# =====================================================================
+
+
+class TestReservedKeywordFnName:
+    """A ``fn`` named after a grammar keyword is rejected (E153, #1187).
+
+    Lark's contextual lexer re-lexes each of these keywords as
+    ``LOWER_IDENT`` in *declaration* position, so ``private fn match(...)``
+    declares happily.  None of them can be written in *expression* position:
+    a bare ``match(3)`` fails to parse (``[E005]``), and ``assert(3)`` /
+    ``assume(3)`` are read as the statement forms and collide
+    (``[E121]`` + ``[E172]``/``[E173]``).  Every one is therefore a
+    declarable trap, and #1187 refuses it at the declaration — the same
+    one-canonical-form rule as ``old``/``new`` (E153, #1181), E151 (built-in
+    functions) and E152 (built-in effects).
+
+    **Probe record** (run against the pre-#1187 tree, one row per name,
+    ``private fn <name>(@Int -> @Int)`` plus ``<name>(3)`` in ``main``):
+
+    * ``assert``, ``assume`` — declaration accepted, bare call reaches the
+      statement form and fails ``[E121]`` + ``[E172]``/``[E173]``.
+    * ``forall``, ``exists``, ``match``, ``if``, ``let``, ``fn``, ``true``,
+      ``false``, ``handle`` — declaration accepted, bare call ``[E005]``
+      (does not parse as a call at all).
+    * A module-qualified ``mod::<name>(5)`` type-checked **and ran** for
+      every one of the eleven (``vera run`` printed 6 for ``match``) —
+      exactly the half-usable-cross-module shape #1181 found for ``old``.
+      Reserving the name closes it deliberately; see
+      ``test_module_qualified_keyword_call_route_is_closed``.
+    * ``op <name>(...)`` inside an ``effect`` block does *not* parse
+      (``[E005]``), so no effect-operation carve-out is needed; pinned by
+      ``test_effect_op_named_match_never_reaches_the_gate``.
+
+    ``handle`` is the one carve-out: ``public fn handle(@Request ->
+    @Response)`` is the host-invoked ``vera serve`` / ``wasi:http`` entry
+    point (spec §9.5.6), called by the host rather than from Vera source, so
+    "uncallable from expression position" does not make it dead code.  It
+    lives in a named ``_HOST_INVOKED_FN_NAMES`` set subtracted from the
+    reservation, pinned by ``test_handle_stays_legal``.
+    """
+
+    #: Every keyword the reservation covers (``handle`` deliberately absent).
+    KEYWORDS = (
+        "assert", "assume", "forall", "exists", "match",
+        "if", "let", "fn", "true", "false",
+    )
+
+    @staticmethod
+    def _codes(errs: list[Diagnostic]) -> list[str]:
+        return [e.error_code for e in errs]
+
+    @pytest.mark.parametrize("name", KEYWORDS)
+    def test_keyword_fn_name_is_E153(self, name: str) -> None:
+        """Each reserved keyword is refused at the declaration site."""
+        errs = _errors(f"""
+public fn {name}(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{{ 5 }}
+""")
+        assert "E153" in self._codes(errs), (name, self._codes(errs))
+        diag = next(e for e in errs if e.error_code == "E153")
+        assert name in diag.description, diag.description
+        assert "reserved" in diag.description.lower(), diag.description
+        # Instructional on the keyword branch too (check_diagnostic_fields).
+        assert diag.rationale and diag.fix and diag.spec_ref
+        assert "Chapter 5" in diag.spec_ref, diag.spec_ref
+        assert "rename" in diag.fix.lower(), diag.fix
+
+    @pytest.mark.parametrize("name", KEYWORDS)
+    def test_private_keyword_fn_name_is_E153(self, name: str) -> None:
+        """Visibility-independent, as the ``old``/``new`` branch is."""
+        errs = _errors(f"""
+private fn {name}(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{{ 5 }}
+""")
+        assert "E153" in self._codes(errs), (name, self._codes(errs))
+
+    def test_keyword_rationale_is_not_the_state_form_rationale(self) -> None:
+        """The two branches explain themselves differently.
+
+        ``old``/``new`` are reserved because they are *contract state forms*;
+        a keyword is reserved because the grammar claims the spelling in
+        expression position.  Reusing the state-form wording for ``match``
+        would tell the reader a falsehood about why their program is wrong,
+        so pin that the keyword branch says neither.
+        """
+        kw = next(
+            e for e in _errors("""
+public fn match(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+""") if e.error_code == "E153"
+        )
+        assert "state form" not in kw.rationale.lower(), kw.rationale
+        assert "keyword" in kw.rationale.lower(), kw.rationale
+        # And the old/new branch keeps its own explanation.
+        state = next(
+            e for e in _errors("""
+public fn old(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 5 }
+""") if e.error_code == "E153"
+        )
+        assert "state form" in state.rationale.lower(), state.rationale
+
+    def test_handle_stays_legal(self) -> None:
+        """``handle`` is carved out — CRITICAL positive control.
+
+        ``public fn handle(@Request -> @Response)`` is the ``vera serve`` /
+        ``wasi:http`` entry point (spec §9.5.6), invoked by the *host*, so it
+        is legitimate despite being uncallable from Vera source.  This is the
+        shape of ``examples/http_server.vera`` and
+        ``tests/conformance/ch09_http_server.vera``; if the reservation ever
+        swallows it, both break and `vera serve` loses its entry point.
+        """
+        errs = _errors("""
+public fn handle(@Request -> @Response)
+  requires(true) ensures(true) effects(<HttpServer>)
+{
+  match @Request.0 {
+    Request(@String, @String, @Map<String, String>, @String) ->
+      Response(200, map_new(), @String.0)
+  }
+}
+""")
+        assert self._codes(errs) == [], self._codes(errs)
+
+    def test_where_helper_named_match_is_E153(self) -> None:
+        """The where-helper recursion covers keywords too.
+
+        A helper is called in expression position exactly like a top-level
+        function, so ``match(...)`` in the parent body hits the same grammar
+        wall one scope deeper.  Inherited from the set-driven gate; pinned so
+        a future refactor that splits the branches cannot drop it.
+        """
+        errs = _errors("""
+public fn caller(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ @Int.0 }
+where {
+  fn match(@Int -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { 5 }
+}
+""")
+        assert "E153" in self._codes(errs), self._codes(errs)
+
+    def test_keyword_E153_is_the_only_diagnostic(self) -> None:
+        """The rejection must not cascade into secondary errors."""
+        errs = _errors("""
+public fn match(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{ 5 }
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+        codes = self._codes(errs)
+        assert "E153" in codes, codes
+        assert [c for c in codes if c != "E153"] == [], codes
+
+    def test_names_merely_beginning_with_a_keyword_are_allowed(self) -> None:
+        """Whole-identifier matching, not prefix matching.
+
+        The grammar reserves the exact tokens only, so ``matched(3)`` and
+        friends parse as ordinary calls and must stay legal — a naive
+        ``startswith`` would break every one of them.
+        """
+        for name in ("matched", "iffy", "letter", "asserting", "forall2",
+                     "existsp", "fnord", "truthy", "falsey", "assumed",
+                     "handler"):
+            errs = _errors(f"""
+public fn {name}(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(pure)
+{{ 5 }}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ {name}(3) }}
+""")
+            assert self._codes(errs) == [], (name, self._codes(errs))
+
+    def test_imported_module_fn_named_match_is_E153(self) -> None:
+        """A module declaring ``fn match`` surfaces E153 into its importer,
+        carrying the *module's* file path — same mechanism as E151/E152 and
+        the ``old``/``new`` branch."""
+        mod_src = (
+            "module lexy;\n"
+            "public fn match(@Int -> @Int)\n"
+            "  requires(true) ensures(@Int.result >= 0) effects(pure)\n"
+            "{ 5 }\n"
+        )
+        mod = _resolved_module(("lexy",), mod_src)
+        prog = parse_to_ast(
+            "import lexy;\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        codes = [d.error_code for d in diags]
+        assert "E153" in codes, codes
+        e153 = next(d for d in diags if d.error_code == "E153")
+        assert e153.location.file == str(mod.file_path), e153.location.file
+
+    def test_module_qualified_keyword_call_route_is_closed(self) -> None:
+        """E153 fires even where a qualified call site proved reachability.
+
+        Probed on the pre-#1187 tree: this exact program — module export
+        named ``match``, importer calling ``lexy::match(5)`` — type-checked
+        AND ran, printing 6.  The qualified route parses through the
+        module-call rule rather than any keyword rule, so "no program can
+        reach it" was false for module exports, exactly as #1181 found for
+        ``old``.  The reservation closes the route deliberately (breaking for
+        such an export) and the breakage is loud and located at the module's
+        declaration.
+        """
+        mod_src = (
+            "module lexy;\n"
+            "public fn match(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 + 1 }\n"
+        )
+        mod = _resolved_module(("lexy",), mod_src)
+        prog = parse_to_ast(
+            "import lexy;\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ lexy::match(5) }\n"
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        codes = [d.error_code for d in diags]
+        assert "E153" in codes, codes
+        e153 = next(d for d in diags if d.error_code == "E153")
+        assert e153.location.file == str(mod.file_path), e153.location.file
+
+    @pytest.mark.parametrize("name", [*KEYWORDS, "handle"])
+    def test_effect_op_named_match_never_reaches_the_gate(
+        self, name: str,
+    ) -> None:
+        """Boundary pin: ``op <keyword>(...)`` is refused by the grammar.
+
+        The contextual lexer admits a keyword as a ``fn`` name but not as an
+        ``op`` name, so ``op match(@Int -> @Int)`` fails at parse with
+        ``[E005]`` and the gate — which covers ``fn`` declarations only —
+        never has to see it.  ``handle`` is included: its carve-out is for
+        ``fn`` declarations, and does not (and need not) extend to ``op``.
+        Pinned so a grammar change admitting the ``op`` spelling shows up as
+        a failure to widen the gate rather than a silent reopening.
+        """
+        with pytest.raises(ParseError) as exc:
+            parse_to_ast(f"""
+effect Renamer {{
+  op {name}(@Int -> @Int)
+}}
+""")
+        assert exc.value.diagnostic.error_code == "E005"
 
 
 # =====================================================================

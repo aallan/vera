@@ -1,0 +1,23 @@
+-- Conformance: a keyword is not available as a function name (Chapter 5, Section 5.2)
+-- Tests: E153 — a user fn named after a grammar keyword is rejected at its
+-- declaration (#1187).  Lark's contextual lexer re-lexes `match` as an
+-- identifier after `fn`, so the declaration parses; in a body `match` is
+-- always the keyword, so `match(3)` fails to parse (E005) and this function
+-- could never be called.  Rejecting the declaration refuses the dead code at
+-- its source.  `handle` is carved out — it is the host-invoked `vera serve`
+-- entry point (Chapter 9, Section 9.5.6).
+public fn match(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  5
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

@@ -935,6 +935,20 @@
     ]
   },
   {
+    "id": "ch05_reserved_keyword_fn_rejected",
+    "file": "ch05_reserved_keyword_fn_rejected.vera",
+    "chapter": 5,
+    "title": "A function named after a grammar keyword is a checker error (#1187)",
+    "level": "check",
+    "spec_ref": "Section 5.2",
+    "expected_error": "E153",
+    "features": [
+      "reserved_fn_name",
+      "function_declaration",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch06_requires",
     "file": "ch06_requires.vera",
     "chapter": 6,

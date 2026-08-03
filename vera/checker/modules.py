@@ -62,9 +62,10 @@ class ModulesMixin:
             # on the same grounds — the block is invisible to codegen, which
             # routes the qualified call to the host import regardless, so an
             # unchecked module would miscompile the importer.
-            # #1181: E153 (a module fn named after a contract state form)
-            # likewise — a module imported but never checked standalone would
-            # otherwise carry a declaration no importer could ever call.
+            # #1181/#1187: E153 (a module fn named after a contract state form
+            # or a grammar keyword) likewise — a module imported but never
+            # checked standalone would otherwise carry a declaration no
+            # importer could ever bare-call.
             self.errors.extend(
                 e for e in temp.errors
                 if e.error_code in ("E151", "E152", "E153", "E154")

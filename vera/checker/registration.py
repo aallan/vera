@@ -70,29 +70,50 @@ def builtin_effect_names() -> frozenset[str]:
 
 
 # Identifiers the grammar reserves in *expression* position, so a call to a
-# same-named function can never parse (E153, #1181).  ``old_expr`` and
-# ``new_expr`` in ``vera/grammar.lark`` claim ``"old" "("`` and ``"new" "("``
-# for the contract state forms, and each demands an *effect reference* as its
-# argument: ``old(5)`` is diagnosed as a malformed state reference
-# (``[E030]``/``[E031]``, #1173), never resolved as a call.  A *bare* call can
-# therefore never reach such a function — not from its own file, not from a
-# sibling in its own module, not from an importer.  One route did reach it:
-# a module-qualified ``mod::old(...)`` parses through the module-call rule,
-# not the state-form rule, so a module export named ``old`` was previously
-# callable cross-module (and only cross-module).  The reservation closes that
-# route deliberately: a name that is a trap in every unqualified position is
-# reserved outright rather than left half-usable, the same one-canonical-form
-# rule as E151/E152.
+# same-named function can never parse (E153).  A function under one of them is
+# a declarable trap: it declares cleanly and no bare call site can reach it.
+# The reservation refuses the mistake at its source rather than letting it
+# surface later as a call-site error, the same one-canonical-form rule as E151
+# (built-in functions) and E152 (built-in effects).
 #
-# The set is exactly the two contract state forms, and deliberately not every
-# keyword the contextual lexer lets through as a function name (``assert``,
-# ``assume``, ``forall``, ``exists``, ``handle``, ``match``, ``if``, ``let``,
-# ``fn``, ``true``, ``false``).  Being uncallable from expression position is
-# not on its own grounds for rejection: a function can be an *entry point* the
-# host invokes rather than Vera source — ``public fn handle(@Request ->
-# @Response)`` is the ``vera serve`` handler (spec §9.5.6).  Widening the rule
-# to keywords is a separate decision that needs its own carve-outs.
-_RESERVED_FN_NAMES = frozenset({"old", "new"})
+# The set is assembled from three named pieces so a future addition joins the
+# right one deliberately.
+
+# 1. The two contract state forms (#1181).  ``old_expr`` and ``new_expr`` in
+# ``vera/grammar.lark`` claim ``"old" "("`` and ``"new" "("``, and each demands
+# an *effect reference* as its argument: ``old(5)`` is diagnosed as a malformed
+# state reference (``[E030]``/``[E031]``, #1173), never resolved as a call.
+_STATE_FORM_FN_NAMES = frozenset({"old", "new"})
+
+# 2. The keywords Lark's *contextual* lexer re-lexes as ``LOWER_IDENT`` in
+# declaration position (#1187).  Each declares fine and none can be written in
+# expression position: a bare ``match(3)`` does not parse at all (``[E005]``),
+# and ``assert(3)`` / ``assume(3)`` are read as the statement forms and collide
+# (``[E121]`` + ``[E172]``/``[E173]``).  Keywords the lexer does *not* admit as
+# a function name (``resume``, ``with``, ``effect``, ``data``, …) need no entry
+# here — the parser already refuses those declarations.
+_KEYWORD_FN_NAMES = frozenset({
+    "assert", "assume", "forall", "exists", "match",
+    "if", "let", "fn", "true", "false", "handle",
+})
+
+# 3. The carve-out: names a *host* invokes rather than Vera source, so being
+# uncallable from expression position does not make them dead code.
+# ``public fn handle(@Request -> @Response)`` is the ``vera serve`` /
+# ``wasi:http`` entry point (spec §9.5.6, ``examples/http_server.vera``).  A
+# future host-invoked entry point joins this set — deliberately, with the same
+# justification — rather than being dropped from the keyword list above.
+_HOST_INVOKED_FN_NAMES = frozenset({"handle"})
+
+# One route did reach a reserved name before it was reserved: a module-qualified
+# ``mod::old(...)`` / ``mod::match(...)`` parses through the module-call rule
+# rather than any reserved rule, so a module export under one of these names was
+# callable cross-module (and only cross-module).  The reservation closes that
+# route deliberately — a name that is a trap in every unqualified position is
+# reserved outright rather than left half-usable.
+_RESERVED_FN_NAMES = (
+    (_STATE_FORM_FN_NAMES | _KEYWORD_FN_NAMES) - _HOST_INVOKED_FN_NAMES
+)
 
 
 def _strip_rejected_where_fns(decl: ast.FnDecl) -> ast.FnDecl:
@@ -138,10 +159,11 @@ class RegistrationMixin:
                     fix=f"private {kind} {name}(...) or public {kind} {name}(...)",
                     spec_ref='Chapter 8, Section 8.4 "Visibility"',
                 )
-            # #1181: a fn named after a contract state form (`old` / `new`)
-            # could never be called, because the grammar claims those spellings
-            # in expression position.  Checked before the E151 gate and without
-            # affecting its control flow, so the two rules stay independent.
+            # #1181/#1187: a fn named after a contract state form (`old` /
+            # `new`) or a grammar keyword (`match`, `let`, …) could never be
+            # called, because the grammar claims those spellings in expression
+            # position.  Checked before the E151 gate and without affecting its
+            # control flow, so the two rules stay independent.
             if isinstance(tld.decl, ast.FnDecl):
                 self._check_reserved_fn_name(tld.decl)
             # #815: redefining a built-in is a one-canonical-form violation
@@ -287,11 +309,16 @@ class RegistrationMixin:
 
     def _check_reserved_fn_name(self, decl: ast.FnDecl) -> None:
         """Emit E153 if ``decl`` — or a nested where-helper — is named after a
-        contract state form (#1181).
+        contract state form (#1181) or a grammar keyword (#1187).
 
         Recurses into ``where_fns``: a helper is called in expression position
-        exactly like a top-level function, so a helper named ``old`` is
-        unreachable for the same reason, one scope deeper.
+        exactly like a top-level function, so a helper named ``old`` or
+        ``match`` is unreachable for the same reason, one scope deeper.
+
+        The rationale branches on which piece of :data:`_RESERVED_FN_NAMES`
+        the name came from — the two are reserved for different reasons, and
+        telling a reader that ``match`` is a "contract state form" would be
+        false.  The fix is the same on both branches: rename.
 
         The rejected declaration is still registered, unlike E151's.  There is
         no canonical built-in for the name to shadow here — nothing can resolve
@@ -300,10 +327,8 @@ class RegistrationMixin:
         """
         if decl.name in _RESERVED_FN_NAMES:
             n = decl.name
-            self._error(
-                decl,
-                f"Function name '{n}' is reserved.",
-                rationale=(
+            if n in _STATE_FORM_FN_NAMES:
+                rationale = (
                     f"'{n}' is a contract state form, not an ordinary "
                     f"identifier: the grammar reads '{n}(' in expression "
                     f"position as a reference to an effect's "
@@ -313,15 +338,45 @@ class RegistrationMixin:
                     f"resolves to a function, so this declaration could not "
                     f"be reached from anywhere in the program — it is dead "
                     f"code the compiler would otherwise accept in silence."
-                ),
-                fix=(
+                )
+                fix = (
                     f"Rename the function to an identifier that is not a "
                     f"contract state form (e.g. '{n}_value' or "
                     f"'{'previous' if n == 'old' else 'updated'}') and "
                     f"update its call sites. Only the exact spellings 'old' "
                     f"and 'new' are reserved — 'older' and 'renew' are "
                     f"ordinary function names."
-                ),
+                )
+            else:
+                rationale = (
+                    f"'{n}' is a keyword the grammar reserves in expression "
+                    f"position, not an ordinary identifier. The declaration "
+                    f"parses only because the lexer reads '{n}' as a name "
+                    f"after 'fn'; in a body '{n}' is always lexed as the "
+                    f"keyword, so '{n}(...)' does not parse as a call and "
+                    f"never resolves to a function. This declaration could "
+                    f"not be reached from anywhere in the program — it is "
+                    f"dead code the compiler would otherwise accept in "
+                    f"silence. Vera provides exactly one way to express each "
+                    f"construct, so a keyword names that construct and "
+                    f"nothing else."
+                )
+                fix = (
+                    f"Rename the function to an identifier that is not a "
+                    f"keyword — '{n}_fn', or better a name describing what "
+                    f"it computes — and update its call sites. The "
+                    f"reservation is on the whole identifier, so a longer "
+                    f"name that merely begins with '{n}' (such as "
+                    f"'{n}_value') is an ordinary function name. 'handle' is "
+                    f"the one keyword still available, because 'vera serve' "
+                    f"invokes 'handle(@Request -> @Response)' from the host "
+                    f"rather than from Vera source."
+                )
+            self._error(
+                decl,
+                f"Function name '{n}' is reserved.",
+                rationale=rationale,
+                fix=fix,
                 spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
                 error_code="E153",
             )

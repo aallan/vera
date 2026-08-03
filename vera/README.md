@@ -80,7 +80,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | 952 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 419 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 180 | | Cross-module registration (C7b/C7c) | |
-| `  registration.py` | 597 | | Pass 1 forward declarations, ability registration | |
+| `  registration.py` | 717 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 1,335 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 199 | | Eq ability derivation checks | |
 | `  sql.py` | 308 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
