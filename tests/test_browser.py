@@ -188,6 +188,43 @@ def _run_node(
     return json.loads(proc.stdout)
 
 
+def _both_stdouts(src: str, tmp_path: Path, name: str = "parity") -> tuple[str, str]:
+    """Compile ``src`` ONCE, run the same ``.wasm`` under wasmtime and Node,
+    and return ``(native_stdout, browser_stdout)`` without comparing them.
+
+    Because both runtimes execute identical module bytes, any divergence
+    isolates a host import in ``vera/browser/runtime.mjs`` — the module
+    itself cannot be at fault.  Used directly only by the cases that pin a
+    *known* divergence as two explicit strings; everything else goes
+    through :func:`_parity_stdout`.
+    """
+    src_path = tmp_path / f"{name}.vera"
+    src_path.write_text(src, encoding="utf-8")
+    wasm_path, result = _compile_file(src_path, tmp_path)
+    py_out = _run_python(result).stdout
+    node = _run_node(wasm_path)
+    assert not node.get("error"), (
+        f"Node harness reported error: {node.get('error')!r}"
+    )
+    return str(py_out), str(node["stdout"])
+
+
+def _parity_stdout(src: str, tmp_path: Path, name: str = "parity") -> str:
+    """Compile ``src`` ONCE, run it under both runtimes, assert byte-identical
+    stdout, and return the (shared) value.
+
+    Mirrors the private helper in ``TestBrowserDecimalExact856``, hoisted to
+    module scope so the #349 coverage classes below can share it.
+    """
+    py_out, node_out = _both_stdouts(src, tmp_path, name)
+    assert node_out == py_out, (
+        "Browser↔native divergence:\n"
+        f"  Python (wasmtime): {py_out!r}\n"
+        f"  Node   (browser):  {node_out!r}"
+    )
+    return py_out
+
+
 # ---------------------------------------------------------------------------
 # Examples with main — parametric stdout parity
 # ---------------------------------------------------------------------------
@@ -3066,3 +3103,644 @@ public fn main(-> @Int)
         wasm_path, _ = _compile_vera(src, tmp_path)
         result = _run_node(wasm_path, fn="main")
         assert result["value"] == 0
+
+
+# ---------------------------------------------------------------------------
+# #349 — targeted browser-runtime coverage
+# ---------------------------------------------------------------------------
+#
+# Baseline for this block was 81.74% line coverage on
+# ``vera/browser/runtime.mjs`` (2700/3303, measured with
+# ``VERA_JS_COVERAGE=1 pytest tests/test_browser.py``).  The classes below
+# aim at the specific host imports the c8 report showed as *registered but
+# never invoked* — their closure bodies had zero hits:
+#
+#   * ``map_get`` / ``map_size`` / ``map_values`` / ``mapAllocArrayOfStrings``
+#   * ``rebuildWithout`` (the shared ``map_remove`` / ``set_remove`` rebuild)
+#   * ``set_to_array``
+#   * ``readJson`` (every ADT tag) and ``json_stringify``
+#   * several ``decParse`` / ``decRoundPlaces`` / ``decDiv`` branches
+#   * the ``Result.Err`` arms of the Regex and Json host bindings
+#
+# Every case compiles ONE ``.wasm`` and runs it under both runtimes, so a
+# failure isolates ``runtime.mjs`` rather than codegen.
+
+# (id, value type, first value, second value, unwrap_or fallback,
+#  expression template rendering the value as a String, expected head)
+#
+# Fallbacks are deliberately chosen NOT to equal the value being read back,
+# so a ``map_get`` that wrongly returned ``None`` would change the output
+# instead of coinciding with the right answer.
+_MAP_VALUE_CASES = [
+    ("int", "Int", "10", "20", "0", "int_to_string({})", "20"),
+    ("float64", "Float64", "1.5", "2.25", "0.0",
+     "float_to_string({})", "2.25"),
+    ("string", "String", '"x"', '"y"', '"?"', "{}", "y"),
+    ("bool", "Bool", "true", "false", "true", "bool_to_string({})", "false"),
+]
+
+# (id, key type, first key, second key, lookup key)
+_MAP_KEY_CASES = [
+    ("int", "Int", "7", "8", "8"),
+    ("float64", "Float64", "1.5", "2.5", "2.5"),
+    ("string", "String", '"a"', '"b"', '"b"'),
+    ("bool", "Bool", "true", "false", "false"),
+]
+
+# (id, element type, first element, second element)
+_SET_ELEMENT_CASES = [
+    ("string", "String", '"x"', '"y"'),
+    ("int", "Int", "1", "2"),
+    ("float64", "Float64", "1.5", "2.5"),
+    ("bool", "Bool", "true", "false"),
+]
+
+# (id, JSON input as written in Vera source, expected browser
+#  json_stringify output).  One case per Json ADT tag, plus nesting.
+_JSON_TAG_CASES = [
+    ("jnull", "null", "null"),
+    ("jbool_true", "true", "true"),
+    ("jbool_false", "false", "false"),
+    ("jnumber", "3.5", "3.5"),
+    ("jstring", '\\"hi\\"', '"hi"'),
+    ("jarray", "[1,2,3]", "[1,2,3]"),
+    ("jobject", '{\\"a\\":1}', '{"a":1}'),
+    (
+        "nested",
+        '{\\"a\\":{\\"b\\":[1,{\\"c\\":null}]},\\"d\\":[true,\\"x\\"]}',
+        '{"a":{"b":[1,{"c":null}]},"d":[true,"x"]}',
+    ),
+    ("array_of_objects", '[{\\"k\\":1},{\\"k\\":2}]', '[{"k":1},{"k":2}]'),
+    ("empty_array", "[]", "[]"),
+    ("empty_object", "{}", "{}"),
+]
+
+
+class TestBrowserMapValueTypes349:
+    """Per-value-type and per-key-type Map host-import parity (#349).
+
+    ``runtime.mjs`` dispatches Map bindings on a mangled
+    ``map_insert$k<kt>_v<vt>`` suffix and decodes each bucket column with
+    a type tag (``i`` i64, ``f`` f64, ``s`` String, else i32).  The
+    existing suite only ever drove String→Int maps, so the f64 slot
+    writer, the String-array emitter, and the ``map_get`` / ``map_size``
+    / ``map_values`` closures were never invoked in the browser.
+    """
+
+    @pytest.mark.parametrize(
+        ("case_id", "vtype", "va", "vb", "fallback", "show", "head"),
+        _MAP_VALUE_CASES,
+        ids=[c[0] for c in _MAP_VALUE_CASES],
+    )
+    def test_map_value_type_variants(
+        self,
+        case_id: str,
+        vtype: str,
+        va: str,
+        vb: str,
+        fallback: str,
+        show: str,
+        head: str,
+        tmp_path: Path,
+    ) -> None:
+        """String-keyed Map carrying each supported value type, driven
+        through get / size / values / keys / remove in one program."""
+        mt = f"@Map<String, {vtype}>"
+        got = show.format(f"option_unwrap_or(map_get({mt}.0, \"b\"), {fallback})")
+        src = f"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  let {mt} = map_insert(map_insert(map_new(), "a", {va}), "b", {vb});
+  let @String = {got};
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(map_size({mt}.0))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(array_length(map_values({mt}.0)))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(array_length(map_keys({mt}.0)))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(map_size(map_remove({mt}.0, "a")))));
+  IO.print(@String.0)
+}}
+"""
+        out = _parity_stdout(src, tmp_path, f"map_v_{case_id}")
+        assert out == f"{head}|2|2|2|1"
+
+    @pytest.mark.parametrize(
+        ("case_id", "ktype", "ka", "kb", "lookup"),
+        _MAP_KEY_CASES,
+        ids=[c[0] for c in _MAP_KEY_CASES],
+    )
+    def test_map_key_type_variants(
+        self,
+        case_id: str,
+        ktype: str,
+        ka: str,
+        kb: str,
+        lookup: str,
+        tmp_path: Path,
+    ) -> None:
+        """Each supported key type through get / contains / keys / remove.
+
+        ``map_keys`` is what routes an i64 / f64 / i32 / String key column
+        into ``emitArray``; the String arm is the only caller of
+        ``mapAllocArrayOfStrings``.
+        """
+        mt = f"@Map<{ktype}, Int>"
+        src = f"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  let {mt} = map_insert(map_insert(map_new(), {ka}, 10), {kb}, 20);
+  let @String = int_to_string(
+    option_unwrap_or(map_get({mt}.0, {lookup}), 0));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(array_length(map_keys({mt}.0)))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(map_size(map_remove({mt}.0, {lookup})))));
+  let @String = if map_contains({mt}.0, {lookup}) then {{
+    string_concat(@String.0, "|yes")
+  }} else {{
+    string_concat(@String.0, "|no")
+  }};
+  IO.print(@String.0)
+}}
+"""
+        out = _parity_stdout(src, tmp_path, f"map_k_{case_id}")
+        assert out == "20|2|1|yes"
+
+
+class TestBrowserSetElementTypes349:
+    """Per-element-type Set host-import parity (#349).
+
+    ``set_to_array`` and the ``set_remove`` structural rebuild
+    (``rebuildWithout``, shared with ``map_remove``) had no browser-side
+    caller at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("case_id", "etype", "ea", "eb"),
+        _SET_ELEMENT_CASES,
+        ids=[c[0] for c in _SET_ELEMENT_CASES],
+    )
+    def test_set_element_type_variants(
+        self,
+        case_id: str,
+        etype: str,
+        ea: str,
+        eb: str,
+        tmp_path: Path,
+    ) -> None:
+        st = f"@Set<{etype}>"
+        src = f"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  let {st} = set_add(set_add(set_new(), {ea}), {eb});
+  let @String = int_to_string(array_length(set_to_array({st}.0)));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(set_size({st}.0))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(set_size(set_remove({st}.0, {ea})))));
+  let @String = string_concat(@String.0,
+    string_concat("|", int_to_string(
+      array_length(set_to_array(set_remove({st}.0, {ea}))))));
+  let @String = if set_contains(set_remove({st}.0, {ea}), {eb}) then {{
+    string_concat(@String.0, "|yes")
+  }} else {{
+    string_concat(@String.0, "|no")
+  }};
+  IO.print(@String.0)
+}}
+"""
+        out = _parity_stdout(src, tmp_path, f"set_{case_id}")
+        assert out == "2|2|1|1|yes"
+
+    def test_set_add_duplicate_dedups_in_browser(self, tmp_path: Path) -> None:
+        """Int elements stay BigInt end-to-end so the JS ``Set`` dedups
+        consistently with the i64 round trip (the comment above the Set
+        bindings in ``runtime.mjs`` calls this out explicitly)."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Set<Int> = set_add(set_add(set_add(set_new(), 5), 5), 6);
+  IO.print(string_concat(
+    int_to_string(set_size(@Set<Int>.0)),
+    string_concat("|", int_to_string(array_length(set_to_array(@Set<Int>.0))))))
+}
+"""
+        assert _parity_stdout(src, tmp_path, "set_dup") == "2|2"
+
+
+class TestBrowserDecimalBranches349:
+    """Decimal branches the #856 suite left cold (#349).
+
+    ``TestBrowserDecimalExact856`` pinned the headline arithmetic; the
+    c8 report still showed the exact-zero sign rule in ``decAdd``, the
+    negative-shift arm of ``decDiv``, two ``decRoundPlaces`` special
+    cases, the exponential arm of ``pyFloatRepr``, ``decimalAlloc``
+    (non-finite storage) and ``decimal_to_float`` with zero hits.
+    """
+
+    _PRELUDE = """
+private fn d(@String -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(decimal_from_string(@String.0), decimal_from_int(0))
+}
+"""
+
+    def test_exact_zero_sum_sign_and_round_special_cases(
+        self, tmp_path: Path,
+    ) -> None:
+        """Six branches in one program:
+
+        ``1 + -1`` takes ``decAdd``'s exact-zero arm with a positive
+        result; ``-0 + -0`` takes the same arm with the both-negative
+        rule that yields ``-0``.  ``round(0, 2)`` hits the zero
+        short-circuit in ``decRoundPlaces``; ``round(1E+30, 2)`` hits
+        the InvalidOperation fall-through that returns the operand
+        unchanged.  ``decimal_to_float`` had no caller at all.
+        """
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_add(d("1"), d("-1")));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_add(d("-0"), d("-0")))));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_round(d("0"), 2))));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_round(d("1E+30"), 2))));
+  let @String = string_concat(@String.0, string_concat("|",
+    float_to_string(decimal_to_float(d("1.5")))));
+  IO.print(@String.0)
+}
+"""
+        out = _parity_stdout(src, tmp_path, "dec_branches")
+        assert out == "0|-0|0.00|1E+30|1.5"
+
+    def test_div_negative_shift_amount(self, tmp_path: Path) -> None:
+        """``decDiv`` computes ``shiftAmt = digits(b) - digits(a) + 29``
+        and only takes its ``else`` arm when the dividend has ~30 more
+        digits than the divisor.  36 digits over 1 gives ``shiftAmt =
+        -6``, so the divisor is scaled up instead of the dividend.
+        """
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match decimal_div(d("123456789012345678901234567890123456"), d("7")) {
+    Some(@Decimal) -> IO.print(decimal_to_string(@Decimal.0)),
+    None -> IO.print("none")
+  }
+}
+"""
+        out = _parity_stdout(src, tmp_path, "dec_div_shift")
+        assert out == "1.763668414462081127160493827E+34"
+
+    def test_from_float_exponential_and_non_finite(
+        self, tmp_path: Path,
+    ) -> None:
+        """``pyFloatRepr`` ports Python's float ``repr`` so
+        ``decimal_from_float`` matches ``Decimal(str(v))`` byte for byte.
+        Magnitudes outside ``1e-4 .. 1e16`` take its exponential arm;
+        NaN / ±Infinity are stored verbatim through ``decimalAlloc``
+        (the only caller), which ``decimalAllocVal`` would mangle.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = decimal_to_string(decimal_from_float(0.0000000001));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_from_float(100000000000000000000.0))));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_from_float(nan()))));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_from_float(infinity()))));
+  let @String = string_concat(@String.0, string_concat("|",
+    decimal_to_string(decimal_from_float(0.0 - infinity()))));
+  IO.print(@String.0)
+}
+"""
+        out = _parity_stdout(src, tmp_path, "dec_from_float")
+        assert out == "1E-10|1E+20|NaN|Infinity|-Infinity"
+
+
+_JSON_ROUND_TRIP_PRELUDE = """
+private fn round_trip(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse(@String.0) {
+    Ok(@Json) -> json_stringify(@Json.0),
+    Err(@String) -> string_concat("ERR:", @String.0)
+  }
+}
+"""
+
+
+class TestBrowserJsonRoundTrip349:
+    """``readJson`` / ``json_stringify`` coverage (#349).
+
+    ``json_parse`` was exercised (``writeJson`` builds the ADT), but
+    nothing in the suite ever called ``json_stringify``, so the whole of
+    ``readJson`` — all six ADT tags including the ``decodeMap``-backed
+    JObject arm — never ran in the browser.
+
+    These are Node-only assertions rather than parity assertions
+    because ``json_stringify`` genuinely diverges between the two hosts;
+    see :meth:`TestBrowserJsonStringifyParity349.test_number_and_spacing`
+    for the pinned divergence.  Pinning the browser side still catches a
+    regression in ``readJson``'s tag decoding, which is what was
+    uncovered.
+    """
+
+    @staticmethod
+    def _node_stdout(src: str, tmp_path: Path, name: str) -> str:
+        src_path = tmp_path / f"{name}.vera"
+        src_path.write_text(src, encoding="utf-8")
+        wasm_path, _ = _compile_file(src_path, tmp_path)
+        node = _run_node(wasm_path)
+        assert not node.get("error"), (
+            f"Node harness reported error: {node.get('error')!r}"
+        )
+        return str(node["stdout"])
+
+    @pytest.mark.parametrize(
+        ("case_id", "json_text", "expected"),
+        _JSON_TAG_CASES,
+        ids=[c[0] for c in _JSON_TAG_CASES],
+    )
+    def test_json_stringify_tag_round_trip(
+        self, case_id: str, json_text: str, expected: str, tmp_path: Path,
+    ) -> None:
+        src = _JSON_ROUND_TRIP_PRELUDE + f"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  IO.print(round_trip("{json_text}"))
+}}
+"""
+        assert self._node_stdout(src, tmp_path, f"json_{case_id}") == expected
+
+
+class TestBrowserJsonStringifyParity349:
+    """``json_stringify`` does NOT match the native runtime (#349 finding).
+
+    The Python host calls ``json.dumps(value, ensure_ascii=False,
+    allow_nan=False)`` — default ``", "`` / ``": "`` separators, and
+    ``read_json`` hands it Python ``float``\\ s so an integral JNumber
+    renders as ``1.0``.  The browser host calls bare
+    ``JSON.stringify(value)`` — no separator padding, and JS renders an
+    integral ``Number`` as ``1``.
+
+    Every other Json binding is byte-identical across the two runtimes;
+    this one is not, and nothing in the suite noticed because
+    ``json_stringify`` had no browser-side caller until #349 added one.
+
+    Both sides are pinned as exact strings rather than marked ``xfail``:
+    a bare ``xfail`` accepts *any* failure, so a broken compile, a dead
+    Node harness or an unrelated ``runtime.mjs`` regression would all
+    read as "yes, the known divergence" and this — the only browser-side
+    coverage of ``json_stringify`` — would stay green through a real
+    regression.  Pinning both outputs tolerates exactly the documented
+    difference and nothing else; fixing ``runtime.mjs`` fails the browser
+    assertion, which is the prompt to collapse the two into one.
+    """
+
+    def test_number_and_spacing(self, tmp_path: Path) -> None:
+        src = _JSON_ROUND_TRIP_PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(round_trip("[1,2]"))
+}
+"""
+        native, browser = _both_stdouts(src, tmp_path, "json_parity")
+        assert native == "[1.0, 2.0]"
+        # Known divergence, deliberately not fixed on a tests-only branch:
+        # bare JSON.stringify gives compact separators and integral numbers.
+        assert browser == "[1,2]"
+
+
+class TestBrowserHostErrorPaths349:
+    """``Result.Err`` arms of the Regex / Json / IO host bindings (#349).
+
+    Each of these ``catch`` blocks and browser stubs was dead in the
+    coverage report.  The Err *message* text differs between the two
+    hosts (Python ``re`` / ``json`` vs JS ``RegExp`` / ``JSON``), so the
+    parity cases assert only on which arm was taken — never on the
+    message.
+    """
+
+    _PRELUDE = """
+private fn find_no_match(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match regex_find("abc", "z+") {
+    Ok(@Option<String>) -> match @Option<String>.0 {
+      Some(@String) -> "some",
+      None -> "nomatch"
+    },
+    Err(@String) -> "err"
+  }
+}
+
+private fn find_bad_pattern(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match regex_find("abc", "[") {
+    Ok(@Option<String>) -> "ok",
+    Err(@String) -> "err"
+  }
+}
+
+private fn find_all_bad_pattern(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match regex_find_all("abc", "[") {
+    Ok(@Array<String>) -> "ok",
+    Err(@String) -> "err"
+  }
+}
+
+private fn replace_bad_pattern(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match regex_replace("abc", "[", "x") {
+    Ok(@String) -> "ok",
+    Err(@String) -> "err"
+  }
+}
+
+private fn parse_bad_json(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{not json") {
+    Ok(@Json) -> "ok",
+    Err(@String) -> "err"
+  }
+}
+"""
+
+    def test_regex_and_json_err_arms(self, tmp_path: Path) -> None:
+        """An unterminated character class ``[`` is rejected by both
+        ``re.compile`` and ``new RegExp``, so all three Regex bindings
+        take their ``invalid regex:`` catch; ``json_parse`` of malformed
+        text takes its ``JSON.parse`` catch.  ``regex_find`` with a
+        non-matching pattern also pins the ``allocOptionNone`` arm,
+        which is a separate uncovered branch from the error path.
+        """
+        src = self._PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = find_no_match(());
+  let @String = string_concat(@String.0,
+    string_concat("|", find_bad_pattern(())));
+  let @String = string_concat(@String.0,
+    string_concat("|", find_all_bad_pattern(())));
+  let @String = string_concat(@String.0,
+    string_concat("|", replace_bad_pattern(())));
+  let @String = string_concat(@String.0,
+    string_concat("|", parse_bad_json(())));
+  IO.print(@String.0)
+}
+"""
+        out = _parity_stdout(src, tmp_path, "err_arms")
+        assert out == "nomatch|err|err|err|err"
+
+    def test_read_file_is_err_stub_in_browser(self, tmp_path: Path) -> None:
+        """``IO.read_file`` has no browser implementation, so
+        ``hostReadFile`` returns ``Err('File I/O not available in
+        browser')``.  Node-only: the native runtime really does read the
+        file, so this is a deliberate non-parity path (it is why
+        ``file_io`` is excluded from ``EXAMPLES_WITH_MAIN``).
+        """
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_file("nonexistent.txt") {
+    Ok(@String) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wasm_path, _ = _compile_vera(src, tmp_path)
+        result = _run_node(wasm_path, fn="main")
+        assert result["value"] == 0
+
+    def test_read_char_is_err_stub_in_browser(self, tmp_path: Path) -> None:
+        """``IO.read_char`` needs JSPI suspend/resume (#609, #618); until
+        that lands ``hostReadChar`` is an ``Err`` stub, so a program
+        using it links and runs rather than failing to instantiate.
+        """
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wasm_path, _ = _compile_vera(src, tmp_path)
+        result = _run_node(wasm_path, fn="main")
+        assert result["value"] == 0
+
+
+class TestBrowserMarkdownNesting349:
+    """Nested-block Markdown walks in the browser runtime (#349).
+
+    Three loops were uncovered: the per-list-item lazy-continuation
+    loop in ``parseBlocks`` (once for unordered, once for ordered
+    lists), and the recursive ``child.forEach`` descents in
+    ``hasHeading`` / ``hasCodeBlock`` / ``extractCodeBlocks``, which only
+    run when a heading or fence is nested inside another block.
+    ``examples/markdown.vera`` is flat, so none of them ever ran.
+
+    Node-only, because ``md_render`` diverges on exactly this input —
+    see :class:`TestBrowserMarkdownRenderParity349`.  The predicate and
+    extraction assertions below *are* host-agnostic and do match the
+    native runtime.
+    """
+
+    # A blockquote wrapping an h2 and a fenced block, so the recursive
+    # descents have something to descend into.
+    _SRC = r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match md_parse("- first\n  continued\n- second\n\n1. one\n   also one\n2. two\n\n> ## Quoted\n>\n> ```py\n> x = 1\n> ```\n") {
+    Ok(@MdBlock) -> IO.print(string_concat(md_render(@MdBlock.0),
+      string_concat("|",
+      string_concat(bool_to_string(md_has_heading(@MdBlock.0, 2)),
+      string_concat("|",
+      string_concat(bool_to_string(md_has_code_block(@MdBlock.0, "py")),
+      string_concat("|",
+      int_to_string(array_length(
+        md_extract_code_blocks(@MdBlock.0, "py")))))))))),
+    Err(@String) -> IO.print(string_concat("ERR:", @String.0))
+  }
+}
+"""
+
+    def test_nested_walks_and_list_continuations(self, tmp_path: Path) -> None:
+        src_path = tmp_path / "md_nesting.vera"
+        src_path.write_text(self._SRC, encoding="utf-8")
+        wasm_path, _ = _compile_file(src_path, tmp_path)
+        node = _run_node(wasm_path)
+        assert not node.get("error"), (
+            f"Node harness reported error: {node.get('error')!r}"
+        )
+        rendered, has_h2, has_py, n_blocks = str(node["stdout"]).rsplit("|", 3)
+        # Continuation lines survived the per-item loop in both list kinds.
+        assert "continued" in rendered
+        assert "also one" in rendered
+        # Recursive descents found the h2 and the fence inside the quote.
+        assert (has_h2, has_py, n_blocks) == ("true", "true", "1")
+
+
+class TestBrowserMarkdownRenderParity349:
+    """``md_render`` diverges from the native runtime on lazy
+    continuation lines (#349 finding).
+
+    Native joins a list item's continuation onto the item ("- first
+    continued"); the browser keeps the newline and emits the
+    continuation as its own line.  The same input also drops the
+    ``> `` prefix from a fenced line inside a blockquote in the browser
+    but not natively.
+
+    ``examples/markdown.vera`` is flat enough to miss both, and nothing
+    else rendered Markdown under Node, so the divergence has never been
+    caught.
+
+    Both sides are pinned as exact strings rather than marked ``xfail``
+    for the same reason as ``TestBrowserJsonStringifyParity349``: a bare
+    ``xfail`` would swallow a compile failure, a dead Node harness or an
+    unrelated ``runtime.mjs`` regression, and this is the only
+    browser-side coverage of ``md_render``.
+    """
+
+    def test_lazy_continuation(self, tmp_path: Path) -> None:
+        src = r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match md_parse("- first\n  continued\n") {
+    Ok(@MdBlock) -> IO.print(md_render(@MdBlock.0)),
+    Err(@String) -> IO.print(string_concat("ERR:", @String.0))
+  }
+}
+"""
+        native, browser = _both_stdouts(src, tmp_path, "md_parity")
+        assert native == "- first continued"
+        # Known divergence, deliberately not fixed on a tests-only branch:
+        # the browser's parseBlocks keeps the continuation as its own line.
+        assert browser == "- first\ncontinued"
