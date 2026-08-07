@@ -76,7 +76,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `prelude.py` | 927 | Type check | Standard prelude — built-in ADT and combinator injection | `inject_prelude()`, `overridable_builtin_names()` |
 | `slots.py` | 289 | Type check | Slot reference table for `vera check --explain-slots` | `slot_table()`, `slot_ref_name()` |
 | `environment.py` | 2,167 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
-| `checker/` | 5,948 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `checker/` | 6,599 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
 | `  core.py` | 952 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 419 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 180 | | Cross-module registration (C7b/C7c) | |
