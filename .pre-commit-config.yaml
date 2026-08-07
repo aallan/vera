@@ -132,6 +132,19 @@ repos:
         pass_filenames: false
         files: '(\.md$|vera/environment\.py$|vera/prelude\.py$)'
 
+      # #1156 — fails when an editor grammar under editors/ omits a built-in
+      # effect name.  The grammars enumerate them by hand and drifted four
+      # effects behind the registry silently (an unknown capitalised name just
+      # falls through to the generic type rule), so nothing failed when adding
+      # an effect skipped them.  Triggered by the effect registry as well as
+      # the grammars, since a new effect is what puts them out of date.
+      - id: editor-grammars
+        name: editor grammars
+        entry: .venv/bin/python scripts/check_editor_grammars.py
+        language: system
+        pass_filenames: false
+        files: '(editors/.*|vera/environment\.py$|vera/introspect\.py$|scripts/check_editor_grammars\.py$)'
+
       # Layer 1 of #626 — fails when any compile of an example or
       # conformance program emits [E602] (body unsupported) or
       # [E604] (param unsupported) outside the explicit allowlist

@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-9,037 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+9,052 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -151,7 +151,7 @@ Beyond the staged sprints — grouped by arc, each pulled forward by its trigger
 Not stage-gated; advanced alongside whatever stage is active.
 
 - **VeraBench** ([vera-bench](https://github.com/aallan/vera-bench)) — the suite is its own thread; the compiler-side pass@k re-run is staged as Stage 23's measurement ([#225](https://github.com/aallan/vera/issues/225)).
-- **CI, process, and tooling** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch, [#1126](https://github.com/aallan/vera/issues/1126) z3-solver 5.0 bake period, then re-run the obligation differential, [#1103](https://github.com/aallan/vera/issues/1103) migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow, [#1156](https://github.com/aallan/vera/issues/1156) gate the editor grammars against `vera effects --json` (vscode and textmate are four effects behind; no grammar knows the abilities).
+- **CI, process, and tooling** — [#386](https://github.com/aallan/vera/issues/386) Hypothesis round-trip properties (bookmark), [#712](https://github.com/aallan/vera/issues/712) Codecov → Harness migration watch, [#753](https://github.com/aallan/vera/issues/753) pygls / Python 3.16 watch, [#1126](https://github.com/aallan/vera/issues/1126) z3-solver 5.0 bake period, then re-run the obligation differential, [#1103](https://github.com/aallan/vera/issues/1103) migrate GitHub Pages off legacy branch-deploy to a self-owned Actions workflow.
 
 ## Not doing now
 

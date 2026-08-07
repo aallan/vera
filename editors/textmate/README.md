@@ -24,7 +24,7 @@ The grammar covers the full Vera language as of v0.0.169.
 
 **Contract blocks** — `requires`, `ensures`, `effects`, `decreases`, and `invariant` — are scoped separately from control flow keywords (`keyword.contract` vs `keyword.control`), so they can be themed independently.
 
-**Effects** — built-in effects (`IO`, `State`, `Exn`, `Http`, `Async`, `Diverge`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
+**Effects** — built-in effects (`IO`, `State`, `Exn`, `Http`, `HttpServer`, `Async`, `Diverge`, `Inference`, `Random`, `DB`) are recognised as `entity.name.type.effect`. Qualified operation calls like `IO.print` and `Exn.throw` are decomposed into effect name, accessor, and operation name.
 
 **Other language features:**
 

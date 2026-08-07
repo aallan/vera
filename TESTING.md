@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 9,037 across 137 files (~108,000 lines of test code; 8,904 passed + 26 stress, 107 skipped) |
+| **Tests** | 9,052 across 138 files (~108,000 lines of test code; 8,919 passed + 26 stress, 107 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 179 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 42, all validated through `vera check` + `vera verify` |
@@ -185,6 +185,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_check_changelog_updated.py` | 68 | 712 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths, and `GIT_*`-env hermeticity of the temp-repo fixtures (regression for the pre-commit-hook env leak) |
 | `test_release.py` | 47 | 566 | Release policy and registry verification (#481): strict project-name and version parsing/comparison, version-bump/TestPyPI/recovery planning, exact confirmation and immutable-tag guards, first-parent version-introduction discovery, package-change recovery refusal, non-empty CHANGELOG extraction, one-wheel/one-sdist SHA-256 manifests, malformed registry-response handling, missing/filename/hash propagation retries, exact filename/hash verification, and CLI dispatch/GitHub-output wiring.  An autouse fixture scrubs hook-exported `GIT_*` variables so the tmp-repo git calls (fixture helpers and `release.py`'s own) never resolve to the developer's repository when the suite runs inside a pre-commit hook. |
 | `test_check_doc_counts.py` | 19 | 187 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows, the #419 empty-section sentinel + its cannot-mask-a-malformed-table dual) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
+| `test_check_editor_grammars.py` | 15 | 122 | `check_editor_grammars.py` gate ([#1156](https://github.com/aallan/vera/issues/1156)): the registry read (every effect in, every ability out, and the four names the grammars actually drifted on present so the set checked is non-vacuous), the word-boundary presence test across all three grammar formats (JSON, plist XML, Vim keyword list) including the prefix pair `Http`/`HttpServer` in both directions, the deliberate comment-mention false pass, a metacharacter pair that only passes when the name is matched literally (`A.B` present, `A0B` not), and the empty registry; plus the completeness guard — a grammar discovered under `editors/` but absent from `GRAMMARS` fails a mirrored tree that is otherwise clean — and the shipped grammars are currently clean |
 | `test_check_explicit_encoding.py` | 54 | 254 | `check_explicit_encoding.py` gate (#645): flags text-mode `open()` / `read_text()` / `write_text()` **and** `subprocess.run/Popen/check_output(..., text=True)` captures missing an `encoding="utf-8"` literal (rejects non-literal / non-UTF-8 values), skips binary/bytes-mode calls, honours the `# encoding-exempt` opt-out, and asserts the shipped repo is clean |
 | `test_check_limitations_sync.py` | 6 | 108 | `check_limitations_sync.py` section extraction: table-rows-only issue harvesting, prose-link exemption, bounding at the next second-level heading, `None` for absent or sub-level headings so renamed sections fail loudly; plus the #852 fail-loud rule: an UNKNOWN issue state under `--check-states` (gh missing / auth failure / timeout) is an error, never a silent pass |
 | `test_doc_annotations.py` | 23 | 340 | `scripts/doc_annotations.py` — the inline `vera:skip-<stage>` fence-annotation reader and shared `run_parse_only_gate` used by the doc-block gates ([#538](https://github.com/aallan/vera/issues/538)): markdown/HTML scanning (annotation attached to the following fence / `<pre>`, stacked directives), hard problems (malformed, dangling incl. EOF, duplicate-stage, unknown-stage, unterminated fence / unclosed `<pre>`; prose mentions without comment syntax are fine), the gate round-trip semantics via `evaluate_block` (unannotated failure fails, annotated failure skips, annotated PASS is a stale annotation, skip-check still runs parse first and stops the pipeline), unsupported-stage detection for parse-only gates, and `strip_annotations` (annotation lines removed, other HTML comments survive) |
@@ -683,7 +684,7 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Twenty-two scripts in `scripts/` validate cross-cutting concerns beyond unit tests (one of them — `build_site.py` — generates rather than checks; the doc-block gates share the fence-annotation reader `scripts/doc_annotations.py`, a helper module rather than a gate):
+Twenty-four scripts in `scripts/` validate cross-cutting concerns beyond unit tests (one of them — `build_site.py` — generates rather than checks; the doc-block gates share the fence-annotation reader `scripts/doc_annotations.py`, a helper module rather than a gate):
 
 | Script | What it validates |
 |--------|-------------------|
@@ -707,6 +708,7 @@ Twenty-two scripts in `scripts/` validate cross-cutting concerns beyond unit tes
 | `check_diagnostic_fields.py` | Every diagnostic in `vera/` carries rationale + spec_ref, and errors also a `fix` (warnings exempt); every present spec_ref resolves to a real spec section; every literal `error_code` is registered in `ERROR_CODES` (#828); `# diag-fields-exempt: <reason>` waives missing/unresolvable fields only — never a wrong-but-resolving spec_ref or an unregistered error_code (#682, #955) |
 | `check_e602_clean.py` | No unexpected E602/E604 silent-skip sites outside the explicit allowlist |
 | `check_doc_builtin_shadowing.py` | No documentation example defines a function named after an opaque verifier-modelled built-in (would fail `vera check` with E151); the `spec/09` signature reference is exempt ([#819](https://github.com/aallan/vera/issues/819)) |
+| `check_editor_grammars.py` | Every editor grammar under `editors/` (vscode, TextMate, Vim) carries every built-in effect name from the live registry.  Word-boundary presence: absence is conclusive, presence is optimistic — the observed failure is omission.  A completeness guard fails any grammar discovered under `editors/` that the checked list doesn't name ([#1156](https://github.com/aallan/vera/issues/1156)) |
 | `check_wheel_availability.py` | Every runtime dependency ships wheels for all supported platforms |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
 | `build_site.py` | Regenerates the AI-readable site assets that `check_site_assets.py` verifies |
@@ -776,7 +778,7 @@ Per `spec/00-introduction.md` §0.5.8: fields MAY be added (consumers MUST toler
 
 ## Pre-commit Hooks
 
-Every push is checked by 32 configured hooks across two stages: 30 are configured at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) are configured at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:
+The repository configures 33 hooks across two stages: 31 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) run at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:
 
 | Hook | What it does |
 |------|-------------|
@@ -801,6 +803,7 @@ Every push is checked by 32 configured hooks across two stages: 30 are configure
 | `check_pypi_readme_examples.py` | PYPI_README.md code blocks parse, check, and verify |
 | `check_html_examples.py` | HTML landing page code blocks pass parse + check + verify |
 | `check_doc_builtin_shadowing.py` | No doc example defines a function named after an opaque built-in (would fail `vera check` with E151); `spec/09` signature reference exempt ([#819](https://github.com/aallan/vera/issues/819)) |
+| `check_editor_grammars.py` | Every editor grammar under `editors/` carries every built-in effect name from the live registry ([#1156](https://github.com/aallan/vera/issues/1156)) |
 | `check_e602_clean.py` | No unexpected `[E602]` (body unsupported) / `[E604]` (param unsupported) silent skips outside the explicit allowlist (Layer 1 of [#626](https://github.com/aallan/vera/issues/626)) |
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_walker_coverage.py` | Every walker function covers every `Expr` subclass via dispatch or checklist comment (#597) |
@@ -813,7 +816,7 @@ Every push is checked by 32 configured hooks across two stages: 30 are configure
 | `check-changelog-updated` (pre-push) | CHANGELOG has a new entry when substantive files changed |
 | `uv-lock-check` (pre-push) | `uv.lock` is in sync with `pyproject.toml` |
 
-The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity). The two pre-push hooks only fire at push time.
+The validation hooks are smart about triggers -- each fires only when files matching its own `files:` pattern in `.pre-commit-config.yaml` change, so that file is the authority on any given hook's trigger set. The common patterns are `.vera` sources, `vera/**/*.py`, `grammar.lark`, and the Markdown file a doc gate reads; narrower ones exist too, such as `editors/*` for the editor-grammar gate and `vera/browser/*` for browser parity. The two pre-push hooks only fire at push time.
 
 ## Scheduled limitations sync
 
