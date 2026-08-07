@@ -249,7 +249,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 9,037 tests, including a 179-program conformance suite
+- 9,043 tests, including a 179-program conformance suite
 - 42 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
@@ -257,7 +257,7 @@ The reference compiler is under active development. The current release includes
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
 - Built-in `<Http>`, `<HttpServer>`, `<Inference>`, `<DB>`, `<State>`, `<IO>`, `<Async>`, `<Random>`, `<Diverge>`, and `Exn<T>` (typed exception) effects
-- `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), or Mistral via env vars
+- `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), Mistral, or Grok (xAI) via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types
 - Cross-module imports with contract verification at call sites

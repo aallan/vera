@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-9,037 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+9,043 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -64,7 +64,6 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 | [#372](https://github.com/aallan/vera/issues/372) | Inference: user-defined `handle[Inference]` handlers — mocking, caching, routing. |
 | [#373](https://github.com/aallan/vera/issues/373) | Host-import `Array<Float64>` returns (`alloc_result_ok_float_array`) — the infrastructure #371 needs. |
 | [#371](https://github.com/aallan/vera/issues/371) | `Inference.embed` — vector embeddings, unblocked by #373. |
-| [#425](https://github.com/aallan/vera/issues/425) | Provider: xAI Grok. |
 | [#450](https://github.com/aallan/vera/issues/450) | Provider: DeepSeek V3/R1. |
 | [#451](https://github.com/aallan/vera/issues/451) | Provider: Google Gemini. |
 | [#380](https://github.com/aallan/vera/issues/380) | Example: handler mocking for Inference (unblocked by #372). |

@@ -88,7 +88,7 @@ public fn research_topic(@String -> @Result<String, String>)
 }
 ```
 
-Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral, xAI) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
 
 ```vera
 public fn find_user(@String -> @Result<Array<Array<Option<String>>>, String>)
@@ -185,7 +185,7 @@ Full source and data: [https://github.com/aallan/vera-bench](https://github.com/
 - **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
 - **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/) plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.
 - **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
-- **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot, Mistral.
+- **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, host-backed. Anthropic, OpenAI, Moonshot, Mistral, xAI.
 - **Typed stdlib** — JSON, HTML, Markdown, HTTP, Regex, Decimal — built-in ADTs with parse/query/serialize.
 - **Async / Future<T>** — Futures carry an `<Async>` effect and compose with the rest of the effect system.
 - **Verified HTTP handlers** — An `<HttpServer>` effect marks a total `handle(Request -> Response)`. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. `vera serve` runs it.
