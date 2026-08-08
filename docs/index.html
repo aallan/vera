@@ -363,7 +363,7 @@
 }</pre>
         </div>
         <aside class="aside">
-          <strong>Effects compose.</strong> <code>&lt;Http, Inference&gt;</code> is the row &mdash; both must be permitted. <code>Inference</code> auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+          <strong>Effects compose.</strong> <code>&lt;Http, Inference&gt;</code> is the row &mdash; both must be permitted. <code>Inference</code> auto-detects the provider (Anthropic, OpenAI, Moonshot, Mistral, xAI) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
         </aside>
       </div>
 
@@ -538,7 +538,7 @@
         <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a> plus runtime fallback, shipped; the Z3-guided middle tier is specified, not yet implemented.</div></div>
         <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
-        <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot, Mistral.</div></div>
+        <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, host-backed. Anthropic, OpenAI, Moonshot, Mistral, xAI.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
         <div class="ref-item"><div class="title">Async / Future&lt;T&gt;</div><div class="desc">Futures carry an <code>&lt;Async&gt;</code> effect and compose with the rest of the effect system.</div></div>
         <div class="ref-item"><div class="title">Verified HTTP handlers</div><div class="desc">An <code>&lt;HttpServer&gt;</code> effect marks a total <code>handle(Request -&gt; Response)</code>. The accept loop lives in the host, so every handler contract is an ordinary proof obligation. <code>vera serve</code> runs it.</div></div>

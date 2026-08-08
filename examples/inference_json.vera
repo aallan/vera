@@ -9,6 +9,7 @@
 --   VERA_OPENAI_API_KEY=sk-...       vera run examples/inference_json.vera
 --   VERA_MOONSHOT_API_KEY=sk-...     vera run examples/inference_json.vera
 --   VERA_MISTRAL_API_KEY=sk-...      vera run examples/inference_json.vera
+--   VERA_XAI_API_KEY=sk-...          vera run examples/inference_json.vera
 -- Clamp an arbitrary model-provided score to the documented range.  This
 -- postcondition is discharged at Tier 1, independently of the LLM response.
 private fn normalize_score(@Int -> @Int)

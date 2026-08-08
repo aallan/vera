@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 9,037 across 137 files (~108,000 lines of test code; 8,904 passed + 26 stress, 107 skipped) |
+| **Tests** | 9,043 across 137 files (~108,000 lines of test code; 8,910 passed + 26 stress, 107 skipped) |
 | **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 179 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 42, all validated through `vera check` + `vera verify` |
@@ -132,7 +132,7 @@ python scripts/check_wheel_availability.py           # pre-flight: every runtime
 | `test_codegen_collections.py` | 69 | 1,131 | Map + Set collections (#62), wrapper-handle bit-31 tagging (#578) (#419 split) |
 | `test_codegen_json.py` | 59 | 984 | Json collection, typed accessors (#419 split) |
 | `test_codegen_decimal.py` | 57 | 779 | Decimal collection, Decimal monomorphization (#419 split) |
-| `test_codegen_host_effects.py` | 58 | 964 | Html/Http/Inference host effects, provider dispatch, postcondition host-import propagation (#823) (#419 split) |
+| `test_codegen_host_effects.py` | 64 | 1,028 | Html/Http/Inference host effects, provider dispatch, postcondition host-import propagation (#823) (#419 split) |
 | `test_codegen_nat_guards.py` | 54 | 1,325 | **`@Nat` runtime guards**: subtraction underflow (#520) and binding-site narrowing (#552 let site; #747 tuple-destructure / match-bind / ADT sub-pattern / ctor-field / call-arg sites; #758 per-leaf function-return guards incl. type-alias returns and TCO preservation on mixed-arm tails — `i64.lt_s; unreachable` net, `@Int` targets exempt) (#419 split); #758 `@Int -> @Nat` return-position guard; #983 review adds alias-aware return gates (`type Count = Nat` narrow, `type MyInt = Int` widen), the alias-to-refinement single-guard exclusion, and the per-narrowing-leaf emission that keeps a non-narrowing `@Nat -> @Nat` recursive tail call's `return_call` (TCO) intact |
 | `test_codegen_translator_fixes.py` | 27 | 528 | WASM call-translator regression fixes (#475): string/array slice clamps, char-code bounds, URL/base64/parse edge cases, map-array-value rejection (#419 split) |
 | `test_codegen_gc_alloc.py` | 39 | 892 | Layout helpers, bump allocator, GC core (#515), shadow-stack overflow, multi-page grow (#487), worklist overflow (#348) (#419 split) |

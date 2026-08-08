@@ -60,6 +60,16 @@ _PROVIDERS: dict[str, _ProviderConfig] = {
         auth_style="bearer",
         response_style="openai",
     ),
+    # New providers append here: insertion order is the auto-detect
+    # precedence, so prepending would change which key wins when
+    # several are set.
+    "xai": _ProviderConfig(
+        env_key="VERA_XAI_API_KEY",
+        url="https://api.x.ai/v1/chat/completions",
+        default_model="grok-4.3",
+        auth_style="bearer",
+        response_style="openai",
+    ),
 }
 
 

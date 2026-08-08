@@ -4,6 +4,7 @@ Split from tests/test_codegen.py (#419). Shared helpers live in tests/codegen_he
 """
 from __future__ import annotations
 
+import pytest
 
 from vera.codegen import (
     execute,
@@ -823,6 +824,69 @@ class TestInferenceProviderDispatch:
         ) as mock_provider:
             execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
             assert mock_provider.call_args[0][0] == "mistral"
+
+    def test_xai_provider(self) -> None:
+        """xAI branch uses correct endpoint, default model, OpenAI-compatible format."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from vera.runtime.inference import _call_inference_provider
+
+        body = json.dumps({"choices": [{"message": {"content": "grok"}}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = _call_inference_provider("xai", "prompt", "", "sk-xai")
+        assert result == "grok"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.x.ai/v1/chat/completions"
+        # Bearer auth (OpenAI-compatible), not Anthropic-style key header
+        assert req.get_header("Authorization") == "Bearer sk-xai"
+        assert req.get_header("X-api-key") is None
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == "grok-4.3"
+        # The exact turn list, not just the key: a presence check stays green
+        # with the role flipped, the content dropped, or the list emptied.
+        assert sent_body["messages"] == [{"role": "user", "content": "prompt"}]
+        # OpenAI-compatible body carries no Anthropic "max_tokens"
+        assert "max_tokens" not in sent_body
+
+    def test_xai_auto_detect(self) -> None:
+        """xAI key auto-detected when no other keys are set."""
+        from unittest.mock import patch
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.runtime.inference._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={"VERA_XAI_API_KEY": "sk-xai-test"})
+            assert mock_provider.call_args[0][0] == "xai"
+
+    #: Every provider that precedes xai in the registry, listed literally
+    #: rather than sliced out of _PROVIDERS: derived order would shrink to
+    #: match a relocated xai row and pass vacuously.
+    _PROVIDERS_BEFORE_XAI = ("anthropic", "openai", "moonshot", "mistral")
+
+    @pytest.mark.parametrize("earlier", _PROVIDERS_BEFORE_XAI)
+    def test_xai_key_does_not_preempt_earlier_provider(self, earlier: str) -> None:
+        """xAI is last in the registry, so *every* earlier provider's key wins.
+
+        One case per provider ahead of xai, so moving the row up fails exactly
+        the providers it jumped instead of only the first one — appending must
+        leave every existing key's behaviour untouched.
+        """
+        from unittest.mock import patch
+        from vera.runtime.inference import _PROVIDERS
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.runtime.inference._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={
+                _PROVIDERS[earlier].env_key: "sk-earlier-test",
+                "VERA_XAI_API_KEY": "sk-xai-test",
+            })
+            assert mock_provider.call_args[0][0] == earlier
 
     def test_multi_key_auto_detect_respects_provider_order(self) -> None:
         """When multiple keys are set, _PROVIDERS insertion order determines which wins.

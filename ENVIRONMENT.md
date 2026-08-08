@@ -4,10 +4,11 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 
 | Variable | Purpose | Phase | Required |
 |---|---|---|---|
-| [`VERA_ANTHROPIC_API_KEY`](#inference-provider-keys) | Anthropic provider key for the `Inference` effect | runtime | one of the four provider keys, when running an `Inference` program |
+| [`VERA_ANTHROPIC_API_KEY`](#inference-provider-keys) | Anthropic provider key for the `Inference` effect | runtime | one of the five provider keys, when running an `Inference` program |
 | [`VERA_OPENAI_API_KEY`](#inference-provider-keys) | OpenAI provider key for the `Inference` effect | runtime | as above |
 | [`VERA_MOONSHOT_API_KEY`](#inference-provider-keys) | Moonshot (Kimi) provider key for the `Inference` effect | runtime | as above |
 | [`VERA_MISTRAL_API_KEY`](#inference-provider-keys) | Mistral provider key for the `Inference` effect | runtime | as above |
+| [`VERA_XAI_API_KEY`](#inference-provider-keys) | xAI (Grok) provider key for the `Inference` effect | runtime | as above |
 | [`VERA_INFERENCE_PROVIDER`](#explicit-provider--model-overrides) | Force a specific provider rather than auto-detecting from the keys present | runtime | optional |
 | [`VERA_INFERENCE_MODEL`](#explicit-provider--model-overrides) | Override the provider's default model | runtime | optional |
 | [`VERA_DB_URL`](#vera_db_url) | Database connection for the `DB` effect | runtime | optional (defaults to `sqlite::memory:`) |
@@ -16,17 +17,18 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 
 ## Inference provider keys
 
-The `Inference` effect ([spec/07-effects.md](spec/07-effects.md)) reaches an LLM provider over HTTP.  The runtime auto-detects which provider to use by checking which of these four variables is set:
+The `Inference` effect ([spec/07-effects.md](spec/07-effects.md)) reaches an LLM provider over HTTP.  The runtime auto-detects which provider to use by checking which of these five variables is set:
 
 - `VERA_ANTHROPIC_API_KEY`
 - `VERA_OPENAI_API_KEY`
 - `VERA_MOONSHOT_API_KEY` (Kimi)
 - `VERA_MISTRAL_API_KEY`
+- `VERA_XAI_API_KEY` (Grok)
 
 Set exactly one (or use [`VERA_INFERENCE_PROVIDER`](#explicit-provider--model-overrides) to force a choice when more than one is set).  The conformance tests `tests/conformance/ch09_inference.vera` and `tests/conformance/ch09_http.vera` are skipped in CI because no provider key is set there; to run them locally:
 
 ```bash
-export VERA_ANTHROPIC_API_KEY=sk-ant-...
+export VERA_ANTHROPIC_API_KEY=sk-ant-...   # or any other key above, e.g. VERA_XAI_API_KEY=xai-...
 vera run tests/conformance/ch09_inference.vera
 ```
 
@@ -34,7 +36,7 @@ The same export works for `examples/inference.vera` from `README.md`.
 
 ## Explicit provider / model overrides
 
-- **`VERA_INFERENCE_PROVIDER`** — set to `anthropic`, `openai`, `moonshot`, or `mistral` to force the runtime to use that provider, overriding the auto-detect-by-key logic.  Useful when more than one provider key is set in the environment (e.g. a development shell).
+- **`VERA_INFERENCE_PROVIDER`** — set to `anthropic`, `openai`, `moonshot`, `mistral`, or `xai` to force the runtime to use that provider, overriding the auto-detect-by-key logic.  Useful when more than one provider key is set in the environment (e.g. a development shell).
 - **`VERA_INFERENCE_MODEL`** — set to a provider-specific model identifier to override the default model.  Each provider has its own default; consult the provider's docs for valid model strings.
 
 Both are optional.  When unset, the runtime uses auto-detection and the provider's default model.
