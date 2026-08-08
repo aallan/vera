@@ -728,7 +728,7 @@ def main() -> int:
         "total tests",
     )
     check_readme(
-        r"([\d,]+) tests, \d+% code coverage",
+        r"([\d,]+) tests, \d+% Python code coverage",
         live_total_tests,
         "project-status tests",
     )

@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-9,037 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
+9,070 tests, 179 conformance programs, 42 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs — burndown material rather than stage work — plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 
@@ -128,7 +128,6 @@ Exit criterion: the browser limitation rows are retired and an animated demo run
 | [#355](https://github.com/aallan/vera/issues/355) | Replace sync XHR with `fetch` — every fix option is an async-to-sync bridge, so it shares the JSPI machinery. |
 | [#610](https://github.com/aallan/vera/issues/610) | Minimal ANSI-subset interpreter so terminal-style programs render unchanged. |
 | [#603](https://github.com/aallan/vera/issues/603) | Export string-marshalling helpers so JS can pass `String` arguments into Vera functions. |
-| [#349](https://github.com/aallan/vera/issues/349) | `runtime.mjs` test coverage to >80%, matching the Python-side gate. |
 
 ## The horizon
 
