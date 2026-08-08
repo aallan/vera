@@ -2871,6 +2871,25 @@ row already carries the effect, nothing runs and the no-op shape comes
 back (`"applied": false, "ok": true, "proof_delta": null,
 "rewritten": []`).
 
+The closure is **bounded at handlers**: a call site inside a
+`handle[E]` body contributes no edge, because the handler discharges
+the effect there, so a caller that wraps every one of its call sites
+is left unrewritten and nothing propagates past it. A caller that also
+reaches the callee on an unhandled path is still rewritten — the
+effect genuinely escapes along that path — and a call in a handler
+*clause* propagates, since a clause body runs outside its own handler.
+The handler has to name the same effect *instance*, type arguments
+included: `handle[State<Nat>]` does not discharge `State<Int>`, so a
+caller around it still gets the row. Propagation stops at the file
+boundary, by design: module-qualified calls are not followed.
+
+Rows are rewritten for top-level functions only. A call inside a
+`where` block attributes to the top-level function containing it —
+that is what the closure reports, and the handler bound applies inside
+a helper body the same way — but the helper's own `effects(...)` row is
+never rewritten, so a helper that itself needs the new effect leaves
+the candidate refused at the gate rather than half-applied.
+
 Declared-but-unused effects are legal in Vera, so the agent ordering
 "propagate rows first, then write the effectful code" type-checks at
 every step.
@@ -2893,7 +2912,6 @@ every step.
 |-----------|-------|
 | Single-file model: module imports resolve from disk, not from open editor buffers, so unsaved edits to an imported module are invisible until saved. | [#724](https://github.com/aallan/vera/issues/724) |
 | Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to yet. | [#181](https://github.com/aallan/vera/issues/181) |
-| `vera/addEffect` is handler-unaware: a caller that handles the effect in a `handle[E]` block is still rewritten. Propagation also stops at the file boundary, by design. | [#725](https://github.com/aallan/vera/issues/725) |
 
 ## Under the hood
 
@@ -3160,7 +3178,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 9,037 tests, including a 179-program conformance suite
+- 9,051 tests, including a 179-program conformance suite
 - 42 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

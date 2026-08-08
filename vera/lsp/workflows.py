@@ -60,12 +60,19 @@ candidate runs through the proposeEdit pipeline.  The response adds
 ``rewritten``: the affected functions in declaration order; if it is
 empty the row state was already satisfied and nothing ran
 (``applied: false, ok: true, proof_delta: null`` — the no-op shape).
-Propagation is handler-unaware by design (a caller that handles the
-effect inside a ``handle[E]`` block is still rewritten — refining the
-closure to stop at handlers is noted future work) and single-file
-(module-qualified calls do not propagate across the file boundary).
-Effect identity is the base name before any type arguments, so
-``State<Int>`` will not be added next to an existing ``State<Bool>``.
+Propagation is bounded at handlers (#725): a call site inside a
+``handle[E]`` body contributes no edge, so a caller that discharges
+the effect around every one of its call sites is left unrewritten.  A
+caller that also reaches the callee on an unhandled path is still
+rewritten — the effect genuinely escapes along that path.  A call in a
+handler *clause* is not discharged by that handler (clause bodies run
+outside it), so it propagates.  A handler only bounds the propagation
+when its effect matches instance-for-instance — ``handle[State<Nat>]``
+does not discharge ``State<Int>`` — and any mismatch keeps the edge.
+Propagation remains single-file (module-qualified calls do not
+propagate across the file boundary).  Row identity, separately, is the
+base name before any type arguments, so ``State<Int>`` will not be
+added next to an existing ``State<Bool>``.
 
 ``vera/strengthenContract`` (Phase F2) — request params::
 
@@ -96,7 +103,7 @@ from lsprotocol import types as lsp
 from vera import ast
 from vera.lsp.documents import Document
 from vera.lsp.extensions import speculative_edit
-from vera.obligations.cache import direct_callee_names
+from vera.obligations.cache import direct_callee_names, walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
 
@@ -315,8 +322,116 @@ def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
     return fns
 
 
+def _effect_base(ref_text: str) -> str:
+    """Effect identity: the reference text before any type arguments
+    (``State<Int>`` → ``State``; ``Mod.IO`` → ``Mod.IO``)."""
+    return ref_text.split("<", 1)[0].strip()
+
+
+def _effect_instance_key(ref_text: str) -> str:
+    """Full-instance effect identity: the reference text with all
+    whitespace removed and type arguments **kept**
+    (``State< Int >`` → ``State<Int>``).
+
+    Deliberately not :func:`_effect_base`.  The row rewrite wants the
+    base name, because appending ``State<Int>`` beside an existing
+    ``State<Bool>`` would give one function two ``State`` rows — a
+    same-base match there suppresses a duplicate, a harmless no-op.
+    Handler discharge is the opposite direction: it *asserts* the
+    effect is gone.  The checker discharges against
+    :class:`~vera.types.EffectInstance`, whose equality includes
+    ``type_args``, so ``handle[State<Nat>]`` leaves ``State<Int>``
+    escaping and a caller around it still needs the row (#725).
+    """
+    return "".join(ref_text.split())
+
+
+def _handled_effect_key(ref: ast.EffectRefNode) -> str:
+    """The ``handle[...]`` head's full-instance identity, in the same
+    spelling :func:`_effect_instance_key` produces from a request
+    string.
+
+    Anything this cannot spell exactly is spelled *unmatchably* — a
+    string no request can equal — so the call site is left unpruned.
+    That is the safe direction: an unpruned edge writes a row the
+    program may not strictly need, which still type-checks, while a
+    wrongly pruned one leaves the caller on ``pure`` and the whole
+    candidate dies on E125.  An almost-right spelling is the trap, so
+    the refinement case below is pushed onto the unmatchable path
+    rather than allowed to collide with a base-type request.
+    """
+    if isinstance(ref, ast.QualifiedEffectRef):
+        base, args = f"{ref.module}.{ref.name}", ref.type_args
+    elif isinstance(ref, ast.EffectRef):
+        base, args = ref.name, ref.type_args
+    else:  # pragma: no cover — the parser produces only those two
+        return ""
+    if not args:
+        return base
+    if any(
+        isinstance(n, ast.RefinementType)
+        for a in args
+        for n in walk_nodes(a)
+    ):
+        # ``format_type_expr`` drops a refinement's predicate, so
+        # ``Exn<{ @Int | p }>`` renders as ``Exn<Int>`` — the checker
+        # keeps those two instances distinct (the call site fails E125
+        # without its own row), so a collapsed key would prune an edge
+        # the program needs.  The walk covers a refinement nested
+        # inside an argument (``Exn<Array<{ @Int | p }>>``), which
+        # collapses exactly the same way.
+        return f"{base}<?>"
+    # ``format_type_expr`` spells parameter position (``@Int``); an
+    # effect argument is written bare.  A shape it cannot render comes
+    # back as "@?", which survives as "?" — never a valid request.
+    rendered = ",".join(
+        _effect_instance_key(ast.format_type_expr(a)).replace("@", "")
+        for a in args
+    )
+    return f"{base}<{rendered}>"
+
+
+def _unhandled_callee_names(
+    decl: ast.FnDecl, effect: str | None,
+) -> frozenset[str]:
+    """Direct callees of *decl*, minus those a ``handle[effect]``
+    block in *decl* already discharges (#725).
+
+    With *effect* ``None`` this is exactly
+    :func:`direct_callee_names` — the handler-unaware call graph.
+
+    Containment is structural (the handled sub-tree) rather than
+    span-arithmetic: identical answers where both apply, and no
+    special case for nodes carrying no span.  Only the handler's
+    ``body`` is pruned.  Its clauses and state initialiser are not —
+    a clause body runs *outside* its own handler, so an effect
+    performed there still escapes to the enclosing function.
+
+    Handler identity is the full instance including type arguments
+    (:func:`_handled_effect_key`); any mismatch keeps the edge.
+    """
+    if effect is None:
+        return direct_callee_names(decl)
+    want = _effect_instance_key(effect)
+    # Identity by object, not by value: two structurally equal calls
+    # at different sites are distinct nodes, and every node stays
+    # reachable from *decl* for the duration of the comprehension.
+    handled = {
+        id(n)
+        for h in walk_nodes(decl)
+        if isinstance(h, ast.HandleExpr)
+        and _handled_effect_key(h.effect) == want
+        for n in walk_nodes(h.body)
+    }
+    return frozenset(
+        n.name
+        for n in walk_nodes(decl)
+        if isinstance(n, ast.FnCall) and id(n) not in handled
+    )
+
+
 def transitive_callers(
-    program: ast.Program, fn_name: str,
+    program: ast.Program, fn_name: str, effect: str | None = None,
 ) -> list[str] | None:
     """*fn_name* plus every top-level function that transitively calls
     it, in declaration order; ``None`` if no such top-level function.
@@ -325,12 +440,24 @@ def transitive_callers(
     names only, so module-qualified calls never propagate across the
     file boundary, and calls inside ``where`` blocks attribute to
     their containing top-level function.
+
+    *effect* bounds the closure at handlers (#725): a call site inside
+    a ``handle[effect]`` body contributes no edge, because the handler
+    discharges the effect and the caller needs no row of its own.  A
+    caller that reaches the callee on *any* unhandled path keeps its
+    edge — the deliberately conservative reading, since the effect
+    genuinely escapes along that path.  Handler identity is the full
+    effect instance, type arguments included: ``handle[State<Nat>]``
+    does **not** bound a ``State<Int>`` propagation, because the
+    checker discharges against ``EffectInstance`` equality and the
+    call site would fail E125 without the row.  Only an exact match
+    prunes; every other outcome keeps the edge.
     """
     fns = _top_level_fns(program)
     if fn_name not in fns:
         return None
     callees = {
-        name: direct_callee_names(decl) & fns.keys()
+        name: _unhandled_callee_names(decl, effect) & fns.keys()
         for name, decl in fns.items()
     }
     affected = {fn_name}
@@ -342,12 +469,6 @@ def transitive_callers(
                 affected.add(name)
                 changed = True
     return [name for name in fns if name in affected]
-
-
-def _effect_base(ref_text: str) -> str:
-    """Effect identity: the reference text before any type arguments
-    (``State<Int>`` → ``State``; ``Mod.IO`` → ``Mod.IO``)."""
-    return ref_text.split("<", 1)[0].strip()
 
 
 def _row_names(row: ast.EffectSet) -> set[str]:
@@ -411,7 +532,7 @@ def add_effect(
             f"document {uri!r} does not parse; "
             "effect rows cannot be located",
         )
-    affected = transitive_callers(analysis.program, fn_name)
+    affected = transitive_callers(analysis.program, fn_name, effect)
     if affected is None:
         raise ValueError(f"no top-level function {fn_name!r}")
 
