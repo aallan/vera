@@ -387,6 +387,20 @@ class ExpressionsMixin:
             else:
                 fix = (f"Ensure enough {tname} bindings are in scope, or use a "
                        f"lower index.")
+            # #558: append the slot table AT THE ERROR POSITION — deep in a
+            # match arm the stack has grown past the signature, which is all
+            # `--explain-slots` shows.  Rendered exactly like the W001 hole
+            # hint so the read-time and write-time diagnostics agree.
+            # The table is the WHOLE scope, zero-size bindings included:
+            # the index range in the description counts them, so hiding
+            # them makes one diagnostic report two different scopes (a
+            # `@Unit.1` against `(@Unit, @Int)` would say "valid indices:
+            # 0..0" above a table with no Unit row).  A zero-size read is
+            # E182's job, and it says what to write instead.
+            scope = self._collect_scope_bindings()
+            if scope:
+                fix += (" Available bindings: "
+                        + "; ".join(f"{r}: {t}" for r, t in scope) + ".")
             self._error(
                 ref,
                 f"Cannot resolve @{tname}.{ref.index}: "
@@ -1175,9 +1189,9 @@ class ExpressionsMixin:
         """All bindings in scope, innermost first, as
         ``(slot_ref_string, pretty_type_string)`` pairs.
 
-        Shared by the W001 hole diagnostic's fix hint and the LSP
-        typed-hole completion (#222 Phase D) — same data, two
-        renderings.
+        Shared by the W001 hole diagnostic's fix hint, the E130
+        unresolved-slot fix (#558) and the LSP typed-hole completion
+        (#222 Phase D) — same data, three renderings.
         """
         bindings: list[tuple[str, str]] = []
         index_by_type: dict[str, int] = {}

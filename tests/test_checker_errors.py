@@ -4,6 +4,8 @@ Split from tests/test_checker.py (#420). Shared helpers live in tests/checker_he
 """
 from __future__ import annotations
 
+import pytest
+
 from vera import ast
 
 from tests.checker_helpers import (
@@ -11,6 +13,7 @@ from tests.checker_helpers import (
     _check_err,
     _check_ok,
     _errors,
+    _warnings,
 )
 
 
@@ -199,6 +202,167 @@ private fn f(@Bool, @Int -> @Int)
         assert e140, "expected an E140 diagnostic for `@Bool.0 + @Int.0`"
         assert e140[0].fix.strip(), "E140 must carry a non-empty fix"
         assert "Fix:" in e140[0].format()
+
+
+# =====================================================================
+# #558 — E130 carries the in-scope slot table
+# =====================================================================
+
+
+class TestSlotTableInE130:
+    """#558 option (a): an unresolved-slot error lists every binding in
+    scope at the error position with its resolved `@T.n`, so the right
+    index can be read off the diagnostic instead of reconstructed by
+    writing a typed hole and re-running.  Same rendering as the W001
+    hole hint ("Available bindings: ...")."""
+
+    @pytest.mark.parametrize("src,expected", [
+        pytest.param("""\
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.3 }
+""", "Available bindings: @Int.0: Int; @Int.1: Int.",
+            id="index_out_of_range"),
+        pytest.param("""\
+private fn f(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "Available bindings: @Bool.0: Bool.",
+            id="no_binding_of_that_type"),
+        pytest.param("""\
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", None,
+            id="empty_scope_lists_nothing"),
+    ])
+    def test_e130_fix_lists_scope_bindings(
+        self, src: str, expected: str | None,
+    ) -> None:
+        e130 = [d for d in _errors(src) if d.error_code == "E130"]
+        assert e130, "expected an E130 diagnostic"
+        if expected is None:
+            assert "Available bindings" not in e130[0].fix, \
+                f"nothing is in scope, got: {e130[0].fix!r}"
+        else:
+            assert e130[0].fix.endswith(expected), \
+                f"expected fix ending {expected!r}, got: {e130[0].fix!r}"
+
+    def test_e130_in_match_arm_lists_arm_bindings(self) -> None:
+        """The issue's motivating case: deep in a match arm the slot stack
+        has grown past the signature, which is all `--explain-slots` shows.
+        The arm's own binding must appear in the table alongside the
+        parameter it shadows."""
+        e130 = [d for d in _errors("""
+private data Term { Var(Int), Abs(Term), App(Term, Term) }
+
+private fn f(@Term -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Term.0 {
+    Var(@Int) -> 0,
+    Abs(@Term) -> @Int.9,
+    App(@Term, @Term) -> 0
+  }
+}
+""") if d.error_code == "E130"]
+        assert e130, "expected an E130 diagnostic in the Abs arm"
+        assert "@Term.0: Term" in e130[0].fix, \
+            f"arm binding missing from the table: {e130[0].fix!r}"
+        assert "@Term.1: Term" in e130[0].fix, \
+            f"shadowed parameter missing from the table: {e130[0].fix!r}"
+
+    def test_e130_table_covers_the_indices_it_calls_valid(self) -> None:
+        """The table and the index range in the same diagnostic must
+        describe one scope.  `@Unit.1` against `(@Unit, @Int)` reports
+        "valid indices: 0..0" and offers a lower index, so `@Unit.0` has
+        to be in the table — omitting it makes the one diagnostic say both
+        that a Unit binding exists and that none does, and the reader who
+        believes the table writes a different wrong index."""
+        e130 = [d for d in _errors("""\
+private fn f(@Unit, @Int -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ @Unit.1 }
+""") if d.error_code == "E130"]
+        assert e130, "expected an E130 diagnostic"
+        assert "valid indices: 0..0" in e130[0].description
+        assert "@Unit.0: Unit" in e130[0].fix, \
+            f"the index the message calls valid is not in the table: " \
+            f"{e130[0].fix!r}"
+
+    def test_e130_and_w001_tables_agree(self) -> None:
+        """Same label, same scope position, so the same set: the E130 fix
+        and the W001 hole hint both render `_collect_scope_bindings()`
+        whole.  Two "Available bindings:" lists that disagree are worse
+        than one of them not existing."""
+        sig = """\
+private fn f(@Unit, @Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+"""
+        e130 = [d for d in _errors(sig + "{ @Int.0 }")
+                if d.error_code == "E130"]
+        w001 = [d for d in _warnings(sig + "{ ? }")
+                if d.error_code == "W001"]
+        assert e130 and w001, "expected both diagnostics"
+        table = "Available bindings: @Bool.0: Bool; @Unit.0: Unit."
+        assert e130[0].fix.endswith(table), f"E130: {e130[0].fix!r}"
+        assert w001[0].fix.endswith(table), f"W001: {w001[0].fix!r}"
+
+    def test_handler_state_hint_keeps_its_guidance_and_gains_the_table(
+        self,
+    ) -> None:
+        """The append runs after *every* fix branch, including the two
+        specialised ones, so each has to keep its tailored text.
+
+        #973's handler-state branch fires only at count == 0, and the
+        table is still worth appending there: it is what shows the reader
+        that `@Unit.0` is the one thing actually in scope.  Asserting
+        both halves means neither the append nor the tailored text can
+        regress without a failure — a table-only assertion would stay
+        green if the specialised branch were flattened to the generic
+        message."""
+        e130 = [d for d in _errors("""\
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    @Int.0
+  }
+}
+""") if d.error_code == "E130"]
+        assert e130, "expected E130 for the handler-state slot read"
+        assert "get(())" in e130[0].fix, \
+            f"tailored handler-state guidance lost: {e130[0].fix!r}"
+        assert e130[0].fix.endswith("Available bindings: @Unit.0: Unit."), \
+            f"table not appended after the handler-state fix: {e130[0].fix!r}"
+
+    def test_where_helper_hint_keeps_its_guidance_and_gains_the_table(
+        self,
+    ) -> None:
+        """The other specialised branch, same two-sided assertion.
+
+        #969's where-helper branch also fires only at count == 0.  Here
+        the table is the more useful half: it names the helper's own
+        parameter, which is what the reader has to pass the outer value
+        into."""
+        e130 = [d for d in _errors("""\
+private fn outer(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(true) }
+where {
+  fn helper(@Bool -> @Int)
+    requires(true) ensures(true) effects(pure)
+  { @Int.0 }
+}
+""") if d.error_code == "E130"]
+        assert e130, "expected E130 for the outer-slot read in the helper"
+        assert "param-rooted" in e130[0].fix, \
+            f"tailored where-helper guidance lost: {e130[0].fix!r}"
+        assert e130[0].fix.endswith("Available bindings: @Bool.0: Bool."), \
+            f"table not appended after the where-helper fix: {e130[0].fix!r}"
 
 
 # =====================================================================

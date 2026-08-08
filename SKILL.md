@@ -409,7 +409,10 @@ Example: for `fn divide(@Int, @Int -> @Int)`, the contract `requires(@Int.1 != 0
 1. Write the function signature.
 2. Run `vera check --explain-slots` to get the slot table.
 3. Use the table to write contracts and body expressions with correct `@T.n` indices.
-4. If `vera check` reports E130 (unresolved slot), re-read the table — you have the wrong index.
+4. If `vera check` reports E130 (unresolved slot), read the `Available bindings:` table in its
+   own fix text — it lists the slot bindings in scope *at that reference* with their `@T.n`,
+   including the `let` and `match`-arm ones the signature table cannot show. `@T.result` is not
+   a slot binding, so it never appears there, not even inside `ensures`.
 
 The `--json` flag also works: `vera check --explain-slots --json` emits a `slot_environments`
 array, useful when processing diagnostics programmatically.
