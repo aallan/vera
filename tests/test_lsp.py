@@ -25,7 +25,7 @@ import pytest
 
 from lsprotocol import types as lsp
 
-from vera.ast import Span
+from vera.ast import QualifiedEffectRef, Span
 from vera.errors import SourceLocation
 from vera.lsp.convert import (
     LineIndex,
@@ -598,6 +598,7 @@ from vera.lsp.server import (  # noqa: E402
     _require_str,
 )
 from vera.lsp.workflows import (  # noqa: E402
+    _handled_effect_key,
     add_effect,
     apply_propose_edit,
     effect_row_rewrite,
@@ -1025,6 +1026,151 @@ DIAMOND = "\n".join([
 ])
 
 
+# Handler bounding (#725).  A `handle[State<Int>]` around the call
+# discharges the effect, so the caller needs no row of its own; the
+# same call reached on a second, unhandled path still does.
+_HANDLED = """handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(1);
+    target(@Nat.0)
+  }"""
+
+_PARTIAL = f"""let @Nat = {_HANDLED};
+  target(@Nat.1)"""
+
+HANDLERS = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("handled", _HANDLED),
+    _fn("partial", _PARTIAL),
+    _fn("unhandled", "target(@Nat.0)"),
+])
+
+# Two shapes that must NOT bound propagation: a call inside a handler
+# *clause* (clause bodies run outside their own handler, so the effect
+# still escapes) and a handler for an unrelated effect.
+HANDLER_EDGES = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("in_clause", """handle[State<Nat>](@Nat = 0) {
+    get(@Unit) -> { resume(target(@Nat.0)) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    put(1);
+    get(())
+  }"""),
+    _fn("other_effect", """handle[Exn<Int>] {
+    throw(@Int) -> { 0 }
+  } in {
+    target(@Nat.0)
+  }"""),
+])
+
+# A handler whose effect INSTANCE differs from the propagated one, in
+# the handler *body* where pruning would otherwise apply.  The checker
+# discharges against `EffectInstance`, whose equality includes
+# `type_args`, so `handle[State<Nat>]` leaves `State<Int>` escaping and
+# the caller still needs the row.  Asking the same fixture for
+# `State<Nat>` is the positive control: this handler key does match
+# something, so the surviving `State<Int>` edge is the type argument
+# and not an unmatchable key.
+MISMATCHED_INSTANCE = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("nat_handled", """handle[State<Nat>](@Nat = 0) {
+    get(@Unit) -> { resume(@Nat.0) },
+    put(@Nat) -> { resume(()) }
+  } in {
+    put(1);
+    target(@Nat.0)
+  }"""),
+])
+
+# `where`-block calls attribute to their containing top-level function
+# (pre-#725 behaviour), and the handler bound applies inside a helper
+# body just as it does in the top-level body.
+WHERE_HANDLERS = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("via_where_handled", "helper(@Nat.0)") + f"""where {{
+  fn helper(@Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {{
+    {_HANDLED}
+  }}
+}}
+""",
+    _fn("via_where_bare", "helper2(@Nat.0)") + """where {
+  fn helper2(@Nat -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    target(@Nat.0)
+  }
+}
+""",
+])
+
+# Refinement type arguments, top-level and nested.  Both handlers
+# type-check (`vera check` is clean on this program), and neither
+# discharges plain `Exn<Int>` — a call needing it inside either body
+# fails E125.  `format_type_expr` renders a refinement as its bare base
+# type, so a key built straight from it would spell `Exn<Int>` for both
+# and prune those edges.
+REFINED_INSTANCE = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("refined", """handle[Exn<{ @Int | @Int.0 >= 0 }>] {
+    throw(@Int) -> { 0 }
+  } in {
+    target(@Nat.0)
+  }"""),
+    _fn("nested_refined", """handle[Exn<Array<{ @Int | @Int.0 >= 0 }>>] {
+    throw(@Array<Int>) -> { 0 }
+  } in {
+    target(@Nat.0)
+  }"""),
+])
+
+# An unparameterised handler: `handle[IO]` really does discharge `IO`,
+# and `IO`/`Async` are what addEffect propagates most often.
+BARE_HANDLER = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("io_handled", """handle[IO] {
+    print(@String) -> { resume(()) }
+  } in {
+    target(@Nat.0)
+  }"""),
+    _fn("io_unhandled", "target(@Nat.0)"),
+])
+
+# Nesting, both orders.  A matching handler inside a foreign one still
+# bounds the closure; a foreign handler inside a matching one does not
+# un-bound it, because the call still sits in the matching handler's
+# body sub-tree.
+NESTED_HANDLERS = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("inner_match", """handle[Exn<Nat>] {
+    throw(@Nat) -> { 0 }
+  } in {
+    handle[Exn<Int>] {
+      throw(@Int) -> { 0 }
+    } in {
+      target(@Nat.0)
+    }
+  }"""),
+    _fn("outer_match", """handle[Exn<Int>] {
+    throw(@Int) -> { 0 }
+  } in {
+    handle[Exn<Nat>] {
+      throw(@Nat) -> { 0 }
+    } in {
+      target(@Nat.0)
+    }
+  }"""),
+])
+
+
 class TestTransitiveCallers:
     def test_diamond_closure_in_declaration_order(self) -> None:
         prog = _program(DIAMOND)
@@ -1041,6 +1187,105 @@ class TestTransitiveCallers:
     def test_recursive_fn_appears_once(self) -> None:
         src = _fn("rec", "rec(@Nat.0)")
         assert transitive_callers(_program(src), "rec") == ["rec"]
+
+    def test_no_effect_argument_is_handler_unaware(self) -> None:
+        """The bare call-graph query is unchanged: every caller."""
+        assert transitive_callers(_program(HANDLERS), "target") == [
+            "target", "handled", "partial", "unhandled",
+        ]
+
+    def test_handler_bounds_the_closure(self) -> None:
+        """#725: a caller whose only call site sits inside a
+        handle[E] body is dropped; a caller that also reaches the
+        callee on an unhandled path is kept."""
+        assert transitive_callers(
+            _program(HANDLERS), "target", "State<Int>",
+        ) == ["target", "partial", "unhandled"]
+
+    def test_handler_clause_and_foreign_handler_do_not_bound(self) -> None:
+        """Only a handler's ``body`` prunes: a call in a *clause* still
+        propagates, as does one under a handler for another effect.
+
+        Propagating State<Nat> — the instance ``in_clause`` handles — so
+        the only reason its edge survives is that the call sits in a
+        clause, not the body.  Asking for a *different* instance would
+        keep the edge for that reason instead and stop discriminating
+        the clause boundary at all.
+        """
+        assert transitive_callers(
+            _program(HANDLER_EDGES), "target", "State<Nat>",
+        ) == ["target", "in_clause", "other_effect"]
+
+    def test_matching_type_argument_prunes_the_edge(self) -> None:
+        """Positive control for the fixture below: the same
+        `handle[State<Nat>]` body DOES prune a `State<Nat>`
+        propagation.  Without this, an unmatchable key for every
+        parameterised handler would leave the mismatch test green."""
+        assert transitive_callers(
+            _program(MISMATCHED_INSTANCE), "target", "State<Nat>",
+        ) == ["target"]
+
+    def test_mismatched_type_argument_keeps_the_edge(self) -> None:
+        """handle[State<Nat>] does not discharge State<Int>, so the
+        edge survives and the caller stays in the closure."""
+        assert transitive_callers(
+            _program(MISMATCHED_INSTANCE), "target", "State<Int>",
+        ) == ["target", "nat_handled"]
+
+    def test_where_helper_attribution_survives_the_bound(self) -> None:
+        """A helper's bare call still attributes to its containing
+        top-level function; a helper that discharges the effect itself
+        bounds the closure there."""
+        prog = _program(WHERE_HANDLERS)
+        assert transitive_callers(prog, "target") == [
+            "target", "via_where_handled", "via_where_bare",
+        ]
+        assert transitive_callers(prog, "target", "State<Int>") == [
+            "target", "via_where_bare",
+        ]
+
+    def test_refinement_argument_keeps_the_edge(self) -> None:
+        """A refinement argument must not collapse into its base type:
+        `handle[Exn<{ @Int | p }>]` does not discharge `Exn<Int>`
+        (E125 at the call site), nested inside a type argument
+        included."""
+        assert transitive_callers(
+            _program(REFINED_INSTANCE), "target", "Exn<Int>",
+        ) == ["target", "refined", "nested_refined"]
+
+    def test_bare_handler_bounds_the_closure(self) -> None:
+        """An unparameterised `handle[IO]` bounds an `IO`
+        propagation."""
+        assert transitive_callers(
+            _program(BARE_HANDLER), "target", "IO",
+        ) == ["target", "io_unhandled"]
+
+    def test_whitespace_in_the_request_still_matches(self) -> None:
+        """Request and handler are compared whitespace-insensitively,
+        so a spelled-out `State< Int >` still bounds the closure."""
+        assert transitive_callers(
+            _program(HANDLERS), "target", "State< Int >",
+        ) == ["target", "partial", "unhandled"]
+
+    def test_nesting_bounds_in_either_order(self) -> None:
+        """A matching handler nested inside a foreign one still bounds
+        the closure, and a foreign handler nested inside a matching one
+        does not un-bound it."""
+        assert transitive_callers(
+            _program(NESTED_HANDLERS), "target", "Exn<Int>",
+        ) == ["target"]
+
+    def test_qualified_handler_key_keeps_its_module(self) -> None:
+        """`handle[Mod.IO]` spells `Mod.IO`, not `IO`.
+
+        Pinned at the key rather than through `transitive_callers`:
+        effects are only ever registered under an unqualified name
+        (`effect_decl` takes a single UPPER_IDENT), so a qualified
+        handler always fails E330 and no program in which this key
+        could prune ever type-checks.
+        """
+        ref = QualifiedEffectRef(module="Mod", name="IO", type_args=None)
+        assert _handled_effect_key(ref) == "Mod.IO"
 
 
 class TestEffectRowRewrite:
@@ -1119,6 +1364,48 @@ class TestAddEffect:
         assert doc is not None
         assert "effects(<IO, Async>)" in doc.text
         assert doc.text.count("effects(<Async>)") == 2
+
+    def test_handled_caller_is_not_rewritten(self) -> None:
+        """#725: `handled` discharges State<Int> around its only call
+        site, so it keeps `pure`; `partial` and `unhandled` still need
+        the row."""
+        server = self._server(HANDLERS)
+        out = add_effect(server, URI, "target", "State<Int>")
+        assert out["applied"] is True
+        assert out["rewritten"] == ["target", "partial", "unhandled"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text.count("effects(<State<Int>>)") == 3
+        assert doc.text.count("effects(pure)") == 1  # handled
+
+    def test_mismatched_type_argument_caller_is_rewritten(self) -> None:
+        """The bound must not refuse an edit that worked before it:
+        `handle[State<Nat>]` leaves `State<Int>` undischarged, so
+        `nat_handled` needs the row and the candidate applies."""
+        server = self._server(MISMATCHED_INSTANCE)
+        out = add_effect(server, URI, "target", "State<Int>")
+        assert out["applied"] is True
+        assert out["ok"] is True
+        assert out["diagnostics"] == 0
+        assert out["rewritten"] == ["target", "nat_handled"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text.count("effects(<State<Int>>)") == 2
+
+    def test_refinement_argument_caller_is_rewritten(self) -> None:
+        """Same shape, one step narrower: a refinement argument reads as
+        its base type when rendered, but does not discharge the base
+        instance.  Collapse the two and both callers keep `pure`, the
+        call sites fail E125, and the gate refuses the whole edit."""
+        server = self._server(REFINED_INSTANCE)
+        out = add_effect(server, URI, "target", "Exn<Int>")
+        assert out["applied"] is True
+        assert out["ok"] is True
+        assert out["diagnostics"] == 0
+        assert out["rewritten"] == ["target", "refined", "nested_refined"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text.count("effects(<Exn<Int>>)") == 3
 
     def test_fully_satisfied_is_noop(self) -> None:
         src = _fn("f", "@Nat.0", effects="<Async>")

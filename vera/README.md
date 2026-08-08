@@ -121,7 +121,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  features.py` | 300 | | Diagnostics + tier hints, hover, slot goto, hole completion | |
 | `  extensions.py` | 146 | | vera/speculativeEdit proof-delta | |
 | `  server.py` | 287 | | pygls wiring, single-session serialisation | |
-| `  workflows.py` | 442 | | Skill-layer workflows: enforced edit sequences (#222 F) | |
+| `  workflows.py` | 563 | | Skill-layer workflows: enforced edit sequences (#222 F) | |
 | `codegen/` | 15,855 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 1,341 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
 | `  memory.py` | 105 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
