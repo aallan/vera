@@ -70,6 +70,7 @@ python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
 python scripts/check_pypi_readme_examples.py # Verify PYPI_README code blocks parse + check + verify
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
 python scripts/check_doc_builtin_shadowing.py # Verify no doc example redefines a built-in (E151; #819)
+python scripts/check_editor_grammars.py # Verify every editor grammar under editors/ carries every built-in effect name from the live registry (#1156)
 python scripts/check_diagnostic_fields.py # Verify every diagnostic carries rationale + spec_ref (+ fix for errors; warnings exempt) or a # diag-fields-exempt reason — waives missing/unresolvable fields only, never a factually wrong spec_ref/error_code (#682)
 python scripts/check_explicit_encoding.py # Verify every text-mode open()/read_text()/write_text() passes explicit encoding='utf-8' (#645)
 python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)

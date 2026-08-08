@@ -171,6 +171,9 @@ jobs:
       - name: Check no unexpected [E602]/[E604] silent skips (Layer 1 of #626)
         run: python scripts/check_e602_clean.py
 
+      - name: Check editor grammars carry every built-in effect (#1156)
+        run: python scripts/check_editor_grammars.py
+
       - name: Check every diagnostic carries rationale/fix/spec_ref (#682)
         run: python scripts/check_diagnostic_fields.py
 

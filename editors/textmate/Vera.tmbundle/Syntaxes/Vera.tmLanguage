@@ -207,7 +207,7 @@
 			<key>name</key>
 			<string>entity.name.type.effect.vera</string>
 			<key>match</key>
-			<string>\b(IO|State|Exn|Http|Async|Diverge)\b</string>
+			<string>\b(IO|State|Exn|HttpServer|Http|Async|Diverge|Inference|Random|DB)\b</string>
 		</dict>
 		<!-- Qualified effect operations: IO.print, State.put, etc. -->
 		<dict>
