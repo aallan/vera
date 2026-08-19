@@ -1624,6 +1624,98 @@ class CodeGenerator(
             error_code="E621",
         ))
 
+    def _entry_contends_with_module(
+        self, entry_decl: ast.DataDecl, owner: tuple[str, ...],
+    ) -> bool:
+        """Can the entry file's declaration share *owner*'s registered layout?
+
+        The entry-versus-module sibling of :meth:`_contends_with_prelude`
+        (#1277): the flat map holds one layout per name, so Pass 1
+        overwriting what Pass 0.5 (``_register_modules``) harvested from an
+        import is safe only when the two declarations describe the same
+        layout (:func:`~vera.prelude.data_decl_shape`).  A module that
+        restates the entry's own type is not a contention: the single
+        registered layout is correct for both, which is the same
+        "restatement is legal" case #1277 protects, one namespace over.
+
+        A module whose declaration this cannot find (the name is recorded
+        in ``_adt_layout_owners``, but the resolved module's AST no longer
+        holds the node) is treated as contending, the safe direction.
+        """
+        module_decl = self._find_module_data_decl(owner, entry_decl.name)
+        if module_decl is None:  # pragma: no cover — defensive
+            return True
+        return (
+            data_decl_shape(entry_decl, self._type_aliases, self._type_alias_params)
+            != data_decl_shape(
+                module_decl,
+                self._module_type_aliases.get(owner, {}),
+                self._module_type_alias_params.get(owner, {}),
+            )
+        )
+
+    def _emit_entry_module_adt_contention_error(
+        self, entry_decl: ast.DataDecl, owner: tuple[str, ...],
+    ) -> None:
+        """Report an entry-file ADT that took an imported module's name (#1312).
+
+        Located at the ENTRY declaration, in the entry file: the
+        declaration Pass 1 is registering when the contention is found, and
+        the file being compiled rather than one of its imports.
+
+        Sibling of :meth:`_emit_prelude_adt_contention_error` (#1277 /
+        E621), for the pair that rail cannot see: an entry-file declaration
+        SUPPRESSES the prelude's own injection outright (spec §8.4.1), so a
+        contention between the entry file and an imported module never
+        reaches Pass 1.2, where E621 is decided. Pass 1 (``_register_all``)
+        registers the entry file's own ``data`` declarations over whatever
+        Pass 0.5 harvested from imports (``_adt_layout_owners``,
+        ``setdefault``), so an entry declaration that DIFFERS in shape from
+        the module's silently takes the one layout slot: the module's own
+        constructors become ``unknown constructor`` inside its own bodies,
+        reported only as E602/E620 warnings, and the functions that use
+        them are simply missing from the compiled module.
+        """
+        mod = ".".join(owner)
+        loc = SourceLocation(file=self.file)
+        source_line = ""
+        if entry_decl.span:
+            loc.line = entry_decl.span.line
+            loc.column = entry_decl.span.column
+            source_line = self._get_source_line(loc.line)
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"This program declares a data type '{entry_decl.name}' "
+                f"whose shape differs from the '{entry_decl.name}' declared "
+                f"in imported module '{mod}', and both are compiled into "
+                f"this program."
+            ),
+            location=loc,
+            source_line=source_line,
+            rationale=(
+                "The flat compilation strategy (C7e) gives the whole "
+                "program one ADT namespace, and Pass 1 registers the "
+                "entry file's own data declarations over whatever an "
+                "imported module already registered. One name carries "
+                f"one constructor layout there, so two differently-shaped "
+                f"declarations of '{entry_decl.name}' cannot both be "
+                f"registered: the entry file's takes the layout, the "
+                f"module's is dropped, and every function in '{mod}' that "
+                "uses its own type is dropped behind it."
+            ),
+            fix=(
+                f"Rename this declaration, or rename '{entry_decl.name}' "
+                f"in module '{mod}' and update that module's uses of it. "
+                f"If they mean the same type, give this declaration the "
+                f"module's shape instead (the same constructors, in the "
+                f"same order, with the same field types), and the one "
+                f"layout serves both."
+            ),
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
+            severity="error",
+            error_code="E622",
+        ))
+
     def _find_module_data_decl(
         self, mod_path: tuple[str, ...], name: str,
     ) -> ast.DataDecl | None:

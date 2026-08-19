@@ -268,6 +268,13 @@ class RegistrationMixin:
         for tag, ctor in enumerate(decl.constructors):
             layout = self._compute_constructor_layout(tag, ctor, decl)
             layouts[ctor.name] = layout
+
+        # #1312: refuse rather than silently overwrite a module's
+        # same-named ADT below, unless the two describe one layout.
+        owner = self._adt_layout_owners.get(decl.name)
+        if owner is not None and self._entry_contends_with_module(decl, owner):
+            self._emit_entry_module_adt_contention_error(decl, owner)
+
         self._adt_layouts[decl.name] = layouts
         self._needs_alloc = True
         self._needs_memory = True
