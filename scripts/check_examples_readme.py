@@ -1,14 +1,25 @@
 #!/usr/bin/env python
-"""Validate vera run commands documented in examples/README.md.
+"""Validate examples/README.md's example-index tables against the examples.
 
 For each row in the example index tables:
   1. Extract the `vera run` command from the Run column.
   2. Verify the referenced .vera file exists.
   3. If --fn <name> is specified, verify <name> is a public function in
      that file (i.e. `public fn <name>` appears in the source).
+  4. Extract every backtick-quoted BARE IDENTIFIER from the Demonstrates
+     column (`array_slice`, `decreases`, `PosInt`, ...) and verify it
+     appears in the referenced file's source.
 
 This catches stale README entries when examples are renamed, functions
-are removed, or the table falls out of sync with the source.
+are removed, or the table falls out of sync with the source — including
+the Demonstrates column crediting an example with a builtin it never
+calls (#1351).  Only backtick-quoted SINGLE IDENTIFIERS are checked in
+the Demonstrates column: a backtick span containing anything else (a
+call expression like `` `async(Http.get)` ``, a declaration snippet like
+`` `type Board = Map<String, Int>` ``, a module path like `` `wasi:http` ``)
+is a code illustration rather than a name claim, and the column's plain
+prose stays unchecked entirely — the same scope the issue's own "Suggested
+fix" draws.
 """
 
 import re
@@ -59,6 +70,55 @@ def is_public_function(vera_file: Path, fn_name: str) -> bool:
     return bool(re.search(rf"\bpublic\s+fn\s+{re.escape(fn_name)}\b", source))
 
 
+_EXAMPLE_FILENAME = re.compile(r"`([\w.-]+\.vera)`")
+_BACKTICK_IDENTIFIER = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+
+
+def extract_example_rows(readme: Path) -> list[tuple[int, str, str]]:
+    """Return (line_number, vera_filename, demonstrates_cell) for every
+    example-index table data row.
+
+    A data row is identified by a backtick-quoted `*.vera` filename in
+    its first cell — this sidesteps depending on the header row's exact
+    wording or the separator row's dashes, and skips any 3-cell row
+    that isn't naming an example (there are none today, but a table
+    row identified structurally rather than by position survives the
+    table growing a column).
+    """
+    rows: list[tuple[int, str, str]] = []
+    for lineno, line in enumerate(readme.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 3:
+            continue
+        name_match = _EXAMPLE_FILENAME.fullmatch(cells[0])
+        if not name_match:
+            continue
+        rows.append((lineno, name_match.group(1), cells[2]))
+    return rows
+
+
+def extract_backticked_names(demonstrates_cell: str) -> list[str]:
+    """Bare-identifier backtick spans in a Demonstrates cell.
+
+    A span is a "name claim" only if its ENTIRE backtick-quoted content
+    is a single identifier (letters/digits/underscore, not starting
+    with a digit) — `array_slice`, `decreases`, `PosInt`.  A span with
+    anything else inside (a dot, parens, angle brackets, spaces, a
+    colon) is a syntax illustration rather than a name the row claims
+    the example demonstrates, and is left unchecked, matching how most
+    of the column's prose is never backtick-quoted at all.
+    """
+    return _BACKTICK_IDENTIFIER.findall(demonstrates_cell)
+
+
+def name_appears_in_source(vera_file: Path, name: str) -> bool:
+    """Return True if `name` appears as a whole word in the source."""
+    source = vera_file.read_text(encoding="utf-8")
+    return bool(re.search(rf"\b{re.escape(name)}\b", source))
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     readme = root / "examples" / "README.md"
@@ -96,14 +156,35 @@ def main() -> int:
                 f"    Command: {cmd}"
             )
 
+    example_rows = extract_example_rows(readme)
+    names_checked = 0
+    for lineno, vera_filename, demonstrates in example_rows:
+        vera_file = root / "examples" / vera_filename
+        if not vera_file.is_file():
+            # Already reported above via the Run-column check when this
+            # file is also missing there; avoid a second failure class
+            # for the same missing file.
+            continue
+        for name in extract_backticked_names(demonstrates):
+            names_checked += 1
+            if not name_appears_in_source(vera_file, name):
+                failures.append(
+                    f"  line {lineno}: Demonstrates column names `{name}`,"
+                    f" which does not appear in examples/{vera_filename}\n"
+                    f"    Demonstrates: {demonstrates.strip()}"
+                )
+
     if failures:
-        print(f"FAILED: {len(failures)} invalid run command(s) in examples/README.md:\n",
+        print(f"FAILED: {len(failures)} invalid entr{'y' if len(failures) == 1 else 'ies'} in examples/README.md:\n",
               file=sys.stderr)
         for msg in failures:
             print(msg, file=sys.stderr)
         return 1
 
-    print(f"All {len(commands)} vera run commands in examples/README.md are valid.")
+    print(
+        f"All {len(commands)} vera run commands and {names_checked} "
+        "Demonstrates-column names in examples/README.md are valid."
+    )
     return 0
 
 
