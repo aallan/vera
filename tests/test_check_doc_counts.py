@@ -26,7 +26,10 @@ or rewording switches the gate off.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -1240,3 +1243,112 @@ class TestFaqExampleCount:
         faq = (root / "FAQ.md").read_text(encoding="utf-8")
         live = len(list((root / "examples").glob("*.vera")))
         assert _MOD.check_faq_example_count(faq, live) == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-checkout import isolation (plan-file S13): a gate's `from vera...`
+# imports must resolve against the SAME tree its own `root` (derived from
+# `__file__`) points at — never a stale PYTHONPATH entry (or, in the real
+# failure mode, a venv's `__editable__.veralang-*.pth` finder pinned to
+# whatever checkout `pip install -e` last ran in) pointing at a DIFFERENT
+# checkout.  That finder — and a stale PYTHONPATH entry alike — only
+# resolves `vera` when nothing earlier on `sys.path` already has; a plain
+# `sys.path.insert(0, root)` wins over either, which is the fix
+# `check_doc_counts.py`'s `main()` now applies before its own `from
+# vera...` imports run.  Distinct from the pytest-rootdir trap TESTING.md's
+# "Running against ANOTHER checkout" section documents (a different
+# mechanism — pytest's own rootdir detection — with a different remedy:
+# relocate the test file into the target tree, not a sys.path insertion).
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_checkout(root: Path, marker: str) -> None:
+    (root / "vera").mkdir(parents=True)
+    (root / "vera" / "__init__.py").write_text(
+        f'MARKER = "{marker}"\n', encoding="utf-8")
+    (root / "scripts").mkdir()
+
+
+class TestCrossCheckoutImportIsolation:
+    def test_root_insertion_wins_over_a_stale_pythonpath(
+        self, tmp_path: Path,
+    ) -> None:
+        """The FIX: a script that inserts its own `__file__`-derived root
+        at sys.path[0] before importing `vera` resolves ITS OWN
+        checkout's package even when PYTHONPATH points at a different
+        one — the same pattern `check_doc_counts.py`'s `main()` uses."""
+        _make_fake_checkout(tmp_path / "checkout_a", "A")
+        _make_fake_checkout(tmp_path / "checkout_b", "B")
+
+        probe = tmp_path / "checkout_a" / "scripts" / "probe.py"
+        probe.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "root = Path(__file__).resolve().parent.parent\n"
+            "sys.path.insert(0, str(root))\n"
+            "import vera\n"
+            "print(vera.MARKER)\n",
+            encoding="utf-8",
+        )
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(tmp_path / "checkout_b")
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env, check=False,
+        )
+        assert result.stdout.strip() == "A", (
+            f"expected checkout_a's vera (MARKER='A'), got "
+            f"{result.stdout!r} (stderr: {result.stderr})"
+        )
+
+    def test_without_the_fix_a_stale_pythonpath_wins(
+        self, tmp_path: Path,
+    ) -> None:
+        """The NEGATIVE CONTROL: without the root-insertion line, the
+        identical two-checkout setup resolves the WRONG package —
+        proving this is a real trap the fix actually closes, not a
+        test that would pass regardless of the fix's presence."""
+        _make_fake_checkout(tmp_path / "checkout_a", "A")
+        _make_fake_checkout(tmp_path / "checkout_b", "B")
+
+        probe = tmp_path / "checkout_a" / "scripts" / "probe_unfixed.py"
+        probe.write_text("import vera\nprint(vera.MARKER)\n", encoding="utf-8")
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(tmp_path / "checkout_b")
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env, check=False,
+        )
+        assert result.stdout.strip() == "B", (
+            "expected the unfixed probe to resolve checkout_b's vera via "
+            f"PYTHONPATH (the trap this class exists to close), got "
+            f"{result.stdout!r} (stderr: {result.stderr})"
+        )
+
+    def test_check_doc_counts_main_inserts_root_before_vera_imports(self) -> None:
+        """Structural pin on the real fix: `main()` must insert `root`
+        at sys.path BEFORE any `from vera` import STATEMENT runs, not
+        after — inserting it after the first one already executed
+        would be a no-op for that import.  Matches an actual `from
+        vera.x import y` statement (line-anchored, optional leading
+        whitespace) rather than a bare substring search, which would
+        also match this very requirement described in a comment."""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        main_start = source.index("\ndef main() -> int:")
+        main_body = source[main_start:]
+        insert_idx = main_body.index("sys.path.insert(0, str(root))")
+        import_match = re.search(r"^[ \t]*from vera\.\w+ import\b", main_body, re.M)
+        assert import_match is not None, (
+            "main() no longer imports anything from vera — this test's "
+            "premise (there is a from-vera import to race against) no "
+            "longer holds; re-check whether the ordering still matters"
+        )
+        assert insert_idx < import_match.start(), (
+            "sys.path.insert(0, str(root)) must appear before the first "
+            "`from vera.<x> import ...` statement in main() — found it "
+            "after instead"
+        )

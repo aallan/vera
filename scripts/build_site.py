@@ -23,6 +23,15 @@ from datetime import date
 from functools import cache
 from pathlib import Path
 
+# The repo root (not `scripts/`, which the next line adds for the
+# doc_annotations sibling import below) must precede site-packages on
+# sys.path BEFORE the `from vera...` import: `import vera` otherwise falls
+# through to whichever venv's editable-install finder answers first —
+# pinned to whatever checkout `pip install -e` last ran in, which can be a
+# different worktree entirely (plan-file S13; see TESTING.md's "Running
+# against ANOTHER checkout" section for the sibling pytest-rootdir trap
+# this is NOT — a different mechanism with a different remedy).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # The doc gates' inline <!-- vera:skip-... --> fence annotations (#538) are

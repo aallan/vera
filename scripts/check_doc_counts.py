@@ -1384,6 +1384,25 @@ def main() -> int:
     )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
+    # This script's several `from vera...` imports below are IN-PROCESS,
+    # unlike the pytest/subprocess calls above that already pin
+    # `root / ".venv/bin/pytest"` (falling back to PATH only if that venv
+    # is absent).  A plain `import vera` instead falls through to
+    # whichever venv's editable-install finder answers first — a
+    # `__editable__.veralang-*.pth` file pinned to WHATEVER checkout `pip
+    # install -e` last ran in, which can be a different worktree entirely
+    # (that finder only engages when nothing earlier on `sys.path` already
+    # resolved `vera`).  Inserting `root` here — ahead of site-packages,
+    # so ahead of that finder — makes `vera` resolve as the plain on-disk
+    # package under `root/vera/` instead: unambiguously the tree this
+    # script's own `__file__` lives in, regardless of which interpreter or
+    # editable install happens to be active.  The equivalent trap on the
+    # pytest side (a test file measuring the wrong checkout because
+    # pytest's OWN rootdir detection wins) is documented in TESTING.md's
+    # "Running against ANOTHER checkout" section — a different mechanism
+    # with a different remedy (relocate the test file into the target
+    # tree), not this one.
+    sys.path.insert(0, str(root))
     errors: list[str] = []
 
     # ------------------------------------------------------------------
