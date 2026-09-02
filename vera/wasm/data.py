@@ -581,6 +581,22 @@ class DataMixin:
         match is then exactly the one value the match produced — and anything
         that value reaches, which the conservative mark phase finds from it.
 
+        That re-root is load-bearing, unlike the two pushes this fix deletes,
+        and the difference is measured rather than asserted: delete it and
+        ``TestMatchResultReRootIsLoadBearing1322`` reads back a
+        freed-and-reused block.  The cells that show it need all three of a
+        result that is NOT ``let``-bound (a ``let`` roots what it binds and
+        supplies the missing root), a sibling call argument that allocates
+        while the result sits on the operand stack, and an assertion on
+        CONTENT — a freed block nothing has overwritten yet still reads back
+        correctly, so a length check passes on a real use-after-free.
+
+        The re-root is itself frame-lifetime, so a POINTER-valued match still
+        costs one root and K of them cost K.  That residual is #1371 — every
+        heap-pointer-producing expression leaves a frame-lifetime root — and
+        its fix, this discipline applied per block statement, makes the
+        block's own restore reclaim the result and this re-root redundant.
+
         Emitted ONLY when this match actually pushed
         (:func:`contains_shadow_push`).  That is not an optimization: a
         function whose lowering never sets ``needs_alloc`` gets no ``$gc_sp``

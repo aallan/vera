@@ -470,6 +470,17 @@ public fn f(@String -> @Int)
             wat_fn_body(_compile_ok(self._SOURCE).wat, "f"))
         control = _push_pattern().findall(
             wat_fn_body(_compile_ok(self._CONTROL).wat, "f"))
+        # An equality between two counts is satisfied by 0 == 0, so a
+        # pattern that stopped matching the emitted push shape would turn
+        # this into a green test that pins nothing.  Both bodies DO push —
+        # the parameter prologue's root and the `string_concat`
+        # intermediates — so requiring a match is a property of the
+        # programs, not of the fix.
+        assert control, (
+            "_push_pattern matched no push in a body that allocates: the "
+            "pattern has drifted from the emitted `gc_shadow_push` shape "
+            "and the delta below would hold vacuously"
+        )
         assert len(matched) == len(control), (
             f"match body has {len(matched)} shadow pushes (locals {matched}), "
             f"match-free control has {len(control)} (locals {control}); "

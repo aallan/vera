@@ -166,6 +166,19 @@ _SLOT_COMPLETE_JS = re.compile(
 )
 
 
+def _fn_body(wat: str, name: str) -> str:
+    """The WAT text of ``$name``, up to the next top-level ``(func``.
+
+    Scoping the assertion to one function is the whole point of the
+    ``$register_wrapper`` cell: every allocating function in a module carries
+    a shadow bound, so a module-wide search is answered by any of them.
+    """
+    start = wat.index(f"(func ${name} ")
+    rest = wat[start + 1:]
+    nxt = rest.find("\n  (func ")
+    return rest if nxt < 0 else rest[:nxt]
+
+
 # A program that needs BOTH the shadow stack and the wrap table, so the
 # emitted module carries `$register_wrapper` (whose slow path holds the
 # fourth bound) alongside ordinary `gc_shadow_push` sites.
@@ -206,12 +219,25 @@ class TestEveryShadowBoundIsSlotComplete860:
 
     def test_emitted_module_carries_the_slot_complete_bound(self) -> None:
         """The negative half alone would pass on a module with no bound
-        at all — assert the replacement is actually present, at both
-        sites (``gc_shadow_push`` and ``$register_wrapper``)."""
+        at all — assert the replacement is actually present.
+
+        Counted per SITE, not module-wide: a module-wide count of two is
+        satisfied by two ordinary ``gc_shadow_push`` bounds while
+        ``$register_wrapper``'s slow path keeps the old shape, which is
+        exactly the site a module-wide count was meant to cover.  So the
+        wrapper's body is extracted and asked on its own.
+        """
         wat = _compile_ok(_WRAP_TABLE_SOURCE).wat
-        assert len(_SLOT_COMPLETE_WAT.findall(wat)) >= 2, (
-            "expected the slot-complete bound at both the gc_shadow_push "
-            "sites and the $register_wrapper slow path"
+        assert _SLOT_COMPLETE_WAT.search(wat), (
+            "no slot-complete bound anywhere in the emitted module"
+        )
+        wrapper = _fn_body(wat, "register_wrapper")
+        assert _SLOT_COMPLETE_WAT.search(wrapper), (
+            "$register_wrapper's slow-path root push does not carry the "
+            f"slot-complete bound:\n{wrapper}"
+        )
+        assert not _SLOT_START_WAT.search(wrapper), (
+            f"$register_wrapper still carries a slot-start bound:\n{wrapper}"
         )
 
     def test_browser_runtime_has_no_slot_start_bound(self) -> None:
