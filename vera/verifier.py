@@ -456,15 +456,17 @@ class ContractVerifier:
         # function name to the set of concrete type-name tuples it is
         # instantiated at; empty when the program has no generics.
         self._instances: dict[str, set[tuple[str, ...]]] = {}
-        # #991: lexically-scoped where-helper resolution.  ``env.functions`` is
-        # flat and last-wins, so a bare call to a same-named helper in a
+        # #991: lexically-scoped where-helper resolution.  ``env.functions``
+        # is flat and last-wins, so a bare call to a same-named helper in a
         # different parent tree (the diamond shape) resolved to the WRONG
         # helper's contract — a false E500.  `_top_level_fn_infos` pins each
-        # top-level function's own info (a nested helper of the same name would
-        # otherwise clobber it in the flat registry, since helpers register
-        # last), and `_scoped_fn_info_cache` memoizes per-helper infos built on
-        # demand for the scoped lookup (`_scoped_fn_lookup`), keyed
-        # (id, visibility) so a hit never returns another visibility's info.
+        # top-level function's own info, and `_scoped_fn_info_cache` memoizes
+        # per-helper infos built on demand for the scoped lookup
+        # (`_scoped_fn_lookup`), keyed (id, visibility) so a hit never returns
+        # another visibility's info.  Since #1307 `register_fn` keeps helpers
+        # out of the flat registry entirely — they cannot clobber a top-level
+        # entry, and this on-demand construction is the only way to reach
+        # one's contract, from inside its parent's scope alone.
         self._top_level_fn_infos: dict[str, FunctionInfo] = {}
         self._scoped_fn_info_cache: dict[
             tuple[int, str | None], FunctionInfo

@@ -12,6 +12,7 @@ from dataclasses import replace
 from vera import ast
 from vera.environment import TypeEnv
 from vera.monomorphize import namespace_adt_names, namespace_fn_names
+from vera.registration import where_helper_parents
 from vera.resolver import ResolvedModule
 
 
@@ -141,6 +142,10 @@ class ModulesMixin:
             mod_label = ".".join(mod.path)
             if name_filter is not None:
                 imp_node = self._find_import_decl(program, mod.path)
+                mod_helpers = where_helper_parents(
+                    tld.decl for tld in mod.program.declarations
+                    if isinstance(tld.decl, ast.FnDecl)
+                )
                 for name in sorted(name_filter):
                     priv_fn = all_fns.get(name)
                     priv_dt = all_data.get(name)
@@ -179,6 +184,39 @@ class ModulesMixin:
                             spec_ref=(
                                 'Chapter 8, Section 8.4 '
                                 '"Visibility"'
+                            ),
+                            error_code="E150",
+                        )
+                    elif name in mod_helpers:
+                        # #1307: a helper is not a module-level declaration
+                        # at all, so it is absent from the tables above —
+                        # the name is refused here on the module's own AST.
+                        owners = ", ".join(
+                            f"'{o}'" for o in sorted(mod_helpers[name])
+                        )
+                        self._error(
+                            imp_node,
+                            f"Cannot import '{name}' from module "
+                            f"'{mod_label}': it is a where-helper of "
+                            f"{owners}, not a declaration of the module.",
+                            rationale=(
+                                "Only a module's public top-level "
+                                "declarations can be imported.  A function "
+                                "declared in a `where` block is local to the "
+                                "function that declares it — it takes no "
+                                "visibility modifier and is not part of the "
+                                "module's namespace."
+                            ),
+                            fix=(
+                                f"Remove '{name}' from the import list and "
+                                f"call {owners} instead, or — if the helper "
+                                f"is meant to be shared — lift it out of the "
+                                f"`where` block to a top-level 'public fn "
+                                f"{name}(...)' in that module."
+                            ),
+                            spec_ref=(
+                                'Chapter 5, Section 5.8 '
+                                '"Function Visibility"'
                             ),
                             error_code="E150",
                         )

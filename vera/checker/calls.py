@@ -207,6 +207,36 @@ class CallsMixin:
         if ab_op:
             return self._check_ability_op_call(ab_op, args, node)
 
+        # #1307: the name resolves to nothing HERE, but the program does
+        # declare it — as a `where` helper of another declaration, which
+        # spec §5.8 makes local to its parent.  Reported as its own error
+        # rather than E200's warning: E200's instruction ("define it in
+        # this file") is false for a name the file already declares, and
+        # codegen has no target for the call either way, so accepting the
+        # program would be a check-green module that cannot be built.
+        owners = self._where_helper_parents.get(name)
+        if owners:
+            owner_list = ", ".join(f"'{o}'" for o in sorted(owners))
+            plural = "s" if len(owners) > 1 else ""
+            self._error(
+                node,
+                f"'{name}' is a where-helper of {owner_list} and is not in "
+                f"scope here.",
+                rationale="A function declared in a `where` block is local "
+                          "to the function that declares it: it is visible "
+                          "to that function's body and to its sibling "
+                          "helpers, and to nothing else in the module.",
+                fix=f"Call {owner_list} instead, move this call into the "
+                    f"body of {owner_list}, or — if '{name}' is meant to be "
+                    f"shared — lift it out of the `where` block{plural} to a "
+                    f"top-level 'private fn {name}(...)'.",
+                spec_ref='Chapter 5, Section 5.8 "Function Visibility"',
+                error_code="E178",
+            )
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
         # Unresolved — emit warning and continue
         self._error(
             node,

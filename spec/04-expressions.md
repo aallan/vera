@@ -197,6 +197,8 @@ match @Option<Int>.0 {
 
 Patterns are matched top-to-bottom. The first matching arm is taken.
 
+Every arm's pattern MUST be one the scrutinee's type can take: a constructor pattern names a constructor of that type, a literal pattern has that type (an integer literal matches `Int`, `Nat` or `Byte`), and a binding pattern `@T` names a type related to it by subtyping. A pattern that can never match is rejected (**E314**) — a `Map<K, V>` has no constructors, so `Some(...)` over one is not an unreachable arm but a type error, and an `Int` can equal no `Bool`. The rule is decided from what the checker knows: it does not apply where the scrutinee's type is a type variable (a `forall<T>` body cannot know which type `T` will be) or a named type the module does not declare.
+
 ### 4.9.2 Exhaustiveness
 
 The compiler MUST verify that the match is exhaustive: every possible value of the scrutinee type is covered by at least one arm. If the match is not exhaustive, the program is rejected.

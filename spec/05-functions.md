@@ -214,6 +214,8 @@ where {
 }
 ```
 
+A helper's **name** is scoped to its parent as well: it is callable from that function's body and contracts, from any closure or handler clause inside them, and from the parent's other helpers — and from nowhere else. A bare call naming a helper anywhere else in the module is rejected (**E178**), and a helper cannot be imported from another module (**E150**), being no part of that module's namespace. Where the name is also an effect operation's, a call outside the parent resolves the operation, by the ordinary bare-call rule (§7.4).
+
 A `where`-helper is a closed, param-rooted scope: its body resolves slot references only against its **own** parameters, never the outer function's. The outer function's parameter slots are not in scope inside a helper — everything a helper needs must be passed as an explicit argument (a helper's mandatory contract covers only its own parameters, so an implicit outer-frame capture would move a value across a contract boundary). Reading an outer parameter slot from a helper body is an unresolved-slot error (E130). The parent's `forall` **type** parameters remain in scope, so a helper of a generic parent may still be written over `@T`; only value slots are isolated.
 
 ## 5.7 Anonymous Functions (Closures)

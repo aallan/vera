@@ -992,6 +992,20 @@
     ]
   },
   {
+    "id": "ch05_where_helper_sibling_call_rejected",
+    "file": "ch05_where_helper_sibling_call_rejected.vera",
+    "chapter": 5,
+    "title": "A bare call to another declaration's where-helper is a checker error (#1307)",
+    "level": "check",
+    "spec_ref": "Section 5.8",
+    "expected_error": "E178",
+    "features": [
+      "where_block",
+      "bare_call",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch06_requires",
     "file": "ch06_requires.vera",
     "chapter": 6,
@@ -3490,6 +3504,34 @@
       "string",
       "array",
       "json_keys"
+    ]
+  },
+  {
+    "id": "ch04_pattern_ctor_over_container_rejected",
+    "file": "ch04_pattern_ctor_over_container_rejected.vera",
+    "chapter": 4,
+    "title": "A constructor pattern over a scrutinee whose type declares no such constructor is a checker error (#1315)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "constructor_pattern",
+      "check_error"
+    ]
+  },
+  {
+    "id": "ch04_pattern_literal_type_rejected",
+    "file": "ch04_pattern_literal_type_rejected.vera",
+    "chapter": 4,
+    "title": "A literal pattern whose type is not the scrutinee's is a checker error (#1320)",
+    "level": "check",
+    "spec_ref": "Section 4.9.1",
+    "expected_error": "E314",
+    "features": [
+      "match",
+      "literal_pattern",
+      "check_error"
     ]
   },
   {

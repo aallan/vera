@@ -1,0 +1,40 @@
+-- Conformance: a bare call to another declaration's where-helper is a checker
+-- error (Chapter 5, Section 5.8).
+-- Tests: E178 — a function declared in a `where` block is local to the
+-- function that declares it, so `helperx` is visible inside `holder` and
+-- nowhere else.  `other` naming it is not an unknown name (E200 would tell
+-- this file to declare one it already has) but a scope violation, and codegen
+-- agrees: a helper is emitted as `holder$where$helperx`, so the bare call has
+-- no target (#1307).
+private fn holder(@Bool -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  helperx(5)
+}
+where {
+  fn helperx(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == @Int.0)
+    effects(pure)
+  {
+    @Int.0
+  }
+}
+
+private fn other(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  helperx(7)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 12)
+  effects(pure)
+{
+  holder(true) + other(())
+}

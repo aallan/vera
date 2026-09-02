@@ -1,0 +1,24 @@
+-- Conformance: a literal pattern whose type is not the scrutinee's is a
+-- checker error (Chapter 4, Section 4.9.1).
+-- Tests: E314 — an Int scrutinee can equal no Bool, so the `true` arm is dead
+-- code the backend has no comparison to emit for.  The literal half of the
+-- same rule the constructor arms obey: a pattern is typed against the
+-- scrutinee, not against its own shape (#1320).
+public fn probe(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    true -> 100,
+    _ -> 200
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe(7)
+}
