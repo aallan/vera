@@ -1358,7 +1358,7 @@ def open_bug_issues(repo: str = "aallan/vera") -> list[int]:
 
 _ERROR_CODES_CITATION = re.compile(
     r"maps every code to a short description \((\d+) entries — (\d+) `E` codes "
-    r"and the two `W` warning codes\)"
+    r"and (\d+) `W` warning codes\)"
 )
 
 
@@ -1366,18 +1366,21 @@ def check_error_codes_count(readme_text: str, registry: dict[str, object]) -> li
     """Check vera/README.md's `ERROR_CODES` figures against the registry.
 
     Three numbers in one sentence, and none was gated: the total, the `E`
-    count, and the claim that the remainder is exactly the two `W` codes.
-    The registry is the only source for any of them, so the sentence could
-    drift on every code added (#1330 review).
+    count, and the `W` count.  The registry is the only source for any of
+    them, so the sentence could drift on every code added (#1330 review).
+    The `W` figure was spelled out in prose ("the two `W` warning codes"),
+    which made a third `W` code a PARSE failure rather than a count
+    mismatch — the gate reporting that it could not find the sentence
+    instead of which number was wrong (#1345 added one).
     """
     found = _ERROR_CODES_CITATION.search(readme_text)
     if found is None:
         return [
             "vera/README.md: could not find the ERROR_CODES count sentence "
             "('maps every code to a short description (N entries — N `E` "
-            "codes and the two `W` warning codes)')"
+            "codes and N `W` warning codes)')"
         ]
-    cited_total, cited_e = (int(g) for g in found.groups())
+    cited_total, cited_e, cited_w = (int(g) for g in found.groups())
     live_e = sum(1 for code in registry if code.startswith("E"))
     live_w = sum(1 for code in registry if code.startswith("W"))
     errors: list[str] = []
@@ -1391,10 +1394,10 @@ def check_error_codes_count(readme_text: str, registry: dict[str, object]) -> li
             f"vera/README.md ERROR_CODES E-code count: doc says {cited_e}, "
             f"live is {live_e}"
         )
-    if live_w != 2:
+    if cited_w != live_w:
         errors.append(
-            f"vera/README.md says the remainder is two `W` codes; the "
-            f"registry has {live_w}"
+            f"vera/README.md ERROR_CODES W-code count: doc says {cited_w}, "
+            f"live is {live_w}"
         )
     return errors
 

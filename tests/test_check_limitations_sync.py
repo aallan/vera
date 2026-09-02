@@ -197,11 +197,17 @@ class TestIssueColumnScoping:
         The set tracks the live document: #1294 dropped out when #1301's
         row was removed, that row's "Successor to #1294" having been its
         last prose citation anywhere in the file.
+
+        #1285 was one of the eight and is no longer among them: its only
+        prose citation lived in the #1298 Bugs row, which left the table
+        when #1298 was fixed.  A citation is pinned here for the SCOPING
+        behaviour it exercises, so one whose host row is gone is dropped
+        rather than kept as a reference to text that no longer exists.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268, 1277, 1281, 1285, 1304, 1305, 1309}
+        prose_only = {1268, 1277, 1281, 1304, 1305, 1309}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

@@ -282,7 +282,8 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
         assert not errors
         narrows = [
             o for o in result.obligations
-            if o.kind == "nat_bind" and o.status == "tier3"
+            if o.kind == "nat_bind"
+            and o.status in ("tier3", "tier3_unguarded")
         ]
         # Exactly TWO records, and the count is the assertion (a stopped
         # descent drops to 1, a double-record rises to 3): the nested
@@ -297,6 +298,15 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
             "nat_to_int-argument record must both be obligated — "
             f"got {len(narrows)}"
         )
+        # The two are in DIFFERENT buckets, and which is which is the #1362
+        # point: the closure's return is guarded by the lifted closure's
+        # return guard, so it is `tier3`; the `nat_to_int` argument is not
+        # guarded by anything — that builtin is a representation identity
+        # with no lowering step to attach a guard to — so claiming `tier3`
+        # there asserted a runtime check that does not exist.  It is now
+        # disclosed instead.
+        by_status = sorted(o.status for o in narrows)
+        assert by_status == ["tier3", "tier3_unguarded"], by_status
 
 
 # =====================================================================

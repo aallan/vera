@@ -356,6 +356,11 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False,
                     "tier1_verified": s.tier1_verified,
                     "tier3_runtime": s.tier3_runtime,
                     "total": s.total,
+                    # #1345: assumptions counted BESIDE the tiers.  Absent
+                    # from this object, an `assume` was counted nowhere at
+                    # all, so a consumer could not tell a proof from a
+                    # promise.
+                    "assumptions": s.assumptions,
                     # #1350: the budget these tiers were measured under.  A
                     # tier near the budget is host-sensitive, so a summary
                     # that does not say which budget produced it cannot be

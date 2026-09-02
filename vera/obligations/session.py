@@ -297,7 +297,7 @@ class VerificationSession:
         # exactly as the cold `verify_program` path derives it from its own —
         # so the warm and cold summaries agree by construction (the tier counts
         # can't drift from the obligations a consumer reads).
-        summary = summarize(out_obls)
+        summary = summarize(out_obls, out_diags)
 
         self.last_program = program
         self.last_run_stats = stats

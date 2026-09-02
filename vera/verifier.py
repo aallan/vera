@@ -19,6 +19,7 @@ import z3
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from vera import ast, naming
@@ -98,6 +99,26 @@ _OPAQUE_SCRUTINEE_REASON = (
     "the matched value is opaque to the SMT layer, so its field could not be "
     "projected and the predicate was never given a value to reason about"
 )
+
+
+#: Builtins that take a ``@Nat`` parameter and plant NO runtime guard on it
+#: (#1362).  Builtin translators bypass codegen's ``_fn_nat_params`` loop and
+#: guard per-translator instead, so "a concrete ``@Nat`` formal is guarded" —
+#: true of every user function — is not true of all of them.
+#:
+#: MEASURED, not reasoned: every builtin with a ``@Nat`` parameter was compiled
+#: with a narrowing argument and its emitted WAT inspected for the guard.  Seven
+#: of the eight plant one; ``nat_to_int`` does not, because it is a
+#: representation identity (``Nat`` and ``Int`` are both ``i64``), so there is
+#: no lowering step for a guard to attach to.
+#:
+#: The set is kept honest by a DIFFERENTIAL rather than by review:
+#: ``test_nat_arg_guard_inventory_matches_codegen`` enumerates the ``@Nat``
+#: builtins from the live registry, derives each one's guard from the emitted
+#: WAT, and compares against this set — so a builtin that gains or loses its
+#: guard fails the test instead of silently desynchronising the classification.
+#: That is the #1205 obligation<->guard parity discipline applied here.
+_NAT_ARG_UNGUARDED_BUILTINS = frozenset({"nat_to_int"})
 
 
 def _is_locally_constructed(term: object, sort: object) -> bool:
@@ -200,7 +221,10 @@ class VerifySummary:
     total: int = 0
 
 
-def summarize(obligations: list[ProofObligation]) -> VerifySummary:
+def summarize(
+    obligations: list[ProofObligation],
+    diagnostics: Sequence[Diagnostic] = (),
+) -> VerifySummary:
     """Derive a :class:`VerifySummary` from the reified obligation stream.
 
     The single source of truth for the tier counts, replacing ~50 hand-written
@@ -232,6 +256,24 @@ def summarize(obligations: list[ProofObligation]) -> VerifySummary:
         tier1_verified=tier1,
         tier3_runtime=tier3,
         total=tier1 + tier3,
+        # #1345: `assume` is counted BESIDE the tiers, never inside them.  It
+        # discharges no obligation — it is the escape hatch that skips one —
+        # so folding it into a tier would inflate exactly the number a reader
+        # uses to judge how much was proved.  Kept out of the obligation
+        # stream for the same reason: the documented partition
+        # (`len(obligations) == total + violated + tier3_unguarded`) is a
+        # statement about obligations, and an assumption is not one.
+        #
+        # DERIVED from the assembled diagnostic stream rather than from a
+        # counter, for the same reason the tiers are derived from the
+        # assembled obligation stream: the warm session builds its result out
+        # of cached per-function slices, and anything accumulated on the
+        # verifier instead of assembled from those slices drifts between the
+        # two paths.  A counter did exactly that, and the warm==cold oracle
+        # caught it — warm 0, cold 1.
+        assumptions=sum(
+            1 for d in diagnostics if d.error_code == "W003"
+        ),
     )
 
 
@@ -342,6 +384,10 @@ class ContractVerifier:
         self.errors: list[Diagnostic] = []
         # #222 Phase A: reified obligations in discharge order.
         self.obligations: list[ProofObligation] = []
+        # #1363: functions whose own obligations were disclosed rather
+        # than discharged.  Empty on the first pass; populated for the
+        # second when pass one found any (see `verify_program`).
+        self._disclosed_fns: frozenset[str] = frozenset()
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -2670,15 +2716,64 @@ class ContractVerifier:
         the obligations recorded so far.  The warm session derives its own
         summaries the same way, per function slice.
         """
-        return summarize(self.obligations)
+        return summarize(self.obligations, self.errors)
 
     def verify_program(self, program: ast.Program) -> None:
-        """Entry point: register modules, then local declarations, then verify."""
+        """Entry point: register modules, then local declarations, then verify.
+
+        TWO PASSES WHEN, AND ONLY WHEN, SOMETHING WAS DISCLOSED (#1363).  A
+        caller may prove a Tier-1 obligation from a callee's declared-type
+        fact, which is sound exactly while the callee's own obligation for
+        that type was DISCHARGED.  When it was merely disclosed — the run
+        saying it could neither prove nor guard it — the caller's proof leans
+        on something this run admitted it could not establish, and R1 makes
+        that never Tier 1.
+
+        Knowing which callees were disclosed needs their verification to have
+        happened, and a forward reference is legal, so declaration order
+        cannot supply it: pass one establishes the statuses, pass two re-runs
+        with them known.  Pass two is skipped entirely when nothing was
+        disclosed, which is the overwhelmingly common case, so the cost lands
+        only on programs that actually have a disclosed obligation.
+        """
         self.register_program(program)
+        self._verify_all_declarations(program)
+
+        disclosed = self._disclosed_fn_names()
+        if disclosed and disclosed != self._disclosed_fns:
+            # Re-run knowing which callees were disclosed.  The obligation
+            # stream is rebuilt rather than patched: a status is a property of
+            # the proof that produced it, and pass one's proofs were made
+            # against a context this pass no longer offers.
+            self._disclosed_fns = disclosed
+            # Both buffers are rebuilt, matching the per-instance idiom in
+            # `_verify_generic_instances`: a status and its diagnostic are
+            # properties of the proof that produced them, and pass one's
+            # proofs were made against a context this pass no longer offers.
+            self.errors, self.obligations = [], []
+            self.register_program(program)
+            self._verify_all_declarations(program)
+
+    def _verify_all_declarations(self, program: ast.Program) -> None:
+        """One full verification pass over the program's own declarations."""
         for tld in program.declarations:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
         self._verify_shadowed_module_generics()
+
+    def _disclosed_fn_names(self) -> frozenset[str]:
+        """Functions carrying an obligation that is neither proved nor guarded.
+
+        ``tier3_unguarded`` is the honest bucket for exactly that (#1362 having
+        stopped an unguarded site from claiming ``tier3``), so it is the whole
+        test: a ``tier3`` obligation IS runtime-guarded, and a guard makes the
+        declared type true at run time, which is what a consumer may lean on.
+        """
+        return frozenset(
+            o.fn_name for o in self.obligations
+            if o.status == "tier3_unguarded"
+        )
+
 
     def _verify_shadowed_module_generics(self) -> None:
         """Verify each IMPORTED generic's clone at the type args the importer
@@ -3492,6 +3587,36 @@ class ContractVerifier:
                     )
                     self._report_violation(
                         decl, contract, smt_result.counterexample
+                    )
+                elif smt_result.status == "disclosed":
+                    # #1363: the postcondition is provable, but only by
+                    # leaning on a declared-type fact this run disclosed as
+                    # neither proved nor guarded.  Reporting it `verified`
+                    # claims a proof the run does not have; reporting it a
+                    # TIMEOUT would name an event that did not happen and
+                    # send the reader to raise a budget that was never hit.
+                    # Tier 3 is the truth: the contract is checked at run
+                    # time, where the fact either holds or the guard fires.
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "tier3",
+                        error_code="E534",
+                    )
+                    self._warning(
+                        contract,
+                        f"Postcondition in '{decl.name}' holds only from a "
+                        f"fact this run could neither prove nor guard. "
+                        f"Contract will be checked at runtime.",
+                        rationale=(
+                            "A declared-type fact is sound to assume once the "
+                            "obligation establishing it is discharged. This "
+                            "one was disclosed instead — the run reported it "
+                            "as neither proved nor guarded — so a proof "
+                            "resting on it is a Tier-3 truth, not a Tier-1 "
+                            "proof."
+                        ),
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+                        error_code="E534",
+                        tier=3,
                     )
                 else:  # pragma: no cover
                     # unknown / timeout
@@ -4459,6 +4584,26 @@ class ContractVerifier:
         if isinstance(expr, ast.AssumeExpr):
             # An assumed condition is taken on trust (no proof obligation);
             # still recurse for any trapping op inside it (#680 review).
+            #
+            # #1345: spec 6.2.6 requires a warning for EVERY `assume`.  It is
+            # an escape hatch and an unsound one — if the assumption is false
+            # the program may do anything — so a reader who sees a clean
+            # verify is entitled to know one was taken on trust.  Counted here
+            # too, which is what makes `VerifySummary.assumptions` a real
+            # number rather than the hardcoded 0 it was.
+            self._warning(
+                expr,
+                f"Unverified assumption in '{decl.name}': taken on trust, "
+                f"not proved.",
+                rationale=(
+                    "`assume` tells the verifier to accept a predicate "
+                    "without proof. If it does not hold at run time the "
+                    "program's behaviour is undefined, and every obligation "
+                    "discharged from it inherits that."
+                ),
+                spec_ref='Chapter 6, Section 6.2.6 "Assumptions (`assume`)"',
+                error_code="W003",
+            )
             self._walk_for_primitive_op_obligations(
                 decl, expr.expr, smt, slot_env, assumptions,
             )
@@ -4827,7 +4972,10 @@ class ContractVerifier:
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
-                            site="call argument", guarded=True,
+                            site="call argument",
+                            # The desugared call is the same call, so it
+                            # inherits the same guard question (#1362).
+                            guarded=self._call_arg_nat_guarded(right.name),
                         )
                     elif (self._int_widening_target(arg, None)
                             and self._result_is_nat(arg)):
@@ -5119,12 +5267,16 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument",
-                            # Always codegen-guarded: a concrete @Nat formal
-                            # guards directly, and a generic formal fixed to
-                            # @Nat is guarded on the monomorphised callee
-                            # (`pick$Nat` carries concrete @Nat flags; the
-                            # guard keys on the resolved call target, CR #756).
-                            guarded=True,
+                            # Codegen-guarded for a USER callee: a concrete
+                            # @Nat formal guards directly, and a generic formal
+                            # fixed to @Nat is guarded on the monomorphised
+                            # callee (`pick$Nat` carries concrete @Nat flags;
+                            # the guard keys on the resolved call target,
+                            # CR #756).  Not universal, though — the builtins
+                            # bypass `_fn_nat_params` and one of them plants no
+                            # guard at all, so the flag is READ FROM the
+                            # measured inventory rather than assumed (#1362).
+                            guarded=self._call_arg_nat_guarded(expr.name),
                         )
                     elif (self._int_widening_target(arg, formal)
                             and self._result_is_nat(arg)):
@@ -5954,7 +6106,8 @@ class ContractVerifier:
             # effect-op stand-in), which is plain Tier-3, not a timeout.
             self._record_obligation(
                 decl.name, "nat_sub", expr,
-                "tier3" if result.status == "opaque" else "timeout",
+                "tier3" if result.status in ("opaque", "disclosed")
+                else "timeout",
             )
 
     def _check_div_zero_obligation(
@@ -6036,7 +6189,8 @@ class ContractVerifier:
             # effect-op stand-in), which is plain Tier-3, not a timeout.
             self._record_obligation(
                 decl.name, "div_zero", expr,
-                "tier3" if result.status == "opaque" else "timeout",
+                "tier3" if result.status in ("opaque", "disclosed")
+                else "timeout",
             )
 
     def _check_assert_obligation(
@@ -6064,8 +6218,10 @@ class ContractVerifier:
         if pred is None or pred.sort() != z3.BoolSort():
             # Untranslatable / non-Bool predicate — the runtime trap is the
             # only guarantee.
-            self._record_obligation(decl.name, "assert", expr, "tier3")
+            self._record_obligation(decl.name, "assert", expr, "tier3",
+                                    error_code="E535")
             return
+            self._assert_runtime_checked_warning(decl, expr)
         result = smt.check_valid(pred, list(assumptions))
         if result.status == "verified":
             self._record_obligation(decl.name, "assert", expr, "verified")
@@ -6082,7 +6238,35 @@ class ContractVerifier:
             self._report_assert_violation(decl, expr, result.counterexample)
             return
         # Sometimes true, sometimes false (or solver unknown) → Tier 3.
-        self._record_obligation(decl.name, "assert", expr, "tier3")
+        self._record_obligation(decl.name, "assert", expr, "tier3",
+                                error_code="E535")
+        self._assert_runtime_checked_warning(decl, expr)
+
+    def _assert_runtime_checked_warning(
+        self, decl: ast.FnDecl, expr: ast.Expr,
+    ) -> None:
+        """Spec 6.5's MUST: a runtime-checked contract says so (#1345).
+
+        `requires` and `ensures` have carried this warning since E521/E522/
+        E524; `assert` fell to a runtime check silently, so a reader saw the
+        tier count move without being told which construct moved it.  Scoped
+        to the CONTRACT constructs of Chapter 6 — the primitive-operation
+        safety obligations of 6.4.3 (overflow, division, index bounds) are
+        not contracts and keep their own reporting.
+        """
+        self._warning(
+            expr,
+            f"Cannot statically verify assertion in '{decl.name}'. "
+            f"Assertion will be checked at runtime.",
+            rationale=(
+                "The solver neither proved the predicate nor refuted it, so "
+                "the assertion falls to a runtime check that traps if it "
+                "fails."
+            ),
+            spec_ref='Chapter 6, Section 6.5 "Runtime Contract Checking"',
+            error_code="E535",
+            tier=3,
+        )
 
     def _check_index_bounds_obligation(
         self,
@@ -6396,6 +6580,21 @@ class ContractVerifier:
             return cur
         return env
 
+    def _call_arg_nat_guarded(self, callee: str) -> bool:
+        """Whether codegen guards an ``@Int -> @Nat`` narrowing at a call to
+        *callee* (#1362).
+
+        A user function's concrete ``@Nat`` formal is guarded through
+        ``_fn_nat_params``; the builtins bypass that loop, and one of them
+        plants no guard at all.  Classifying its argument ``tier3`` claims a
+        runtime check that does not exist, so an undecided obligation there
+        must take the unguarded bucket and disclose E504 like its documented
+        siblings.  Refutable arguments hid this: the obligation is
+        ``violated`` regardless, so only an opaque value — a handler-clause
+        payload binder, in the reported case — reaches the bucketing at all.
+        """
+        return callee not in _NAT_ARG_UNGUARDED_BUILTINS
+
     def _check_nat_binding_obligation(
         self,
         decl: ast.FnDecl,
@@ -6454,7 +6653,8 @@ class ContractVerifier:
             # opaque term some other way.
             self._record_nat_bind_tier3(
                 decl, value_node, site,
-                "tier3" if result.status == "opaque" else "timeout",
+                "tier3" if result.status in ("opaque", "disclosed")
+                else "timeout",
                 guarded=guarded,
                 reason=self._undecided_reason(result.status))
 
@@ -6500,7 +6700,8 @@ class ContractVerifier:
             # codegen-guarded.
             self._record_nat_bind_tier3(
                 decl, node, site,
-                "tier3" if result.status == "opaque" else "timeout",
+                "tier3" if result.status in ("opaque", "disclosed")
+                else "timeout",
                 guarded=True)
 
     def _check_int_widening_obligation(
@@ -6956,8 +7157,8 @@ class ContractVerifier:
     def _undecided_reason(status: str, subject: str = "the obligation") -> str:
         """Why ``check_valid`` neither proved nor refuted the obligation (#1251).
 
-        :py:meth:`~vera.smt.SmtContext.check_valid` has FOUR outcomes, and the
-        two that reach a Tier-3 demotion are not the same event.  ``unknown``
+        :py:meth:`~vera.smt.SmtContext.check_valid` has FIVE outcomes, and the
+        three that reach a Tier-3 demotion are not the same event.  ``unknown``
         is the solver declining to decide — a timeout, or a goal outside what
         it can settle.  ``opaque`` is the #1199 verdict: the solver decided
         promptly and SAT, but every countermodel ran over an effect-operation
@@ -6991,7 +7192,7 @@ class ContractVerifier:
         callers branch on them first — and ``unsupported``, which
         :py:class:`~vera.smt.SmtResult`'s annotation once listed, is produced by
         nothing: ``check_valid`` is the only constructor and it returns exactly
-        the four below.  A future fifth status is a decision about what to tell
+        the five below.  A future fifth status is a decision about what to tell
         the reader, so it fails here rather than quietly wearing wrong text.
         """
         if status == "opaque":
@@ -7001,6 +7202,12 @@ class ContractVerifier:
             )
         if status == "unknown":
             return f"the solver returned no decision on {subject}"
+        if status == "disclosed":
+            return (
+                "the only proof available leans on a declared-type fact this "
+                "run disclosed as neither proved nor guarded, so it is a "
+                "Tier-3 truth rather than a Tier-1 proof"
+            )
         raise ValueError(
             f"no demotion reason for solver status {status!r}: "
             "every outcome that can reach a Tier-3 demotion must say what it "
@@ -7450,8 +7657,26 @@ class ContractVerifier:
         if (isinstance(scrutinee, ast.ConstructorCall)
                 and scrutinee.name == pattern.name):
             return []  # literal scrutinee — concrete args, not accessors
-        return self._subpattern_source_facts_term(
+        facts = self._subpattern_source_facts_term(
             self._resolved_type_of(scrutinee), scrutinee_z3, pattern, smt)
+        if facts and self._scrutinee_is_disclosed_call(scrutinee):
+            # #1363: the declared type these facts are read off belongs to a
+            # callee whose OWN obligation for it was disclosed, not
+            # discharged.  The boundary rule that a call-produced value's
+            # facts were established elsewhere has a third case — disclosed —
+            # and this is it.  Held apart rather than dropped: a goal that
+            # needs them is still reported, as Tier 3 rather than Tier 1.
+            smt._tainted_facts.extend(facts)
+            return []
+        return facts
+
+    def _scrutinee_is_disclosed_call(self, scrutinee: ast.Expr) -> bool:
+        """Whether *scrutinee* is a call to a function this run disclosed."""
+        if not self._disclosed_fns:
+            return False
+        name = getattr(scrutinee, "name", None)
+        return (isinstance(scrutinee, (ast.FnCall, ast.ModuleCall))
+                and name in self._disclosed_fns)
 
     def _subpattern_source_facts_term(
         self,

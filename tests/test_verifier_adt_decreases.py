@@ -343,7 +343,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 411 T1 / 122 T3 / 533 total (current).
+        """All examples together: 411 T1 / 119 T3 / 530 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -478,6 +478,10 @@ private fn sum(@List<Int> -> @Int)
         postcondition the verifier discharged statically; the user-defined
         `magnitude`/`larger` shed it, so one obligation moves T1 -> T3.  Net:
         -1 T1, +1 T3, +0 total: 271/81/352 -> 270/82/352.
+        * 411/119/530 after #1362 stopped three `string_utilities.vera`
+          `nat_to_int` arguments claiming a runtime guard that does not
+          exist; they are disclosed (`tier3_unguarded`/E504) instead, and
+          `tier3_unguarded` is counted in neither tier by design.
         * 411/122/533 after `ephemeris.vera` (#143) contributed 47 T1 +
           2 T3 + 49 contracts.  The two T3s are the `ensures` clauses of
           `vec_norm` and `declination`, each standing on the far side of a
@@ -674,11 +678,17 @@ private fn sum(@List<Int> -> @Int)
         # +5 T1, -5 T3, +0 total: 359/125/484 -> 364/120/484.
         #
         # #143: `ephemeris.vera`, the first floating-point example, adds
-        # 47 T1 + 2 T3: 364/120/484 -> 411/122/533.
+        # 47 T1 + 2 T3: 364/120/484 -> 411/122/533; then #1362 disclosed
+        # three of `string_utilities.vera`'s `nat_to_int` arguments, which
+        # leave `tier3_runtime` without joining any other count.
         assert t1 == 411, f"Expected 411 T1, got {t1}"
-        assert t3 == 122, f"Expected 122 T3, got {t3}"
-        assert total == 533, f"Expected 533 total, got {total}"
-        assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
+        assert t3 == 119, f"Expected 119 T3, got {t3}"
+        assert total == 530, f"Expected 530 total, got {total}"
+        # #1362: three `nat_to_int` arguments in `string_utilities.vera`
+        # are now disclosed rather than claiming a guard that the emitted
+        # module does not contain.  They are counted in NEITHER tier, which
+        # is why `total` fell by three while `tier1_verified` held.
+        assert t3u == 3, f"Expected 3 tier3_unguarded, got {t3u}"
 
 
 # =====================================================================

@@ -157,12 +157,14 @@ class SlotEnv:
 class SmtResult:
     """Outcome of a Z3 validity check."""
 
-    #: The four outcomes ``check_valid`` produces — its only constructor, so
-    #: this list is exhaustive.  Consumers that map a status to user-facing
+    #: The five outcomes ``check_valid`` produces — its only constructor, so
+    #: this list is exhaustive.  ``disclosed`` (#1363) means the goal is
+    #: provable ONLY by leaning on a fact the same run disclosed as neither
+    #: proved nor guarded: honest as a Tier-3 outcome, never as Tier 1.  Consumers that map a status to user-facing
     #: text handle each by name and reject the rest (see
     #: ``ContractVerifier._undecided_reason``); a fifth added here is a
     #: decision they have to make, not one to inherit.
-    status: str  # "verified" | "violated" | "unknown" | "opaque"
+    status: str  # "verified" | "violated" | "unknown" | "opaque" | "disclosed"
     counterexample: dict[str, str] | None = None  # slot_name → value
 
 
@@ -472,6 +474,12 @@ class SmtContext:
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
         self._path_conditions: list[z3.ExprRef] = []
+        # #1363: declared-type facts whose OWN obligation resolved
+        # not-proved-not-guarded.  Held apart from the solver rather than
+        # asserted into it, so a goal is first asked WITHOUT them: anything
+        # that needs one is provable only from something this run admitted it
+        # could not establish, which is a Tier-3 truth and not a Tier-1 proof.
+        self._tainted_facts: list[z3.ExprRef] = []
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -3326,12 +3334,41 @@ class SmtContext:
         - unsat → goal always holds (verified)
         - sat → counterexample found (violated)
         - unknown → solver timeout or incomplete (unknown)
+        - provable only with a disclosed fact → disclosed (#1363)
+
+        TAINTED FACTS ARE WITHHELD FROM THE FIRST ATTEMPT.  A declared-type
+        fact whose own obligation resolved not-proved-not-guarded is not a
+        fact this run established, so a goal that needs it is not proved.  The
+        goal is asked without them; only if that fails are they added, and a
+        goal that then holds is reported ``disclosed`` — Tier 3, never Tier 1.
+        Asking in that order is what distinguishes "proved" from "proved from
+        something we admitted we could not establish", which asserting them
+        into the base context makes indistinguishable.
         """
+        result = self._check_refutation(goal, assumptions, tainted=False)
+        if result.status == "verified" or not self._tainted_facts:
+            return result
+        with_tainted = self._check_refutation(goal, assumptions, tainted=True)
+        if with_tainted.status == "verified":
+            return SmtResult(status="disclosed")
+        return result
+
+    def _check_refutation(
+        self,
+        goal: z3.ExprRef,
+        assumptions: list[z3.ExprRef],
+        *,
+        tainted: bool,
+    ) -> SmtResult:
+        """One refutation attempt, with or without the tainted facts (#1363)."""
         self.solver.push()
         for a in assumptions:
             self.solver.add(a)
         for pc in self._path_conditions:
             self.solver.add(pc)
+        if tainted:
+            for tf in self._tainted_facts:
+                self.solver.add(tf)
         self.solver.add(z3.Not(goal))
 
         result = self.solver.check()

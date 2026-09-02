@@ -1106,7 +1106,7 @@ class TestErrorCodesCount:
 
     _SENTENCE = (
         "The `ERROR_CODES` dict in `errors.py` maps every code to a short "
-        "description (160 entries — 158 `E` codes and the two `W` warning "
+        "description (160 entries — 158 `E` codes and 2 `W` warning "
         "codes)."
     )
 
@@ -1133,11 +1133,13 @@ class TestErrorCodesCount:
         )
         assert [e for e in errors if "E-code count" in e]
 
-    def test_a_third_warning_code_is_caught(self) -> None:
-        """The sentence says "the two `W` warning codes" in prose, so the
-        only way it can go wrong is the registry gaining a third."""
+    def test_a_stale_w_count_is_caught(self) -> None:
+        """The `W` figure is a NUMBER in the sentence, gated like the other
+        two.  It was prose ("the two `W` warning codes"), which made a third
+        `W` code a parse failure — the gate saying it could not find the
+        sentence rather than which number was wrong (#1345 added one)."""
         errors = _MOD.check_error_codes_count(self._SENTENCE, self._registry(158, 3))
-        assert [e for e in errors if "two `W` codes" in e]
+        assert [e for e in errors if "W-code count" in e], errors
 
     def test_a_reworded_sentence_is_an_error_not_a_skip(self) -> None:
         text = "The ERROR_CODES dict has 160 entries."
