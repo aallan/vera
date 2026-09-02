@@ -139,6 +139,17 @@ def _collect_ids(argv_after_pytest: list[str]) -> set[str]:
         encoding="utf-8",
         check=False,
     )
+    # A nonexistent path or bad flag on the replayed command can make
+    # pytest exit non-zero while still printing SOME valid node IDs on
+    # stdout (e.g. a bad `--ignore=` target with other paths still
+    # resolving) — collecting fewer than intended is silent unless the
+    # exit status is checked too, and every assertion below is a set
+    # comparison that a too-small collection could still satisfy.
+    assert result.returncode == 0, (
+        "pytest collection failed while replaying "
+        f"{['pytest', *argv_after_pytest, '--collect-only', '-q']!r}:\n"
+        f"{result.stderr}"
+    )
     return {
         line.strip()
         for line in result.stdout.splitlines()
@@ -244,21 +255,52 @@ class TestNightlyStressLaneCollection1328:
         )
 
     def test_workflow_selection_collects_host_handle_reclamation_battery(
-        self, workflow_collected_ids: set[str]
+        self,
+        workflow_collected_ids: set[str],
+        canonical_collected_ids: set[str],
     ) -> None:
         """#1328's own repro, verbatim: replay the workflow's command
-        in collect-only mode and assert all 10
-        ``TestHostHandleReclamation573`` instances are among the
-        collected node IDs."""
-        missing = [
-            name
+        in collect-only mode and assert all 10 named
+        ``TestHostHandleReclamation573`` instances are collected
+        EXACTLY (full node-ID equality, not "some node ID contains
+        this method's name" — a future parametrised variant of one of
+        these methods would otherwise still satisfy a substring check
+        with only some of its instances present).  Also compares the
+        FULL set of collected reclamation node IDs against the
+        canonical `-m stress` selection's own reclamation subset, so
+        an instance ADDED to the class later is caught too, not just
+        one of today's ten going missing."""
+        expected_ids = {
+            f"tests/test_codegen_gc_reclamation.py::"
+            f"TestHostHandleReclamation573::{name}"
             for name in _EXPECTED_RECLAMATION_TESTS
-            if not any(
-                f"TestHostHandleReclamation573::{name}" in node_id
-                for node_id in workflow_collected_ids
-            )
-        ]
+        }
+        missing = expected_ids - workflow_collected_ids
         assert not missing, (
             "nightly-stress.yml's stress selection does not collect "
-            f"these TestHostHandleReclamation573 instances: {missing}"
+            f"these TestHostHandleReclamation573 instances: {sorted(missing)}"
+        )
+
+        class_marker = "::TestHostHandleReclamation573::"
+        canonical_class_ids = {
+            node_id for node_id in canonical_collected_ids
+            if class_marker in node_id
+        }
+        assert len(canonical_class_ids) == len(_EXPECTED_RECLAMATION_TESTS), (
+            "the canonical `-m stress` selection's own "
+            "TestHostHandleReclamation573 subset no longer has "
+            f"{len(_EXPECTED_RECLAMATION_TESTS)} instances "
+            f"({len(canonical_class_ids)} found) — update "
+            "_EXPECTED_RECLAMATION_TESTS to match the class"
+        )
+        workflow_class_ids = {
+            node_id for node_id in workflow_collected_ids
+            if class_marker in node_id
+        }
+        assert workflow_class_ids == canonical_class_ids, (
+            "nightly-stress.yml's stress selection's "
+            "TestHostHandleReclamation573 subset does not match the "
+            "canonical `-m stress` selection's — "
+            f"missing: {sorted(canonical_class_ids - workflow_class_ids)}, "
+            f"extra: {sorted(workflow_class_ids - canonical_class_ids)}"
         )
