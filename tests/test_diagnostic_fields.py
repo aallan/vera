@@ -1422,6 +1422,143 @@ class TestSpecDirCache:
 
 
 # =====================================================================
+# #828: error_code uniqueness — a literal code emitted from more than
+# one distinct (file, enclosing-function) site must have that exact
+# site set declared in KNOWN_MULTI_SITE_ERROR_CODES.
+# =====================================================================
+
+class TestQualifiedNames:
+    def test_module_function_and_method_scopes(self, mod: object) -> None:
+        import ast
+
+        src = (
+            "x = 1\n"
+            "def top_fn():\n"
+            "    y = 2\n"
+            "class C:\n"
+            "    def method(self):\n"
+            "        z = 3\n"
+        )
+        tree = ast.parse(src)
+        names = mod._enclosing_qualified_names(tree)
+
+        assign_x = tree.body[0]
+        top_fn = tree.body[1]
+        inner_y = top_fn.body[0]
+        class_c = tree.body[2]
+        method = class_c.body[0]
+        inner_z = method.body[0]
+
+        assert names[id(assign_x)] == "<module>"
+        assert names[id(inner_y)] == "top_fn"
+        assert names[id(inner_z)] == "C.method"
+
+
+class TestErrorCodeCollision:
+    def test_single_site_is_never_flagged(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "def f():\n    self._error(node, 'd', error_code='E999')\n",
+            encoding="utf-8")
+        assert mod.error_code_collision_violations([Path("a.py")]) == []
+
+    def test_undeclared_two_site_collision_is_flagged(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "def f():\n    self._error(node, 'd1', error_code='E999')\n",
+            encoding="utf-8")
+        (tmp_path / "b.py").write_text(
+            "def g():\n    self._error(node, 'd2', error_code='E999')\n",
+            encoding="utf-8")
+        violations = mod.error_code_collision_violations(
+            [Path("a.py"), Path("b.py")])
+        assert len(violations) == 1
+        assert "E999" in violations[0].missing[0]
+        assert "not declared" in violations[0].missing[0]
+
+    def test_declared_matching_set_is_fine(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "def f():\n    self._error(node, 'd', error_code='E998')\n",
+            encoding="utf-8")
+        (tmp_path / "b.py").write_text(
+            "def g():\n    self._error(node, 'd', error_code='E998')\n",
+            encoding="utf-8")
+        monkeypatch.setitem(
+            mod.KNOWN_MULTI_SITE_ERROR_CODES, "E998",
+            frozenset({("a.py", "f"), ("b.py", "g")}))
+        assert mod.error_code_collision_violations(
+            [Path("a.py"), Path("b.py")]) == []
+
+    def test_declared_set_drift_is_flagged(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A THIRD site added to an already-declared 2-site code must
+        still be caught — a count-only or code-only allowlist would
+        miss this."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "def f():\n    self._error(node, 'd', error_code='E997')\n",
+            encoding="utf-8")
+        (tmp_path / "b.py").write_text(
+            "def g():\n    self._error(node, 'd', error_code='E997')\n",
+            encoding="utf-8")
+        (tmp_path / "c.py").write_text(
+            "def h():\n    self._error(node, 'd', error_code='E997')\n",
+            encoding="utf-8")
+        monkeypatch.setitem(
+            mod.KNOWN_MULTI_SITE_ERROR_CODES, "E997",
+            frozenset({("a.py", "f"), ("b.py", "g")}))
+        violations = mod.error_code_collision_violations(
+            [Path("a.py"), Path("b.py"), Path("c.py")])
+        assert len(violations) == 1
+        assert "no longer matches" in violations[0].missing[0]
+
+    def test_non_literal_code_is_not_counted_as_a_site(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "def f():\n    self._error(node, 'd', error_code=code)\n",
+            encoding="utf-8")
+        (tmp_path / "b.py").write_text(
+            "def g():\n    self._error(node, 'd', error_code=code)\n",
+            encoding="utf-8")
+        assert mod.error_code_collision_violations(
+            [Path("a.py"), Path("b.py")]) == []
+
+    def test_shared_helpers_own_plumbing_ctor_is_not_a_third_site(
+        self, mod: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two call sites through one shared `_error` helper are two
+        real sites needing a declaration — but the helper's OWN
+        internal `Diagnostic(...)` construction must not be counted as
+        a third."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(
+            "class C:\n"
+            "    def _error(self, node, msg, *, error_code=''):\n"
+            "        self.diagnostics.append(Diagnostic(\n"
+            "            description=msg, location=loc, error_code=error_code))\n"
+            "    def f(self):\n"
+            "        self._error(node, 'd1', error_code='E996')\n"
+            "    def g(self):\n"
+            "        self._error(node, 'd2', error_code='E996')\n",
+            encoding="utf-8")
+        violations = mod.error_code_collision_violations([Path("a.py")])
+        assert len(violations) == 1
+        assert "2 distinct sites" in violations[0].missing[0]
+        assert "C.f" in violations[0].missing[0]
+        assert "C.g" in violations[0].missing[0]
+
+
+# =====================================================================
 # Integration: the live vera/ tree must be fully tagged AND every
 # spec_ref must resolve to a real spec section.
 # =====================================================================
@@ -1432,7 +1569,8 @@ class TestLiveTree:
         registry = mod._load_error_codes(ROOT / "vera" / "errors.py")
         violations = (mod.check_paths(files)
                       + mod.spec_ref_violations(files)
-                      + mod.error_code_registration_violations(files, registry))
+                      + mod.error_code_registration_violations(files, registry)
+                      + mod.error_code_collision_violations(files))
         report = "\n".join(
             f"  {v.file}:{v.line} {v.target} {v.missing}" for v in violations)
         assert violations == [], f"{len(violations)} diagnostic problem(s):\n{report}"
