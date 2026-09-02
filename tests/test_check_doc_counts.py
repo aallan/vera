@@ -965,6 +965,97 @@ class TestBugRows:
         assert len(errors) == 1 and "not found" in errors[0]
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP's burndown header word vs. its own table vs. KNOWN_ISSUES' Bugs
+# table (#1370-class): two parallel PRs each hand-wrote "Nineteen" from a
+# stale 20-count independently on the same night, and whichever merged
+# second was silently wrong.  This is the gate that ends the class.
+# ---------------------------------------------------------------------------
+
+
+def _roadmap_burndown(header_word: str, *issue_numbers: int) -> str:
+    rows = "\n".join(
+        f"| [#{n}](https://github.com/aallan/vera/issues/{n}) | Something. |"
+        for n in issue_numbers
+    )
+    return (
+        "# Roadmap\n\n"
+        "## Where we are\n\n"
+        "12,290 tests, 244 conformance programs, 43 examples, 14 spec chapters.\n\n"
+        "## The v0.1.14 burndown\n\n"
+        f"*{header_word} open bugs, driven to zero.*\n\n"
+        "| Issue | What |\n|---|---|\n"
+        f"{rows}\n\n"
+        "## Stage 19 — next stage\n\n"
+        "Some stage content.\n"
+    )
+
+
+class TestBurndownHeaderMatchesRows:
+    def test_the_shipped_roadmap_is_consistent(self) -> None:
+        """Regression pin against the real files: the header word, the
+        burndown table's own row count, and KNOWN_ISSUES.md's Bugs
+        table row count must already agree."""
+        roadmap = (Path(__file__).parent.parent / "ROADMAP.md").read_text(
+            encoding="utf-8"
+        )
+        known_issues = (
+            Path(__file__).parent.parent / "KNOWN_ISSUES.md"
+        ).read_text(encoding="utf-8")
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_all_three_agreeing_is_clean(self) -> None:
+        roadmap = _roadmap_burndown("Two", 101, 102)
+        known_issues = _bugs(_row(101), _row(102))
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_header_word_stale_relative_to_both_tables_is_an_error(self) -> None:
+        """The exact #1370 shape: the header still says a count from
+        before a row was removed, while both tables already agree with
+        each other at the new (lower) count."""
+        roadmap = _roadmap_burndown("Twenty", 101)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+        assert "Twenty" in errors[0] and "20" in errors[0] and "1" in errors[0]
+
+    def test_burndown_table_row_count_disagreeing_is_an_error(self) -> None:
+        """Header and KNOWN_ISSUES agree; the burndown table itself
+        has a stray extra (or missing) row — a copy/rebase slip in the
+        table rather than in the header word."""
+        roadmap = _roadmap_burndown("One", 101, 102)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+
+    def test_known_issues_row_count_disagreeing_is_an_error(self) -> None:
+        """Header and the burndown table agree with each other; only
+        KNOWN_ISSUES.md's Bugs table has drifted from both."""
+        roadmap = _roadmap_burndown("Two", 101, 102)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+
+    def test_hyphenated_compound_number_words_parse(self) -> None:
+        roadmap = _roadmap_burndown(
+            "Twenty-one", *range(101, 122)
+        )
+        known_issues = _bugs(*(_row(n) for n in range(101, 122)))
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_an_unrecognised_header_word_is_an_error(self) -> None:
+        roadmap = _roadmap_burndown("Several", 101)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1 and "Several" in errors[0]
+
+    def test_a_missing_burndown_section_is_an_error_not_a_skip(self) -> None:
+        roadmap = "# Roadmap\n\n## Where we are\n\nNo burndown here.\n"
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1 and "burndown" in errors[0]
+
+
 class TestBugIssueParity:
     def test_a_matching_pair_of_sets_is_clean(self) -> None:
         assert _MOD.check_bug_issue_parity([101, 102], [102, 101]) == []

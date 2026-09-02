@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,351 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,359 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
@@ -69,9 +69,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 |---|---|
 | [#1344](https://github.com/aallan/vera/issues/1344) | **Single-source registries umbrella** — one typed source of truth for built-ins, diagnostics, and doc mirrors.  The next three rows are its parts, and it is what makes them one campaign rather than three coincidences. |
 | [#735](https://github.com/aallan/vera/issues/735) | **Builtin dispatch table** — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it.  One table, three consumers. |
-| [#828](https://github.com/aallan/vera/issues/828) | `error_code` uniqueness — one stable code per diagnostic concept, enforced by a collision gate on the registry. |
-| [#1291](https://github.com/aallan/vera/issues/1291) | Rendered diagnostic output in docs — a `text` fence carrying compiler output is replayed against live output by a gate, the shape the `vera` fences already have. |
-| [#1351](https://github.com/aallan/vera/issues/1351) | `examples/README.md`'s **Demonstrates** column is ungated prose and has drifted — rows name features their example never calls. `check_examples_readme.py` replays the Run column only, so the claim half needs a gate of its own. |
 | [#1342](https://github.com/aallan/vera/issues/1342) | Conformance matrix — generate a construct × phase × target support table, so which constructs `check`, `verify`, and each compile target accept is read off the suite rather than asserted in prose. |
 | [#653](https://github.com/aallan/vera/issues/653) | Spec audit for §0.2 / §0.3 design-principle violations — the spec held to its own principles. |
 | [#540](https://github.com/aallan/vera/issues/540) | lychee + markdownlint MD051 cross-doc anchor validation. |
