@@ -15,15 +15,29 @@ This module replays the WORKFLOW FILE'S OWN command in
 ``--collect-only`` mode — extracted from the live YAML text, not a
 hand-copied belief about it — so a future re-narrowing of the
 invocation reds this test instead of silently losing coverage again.
+
+The replay is VERBATIM (``shlex.split`` on the extracted command, with
+only display-only verbosity flags stripped), not a reconstruction from
+a parsed ``-m``/paths pair.  An earlier version of this module did
+reconstruct the argv from parsed pieces, which silently discarded any
+OTHER flag on the command line — an ``--ignore=...`` or ``--deselect``
+added to the workflow could re-exclude the reclamation battery in a
+differently-shaped command while a reconstruction-based comparison
+stayed green, because it never looked at those tokens in the first
+place.  Replaying the actual argv closes that gap: whatever the
+workflow would really pass to pytest is what gets collected here.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-stress.yml"
@@ -49,6 +63,14 @@ _RUN_STEP = re.compile(
     r"name:\s*Run stress tests\s*\n(?:\s*#.*\n)*\s*run:\s*(.+)"
 )
 
+# Flags that only affect DISPLAY, not what gets collected.  Stripped
+# before appending our own `--collect-only -q`: leaving a `-v` in
+# place makes `--collect-only` print an indented `<Function ...>` tree
+# instead of flat `path::Class::test` node IDs, so every membership
+# check below would silently compare against an empty set instead of
+# failing loudly.
+_VERBOSITY_FLAGS = frozenset({"-v", "-vv", "-vvv", "-q", "-qq"})
+
 
 def _extract_stress_run_command() -> str:
     """The literal ``run:`` command of nightly-stress.yml's "Run stress
@@ -64,43 +86,51 @@ def _extract_stress_run_command() -> str:
     return match.group(1).strip()
 
 
-def _parse_pytest_selection(command: str) -> tuple[str, list[str]]:
-    """Pull the ``-m <expr>`` marker and the positional path arguments
-    out of a ``pytest ...`` command line, ignoring display-only flags
-    (``-v``, ``-q``, ...) that don't affect what gets collected."""
-    tokens = command.split()
+def _extract_marker(command: str) -> str:
+    """Just the ``-m <expr>`` marker value, for asserting the workflow
+    still selects on the ``stress`` marker specifically.  Deliberately
+    does NOT also characterise "the paths" as a separate value —
+    that reconstruction is exactly what silently drops flags like
+    ``--ignore``/``--deselect``/``-k``; see ``_workflow_collect_argv``
+    for the verbatim replay used for actual collection below."""
+    tokens = shlex.split(command)
     assert tokens and tokens[0] == "pytest", (
         f"nightly-stress.yml: not a pytest invocation: {command!r}"
     )
-    marker: str | None = None
-    paths: list[str] = []
-    i = 1
-    while i < len(tokens):
-        tok = tokens[i]
+    for i, tok in enumerate(tokens):
         if tok == "-m":
             assert i + 1 < len(tokens), f"'-m' with no argument in: {command!r}"
-            marker = tokens[i + 1]
-            i += 2
-            continue
-        if tok.startswith("-"):
-            i += 1
-            continue
-        paths.append(tok)
-        i += 1
-    assert marker is not None, (
+            return tokens[i + 1]
+    raise AssertionError(
         f"nightly-stress.yml: no `-m` marker expression in: {command!r}"
     )
-    assert paths, f"nightly-stress.yml: no path arguments in: {command!r}"
-    return marker, paths
 
 
-def _collect_node_ids(marker: str, paths: list[str]) -> set[str]:
-    """Flat ``path::Class::test[params]`` node IDs collect-only would
-    run, given a marker expression and path arguments."""
+def _workflow_collect_argv(command: str) -> list[str]:
+    """The workflow's own argv, VERBATIM apart from verbosity flags —
+    every other flag (``--ignore``, ``--deselect``, ``-k``, explicit
+    paths or their absence, ...) is preserved exactly as the workflow
+    would pass it to pytest."""
+    tokens = shlex.split(command)
+    assert tokens and tokens[0] == "pytest", (
+        f"nightly-stress.yml: not a pytest invocation: {command!r}"
+    )
+    return [tok for tok in tokens[1:] if tok not in _VERBOSITY_FLAGS]
+
+
+def _collect_ids(argv_after_pytest: list[str]) -> set[str]:
+    """Flat ``path::Class::test[params]`` node IDs a
+    ``pytest <argv_after_pytest> --collect-only -q`` run would list.
+
+    No explicit path argument is required: a bare ``-m stress`` with
+    no path is a legitimate invocation that falls back to pyproject's
+    own ``testpaths`` default, and must be collectable here exactly
+    like an explicit ``tests/`` would be.
+    """
     result = subprocess.run(
         [
             sys.executable, "-m", "pytest",
-            "-m", marker, *paths,
+            *argv_after_pytest,
             "--collect-only", "-q",
         ],
         cwd=ROOT,
@@ -127,55 +157,86 @@ def _canonical_testpaths() -> list[str]:
     return list(testpaths)
 
 
+# ---------------------------------------------------------------------
+# Module-scoped fixtures: each `--collect-only` replay walks the whole
+# ~12,000-item test tree, so collecting the workflow's selection (and
+# the canonical one) ONCE per test session and sharing the result
+# across every cell below keeps this module's cost to two subprocess
+# calls total rather than one per test method.
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def workflow_command() -> str:
+    return _extract_stress_run_command()
+
+
+@pytest.fixture(scope="module")
+def workflow_marker(workflow_command: str) -> str:
+    return _extract_marker(workflow_command)
+
+
+@pytest.fixture(scope="module")
+def workflow_collected_ids(workflow_command: str) -> set[str]:
+    return _collect_ids(_workflow_collect_argv(workflow_command))
+
+
+@pytest.fixture(scope="module")
+def canonical_collected_ids() -> set[str]:
+    return _collect_ids(["-m", "stress", *_canonical_testpaths()])
+
+
 class TestNightlyStressLaneCollection1328:
     """The nightly stress workflow's marker selection must collect
     every ``@pytest.mark.stress`` instance repo-wide, not just the
     ones in whichever file the invocation happens to name."""
 
-    def test_workflow_command_not_narrowed_to_test_stress_py_alone(self) -> None:
-        """The extracted command must not scope collection to
-        ``tests/test_stress.py`` alone — that file-scoping is the
-        exact #1328 defect (the marker selection was collected, then
-        silently re-narrowed by the trailing single-file argument)."""
-        command = _extract_stress_run_command()
-        _marker, paths = _parse_pytest_selection(command)
-        assert paths != ["tests/test_stress.py"], (
+    def test_workflow_marker_is_stress(self, workflow_marker: str) -> None:
+        """The workflow must still select on the ``stress`` marker
+        specifically.  The canonical comparison below is only
+        meaningful against that marker: a silent rename to some OTHER
+        marker that coincidentally still selected exactly the
+        reclamation battery would otherwise compare that narrower
+        selection against itself and pass, without noticing the rest
+        of the `stress` domain (`tests/test_stress.py`'s 16 instances)
+        fell out."""
+        assert workflow_marker == "stress", (
+            f"nightly-stress.yml's stress step no longer selects on "
+            f"the `stress` marker (found {workflow_marker!r}) — the "
+            f"canonical comparison below is only meaningful against "
+            f"that literal marker"
+        )
+
+    def test_workflow_command_not_narrowed_to_test_stress_py_alone(
+        self, workflow_command: str
+    ) -> None:
+        """The extracted command's own argv must not be exactly the
+        #1328 regression shape — ``-m stress tests/test_stress.py``
+        and nothing else."""
+        argv = _workflow_collect_argv(workflow_command)
+        assert argv != ["-m", "stress", "tests/test_stress.py"], (
             f"nightly-stress.yml's stress run command is file-scoped "
-            f"to test_stress.py again: {command!r} — this is the "
-            f"#1328 regression shape"
+            f"to test_stress.py again: {workflow_command!r} — this is "
+            f"the #1328 regression shape"
         )
 
-    def test_workflow_selection_matches_canonical_stress_selection(self) -> None:
-        """The workflow's own command must collect the same node IDs
-        as the canonical ``-m stress`` selection over pyproject's own
-        ``testpaths`` — no file-scoping that silently drops a
-        stress-marked class living elsewhere in the tree.
-
-        The marker is asserted to literally be ``stress`` (not just
-        threaded through from whatever the workflow happens to say)
-        and the canonical side is always collected with the literal
-        ``"stress"``: a workflow that switched to some OTHER marker
-        which coincidentally still selects the reclamation battery
-        would otherwise compare that narrower selection against
-        itself and pass, without noticing the rest of the `stress`
-        domain (e.g. `tests/test_stress.py`'s 16 instances) fell out.
-        """
-        command = _extract_stress_run_command()
-        marker, workflow_paths = _parse_pytest_selection(command)
-        assert marker == "stress", (
-            f"nightly-stress.yml's stress step no longer selects on the "
-            f"`stress` marker (found {marker!r}) — this test's canonical "
-            f"comparison is only meaningful against that marker"
-        )
-        workflow_ids = _collect_node_ids(marker, workflow_paths)
-
-        canonical_ids = _collect_node_ids("stress", _canonical_testpaths())
-        assert canonical_ids, (
+    def test_workflow_selection_matches_canonical_stress_selection(
+        self,
+        workflow_collected_ids: set[str],
+        canonical_collected_ids: set[str],
+    ) -> None:
+        """The workflow's own command — replayed VERBATIM, not
+        reconstructed from a parsed marker+paths pair — must collect
+        the same node IDs as the canonical ``-m stress`` selection
+        over pyproject's own ``testpaths``.  No file-scoping, and no
+        other flag (``--ignore``, ``--deselect``, ``-k``, ...) that
+        would silently drop a stress-marked class, wherever it lives
+        in the tree."""
+        assert canonical_collected_ids, (
             "canonical `-m stress` selection over testpaths collected "
             "nothing — this test is broken, not the workflow"
         )
-
-        missing = canonical_ids - workflow_ids
+        missing = canonical_collected_ids - workflow_collected_ids
         assert not missing, (
             "nightly-stress.yml's own command collects fewer tests "
             "than the canonical `-m stress` selection over "
@@ -183,29 +244,18 @@ class TestNightlyStressLaneCollection1328:
         )
 
     def test_workflow_selection_collects_host_handle_reclamation_battery(
-        self,
+        self, workflow_collected_ids: set[str]
     ) -> None:
         """#1328's own repro, verbatim: replay the workflow's command
         in collect-only mode and assert all 10
         ``TestHostHandleReclamation573`` instances are among the
-        collected node IDs.  Also asserts the marker is literally
-        ``stress`` — otherwise a marker rename that still happened to
-        select this one battery would pass here while silently
-        dropping the rest of the `stress` domain."""
-        command = _extract_stress_run_command()
-        marker, paths = _parse_pytest_selection(command)
-        assert marker == "stress", (
-            f"nightly-stress.yml's stress step no longer selects on the "
-            f"`stress` marker (found {marker!r})"
-        )
-        collected = _collect_node_ids(marker, paths)
-
+        collected node IDs."""
         missing = [
             name
             for name in _EXPECTED_RECLAMATION_TESTS
             if not any(
                 f"TestHostHandleReclamation573::{name}" in node_id
-                for node_id in collected
+                for node_id in workflow_collected_ids
             )
         ]
         assert not missing, (
