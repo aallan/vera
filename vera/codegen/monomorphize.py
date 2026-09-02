@@ -23,6 +23,7 @@ from vera import ast
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
 )
@@ -168,6 +169,10 @@ class MonomorphizationMixin:
         # where-helper under an all-NON-generic ancestor chain is a mono base
         # too — without collecting it here, no clone is emitted and the
         # parent's concrete call lowers to a dangling unmangled name.
+        # #1327/#1366: records from the per-call throwaway walkers the
+        # shadowed/qualified discovery builds (`_mono_infer_shadowed`), which
+        # have no other way back to the drain at the end of this method.
+        self._shadowed_uninferred_type_args: list[UninferredTypeArg] = []
         generic_decls: dict[str, ast.FnDecl] = {}
         for tld in program.declarations:
             decl = tld.decl
@@ -387,7 +392,57 @@ class MonomorphizationMixin:
             round_decls = self._drain_generic_worklist(
                 reseed, seen, generic_decls, ctor_to_adt, mono,
             ) if reseed else []
+        # #1327/#1366: discovery is complete, so every type argument it could
+        # not infer is now known.  Report each as [E622] — an error, not a
+        # note: the instantiation set is what codegen emits clones from, and
+        # one built on the phantom-var guess emits a clone the call-site
+        # rewrite does not call (E602 with no explanation of why, or an
+        # invalid module).  Failing here names the argument the walker could
+        # not type, which is the fact the user can act on.
+        self._report_uninferred_type_args(mono)
         return emitted
+
+    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
+        """Turn discovery's un-inferable type arguments into [E622] errors.
+
+        The fail-closed half of the #1327/#1366 family: the phantom-var
+        default is retained for a variable no parameter determines, and every
+        variable a DIRECT ``@T`` parameter DOES determine but whose argument
+        no arm could name is reported here instead of being guessed.
+        """
+        from vera.errors import Diagnostic
+        records = [
+            *mono.uninferred_type_args,
+            *getattr(self, "_shadowed_uninferred_type_args", []),
+        ]
+        for rec in records:
+            loc, source_line = self._diag_location(rec.arg)
+            self.diagnostics.append(Diagnostic(
+                description=(
+                    f"Cannot infer the type argument '{rec.type_var}' of "
+                    f"generic call '{rec.fn_name}' from its "
+                    f"{rec.arg_kind} argument."
+                ),
+                location=loc,
+                source_line=source_line,
+                rationale=(
+                    "A generic is compiled by specialising it at each "
+                    "concrete type it is called with, so the compiler must "
+                    "know the type of every argument that fixes a type "
+                    "variable. This argument's type could not be determined, "
+                    "and specialising at a guessed type would emit a "
+                    "specialisation nothing calls."
+                ),
+                fix=(
+                    f"Bind the argument to a slot of its own first and pass "
+                    f"the slot reference — 'let @T = <argument>;' then "
+                    f"'{rec.fn_name}(@T.0)' — so the type argument is read "
+                    f"from the declared slot type."
+                ),
+                spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+                severity="error",
+                error_code="E622",
+            ))
 
     def _drain_generic_worklist(
         self,
@@ -1116,7 +1171,14 @@ class MonomorphizationMixin:
         m = Monomorphizer(self._build_mono_context({}, ctor_to_adt))
         if op_result_types:
             m._op_result_types = op_result_types
-        return m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        result = m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        # #1327/#1366: this walker is a THROWAWAY built per qualified call, so
+        # its fail-closed records would be dropped on the floor.  Carry them to
+        # the codegen-level accumulator `_monomorphize` drains, or the shadowed
+        # /qualified spelling of a shape (`mod$plib$gen2$Int`) would keep
+        # guessing where the unshadowed one refuses.
+        self._shadowed_uninferred_type_args.extend(m.uninferred_type_args)
+        return result
 
     def _collect_eq_full_type_names(
         self,

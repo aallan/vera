@@ -2312,7 +2312,47 @@ class ContractVerifier:
         self._collect_shadowed_qualified_instances(
             program, mono, generic_decls, result,
         )
+        # #1327/#1366: discovery is complete, so every type argument it could
+        # not infer is now known.  The verifier's discovered set is what the
+        # #732 differential holds codegen's emitted set against, and a set
+        # built on the phantom-var guess verifies a clone codegen does not
+        # emit while leaving codegen's real clone unverified — a false Tier 1.
+        # Report each as [E622] rather than tiering a proof about the wrong
+        # instantiation.
+        self._report_uninferred_type_args(mono)
         return result
+
+    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
+        """Turn discovery's un-inferable type arguments into [E622] errors.
+
+        The verifier's leg of the #1327/#1366 fail-closed: codegen refuses to
+        EMIT a specialisation resting on the phantom-var guess, and this
+        refuses to report a TIER for one.  Both consultors run the same shared
+        inference, so both record the same argument.
+        """
+        for rec in mono.uninferred_type_args:
+            self._error(
+                rec.arg,
+                f"Cannot infer the type argument '{rec.type_var}' of "
+                f"generic call '{rec.fn_name}' from its "
+                f"{rec.arg_kind} argument.",
+                rationale=(
+                    "A generic is verified once per concrete type it is "
+                    "called with, so the verifier must know the type of "
+                    "every argument that fixes a type variable. This "
+                    "argument's type could not be determined, and verifying "
+                    "at a guessed type would report a tier for a "
+                    "specialisation the compiler does not emit."
+                ),
+                fix=(
+                    f"Bind the argument to a slot of its own first and pass "
+                    f"the slot reference — 'let @T = <argument>;' then "
+                    f"'{rec.fn_name}(@T.0)' — so the type argument is read "
+                    f"from the declared slot type."
+                ),
+                spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+                error_code="E622",
+            )
 
     def _collect_shadowed_qualified_instances(
         self,

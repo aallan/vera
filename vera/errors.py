@@ -808,6 +808,7 @@ ERROR_CODES: dict[str, str] = {
     "E619": "Cannot infer type argument for ability-constrained parameter",
     "E620": "Function dropped: skipped callee or no function table",
     "E621": "Name collision: module ADT contends with a prelude data type",
+    "E622": "Cannot infer a generic call's type argument",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

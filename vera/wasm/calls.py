@@ -840,11 +840,14 @@ class CallsMixin:
         # `eq2(MkErr(5), MkOk("x"))` references a `$Res` clone the emitter named
         # `$Res_LString_C_Int_R`, is dropped, and `main` vanishes (the #878 class).
         partial_adt: dict[str, tuple[str, list[str | None]]] = {}
+        # #1327/#1366: the rewrite side's leg of the fail-closed default —
+        # see the result loop below.
+        unnamed_direct: set[str] = set()
 
         for param_te, arg in zip(param_types, call.args):
             self._unify_param_arg_wasm(
                 param_te, arg, forall_vars, mapping, constrained_vars,
-                partial_adt)
+                partial_adt, unnamed_direct)
 
         for tv, (base_name, slots) in partial_adt.items():
             if all(s is not None for s in slots):
@@ -872,6 +875,20 @@ class CallsMixin:
         parts = []
         for tv in forall_vars:
             if tv not in mapping:
+                # #1327/#1366 — FAIL CLOSED before defaulting.  A var bound by
+                # a DIRECT `@T` parameter is determined by that argument's
+                # type; arriving here means no arm named the argument, so
+                # `Bool` would be a guess.  Answer "inference failed" (this
+                # method's documented `None`), which leaves the call on its
+                # bare name and reaches the guard rail's source-located
+                # [E602] — rather than mangling a symbol on a guess, which
+                # either dangles or, worse, names a clone whose WASM types do
+                # not match the value being passed.  The phantom-var default
+                # is retained for every other var: one no parameter position
+                # determines is not inferable by construction, and the emitted
+                # WASM is identical whatever it is named.
+                if tv in unnamed_direct:
+                    return None
                 mapping[tv] = "Bool"
             parts.append(mapping[tv])
         return Monomorphizer._mangle_fn_name(call.name, tuple(parts))
@@ -884,16 +901,20 @@ class CallsMixin:
         mapping: dict[str, str],
         constrained_vars: frozenset[str] = frozenset(),
         partial_adt: dict[str, tuple[str, list[str | None]]] | None = None,
+        unnamed_direct: set[str] | None = None,
     ) -> None:
         """Unify a parameter TypeExpr against an argument to bind type vars.
 
         Mirrors CodeGenerator._unify_param_arg for use during WASM
-        translation.
+        translation — ``unnamed_direct`` included (#1327/#1366): the set of
+        type variables a DIRECT ``@T`` parameter binds whose argument this
+        namer could not type, which is the rewrite side's evidence that a
+        mangled name would be a guess rather than a resolution.
         """
         if isinstance(param_te, ast.RefinementType):
             self._unify_param_arg_wasm(
                 param_te.base_type, arg, forall_vars, mapping,
-                constrained_vars, partial_adt,
+                constrained_vars, partial_adt, unnamed_direct,
             )
             return
 
@@ -939,6 +960,12 @@ class CallsMixin:
                                     slots[i] = name
             if vera_type and param_te.name not in mapping:
                 mapping[param_te.name] = vera_type
+            elif not vera_type and unnamed_direct is not None:
+                # #1327/#1366: the parameter IS the type variable, so this
+                # argument's type is the instantiation — and no arm named it.
+                # Mirrors `Monomorphizer._unify_param_arg`'s record so the two
+                # consultors fail closed on the same shapes.
+                unnamed_direct.add(param_te.name)
             return
 
         # Parameterized type like Option<T>
