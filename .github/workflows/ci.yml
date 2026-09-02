@@ -165,6 +165,9 @@ jobs:
       - name: Check DE_BRUIJN.md code blocks parse correctly
         run: python scripts/check_debruijn_examples.py
 
+      - name: Check vera:diagnostic examples match live output
+        run: python scripts/check_diagnostic_examples.py
+
       - name: Check PYPI_README code blocks parse, check, and verify
         run: python scripts/check_pypi_readme_examples.py
 

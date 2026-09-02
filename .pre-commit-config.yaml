@@ -115,6 +115,13 @@ repos:
         pass_filenames: false
         files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_debruijn_examples|doc_annotations)\.py$)'
 
+      - id: diagnostic-examples
+        name: diagnostic examples
+        entry: .venv/bin/python scripts/check_diagnostic_examples.py
+        language: system
+        pass_filenames: false
+        files: '(DE_BRUIJN\.md$|vera/.*\.py$|vera/grammar\.lark$|scripts/(check_diagnostic_examples|doc_annotations)\.py$)'
+
       - id: pypi-readme-examples
         name: pypi readme examples
         entry: .venv/bin/python scripts/check_pypi_readme_examples.py

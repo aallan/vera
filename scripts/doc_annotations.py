@@ -32,15 +32,33 @@ language tag stays plain ``vera`` so GitHub syntax highlighting is unaffected
 (the rationale for preferring this form over an info-string variant is in
 issue #538).  ``build_site.py`` uses :func:`strip_annotations` so annotations
 never leak into the generated site assets (docs/SKILL.md, docs/llms-full.txt).
+
+A second, unrelated annotation pair lives here too — ``vera:diagnostic`` /
+``vera:diagnostic``'s closing tag ``/vera:diagnostic`` (#1291) — replaying a
+```text fence carrying RENDERED COMPILER OUTPUT against a live re-run,
+the same "replay, don't trust" shape as the ```vera fence gates above, for
+content those gates never touch (they parse Vera source; this diffs
+diagnostic TEXT).  See :func:`scan_diagnostic_examples` and
+:func:`replay_diagnostic_examples`.
 """
 
 from __future__ import annotations
 
 import html
 import re
+import sys
 from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 from typing import NamedTuple
+
+# `run_parse_only_gate` and `replay_diagnostic_examples` below both import
+# from `vera` — pin that to the checkout THIS FILE lives in before either
+# runs, ahead of whichever venv's editable-install finder would otherwise
+# answer first (pinned to whatever checkout `pip install -e` last ran in,
+# possibly a different worktree entirely — plan-file S13).  See TESTING.md's
+# "Running against ANOTHER checkout" section for the sibling pytest-rootdir
+# trap this is NOT — a different mechanism with a different remedy.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 STAGES = ("parse", "check", "verify")
 
@@ -62,6 +80,199 @@ _ANNOTATION_LINE_RE = re.compile(
 
 _FENCE_OPEN_RE = re.compile(r"^```(\w*)$")
 _FENCE_CLOSE_RE = re.compile(r"^```$")
+
+# `vera:diagnostic` — rendered-diagnostic replay (#1291).  A ```text fence
+# carrying compiler output (a diagnostic block, a fix text) is otherwise
+# validated by nothing: DE_BRUIJN.md §6.2's E130 example went stale the
+# moment #1262 extended E130's fix text, and every ```vera-fence gate above
+# stayed green throughout (their remit is parsing Vera source, not checking
+# rendered TEXT against it).  The annotation pair below travels with the
+# fence it documents (no line numbers to maintain, matching `vera:skip-*`)
+# and is invisible in rendered markdown, like every other HTML-comment
+# annotation here — the fence's rendered appearance is unchanged; only a
+# gate can tell the difference.
+#
+#     <!-- vera:diagnostic file="main.vera" stage="check" error_code="E130" -->
+#     type Meters = Int;
+#     ...
+#     <!-- /vera:diagnostic -->
+#     ```text
+#     [E130] Error at main.vera, line 9, column 3:
+#     ...
+#     ```
+#
+# `error_code` is optional: when given, the replay selects the one
+# diagnostic with that code (and fails if that is not unique); when
+# omitted, the replay requires the program to produce EXACTLY one
+# diagnostic in total, so the example stays unambiguous about which
+# diagnostic it illustrates either way.  `stage` currently supports only
+# `"check"` — the shape #1291 asks to widen later.
+_DIAGNOSTIC_OPEN_RE = re.compile(
+    r'^\s*<!--\s*vera:diagnostic\s+file="([^"]*)"'
+    r'(?:\s+stage="([^"]*)")?'
+    r'(?:\s+error_code="([^"]*)")?'
+    r'\s*-->\s*$'
+)
+_DIAGNOSTIC_CLOSE_RE = re.compile(r"^\s*<!--\s*/vera:diagnostic\s*-->\s*$")
+_DIAGNOSTIC_HINT_RE = re.compile(r"<!--\s*/?vera:diagnostic")
+
+
+class DiagnosticExample(NamedTuple):
+    """One `vera:diagnostic`-annotated program paired with the ```text
+    fence immediately following it that claims to be its rendered
+    output."""
+
+    line: int  # 1-based line of the opening annotation comment
+    file: str
+    stage: str  # defaults to "check" when the attribute is omitted
+    error_code: str | None
+    program: str  # the inline Vera source between the two comments
+    fence_line: int  # 1-based line of the opening ``` of the ```text fence
+    fence_content: str
+
+
+def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[str]]:
+    """Extract `vera:diagnostic`-annotated (program, expected-output) pairs
+    from a Markdown file.  Returns ``(examples, problems)`` in the same
+    shape :func:`scan_markdown` uses: a dangling open with no close, a
+    close with no preceding open, and a program not immediately followed
+    (blank lines aside) by a ```text fence are all reported as problems
+    rather than silently skipped.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    examples: list[DiagnosticExample] = []
+    problems: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        open_match = _DIAGNOSTIC_OPEN_RE.match(line)
+        if open_match:
+            start_line = i + 1
+            file_attr, stage_attr, code_attr = open_match.groups()
+            stage = stage_attr or "check"
+            i += 1
+            program_lines: list[str] = []
+            closed = False
+            while i < len(lines):
+                if _DIAGNOSTIC_CLOSE_RE.match(lines[i]):
+                    closed = True
+                    i += 1
+                    break
+                if _DIAGNOSTIC_OPEN_RE.match(lines[i]):
+                    break  # a second open before this one closed
+                program_lines.append(lines[i])
+                i += 1
+            if not closed:
+                problems.append(
+                    f"line {start_line}: vera:diagnostic annotation has no "
+                    f"matching <!-- /vera:diagnostic --> before the next "
+                    f"annotation or end of file"
+                )
+                continue
+            while i < len(lines) and lines[i].strip() == "":
+                i += 1
+            if i >= len(lines) or not _FENCE_OPEN_RE.match(lines[i]):
+                problems.append(
+                    f"line {start_line}: vera:diagnostic annotation is not "
+                    f"immediately followed by a code fence"
+                )
+                continue
+            fence_lang = _FENCE_OPEN_RE.match(lines[i]).group(1)  # type: ignore[union-attr]
+            if fence_lang.lower() != "text":
+                problems.append(
+                    f"line {start_line}: vera:diagnostic annotation is "
+                    f"followed by a ```{fence_lang} fence, not ```text"
+                )
+                continue
+            fence_line = i + 1
+            i += 1
+            fence_lines: list[str] = []
+            while i < len(lines) and not _FENCE_CLOSE_RE.match(lines[i]):
+                fence_lines.append(lines[i])
+                i += 1
+            if i >= len(lines):
+                problems.append(
+                    f"line {fence_line}: unterminated code fence "
+                    f"(no closing ``` before end of file)"
+                )
+                continue
+            i += 1
+            examples.append(DiagnosticExample(
+                start_line, file_attr, stage, code_attr,
+                "\n".join(program_lines), fence_line, "\n".join(fence_lines),
+            ))
+            continue
+        if _DIAGNOSTIC_CLOSE_RE.match(line):
+            problems.append(
+                f"line {i + 1}: <!-- /vera:diagnostic --> with no "
+                f"preceding <!-- vera:diagnostic ... -->"
+            )
+            i += 1
+            continue
+        if _DIAGNOSTIC_HINT_RE.search(line):
+            problems.append(
+                f"line {i + 1}: malformed vera:diagnostic annotation: "
+                f"{line.strip()!r} (expected "
+                '<!-- vera:diagnostic file="..." [stage="..."] '
+                '[error_code="..."] -->)'
+            )
+        i += 1
+    return examples, problems
+
+
+def replay_diagnostic_examples(
+    examples: list[DiagnosticExample],
+) -> list[str]:
+    """Re-run each example's program and diff its rendered diagnostic
+    against the ```text fence that claims to be its output.  Returns a
+    list of human-readable problem strings (empty = every example's
+    fence is live-accurate)."""
+    from vera.checker import typecheck
+    from vera.parser import parse_to_ast
+
+    errors: list[str] = []
+    for ex in examples:
+        if ex.stage != "check":
+            errors.append(
+                f"line {ex.line}: vera:diagnostic stage={ex.stage!r} is not "
+                f"replayed yet (only \"check\" is currently supported)"
+            )
+            continue
+        try:
+            program = parse_to_ast(ex.program)
+            diags = typecheck(program, source=ex.program, file=ex.file)
+        except Exception as exc:  # noqa: BLE001 — a bad replay is reported, not raised
+            errors.append(
+                f"line {ex.line}: replaying the annotated program raised "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+        if ex.error_code:
+            matches = [d for d in diags if d.error_code == ex.error_code]
+            if len(matches) != 1:
+                errors.append(
+                    f"line {ex.line}: expected exactly one diagnostic with "
+                    f"error_code {ex.error_code!r}, found {len(matches)} "
+                    f"(of {len(diags)} total)"
+                )
+                continue
+        else:
+            if len(diags) != 1:
+                errors.append(
+                    f"line {ex.line}: expected exactly one diagnostic "
+                    f"(no error_code attribute to disambiguate), found "
+                    f"{len(diags)}"
+                )
+                continue
+            matches = diags
+        live = matches[0].format()
+        if live != ex.fence_content:
+            errors.append(
+                f"line {ex.fence_line}: ```text fence does not match live "
+                f"output.\n--- fence ---\n{ex.fence_content}\n--- live ---\n"
+                f"{live}"
+            )
+    return errors
 
 
 class Annotation(NamedTuple):
