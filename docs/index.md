@@ -105,16 +105,14 @@ SQL injection won't compile. Nearly every SQL injection starts the same way — 
 When you get it wrong, every error is an instruction for the model that wrote the code:
 
 ```
-[E001] Error at main.vera, line 14, column 1:
+[E001] Error at main.vera, line 2, column 1:
 
     {
     ^
 
-  Function is missing its contract block. Every function in Vera must declare
-  requires(), ensures(), and effects() clauses between the signature and the body.
+  Function is missing its contract block. Every function in Vera must declare requires(), ensures(), and effects() clauses between the signature and the body.
 
-  Vera requires all functions to have explicit contracts so that every function's
-  behaviour is mechanically checkable.
+  Vera requires all functions to have explicit contracts so that every function's behaviour is mechanically checkable.
 
   Fix:
 

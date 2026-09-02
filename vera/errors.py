@@ -212,6 +212,90 @@ def missing_contract_block(
     )
 
 
+# The illustrative E001 example shown in every doc mirror (README.md,
+# docs/index.html, docs/index.md, spec/00-introduction.md) and used by
+# tests/test_errors.py's TestErrorDisplaySync drift guard.  One example,
+# one place: "which sample program illustrates E001" cannot fork across
+# the docs because every mirror calls `render_e001_doc_example()` (or,
+# for docs/index.html, `render_e001_doc_example_html()`) rather than
+# hand-copying a rendering of it (#954).
+E001_EXAMPLE_FILE = "main.vera"
+E001_EXAMPLE_SOURCE = "private fn add(@Int, @Int -> @Int)\n{"
+E001_EXAMPLE_LINE = 2
+E001_EXAMPLE_COLUMN = 1
+
+
+def e001_doc_example() -> Diagnostic:
+    """The canonical E001 :class:`Diagnostic` every doc mirror renders."""
+    return missing_contract_block(
+        E001_EXAMPLE_FILE, E001_EXAMPLE_SOURCE, E001_EXAMPLE_LINE, E001_EXAMPLE_COLUMN
+    )
+
+
+def render_e001_doc_example() -> str:
+    """Plain-text rendering of the canonical E001 example, byte-identical
+    to what ``vera check`` prints for it (modulo trailing whitespace on
+    otherwise-blank lines, stripped for the same reason a markdown
+    fenced block shouldn't carry invisible trailing spaces).  Embedded
+    verbatim in README.md, spec/00-introduction.md, and (via
+    ``scripts/build_site.py``) docs/index.md."""
+    text = e001_doc_example().format()
+    return "\n".join(line.rstrip() for line in text.splitlines())
+
+
+def render_e001_doc_example_html() -> str:
+    """HTML rendering of the canonical E001 example for docs/index.html's
+    ``<pre>`` sample block, wrapping each semantic piece of
+    :meth:`Diagnostic.format` in the same ``err-*`` span classes the
+    page's stylesheet already targets — the HTML mirror of
+    :func:`render_e001_doc_example`, built from the same
+    :class:`Diagnostic` rather than a hand-copied re-rendering of it.
+
+    Mirrors :meth:`Diagnostic.format`'s own per-section indentation
+    (a 2-space indent for the message, 4-space for the fix body) with
+    one cosmetic difference: each span's OPENING line has its native
+    indent moved to before the ``<span>`` tag rather than inside it —
+    matching how the hand-written original was authored, with no
+    rendered difference either way.
+    """
+    diag = e001_doc_example()
+    parts: list[str] = [
+        f'<span class="err-head">[{diag.error_code}] '
+        f"Error at {diag.location}:</span>"
+    ]
+    if diag.source_line:
+        stripped = diag.source_line.rstrip()
+        parts.append("")
+        parts.append(f'    <span class="err-code">{stripped}</span>')
+        if diag.location.column > 0:
+            pointer_indent = " " * (diag.location.column - 1 + 4)
+            parts.append(f'{pointer_indent}<span class="err-caret">^</span>')
+
+    msg_lines: list[str] = list(diag.description.splitlines())
+    if diag.rationale:
+        msg_lines.append("")
+        msg_lines.extend(diag.rationale.splitlines())
+    if msg_lines:
+        parts.append("")
+        first, *rest = msg_lines
+        indented_rest = [f"  {line}" if line else "" for line in rest]
+        content = "\n".join([first, *indented_rest])
+        parts.append(f'  <span class="err-msg">{content}</span>')
+
+    if diag.fix:
+        parts.append("")
+        fix_lines = ["Fix:", ""] + [
+            f"    {line}" if line else "" for line in diag.fix.splitlines()
+        ]
+        parts.append(f'  <span class="err-fix">{chr(10).join(fix_lines)}</span>')
+
+    if diag.spec_ref:
+        parts.append("")
+        parts.append(f'  <span class="err-ref">See: {diag.spec_ref}</span>')
+
+    return "\n".join(parts)
+
+
 def missing_effect_clause(
     file: Optional[str], source: str, line: int, column: int
 ) -> Diagnostic:

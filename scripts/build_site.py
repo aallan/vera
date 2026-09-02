@@ -29,6 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # repo-tooling metadata: strip them from every generated site asset.
 from doc_annotations import strip_annotations
 
+# Single-sourced E001 doc example (#954): render_e001_doc_example() is the
+# same call README.md, spec/00-introduction.md, and tests/test_errors.py's
+# TestErrorDisplaySync all use, so docs/index.md's copy cannot drift from
+# vera.errors on its own.
+from vera.errors import render_e001_doc_example
+
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 SITE = "https://veralang.dev"
@@ -490,6 +496,7 @@ def build_index_md(version: str) -> str:
     """
     n_examples = _count_examples()
     n_conformance = _count_conformance()
+    e001_example = render_e001_doc_example()
     return f"""\
 # Vera — A language designed for machines to write
 
@@ -598,30 +605,7 @@ SQL injection won't compile. Nearly every SQL injection starts the same way — 
 When you get it wrong, every error is an instruction for the model that wrote the code:
 
 ```
-[E001] Error at main.vera, line 14, column 1:
-
-    {{
-    ^
-
-  Function is missing its contract block. Every function in Vera must declare
-  requires(), ensures(), and effects() clauses between the signature and the body.
-
-  Vera requires all functions to have explicit contracts so that every function's
-  behaviour is mechanically checkable.
-
-  Fix:
-
-    Add a contract block after the signature:
-
-      private fn example(@Int -> @Int)
-        requires(true)
-        ensures(@Int.result >= 0)
-        effects(pure)
-      {{
-        ...
-      }}
-
-  See: Chapter 5, Section 5.2 "Function Declaration Syntax"
+{e001_example}
 ```
 
 Parse errors, type errors, effect mismatches, verification failures, and contract violations all produce the same shape: what went wrong, why, how to fix it, and a spec reference.

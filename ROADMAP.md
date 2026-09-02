@@ -12,11 +12,11 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,491 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,351 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
-*Sixteen open bugs, driven to zero.*
+*Twenty-one open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
@@ -25,6 +25,8 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1363](https://github.com/aallan/vera/issues/1363) | **Soundness.** A fact disclosed as neither proved nor guarded is still assumed at Tier 1 downstream, so a postcondition proves from what the same run admitted it could not establish. |
 | [#1362](https://github.com/aallan/vera/issues/1362) | **Accounting.** A handler-clause `@Nat` payload narrowing counts as runtime-guarded while nothing guards it and nothing discloses it, so a negative returns untrapped from a verify-clean program. |
 | [#1331](https://github.com/aallan/vera/issues/1331) | A user `data` declaration named after a built-in container compiles at the container's width, so a check-green program loses its exports to an E602 refusal. |
+| [#1315](https://github.com/aallan/vera/issues/1315) | The checker accepts a constructor pattern over a container ADT that has no constructors. |
+| [#1320](https://github.com/aallan/vera/issues/1320) | The checker admits literal patterns over scrutinees that can never match them — the general disease behind #1315. |
 | [#1316](https://github.com/aallan/vera/issues/1316) | A main-file `type` alias named after a prelude ADT leaks into the prelude's own bodies. |
 | [#1317](https://github.com/aallan/vera/issues/1317) | `E609` and `E610` refuse two modules' same-named declarations by declaration rather than by use. |
 | [#1312](https://github.com/aallan/vera/issues/1312) | An entry-file `data` declaration and a module's of the same name silently drop the caller when their shapes differ. |
@@ -33,11 +35,14 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1366](https://github.com/aallan/vera/issues/1366) | The same namer has no `ModuleCall` arm, so a nested direct module-generic call never registers the outer clone and the importer loses its caller. |
 | [#1365](https://github.com/aallan/vera/issues/1365) | Both namers type a pipe from its left operand, so a chain whose stage changes the type instantiates at the pre-stage type and emits invalid WebAssembly. |
 | [#1357](https://github.com/aallan/vera/issues/1357) | A module generic never discovers an instantiation piped from an effect-operation result — the piped sibling of #1310, failing on both discovery walks. |
+| [#1307](https://github.com/aallan/vera/issues/1307) | The checker resolves a bare call to a sibling function's `where` helper. |
 | [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |
 | [#1301](https://github.com/aallan/vera/issues/1301) | `md_parse` diverges between the native and browser runtimes on adversarial input. |
+| [#1328](https://github.com/aallan/vera/issues/1328) | The nightly stress workflow never exercises the host-handle reclamation battery. |
 | [#1347](https://github.com/aallan/vera/issues/1347) | String interpolation rejects a refinement type that resolves to an interpolable primitive, where a plain alias to the same primitive passes. |
 | [#1349](https://github.com/aallan/vera/issues/1349) | Internal Lark terminal names (`__ANON_0`) reach user-facing `Expected one of:` lists instead of the literals they stand for. |
 | [#1345](https://github.com/aallan/vera/issues/1345) | Chapter 6's MUST-warnings — one per `assume` statement, one per runtime-checked contract — are never emitted, so `vera verify` stays silent about work it did not prove. |
+| [#996](https://github.com/aallan/vera/issues/996) | `ch05_closure_nat_return` trapped once in a full conformance run and has not reproduced. |
 
 ## Stage 19 — The verification completeness sprint
 
@@ -65,7 +70,6 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 | [#1344](https://github.com/aallan/vera/issues/1344) | **Single-source registries umbrella** — one typed source of truth for built-ins, diagnostics, and doc mirrors.  The next three rows are its parts, and it is what makes them one campaign rather than three coincidences. |
 | [#735](https://github.com/aallan/vera/issues/735) | **Builtin dispatch table** — replace the 475-line `_translate_call` if-chain with a `{name: BuiltinSpec}` table, then have checker registration and the spec §9 tables consume it.  One table, three consumers. |
 | [#828](https://github.com/aallan/vera/issues/828) | `error_code` uniqueness — one stable code per diagnostic concept, enforced by a collision gate on the registry. |
-| [#954](https://github.com/aallan/vera/issues/954) | Single-source the `E001` example — generate all five doc mirrors from `vera/errors.py` instead of guarding hand-copies. |
 | [#1291](https://github.com/aallan/vera/issues/1291) | Rendered diagnostic output in docs — a `text` fence carrying compiler output is replayed against live output by a gate, the shape the `vera` fences already have. |
 | [#1351](https://github.com/aallan/vera/issues/1351) | `examples/README.md`'s **Demonstrates** column is ungated prose and has drifted — rows name features their example never calls. `check_examples_readme.py` replays the Run column only, so the claim half needs a gate of its own. |
 | [#1342](https://github.com/aallan/vera/issues/1342) | Conformance matrix — generate a construct × phase × target support table, so which constructs `check`, `verify`, and each compile target accept is read off the suite rather than asserted in prose. |

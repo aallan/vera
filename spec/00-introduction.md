@@ -77,16 +77,14 @@ When a diagnostic prints an inferred type it could not fully determine, the unkn
 ### 0.5.2 Example
 
 ```
-[E001] Error at main.vera, line 14, column 1:
+[E001] Error at main.vera, line 2, column 1:
 
     {
     ^
 
-  Function is missing its contract block. Every function in Vera must declare
-  requires(), ensures(), and effects() clauses between the signature and the body.
+  Function is missing its contract block. Every function in Vera must declare requires(), ensures(), and effects() clauses between the signature and the body.
 
-  Vera requires all functions to have explicit contracts so that every function's
-  behaviour is mechanically checkable.
+  Vera requires all functions to have explicit contracts so that every function's behaviour is mechanically checkable.
 
   Fix:
 
