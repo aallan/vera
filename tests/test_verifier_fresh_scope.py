@@ -298,15 +298,21 @@ public fn f(@Array<Int>, @Array<Int> -> @Array<Int>)
             "nat_to_int-argument record must both be obligated — "
             f"got {len(narrows)}"
         )
-        # The two are in DIFFERENT buckets, and which is which is the #1362
-        # point: the closure's return is guarded by the lifted closure's
-        # return guard, so it is `tier3`; the `nat_to_int` argument is not
-        # guarded by anything — that builtin is a representation identity
-        # with no lowering step to attach a guard to — so claiming `tier3`
-        # there asserted a runtime check that does not exist.  It is now
-        # disclosed instead.
+        # Both are `tier3`, and both are TRUE of the emitted module: the
+        # closure's @Nat return is covered by the lifted closure's return
+        # guard, and the `nat_to_int` argument by the narrowing guard that
+        # builtin now emits.  This assertion has held three different values,
+        # which is the history worth keeping.  It read `["tier3", "tier3"]`
+        # when the argument site hardcoded `guarded=True` — true by accident,
+        # since nothing guarded it; `["tier3", "tier3_unguarded"]` under #1362,
+        # which stopped the site claiming a guard it did not have and reported
+        # the shortfall; and `["tier3", "tier3"]` again now that the guard
+        # exists.  The first and third agree on the STATUS and disagree on
+        # whether it is warranted, which is exactly why the parity
+        # differential in `test_verifier_truth_consult_status.py` checks the
+        # claim against the artifact rather than against another claim.
         by_status = sorted(o.status for o in narrows)
-        assert by_status == ["tier3", "tier3_unguarded"], by_status
+        assert by_status == ["tier3", "tier3"], by_status
 
 
 # =====================================================================

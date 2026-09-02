@@ -66,7 +66,7 @@ Every diagnostic — parse errors, type errors, contract violations, effect mism
 
 Every diagnostic MUST include:
 
-1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E702` for errors, `W001`–`W002` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
+1. **Diagnostic code and location.** A stable diagnostic code (`E001`–`E702` for errors, `W001`–`W003` for warnings), file path, line number, and column, with the offending source line quoted and the error position indicated. The error code provides a machine-readable identifier, but every code is always accompanied by a full natural language explanation — the code alone is never the message.
 2. **Description.** A plain English explanation of the problem, written to tell the model what went wrong and how to fix it.
 3. **Rationale.** Why this is an error — which language rule was violated.
 4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.

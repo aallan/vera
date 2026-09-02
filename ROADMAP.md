@@ -16,21 +16,17 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## The v0.1.14 burndown
 
-*Nine open bugs, driven to zero.*
+*Five open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
 | Issue | What |
 |---|---|
-| [#1363](https://github.com/aallan/vera/issues/1363) | **Soundness.** A fact disclosed as neither proved nor guarded is still assumed at Tier 1 downstream, so a postcondition proves from what the same run admitted it could not establish. |
-| [#1362](https://github.com/aallan/vera/issues/1362) | **Accounting.** A handler-clause `@Nat` payload narrowing counts as runtime-guarded while nothing guards it and nothing discloses it, so a negative returns untrapped from a verify-clean program. |
 | [#1331](https://github.com/aallan/vera/issues/1331) | A user `data` declaration named after a built-in container compiles at the container's width, so a check-green program loses its exports to an E602 refusal. |
 | [#1316](https://github.com/aallan/vera/issues/1316) | A main-file `type` alias named after a prelude ADT leaks into the prelude's own bodies. |
 | [#1317](https://github.com/aallan/vera/issues/1317) | `E609` and `E610` refuse two modules' same-named declarations by declaration rather than by use. |
 | [#1312](https://github.com/aallan/vera/issues/1312) | An entry-file `data` declaration and a module's of the same name silently drop the caller when their shapes differ. |
 | [#1321](https://github.com/aallan/vera/issues/1321) | Codegen tests its container branches before `_adt_layouts`, so a user `data` named after a container is misclassified. |
-| [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |
-| [#1345](https://github.com/aallan/vera/issues/1345) | Chapter 6's MUST-warnings — one per `assume` statement, one per runtime-checked contract — are never emitted, so `vera verify` stays silent about work it did not prove. |
 
 ## Stage 19 — The verification completeness sprint
 

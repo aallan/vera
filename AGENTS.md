@@ -54,7 +54,7 @@ vera version                      # Print the installed version (also --version,
 vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera builtins [--json]            # List the built-in function registry (no file needed)
 vera effects [--json]             # List the effect and ability registry (no file needed)
-vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001/W002 (no file needed)
+vera errors [--json]              # List the diagnostic-code registry: E001–E702 + W001–W003 (no file needed)
 ```
 
 See [TOOLCHAIN.md](TOOLCHAIN.md) for the CLI cookbook — driving the toolchain to write, verify, test, run, and debug Vera, including the `builtins`/`effects`/`errors` introspection commands.
@@ -131,12 +131,16 @@ The `verify --json` output includes a verification summary:
   "verification": {
     "tier1_verified": 2,
     "tier3_runtime": 0,
+    "assumptions": 0,
     "total": 2
   }
 }
 ```
 
 Alongside it, an `obligations` array carries one entry per reified proof obligation (`kind`, `status`, `description`, `location`). The summary is derived from that array by `status` — `verified` counts as `tier1_verified`, `tier3`/`timeout` as `tier3_runtime`, and `total` is their sum. Reproduce the counts by *filtering on `status`*, not by taking the array's length: a `violated` or `tier3_unguarded` obligation discharged to no tier, so it is counted nowhere and is surfaced as an error or warning diagnostic instead. On a program with one refuted contract, `total: 2` beside a three-entry array is the expected partition.
+
+`assumptions` sits beside those counts and is NOT part of that identity: it counts the `assume` statements this run took on trust (one W003 warning each, spec §6.2.6), which are not obligations and discharge to no tier. It is derived from the assembled diagnostics, so a consumer reproduces it by counting W003 rather than by reading any obligation's status. A non-zero value is the honest measure of how much of a "verified" result rests on something nobody proved.
+
 
 ### Essential rules
 

@@ -19,6 +19,7 @@ import z3
 
 from vera import ast, naming
 from vera.errors import Diagnostic, SourceLocation
+from vera.obligations.core import ProofObligation
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.slots import fn_slot_scope
 from vera.smt import SlotEnv, SmtContext
@@ -106,6 +107,18 @@ _NEEDS_RAW = {STRING, FLOAT64}
 # count of unattributable / filtered-out errors as
 # ``TestSummary.unlisted_errors``.
 _VERIFICATION_ERROR_CODES = frozenset({"E500", "E501", "E502"})
+
+# The obligation kinds that carry a CONTRACT the programmer wrote, and so the
+# kinds whose Tier-3 status means "this clause is checked at runtime, not
+# proved" — the question `_classify_functions` is asking (#1375).  Its
+# complement is the per-site SAFETY family (nat_sub, nat_bind, refine_bind,
+# call_pre, div_zero, index_bounds, int_overflow), where `tier3` means a
+# codegen trap rather than a proof is the guard: a property of one operation,
+# not a demoted contract, and not something trials can adjudicate.
+# `test_every_obligation_kind_is_classified` pins the partition against the
+# live ObligationKind vocabulary, so a new kind has to be placed deliberately
+# rather than defaulting into whichever side happens to be written first.
+_CONTRACT_KINDS = frozenset({"requires", "ensures", "decreases", "assert"})
 
 # The internal classification for a function skipped because the input
 # generator cannot model one of its input constraints (#1229).  Distinct from
@@ -265,7 +278,8 @@ class _TestEngine:
             expr_target_types=self.expr_target_types,
         )
         classification = _classify_functions(
-            self.program, verify_result.diagnostics, self.alias_env,
+            self.program, verify_result.diagnostics,
+            verify_result.obligations, self.alias_env,
         )
 
         # 2. Filter to target functions
@@ -600,6 +614,7 @@ def _not_exported_reason(
 def _classify_functions(
     program: ast.Program,
     verify_diagnostics: list[Diagnostic],
+    obligations: list[ProofObligation],
     alias_env: AliasEnv = EMPTY_ALIAS_ENV,
 ) -> dict[str, tuple[str, str, ast.FnDecl]]:
     """Classify each function as verified/tier3/skipped.
@@ -611,17 +626,38 @@ def _classify_functions(
     (#1216); the engine passes its own, and the default keeps every alias
     opaque for a caller that has none.
     """
-    # Collect function names mentioned in verifier diagnostics.
-    tier3_fns: set[str] = set()
-    tier3_codes = {"E520", "E521", "E522", "E523", "E524", "E525", "E532"}
+    # #1375: read the OBLIGATION STREAM, the same source `verify --json`
+    # reports and `summarize` counts from.  This was a re-derivation — a
+    # hardcoded set of Tier-3 warning codes, with the function name recovered
+    # by regex from the diagnostic's prose — and a re-derivation of a fact that
+    # already exists goes stale the moment a code is added.  It had: E534
+    # (#1363's demotion) was absent, so a contract this run demoted to
+    # runtime-only truth read back as "Tier 1 (proved)" and was EXCLUDED from
+    # trials — the one contract most in need of them.  Statuses carry
+    # `fn_name` directly, so the regex goes with the list.
+    #
+    # Scoped to the CONTRACT kinds, which is what the diagnostic-keyed set
+    # covered: only these emit a function-named Tier-3 warning, so only these
+    # ever entered it.  The obligation stream is strictly wider — it also
+    # carries the per-site SAFETY kinds (int_overflow, nat_bind, div_zero,
+    # index_bounds, ...), which are `tier3` whenever a codegen trap rather
+    # than a proof is the guard, and which mostly carry no diagnostic at all.
+    # Those are not contract demotions: `abs_val` above has both its clauses
+    # proved and one `int_overflow` site, and testing it would run trials
+    # against a function whose contracts are already Tier 1 — where a trap the
+    # guard fires legitimately scores as a falsified contract, the #1229
+    # hazard the call below exists to avoid.  Keying on `kind` also outlasts
+    # the code list it replaces: ObligationKind is a closed vocabulary, so a
+    # new Tier-3 *code* on an existing kind (E534 was exactly that) is picked
+    # up by construction.
+    tier3_fns: set[str] = {
+        o.fn_name
+        for o in obligations
+        if o.status in ("tier3", "timeout") and o.kind in _CONTRACT_KINDS
+    }
     failed_fns: dict[str, str] = {}
     for diag in verify_diagnostics:
-        if diag.severity == "warning" and diag.error_code in tier3_codes:
-            # Extract fn name from description: '...'
-            m = re.search(r"'(\w+)'", diag.description)
-            if m:
-                tier3_fns.add(m.group(1))
-        elif (
+        if (
             diag.severity == "error"
             and diag.error_code in _VERIFICATION_ERROR_CODES
         ):

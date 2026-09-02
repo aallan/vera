@@ -312,6 +312,31 @@ def test_a_family_the_row_does_not_declare_is_loud_on_both_sides(
     assert "State<Int>" in named.description, named.description
 
 
+def test_an_open_row_tail_may_supply_the_family() -> None:
+    """The carve-out, pinned: an OPEN row is not refused.
+
+    A row entry naming a `forall` type parameter is a row VARIABLE, and its
+    tail may be instantiated at a call site that supplies the family — so
+    refusing here would reject a program legal under some instantiation. The
+    rule E177 enforces is membership in a CLOSED row.
+
+    Worth stating how this cell arrived: a first pass concluded open rows were
+    not expressible and asserted that instead. A tripwire over the compiler's
+    own `row_var` assignments refuted it — `resolution.py` sets one whenever a
+    row entry names a type parameter — which is the shape below.
+    """
+    source = """
+public forall<E> fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(new(State<Bool>) == false)
+  effects(<State<Int>, E>)
+{
+  7
+}
+"""
+    _check_ok(source)
+
+
 def test_the_declared_family_is_still_accepted() -> None:
     """The over-rejection control: a contract naming the row's OWN family
     checks clean, so the new rule refuses only what the row omits."""

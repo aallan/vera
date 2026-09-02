@@ -45,7 +45,12 @@ from vera.parser import parse
 from vera.resolver import ModuleResolver, ResolvedModule
 from vera.smt import SmtContext, resolve_timeout_ms
 from vera.transform import transform
-from vera.verifier import ContractVerifier, VerifySummary, summarize
+from vera.verifier import (
+    ContractVerifier,
+    VerifySummary,
+    disclosed_fn_names,
+    summarize,
+)
 
 
 @dataclass
@@ -103,6 +108,11 @@ class VerificationSession:
         # Phase B: per-function discharge cache (see cache.py for the
         # invalidation-key soundness model).
         self._cache = DischargeCache()
+        # #1363 (PR review): functions this session has found disclosed.
+        # Carried across runs so the warm path verifies under the same
+        # set the cold path computes, and folded into the cache key so a
+        # slice proved under a different set is never replayed.
+        self._disclosed: frozenset[str] = frozenset()
         # Cached AST of the last successfully verified program.
         self.last_program: ast.Program | None = None
         # Cache observability for the most recent verify_source call.
@@ -136,6 +146,27 @@ class VerificationSession:
         resolved_modules: list[ResolvedModule] | None = None,
     ) -> SessionVerifyResult:
         """Parse, type-check, and verify *source* on the warm session.
+
+        The disclosed set belongs to ONE program's fixpoint, so it is cleared
+        here rather than left to accumulate (#1363, PR review).  A session
+        outlives the document it was created for — an editor verifies file
+        after file on one — and a set carried forward demoted the NEXT
+        program's contracts on the strength of the previous one's disclosures,
+        against unrelated names, where cold (a fresh process each time) proves
+        them at Tier 1.  Cleared at the ENTRY point specifically: the fixpoint
+        below re-enters `_verify_source_fixpoint`, which must see the set the
+        previous pass produced, and clearing there would not terminate.
+        """
+        self._disclosed = frozenset()
+        return self._verify_source_fixpoint(source, file, resolved_modules)
+
+    def _verify_source_fixpoint(
+        self,
+        source: str,
+        file: str | None = None,
+        resolved_modules: list[ResolvedModule] | None = None,
+    ) -> SessionVerifyResult:
+        """One pass, re-entered until the disclosed set stops growing.
 
         Mirrors the ``vera verify`` CLI pipeline (cmd_verify): imports
         are resolved from disk relative to *file* when given (and
@@ -239,6 +270,10 @@ class VerificationSession:
             if isinstance(tld.decl, ast.FnDecl)
         }
 
+        # #1363 (PR review): the warm path must run under the same disclosed
+        # set the cold path computes, or it proves at Tier 1 from facts cold
+        # withholds — a warm/cold divergence in the generous direction.
+        verifier._disclosed_fns = self._disclosed
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
@@ -248,6 +283,12 @@ class VerificationSession:
                 continue
             decl = tld.decl
             key = fn_cache_key(decl, fn_map, context_hash)
+            if self._disclosed:
+                # A slice proved under a DIFFERENT disclosed set is stale:
+                # its statuses depend on which facts were withheld, which is
+                # not a property of the function's own subtree that
+                # `fn_cache_key` digests (#1363, PR review).
+                key = f"{key}\x1f{sorted(self._disclosed)!r}"
             if decl.forall_vars:
                 # #732: a generic's verification depends on its concrete
                 # instantiation set, which is a property of its CALLERS — not of
@@ -297,6 +338,17 @@ class VerificationSession:
         # exactly as the cold `verify_program` path derives it from its own —
         # so the warm and cold summaries agree by construction (the tier counts
         # can't drift from the obligations a consumer reads).
+        disclosed = disclosed_fn_names(out_obls)
+        if not disclosed <= self._disclosed:
+            # Re-run knowing what this pass disclosed, exactly as the cold
+            # `verify_program` fixpoint does.  The set only grows, so this
+            # terminates; the cache is keyed on it, so slices from the previous
+            # set are not replayed.
+            self._disclosed = disclosed
+            return self._verify_source_fixpoint(
+                source, file=file, resolved_modules=resolved_modules,
+            )
+
         summary = summarize(out_obls, out_diags)
 
         self.last_program = program

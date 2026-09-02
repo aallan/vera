@@ -20,9 +20,10 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from vera import ast, naming
+from vera import ast, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -101,24 +102,37 @@ _OPAQUE_SCRUTINEE_REASON = (
 )
 
 
-#: Builtins that take a ``@Nat`` parameter and plant NO runtime guard on it
-#: (#1362).  Builtin translators bypass codegen's ``_fn_nat_params`` loop and
-#: guard per-translator instead, so "a concrete ``@Nat`` formal is guarded" —
-#: true of every user function — is not true of all of them.
+#: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
+#: question (#1362, narrowed in #757's completion).
 #:
-#: MEASURED, not reasoned: every builtin with a ``@Nat`` parameter was compiled
-#: with a narrowing argument and its emitted WAT inspected for the guard.  Seven
-#: of the eight plant one; ``nat_to_int`` does not, because it is a
-#: representation identity (``Nat`` and ``Int`` are both ``i64``), so there is
-#: no lowering step for a guard to attach to.
+#: The ARGUMENT half is `vera.narrowing.narrows_into_nat`, shared with codegen.
+#: Both halves are needed: the same callee guards `nat_to_int(array_length(...))`
+#: and guards nothing at `nat_to_int(@Nat.0)` on a handler-clause binder, so the
+#: callee alone cannot settle it — and an argument that narrows is still
+#: unguarded if its callee emits no check, so the argument alone cannot either.
 #:
-#: The set is kept honest by a DIFFERENTIAL rather than by review:
-#: ``test_nat_arg_guard_inventory_matches_codegen`` enumerates the ``@Nat``
-#: builtins from the live registry, derives each one's guard from the emitted
-#: WAT, and compares against this set — so a builtin that gains or loses its
-#: guard fails the test instead of silently desynchronising the classification.
-#: That is the #1205 obligation<->guard parity discipline applied here.
-_NAT_ARG_UNGUARDED_BUILTINS = frozenset({"nat_to_int"})
+#: `string_slice` is here BY DESIGN, not as a residual: it clamps its indices to
+#: `[0, len]` while still in i64 (#475), so a negative index is defined
+#: behaviour rather than a trap.  Turning that into a guard would change
+#: documented semantics, so the honest report is that the obligation is
+#: unguarded — neutralised, not checked.  Its siblings were completed instead:
+#: `nat_to_int` and `nat_to_string` now guard their narrowing arguments.
+#:
+#: MEASURED, not remembered: `test_nat_arg_guard_parity` derives each builtin's
+#: guard from the emitted module AND from running a negative through it, and
+#: fails if this set disagrees.
+_NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
+
+
+@lru_cache(maxsize=1)
+def _builtin_fn_names() -> frozenset[str]:
+    """Names registered in a FRESH environment — i.e. the built-ins.
+
+    The three-case guard rule turns on whether a callee is a builtin (whose
+    translator decides) or a user function (guarded unconditionally at the call
+    site), and a fresh `TypeEnv` is exactly the built-in registry.
+    """
+    return frozenset(TypeEnv().functions)
 
 
 def _is_locally_constructed(term: object, sort: object) -> bool:
@@ -210,15 +224,51 @@ class VerifySummary:
 
     Derived from the reified obligation stream (see :func:`summarize`) rather
     than accumulated by hand, so the fields cannot drift out of step with the
-    obligations a consumer reads (#967).  ``assumptions`` is retained for
-    backward shape compatibility and is always ``0`` — no obligation kind maps
-    to it (it was never incremented on the historical hand-counted path).
+    obligations a consumer reads (#967).  ``assumptions`` is the exception to
+    that sentence and is derived the same way for the same reason: no
+    obligation kind maps to it, so it counts W003 diagnostics in the assembled
+    stream (#1345).  It read a constant ``0`` while the code that would have
+    incremented it did not exist; once §6.2.6's MUST-warning was emitted, a
+    hand-kept counter promptly drifted between the warm and cold paths, so it
+    is computed from the diagnostics rather than accumulated.
     """
 
     tier1_verified: int = 0
     tier3_runtime: int = 0
     assumptions: int = 0
     total: int = 0
+
+
+def disclosed_fn_names(
+    obligations: "list[ProofObligation]",
+) -> frozenset[str]:
+    """Functions carrying an obligation that is neither proved nor guarded.
+
+    ONE derivation, read by the cold `verify_program` fixpoint and by the warm
+    `VerificationSession` alike (#1363, PR review).  The warm path assembles
+    its stream from cached per-function slices and never called this at all,
+    so `_scrutinee_is_disclosed_call` answered False and warm proved at Tier 1
+    from facts cold withheld — a warm/cold divergence in the one direction
+    that matters, the warm answer being the more generous.
+
+    Two statuses qualify:
+
+    * ``tier3_unguarded`` — the honest bucket for a site nothing guards
+      (#1362 having stopped an unguarded site from claiming ``tier3``); and
+    * ``tier3`` carrying ``E534`` — an obligation this mechanism demoted,
+      because it held only from a disclosed fact.
+
+    A plain ``tier3`` does not qualify: it is genuinely runtime-guarded, and a
+    guard makes the declared type true at run time, which is exactly what a
+    consumer may lean on.  Missing the second was a KEY MISMATCH — R1 demotes
+    to ``tier3``, so a function demoted by this very mechanism did not count as
+    disclosed and the taint stopped one hop short.
+    """
+    return frozenset(
+        o.fn_name for o in obligations
+        if o.status == "tier3_unguarded"
+        or (o.status == "tier3" and o.error_code == "E534")
+    )
 
 
 def summarize(
@@ -2738,18 +2788,34 @@ class ContractVerifier:
         """
         self.register_program(program)
         self._verify_all_declarations(program)
+        self._rerun_until_disclosure_settles(program)
 
-        disclosed = self._disclosed_fn_names()
-        if disclosed and disclosed != self._disclosed_fns:
-            # Re-run knowing which callees were disclosed.  The obligation
-            # stream is rebuilt rather than patched: a status is a property of
-            # the proof that produced it, and pass one's proofs were made
-            # against a context this pass no longer offers.
-            self._disclosed_fns = disclosed
+    def _rerun_until_disclosure_settles(self, program: ast.Program) -> None:
+        """Re-verify until the disclosed set stops growing (#1363, PR review).
+
+        One extra pass is not enough.  Within a pass the set is fixed, so a
+        function DISCLOSED during it taints nothing for the callers verified
+        after it — and because a demotion can itself disclose (an ``ensures``
+        demoted to ``tier3``/E534 makes its function disclosed), a chain
+        propagates one hop per pass. A two-hop chain whose middle function is
+        verified after its caller therefore still proved at Tier 1.
+
+        Iterating to a FIXPOINT is what closes that: each pass is run with the
+        full set the previous one produced, and the set only ever grows, so it
+        terminates — bounded by the number of functions, since a pass that adds
+        nothing new stops it.
+        """
+        seen = self._disclosed_fns
+        while True:
+            disclosed = self._disclosed_fn_names()
+            if disclosed <= seen:
+                return
+            self._disclosed_fns = seen = disclosed
             # Both buffers are rebuilt, matching the per-instance idiom in
             # `_verify_generic_instances`: a status and its diagnostic are
-            # properties of the proof that produced them, and pass one's
-            # proofs were made against a context this pass no longer offers.
+            # properties of the proof that produced them, and the previous
+            # pass's proofs were made against a context this one no longer
+            # offers.
             self.errors, self.obligations = [], []
             self.register_program(program)
             self._verify_all_declarations(program)
@@ -2762,18 +2828,8 @@ class ContractVerifier:
         self._verify_shadowed_module_generics()
 
     def _disclosed_fn_names(self) -> frozenset[str]:
-        """Functions carrying an obligation that is neither proved nor guarded.
-
-        ``tier3_unguarded`` is the honest bucket for exactly that (#1362 having
-        stopped an unguarded site from claiming ``tier3``), so it is the whole
-        test: a ``tier3`` obligation IS runtime-guarded, and a guard makes the
-        declared type true at run time, which is what a consumer may lean on.
-        """
-        return frozenset(
-            o.fn_name for o in self.obligations
-            if o.status == "tier3_unguarded"
-        )
-
+        """This verifier's obligations, through the shared rule."""
+        return disclosed_fn_names(self.obligations)
 
     def _verify_shadowed_module_generics(self) -> None:
         """Verify each IMPORTED generic's clone at the type args the importer
@@ -2949,6 +3005,28 @@ class ContractVerifier:
             "tier3_unguarded": ("tier3_unguarded",),
             "violated": ("violated",),
         }
+        # #1345 (PR review): a diagnostic with NO obligation behind it is
+        # dropped by the grouping below, which is keyed on obligations.  W003
+        # is exactly that shape — `assume` emits a warning and records no
+        # obligation, because an assumption discharges nothing — so an
+        # `assume` inside an instantiated generic warned per instance and then
+        # reached neither the stream nor `summarize`, violating spec 6.2.6's
+        # MUST-per-assume for every generic body.  Re-emitted once per SITE,
+        # not once per instantiation: the source `assume` is one statement
+        # however many times its enclosing generic is instantiated.
+        seen_obligation_free: set[tuple[str, int, int, str]] = set()
+        for _concrete, _obls, errs in per_instance:
+            for diag in errs:
+                if diag.error_code != "W003":
+                    continue
+                loc = diag.location
+                site = (diag.error_code, getattr(loc, "line", 0),
+                        getattr(loc, "column", 0), diag.description)
+                if site in seen_obligation_free:
+                    continue
+                seen_obligation_free.add(site)
+                self.errors.append(diag)
+
         groups: dict[str, list[tuple[tuple[str, ...], ProofObligation]]] = {}
         order: list[str] = []
         errs_by_instance: dict[tuple[str, ...], list[Diagnostic]] = {}
@@ -4975,7 +5053,8 @@ class ContractVerifier:
                             site="call argument",
                             # The desugared call is the same call, so it
                             # inherits the same guard question (#1362).
-                            guarded=self._call_arg_nat_guarded(right.name),
+                            guarded=self._call_arg_nat_guarded(
+                                right.name, arg),
                         )
                     elif (self._int_widening_target(arg, None)
                             and self._result_is_nat(arg)):
@@ -5276,7 +5355,8 @@ class ContractVerifier:
                             # bypass `_fn_nat_params` and one of them plants no
                             # guard at all, so the flag is READ FROM the
                             # measured inventory rather than assumed (#1362).
-                            guarded=self._call_arg_nat_guarded(expr.name),
+                            guarded=self._call_arg_nat_guarded(
+                                expr.name, arg),
                         )
                     elif (self._int_widening_target(arg, formal)
                             and self._result_is_nat(arg)):
@@ -6220,8 +6300,8 @@ class ContractVerifier:
             # only guarantee.
             self._record_obligation(decl.name, "assert", expr, "tier3",
                                     error_code="E535")
-            return
             self._assert_runtime_checked_warning(decl, expr)
+            return
         result = smt.check_valid(pred, list(assumptions))
         if result.status == "verified":
             self._record_obligation(decl.name, "assert", expr, "verified")
@@ -6580,20 +6660,66 @@ class ContractVerifier:
             return cur
         return env
 
-    def _call_arg_nat_guarded(self, callee: str) -> bool:
-        """Whether codegen guards an ``@Int -> @Nat`` narrowing at a call to
-        *callee* (#1362).
+    def _call_arg_nat_guarded(self, callee: str, arg: ast.Expr) -> bool:
+        """Whether codegen plants a ``>= 0`` guard for this argument (#1362).
 
-        A user function's concrete ``@Nat`` formal is guarded through
-        ``_fn_nat_params``; the builtins bypass that loop, and one of them
-        plants no guard at all.  Classifying its argument ``tier3`` claims a
-        runtime check that does not exist, so an undecided obligation there
-        must take the unguarded bucket and disclose E504 like its documented
-        siblings.  Refutable arguments hid this: the obligation is
-        ``violated`` regardless, so only an opaque value — a handler-clause
-        payload binder, in the reported case — reaches the bucketing at all.
+        MEASURED, and it is three cases rather than one — each verified by
+        compiling the shape and running a negative through it:
+
+        1. A USER function's ``@Nat`` formal is guarded unconditionally, from
+           ``_fn_nat_params`` at the call site.  It does not consult the
+           argument at all: a clause binder already declared ``@Nat`` still
+           traps.
+        2. A BUILTIN that guards does so only when the argument NARROWS — its
+           translator asks ``_narrows_into_nat`` first — so the same callee
+           guards ``nat_to_int(array_length(...))`` and guards nothing at
+           ``nat_to_int(@Nat.0)``.
+        3. ``string_slice`` never guards, by design rather than omission: it
+           clamps its indices to ``[0, len]`` (#475), so a negative index is
+           defined behaviour and a trap would change documented semantics.
+
+        Neither key alone is the rule.  Callee-only cannot separate the two
+        halves of case 2; argument-only gets case 1 backwards and case 3
+        wrong.  Asked with CODEGEN's oracle throughout, deliberately: this
+        verifier obligates the clause binder because the checker's semantic
+        type carries the thrown ``@Int``, which is the right reading for "is
+        there a narrowing to prove?" and the wrong one for "will a guard be
+        emitted?", a statement about codegen that has to be answered the way
+        codegen answers it.
         """
-        return callee not in _NAT_ARG_UNGUARDED_BUILTINS
+        if callee in _NAT_ARG_UNGUARDED_BUILTINS:
+            return False
+        if callee not in _builtin_fn_names():
+            return True
+        return narrowing.narrows_into_nat(
+            arg,
+            self._declared_ret_type_name,
+            # Codegen's own @Nat-provenance question, asked the way codegen
+            # asks it.  A constant `False` stood here, justified as
+            # conservative; it is the opposite, and measurement says so
+            # (CR PR-review).  For `nat_to_int(@Nat.0 - 1)` the constant
+            # yields `narrows_into_nat = True` while the real oracle yields
+            # False: codegen's `_has_nat_origin_codegen` suppresses the
+            # underflow leaf and emits NO guard, so the constant claims a
+            # runtime check that is not in the module — #1362 exactly, in the
+            # code that fixes #1362.  Divergence from codegen's oracle is the
+            # bug, in either direction, which is why the shared derivation
+            # takes the oracle as a parameter rather than baking one in.
+            self._has_nat_origin,
+        )
+
+    def _declared_ret_type_name(self, call: ast.Expr) -> str | None:
+        """The DECLARED return type name of *call*'s callee, or None.
+
+        Codegen's oracle reads its own inference tables; the equivalent here is
+        the registered signature, which is what those tables are built from.
+        """
+        name = getattr(call, "name", None)
+        if not isinstance(name, str):
+            return None
+        info = self.env.lookup_function(name)
+        ret = getattr(info, "return_type", None) if info is not None else None
+        return getattr(ret, "name", None)
 
     def _check_nat_binding_obligation(
         self,
@@ -7233,7 +7359,14 @@ class ContractVerifier:
         reported as itself via :py:meth:`_undecided_reason`.
         """
         for status in (safe_status, bad_status):
-            if status in ("unknown", "opaque"):
+            if status in ("unknown", "opaque", "disclosed"):
+                # `disclosed` is a non-verdict like the other two (#1363, PR
+                # review): the goal is provable only from a fact this run
+                # could neither prove nor guard.  Omitting it here sent the
+                # reader the generic "unconstrained @Nat" text — a fact about
+                # the PROGRAM — for what is actually a fact about the PROOF,
+                # which is the misattribution `_undecided_reason` exists to
+                # prevent.
                 return ContractVerifier._undecided_reason(status)
         return (
             "the value is not provably within i64's range, and not provably "

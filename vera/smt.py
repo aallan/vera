@@ -2106,8 +2106,9 @@ class SmtContext:
         """Check each of the callee's preconditions at this call site.
 
         Returns True when every non-trivial precondition is discharged (or the
-        callee has none), False when one is violated (E501 recorded) or cannot
-        be translated (E532 demotion recorded).  Shared by the modelled-return
+        callee has none), False when one is violated (E501 recorded), cannot
+        be translated, or holds only from a disclosed fact (E532 demotion
+        recorded for both — neither is a violation).  Shared by the modelled-return
         path and the #882 opaque-return path so both check the obligation with
         identical dedup semantics.
         """
@@ -2138,6 +2139,19 @@ class SmtContext:
                 return False
             # Check validity: solver state already has caller's assumptions
             result = self.check_valid(z3_pre, [])
+            if result.status == "disclosed":
+                # #1363 (PR review): the precondition HOLDS — just only from a
+                # declared-type fact this run disclosed as neither proved nor
+                # guarded.  There is no violating model, so recording a
+                # CallViolation would emit E501, a definite "precondition
+                # violated", from a run that found no violation: the opposite
+                # misattribution from claiming Tier 1, and equally wrong.  It
+                # takes the same Tier-3 E532 demotion an untranslatable
+                # precondition takes, so the call keeps its runtime guard.
+                self._record_call_demotion_for(
+                    callee_name, call_node, contract,
+                )
+                return False
             if result.status != "verified":
                 # The same call site is translated more than once per
                 # function (the @Nat-subtraction walker re-translates
@@ -3436,6 +3450,13 @@ class SmtContext:
         registry (pure Python metadata, identical across functions of
         one program) persists.
 
+        ``_tainted_facts`` goes with them (#1363, PR review): they are facts
+        about ONE function's callees, and a warm session reuses this context
+        across a whole program.  Left standing, a prior function's withheld
+        fact is still in the second attempt for an unrelated goal, which is
+        reported ``disclosed`` — a demotion inherited from a function it has
+        nothing to do with.
+
         ``_length_fns`` / ``_index_fns`` MUST be cleared even though
         their ``FuncDeclRef`` objects stay valid across
         ``solver.reset()``: their side-effect axioms do not.
@@ -3456,6 +3477,7 @@ class SmtContext:
         self._fresh_counter = 0
         self._opaque_tainted = False
         self._path_conditions.clear()
+        self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }
