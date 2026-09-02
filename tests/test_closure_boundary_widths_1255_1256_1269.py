@@ -98,8 +98,14 @@ private fn mk(@Int -> @{T})
 }}
 """
 
+# The opening of a `gc_shadow_push` sequence: the slot-complete overflow
+# bound (#860 — `$gc_sp + 4` against `$gc_stack_limit`, since the store
+# writes four bytes).  Matching the bound rather than the store is what
+# keeps this a PUSH count: the `$gc_sp` restore that closes a function or a
+# match scope reads the same global and stores nothing.
 _SHADOW_PUSH = re.compile(
-    r"global\.get \$gc_sp\n\s*global\.get \$gc_stack_limit")
+    r"global\.get \$gc_sp\n\s*i32\.const 4\n\s*i32\.add"
+    r"\n\s*global\.get \$gc_stack_limit")
 
 
 def _fn_body(wat: str, name: str) -> str:

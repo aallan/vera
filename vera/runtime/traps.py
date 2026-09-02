@@ -387,12 +387,22 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
         "recursion)."
     ),
     "unreachable": (
-        "Usually a non-exhaustive `match` whose missing arm would have "
-        "required user code, or a compiler-generated assertion (e.g. an "
-        "ADT field offset that didn't resolve).  If the trap is inside "
-        "a `match` expression, add the missing arm explicitly rather "
-        "than relying on a wildcard — the type checker will tell you "
-        "which constructors are uncovered."
+        "Three causes reach this trap.  (1) A non-exhaustive `match` "
+        "whose missing arm would have required user code — add the "
+        "missing arm explicitly rather than relying on a wildcard; the "
+        "type checker will tell you which constructors are uncovered.  "
+        "(2) A compiler-generated assertion, e.g. an ADT field offset "
+        "that didn't resolve.  (3) GC shadow-stack overflow, which is "
+        "what a DEEP RECURSION through a function holding heap "
+        "references hits: every live frame roots its pointer "
+        "parameters, its allocations, and the values it binds out of "
+        "them, and the shadow stack holds 4 096 roots in total (16 KiB "
+        "— `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion "
+        "that traps at a depth close to 4 096 divided by a small "
+        "integer is this one: reduce the heap values live across the "
+        "recursive call, or restructure so the call is in tail position "
+        "(#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain "
+        "runs in constant shadow space)."
     ),
     "overflow": (
         "Integer arithmetic produced a value outside the representable "

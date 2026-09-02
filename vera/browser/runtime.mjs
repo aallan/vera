@@ -140,7 +140,12 @@ function gcRooted(ptr, fn) {
     return fn();
   }
   const sp = wasm.gc_sp.value;
-  if (sp >= wasm.gc_stack_limit.value) {
+  // #860, following #791: slot-complete bound.  The write below is FOUR
+  // bytes at [sp..sp+3], so an sp with 1-3 bytes of headroom passed
+  // `sp >= limit` and then spilled past the window.  Unreachable while
+  // generated code advances $gc_sp in 4-byte steps from a 4-aligned base
+  // — defence in depth, matching the CLI `_ShadowGuard.push` predicate.
+  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
     throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
   }
   writeI32(sp, ptr | 0);
@@ -196,7 +201,8 @@ function gcShadowPush(value) {
     );
   }
   const sp = wasm.gc_sp.value;
-  if (sp >= wasm.gc_stack_limit.value) {
+  // #860, following #791: slot-complete bound — see `gcRooted` above.
+  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
     throw new Error('GC shadow stack overflow in browser runtime');
   }
   writeI32(sp, value | 0);
