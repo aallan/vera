@@ -149,12 +149,27 @@ class TestNightlyStressLaneCollection1328:
         """The workflow's own command must collect the same node IDs
         as the canonical ``-m stress`` selection over pyproject's own
         ``testpaths`` — no file-scoping that silently drops a
-        stress-marked class living elsewhere in the tree."""
+        stress-marked class living elsewhere in the tree.
+
+        The marker is asserted to literally be ``stress`` (not just
+        threaded through from whatever the workflow happens to say)
+        and the canonical side is always collected with the literal
+        ``"stress"``: a workflow that switched to some OTHER marker
+        which coincidentally still selects the reclamation battery
+        would otherwise compare that narrower selection against
+        itself and pass, without noticing the rest of the `stress`
+        domain (e.g. `tests/test_stress.py`'s 16 instances) fell out.
+        """
         command = _extract_stress_run_command()
         marker, workflow_paths = _parse_pytest_selection(command)
+        assert marker == "stress", (
+            f"nightly-stress.yml's stress step no longer selects on the "
+            f"`stress` marker (found {marker!r}) — this test's canonical "
+            f"comparison is only meaningful against that marker"
+        )
         workflow_ids = _collect_node_ids(marker, workflow_paths)
 
-        canonical_ids = _collect_node_ids(marker, _canonical_testpaths())
+        canonical_ids = _collect_node_ids("stress", _canonical_testpaths())
         assert canonical_ids, (
             "canonical `-m stress` selection over testpaths collected "
             "nothing — this test is broken, not the workflow"
@@ -173,9 +188,16 @@ class TestNightlyStressLaneCollection1328:
         """#1328's own repro, verbatim: replay the workflow's command
         in collect-only mode and assert all 10
         ``TestHostHandleReclamation573`` instances are among the
-        collected node IDs."""
+        collected node IDs.  Also asserts the marker is literally
+        ``stress`` — otherwise a marker rename that still happened to
+        select this one battery would pass here while silently
+        dropping the rest of the `stress` domain."""
         command = _extract_stress_run_command()
         marker, paths = _parse_pytest_selection(command)
+        assert marker == "stress", (
+            f"nightly-stress.yml's stress step no longer selects on the "
+            f"`stress` marker (found {marker!r})"
+        )
         collected = _collect_node_ids(marker, paths)
 
         missing = [
