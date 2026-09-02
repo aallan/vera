@@ -7,6 +7,7 @@ imports between context.py and the mixin modules.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from vera import ast
@@ -243,18 +244,30 @@ def _align_up(offset: int, align: int) -> int:
 # GC shadow stack helper
 # =====================================================================
 
+# The line that opens every ``gc_shadow_push`` sequence.  Named once so the
+# emitter below and :func:`contains_shadow_push` read the SAME spelling — two
+# independently-maintained copies would let a reworded emitter silently stop
+# being detected, and the detector's caller (#1322's match scoping) would then
+# emit no ``$gc_sp`` restore for a match that does push.
+_SHADOW_PUSH_MARKER = "global.get $gc_stack_limit"
+
+
 def gc_shadow_push(local_idx: int) -> list[str]:
     """Generate WAT instructions to push an i32 value onto the GC shadow stack.
 
     Stores the value from ``local_idx`` at the current shadow-stack
     pointer (``$gc_sp``) and advances ``$gc_sp`` by 4 bytes.  Traps
     if the push would overflow the shadow stack into the GC worklist
-    region.
+    region — bounding the FULL four-byte slot, not just its first byte
+    (#791, and its four siblings in #860), so a ``$gc_sp`` that lands
+    within four bytes of ``$gc_stack_limit`` cannot store past the end.
     """
     return [
         "global.get $gc_sp",
-        "global.get $gc_stack_limit",
-        "i32.ge_u",
+        "i32.const 4",
+        "i32.add",
+        _SHADOW_PUSH_MARKER,
+        "i32.gt_u",
         "if",
         "  unreachable",  # shadow stack overflow
         "end",
@@ -266,6 +279,25 @@ def gc_shadow_push(local_idx: int) -> list[str]:
         "i32.add",
         "global.set $gc_sp",
     ]
+
+
+def contains_shadow_push(instructions: Iterable[str]) -> bool:
+    """Whether *instructions* contains at least one :func:`gc_shadow_push`.
+
+    Answers the one question #1322's match scoping needs: did lowering this
+    sub-expression put anything on the shadow stack that a ``$gc_sp`` restore
+    would have to reclaim?  A match that pushed nothing gets no wrapper, so
+    the emitted WAT of a non-rooting match is unchanged and — decisively — a
+    function whose lowering never sets ``needs_alloc`` never acquires a
+    reference to ``$gc_sp``, a global that only exists when it does.
+
+    Several call sites indent the emitted lines before appending them, so the
+    match is on the stripped line.  ``$gc_stack_limit`` is read nowhere else
+    inside a function body: its only other consumers are ``$register_wrapper``
+    and the collector in ``vera/codegen/assembly.py``, which are assembled as
+    whole functions and never flow through an instruction list.
+    """
+    return any(i.strip() == _SHADOW_PUSH_MARKER for i in instructions)
 
 
 # =====================================================================

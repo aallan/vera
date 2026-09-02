@@ -111,7 +111,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_parsing.py` | 1,035 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
 | ` ├ calls_strings.py` | 4,185 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
 | ` ├ closures.py` | 582 | | Closures, anonymous functions, free variable analysis | |
-| ` ├ data.py` | 1,515 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ data.py` | 1,695 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 651 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
 | ` ├ json_serde.py` | 631 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
@@ -636,7 +636,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer (in heap range, properly aligned, below `$heap_ptr`) is treated as one (no type descriptors needed). Because those guards don't prove the word at `val - 4` is actually an object header, the marker also bounds the conservative scan against `$heap_ptr` at two layers — early-skip if `obj_ptr + obj_size > heap_ptr` before marking, plus a per-iteration check inside the scan loop — so a non-pointer payload value that happens to satisfy the seeding guards (e.g. a bit-packed `Nat` row) cannot cause the collector to walk past the heap and trap (#515)
 3. **Sweep** — walk heap, link unmarked objects into free list
 
-**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. An overflow guard (`$gc_sp >= $gc_stack_limit`) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464).
+**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. A `match` applies that same save/restore/re-root discipline to its own extent (`_scope_match_shadow_roots` in `data.py`), so an arm's roots are reclaimed when the arm produces its value rather than at frame exit; the shadow stack roots ADDRESSES, so a copy of a pointer the producer already rooted is not pushed again (#1322). An overflow guard (`$gc_sp + 4 > $gc_stack_limit` — slot-complete, since the store writes four bytes) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464, #791, #860).
 
 **Zero overhead:** The GC infrastructure (globals, shadow stack, worklist, `$gc_collect`) is only emitted when `needs_alloc` is True. Programs that perform no heap allocation have no GC overhead.
 
@@ -753,7 +753,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (16
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 12,290 tests across 181 files: compiler-internals unit tests plus a **conformance suite** (244 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 12,311 tests across 183 files: compiler-internals unit tests plus a **conformance suite** (244 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

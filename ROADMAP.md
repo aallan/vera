@@ -12,11 +12,11 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,290 tests, 244 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,311 tests, 244 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
-*Twenty open bugs, driven to zero.*
+*Nineteen open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
@@ -35,7 +35,6 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1357](https://github.com/aallan/vera/issues/1357) | A module generic never discovers an instantiation piped from an effect-operation result — the piped sibling of #1310, failing on both discovery walks. |
 | [#1307](https://github.com/aallan/vera/issues/1307) | The checker resolves a bare call to a sibling function's `where` helper. |
 | [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |
-| [#1322](https://github.com/aallan/vera/issues/1322) | A match binding's GC shadow-stack push is never popped, so the stack grows with recursion depth until it traps. |
 | [#1301](https://github.com/aallan/vera/issues/1301) | `md_parse` diverges between the native and browser runtimes on adversarial input. |
 | [#1328](https://github.com/aallan/vera/issues/1328) | The nightly stress workflow never exercises the host-handle reclamation battery. |
 | [#1347](https://github.com/aallan/vera/issues/1347) | String interpolation rejects a refinement type that resolves to an interpolable primitive, where a plain alias to the same primitive passes. |
@@ -47,7 +46,7 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 
 *`vera verify` tells the whole truth.*
 
-Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small; the `@Nat`-narrowing rows ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#765](https://github.com/aallan/vera/issues/765)) reuse the per-component target-type metadata the [#820](https://github.com/aallan/vera/issues/820) enabler provides, while the reporting-completeness and hardening rows each carry their own root cause:
+Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small; the `@Nat`-narrowing rows ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#765](https://github.com/aallan/vera/issues/765)) reuse the per-component target-type metadata the [#820](https://github.com/aallan/vera/issues/820) enabler provides, while the reporting-completeness row carries its own root cause:
 
 | Issue | What |
 |---|---|
@@ -55,7 +54,6 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | [#754](https://github.com/aallan/vera/issues/754) | Effect-operation-argument runtime guard for `@Nat` narrowing, with a dedicated trap kind — first consumer of the per-component metadata enabler. |
 | [#757](https://github.com/aallan/vera/issues/757) | Generic-instantiated constructor-field runtime guard — second consumer of the same enabler. |
 | [#765](https://github.com/aallan/vera/issues/765) | Nested constructor sub-pattern binds (`Some(Some(@PosInt))`) runtime-guarded to match their static obligation. |
-| [#860](https://github.com/aallan/vera/issues/860) | Harden the four sibling shadow-stack bounds (WAT `gc_shadow_push` emitter, `$register_wrapper` slow path, browser `gcRooted`/`gcShadowPush`) to the slot-complete form #791 gave `_ShadowGuard.push` — rides here because the WAT sites re-baseline golden pins. |
 
 ## Stage 20 — The single-source sprint
 

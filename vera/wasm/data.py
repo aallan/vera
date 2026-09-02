@@ -13,7 +13,9 @@ from vera.wasm.helpers import (
     _element_load_op,
     _element_store_op,
     _is_pair_element_type,
+    contains_shadow_push,
     gc_shadow_push,
+    is_gc_pointer_base,
 )
 
 if TYPE_CHECKING:
@@ -483,16 +485,30 @@ class DataMixin:
             len_local = self.alloc_local("i32")  # consecutive: ptr + 1
             instructions.append(f"local.set {len_local}")
             instructions.append(f"local.set {ptr_local}")
-            # Root the pointer half, following the #705 discipline the
-            # pair-field extraction below and `_destructure_let` already
-            # apply to a pointer that lives only in a WASM local.  This is
-            # defensive depth, not a fix for an observed reclamation: with
-            # both pushes deleted the whole suite, the GC rooting and
-            # reclamation suites, and four allocate-inside-the-arm probes
-            # under VERA_EAGER_GC=1 all stay green.  The length is not a
-            # pointer and is deliberately not rooted.
-            self.needs_alloc = True
-            instructions.extend(gc_shadow_push(ptr_local))
+            # NOT rooted (#1322).  ``ptr_local`` is a COPY of the address the
+            # scrutinee expression just produced, and every producer of a heap
+            # pointer already roots it: a parameter in the function prologue,
+            # an allocation at its ``$alloc`` site, a call's result in the
+            # callee's epilogue, a ``let`` at its binding.  The shadow stack
+            # roots ADDRESSES, not locals, so a second push of the same
+            # address buys the mark phase nothing — while costing a slot for
+            # the whole frame.  Two pushes of one address is what took a
+            # ``String``-scrutinee recursion to three roots per frame and a
+            # bare `unreachable` at depth 1 364.
+            #
+            # The rooting these replaced was already documented as defensive
+            # rather than load-bearing: "with both pushes deleted the whole
+            # suite, the GC rooting and reclamation suites, and four
+            # allocate-inside-the-arm probes under VERA_EAGER_GC=1 all stay
+            # green".  What makes deleting them SAFE rather than merely
+            # untested is the producer's root staying live across the arm,
+            # which ``_scope_match_shadow_roots`` now guarantees: its
+            # ``$gc_sp`` snapshot is taken BEFORE the scrutinee, so anything
+            # the scrutinee rooted is reclaimed only once the arm is done.
+            #
+            # The non-pair bindings below are a different case and keep their
+            # pushes: a constructor FIELD load produces an address that lives
+            # in no other local, so #705/#707 are load-bearing there.
             scr_local = ptr_local
         else:
             scr_local = self.alloc_local(scr_wasm_type)
@@ -533,7 +549,100 @@ class DataMixin:
             return None
 
         instructions.extend(arm_instrs)
-        return instructions
+        return self._scope_match_shadow_roots(expr, instructions, result_type)
+
+    def _scope_match_shadow_roots(
+        self,
+        expr: ast.MatchExpr,
+        instructions: list[str],
+        result_type: str | None,
+    ) -> list[str]:
+        """Give a match's GC shadow roots ARM lifetime instead of FRAME
+        lifetime (#1322).
+
+        Every root this match pushes — the pair scrutinee's pointer half, each
+        arm's pattern bindings, every allocation an arm body makes — is dead
+        once the arm has produced its value.  Nothing popped them: the only
+        reclamation was the function epilogue's ``$gc_sp`` restore, which runs
+        once, at frame exit.  A ``let``'s frame lifetime is correct (the
+        binding is live to the end of its block); a match arm's is not, so a
+        frame holding K sequential matches held 3K roots of which at most
+        three were live, and a recursion multiplied that by its depth.  With
+        the shadow stack at 4 096 roots the ceiling moved with K — measured
+        over a ``String`` scrutinee: 1 023 levels at K=1, 584 at K=2, 314 at
+        K=4 — and overflow is a bare ``unreachable`` from
+        :func:`gc_shadow_push`'s bound check: no diagnostic, no location, on a
+        program ``check`` and ``verify`` both pass.
+
+        The discipline is the function epilogue's, verbatim (``gc_prologue`` /
+        ``gc_epilogue`` in ``vera/codegen/functions.py``): snapshot ``$gc_sp``
+        before the scrutinee, restore it after the arm cascade, and re-root
+        the arm's result when the result is a heap pointer.  What survives the
+        match is then exactly the one value the match produced — and anything
+        that value reaches, which the conservative mark phase finds from it.
+
+        Emitted ONLY when this match actually pushed
+        (:func:`contains_shadow_push`).  That is not an optimization: a
+        function whose lowering never sets ``needs_alloc`` gets no ``$gc_sp``
+        global at all, so an unconditional wrapper would emit a
+        ``global.get $gc_sp`` with nothing to read.  It also keeps the emitted
+        WAT of every non-rooting match byte-identical.
+
+        The save is placed before the SCRUTINEE, not after it: a scrutinee
+        that allocates (``match json_keys(j) { … }``) roots its own result,
+        and that root dies with the match too.  Roots pushed by anything
+        lowered EARLIER — a preceding call argument, an enclosing ``let`` —
+        sit below the snapshot and are untouched.
+        """
+        if not contains_shadow_push(instructions):
+            return instructions
+        save_local = self.alloc_local("i32")
+        scoped = ["global.get $gc_sp", f"local.set {save_local}"]
+        scoped.extend(instructions)
+        restore = [f"local.get {save_local}", "global.set $gc_sp"]
+        if result_type == "i32_pair":
+            # A (ptr, len) result: the pointer half is a heap pointer by
+            # construction (the pair convention has no non-pointer form).
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+            scoped.append(f"local.set {ret_len}")
+            scoped.append(f"local.set {ret_ptr}")
+            scoped.extend(restore)
+            scoped.extend(gc_shadow_push(ret_ptr))
+            scoped.append(f"local.get {ret_ptr}")
+            scoped.append(f"local.get {ret_len}")
+        elif result_type is not None:
+            ret_local = self.alloc_local(result_type)
+            scoped.append(f"local.set {ret_local}")
+            scoped.extend(restore)
+            if result_type == "i32" and self._match_result_is_pointer(expr):
+                scoped.extend(gc_shadow_push(ret_local))
+            scoped.append(f"local.get {ret_local}")
+        else:
+            # Void match — the cascade carries no result annotation and
+            # leaves nothing on the operand stack.
+            scoped.extend(restore)
+        return scoped
+
+    def _match_result_is_pointer(self, expr: ast.MatchExpr) -> bool:
+        """Whether an ``i32``-lowered match result must be re-rooted (#1322).
+
+        Decided by :func:`is_gc_pointer_base` over the REPRESENTATION base of
+        the match's Vera type — the same rule, from the same function, that
+        the function and closure epilogues use for their return values, so
+        the three cannot drift.
+
+        Defaults to ``True`` when the Vera type is unrecoverable.  The two
+        errors are not symmetric: re-rooting a non-pointer costs one shadow
+        slot and one candidate the mark phase's heap-range guard rejects,
+        while failing to re-root a pointer hands the arm's result to the next
+        collection.  An unknown type takes the inert error.
+        """
+        vera_type = self._infer_vera_type(expr)
+        if vera_type is None:
+            return True
+        head = vera_type.split("<", 1)[0]
+        return is_gc_pointer_base(self._resolve_base_type_name(head))
 
     def _match_scrutinee_vera_type(self, scrutinee: ast.Expr) -> str | None:
         """Concrete Vera type of a match scrutinee for the #1060 wildcard walks.
@@ -864,10 +973,7 @@ class DataMixin:
                 # #1305: a pair scrutinee lives in two consecutive locals
                 # (``scr_local`` = ptr, ``scr_local + 1`` = len), so the
                 # binding takes two of its own.  Copying only the pointer
-                # would bind a length-free String and read garbage.  The
-                # push below is the same defensive rooting as the
-                # scrutinee's — pinned as EMISSION by a WAT differential,
-                # because no probe distinguishes it behaviourally.
+                # would bind a length-free String and read garbage.
                 ptr_local = self.alloc_local("i32")
                 len_local = self.alloc_local("i32")  # consecutive: ptr + 1
                 instrs = [
@@ -876,8 +982,10 @@ class DataMixin:
                     f"local.get {scr_local + 1}",
                     f"local.set {len_local}",
                 ]
-                self.needs_alloc = True
-                instrs.extend(gc_shadow_push(ptr_local))
+                # NOT rooted (#1322), for the same reason the scrutinee copy
+                # in ``_translate_match`` is not: this local receives the
+                # scrutinee's address verbatim, and the shadow stack roots
+                # addresses.  See the note there.
                 return (instrs, env.push(type_name, ptr_local))
             local_idx = self.alloc_local(scr_wasm_type)
             bind_val = [f"local.get {scr_local}"]
