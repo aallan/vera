@@ -436,9 +436,22 @@ class InferenceMixin:
         # function — its DECLARED return width, not the ability-op width.  Defer
         # to `_fn_ret_types` (the same registry the general user-fn branch below
         # consults) when the name resolves to a user fn, so the field/element
-        # WASM type matches the emit.  A GENUINE ability op has no `_fn_ret_types`
-        # entry, so it falls through to the special-case width.
-        if expr.name in ("show", "hash") and expr.name in self._fn_ret_types:
+        # WASM type matches the emit.  A GENUINE ability op falls through to
+        # the special-case width.
+        #
+        # Which of the two it is comes from `_bare_call_denotes_op`, the
+        # SHARED gate (#1284/#1299), not from `_fn_ret_types` membership.
+        # That registry is flat: it holds every symbol the whole compilation
+        # absorbed, including another module's `fn show` that this
+        # declaration's lexical scope does not contain.  Asked by membership,
+        # this arm answered "the user's" for `show(42)` in a file that merely
+        # IMPORTS such a module, and typed a String result as `i64` — while
+        # `_translate_call`, narrowed to `_scoped_fns` by #1299, correctly
+        # lowered the ability operation.  The two consultors disagreeing is
+        # what #1299 fixed at the lowering and left here.
+        if (expr.name in ("show", "hash")
+                and not self._bare_call_denotes_op(expr.name)
+                and expr.name in self._fn_ret_types):
             return self._fn_ret_types[expr.name]
         if expr.name == "show":
             return "i32_pair"

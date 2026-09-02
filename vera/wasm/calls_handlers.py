@@ -927,6 +927,11 @@ class CallsHandlersMixin:
         instrs: list[str] = []
         instrs.extend(value_instrs)
         instrs.append(f"local.set {ptr}")
+        # `needs_alloc` beside the push, as every other push site does
+        # (#1371): the flag is what declares `$gc_sp`, so a push without
+        # it references an undeclared global whenever nothing else in
+        # the module allocates.
+        self.needs_alloc = True
         instrs.extend(gc_shadow_push(ptr))
         # One shadow slot roots the running accumulator across the per-field
         # concat allocations (seeded with the struct pointer, overwritten with
@@ -1027,6 +1032,7 @@ class CallsHandlersMixin:
         instrs.extend(value_instrs)  # (ptr, len)
         instrs.append(f"local.set {arr_len}")
         instrs.append(f"local.set {arr_ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(arr_ptr))
 
         # acc = "["
@@ -1110,6 +1116,7 @@ class CallsHandlersMixin:
         # Capture the slot address (current $gc_sp) BEFORE the push advances it.
         instrs.append(f"{indent}global.get $gc_sp")
         instrs.append(f"{indent}local.set {slot_addr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(indent + i for i in gc_shadow_push(init_ptr))
         return slot_addr
 
@@ -1288,6 +1295,7 @@ class CallsHandlersMixin:
         instrs: list[str] = []
         instrs.extend(value_instrs)
         instrs.append(f"local.set {ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(ptr))
         # Seed with the FNV basis, then mix the tag (distinguishes
         # constructors) and each field's hash.
@@ -1356,6 +1364,7 @@ class CallsHandlersMixin:
         instrs.extend(value_instrs)  # (ptr, len)
         instrs.append(f"local.set {arr_len}")
         instrs.append(f"local.set {arr_ptr}")
+        self.needs_alloc = True  # declares `$gc_sp` for the push (#1371)
         instrs.extend(gc_shadow_push(arr_ptr))
         # Seed with basis, mix the length, then each element hash.
         instrs.append(f"i64.const {self._FNV_BASIS}")
@@ -1697,6 +1706,15 @@ class CallsHandlersMixin:
         self._addressable_from = len(self._pushed_cell_families)
         try:
             body_instrs = self.translate_block(expr.body, env)
+            # Record this handle expression's stack shape HERE, while
+            # the handler's effect-op registries are still installed
+            # (#1371).  A `handle`'s value is its body's, and the body's
+            # ops resolve through registries the `finally` below
+            # restores — so asked afterwards, from the scoping wrapper,
+            # a nested handler's `get` answers with the ENCLOSING
+            # handler's result width.
+            self._scoped_expr_shape[id(expr)] = (
+                self._compute_stack_shape(expr))
         finally:
             # 5. Restore effect_ops (and the clause registry — nested
             #    handlers).  In a `finally` because the body translation
@@ -2450,6 +2468,15 @@ class CallsHandlersMixin:
         # Compile body
         try:
             body_instrs = self.translate_block(expr.body, env)
+            # Record this handle expression's stack shape HERE, while
+            # the handler's effect-op registries are still installed
+            # (#1371).  A `handle`'s value is its body's, and the body's
+            # ops resolve through registries the `finally` below
+            # restores — so asked afterwards, from the scoping wrapper,
+            # a nested handler's `get` answers with the ENCLOSING
+            # handler's result width.
+            self._scoped_expr_shape[id(expr)] = (
+                self._compute_stack_shape(expr))
         finally:
             # Restore effect_ops
             self._effect_ops = saved_ops

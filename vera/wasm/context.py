@@ -244,6 +244,9 @@ class WasmContext(
         # answer rather than silently owning NO name — an empty scope would
         # route every bare call to the op registries, which is the opposite
         # error and a far louder one.
+        # Stack shapes recorded by a lowering that installs its own
+        # scope, keyed by expression id (#1371).  See `_stack_shape_of`.
+        self._scoped_expr_shape: dict[int, str] = {}
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -1032,6 +1035,27 @@ class WasmContext(
 
     def _stack_shape_of(self, expr: ast.Expr) -> str:
         """What *expr*'s lowering leaves on the operand stack.
+
+        A shape recorded BY the lowering wins (#1371).  Most kinds answer the
+        same in any context, but a ``handle`` expression's value is its
+        body's, and the body's ops resolve through the effect-op registries
+        that handler installs — which exist only while it is being lowered,
+        and are keyed by bare op name, so two nested handlers' ``get``s are
+        indistinguishable once the inner one is popped.  Asked from here,
+        afterwards, a ``handle[State<Nat>]`` nested in a
+        ``handle[State<Option<Int>>]`` answered with the OUTER ``get``:
+        ``i32`` for a body worth ``i64``, and the wrapper then emitted
+        ``local.set`` at the wrong width.  So the lowering records the answer
+        at the one moment it is computable and this reads the record, rather
+        than re-deriving it in a context that no longer holds.
+        """
+        recorded = self._scoped_expr_shape.get(id(expr))
+        if recorded is not None:
+            return recorded
+        return self._compute_stack_shape(expr)
+
+    def _compute_stack_shape(self, expr: ast.Expr) -> str:
+        """Derive *expr*'s operand-stack shape from the CURRENT context.
 
         One of ``"void"``, ``"i32_pair"``, a WAT value type, or
         ``"unknown"``.  Reads the two predicates the rest of codegen already
