@@ -1584,3 +1584,35 @@ class TestLiveTree:
         report = "\n".join(
             f"  {v.file}:{v.line} {v.target} {v.missing}" for v in violations)
         assert violations == [], f"{len(violations)} diagnostic problem(s):\n{report}"
+
+
+class TestEnclosingQualifiedNamesScopeDecoratorsToTheEnclosingSite:
+    """Decorators, parameter defaults, annotations and base classes are
+    evaluated in the ENCLOSING scope, so a site inside one belongs to the
+    enclosing name, not to the definition it decorates."""
+
+    def test_decorator_default_and_annotation_sites_use_the_enclosing_scope(self, mod: object) -> None:
+        import ast as _ast
+        src = (
+            "@deco(mark('DECO'))\n"
+            "class C(base(mark('BASE'))):\n"
+            "    attr = mark('CLASSBODY')\n"
+            "    @deco(mark('MDECO'))\n"
+            "    def m(self, x=mark('DEFAULT')) -> mark('RET'):\n"
+            "        return mark('BODY')\n"
+        )
+        tree = _ast.parse(src)
+        names = mod._enclosing_qualified_names(tree)
+        found = {
+            node.args[0].value: names[id(node)]
+            for node in _ast.walk(tree)
+            if isinstance(node, _ast.Call)
+            and isinstance(node.func, _ast.Name) and node.func.id == "mark"
+        }
+        assert found["DECO"] == "<module>"
+        assert found["BASE"] == "<module>"
+        assert found["CLASSBODY"] == "C"
+        assert found["MDECO"] == "C"
+        assert found["DEFAULT"] == "C"
+        assert found["RET"] == "C"
+        assert found["BODY"] == "C.m"

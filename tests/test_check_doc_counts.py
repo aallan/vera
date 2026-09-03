@@ -1352,3 +1352,20 @@ class TestCrossCheckoutImportIsolation:
             "`from vera.<x> import ...` statement in main() — found it "
             "after instead"
         )
+
+
+class TestEnglishNumberWordRejectsInvalidCompounds:
+    """A hyphenated compound's tail is a units word and nothing else:
+    ``twenty-ten`` and ``thirty-nineteen`` are not English numbers, and
+    accepting them would let a malformed burndown header pass whenever the
+    arithmetic happened to equal the live row count."""
+
+    def test_valid_compounds_still_parse(self) -> None:
+        mod = _MOD
+        assert mod._english_number_word_to_int("twenty-one") == 21
+        assert mod._english_number_word_to_int("Ninety-nine") == 99
+
+    def test_invalid_compounds_are_not_numbers(self) -> None:
+        mod = _MOD
+        for word in ("twenty-zero", "twenty-ten", "thirty-nineteen", "forty-twenty"):
+            assert mod._english_number_word_to_int(word) is None, word

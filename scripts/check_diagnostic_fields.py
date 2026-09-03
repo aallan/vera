@@ -866,15 +866,29 @@ def _enclosing_qualified_names(tree: ast.AST) -> dict[int, str]:
     code) — a far more stable site identity than a line number, which
     shifts on any unrelated edit above it in the file."""
     result: dict[int, str] = {}
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def label(child: ast.AST, stack: list[str]) -> None:
+        result[id(child)] = ".".join(stack) if stack else "<module>"
 
     def visit(node: ast.AST, stack: list[str]) -> None:
+        if isinstance(node, defs):
+            # A definition's name scopes only its BODY.  Python evaluates
+            # decorators, parameter defaults, annotations, base classes and
+            # class keywords in the enclosing scope, so a diagnostic emitted
+            # from one of those belongs to the enclosing site, not to the
+            # definition it decorates.
+            inner = stack + [node.name]
+            for field, value in ast.iter_fields(node):
+                scope = inner if field == "body" else stack
+                for child in (value if isinstance(value, list) else [value]):
+                    if isinstance(child, ast.AST):
+                        label(child, scope)
+                        visit(child, scope)
+            return
         for child in ast.iter_child_nodes(node):
-            new_stack = stack
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                   ast.ClassDef)):
-                new_stack = stack + [child.name]
-            result[id(child)] = ".".join(stack) if stack else "<module>"
-            visit(child, new_stack)
+            label(child, stack)
+            visit(child, stack)
 
     visit(tree, [])
     return result

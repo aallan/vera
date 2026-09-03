@@ -1190,7 +1190,12 @@ def _english_number_word_to_int(word: str) -> int | None:
         return _TENS_WORDS[lowered]
     if "-" in lowered:
         tens_part, _, ones_part = lowered.partition("-")
-        if tens_part in _TENS_WORDS and ones_part in _ONES_WORDS:
+        # The half after the hyphen is a units word (one..nine) and nothing
+        # else: "twenty-ten" and "thirty-nineteen" are not English numbers,
+        # and accepting them would let a malformed header pass whenever the
+        # arithmetic happened to match the live row count.
+        if (tens_part in _TENS_WORDS and ones_part in _ONES_WORDS
+                and 1 <= _ONES_WORDS[ones_part] <= 9):
             return _TENS_WORDS[tens_part] + _ONES_WORDS[ones_part]
     return None
 
