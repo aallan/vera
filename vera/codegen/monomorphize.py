@@ -26,6 +26,7 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
+    uninferred_type_arg_fix,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.skip import DERIVED_HELPER_DEPTH_CAP
@@ -415,7 +416,29 @@ class MonomorphizationMixin:
             *mono.uninferred_type_args,
             *getattr(self, "_shadowed_uninferred_type_args", []),
         ]
+        # #1368 review: the shadowed/qualified discovery builds a THROWAWAY
+        # walker per qualified call, so its records reach this accumulator
+        # with no shared deduplication — only the per-walker one, which a
+        # fresh walker per call cannot supply.  One argument is one
+        # diagnostic, so the drain dedupes on the same key the walker uses
+        # (`_record_uninferred_type_arg`).  No program in the suite or the
+        # corpus currently reaches this second layer twice for one span —
+        # removing it changes no measured count — so it is the belt to the
+        # per-walker braces rather than a fix for an observed duplicate; the
+        # "exactly one" cells in tests/test_uninferred_type_arg_e622.py pin
+        # the property wherever it is supplied from.
+        seen: set[tuple[str, str, object]] = set()
         for rec in records:
+            span = getattr(rec.arg, "span", None)
+            key = (
+                rec.fn_name,
+                rec.type_var,
+                (span.line, span.column, span.end_line, span.end_column)
+                if span is not None else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
             loc, source_line = self._diag_location(rec.arg)
             self.diagnostics.append(Diagnostic(
                 description=(
@@ -433,12 +456,8 @@ class MonomorphizationMixin:
                     "and specialising at a guessed type would emit a "
                     "specialisation nothing calls."
                 ),
-                fix=(
-                    f"Bind the argument to a slot of its own first and pass "
-                    f"the slot reference — 'let @T = <argument>;' then "
-                    f"'{rec.fn_name}(@T.0)' — so the type argument is read "
-                    f"from the declared slot type."
-                ),
+                fix=uninferred_type_arg_fix(
+                    rec, self._expr_semantic_types),
                 spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
                 severity="error",
                 error_code="E622",

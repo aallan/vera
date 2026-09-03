@@ -200,6 +200,130 @@ public fn main(@Unit -> @Int)
 }
 """
 
+# R2 (PR #1368 adversarial round): the variable is determined through the
+# parameter's TYPE ARGUMENTS rather than by a bare `@T`.  On the base BOTH
+# walkers leave it unbound, agree on the phantom `$Bool` clone, and the module
+# runs — correctly, because `Array<T>`'s representation does not depend on `T`.
+# That is #1365's confidently-wrong shape one branch over, and a fail-closed
+# net keyed to the parameter's SPELLING would not see it.
+_NESTED_VAR_UNNAMEABLE = """\
+private forall<T> fn takes_arr(@Array<T> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Array<T>.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Int>> = [[1, 2], [3]];
+  takes_arr(@Array<Array<Int>>.0[0])
+}
+"""
+
+# The control for it: the SAME generic and the same nested parameter, reached
+# through an argument a walker CAN name.  A refusal here would mean the widened
+# net rejects every parameterised generic rather than the un-nameable case.
+_NESTED_VAR_NAMEABLE = """\
+private forall<T> fn takes_arr(@Array<T> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Array<T>.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [7, 8, 9];
+  takes_arr(@Array<Int>.0)
+}
+"""
+
+# The [E622] `fix` applied literally to `_INDEX_ARG`.  The point of the cell is
+# that the type it names is the ARGUMENT's (`@Int`), not the generic's type
+# VARIABLE — `let @T = …` is not in scope at the call site and fails E170/E121.
+_INDEX_ARG_FIX_APPLIED = """\
+private forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [7, 8, 9];
+  let @Int = @Array<Int>.0[1];
+  idg(@Int.0)
+}
+"""
+
+# The un-nameable argument written inside an IMPORTED module, so the [E622]
+# must name THAT module's file and quote ITS line — not the entry program's.
+_MODULE_OWNED_SITE = {
+    "mlib.vera": """\
+module mlib;
+
+private forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn compute(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [7, 8, 9];
+  idg(@Array<Int>.0[1])
+}
+""",
+    "main.vera": """\
+import mlib(compute);
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  compute(())
+}
+""",
+}
+
+# The prelude shape the widening would have refused: `result_map(...)` is an
+# argument no arm can name, and `VeraE` is reachable only through
+# `Result<T, E>`.  `T` is bound by the second parameter; `E` is the documented
+# phantom.  `ch09_prelude` and `ch09_option_result_combinators` are the corpus
+# programs that stand on it.
+_PRELUDE_PHANTOM = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(
+    result_map(Ok(100), fn(@Int -> @Int) effects(pure) { @Int.0 - 1 }),
+    0
+  )
+}
+"""
+
 # #1365's shape, which fail-closed does NOT catch (see the module docstring).
 _TYPE_CHANGING_PIPE = """\
 private forall<T> fn gid(@T -> @T)
@@ -339,6 +463,30 @@ public fn main(@Unit -> @Int)
 }
 
 
+
+def _compile_checked(source: str) -> object:
+    """Compile the way the CLI does — with the checker's artifacts threaded.
+
+    ``tests.codegen_helpers._compile`` deliberately skips the type-check pass,
+    so the span-keyed table [E622]'s ``fix`` reads is absent there and the
+    diagnostic falls back to its shape-only wording.  The cells that assert
+    the fix NAMES a type use this path, which is the one every real
+    invocation takes.
+    """
+    from vera.checker import typecheck_with_artifacts
+    from vera.codegen import compile as codegen_compile
+    from vera.parser import parse_to_ast
+
+    program = parse_to_ast(source)
+    diags, arts = typecheck_with_artifacts(program, source)
+    assert not [d for d in diags if d.severity == "error"], diags
+    return codegen_compile(
+        program, source=source,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+
+
 def _errors(diagnostics: object) -> list[tuple[str, str]]:
     return [
         (d.error_code, d.description)
@@ -369,9 +517,17 @@ class TestIndexArgumentFailsClosed1327:
         # Before the fix the module carried `idg$Bool` (discovery's guess) and
         # a call to `idg$Int` (the rewrite's answer).  Neither may survive a
         # refusal: an emitted clone would mean the guess still reached WAT.
+        # Asserted as EXACT SETS through `wat_fn_names` / `wat_calls`, not as
+        # substrings: `"idg$Bool" in wat` is a prefix test that `idg$BoolBox`
+        # would satisfy, which is exactly how one clone impersonates another.
+        from tests.codegen_helpers import wat_calls, wat_fn_names
+
         result = _compile(_INDEX_ARG)
-        assert "idg$Bool" not in result.wat
-        assert "$idg$Int" not in result.wat
+        emitted = sorted(n for n in wat_fn_names(result.wat) if "idg" in n)
+        assert emitted == [], emitted
+        for target in ("idg$Bool", "idg$Int", "idg"):
+            assert not wat_calls(result.wat, target), (
+                f"module still calls {target!r}; emitted: {emitted}")
 
     def test_verify_reports_e622(self) -> None:
         # The verifier discovers instantiations through the SAME walker, so a
@@ -415,10 +571,14 @@ class TestNestedModuleCallFailsClosed1366:
     ) -> None:
         # Discovered by the throwaway-walker path, so this pins that the
         # record reaches the drain rather than dying with the walker.
-        _verify_errors, _result, cg_errors = build_multi_module(
+        verify_errors, _result, cg_errors = build_multi_module(
             tmp_path / "shadowed", _MODULE_NESTED_SHADOWED,
         )
         assert "E622" in [c for c, _ in cg_errors], cg_errors
+        # The verifier's drain is the other half of the fail-closed, and this
+        # is the only cell that reaches it through the throwaway-walker path
+        # — so it is asserted here rather than assumed from the sibling cell.
+        assert "E622" in [c for c, _ in verify_errors], verify_errors
 
     def test_single_level_call_still_runs(self, tmp_path: Path) -> None:
         # The control: same import, same handler, one call.  A refusal here
@@ -429,6 +589,128 @@ class TestNestedModuleCallFailsClosed1366:
         assert verify_errors == [], verify_errors
         assert cg_errors == [], cg_errors
         assert module_value(result) == ("ok", 42007)
+
+
+# ---------------------------------------------------------------------
+# The net's reach: a variable determined through a parameter's type args
+# ---------------------------------------------------------------------
+
+
+class TestNestedTypeVarIsTheNetsBoundary:
+    """A var reached only through a parameter's TYPE ARGUMENTS is NOT caught.
+
+    The boundary is measured, not assumed.  Widening the net to cover this
+    branch was implemented and run: it refuses the prelude's own combinators,
+    because `result_unwrap_or(result_map(Ok(100), f), 0)` has an argument no
+    arm can name and `VeraE` — reachable only through `Result<T, E>` — is then
+    recorded and reported, taking `ch09_prelude`,
+    `ch09_option_result_combinators`, both dual-target cells and four unit
+    tests red.  That variable is precisely the phantom the default documents,
+    and the prelude depends on it.
+
+    So the net covers the case where a wrong name is a wrong WASM TYPE, and
+    leaves this one.  The exclusion is narrower than "sound by construction" —
+    `fn head(@Array<T> -> @T)` returns AT `T`, so a guessed `head$Bool` would
+    return i32 where `Int` needs i64 — and these cells pin what the compiler
+    does today so the gap is a measured fact rather than a claim.  It closes
+    by INFERENCE, not by refusal: naming the argument leaves nothing to guess.
+    """
+
+    def test_nested_var_is_not_refused_today(self) -> None:
+        result = _compile(_NESTED_VAR_UNNAMEABLE)
+        assert _errors(result.diagnostics) == []
+
+    def test_and_the_clone_carries_the_guessed_name(self) -> None:
+        # The gap itself, pinned: `T` is `Array<Int>`, and the emitted clone
+        # says `Bool`.  It runs because `array_length` does not read `T`.
+        from tests.codegen_helpers import wat_fn_names
+
+        result = _compile(_NESTED_VAR_UNNAMEABLE)
+        emitted = sorted(
+            n for n in wat_fn_names(result.wat) if "takes_arr$" in n)
+        assert emitted == ["takes_arr$Bool"], emitted
+        assert _run(_NESTED_VAR_UNNAMEABLE, fn="main") == 2
+
+    def test_nameable_nested_argument_is_named_correctly(self) -> None:
+        # The control: when an arm CAN name the argument, the nested var is
+        # inferred and the clone carries the real type.
+        from tests.codegen_helpers import wat_fn_names
+
+        result = _compile(_NESTED_VAR_NAMEABLE)
+        assert _errors(result.diagnostics) == []
+        emitted = sorted(
+            n for n in wat_fn_names(result.wat) if "takes_arr$" in n)
+        assert emitted == ["takes_arr$Int"], emitted
+        assert _run(_NESTED_VAR_NAMEABLE, fn="main") == 3
+
+    def test_the_prelude_shape_the_widening_would_have_refused(self) -> None:
+        # The measurement that decided the boundary, kept as a cell: this is
+        # the documented phantom (`E` in `result_unwrap_or(Ok(x), d)`) reached
+        # through an un-nameable argument, and it must keep compiling.
+        assert _errors(_compile(_PRELUDE_PHANTOM).diagnostics) == []
+        assert _run(_PRELUDE_PHANTOM, fn="main") == 99
+
+
+# ---------------------------------------------------------------------
+# The diagnostic's own quality
+# ---------------------------------------------------------------------
+
+
+class TestDiagnosticIsActionable:
+    """[E622]'s `fix` names the ARGUMENT's type, and applying it works."""
+
+    def test_fix_names_the_argument_type_not_the_type_variable(self) -> None:
+        result = _compile_checked(_INDEX_ARG)
+        e622 = [d for d in result.diagnostics  # type: ignore[attr-defined]
+                if d.error_code == "E622"][0]
+        # `let @T = …` would not compile: `T` is the generic's own variable,
+        # out of scope at the call site.  The argument is an `Int`.
+        assert "let @Int =" in e622.fix, e622.fix
+        assert "let @T =" not in e622.fix, e622.fix
+
+    def test_applying_the_fix_verbatim_checks_verifies_and_runs(self) -> None:
+        # The cell that makes the assertion above mean something: the program
+        # the `fix` describes is built and driven end to end.
+        from tests.verifier_helpers import _verify
+
+        result = _compile(_INDEX_ARG_FIX_APPLIED)
+        assert _errors(result.diagnostics) == []
+        assert _errors(_verify(_INDEX_ARG_FIX_APPLIED).diagnostics) == []
+        assert _run(_INDEX_ARG_FIX_APPLIED, fn="main") == 8
+
+    def test_one_argument_yields_exactly_one_diagnostic(self) -> None:
+        # Both drains dedupe on (callee, variable, span).  Discovery re-walks
+        # a call site once per worklist re-seed round, and the shadowed
+        # /qualified path builds a fresh walker per qualified call, so the
+        # count is a property worth pinning wherever it is supplied from.
+        result = _compile(_INDEX_ARG)
+        assert len(
+            [d for d in result.diagnostics if d.error_code == "E622"]) == 1
+
+    def test_module_owned_site_names_the_module_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # The record carries the namespace the walk was in; without it the
+        # verifier pairs this module's line number with the ENTRY file's name
+        # and source buffer, so the reader is sent to another file's line and
+        # shown another file's text.
+        from vera.verifier import verify
+
+        from tests.module_fixture_helpers import _resolve_and_check
+
+        program, source, main_path, resolved, _arts, check_errors = (
+            _resolve_and_check(
+                tmp_path / "owned", _MODULE_OWNED_SITE, "main.vera")
+        )
+        assert not check_errors, check_errors
+        vres = verify(program, source, file=str(main_path),
+                      resolved_modules=resolved)
+        e622 = [d for d in vres.diagnostics if d.error_code == "E622"]
+        assert len(e622) == 1, [d.description for d in vres.diagnostics]
+        assert e622[0].location.file is not None
+        assert e622[0].location.file.endswith("mlib.vera"), (
+            e622[0].location.file)
+        assert "idg(" in e622[0].source_line, e622[0].source_line
 
 
 # ---------------------------------------------------------------------
