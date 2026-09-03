@@ -20,6 +20,7 @@ from vera.monomorphize import (
     namespace_fn_names,
     public_generic_names,
 )
+from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -305,6 +306,27 @@ class CrossModuleMixin:
                 source=mod.source, file=str(mod.file_path),
             )
             temp._register_all(mod.program)
+            # #1317: capture this module's alias namespace BEFORE the ADT
+            # harvest below, not after it.  The harvest's collision rails ask
+            # `_adt_decls_share_a_layout`, which resolves each declaration's
+            # field types through its OWN module's maps (§8.4.1) — so the
+            # module being harvested has to be in the table by then, or a
+            # restatement spelled through its own alias would key DIFFERENT
+            # and be refused.  The capture is idempotent and depends on
+            # nothing the harvest does; the block that used to hold it below
+            # is now this one, moved, with its reasoning intact.
+            #
+            # Spec §8.4.1: a type alias is module-local, so two modules may
+            # reuse one name for different targets and neither the main file
+            # nor a sibling module may resolve through it.  These are NEVER
+            # merged into the flat maps; `_module_alias_scope` installs this
+            # module's while its declarations compile / register, and the old
+            # flat `setdefault` merge (first module won, local registration
+            # then overwrote) is exactly the #1111 bug.
+            self._module_type_aliases[mod.path] = dict(temp._type_aliases)
+            self._module_type_alias_params[mod.path] = dict(
+                temp._type_alias_params,
+            )
 
             # Build visibility map for this module
             vis_map: dict[str, str] = {}
@@ -516,32 +538,52 @@ class CrossModuleMixin:
                     name_filter is None or adt_name in name_filter
                 )
 
-                # ADT type name collision detection
+                # ADT type name collision detection.  #1317: two modules that
+                # declare the SAME LAYOUT under one name are not a collision
+                # — the single registered slot serves both, which is the
+                # rule #1277 already established for a module against the
+                # prelude and #1312 for the entry file against a module.  A
+                # restatement is an ordinary thing to write across a
+                # dependency diamond, and refusing it left renaming in a
+                # dependency's source as the only remedy.
+                restatement = False
                 if adt_name in adt_provenance:
                     prev_path = adt_provenance[adt_name]
                     if prev_path != mod.path:
-                        self._emit_collision_error(
-                            program, adt_name, "Data type",
-                            prev_path, mod.path, "E609",
-                        )
-                        continue
+                        if self._adt_decls_share_a_layout(
+                            adt_name, prev_path, mod.path,
+                        ):
+                            restatement = True
+                        else:
+                            self._emit_collision_error(
+                                program, adt_name, "Data type",
+                                prev_path, mod.path, "E609",
+                            )
+                            continue
                 else:
                     adt_provenance[adt_name] = mod.path
 
-                # Constructor name collision detection
+                # Constructor name collision detection.  A restatement's
+                # constructors are the FIRST declaration's, name for name and
+                # tag for tag — that is what sharing a layout means — so the
+                # rail is skipped in lockstep with E609 above.  Relaxing one
+                # without the other would close nothing: two modules restating
+                # a type share its constructor names too, so E610 would refuse
+                # exactly the programs E609 just admitted.
                 ctor_collision = False
-                for ctor_name in layouts:
-                    if ctor_name in ctor_provenance:
-                        prev_path, prev_adt = ctor_provenance[ctor_name]
-                        if prev_path != mod.path:
-                            self._emit_ctor_collision_error(
-                                program, ctor_name,
-                                prev_path, prev_adt,
-                                mod.path, adt_name,
-                            )
-                            ctor_collision = True
-                    else:
-                        ctor_provenance[ctor_name] = (mod.path, adt_name)
+                if not restatement:
+                    for ctor_name in layouts:
+                        if ctor_name in ctor_provenance:
+                            prev_ctor_path, prev_adt = ctor_provenance[ctor_name]
+                            if prev_ctor_path != mod.path:
+                                self._emit_ctor_collision_error(
+                                    program, ctor_name,
+                                    prev_ctor_path, prev_adt,
+                                    mod.path, adt_name,
+                                )
+                                ctor_collision = True
+                        else:
+                            ctor_provenance[ctor_name] = (mod.path, adt_name)
 
                 if not ctor_collision:
                     # #1008: register EVERY non-colliding module ADT's layout
@@ -605,18 +647,10 @@ class CrossModuleMixin:
                             transitive_contributed.add(adt_name)
                             transitive_contributed.update(layouts.keys())
 
-            # Capture type aliases PER MODULE (#1111) — never into the
-            # flat maps.  Spec §8.4.1: a type alias is module-local, so
-            # two modules may reuse one name for different targets and
-            # neither the main file nor a sibling module may resolve
-            # through it.  ``_module_alias_scope`` installs this
-            # module's maps while its declarations compile / register;
-            # the old flat ``setdefault`` merge (first module won, local
-            # registration then overwrote) is exactly the #1111 bug.
-            self._module_type_aliases[mod.path] = dict(temp._type_aliases)
-            self._module_type_alias_params[mod.path] = dict(
-                temp._type_alias_params,
-            )
+            # The alias-namespace capture (#1111) that used to sit here now
+            # runs immediately after `temp._register_all` above, where the
+            # ADT harvest's shape comparison can already read it (#1317).
+            #
             # #1208: capture this module's declaration ORDER as its OWN
             # namespace, exactly as the alias maps above are captured, in the
             # module's own source order (`temp` registered them 0-based).
@@ -859,6 +893,44 @@ class CrossModuleMixin:
         }
         return members
 
+    def _adt_decls_share_a_layout(
+        self, name: str, path_a: tuple[str, ...], path_b: tuple[str, ...],
+    ) -> bool:
+        """Do two modules' ``data {name}`` declarations describe one layout?
+
+        The ADT arm of the one-layout-per-name question
+        (:func:`~vera.prelude.data_decl_shape`), asked between two IMPORTED
+        modules (#1317) as :meth:`~CodeGenerator._contends_with_prelude` asks
+        it of a module against the prelude (#1277) and
+        :meth:`~CodeGenerator._check_entry_module_adt_contention` of the entry
+        file against a module (#1312).  One derivation of "can the single
+        registered slot serve both", so the three rails cannot disagree about
+        which declarations are compatible.
+
+        Each declaration's field types resolve through the aliases of ITS OWN
+        module, never the other's — §8.4.1 makes an alias module-local, and
+        resolving one module's spelling through another's maps would let a
+        coincidentally-named alias collapse two incompatible layouts onto one
+        key.
+
+        A declaration this cannot find is treated as NOT sharing, the safe
+        direction: the alternative is registering one layout for two shapes
+        it may not fit.
+        """
+        decl_a = self._find_module_data_decl(path_a, name)
+        decl_b = self._find_module_data_decl(path_b, name)
+        if decl_a is None or decl_b is None:  # pragma: no cover — defensive
+            return False
+        return data_decl_shape(
+            decl_a,
+            self._module_type_aliases.get(path_a, {}),
+            self._module_type_alias_params.get(path_a, {}),
+        ) == data_decl_shape(
+            decl_b,
+            self._module_type_aliases.get(path_b, {}),
+            self._module_type_alias_params.get(path_b, {}),
+        )
+
     def _generics_cannot_collide(
         self,
         name: str,
@@ -974,6 +1046,19 @@ class CrossModuleMixin:
         )
         self._namespace_tables = tables
         self._namespace_fn_names = dict(tables.by_namespace)
+        # #1316: and the PRELUDE's own namespace, whose declarations are its
+        # combinators and nothing else.  Pass 2 compiles a prelude body under
+        # `_module_alias_scope(PRELUDE_NAMESPACE)`, and `_scoped_fn_names`
+        # reads the installed namespace's entry — so without this a bare call
+        # from one combinator to another would find an EMPTY lexical set and
+        # the #1284 ownership predicate would stop calling them user-owned.
+        # Empty before the prelude pass populates `_prelude_fn_names`, which
+        # is why the second of this method's two calls is the one that fills
+        # it; nothing enters the prelude scope in between.
+        if self._prelude_fn_names:
+            self._namespace_fn_names[PRELUDE_NAMESPACE] = frozenset(
+                self._prelude_fn_names,
+            )
         self._ambiguous_imported_fn_names = tables.ambiguous
 
     @staticmethod

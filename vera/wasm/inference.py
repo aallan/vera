@@ -20,7 +20,7 @@ from vera.slots import (
     family_fallback_name,
     type_expr_slot_name,
 )
-from vera.wasm.helpers import _element_wasm_type, state_type_arg
+from vera.wasm.helpers import _strip_future, state_type_arg
 
 # `substitute_type_vars` was relocated to `vera.monomorphize` (the codegen-free
 # shared monomorphizer, #732) so the verifier can reuse it without importing the
@@ -226,7 +226,7 @@ class InferenceMixin:
             return None  # pragma: no cover
         if isinstance(expr, ast.IndexExpr):
             elem_type = self._infer_index_element_type(expr)
-            return _element_wasm_type(elem_type) if elem_type else None
+            return self._element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return "i32_pair"
         if isinstance(expr, ast.StringLit):
@@ -583,10 +583,15 @@ class InferenceMixin:
             if self._is_pair_type_name(name):
                 return "i32_pair"
             base = name.split("<")[0] if "<" in name else name
+            # #1321/#1331: the DECLARED-ADT branch first, as at every other
+            # decider.  Both arms answer "i32", so this ordering is inert
+            # TODAY — which is exactly the width-luck that hid #1309 and
+            # #1331, and the reason it is corrected rather than left to a
+            # future representation to expose.
+            if base in self._adt_type_names:
+                return "i32"
             # Opaque handle types — i32 handles managed by host runtime
             if base in ("Decimal", "Map", "Set"):
-                return "i32"
-            if base in self._adt_type_names:
                 return "i32"
             return None  # pragma: no cover
         if isinstance(expr, ast.BinaryExpr):
@@ -637,7 +642,7 @@ class InferenceMixin:
             return None
         if isinstance(expr, ast.IndexExpr):
             elem_type = self._infer_index_element_type(expr)
-            return _element_wasm_type(elem_type) if elem_type else None
+            return self._element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return "i32_pair"
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
@@ -834,6 +839,10 @@ class InferenceMixin:
             if self._reaches_fn_type(te, alias_map):
                 return "i32"
             return "i64"
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name — the same precedence `classify_named` gives it.
+        if self._declares_adt(canonical.name):
+            return "i32"
         # Future<T> is transparent — recurse on the inner type.
         if (canonical.name == "Future" and canonical.type_args
                 and len(canonical.type_args) == 1):
@@ -1474,6 +1483,167 @@ class InferenceMixin:
         """Check if a slot type name is an Array<T> type."""
         return type_name.startswith("Array<")
 
+    def _resolve_element_name(self, elem_type: str) -> str:
+        """An array element's type name, resolved the way the spine resolves
+        one: through the alias chain, with ``Future<…>`` stripped.
+
+        The four size/load/store/type deciders below and
+        :meth:`_is_pair_element_type` must all read the SAME name, or an
+        alias-spelled element takes the primitive table in one and the
+        built-in reading in another (PR #1372 review).
+        """
+        name, _ = self._canonicalize_alias_slot_name(elem_type)
+        return self._resolve_base_type_name(_strip_future(name))
+
+    def _is_pair_element_type(self, elem_type: str) -> bool:
+        """Check if an array element type is a pair type (ptr, len).
+
+        String and Array<T> elements are represented as two consecutive
+        i32 values (pointer + length), requiring 8 bytes of storage.
+        Bare "Array" (without type args) also matches, since the element
+        type name from _infer_vera_type may not include type parameters.
+
+        ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
+        ``Future<Array<T>>`` element is a pair exactly like its payload.
+
+        A METHOD, and on this mixin, because the answer depends on the
+        NAMESPACE (PR #1372 review).  It used to be a module-level free
+        function over a bare ``str`` — no ``self``, no ``AliasEnv``, no ADT
+        table — so it could not be asked the question the spine answers, and
+        it kept saying "pair" for ``Array`` after `_is_pair_type_name` had
+        learned to say "declared ADT".  The two halves then disagreed: with
+        ``private data Array { … }`` the SCRUTINEE side stopped refusing
+        while the ELEMENT side still laid the value out as an 8-byte
+        two-word pair, so an element operation over ``@Array<Array>``
+        compiled at rc 0 with ZERO diagnostics to a `.wasm` no runtime can
+        load — strictly worse than the loud `[E602]` refusal it replaced.
+        Its four derived deciders below all funnel through it, so routing
+        this one routes the element side entirely.
+        """
+        # ALIAS first, then the declared ADT, then the built-in reading —
+        # the spine's order, which this decider could not follow while it was
+        # a free function.  Under `type Array = Int;` the name is the alias's
+        # target, an 8-byte i64 loaded with `i64.load`; answering "pair" for
+        # it returned `None` from `_element_load_op`, which the callers read
+        # as "two loads".  The same walk `_is_pair_type_name` uses, so the
+        # element side and the scrutinee side resolve identically.
+        elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
+        elem_type = self._resolve_base_type_name(_strip_future(elem_type))
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name, here exactly as at every other decider.
+        if self._declares_adt(elem_type):
+            return False
+        return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
+
+    def _element_mem_size(self, elem_type: str) -> int | None:
+        """Get memory size in bytes for an array element type.
+
+        Primitive types have fixed sizes.  Pair types (String, Array<T>)
+        use 8 bytes (ptr + len).  All other compound types (ADTs) use
+        4 bytes (i32 heap pointer).
+
+        ``Future<…>`` is stripped first (#1045) so the payload's size is
+        used — e.g. ``Future<Int>`` is an 8-byte i64, not a 4-byte i32.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        sizes = {
+            "Int": 8,
+            "Nat": 8,
+            "Float64": 8,
+            "Bool": 1,
+            "Byte": 1,
+        }
+        size = sizes.get(elem_type)
+        if size is not None:
+            return size
+        # Pair types: (ptr, len) = 8 bytes
+        if self._is_pair_element_type(elem_type):
+            return 8
+        # ADT / other compound types: i32 heap pointer = 4 bytes
+        return 4
+
+
+    def _element_load_op(self, elem_type: str) -> str | None:
+        """Get the WASM load instruction for an array element type.
+
+        Returns None for pair types (String, Array<T>) which require
+        special two-load handling in the caller.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's load op is
+        used — e.g. ``Future<Int>`` loads with ``i64.load``, not ``i32.load``.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        ops = {
+            "Int": "i64.load",
+            "Nat": "i64.load",
+            "Float64": "f64.load",
+            "Bool": "i32.load8_u",
+            "Byte": "i32.load8_u",
+        }
+        op = ops.get(elem_type)
+        if op is not None:
+            return op
+        # Pair types need two loads — caller must handle specially
+        if self._is_pair_element_type(elem_type):
+            return None
+        # ADT / other compound types: single i32 load
+        return "i32.load"
+
+
+    def _element_store_op(self, elem_type: str) -> str | None:
+        """Get the WASM store instruction for an array element type.
+
+        Returns None for pair types (String, Array<T>) which require
+        special two-store handling in the caller.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's store op is
+        used — e.g. ``Future<Int>`` stores with ``i64.store``, not
+        ``i32.store``, and ``Future<String>`` returns None (pair, two stores).
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        ops = {
+            "Int": "i64.store",
+            "Nat": "i64.store",
+            "Float64": "f64.store",
+            "Bool": "i32.store8",
+            "Byte": "i32.store8",
+        }
+        op = ops.get(elem_type)
+        if op is not None:
+            return op
+        # Pair types need two stores — caller must handle specially
+        if self._is_pair_element_type(elem_type):
+            return None
+        # ADT / other compound types: single i32 store
+        return "i32.store"
+
+
+    def _element_wasm_type(self, elem_type: str) -> str | None:
+        """Get the WASM value type for an array element type.
+
+        Returns "i32_pair" for pair types (String, Array<T>),
+        "i32" for ADT/compound types, or the native type for primitives.
+
+        ``Future<…>`` is stripped first (#1045) so the payload's value type
+        is used — e.g. ``Future<Int>`` is ``i64``, not ``i32``.
+        """
+        elem_type = self._resolve_element_name(elem_type)
+        types = {
+            "Int": "i64",
+            "Nat": "i64",
+            "Float64": "f64",
+            "Bool": "i32",
+            "Byte": "i32",
+        }
+        wt = types.get(elem_type)
+        if wt is not None:
+            return wt
+        # Pair types: (ptr, len) represented as i32_pair
+        if self._is_pair_element_type(elem_type):
+            return "i32_pair"
+        # ADT / other compound types: i32 heap pointer
+        return "i32"
+
     def _is_pair_type_name(
         self, type_name: str, _seen: frozenset[str] = frozenset(),
     ) -> bool:
@@ -1513,6 +1683,17 @@ class InferenceMixin:
         """
         type_name, _seen = self._canonicalize_alias_slot_name(type_name, _seen)
         resolved = self._resolve_base_type_name(type_name)
+        # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
+        # reading of its name, exactly as in the checker's spine
+        # (`vera.naming.classify_named`).  `data Array { Mk(Int) }` is a
+        # one-word heap pointer, and answering "pair" for it made the match
+        # over it a pair scrutinee — refused with a located E602 whose text
+        # describes `String` / `Array<T>`, its callers dropped behind E620,
+        # and the module shipped with no exports at all.  Ahead of the
+        # `Future` strip too: a user `data Future` carries no transparent
+        # payload.
+        if self._declares_adt(resolved):
+            return False
         if resolved.startswith("Future<") and resolved.endswith(">"):
             return self._is_pair_type_name(resolved[7:-1], _seen)
         return (resolved == "String"
@@ -2228,6 +2409,26 @@ class InferenceMixin:
         alias_map = dict(zip(alias_params, type_args))
         return self._canonical_wasm_type(fn_type.return_type, alias_map)
 
+    def _declares_adt(self, type_name: str) -> bool:
+        """Is *type_name* a ``data`` declaration of the namespace compiling?
+
+        The wasm layer's arm of the resolution spine's DECLARED-ADT branch
+        (:func:`vera.naming.classify_named`), asked over slot-name STRINGS
+        rather than type expressions — which is the currency here.  Spec
+        §8.4.1 lets a declaration take a name a built-in container or the
+        prelude already uses, and the declaration wins, so every derivation
+        that would otherwise answer the built-in's representation asks this
+        first (#1321, #1331).
+
+        ``_adt_type_names`` is the namespace-scoped set the same
+        ``AliasEnv.data_types`` this context's ``_alias_env`` carries — so a
+        sibling module's ADT, or the entry file's, is NOT an ADT here.
+        Strips one level of type arguments so a parameterised spelling
+        (``Box<Int>``) asks about its head.
+        """
+        base = type_name.split("<")[0] if "<" in type_name else type_name
+        return base in self._adt_type_names
+
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
         """Map a concrete type name to its WASM representation."""
@@ -2474,6 +2675,14 @@ class InferenceMixin:
             return "f64"
         if resolved in ("Bool", "Byte"):
             return "i32"
+        # #1321/#1331: this namespace's own `data` declaration beats every
+        # built-in reading of the name — a heap pointer, whatever the
+        # container of that name would have been.  The `_adt_type_names`
+        # test at the bottom of this chain used to sit BELOW the pair,
+        # Future and Map/Set/Decimal arms, so only the names no built-in
+        # claimed ever reached it.
+        if self._declares_adt(resolved):
+            return "i32"
         if self._is_pair_type_name(resolved):
             return "i32_pair"
         # Future<T> is WASM-transparent — same representation as its single type
@@ -2499,10 +2708,14 @@ class InferenceMixin:
         if resolved.startswith("Future<") and resolved.endswith(">"):
             return self._ref_type_name_wasm_type(resolved[7:-1], None, _seen)
         base = resolved.split("<")[0] if "<" in resolved else resolved
+        # Declared ADT before the built-in handles, uniformly (#1321/#1331).
+        # Unreachable for a declared ADT — the `_declares_adt` guard above
+        # answers first — and ordered this way so the chain reads the same
+        # everywhere rather than relying on that guard staying put.
+        if base in self._adt_type_names:
+            return "i32"
         # Opaque handle types — i32 handles managed by host runtime
         if base in ("Decimal", "Map", "Set"):
-            return "i32"
-        if base in self._adt_type_names:
             return "i32"
         # Function type aliases → i32 (closure pointer).  Resolved through the
         # shared transitive resolver so an alias chain (`type MyFn = InnerFn;`,
@@ -2602,6 +2815,13 @@ class InferenceMixin:
             return "f64"
         if name in ("Bool", "Byte"):
             return "i32"
+        # ADT types are heap pointers.  #1321/#1331: a DECLARED ADT is tested
+        # BEFORE the built-in container names, matching the checker's spine
+        # (`vera.naming.classify_named`) — below them, only a name no built-in
+        # claimed reached this branch, so `data Array` / `data Future` were
+        # measured as the container instead of as the declaration.
+        if self._declares_adt(name):
+            return "i32"
         # Future<T> is WASM-transparent — same representation as T
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
@@ -2609,10 +2829,7 @@ class InferenceMixin:
         # Map/Set/Decimal are opaque host-import handles (i32)
         if name.startswith("Map<") or name.startswith("Set<") or name == "Decimal":
             return "i32"
-        # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name
-        if base in self._adt_type_names:
-            return "i32"
         # Function type aliases are closure pointers (i32) — resolved
         # **transitively** through the shared resolver (#867 / PR #880
         # 4th site) so a refinement-wrapped (`type Foo = { @fn(...) | p }`)

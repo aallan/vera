@@ -323,7 +323,10 @@ class ClosureLiftingMixin:
         ctx = WasmContext(
             self.string_pool,
             ctor_layouts=ctor_layouts,
-            adt_type_names=set(self._adt_layouts.keys()),
+            # #1253/#1316: the namespace's data types, as in `functions.py`
+            # — a lifted closure body belongs to the declaration that
+            # contains it, so it resolves names in that declaration's scope.
+            adt_type_names=set(self._alias_env.data_types),
             # #873: a generic called ONLY from inside a closure body must be
             # rewritten to its monomorphized clone here too — mono discovery
             # already walks closure bodies (the total AST walk) and emits the

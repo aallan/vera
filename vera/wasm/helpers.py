@@ -420,21 +420,6 @@ def _strip_future(name: str) -> str:
     return name
 
 
-def _is_pair_element_type(elem_type: str) -> bool:
-    """Check if an array element type is a pair type (ptr, len).
-
-    String and Array<T> elements are represented as two consecutive
-    i32 values (pointer + length), requiring 8 bytes of storage.
-    Bare "Array" (without type args) also matches, since the element
-    type name from _infer_vera_type may not include type parameters.
-
-    ``Future<…>`` is stripped first (#1045): a ``Future<String>`` /
-    ``Future<Array<T>>`` element is a pair exactly like its payload.
-    """
-    elem_type = _strip_future(elem_type)
-    return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
-
-
 # Opaque host-handle types: i32 indices into Python-side host stores
 # (`_map_store`, `_set_store`, `_decimal_store` in
 # `vera/codegen/api.py`).  These look like i32 heap pointers to the
@@ -552,116 +537,6 @@ def is_gc_pointer_base(base_name: str) -> bool:
     """
     return (base_name not in _NON_POINTER_I32_BASES
             and not _is_host_handle_type(base_name))
-
-
-def _element_mem_size(elem_type: str) -> int | None:
-    """Get memory size in bytes for an array element type.
-
-    Primitive types have fixed sizes.  Pair types (String, Array<T>)
-    use 8 bytes (ptr + len).  All other compound types (ADTs) use
-    4 bytes (i32 heap pointer).
-
-    ``Future<…>`` is stripped first (#1045) so the payload's size is
-    used — e.g. ``Future<Int>`` is an 8-byte i64, not a 4-byte i32.
-    """
-    elem_type = _strip_future(elem_type)
-    sizes = {
-        "Int": 8,
-        "Nat": 8,
-        "Float64": 8,
-        "Bool": 1,
-        "Byte": 1,
-    }
-    size = sizes.get(elem_type)
-    if size is not None:
-        return size
-    # Pair types: (ptr, len) = 8 bytes
-    if _is_pair_element_type(elem_type):
-        return 8
-    # ADT / other compound types: i32 heap pointer = 4 bytes
-    return 4
-
-
-def _element_load_op(elem_type: str) -> str | None:
-    """Get the WASM load instruction for an array element type.
-
-    Returns None for pair types (String, Array<T>) which require
-    special two-load handling in the caller.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's load op is
-    used — e.g. ``Future<Int>`` loads with ``i64.load``, not ``i32.load``.
-    """
-    elem_type = _strip_future(elem_type)
-    ops = {
-        "Int": "i64.load",
-        "Nat": "i64.load",
-        "Float64": "f64.load",
-        "Bool": "i32.load8_u",
-        "Byte": "i32.load8_u",
-    }
-    op = ops.get(elem_type)
-    if op is not None:
-        return op
-    # Pair types need two loads — caller must handle specially
-    if _is_pair_element_type(elem_type):
-        return None
-    # ADT / other compound types: single i32 load
-    return "i32.load"
-
-
-def _element_store_op(elem_type: str) -> str | None:
-    """Get the WASM store instruction for an array element type.
-
-    Returns None for pair types (String, Array<T>) which require
-    special two-store handling in the caller.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's store op is
-    used — e.g. ``Future<Int>`` stores with ``i64.store``, not
-    ``i32.store``, and ``Future<String>`` returns None (pair, two stores).
-    """
-    elem_type = _strip_future(elem_type)
-    ops = {
-        "Int": "i64.store",
-        "Nat": "i64.store",
-        "Float64": "f64.store",
-        "Bool": "i32.store8",
-        "Byte": "i32.store8",
-    }
-    op = ops.get(elem_type)
-    if op is not None:
-        return op
-    # Pair types need two stores — caller must handle specially
-    if _is_pair_element_type(elem_type):
-        return None
-    # ADT / other compound types: single i32 store
-    return "i32.store"
-
-
-def _element_wasm_type(elem_type: str) -> str | None:
-    """Get the WASM value type for an array element type.
-
-    Returns "i32_pair" for pair types (String, Array<T>),
-    "i32" for ADT/compound types, or the native type for primitives.
-
-    ``Future<…>`` is stripped first (#1045) so the payload's value type
-    is used — e.g. ``Future<Int>`` is ``i64``, not ``i32``.
-    """
-    elem_type = _strip_future(elem_type)
-    types = {
-        "Int": "i64",
-        "Nat": "i64",
-        "Float64": "f64",
-        "Bool": "i32",
-        "Byte": "i32",
-    }
-    wt = types.get(elem_type)
-    if wt is not None:
-        return wt
-    # Pair types: (ptr, len) represented as i32_pair
-    if _is_pair_element_type(elem_type):
-        return "i32_pair"
-    # ADT / other compound types: i32 heap pointer
-    return "i32"
 
 
 def state_type_arg(effect_ref: ast.EffectRefNode) -> ast.TypeExpr:

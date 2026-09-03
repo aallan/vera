@@ -437,7 +437,14 @@ class FunctionCompilationMixin:
             ctor_layouts.update(layouts)
             for ctor_name in layouts:
                 ctor_to_adt[ctor_name] = adt_name
-        adt_type_names = set(self._adt_layouts.keys())
+        # #1253/#1316: the NAMESPACE's data types, not every layout this
+        # compilation registered.  `_adt_layouts` is one map across every
+        # absorbed namespace; `_alias_env.data_types` is the set
+        # `_adt_members_in_scope` scoped to the module (or the prelude) whose
+        # declaration is compiling, which is what the checker saw.  Handing
+        # the wasm layer the flat map made its `base in _adt_type_names`
+        # tests answer over a larger set than `naming._resolve_named` does.
+        adt_type_names = set(self._alias_env.data_types)
 
         ctx = WasmContext(
             self.string_pool,

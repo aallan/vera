@@ -1013,6 +1013,7 @@ ERROR_CODES: dict[str, str] = {
     "E620": "Function dropped: skipped callee or no function table",
     "E621": "Name collision: module ADT contends with a prelude data type",
     "E622": "Cannot infer a generic call's type argument",
+    "E623": "Name collision: entry-file ADT contends with a module data type",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

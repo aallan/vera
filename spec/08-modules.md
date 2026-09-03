@@ -106,7 +106,7 @@ private fn helper(@Int -> @Int)
 
 - `public` declarations are visible to any module that imports them.
 - `private` declarations are visible only within the module that defines them.
-- Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. These declarations are **module-local** — they are not importable by other modules. If another module needs the same type alias or effect, it must declare its own copy. The prelude's own combinators resolve their closure-parameter types through aliases a program cannot name: those aliases carry reserved names, and a name beginning with `Vera` followed by an uppercase letter or digit is a compile error (**E154**) — whether the program *declares* that name as a type, an alias, an effect, an ability or a constructor, *binds* it as a type parameter, or merely *mentions* it in a type. The reservation is one rule across every namespace, so the prelude's internal namespace can be neither re-typed, shadowed by a binder, nor referenced, and a program that wants a short name for a function type declares its own alias for it. Outside a type position there is no alias escape, so the fix in the effect, ability and constructor namespaces is simply a name that does not start with the reserved prefix. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, …) are not in that namespace: they are ordinary public declarations a program names, and shadows, like any other. A declaration in the **entry file** shadows the prelude's for the whole program: the prelude injects nothing under that name, so the entry's declaration never contends with the prelude's. That settles the pair it names and no other — where a *module* declares the same name as well, the entry's declaration and the module's are a distinct pair, which the compiler does not yet arbitrate ([#1312](https://github.com/aallan/vera/issues/1312)). A declaration in a **module** shadows it for that module alone only while the prelude is not also compiling its own declaration of that name — the two would otherwise contend for one layout in the flat compiled namespace (§11.16), and the compiler reports **E621** at the module's declaration. Whether they contend is decided by the two declarations' *shapes*: a module that restates the prelude's type — the same constructors, in the same order, with the same field types, type parameters compared by position — shares the one layout and is not a contention. A differently-shaped one is, and the condition differs between the two halves of the prelude's data types: for `Json`, `HtmlNode`, `Request` and `Response`, which the prelude injects only when the entry program uses them, the module's declaration stands alone until it does; for `Option`, `Result`, `Ordering` and `UrlParts`, which every program compiles, a differently-shaped module declaration always contends.
+- Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. These declarations are **module-local** — they are not importable by other modules. If another module needs the same type alias or effect, it must declare its own copy. The prelude's own combinators resolve their closure-parameter types through aliases a program cannot name: those aliases carry reserved names, and a name beginning with `Vera` followed by an uppercase letter or digit is a compile error (**E154**) — whether the program *declares* that name as a type, an alias, an effect, an ability or a constructor, *binds* it as a type parameter, or merely *mentions* it in a type. The reservation is one rule across every namespace, so the prelude's internal namespace can be neither re-typed, shadowed by a binder, nor referenced, and a program that wants a short name for a function type declares its own alias for it. Outside a type position there is no alias escape, so the fix in the effect, ability and constructor namespaces is simply a name that does not start with the reserved prefix. The prelude's data types (`Option`, `Result`, `Ordering`, `UrlParts`, …) are not in that namespace: they are ordinary public declarations a program names, and shadows, like any other. A declaration in the **entry file** shadows the prelude's for the whole program: the prelude injects nothing under that name, so the entry's declaration never contends with the prelude's. Where a *module* declares the same name as well, the entry's declaration and the module's are a distinct pair, arbitrated by the same shape test: they share the one layout when their shapes match, and the compiler reports **E623** at the entry declaration when they differ (§11.16). A declaration in a **module** shadows it for that module alone only while the prelude is not also compiling its own declaration of that name — the two would otherwise contend for one layout in the flat compiled namespace (§11.16), and the compiler reports **E621** at the module's declaration. Whether they contend is decided by the two declarations' *shapes*: a module that restates the prelude's type — the same constructors, in the same order, with the same field types, type parameters compared by position — shares the one layout and is not a contention. A differently-shaped one is, and the condition differs between the two halves of the prelude's data types: for `Json`, `HtmlNode`, `Request` and `Response`, which the prelude injects only when the entry program uses them, the module's declaration stands alone until it does; for `Option`, `Result`, `Ordering` and `UrlParts`, which every program compiles, a differently-shaped module declaration always contends.
 - Functions declared inside `where` blocks are always local to the parent function and do not take visibility modifiers.
 
 ### 8.4.2 Data Type Visibility
@@ -229,8 +229,8 @@ three declaration namespaces, each with its own code:
 | Clashing name | Code | Compilation backstop |
 |---------------|------|----------------------|
 | function | **E155** | E608 |
-| data type | **E156** | E609 |
-| constructor | **E157** | E610 |
+| data type | **E156** | E609 (differing shapes only) |
+| constructor | **E157** | E610 (differing shapes only) |
 
 A constructor is admitted by its parent type's name (§8.5.4), so
 `import m(Shape)` supplies `Sq` without naming it, and two modules exporting
@@ -259,12 +259,50 @@ suppliers the namespace can still reach:
   then the local one, so the imports no longer compete, and each import's
   declaration remains reachable through the module-qualified form (§8.5.3).
 
-For a clashing **data type** or **constructor** name, neither of those applies
-and the resolution is to rename the declaration in one of the two modules. The
-flat compilation strategy refuses two modules' same-named data declarations
-whatever the importing namespace does with them (§11.16), so narrowing an import
-or shadowing the name locally removes the ambiguity without making the program
-compile.
+For a clashing **data type** or **constructor** name, neither of those applies.
+If the two declarations describe the same layout — the same constructors, in the
+same order, with the same field types, type parameters compared by position —
+they share one layout in the compiled program and only the check-time ambiguity
+has to be resolved. If they describe different layouts, the resolution is to
+rename the declaration in one of the two modules: the flat compilation strategy
+refuses a differently-shaped pair whatever the importing namespace does with
+them (§11.16), so narrowing an import or shadowing the name locally removes the
+ambiguity without making the program compile.
+
+Two modules may therefore declare this and share the one compiled layout —
+the constructor names, their order and their field types all agree, and the
+type parameter's *name* is free because parameters are matched by position:
+
+```
+-- in module `shapes`
+public data Box<T> {
+  Empty,
+  Full(T)
+}
+
+-- in module `crates`, a compatible restatement
+public data Box<U> {
+  Empty,
+  Full(U)
+}
+```
+
+while these two describe different layouts — the constructors are reordered,
+so the tags differ — and one of them has to be renamed:
+
+```
+-- in module `shapes`
+public data Box<T> {
+  Empty,
+  Full(T)
+}
+
+-- in module `crates`, an incompatible layout
+public data Box<T> {
+  Full(T),
+  Empty
+}
+```
 
 **Design note.** The alternative — defining an order, first import wins or last
 — was rejected. It would make the resolved declaration implicit in import
@@ -314,9 +352,18 @@ is. An imported type's constructors are admitted by the type's name, so a
 selective import naming the type admits all of them.
 
 Constructors differ from functions in one respect, and it is a property of
-compilation rather than of resolution: two modules of one program may not
-declare the same `data` name or the same constructor name at all, whatever any
-namespace imports or shadows (§11.16).
+compilation rather than of resolution: what two modules of one program may
+share under one `data` name is a LAYOUT, not merely a namespace. Two
+declarations describing the same layout — the same constructors, in the same
+order, with the same field types, type parameters compared by position — share
+the single registered one and compile, and their shared constructor names
+compile with them. Two describing different layouts **MUST NOT** both be
+declared at all, whatever any namespace imports or shadows (§11.16).
+
+Sharing a layout settles compilation, not scope: where two imports both
+supply the bare name, §8.5.2.2's ambiguity refusal applies first and
+independently of the layouts, so identical declarations are still E156 /
+E157 at check time.
 
 ## 8.6 Module Resolution Algorithm
 

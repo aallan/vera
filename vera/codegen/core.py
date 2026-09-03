@@ -35,6 +35,7 @@ from vera.monomorphize import (
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.prelude import (
     PRELUDE_FILE,
+    PRELUDE_NAMESPACE,
     data_decl_shape,
     mentioned_fn_names,
     prelude_adt_names,
@@ -46,8 +47,6 @@ from vera.wasm.async_fusion import (
     compute_future_ret_fns,
     compute_future_ret_module_fns,
 )
-from vera.wasm.inference import substitute_type_vars
-
 from vera.codegen.modules import CrossModuleMixin
 from vera.codegen.registration import RegistrationMixin
 from vera.codegen.monomorphize import MonomorphizationMixin
@@ -86,6 +85,24 @@ _WAT_CALL_INDIRECT_RE = re.compile(r"(?m)^\s*call_indirect\b")
 # with room for far more injected declarations than the prelude has.
 _BUILTIN_DECL_INDEX = -(1 << 30)
 _PRELUDE_DECL_BASE = -(1 << 20)
+
+# The WAT width of each `vera.types.PRIMITIVES` member — one entry per key of
+# that registry, which `tests/test_name_resolution_spine_1316.py` asserts
+# directly, since the spine answers PRIMITIVE for every one of them and this
+# table is where the width is stated.  `Never` is the one
+# primitive with no representation — no value of it exists, so a parameter or
+# return of that type has no word to occupy and the compilability check refuses
+# it, exactly as it did before the spine (#1309) routed primitives here.
+_PRIMITIVE_WASM_TYPES: dict[str, str | None] = {
+    "Int": "i64",
+    "Nat": "i64",
+    "Float64": "f64",
+    "Bool": "i32",
+    "Byte": "i32",
+    "Unit": None,
+    "String": "i32_pair",
+    "Never": "unsupported",
+}
 
 
 def _find_holes(program: ast.Program) -> list[ast.HoleExpr]:
@@ -1333,6 +1350,33 @@ class CodeGenerator(
         finally:
             self._alias_env = saved
 
+    def _declaration_namespace(
+        self, name: str, origin: tuple[str, ...] | None = None,
+    ) -> tuple[str, ...] | None:
+        """The namespace the declaration emitted as *name* was DECLARED in.
+
+        The one predicate every registration and emission door asks before
+        entering ``_module_alias_scope``, so a body is always named, resolved
+        and measured in the namespace that wrote it (#1111, #1316).  Three
+        answers, in this order:
+
+        * *origin* when the caller has one — a mono clone of an IMPORTED
+          generic records its defining module in ``_mono_clone_origins``, and
+          that beats every name-based test.
+        * :data:`PRELUDE_NAMESPACE` when the name (or the base a mono clone's
+          ``base$Types`` mangling strips back to) is a prelude combinator.
+          The same ``split("$")[0]`` test ``_is_prelude_origin`` and
+          ``_compile_fn``'s ``_in_prelude_fn`` flag use, so a declaration's
+          diagnostics and its type resolution agree about whose code it is.
+        * ``None`` — the entry file's own namespace, where
+          ``_module_alias_scope`` is a no-op.
+        """
+        if origin is not None:
+            return origin
+        if name.split("$")[0] in self._prelude_fn_names:
+            return PRELUDE_NAMESPACE
+        return None
+
     def _sync_alias_env(self) -> None:
         """Re-derive ``_alias_env`` from the flat alias maps (#1208).
 
@@ -1424,15 +1468,29 @@ class CodeGenerator(
         reads the set for anything else would see the module's layout
         under the prelude's name — which is why the Pass-1.2 rail refuses
         that program (E621) rather than leaving the two to disagree.
+
+        THE PRELUDE is a namespace too (#1316), and the only one whose
+        membership is stated rather than looked up: it declares no user type
+        and imports none, so its members are exactly the global
+        infrastructure.  It has to be answered here even for a single-file
+        program, where the permissive ``None`` above would otherwise hand the
+        prelude's bodies the ENTRY file's declarations — and a
+        ``data Array { … }`` in the entry file would then make the prelude's
+        own ``Array<T>`` parameters a one-word ADT pointer instead of the
+        container's (ptr, len) pair.
         """
+        infrastructure = (
+            frozenset(self._adt_layouts) - self._namespace_declared_adts
+        )
+        if self._active_module_path == PRELUDE_NAMESPACE:
+            return (
+                infrastructure | self._builtin_adt_names | prelude_adt_names()
+            )
         if not self._adt_namespace_members:
             return None
         members = self._adt_namespace_members.get(self._active_module_path)
         if members is None:
             return None
-        infrastructure = (
-            frozenset(self._adt_layouts) - self._namespace_declared_adts
-        )
         return (
             members | infrastructure
             | self._builtin_adt_names | prelude_adt_names()
@@ -1624,6 +1682,123 @@ class CodeGenerator(
             error_code="E621",
         ))
 
+    def _check_entry_module_adt_contention(self, program: ast.Program) -> None:
+        """Refuse an entry `data` that cannot share a module's layout (#1312).
+
+        The third pair in the one-layout-per-name family, and the one no rail
+        could be asked about before.  E609 compares two IMPORTED modules;
+        E621 compares an imported module against the PRELUDE — and an
+        entry-file declaration SUPPRESSES the prelude's injection outright,
+        so the prelude declaration E621 needs never exists and the entry
+        versus module pair fell through both.
+
+        What it fell through to was silent.  Pass 1 registers the entry
+        file's `data` over the Pass-0.5 module harvest, which only
+        ``setdefault``s, so the entry's declaration takes the one flat layout
+        slot and the module's own constructors become ``unknown constructor``
+        inside the module's own bodies — an ``[E602]`` skip, an ``[E620]``
+        cascade behind it, both WARNINGS.  A `vera check`-green program
+        compiled with exit 0 to a module whose `main` was simply absent from
+        the exports.
+
+        SHAPE decides, exactly as it does for the prelude pair
+        (:func:`~vera.prelude.data_decl_shape`): two declarations that
+        describe the same layout are served by the one registered slot, and
+        an entry file restating a module's public type must keep compiling.
+        Each side's field types resolve through the aliases of the namespace
+        it was WRITTEN in — the entry's flat maps here, the module's own
+        captured maps for the module's — because §8.4.1 makes an alias
+        module-local and no other namespace's may answer for it.
+
+        ONE diagnostic, at the ENTRY's declaration: that is the file `vera
+        compile` was given and the declaration whose registration wins the
+        slot, and it names the module's file and line so the other half is
+        reachable.  E608/E609/E610/E621 all report one instruction per
+        collision, and reporting the module's declaration as well would say
+        the same thing twice.
+        """
+        if not self._module_adt_declarers:
+            return
+        for tld in program.declarations:
+            decl = tld.decl
+            if not isinstance(decl, ast.DataDecl):
+                continue
+            declarers = self._module_adt_declarers.get(decl.name, ())
+            if not declarers:
+                continue
+            entry_shape = data_decl_shape(
+                decl, self._type_aliases, self._type_alias_params,
+            )
+            for owner in declarers:
+                module_decl = self._find_module_data_decl(owner, decl.name)
+                if module_decl is not None and entry_shape == data_decl_shape(
+                    module_decl,
+                    self._module_type_aliases.get(owner, {}),
+                    self._module_type_alias_params.get(owner, {}),
+                ):
+                    continue
+                self._emit_entry_adt_contention_error(decl, owner)
+
+    def _emit_entry_adt_contention_error(
+        self, decl: ast.DataDecl, owner: tuple[str, ...],
+    ) -> None:
+        """Report an entry `data` that contends with a module's (#1312).
+
+        Located at the entry declaration, in the entry file, with the
+        module's own coordinates named in the description — see
+        :meth:`_check_entry_module_adt_contention` for why one diagnostic
+        rather than two.  Refused by the same Pass-1.9 severity gate
+        E608 / E609 / E610 / E621 take, so there is ONE refusal mechanism.
+        """
+        mod = ".".join(owner)
+        loc = SourceLocation(file=self.file)
+        source_line = ""
+        if decl.span is not None:
+            loc.line = decl.span.line
+            loc.column = decl.span.column
+            if self.source:
+                lines = self.source.splitlines()
+                if 1 <= loc.line <= len(lines):
+                    source_line = lines[loc.line - 1]
+        where = f"module '{mod}'"
+        module_decl = self._find_module_data_decl(owner, decl.name)
+        resolved = next(
+            (m for m in self._resolved_modules if m.path == owner), None)
+        if resolved is not None and module_decl is not None and module_decl.span:
+            where = (
+                f"module '{mod}' ({resolved.file_path}:"
+                f"{module_decl.span.line})"
+            )
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"This file declares a data type '{decl.name}' whose shape "
+                f"differs from the '{decl.name}' declared by {where}, and "
+                f"both are compiled into this program."
+            ),
+            location=loc,
+            source_line=source_line,
+            rationale=(
+                "The flat compilation strategy (C7e) gives the whole "
+                "program one ADT namespace. One name carries one "
+                "constructor layout there, so two differently-shaped "
+                f"declarations of '{decl.name}' cannot both be registered: "
+                "this file's takes the layout, the module's is dropped, and "
+                "every function in that module which constructs or matches "
+                "its own version is dropped behind it — including any entry "
+                "function that calls one."
+            ),
+            fix=(
+                f"Rename '{decl.name}' in this file and update its uses "
+                f"here. If this file means the module's type, import it "
+                f"instead of redeclaring it — or give this declaration the "
+                f"module's shape, the same constructors in the same order "
+                f"with the same field types, and the one layout serves both."
+            ),
+            spec_ref='Chapter 11, Section 11.16 "Cross-Module Compilation"',
+            severity="error",
+            error_code="E623",
+        ))
+
     def _find_module_data_decl(
         self, mod_path: tuple[str, ...], name: str,
     ) -> ast.DataDecl | None:
@@ -1733,6 +1908,14 @@ class CodeGenerator(
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)
 
+        # #1312: the ENTRY file's own `data` declarations against the
+        # modules'.  Asked here, between the Pass-0.5 module harvest and the
+        # Pass-1.2 prelude injection, for two reasons: `_module_adt_declarers`
+        # is already built, and `_type_aliases` still holds ONLY the entry
+        # file's aliases — which are the ones an entry declaration's field
+        # types resolve through (§8.4.1).
+        self._check_entry_module_adt_contention(program)
+
         # #841: Future<Result<String, String>>-returning fn names — one
         # derivation feeds both import-emission passes (pre-scan +
         # WasmContext) so they agree on which awaits need the
@@ -1832,9 +2015,49 @@ class CodeGenerator(
         # silently missing.
         for name, owner in contended:
             self._emit_prelude_adt_contention_error(name, owner)
+        # TYPES first, then functions — the split `_register_all` makes for
+        # the main file, for the same reason: a prelude combinator's signature
+        # is derived by asking the spine what its parameter names MEAN, and
+        # the prelude's own ADTs have to be in the env before the first such
+        # question.  Only the flat-map halves are registered here; the
+        # per-namespace `_prelude_type_aliases` capture happened in the
+        # identity-filtered walk above.
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
+            if isinstance(decl, ast.DataDecl):
+                if decl.name not in existing_adts:  # pragma: no cover
+                    self._register_data(decl)
+            elif isinstance(decl, ast.TypeAliasDecl):
+                if decl.name not in self._type_aliases:
+                    self._stamp_decl_order(decl.name)
+                    self._type_aliases[decl.name] = decl.type_expr
+                    if decl.type_params:
+                        self._type_alias_params[decl.name] = decl.type_params
+            else:
+                continue
+            # #1208: re-derived per TYPE declaration, as in `_register_all`
+            # — a prelude constructor field naming an earlier prelude type
+            # is measured through this env.
+            self._sync_alias_env()
+        # #1208: prelude aliases and ADTs are now in the flat maps too.
+        self._sync_alias_env()
+        # #1316: and the prelude's own FUNCTIONS register in the PRELUDE's
+        # namespace.  Their signatures name the prelude's types, and spec
+        # §8.4.1 scopes the alias namespace to the declaring module — so an
+        # entry-file `type Json = Int;` must not re-type `json_get`'s
+        # parameter.  Pre-fix it did: the signature took the alias's i64 while
+        # the body built the ADT's i32 pointer, and the module died at load
+        # with `expected i32, found i64` inside `json_get` on a check-green,
+        # verify-green program.  The same scope is entered again when these
+        # bodies are COMPILED (Pass 2) and when their generic clones are
+        # registered and emitted, so the signature and the body agree.
+        with self._module_alias_scope(PRELUDE_NAMESPACE):
+            for tld in program.declarations:
+                decl = tld.decl
+                if not isinstance(decl, ast.FnDecl):
+                    continue
+                if decl.name in existing_fns:
+                    continue
                 self._register_fn(decl)
                 # #516 Stage 2 — anything that arrives here through
                 # inject_prelude() (i.e. wasn't in `existing_fns` before
@@ -1851,19 +2074,8 @@ class CodeGenerator(
                 # actual file).
                 self._fn_source_map.pop(decl.name, None)
                 self._prelude_fn_names.add(decl.name)
-            elif isinstance(decl, ast.DataDecl):
-                if decl.name not in existing_adts:  # pragma: no cover
-                    self._register_data(decl)
-            elif isinstance(decl, ast.TypeAliasDecl):
-                if decl.name not in self._type_aliases:
-                    self._stamp_decl_order(decl.name)
-                    self._type_aliases[decl.name] = decl.type_expr
-                    if decl.type_params:
-                        self._type_alias_params[decl.name] = decl.type_params
-        # #1208: prelude aliases and ADTs are now in the flat maps too.
-        self._sync_alias_env()
 
-        # #1299: and so are the prelude's FUNCTIONS, which belong to every
+        # #1299: the prelude's FUNCTIONS belong to every
         # namespace.  Rebuild the visibility tables now that
         # `_prelude_fn_names` is populated — Pass 0.5's call could not know
         # them, and the verifier builds ITS tables from a post-injection
@@ -1917,8 +2129,14 @@ class CodeGenerator(
             # Pass 2.5/2.6 use, so registration and emission agree; a LOCAL
             # clone has no recorded origin and the scope is a no-op.
             origin_path = self._mono_clone_origins.get(mdecl.name)
+            # #1316: a clone of a PRELUDE generic has no recorded origin — it
+            # is not imported — but it is still the prelude's declaration, and
+            # its signature must be measured in the prelude's namespace, not
+            # the entry file's.  `_declaration_namespace` answers the recorded
+            # origin when there is one and the prelude otherwise.
             with (
-                self._module_alias_scope(origin_path),
+                self._module_alias_scope(
+                    self._declaration_namespace(mdecl.name, origin_path)),
                 self._module_source_scope(origin_path),
             ):
                 self._register_fn(mdecl)
@@ -2040,53 +2258,61 @@ class CodeGenerator(
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
                 is_public = tld.visibility == "public"
-                fn_wat = self._compile_fn_tracked(
-                    decl, export=is_public,
-                    where_scope=frozenset(
-                        w.name for w in decl.where_fns or ()
-                    ),
-                )
-                if fn_wat is not None:
-                    functions_wat.append(fn_wat)
-                    if is_public:
-                        exports.append(decl.name)
-                    # Also compile where-block functions — recursively, so a
-                    # helper's OWN where-helpers (grandchildren) are emitted
-                    # too.  The checker, verifier, and registration paths all
-                    # recurse into nested `where` blocks (`_check_fn` /
-                    # `_verify_fn` / `_register_fn`), so a grandchild's name is
-                    # registered and the parent's body lowers its call to
-                    # `$grandchild` — but before #978 only the direct helpers
-                    # were emitted, so a nested helper's body dangled
-                    # (`unknown func` at WAT assembly).  The generic path
-                    # already flattens nested helpers via
-                    # `monomorphize._hoist_where_fns_under`.
-                    # #1299: paired with the scope each helper's own body
-                    # resolves in — its ancestors' direct helpers plus its
-                    # own, which is what the checker walks.
-                    for wfn, wscope in self._where_fn_scopes(decl):
-                        wfn_wat = self._compile_fn_tracked(
-                            wfn, export=False, where_scope=wscope,
-                        )
-                        if wfn_wat is not None:
-                            # PR #1013 review: a fully-concrete (T-unused)
-                            # generic helper TEMPLATE compiles — unlike a
-                            # `@T`-param one — but is dead code once clones are
-                            # registered (every call site rewrites to a clone
-                            # via `_generic_fn_info`).  Emitting it dangles:
-                            # its body's calls to its OWN where-helpers target
-                            # per-clone symbols (`gen$Bool$where$shared`) that
-                            # exist under no bare name (pre-#991 they resolved
-                            # to a same-named ancestor's bare emission only by
-                            # collision luck).  Drop the dead WAT; the compile
-                            # attempt above keeps the `@T`-template warning
-                            # surface intact, and an uninstantiated generic
-                            # (no registered clones) still emits so a bare
-                            # call has a target.
-                            if (wfn.forall_vars
-                                    and wfn.name in mono_base_names):
-                                continue
-                            functions_wat.append(wfn_wat)
+                # #1316: a PRELUDE-injected declaration sits in this list but
+                # was written in the prelude's namespace, so its body compiles
+                # against the prelude's aliases and data types — the same
+                # scope its signature was registered in at Pass 1.2.  A
+                # user declaration answers `None` and the scope is a no-op.
+                with self._module_alias_scope(
+                    self._declaration_namespace(decl.name),
+                ):
+                    fn_wat = self._compile_fn_tracked(
+                        decl, export=is_public,
+                        where_scope=frozenset(
+                            w.name for w in decl.where_fns or ()
+                        ),
+                    )
+                    if fn_wat is not None:
+                        functions_wat.append(fn_wat)
+                        if is_public:
+                            exports.append(decl.name)
+                        # Also compile where-block functions — recursively, so a
+                        # helper's OWN where-helpers (grandchildren) are emitted
+                        # too.  The checker, verifier, and registration paths all
+                        # recurse into nested `where` blocks (`_check_fn` /
+                        # `_verify_fn` / `_register_fn`), so a grandchild's name is
+                        # registered and the parent's body lowers its call to
+                        # `$grandchild` — but before #978 only the direct helpers
+                        # were emitted, so a nested helper's body dangled
+                        # (`unknown func` at WAT assembly).  The generic path
+                        # already flattens nested helpers via
+                        # `monomorphize._hoist_where_fns_under`.
+                        # #1299: paired with the scope each helper's own body
+                        # resolves in — its ancestors' direct helpers plus its
+                        # own, which is what the checker walks.
+                        for wfn, wscope in self._where_fn_scopes(decl):
+                            wfn_wat = self._compile_fn_tracked(
+                                wfn, export=False, where_scope=wscope,
+                            )
+                            if wfn_wat is not None:
+                                # PR #1013 review: a fully-concrete (T-unused)
+                                # generic helper TEMPLATE compiles — unlike a
+                                # `@T`-param one — but is dead code once clones are
+                                # registered (every call site rewrites to a clone
+                                # via `_generic_fn_info`).  Emitting it dangles:
+                                # its body's calls to its OWN where-helpers target
+                                # per-clone symbols (`gen$Bool$where$shared`) that
+                                # exist under no bare name (pre-#991 they resolved
+                                # to a same-named ancestor's bare emission only by
+                                # collision luck).  Drop the dead WAT; the compile
+                                # attempt above keeps the `@T`-template warning
+                                # surface intact, and an uninstantiated generic
+                                # (no registered clones) still emits so a bare
+                                # call has a target.
+                                if (wfn.forall_vars
+                                        and wfn.name in mono_base_names):
+                                    continue
+                                functions_wat.append(wfn_wat)
 
         # Compile monomorphized functions.
         #
@@ -2139,7 +2365,8 @@ class CodeGenerator(
             # any module name the importer does not shadow, so nothing else
             # moves.
             with (
-                self._module_alias_scope(origin),
+                self._module_alias_scope(
+                    self._declaration_namespace(mdecl.name, origin)),
                 self._module_source_scope(origin),
             ):
                 fn_wat = self._compile_fn_tracked(
@@ -2581,35 +2808,37 @@ class CodeGenerator(
 
         The BRANCH ORDER is the checker's, for the same reason
         ``_type_expr_to_wasm_type``'s is (#1309, and this is the THIRD
-        consumer of that disease): ``String`` is a ``vera.types.PRIMITIVES``
-        member and so precedes the alias table, while ``Future`` is an ADT
-        name and so must follow it.  Tested the other way round, ``type
-        Future<T> = Array<T>;`` made a ``@Future<String>`` return take the
-        transparent-wrapper strip and be classified a string, while the
-        width derivation resolved the alias and lowered an ``Array<String>``
-        — so ``vera run`` decoded the array's backing bytes as UTF-8 and
-        printed two NULs where the same program under a non-ADT alias name
-        printed the pointer.
+        consumer of that disease), and it is taken by the same spine,
+        :func:`vera.naming.classify_named`: ``String`` is a
+        ``vera.types.PRIMITIVES`` member and so precedes the alias table,
+        while ``Future`` is an ADT name and so must follow it — and follow
+        the DECLARED-ADT branch too, since a user ``data Future`` is that
+        namespace's own type and carries no transparent payload (#1321).
+        Tested the other way round, ``type Future<T> = Array<T>;`` made a
+        ``@Future<String>`` return take the transparent-wrapper strip and be
+        classified a string, while the width derivation resolved the alias
+        and lowered an ``Array<String>`` — so ``vera run`` decoded the
+        array's backing bytes as UTF-8 and printed two NULs where the same
+        program under a non-ADT alias name printed the pointer.
         """
         if isinstance(te, ast.NamedType):
-            if te.name == "String":
-                return True
-            # Type aliases — substitute a parameterised alias's own type
-            # params with the concrete `te.type_args` BEFORE recursing
-            # (mirrors `_type_expr_to_wasm_type`'s #635 block below), so
-            # `type Deferred<T> = Future<T>` used as `Deferred<String>`
-            # resolves to String instead of recursing on the bare `T` and
-            # displaying the raw pointer (PR #1041 review).  Ahead of the
-            # `Future` strip below, which names an ADT rather than a
-            # primitive and which an alias of that name therefore shadows.
-            if te.name in self._type_aliases:
-                alias = self._type_aliases[te.name]
-                alias_params = self._type_alias_params.get(te.name)
-                if (alias_params and te.type_args
-                        and len(alias_params) == len(te.type_args)):
-                    local_subst = dict(zip(alias_params, te.type_args))
-                    alias = substitute_type_vars(alias, local_subst)
-                return self._return_type_is_string(alias)
+            sort = naming.classify_named(te, self._alias_env)
+            if sort is naming.NameSort.PRIMITIVE:
+                return te.name == "String"
+            if sort in (
+                naming.NameSort.ALIAS,
+                naming.NameSort.ALIAS_ARITY_MISMATCH,
+            ):
+                # Substitute a parameterised alias's own type params with the
+                # concrete `te.type_args` BEFORE recursing (the same
+                # `naming.alias_body` `_type_expr_to_wasm_type` uses), so
+                # `type Deferred<T> = Future<T>` used as `Deferred<String>`
+                # resolves to String instead of recursing on the bare `T` and
+                # displaying the raw pointer (PR #1041 review).
+                return self._return_type_is_string(
+                    naming.alias_body(te, self._alias_env))
+            if sort is naming.NameSort.DECLARED_ADT:
+                return False
             # Future<T> is representation-transparent (#841 / #1047): a bare
             # `Future<String>` return has the same (ptr, len) pair shape as a
             # plain String, so `execute()` must decode it for display too.
@@ -2631,59 +2860,75 @@ class CodeGenerator(
         "i32_pair" for types represented as (i32, i32) pairs (String, Array).
 
         The BRANCH ORDER is the checker's, not a convenience ordering
-        (#1309): ``vera.naming._resolve_named`` resolves a named type as
-        type parameter (shadowing everything) -> primitive -> alias
-        (arity-checked) -> declared ADT -> ``Decimal`` -> removed alias ->
-        opaque ADT, the built-in containers being ABSORBED by that last
-        branch rather than sitting after it.  A WIDTH derived in any other
-        order disagrees with the type the program was checked and verified
-        against.  This function has no type-parameter step of its own —
-        monomorphization substitutes concrete arguments before it runs — so
-        what it must reproduce is the primitive-then-alias-then-ADT spine.
-        Spec §8.4.1 permits an alias to take a
-        name the prelude already uses, so ``type Option = Int;`` is a legal
-        shadow whose parameter must emit i64; codegen used to test
-        ``_adt_layouts`` (and ``Array`` / ``Map`` / ``Set`` / ``Decimal``,
-        none of which are ``vera.types.PRIMITIVES``) first and emitted the ADT
-        pointer's i32 instead.  Loud where the widths differ and the target is
-        a scalar — the module fails WASM validation with ``expected i64, found
-        i32`` — and SILENT where the target is a pair: the single i32 drops the
-        length word, the module validates, and ``string_concat`` over a
-        shadow-aliased ``String`` returned junk bytes at exit 0.  Only the
-        PRIMITIVES ahead of the alias branch may stay ahead of it, because that
-        is where the checker puts them: ``type Bool = Int;`` leaves ``@Bool`` a
-        Bool on both sides.
+        (#1309, #1321, #1331), and it is not restated here: the branch is
+        taken by :func:`vera.naming.classify_named`, THE spine, against
+        ``_alias_env`` — the aliases and declared ADTs of the namespace whose
+        declaration is compiling (``_sync_alias_env`` / ``_module_alias_scope``,
+        #1316).  A width derived in any other order — or against any other
+        namespace's tables — disagrees with the type the program was checked
+        and verified against.  This function has no type-parameter step of its
+        own; monomorphization substitutes concrete arguments before it runs.
+
+        What is left here is the REPRESENTATION question the spine
+        deliberately does not answer: given that the name is not declared in
+        this namespace, which built-in does it denote and how wide is it.
+        Spec §8.4.1 permits both a `type` alias and a `data` declaration to
+        take a name the prelude or a built-in container already uses, and both
+        shadows win over the built-in reading:
+
+        * ``type Option = Int;`` must emit the alias target's i64.  Codegen
+          used to test ``_adt_layouts`` (and ``Array`` / ``Map`` / ``Set`` /
+          ``Decimal``, none of which are ``vera.types.PRIMITIVES``) first and
+          emitted the ADT pointer's i32 instead — loud where the widths
+          differ and the target is a scalar (WASM validation: ``expected i64,
+          found i32``) and SILENT where the target is a pair, the single i32
+          dropping the length word so ``string_concat`` over a shadow-aliased
+          ``String`` returned junk bytes at exit 0 (#1309).
+        * ``data Array { Mk(Int) }`` must emit the ADT pointer's i32.  The
+          container branch used to run first and answer ``i32_pair``, so the
+          match over it was refused as a pair scrutinee, its callers dropped,
+          and the module shipped with no exports at all (#1321, #1331).
+
+        Only the PRIMITIVES stay ahead of both shadows, because that is where
+        the checker puts them: ``type Bool = Int;`` leaves ``@Bool`` a Bool on
+        both sides.  ``Never`` is the one primitive with no representation —
+        no value of it exists — so it is ``"unsupported"`` rather than a width.
         """
         if isinstance(te, ast.NamedType):
             name = te.name
-            if name in ("Int", "Nat"):
-                return "i64"
-            if name == "Float64":
-                return "f64"
-            if name in ("Bool", "Byte"):
-                return "i32"
-            if name == "Unit":
-                return None
-            if name == "String":
-                return "i32_pair"
-            # Type aliases — recurse to resolve the underlying type.  Ahead of
-            # every non-primitive branch below, per the checker's order (#1309).
-            # When the alias is parameterised (`type Box<T> =
-            # Array<T>`), substitute the alias's own type params with
-            # the concrete `te.type_args` *before* recursing, so type
-            # variables in the alias body don't leak through and get
-            # mis-classified as `"unsupported"`.  Closes #635 — the
-            # parallel of the walker fix landed in PR #631 for
-            # `_canonical_named_type`, applied to this compilability
-            # check.
-            if name in self._type_aliases:
-                alias = self._type_aliases[name]
-                alias_params = self._type_alias_params.get(name)
-                if (alias_params and te.type_args
-                        and len(alias_params) == len(te.type_args)):
-                    local_subst = dict(zip(alias_params, te.type_args))
-                    alias = substitute_type_vars(alias, local_subst)
-                return self._type_expr_to_wasm_type(alias)
+            sort = naming.classify_named(te, self._alias_env)
+            if sort is naming.NameSort.PRIMITIVE:
+                # GUARDED, not a direct index (PR #1372 review).  The spine
+                # answers PRIMITIVE for every bare key of
+                # ``vera.types.PRIMITIVES``, and this table is a separate
+                # statement of each one's WAT width — so a primitive added
+                # there and not here would raise ``KeyError`` from inside
+                # codegen, an internal crash where the compiler owes a
+                # diagnostic.  Falling through to ``"unsupported"`` routes it
+                # to the existing E605 refusal instead, which is the LOUD
+                # answer, not a silent default: an unsupported type is refused
+                # with a located diagnostic, never compiled at a guessed
+                # width.  ``tests/test_name_resolution_spine_1316.py`` pins
+                # the table's keys against the registry so the gap cannot be
+                # introduced unnoticed in the first place.
+                return _PRIMITIVE_WASM_TYPES.get(name, "unsupported")
+            if sort in (
+                naming.NameSort.ALIAS,
+                naming.NameSort.ALIAS_ARITY_MISMATCH,
+            ):
+                # Recurse into the alias's body with this application's
+                # arguments substituted for the alias's own parameters, so a
+                # parameterised alias (`type Box<T> = Array<T>`) does not leak
+                # a bare `T` into the width question and get classified
+                # "unsupported" (#635).  An arity mismatch takes the same arm
+                # deliberately: the checker rejects it (E133) before any
+                # program reaches codegen, and `alias_body` then declines to
+                # substitute, which is exactly what this walker did before the
+                # spine existed.
+                return self._type_expr_to_wasm_type(
+                    naming.alias_body(te, self._alias_env))
+            if sort is naming.NameSort.DECLARED_ADT:
+                return "i32"  # heap pointer
             if name == "Array":
                 return "i32_pair"
             if name in ("Map", "Set", "Decimal"):
@@ -2696,9 +2941,6 @@ class CodeGenerator(
             # *returning* a Future was E605-skipped.
             if name == "Future" and te.type_args and len(te.type_args) == 1:
                 return self._type_expr_to_wasm_type(te.type_args[0])
-            # ADT types compile to i32 (heap pointer)
-            if name in self._adt_layouts:
-                return "i32"
             return "unsupported"
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_wasm_type(te.base_type)

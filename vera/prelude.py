@@ -34,6 +34,16 @@ from vera.monomorphize import canonicalize_type_aliases
 # misattribution defect).
 PRELUDE_FILE = "<prelude>"
 
+# The prelude's NAMESPACE token (#1316).  Spec §8.4.1 scopes the alias
+# namespace to the declaring module, and the prelude is a namespace like any
+# other: its combinator bodies are injected into whatever program is being
+# compiled, but they were DECLARED here, so they resolve type names against the
+# prelude's own aliases and data types — never the entry file's.  Shaped as a
+# module path so codegen's `_module_alias_scope` can install it with no special
+# case; `<` cannot begin a module-path segment (§8.1 restricts them to
+# identifiers), so it can never collide with a real module.
+PRELUDE_NAMESPACE: tuple[str, ...] = (PRELUDE_FILE,)
+
 
 # =====================================================================
 # Prelude Vera source

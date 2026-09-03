@@ -19,10 +19,7 @@ from vera.wasm.helpers import (
     CellNames,
     StateClauseEntry,
     WasmSlotEnv,
-    _element_load_op,
-    _element_mem_size,
     _is_host_handle_type,
-    _is_pair_element_type,
     gc_shadow_push,
 )
 
@@ -125,8 +122,10 @@ class CallsHandlersMixin:
             offset, length = self.string_pool.intern("unit")
             return [f"i32.const {offset}", f"i32.const {length}"]
 
-        # Decimal → decimal_to_string host import
-        if vera_type == "Decimal":
+        # Decimal → decimal_to_string host import.  #1321/#1331: unless this
+        # namespace declares its own `Decimal`, which is an ADT with a tag
+        # and fields, not an opaque host handle the host can stringify.
+        if vera_type == "Decimal" and not self._declares_adt(vera_type):
             desugared = ast.FnCall(
                 name="decimal_to_string", args=(arg,), span=arg.span,
             )
@@ -860,7 +859,11 @@ class CallsHandlersMixin:
             # value_instrs leaves nothing useful; drop it and emit "unit".
             return self._const_string("unit")
 
-        if base == "Array":
+        # #1321/#1331: a DECLARED `data Array` is not the container — it is
+        # this namespace's own one-word ADT, and falling through to
+        # `_show_adt` below is what renders it.  Taking the array arm would
+        # walk its heap pointer as a (ptr, len) pair.
+        if base == "Array" and not self._declares_adt(base):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None
@@ -1008,7 +1011,7 @@ class CallsHandlersMixin:
         acc_len = self.alloc_local("i32")
         sp_save = self.alloc_local("i32")
 
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             return None
 
@@ -1172,8 +1175,8 @@ class CallsHandlersMixin:
         self, arr_ptr: int, idx: int, elem_type: str, elem_size: int,
     ) -> list[str] | None:
         """Instructions leaving arr[idx] on the stack (natural WASM shape)."""
-        is_pair = _is_pair_element_type(elem_type)
-        load_op = _element_load_op(elem_type)
+        is_pair = self._is_pair_element_type(elem_type)
+        load_op = self._element_load_op(elem_type)
         if load_op is None and not is_pair:
             return None
         addr: list[str] = [f"local.get {arr_ptr}", f"local.get {idx}"]
@@ -1191,7 +1194,7 @@ class CallsHandlersMixin:
                 f"local.get {tmp}", "i32.load offset=0",
                 f"local.get {tmp}", "i32.load offset=4",
             ]
-        return addr + [load_op]  # type: ignore[list-item]
+        return addr + [load_op]
 
     # ---- hash ---------------------------------------------------------
 
@@ -1224,7 +1227,8 @@ class CallsHandlersMixin:
             return ["i64.const 0"]
         if base == "String":
             return self._translate_hash_string(value_instrs)
-        if base == "Array":
+        # The hash twin of the show arm above (#1321/#1331).
+        if base == "Array" and not self._declares_adt(base):
             elem_type = type_args[0] if type_args else None
             if elem_type is None:
                 return None
@@ -1338,7 +1342,7 @@ class CallsHandlersMixin:
         acc = self.alloc_local("i64")
         sp_save = self.alloc_local("i32")
 
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             return None
         elem_load = self._load_array_element(arr_ptr, idx, elem_type, elem_size)

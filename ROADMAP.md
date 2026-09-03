@@ -22,11 +22,7 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 
 | Issue | What |
 |---|---|
-| [#1331](https://github.com/aallan/vera/issues/1331) | A user `data` declaration named after a built-in container compiles at the container's width, so a check-green program loses its exports to an E602 refusal. |
-| [#1316](https://github.com/aallan/vera/issues/1316) | A main-file `type` alias named after a prelude ADT leaks into the prelude's own bodies. |
 | [#1317](https://github.com/aallan/vera/issues/1317) | `E609` and `E610` refuse two modules' same-named declarations by declaration rather than by use. |
-| [#1312](https://github.com/aallan/vera/issues/1312) | An entry-file `data` declaration and a module's of the same name silently drop the caller when their shapes differ. |
-| [#1321](https://github.com/aallan/vera/issues/1321) | Codegen tests its container branches before `_adt_layouts`, so a user `data` named after a container is misclassified. |
 
 ## Stage 19 — The verification completeness sprint
 

@@ -9,10 +9,6 @@ from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
     WasmSlotEnv,
-    _element_mem_size,
-    _element_load_op,
-    _element_store_op,
-    _is_pair_element_type,
     contains_shadow_push,
     gc_shadow_push,
     is_gc_pointer_base,
@@ -1699,14 +1695,14 @@ class DataMixin:
         # resolve order (#1046).
         elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
         elem_type = self._resolve_base_type_name(elem_type)
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             raise CodegenSkip(
                 expr,
                 f"unsupported array literal element type {elem_type!r}",
             )
-        is_pair = _is_pair_element_type(elem_type)
-        store_op = _element_store_op(elem_type)
+        is_pair = self._is_pair_element_type(elem_type)
+        store_op = self._element_store_op(elem_type)
         # store_op is None only for pair types — handled below
         if store_op is None and not is_pair:
             raise CodegenSkip(
@@ -1777,20 +1773,44 @@ class DataMixin:
         Evaluates collection → (ptr, len), evaluates index,
         performs bounds check (trap on OOB), then loads the element.
         """
+        # The COLLECTION must actually be one (PR #1372 review).  The emit
+        # below saves two words — the (ptr, len) pair every real array is —
+        # so a collection of any other representation underflows the stack
+        # and the module fails to load with "expected a type but nothing on
+        # stack", at rc 0 and with no diagnostic at all.
+        #
+        # It is reachable because §8.4.1 lets a declaration take the
+        # container's name: under `private data Array { … }` the spine
+        # resolves `Array<Array>` to that DECLARATION (a one-word heap
+        # pointer), which is the same answer the checker's `_resolve_named`
+        # gives — and the checker then admits an index over it anyway, which
+        # is the hole #1315/#1320 describe.  Until that hole closes, codegen
+        # refuses here rather than shipping an artifact no runtime can load.
+        coll_wt = self._infer_expr_wasm_type(expr.collection)
+        if coll_wt is not None and coll_wt != "i32_pair":
+            raise CodegenSkip(
+                expr,
+                "index over a collection that is not an array — its "
+                f"representation is {coll_wt!r}, where indexing needs the "
+                "(ptr, len) pair an array is.  A `data` declaration that "
+                "takes a built-in container's name shadows it (spec "
+                "§8.4.1), so a type spelled like a container here may be "
+                "that declaration",
+            )
         elem_type = self._infer_index_element_type(expr)
         if elem_type is None:
             raise CodegenSkip(
                 expr,
                 "could not infer index expression element type",
             )
-        elem_size = _element_mem_size(elem_type)
+        elem_size = self._element_mem_size(elem_type)
         if elem_size is None:
             raise CodegenSkip(
                 expr,
                 f"unsupported index expression element type {elem_type!r}",
             )
-        is_pair = _is_pair_element_type(elem_type)
-        load_op = _element_load_op(elem_type)
+        is_pair = self._is_pair_element_type(elem_type)
+        load_op = self._element_load_op(elem_type)
         # load_op is None only for pair types — handled below
         if load_op is None and not is_pair:
             raise CodegenSkip(
@@ -1850,5 +1870,5 @@ class DataMixin:
             instructions.append(f"local.get {tmp_addr}")
             instructions.append("i32.load offset=4")
         else:
-            instructions.append(load_op)  # type: ignore[arg-type]
+            instructions.append(load_op)
         return instructions
