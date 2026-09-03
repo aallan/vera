@@ -1475,6 +1475,46 @@ def _type_clone_name(ty: object) -> str | None:
     return None
 
 
+def checker_arg_type_info(
+    table: SpanTypeTable | None, expr: ast.Expr,
+) -> tuple[str, tuple[str | None, ...]] | None:
+    """``(base name, per-type-argument names)`` from the CHECKER's type.
+
+    The structural counterpart of :func:`checker_clone_type_name`, for the
+    parameterised branch of unification: matching ``Array<T>`` against an
+    argument needs the argument's own base and type arguments, and the
+    walkers' ``_get_arg_type_info`` has the same missing arms their namers had
+    — no arm for an indexed argument, none for a nested module call — so the
+    variable stays unbound and the phantom default names the clone (#1395).
+
+    Consulted ONLY for variables the walkers left unbound, and only after
+    every parameter has bound what it can.  That ordering is the whole
+    discipline: the checker's answer is a SEMANTIC type and the walkers' is a
+    clone-NAMING vocabulary, and where they differ the walkers' is the one the
+    emitted symbol must use.  `option_unwrap_or(nothing(()), 11)` measures
+    `Option<Nat>` here where the walkers spell the same instantiation `Int`;
+    consulted during the first pass that answer arrives from the FIRST
+    parameter and displaces the correct binding the second parameter's literal
+    supplies, moving six corpus programs' WAT.  Consulted last, into a hole,
+    it can displace nothing.
+    """
+    if table is None:
+        return None
+    key = ast.span_key(expr)
+    if key is None:
+        return None
+    ty = table.get(key)
+    if ty is None:
+        return None
+    from vera.types import AdtType, RefinedType
+
+    while isinstance(ty, RefinedType):
+        ty = ty.base
+    if not isinstance(ty, AdtType):
+        return None
+    return ty.name, tuple(_type_clone_name(a) for a in ty.type_args)
+
+
 def pipe_desugared_call(
     expr: ast.Expr,
 ) -> ast.FnCall | ast.ModuleCall | None:
@@ -2580,6 +2620,18 @@ class Monomorphizer:
             self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
                                   mapping, generic_decls, constrained_vars,
                                   partial_adt, unnamed_direct)
+        # #1395: a SECOND pass, for the variables the first left unbound.  The
+        # checker is asked only into a hole, and only once every parameter has
+        # had its say, so it can never displace a binding the walkers made —
+        # which is what makes consulting a semantic type safe for a naming
+        # vocabulary.  Skipped when nothing is unbound, so an ordinary call
+        # pays one membership test.
+        if any(tv not in mapping for tv in forall_vars):
+            for param_te, arg in zip(decl.params, args):
+                self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
+                                      mapping, generic_decls, constrained_vars,
+                                      partial_adt, unnamed_direct,
+                                      consult_checker=True)
 
         # Materialise any merged sparse-ADT recovery.
         #
@@ -2669,6 +2721,7 @@ class Monomorphizer:
         constrained_vars: frozenset[str] = frozenset(),
         partial_adt: dict[str, tuple[str, list[str | None]]] | None = None,
         unnamed_direct: dict[str, ast.Expr] | None = None,
+        consult_checker: bool = False,
     ) -> None:
         """Unify a parameter TypeExpr against an argument to bind type vars.
 
@@ -2681,6 +2734,7 @@ class Monomorphizer:
             self._unify_param_arg(
                 param_te.base_type, arg, forall_vars, ctor_to_adt, mapping,
                 generic_decls, constrained_vars, partial_adt, unnamed_direct,
+                consult_checker,
             )
             return
 
@@ -2762,28 +2816,23 @@ class Monomorphizer:
                 return
 
             arg_info = self._get_arg_type_info(arg, ctor_to_adt)
-            # #1327/#1366 — the fail-closed net deliberately STOPS here, and
-            # the exclusion is not free.  Widening it to "a var this
-            # parameter's TYPE ARGUMENTS determine" was implemented and
-            # measured: it refuses the prelude's own combinators.
-            # `result_unwrap_or(result_map(Ok(100), f), 0)` has an argument no
-            # arm can name, so `VeraE` — reachable only through
-            # `Result<T, E>` — is recorded and reported, taking
-            # `ch09_prelude`, `ch09_option_result_combinators`, both dual-target
-            # cells and four unit tests red.  That variable is exactly the
-            # phantom the default documents, and the prelude relies on it.
-            #
-            # So the net covers the case where a wrong name is a wrong WASM
-            # TYPE — a bare `@T` parameter, whose clone takes the argument's
-            # own representation — and not the case where the variable is a
-            # type argument of a heap constructor the clone handles as a
-            # pointer.  That is a narrower claim than "sound by construction":
-            # a generic like `fn head(@Array<T> -> @T)` RETURNS at `T`, so a
-            # guessed `head$Bool` would return i32 where `Int` needs i64, and
-            # this net does not catch it.  The gap is real and is closed by
-            # inference rather than by refusal — once the type comes from the
-            # checker there is nothing left to guess, so the net stops being
-            # the thing that has to be exactly right.
+            if arg_info is None and consult_checker:
+                # #1395: a variable reached only through this parameter's
+                # TYPE ARGUMENTS is bound here rather than by the type
+                # namer, and this helper carries the same missing arms the
+                # namers did — none for an indexed argument, none for a
+                # nested module call — so the variable stayed unbound and
+                # the phantom default named the clone.  A
+                # `fn head(@Array<T> -> @T)` then returned i32 where `Int`
+                # needs i64: check-green, verify-clean, invalid WASM.
+                #
+                # Consulted ONLY into a hole, and only after every
+                # parameter has bound what it can — see
+                # `checker_arg_type_info`.  The checker's answer is a
+                # semantic type and the walkers' is a naming vocabulary, so
+                # asking earlier lets `Option<Nat>` displace the `Int` a
+                # later parameter's literal supplies.
+                arg_info = checker_arg_type_info(self.ctx.expr_types, arg)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]

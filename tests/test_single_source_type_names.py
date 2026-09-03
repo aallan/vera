@@ -376,34 +376,62 @@ def test_matrix_discovery_matches_the_rewrite(
     assert codegen_set, f"{name}: no instantiation was discovered at all"
 
 
-def test_nested_type_var_is_still_the_open_gap() -> None:
-    """`takes_arr(@Array<Array<Int>>.0[0])` still names the default.
+def test_nested_type_var_names_the_element_type() -> None:
+    """`takes_arr(@Array<Array<Int>>.0[0])` instantiates at `Int` (#1395).
 
-    The gap is real and deliberately NOT closed here.  A variable determined
-    only through a parameter's TYPE ARGUMENTS is bound by
-    ``_get_arg_type_info``, not by the type namer, and that helper has the same
-    missing arms — so `T` stays unbound and both walkers agree on
-    `takes_arr$Bool` for an `Array<Int>`.  It runs because `array_length`
-    never reads `T`; a `fn head(@Array<T> -> @T)` would return i32 where `Int`
-    needs i64.
+    A variable reached only through a parameter's TYPE ARGUMENTS is bound by
+    `_get_arg_type_info`, not by the type namer, and that helper carried the
+    same missing arms the namers did — so `T` stayed unbound and both walkers
+    named `takes_arr$Bool` for an `Array<Int>`.  It ran, because
+    `array_length` never reads `T`.
 
-    Extending the checker fallback to that helper was implemented and
-    MEASURED, and reverted: it reaches the span-keyed table for an argument
-    whose span can collide with the injected prelude's, and it binds during a
-    first pass that is first-binding-wins.  `option_unwrap_or(nothing(()), 11)`
-    then took `Nat` and `String` from the prelude's spans where the second
-    parameter's `11` says `Int`, and six corpus programs' WAT moved —
-    `ch09_prelude` and `ch09_generic_none_return` among them — with `main`
-    dropped at [E602] on two of them.  Closing this needs the table keyed by
-    file identity, not another consultation of a table that has none.
-
-    Pinned so the gap is a measured fact rather than a claim, and so the day
-    it closes this cell is what notices.
+    Asserted on the emitted name rather than the value for exactly that
+    reason: the value is right either way here.
     """
     source = _SINGLE_FILE_MATRIX[-1][1]
     result = _compile_checked(source)
-    assert _clone_names(result.wat, "takes_arr") == ["takes_arr$Bool"], (
+    assert _clone_names(result.wat, "takes_arr") == ["takes_arr$Int"], (
         result.wat
+    )
+
+
+# The shape the guess actually breaks: a generic that RETURNS at `T`.  Named
+# `head$Bool` the clone returns i32 where `Int` needs i64, so the module is
+# invalid WebAssembly — from `check`-green, `verify --json`-clean source
+# (`ok: true`, 6 Tier-1 + 1 Tier-3).  #1395's own repro.
+_RETURNS_AT_T = """\
+private forall<T> fn head(@Array<T> -> @T)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Array<T>.0[0]
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Int>> = [[1234, 2], [3]];
+  head(@Array<Array<Int>>.0[0])
+}
+"""
+
+
+def test_a_generic_returning_at_t_gets_the_right_width() -> None:
+    """#1395's repro: `head$Bool` returned i32 where `Int` needs i64."""
+    result = _compile_checked(_RETURNS_AT_T)
+    assert _errors(result) == [], _errors(result)
+    assert _clone_names(result.wat, "head") == ["head$Int"], result.wat
+    assert "(result i64)" in result.wat
+    assert _run_checked(_RETURNS_AT_T) == 1234
+
+
+def test_returns_at_t_holds_the_differential() -> None:
+    codegen_set, verifier_set = _discovery_differential(_RETURNS_AT_T)
+    assert codegen_set == verifier_set, (
+        f"codegen {sorted(codegen_set)} != verifier {sorted(verifier_set)}"
     )
 
 
@@ -746,14 +774,22 @@ class TestGenuinePhantomIsUntouched:
         res = verify_program(program, _GENUINE_PHANTOM)
         assert [d for d in res.diagnostics if d.severity == "error"] == []
 
-    def test_the_phantom_var_is_still_named_Bool(self) -> None:
-        # Named for what it is: the default, not an inference.  If the checker
-        # fallback started answering here, every `Result`-taking generic would
-        # split into one clone per error type — a re-granulation, and the
-        # measurement that decided the precedence.
+    def test_a_var_nothing_determines_keeps_the_default(self) -> None:
+        # Still `Bool`, and that is the point.  `E` is unconstrained in
+        # `result_map(Ok(100), f)` — the checker's own type for that argument
+        # leaves the error position a free variable — so there is nothing to
+        # name and the documented default stands.
+        #
+        # Contrast the one call the corpus differential moved for #1395:
+        # `ch09_prelude` has a `result_unwrap_or` whose argument's error type
+        # IS determined, and that one goes from `$Int_JBool` to
+        # `$Int_JString`.  The distinction the second pass draws is not
+        # "phantom versus real" but "un-nameable versus nameable", which is
+        # the distinction [E622] draws — a default survives exactly where
+        # nothing can do better.
         result = _compile_checked(_GENUINE_PHANTOM)
         emitted = _clone_names(result.wat, "result_unwrap_or")
-        assert emitted and all("Bool" in n for n in emitted), emitted
+        assert emitted == ["result_unwrap_or$Int_JBool"], emitted
 
 
 # ---------------------------------------------------------------------
@@ -1097,3 +1133,149 @@ def test_a_piped_module_refusal_names_the_module_file(tmp_path: Path) -> None:
     )
     e622 = [d for c, d in verify_errors if c == "E622"]
     assert e622, verify_errors
+
+
+# ---------------------------------------------------------------------
+# The ordering the second pass exists for
+# ---------------------------------------------------------------------
+
+# The checker's answer is a SEMANTIC type; the walkers' is a clone-NAMING
+# vocabulary, and where they differ the emitted symbol must use the walkers'.
+# Here the first argument's type is `Option<Nat>` to the checker, while the
+# same instantiation is spelled `Int` by the walkers — which bind it from the
+# SECOND parameter's literal.  Consulted during the FIRST pass, before that
+# parameter has had its say, the checker's answer arrives first and wins,
+# because `mapping` is first-binding-wins.
+#
+# Measured: with the consultation moved into the first pass ON BOTH SIDES,
+# five corpus programs emit `$option_unwrap_or$Nat` where this form emits
+# `$Int` — `ch09_generic_none_nested`, `ch09_generic_none_return`, `ch09_map`,
+# `ch09_none_err_inference`, `ch09_prelude`.  A one-sided mutation does NOT
+# show it: both consultors move together and agree on `Nat`, so the module is
+# consistent and every value assertion still passes.  That is why this cell
+# asserts the NAME rather than the value, and why the earlier report that the
+# ordering was unfalsifiable was wrong — the mutation had been applied to one
+# side only.
+_ORDERING = """\
+private forall<T> fn nothing(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(nothing(()), 11)
+}
+"""
+
+
+def test_the_checker_never_displaces_a_walker_binding() -> None:
+    """A hole is filled only after every parameter has bound what it can."""
+    result = _compile_checked(_ORDERING)
+    assert _errors(result) == [], _errors(result)
+    assert _clone_names(result.wat, "option_unwrap_or") == [
+        "option_unwrap_or$Int"
+    ], result.wat
+    assert _run_checked(_ORDERING) == 11
+
+
+def test_the_ordering_holds_the_differential() -> None:
+    codegen_set, verifier_set = _discovery_differential(_ORDERING)
+    assert codegen_set == verifier_set, (
+        f"codegen {sorted(codegen_set)} != verifier {sorted(verifier_set)}"
+    )
+
+
+# ---------------------------------------------------------------------
+# A variable determined by NOTHING: the family's last shape
+# ---------------------------------------------------------------------
+
+# The remaining way a type variable can go unbound is for no ARGUMENT to
+# mention it at all — `T` reachable only from the return type.  The question
+# this closes is whether the default can be observed there.
+#
+# It cannot, and the reason is the checker rather than luck.  A bare `@T`
+# return is uninhabitable: a concrete body is [E121] ("body has type Nat,
+# expected T"), and a diverging body pushes the refusal to the binding, where
+# [E170] declines to let a `T`-typed value flow into a concrete slot without
+# an argument to fix it.  So `T` can only reach the return INSIDE a heap
+# constructor's type argument — `Option<T>`, `Array<T>` — whose WASM
+# representation is a pointer whatever `T` is, and whose clone body (`None`,
+# `[]`) never reads it.
+#
+# Both shapes are therefore check-green, verify-clean, emit the `$Bool`
+# default, and run correctly.  Pinned rather than fixed: if a future change
+# makes a bare `@T` return inhabitable, or gives a parameterised return a
+# `T`-dependent representation, these cells are what notices.
+_RETURN_ONLY_OPTION = """\
+private forall<T> fn mk(@Unit -> @Option<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  None
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = mk(());
+  option_unwrap_or(@Option<Int>.0, 5)
+}
+"""
+
+_RETURN_ONLY_ARRAY = """\
+private forall<T> fn empty(@Unit -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  []
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = array_append(empty(()), 1234);
+  @Array<Int>.0[0]
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "base", "expected"),
+    [
+        (_RETURN_ONLY_OPTION, "mk", 5),
+        (_RETURN_ONLY_ARRAY, "empty", 1234),
+    ],
+    ids=["option_return", "array_return"],
+)
+def test_a_return_only_type_var_defaults_harmlessly(
+    source: str, base: str, expected: int,
+) -> None:
+    """No argument mentions `T`, so the default stands — and is unobservable.
+
+    Asserted on all three: the emitted clone IS the default, the differential
+    holds, and the program runs correctly.  Naming the default explicitly is
+    the point — a cell that only checked the value would pass just as well if
+    the variable were inferred, and would not record that this shape is the
+    one place a default still survives.
+    """
+    result = _compile_checked(source)
+    assert _errors(result) == [], _errors(result)
+    assert _clone_names(result.wat, base) == [f"{base}$Bool"], result.wat
+    assert _run_checked(source) == expected
+    codegen_set, verifier_set = _discovery_differential(source)
+    assert codegen_set == verifier_set, (
+        f"codegen {sorted(codegen_set)} != verifier {sorted(verifier_set)}"
+    )
