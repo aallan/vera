@@ -241,6 +241,34 @@ _INLINE_TEXTS: list[str] = [
     "a ** b ** c",
 ]
 
+# Delimiter-run boundaries — the shapes that pin §9.7.3's two scan rules
+# and separate them from the readings they are easily mistaken for
+# (#1386 review).  A code span closes at the next OCCURRENCE of its run
+# length, which may be the leading part of a longer run, so `x`` is a
+# span plus a literal backtick rather than literal text throughout; and
+# an emphasis run of two or more with no closing pair is retried from
+# its own second character, so it yields an EMPTY emphasis rather than
+# literal text.  Both hosts already agree here — these keep it that way,
+# and keep the spec sentence honest about which reading is canonical.
+_SPAN_LINES: list[str] = [
+    "`x``",
+    "``x`",
+    "`x```",
+    "```x`",
+    "``x```",
+    "`a`b`",
+    "``a``b``",
+    "` `",
+    "`  `",
+    "`   `",
+    "*unclosed",
+    "**unclosed",
+    "***unclosed",
+    "****unclosed",
+    "**a*b",
+    "***a**b",
+]
+
 # Carriage returns: a CRLF document split on "\n" leaves a trailing "\r"
 # on every line, and a lone "\r" can appear mid-line.  ECMAScript's "."
 # excludes "\r" where Python's does not, so these are the shapes that
@@ -358,6 +386,8 @@ def md_corpus() -> list[tuple[str, str]]:
         cases.append((f"cr_{idx:02d}", line))
     for idx, line in enumerate(_WS_CLASS_LINES):
         cases.append((f"ws_{idx:02d}", line))
+    for idx, line in enumerate(_SPAN_LINES):
+        cases.append((f"span_{idx:02d}", line))
 
     cases.extend(_fuzz_documents(600, seed=1301))
     return cases

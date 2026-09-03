@@ -2305,7 +2305,7 @@ Trimming, wherever these rules call for it, removes *whitespace* from both ends 
 |---|---|---|
 | 1 | blank line — skipped | the whole line is *whitespace* |
 | 2 | `MdHeading` | `^(#{1,6})ws+(any*?)(?:ws+#+ws*)?$` — level is the run of `#`, content is group 2 trimmed |
-| 3 | `MdCodeBlock` | ` ^(`{3,}\|~{3,})ws*(any*?)$ ` — closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
+| 3 | `MdCodeBlock` | ``^(`{3,}\|~{3,})ws*(any*?)$`` — closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
 | 4 | `MdThematicBreak` | `^(?:---+\|\*\*\*+\|___+)ws*$` — three or more of one character, with no interior *whitespace*, so `* * *` is a list, not a break |
 | 5 | `MdBlockQuote` | `^>ws?(any*)` — a following line with no marker continues the quote unless it opens a block (2, 3, 4, 5, 7 or 8) |
 | 6 | `MdTable` | `^\|(any+)\|?ws*$` on the line AND `^\|[ws:]*-[-ws:\|]*\|?ws*$` on the next; body rows continue while the row pattern matches. A row without that separator line beneath it is not a table |
@@ -2321,9 +2321,9 @@ Rule 9's stopping set is exactly the patterns of the constructs that claim a lin
 
 **Inline structure.** Within a heading, a paragraph, a quote's text or a table cell:
 
-- **Text runs are maximal.** Adjacent characters that open no other node form ONE `MdText`. Emitting one node per scan step produces a different ADT that renders to the same string, which is why this rule is stated rather than left to the implementation.
-- **A code span closes on a run of its own length.** An opening run of *n* backticks closes on the next run of exactly *n*; one leading and one trailing space are removed together when both are present. An unclosed run is literal text.
-- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows, and the run's leftover delimiters are resolved after that span closes; otherwise the run is retried as `MdEmph` from its first character. An unclosed delimiter is literal text.
+- **Text runs are maximal.** Adjacent characters that open no other node form ONE `MdText`, the characters of a delimiter that failed to open one included. Emitting one node per scan step produces a different ADT that renders to the same string, which is why this rule is stated rather than left to the implementation.
+- **A code span closes at the next occurrence of its own run length.** An opening run of *n* backticks closes at the next *n* consecutive backticks, which MAY be the leading *n* of a longer run — the remainder of that run stays literal text, so `` `x`` `` is a span holding `x` followed by a literal backtick. That is what makes the renderer's fence rule sufficient: a fence one backtick longer than the longest run inside the content cannot be entered early. If no such occurrence follows, the opening run is literal text. One leading and one trailing space are removed together when the fenced text is at least two characters long and both of its ends are spaces, so `` ` ` `` keeps its single space and `` `  ` `` is an empty span.
+- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows; the run's leftover delimiters are resolved after that span closes, a single leftover as an `MdEmph` reaching the next lone delimiter and a larger leftover as literal text. If no closing pair follows, the run is retried as an `MdEmph` opened by its FIRST character and closing on the next lone delimiter — which the run's own second character supplies. So a run of two or more with no partner yields an EMPTY emphasis and re-scans what is left, rather than falling back to literal text: `**unclosed` is `[MdEmph([]), MdText("unclosed")]` and `****unclosed` is two empty emphases followed by the text. Only a LONE unpaired delimiter is literal text.
 - **A link or image label ends at its MATCHING bracket**, so `[a[b]c](url)` is one link.
 
 
