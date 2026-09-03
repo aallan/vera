@@ -33,6 +33,7 @@ from vera.monomorphize import (
     module_qualified_generic_names,
     module_qualified_generic_targets,
     namespace_fn_names,
+    pipe_desugared_call,
     public_generic_names,
     qualify_nested_generic_decls,
     reroute_module_qualified_generic_calls,
@@ -1784,6 +1785,12 @@ class ContractVerifier:
                 [(mod.path, mod.program) for mod in self._resolved_modules],
                 prelude=self._disc_prelude_fn_names,
             ),
+            # #1327/#1366/#1369: the same checker table codegen's own
+            # `_build_mono_context` threads — the ENTRY program's, which the
+            # CLI hands to both.  The two consultors must back off to the SAME
+            # answers, or this discovery finds a strict subset of what codegen
+            # emits and a clone whose contract lies runs unverified.
+            expr_types=self._expr_types,
         )
 
     @staticmethod
@@ -2334,18 +2341,10 @@ class ContractVerifier:
         refuses to report a TIER for one.  Both consultors run the same shared
         inference, so both record the same argument.
         """
-        seen: set[tuple[str, str, object]] = set()
         for rec in mono.uninferred_type_args:
-            span = getattr(rec.arg, "span", None)
-            key = (
-                rec.fn_name,
-                rec.type_var,
-                (span.line, span.column, span.end_line, span.end_column)
-                if span is not None else None,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
+            # One argument is one diagnostic — supplied by the walker's
+            # own `_uninferred_seen`, the single place that rule lives
+            # (see the codegen drain's note for the measurement).
             # #1368 review: a call site inside an IMPORTED module has that
             # module's line numbers, so reporting it under the entry
             # program's file and source buffer points the reader at another
@@ -2486,6 +2485,18 @@ class ContractVerifier:
                     **effect_op_result_names([node.effect]),
                 }
                 walk_seed(node.body, merged)
+                return
+            piped = (pipe_desugared_call(node)
+                     if isinstance(node, ast.Expr) else None)
+            if piped is not None:
+                # #1357: mirrors codegen's
+                # `_collect_shadowed_qualified_calls` — walk the DESUGARED
+                # call, whose argument list carries the piped value, rather
+                # than the raw right operand whose own `args` omit it.  The
+                # two walks must move together or this discovery finds a
+                # different instantiation from the one codegen emits, which
+                # is a false Tier 1 in whichever direction it lands.
+                walk_seed(piped, op_result_types)
                 return
             if (isinstance(node, ast.ModuleCall)
                     and tuple(node.path) in shadowed

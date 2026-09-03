@@ -1382,12 +1382,43 @@ def uninferred_type_arg_fix(
 def checker_clone_type_name(
     table: SpanTypeTable | None, expr: ast.Expr,
 ) -> str | None:
-    """The clone-name spelling of the checker's recorded type for *expr*.
+    """The clone-name the CHECKER's recorded type for *expr* denotes (#1327).
 
-    Diagnostic-only here: [E622] uses it to name the argument's type in its
-    ``fix``.  Inference itself does not consult it in this change — that is
-    the single-sourcing repair, and it is deliberately not smuggled in
-    through a diagnostic.
+    The two type namers — discovery's ``_infer_vera_type_name`` and the WASM
+    call-rewrite's ``_infer_vera_type`` — are hand-maintained walkers over the
+    expression grammar, and every member of the #1327 family is one of them
+    missing an arm the other has: discovery had none for ``IndexExpr``
+    (#1327), none for ``ModuleCall`` (#1366), none for ``ResultRef`` (#1369).
+    A missing arm answers ``None``, the type variable falls to the phantom
+    default, and the two consultors name different clones on check-green
+    source.
+
+    The checker has already typed every expression it synthesised, so this is
+    the answer neither walker has to re-derive.  Both consult it through THIS
+    function, in the same position — after their own walk, never before it —
+    so a shape one of them cannot name is named identically for both, and the
+    class of bug that is "one walker is missing an arm" cannot recur.
+
+    Why after rather than before: the walkers' answers are a deliberate
+    clone-NAMING vocabulary, not a type judgement, and it differs from the
+    checker's semantic type in ways that are load-bearing.  Measured over the
+    corpus, 1,976 namer calls across 73 shapes would change their answer if
+    the checker won: an integer literal names ``Int`` where the checker says
+    ``Nat`` (the WAT-collapsed vocabulary the #732 differential is stated in),
+    a ``ConstructorCall`` names the bare ``List`` where the checker says
+    ``List<List<Nat>>`` (#772 — an unconstrained generic's clone is a uniform
+    pointer, so one ``id$Box`` serves every instantiation), and a user
+    function's declared ``-> @Age`` names ``Age`` where the checker resolves
+    the alias to ``Int`` (#899 — the raw declared name is what discovery keys
+    the clone on).  Reversing the precedence would re-granulate
+    monomorphization across the whole corpus, which is a language decision and
+    not this repair.  Consulted second, the checker changes no name that
+    exists and supplies every name that does not.
+
+    Returns ``None`` when there is no table, no entry for this span, or a type
+    with no clone-name spelling (a still-generic ``TypeVar``, a function type,
+    the checker's unknown) — in which case the caller is exactly as informed as
+    it was before, and [E622] reports the hole rather than guessing at it.
     """
     if table is None:
         return None
@@ -1401,16 +1432,42 @@ def checker_clone_type_name(
 
 
 def _type_clone_name(ty: object) -> str | None:
-    """Render one checker ``Type`` as a Vera type name, or ``None``."""
+    """Render one checker ``Type`` into the clone-name vocabulary.
+
+    Deliberately narrow: primitives and ADTs by name (with type arguments,
+    which is how a slot reference's declared name already spells them), a
+    refinement by its base (every namer arm unwraps refinements), and nothing
+    at all for a type variable — a still-generic type must never name a
+    concrete clone — or for a function type or the unknown.
+    """
     from vera.types import AdtType, PrimitiveType, RefinedType
 
     if isinstance(ty, PrimitiveType):
-        return None if ty.name == "Never" else ty.name
+        if ty.name == "Never":
+            # A diverging expression has no value, so it can never be the
+            # value a generic is instantiated at.  Answering `Never` here
+            # would defeat the #1286 join, whose whole premise is that a
+            # branch naming NOTHING must not decide the answer: the `then` of
+            # `idg(if c then { throw(x) } else { 42 })` walks to `None` today
+            # and the `else` supplies `Int`, and a checker answer of `Never`
+            # at the recursive level would name `idg$Never` — a clone whose
+            # parameter has no WASM representation, dropped at [E604], taking
+            # `main` with it.  Measured: the whole #1286 battery and
+            # `ch02_generic_arg_branch_join` fail exactly that way without
+            # this line.
+            return None
+        return ty.name
     if isinstance(ty, AdtType):
         if not ty.type_args:
             return ty.name
         parts = [_type_clone_name(a) for a in ty.type_args]
-        if any(part is None for part in parts):
+        if any(p is None for p in parts):
+            # A partially-generic instantiation has no honest concrete
+            # spelling.  Drop EVERY argument rather than render the ones that
+            # resolved: `Option<Option>` for `Option<Option<T>>` is a name no
+            # clone emission produces, where the bare `Option` is exactly what
+            # both walkers already answer for an unconstrained parameterised
+            # argument (#772).
             return ty.name
         return f"{ty.name}<{', '.join(p for p in parts if p is not None)}>"
     if isinstance(ty, RefinedType):
@@ -1418,26 +1475,42 @@ def _type_clone_name(ty: object) -> str | None:
     return None
 
 
-def _forall_vars_in(
-    te: ast.TypeExpr, forall_vars: tuple[str, ...],
-) -> list[str]:
-    """Every ``forall`` variable occurring anywhere in *te*, outermost first.
+def pipe_desugared_call(
+    expr: ast.Expr,
+) -> ast.FnCall | ast.ModuleCall | None:
+    """The call a ``|>`` pipe denotes, or ``None`` if *expr* is not one.
 
-    A parameter's type arguments determine a variable at any nesting depth —
-    ``Array<T>``, ``Map<K, Option<V>>`` — which is the same reach
-    :meth:`Monomorphizer._unify_type_arg_pair` binds over, so the fail-closed
-    net must see exactly as far as the binder does.
+    ``a |> f(x, y)`` means ``f(a, x, y)``: the piped value becomes the call's
+    FIRST argument.  Four places have to agree on that shape — the checker's
+    ``_check_pipe``, codegen's ``_translate_binary``, instantiation
+    discovery's pipe arm (#913) and the two type namers (#1365) — so it is
+    built here once rather than spelled four times.
+
+    The desugared call keeps the right operand's OWN node type.  A
+    ``ModuleCall`` right operand stays a ``ModuleCall`` (#1357): its ``path``
+    is what routes the call to the declaring module's ``mod$<path>$name``
+    clone, and rebuilding it as a bare-name ``FnCall`` discards that path, so
+    the call lands on a name the importer's flat namespace does not have.
+    That is precisely how a piped module generic lost its caller while the
+    direct spelling of the same call worked.
+
+    Returns ``None`` for a non-pipe, and for a pipe whose right operand is
+    neither call shape: the checker rejects that, so a consumer meeting one
+    has nothing to say about it either.
     """
-    if isinstance(te, ast.RefinementType):
-        return _forall_vars_in(te.base_type, forall_vars)
-    if not isinstance(te, ast.NamedType):
-        return []
-    if te.name in forall_vars:
-        return [te.name]
-    found: list[str] = []
-    for sub in te.type_args or ():
-        found.extend(_forall_vars_in(sub, forall_vars))
-    return found
+    if not isinstance(expr, ast.BinaryExpr) or expr.op != ast.BinOp.PIPE:
+        return None
+    rhs = expr.right
+    if isinstance(rhs, ast.ModuleCall):
+        return ast.ModuleCall(
+            path=rhs.path, name=rhs.name,
+            args=(expr.left, *rhs.args), span=expr.span,
+        )
+    if isinstance(rhs, ast.FnCall):
+        return ast.FnCall(
+            name=rhs.name, args=(expr.left, *rhs.args), span=expr.span,
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -1848,6 +1921,17 @@ class MonoContext:
     qualified_module_generics: frozenset[tuple[tuple[str, ...], str]] = (
         frozenset()
     )
+    # #1327/#1366/#1369: the checker's span-keyed resolved-type table for the
+    # ENTRY program — the single source both type namers fall back to when
+    # their own walk names nothing (see :func:`checker_clone_type_name`).  The
+    # ENTRY program's, deliberately: codegen and the verifier are both handed
+    # exactly this table by the CLI, so both consultors back off to the same
+    # answers and the #732 emitted-versus-discovered differential stays an
+    # equality.  Threading a per-module table to only one of them would buy
+    # reach on that side and a false Tier 1 on the other.  Defaulted ``None``:
+    # a consumer that has not been threaded keeps the pre-#1327 behaviour,
+    # where an unnameable argument is [E622] rather than a guess.
+    expr_types: SpanTypeTable | None = None
 
 
 class Monomorphizer:
@@ -2344,21 +2428,23 @@ class Monomorphizer:
         # recursion below, so an inner generic call reachable through the RHS
         # is still discovered; this branch only adds the pipe-desugared
         # instantiation.
-        if (
-            isinstance(node, ast.BinaryExpr)
-            and node.op == ast.BinOp.PIPE
-            and isinstance(node.right, (ast.FnCall, ast.ModuleCall))
-            and node.right.name in generic_decls
-        ):
-            decl = generic_decls[node.right.name]
-            piped_args = (node.left,) + node.right.args
-            type_args = self._infer_type_args_from_args(
-                decl, piped_args, ctor_to_adt, generic_decls,
+        piped = (pipe_desugared_call(node)
+                 if isinstance(node, ast.Expr) else None)
+        if piped is not None:
+            # #1357: walk the DESUGARED call rather than adding an
+            # instantiation beside the raw pipe.  The raw right operand is a
+            # call whose own `args` omit the piped value, so walking it as a
+            # call in its own right inferred a generic's type arguments from
+            # an argument list that is missing its first element — nothing
+            # bound the type variable, and the phantom default registered a
+            # `$Bool` clone that nothing calls, beside (or instead of) the one
+            # the call site needs.  The desugared node carries the same
+            # children, so nothing goes unwalked; it is simply seen as the
+            # call it denotes.
+            self._collect_calls(
+                piped, generic_decls, ctor_to_adt, instances,
             )
-            if type_args is not None and not self._binds_a_type_var(
-                type_args, decl, generic_decls,
-            ):
-                instances[node.right.name].add(type_args)
+            return
         # #1207: a `handle[State<T>]` installs its op registry over its BODY
         # only.  The state-init expression and the clause bodies belong to the
         # ENCLOSING context — the checker checks clauses before the handled
@@ -2755,7 +2841,27 @@ class Monomorphizer:
         ctor_to_adt: dict[str, str],
         generic_decls: dict[str, ast.FnDecl] | None = None,
     ) -> str | None:
-        """Infer the simple Vera type name of an expression."""
+        """The simple Vera type name of an expression, from one source.
+
+        This walker first, the CHECKER second — the precedence and its
+        rationale are stated once, on :func:`checker_clone_type_name`.  The
+        WASM call-rewrite twin (``InferenceMixin._infer_vera_type``) asks the
+        same two sources in the same order over the same table, so a shape
+        either walker cannot name is now named identically for both instead of
+        becoming a clone only one of them believes in.
+        """
+        walked = self._walk_vera_type_name(expr, ctor_to_adt, generic_decls)
+        if walked is not None:
+            return walked
+        return checker_clone_type_name(self.ctx.expr_types, expr)
+
+    def _walk_vera_type_name(
+        self,
+        expr: ast.Expr,
+        ctor_to_adt: dict[str, str],
+        generic_decls: dict[str, ast.FnDecl] | None = None,
+    ) -> str | None:
+        """Infer the simple Vera type name of an expression, syntactically."""
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -2799,6 +2905,24 @@ class Monomorphizer:
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
                            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "Bool"
+            piped = pipe_desugared_call(expr)
+            if piped is not None:
+                # #1365: a PIPE's value is the RIGHT-hand call's RESULT, not
+                # the piped-in value.  Naming it from the left operand is
+                # right only where the stage preserves the type, and silently
+                # wrong the moment one does not: `@Int.0 |> to_b() |> gid()`
+                # instantiated `gid` at `Int` and called it with the `Bool`
+                # `to_b` produced, so the module failed WASM validation at
+                # load from check-green, verify-clean source.  Name the
+                # desugared call instead — the same `(lhs, *rhs.args)` shape
+                # the checker's `_check_pipe`, codegen's `_translate_binary`
+                # and discovery's own #913 instantiation arm all build — so a
+                # chain types stage by stage.  The twin
+                # (`InferenceMixin._infer_vera_type`) carries the identical
+                # arm: the two must land on the same name or the discovered
+                # clone dangles at the call the rewrite emits.
+                return self._infer_vera_type_name(
+                    piped, ctor_to_adt, generic_decls)
             return self._infer_vera_type_name(
                 expr.left, ctor_to_adt, generic_decls)
         if isinstance(expr, ast.UnaryExpr):
