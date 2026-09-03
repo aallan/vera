@@ -383,6 +383,8 @@ String interpolation provides ergonomic syntax for building strings from mixed t
 - If the expression has type Int, Nat, Bool, Byte, or Float64, it is automatically converted using the appropriate built-in (`to_string`, `nat_to_string`, `bool_to_string`, `byte_to_string`, `float_to_string`).
 - All other types produce error E148.
 
+Membership is decided on the expression's **resolved** type, not on how that type is spelled: a type alias and a refinement type both interpolate exactly as the primitive they resolve to (`type Warm = { @Float64 | @Float64.0 > 0.0 };` renders as a `Float64`). A refinement predicate constrains which values exist; it does not change how one of them prints.
+
 **Canonical form.** `InterpolatedString` is a first-class AST node and the canonical representation for strings with embedded expressions. The formatter preserves interpolation syntax — it does not desugar to `string_concat`/`to_string` chains.
 
 **Compilation.** At the WASM level, interpolation desugars to a chain of `string_concat` and `*_to_string` calls. For example, `"a=\(@Int.0), b=\(@Bool.0)"` becomes `string_concat(string_concat(string_concat("a=", to_string(@Int.0)), ", b="), bool_to_string(@Bool.0))`.

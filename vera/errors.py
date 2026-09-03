@@ -406,6 +406,105 @@ def module_call_dot_syntax(
     )
 
 
+
+# The contract clauses spec §5.2 orders before `effects` (#1348).
+_CONTRACT_CLAUSE_KEYWORDS = frozenset(
+    {"requires", "ensures", "decreases", "invariant"}
+)
+
+
+def contract_clause_after_effects(
+    file: Optional[str],
+    source: str,
+    line: int,
+    column: int,
+    keyword: str,
+) -> Diagnostic:
+    """A contract clause written after the effect clause (#1348).
+
+    The grammar fixes the order — `contract_block` then `effect_clause`
+    (spec §10) — so this program is correctly rejected; what was wrong
+    was the diagnostic.  It fell to the `unexpected_token` fallback,
+    which offered "replace the unexpected token with one of the expected
+    tokens, or check for a missing delimiter": inapplicable advice, since
+    replacing `decreases` with `,` is not a repair and no delimiter is
+    missing.  The repair is a move, and it is stated here.
+    """
+    return Diagnostic(
+        description=(
+            f"Contract clause '{keyword}' appears after the 'effects' "
+            f"clause. Every contract clause comes first, then 'effects', "
+            f"then the body."
+        ),
+        location=SourceLocation(file=file, line=line, column=column),
+        source_line=_get_source_line(source, line),
+        rationale=(
+            "A function declaration has a fixed clause order: the "
+            "signature, then its contract clauses ('requires', 'ensures', "
+            "'decreases', 'invariant') in any order among themselves, then "
+            "exactly one 'effects' clause, then the body. Once 'effects' "
+            "has been read the parser expects the body, so a contract "
+            "keyword here begins no construct it can accept."
+        ),
+        fix=(
+            f"Move the '{keyword}(...)' clause above the 'effects' clause, "
+            f"so the declaration reads: requires / ensures / decreases, "
+            f"then effects, then the body in braces."
+        ),
+        spec_ref='Chapter 5, Section 5.2 "Function Declaration Syntax"',
+        error_code="E032",
+    )
+
+
+# #1349: how a grammar terminal is shown to the reader.
+#
+# Lark names a terminal the grammar author did not: a literal written
+# inline in a rule becomes `__ANON_<n>`.  Those names reached users
+# verbatim in `Expected one of:` lists — `__ANON_0` for `->` — telling a
+# reader (and a model acting on the message) to supply a token that
+# appears nowhere in the language.  The knowledge was already in the
+# file, as a special case keyed on `__ANON_9` for `"::"`; what was
+# missing is that it applies to every terminal, not one.
+#
+# The table is DERIVED from the parser's own terminal list rather than
+# hand-written, so it cannot fall behind `grammar.lark`: a terminal whose
+# pattern is a literal string shows that string (the most useful thing a
+# reader can be told), and one whose pattern is a regular expression
+# keeps its grammar name, because a class of tokens has no single
+# spelling to show.  `tests/test_parse_error_instructions_1348_1349.py`
+# walks every terminal the live parser has and fails on any that would
+# still render as a raw Lark name.
+_TERMINAL_DISPLAY: Optional[dict[str, str]] = None
+
+
+def _terminal_display_table() -> dict[str, str]:
+    """Build (once) the terminal-name → display-form table."""
+    global _TERMINAL_DISPLAY
+    if _TERMINAL_DISPLAY is None:
+        # Imported here, not at module scope: `vera.parser` imports this
+        # module for its diagnostics, so a top-level import is a cycle.
+        from vera.parser import _get_parser
+
+        table: dict[str, str] = {}
+        for term in _get_parser().terminals:
+            pattern = term.pattern
+            value = getattr(pattern, "value", None)
+            if type(pattern).__name__ == "PatternStr" and value:
+                table[term.name] = f'"{value}"'
+        _TERMINAL_DISPLAY = table
+    return _TERMINAL_DISPLAY
+
+
+def terminal_display(name: str) -> str:
+    """The reader-facing form of a grammar terminal name (#1349).
+
+    A literal terminal shows its spelling in quotes (`__ANON_0` → `"->"`,
+    `COMMA` → `","`); a pattern terminal and an unknown name are returned
+    unchanged, so a caller can always render the result.
+    """
+    return _terminal_display_table().get(name, name)
+
+
 def unexpected_token(
     file: Optional[str],
     source: str,
@@ -415,8 +514,9 @@ def unexpected_token(
     expected: set[str],
 ) -> Diagnostic:
     """Fallback diagnostic for unexpected tokens not matching a known pattern."""
-    expected_str = ", ".join(sorted(expected)[:8])
-    if len(expected) > 8:
+    shown = sorted({terminal_display(name) for name in expected})
+    expected_str = ", ".join(shown[:8])
+    if len(shown) > 8:
         expected_str += ", ..."
 
     return Diagnostic(
@@ -685,6 +785,17 @@ def diagnose_lark_error(
         if token == "(" and "__ANON_9" in expected:  # noqa: S105
             return module_call_dot_syntax(file, source, line, column)
 
+        # Pattern: a contract clause after the effect clause (#1348).
+        # Once `effects` is consumed the parser wants the body, so LBRACE
+        # in the expected set beside a contract keyword identifies the
+        # shape exactly — and a legal program cannot produce it, because
+        # a contract clause in its proper place is EXPECTED there rather
+        # than surprising.
+        if token in _CONTRACT_CLAUSE_KEYWORDS and "LBRACE" in expected:
+            return contract_clause_after_effects(
+                file, source, line, column, token,
+            )
+
         # Fallback
         return unexpected_token(file, source, line, column, token, expected)
 
@@ -751,6 +862,7 @@ ERROR_CODES: dict[str, str] = {
     # E03x — Contract constructs (parse)
     "E030": "old() argument is not an effect reference",
     "E031": "new() argument is not an effect reference",
+    "E032": "Contract clause after the effects clause",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",
     "E121": "Function body type mismatch",

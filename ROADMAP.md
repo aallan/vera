@@ -16,7 +16,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## The v0.1.14 burndown
 
-*Fifteen open bugs, driven to zero.*
+*Thirteen open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
@@ -34,8 +34,6 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1365](https://github.com/aallan/vera/issues/1365) | Both namers type a pipe from its left operand, so a chain whose stage changes the type instantiates at the pre-stage type and emits invalid WebAssembly. |
 | [#1357](https://github.com/aallan/vera/issues/1357) | A module generic never discovers an instantiation piped from an effect-operation result — the piped sibling of #1310, failing on both discovery walks. |
 | [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |
-| [#1347](https://github.com/aallan/vera/issues/1347) | String interpolation rejects a refinement type that resolves to an interpolable primitive, where a plain alias to the same primitive passes. |
-| [#1349](https://github.com/aallan/vera/issues/1349) | Internal Lark terminal names (`__ANON_0`) reach user-facing `Expected one of:` lists instead of the literals they stand for. |
 | [#1345](https://github.com/aallan/vera/issues/1345) | Chapter 6's MUST-warnings — one per `assume` statement, one per runtime-checked contract — are never emitted, so `vera verify` stays silent about work it did not prove. |
 
 ## Stage 19 — The verification completeness sprint
@@ -132,7 +130,6 @@ Exit criterion: the LSP limitation rows are retired, and a fresh VeraBench run (
 | [#424](https://github.com/aallan/vera/issues/424) | Register veralang.dev with llms.txt directories. |
 | [#525](https://github.com/aallan/vera/issues/525) | Close the remaining Agent Score gaps on veralang.dev. |
 | [#225](https://github.com/aallan/vera/issues/225) | VeraBench: pass@k evaluation, more models, more tiers — the sprint's measurement. |
-| [#1348](https://github.com/aallan/vera/issues/1348) | A contract clause placed after `effects` falls to the generic unexpected-token diagnostic, whose suggested fix cannot apply — the write–verify–fix loop hands the model a repair that does not repair. Wants a pattern-layer arm of the kind [#1173](https://github.com/aallan/vera/issues/1173) added. |
 | [#1139](https://github.com/aallan/vera/issues/1139) | Formatter internals: parse-time comment ownership and a single recursive renderer, making comment preservation and one-canonical-form structural properties rather than invariants spread across the emitters; retires the remaining relocation cases and the inline/multi-line dual paths. |
 
 ## Stage 24 — The browser sprint

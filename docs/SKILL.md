@@ -179,11 +179,17 @@ Every function has this exact structure. No part is optional except `decreases` 
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition_expression)
   ensures(postcondition_expression)
+  decreases(measure_expression)
   effects(effect_row)
 {
   body_expression
 }
 ```
+
+The order is fixed: every contract clause first (`requires`, `ensures`,
+`decreases`, `invariant` — in any order among themselves), then exactly one
+`effects` clause, then the body.  A contract clause written after `effects`
+is a parse error (`E032`) naming the move.
 
 Complete example:
 

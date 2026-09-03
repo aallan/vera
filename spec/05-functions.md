@@ -21,11 +21,19 @@ The canonical form of a function declaration:
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition)
   ensures(postcondition)
+  decreases(measure)
   effects(effect_row)
 {
   body_expression
 }
 ```
+
+The clause order is fixed by the grammar (Chapter 10): the signature, then the
+contract clauses — `requires`, `ensures`, `decreases` and `invariant`, in any
+order among themselves — then exactly one `effects` clause, then the body. A
+contract clause written after `effects` is rejected with **E032**, which names
+the clause and the move; `decreases` is optional (Section 5.6) but takes its
+place among the contract clauses when present.
 
 An identifier the grammar claims is unavailable as a function name. Three groups are affected, and a fourth name is reserved for a different reason.
 

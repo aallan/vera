@@ -14,32 +14,33 @@ from typing import ClassVar
 from vera import ast
 from vera.checker.sql import resolve_array_len, resolve_literal_string
 from vera.types import (
+    AdtType,
+    base_type,
     BOOL,
     BYTE,
-    FLOAT64,
-    INT,
-    NAT,
-    NUMERIC_TYPES,
-    ORDERABLE_TYPES,
-    STRING,
-    UNIT,
-    AdtType,
-    PrimitiveType,
-    RefinedType,
-    TypeVar,
-    EffectInstance,
-    FunctionType,
-    Type,
-    UnknownType,
     contains_fresh_typevar,
     contains_typevar,
-    base_type,
+    EffectInstance,
     erases_to_unit,
+    FLOAT64,
+    FunctionType,
+    INT,
     is_subtype,
+    NAT,
     numeric_join,
-    pretty_type,
+    NUMERIC_TYPES,
+    ORDERABLE_TYPES,
     pretty_inferred_type,
+    pretty_type,
+    PrimitiveType,
+    RefinedType,
+    STRING,
+    TO_STRING_BUILTINS,
+    Type,
     types_equal,
+    TypeVar,
+    UNIT,
+    UnknownType,
 )
 
 # Machine bounds for the integer types (#812): `@Int` is i64, `@Nat` is u64.  An
@@ -354,14 +355,10 @@ class ExpressionsMixin:
     # String interpolation
     # -----------------------------------------------------------------
 
-    # Types that have a corresponding *_to_string builtin.
-    _TO_STRING_TYPES: ClassVar[dict[str, str]] = {
-        "Int": "to_string",
-        "Nat": "nat_to_string",
-        "Bool": "bool_to_string",
-        "Byte": "byte_to_string",
-        "Float64": "float_to_string",
-    }
+    # Types that have a corresponding *_to_string builtin — the shared
+    # table (#1347), not a copy of it; codegen's dispatch reads the same
+    # object, so the two sides cannot drift about what is interpolable.
+    _TO_STRING_TYPES: ClassVar[dict[str, str]] = TO_STRING_BUILTINS
 
     def _check_interpolated_string(
         self, expr: ast.InterpolatedString,
@@ -376,10 +373,19 @@ class ExpressionsMixin:
             # String expressions are fine as-is
             if is_subtype(part_ty, STRING):
                 continue
-            # Check for auto-convertible primitive types
+            # Check for auto-convertible primitive types, on the type's
+            # RESOLVED form (#1347).  `base_type` unwraps refinement
+            # layers; an alias is already resolved by the time a type
+            # reaches here.  A refinement renders exactly as the
+            # primitive it refines — the predicate constrains which
+            # values exist, not how one prints — so testing
+            # `isinstance(part_ty, PrimitiveType)` rejected
+            # `{ @Float64 | ... }` while accepting `type C = Float64`,
+            # two spellings of the same runtime value.
+            resolved = base_type(part_ty)
             type_name = (
-                part_ty.name
-                if isinstance(part_ty, PrimitiveType)
+                resolved.name
+                if isinstance(resolved, PrimitiveType)
                 else None
             )
             if type_name not in self._TO_STRING_TYPES:

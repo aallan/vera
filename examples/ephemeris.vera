@@ -97,12 +97,12 @@
 -- transcendental intervenes.  That is the tier system doing exactly what it is
 -- specified to do, made visible in a program that does real work.
 --
--- One limitation is worked around rather than solved.  Refinement types cannot
--- currently be string-interpolated
--- ([#1347](https://github.com/aallan/vera/issues/1347)), so every rendered value
--- goes through an explicit `float_to_string` / `int_to_string` and
--- `string_concat` rather than "\(...)".  Refinements widen to their base type
--- for free, which is why the formatting layer below takes plain `@Float64`.
+-- The formatting layer takes plain `@Float64` rather than the refined types the
+-- computation carries, because a refinement widens to its base for free and the
+-- renderer has no use for the constraint.  Its output is built with explicit
+-- `float_to_string` / `int_to_string` and `string_concat`, which is a style
+-- choice rather than a limitation: interpolation renders a refined value
+-- exactly as the primitive it refines.
 --
 -- =============================================================================
 -- ACCURACY
