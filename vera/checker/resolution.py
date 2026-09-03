@@ -122,6 +122,58 @@ class ResolutionMixin:
         # ADT or parameterised built-in?
         adt = self.env.data_types.get(name)
         if adt is not None:
+            if te.type_args and not (adt.type_params or ()):
+                # #1372 fix round: a declared ADT applied to type arguments it
+                # does not declare.  Refused HERE, at check, because a
+                # declaration shadows every built-in reading of its name
+                # (§8.4.1) — so under `private data Array { MkArr(Int) }` the
+                # head of `Array<Array>` is that declaration, which takes no
+                # arguments, and there is no container left for the arguments
+                # to belong to.  Accepting it built an `AdtType("Array",
+                # (…,))` that no constructor can produce, and every codegen
+                # path that met it went wrong differently: the index emit
+                # refused it, while `array_length` / `array_map` /
+                # `array_fold` passed one word where the built-in pops a
+                # (ptr, len) pair and shipped a `.wasm` that fails to load at
+                # rc 0 with no diagnostic.  One rule at the resolution spine
+                # closes all seven element shapes at once, and no codegen path
+                # can reach any of them.
+                #
+                # Only the ZERO-arity direction is refused.  Under-application
+                # of a parameterised ADT (`@Option` for `Option<T>`) is a
+                # separate question with its own inference story, and widening
+                # this to full arity equality would refuse programs that
+                # compile correctly today.
+                self._error(
+                    te,
+                    f"'{name}' is declared with no type parameters, so it "
+                    f"cannot be applied to type arguments.",
+                    rationale=(
+                        f"A `data` declaration shadows every built-in "
+                        f"reading of its name (Chapter 8, Section 8.4.1), so "
+                        f"'{name}' here is this namespace's own declaration "
+                        f"and not any built-in container of that name.  It "
+                        f"declares no type parameters, so there is nothing "
+                        f"for the type arguments to bind to."
+                    ),
+                    fix=(
+                        f"Write '{name}' with no type arguments, or rename "
+                        f"the declaration if you meant the built-in type of "
+                        f"that name — a declaration in scope always wins."
+                    ),
+                    spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
+                    error_code="E135",
+                )
+                # Report, then resolve EXACTLY as before.  The program is
+                # already refused, so the type only has to stay consistent
+                # with what `vera.naming._resolve_named` produces for the
+                # same expression — and dropping the arguments here made the
+                # checker and the renderer disagree about
+                # `Option<Decimal<Int>>`, which is the very divergence class
+                # this PR exists to close (`test_slot_naming_differential`
+                # caught it).
+                return AdtType(
+                    name, tuple(self._resolve_type(a) for a in te.type_args))
             if te.type_args:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(name, args)

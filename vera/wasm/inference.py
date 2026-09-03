@@ -42,7 +42,6 @@ class InferenceMixin:
     - _infer_vera_type
     - _infer_fncall_vera_type
     - _ctor_to_adt_name
-    - _is_array_type_name (staticmethod)
     - _is_pair_type_name
     - _infer_array_element_type
     - _infer_index_element_type
@@ -1478,10 +1477,20 @@ class InferenceMixin:
         """Find the ADT type name for a constructor name."""
         return self._ctor_to_adt.get(ctor_name)
 
-    @staticmethod
-    def _is_array_type_name(type_name: str) -> bool:
-        """Check if a slot type name is an Array<T> type."""
-        return type_name.startswith("Array<")
+    def _strip_future_scoped(self, name: str) -> str:
+        """:func:`~vera.wasm.helpers._strip_future`, asked in this namespace.
+
+        The free function is a textual ``startswith("Future<")`` peel with no
+        namespace to consult, so it ran BEFORE the declared-ADT branch and
+        unwrapped a user ``data Future`` as if it were the transparent
+        built-in wrapper (PR #1372 review) — the mechanism behind the
+        ``data Future`` residue.  A declaration shadows every built-in
+        reading of its name (§8.4.1), so the peel asks the spine first and
+        declines for a name this namespace declares.
+        """
+        if self._declares_adt(name):
+            return name
+        return _strip_future(name)
 
     def _resolve_element_name(self, elem_type: str) -> str:
         """An array element's type name, resolved the way the spine resolves
@@ -1493,7 +1502,7 @@ class InferenceMixin:
         built-in reading in another (PR #1372 review).
         """
         name, _ = self._canonicalize_alias_slot_name(elem_type)
-        return self._resolve_base_type_name(_strip_future(name))
+        return self._resolve_base_type_name(self._strip_future_scoped(name))
 
     def _is_pair_element_type(self, elem_type: str) -> bool:
         """Check if an array element type is a pair type (ptr, len).
@@ -1528,7 +1537,8 @@ class InferenceMixin:
         # as "two loads".  The same walk `_is_pair_type_name` uses, so the
         # element side and the scrutinee side resolve identically.
         elem_type, _ = self._canonicalize_alias_slot_name(elem_type)
-        elem_type = self._resolve_base_type_name(_strip_future(elem_type))
+        elem_type = self._resolve_base_type_name(
+            self._strip_future_scoped(elem_type))
         # #1321/#1331: a DECLARED ADT of this namespace beats every built-in
         # reading of its name, here exactly as at every other decider.
         if self._declares_adt(elem_type):

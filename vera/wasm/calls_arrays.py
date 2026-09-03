@@ -13,7 +13,6 @@ from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _is_host_handle_type,
-    _strip_future,
     gc_shadow_push,
 )
 
@@ -180,7 +179,7 @@ class CallsArraysMixin:
             # too a `Future<Int>` payload (i64) is `local.set` into an i32
             # local — a "expected i32, found i64" validation trap on a
             # check+verify-green `array_append` (#1057).
-            bare_elem = _strip_future(elem_type)
+            bare_elem = self._strip_future_scoped(elem_type)
             elem_val = self.alloc_local(
                 "i64" if bare_elem in ("Int", "Nat") else
                 "f64" if bare_elem == "Float64" else "i32"
