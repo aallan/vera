@@ -93,16 +93,14 @@ Build the query out of the parameter instead — `string_concat("SELECT ... WHER
 Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera produces instructions for the model that wrote the code. Every error includes what went wrong, why, how to fix it with a concrete code example, and a spec reference.
 
 ```
-[E001] Error at main.vera, line 14, column 1:
+[E001] Error at main.vera, line 2, column 1:
 
     {
     ^
 
-  Function is missing its contract block. Every function in Vera must declare
-  requires(), ensures(), and effects() clauses between the signature and the body.
+  Function is missing its contract block. Every function in Vera must declare requires(), ensures(), and effects() clauses between the signature and the body.
 
-  Vera requires all functions to have explicit contracts so that every function's
-  behaviour is mechanically checkable.
+  Vera requires all functions to have explicit contracts so that every function's behaviour is mechanically checkable.
 
   Fix:
 
@@ -263,7 +261,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.1.13: 2,000+ commits, 211 releases, 12,491 tests, 95% Python code coverage, 247 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.1.13: 2,000+ commits, 211 releases, 12,553 tests, 95% Python code coverage, 247 conformance programs, 43 examples, and a 14-chapter specification. Known bugs and limitations are tracked in **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [14 chapters](spec/).
 

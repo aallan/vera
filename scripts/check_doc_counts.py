@@ -1148,6 +1148,134 @@ def check_bug_rows(known_issues_text: str) -> list[str]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP's burndown header word vs. the burndown table vs. KNOWN_ISSUES'
+# Bugs table (#1370-class): three independent counts of "how many open bugs
+# are there right now" that must read as one fact.  Two parallel PRs each
+# hand-wrote the header word from their own stale count on the same night —
+# whichever merged second was wrong, and nothing caught it.  This gate makes
+# the drift structural: the header word is PARSED into a number (not
+# eyeballed), and compared against both row counts.
+# ---------------------------------------------------------------------------
+
+_ROADMAP_BURNDOWN_SECTION = re.compile(
+    r"^## The v[\d.]+ burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
+)
+_BURNDOWN_HEADER = re.compile(
+    r"^\*([A-Za-z-]+) open bugs, driven to zero\.\*[ \t]*$", re.M
+)
+
+_ONES_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+
+def _english_number_word_to_int(word: str) -> int | None:
+    """Parse an English number word (0-99, including a hyphenated
+    compound like 'twenty-one') into an int, or None if `word` is not
+    one.  Deliberately small (this repo's bug count is never going to
+    need "one hundred") rather than pulling in a parsing dependency
+    for a single doc sentence."""
+    lowered = word.lower()
+    if lowered in _ONES_WORDS:
+        return _ONES_WORDS[lowered]
+    if lowered in _TENS_WORDS:
+        return _TENS_WORDS[lowered]
+    if "-" in lowered:
+        tens_part, _, ones_part = lowered.partition("-")
+        # The half after the hyphen is a units word (one..nine) and nothing
+        # else: "twenty-ten" and "thirty-nineteen" are not English numbers,
+        # and accepting them would let a malformed header pass whenever the
+        # arithmetic happened to match the live row count.
+        if (tens_part in _TENS_WORDS and ones_part in _ONES_WORDS
+                and 1 <= _ONES_WORDS[ones_part] <= 9):
+            return _TENS_WORDS[tens_part] + _ONES_WORDS[ones_part]
+    return None
+
+
+def roadmap_burndown_rows(roadmap_text: str) -> list[int] | None:
+    """Issue numbers from the CURRENT '## The vX.Y.Z burndown' table's
+    Issue column, in the same shape `bug_rows` reads KNOWN_ISSUES.md's
+    Bugs table — reused so the two are compared like for like."""
+    section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
+    if section is None:
+        return None
+    numbers: list[int] = []
+    for line in section.group(1).splitlines():
+        if not line.startswith("|") or set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells[0] == "Issue":
+            continue
+        links = [
+            int(number)
+            for number, url_number in _ISSUE_LINK.findall(cells[0])
+            if number == url_number
+        ]
+        if len(links) != 1:
+            return None
+        numbers.append(links[0])
+    return numbers or None
+
+
+def check_burndown_header_matches_rows(
+    roadmap_text: str, known_issues_text: str,
+) -> list[str]:
+    """The burndown header word, the burndown table's row count, and
+    KNOWN_ISSUES.md's Bugs table row count must all agree — three
+    numbers, one fact.  A mismatch on any pair is reported together
+    (not as separate errors per pair) so the message reads as the one
+    underlying disagreement it is."""
+    section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
+    if section is None:
+        return ["ROADMAP.md: could not find '## The vX.Y.Z burndown' section"]
+
+    header_match = _BURNDOWN_HEADER.search(section.group(1))
+    if header_match is None:
+        return [
+            "ROADMAP.md: burndown section has no "
+            "'*<Word> open bugs, driven to zero.*' header line"
+        ]
+    header_word = header_match.group(1)
+    header_number = _english_number_word_to_int(header_word)
+    if header_number is None:
+        return [
+            f"ROADMAP.md: burndown header word {header_word!r} is not a "
+            "recognised English number word (0-99)"
+        ]
+
+    burndown_rows = roadmap_burndown_rows(roadmap_text)
+    if burndown_rows is None:
+        return ["ROADMAP.md: burndown table has no issue rows"]
+
+    bugs = bug_rows(known_issues_text)
+    if bugs is None:
+        return [
+            "KNOWN_ISSUES.md: the `## Bugs` table was not found — cannot "
+            "cross-check against ROADMAP.md's burndown header"
+        ]
+
+    values = {
+        "burndown header word": header_number,
+        "burndown table rows": len(burndown_rows),
+        "KNOWN_ISSUES.md Bugs table rows": len(bugs),
+    }
+    if len(set(values.values())) > 1:
+        detail = ", ".join(f"{k} = {v}" for k, v in values.items())
+        return [
+            f"ROADMAP.md burndown header {header_word!r} does not match "
+            f"the row counts it should agree with: {detail}"
+        ]
+    return []
+
+
 def check_bug_issue_parity(rows: list[int], open_bugs: list[int]) -> list[str]:
     """Check the Bugs table against the open `bug`-labelled issues."""
     if not open_bugs:
@@ -1156,14 +1284,36 @@ def check_bug_issue_parity(rows: list[int], open_bugs: list[int]) -> list[str]:
             "all, so the Bugs table has nothing to be checked against. An "
             "empty query is a failed one, not a clean bill of health."
         ]
+    bug_set, row_set = set(open_bugs), set(rows)
+    matched = bug_set & row_set
+    missing_rows = sorted(bug_set - row_set)
     errors = [
         f"KNOWN_ISSUES.md: issue #{number} is an open bug with no Bugs row"
-        for number in sorted(set(open_bugs) - set(rows))
+        for number in missing_rows
     ]
     errors += [
         f"KNOWN_ISSUES.md: the Bugs row for #{number} is not an open bug issue"
-        for number in sorted(set(rows) - set(open_bugs))
+        for number in sorted(row_set - bug_set)
     ]
+    # Every open bug is either MATCHED (has a row) or reported above as a
+    # missing row — matched and missing_rows partition open_bugs exactly,
+    # by construction of the two set operations above.  This can only be
+    # violated by a bug in that construction itself (a future refactor
+    # that computes one of them some other way, or a type mismatch
+    # between `rows` and `open_bugs` — e.g. one holding strings where the
+    # other holds ints, which would make membership tests silently wrong
+    # rather than raise) — not by any state KNOWN_ISSUES.md or the
+    # tracker can be in, so this never fires against real data (#1377
+    # review: "a dropped issue should surface as an inconsistency rather
+    # than as silence").
+    if len(matched) + len(missing_rows) != len(bug_set):
+        errors.append(
+            "KNOWN_ISSUES.md: internal inconsistency in the parity check "
+            f"itself — {len(matched)} matched + {len(missing_rows)} "
+            f"missing-row divergences should account for all "
+            f"{len(bug_set)} open bugs; this is a bug in the "
+            f"reconciliation logic, not in KNOWN_ISSUES.md"
+        )
     return errors
 
 
@@ -1262,6 +1412,25 @@ def main() -> int:
     )
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
+    # This script's several `from vera...` imports below are IN-PROCESS,
+    # unlike the pytest/subprocess calls above that already pin
+    # `root / ".venv/bin/pytest"` (falling back to PATH only if that venv
+    # is absent).  A plain `import vera` instead falls through to
+    # whichever venv's editable-install finder answers first — a
+    # `__editable__.veralang-*.pth` file pinned to WHATEVER checkout `pip
+    # install -e` last ran in, which can be a different worktree entirely
+    # (that finder only engages when nothing earlier on `sys.path` already
+    # resolved `vera`).  Inserting `root` here — ahead of site-packages,
+    # so ahead of that finder — makes `vera` resolve as the plain on-disk
+    # package under `root/vera/` instead: unambiguously the tree this
+    # script's own `__file__` lives in, regardless of which interpreter or
+    # editable install happens to be active.  The equivalent trap on the
+    # pytest side (a test file measuring the wrong checkout because
+    # pytest's OWN rootdir detection wins) is documented in TESTING.md's
+    # "Running against ANOTHER checkout" section — a different mechanism
+    # with a different remedy (relocate the test file into the target
+    # tree), not this one.
+    sys.path.insert(0, str(root))
     errors: list[str] = []
 
     # ------------------------------------------------------------------
@@ -1889,6 +2058,7 @@ def main() -> int:
 
     known_issues = (root / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
     errors.extend(check_bug_rows(known_issues))
+    errors.extend(check_burndown_header_matches_rows(roadmap_md, known_issues))
     if args.check_bug_issues:
         rows = bug_rows(known_issues)
         if rows is not None:

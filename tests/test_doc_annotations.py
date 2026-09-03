@@ -45,6 +45,8 @@ evaluate_block = doc_annotations.evaluate_block
 unsupported_stage_annotations = doc_annotations.unsupported_stage_annotations
 strip_annotations = doc_annotations.strip_annotations
 CodeBlock = doc_annotations.CodeBlock
+scan_diagnostic_examples = doc_annotations.scan_diagnostic_examples
+replay_diagnostic_examples = doc_annotations.replay_diagnostic_examples
 
 
 def _try_parse(content: str) -> str | None:
@@ -338,3 +340,280 @@ class TestStripAnnotations:
     def test_other_html_comments_survive(self) -> None:
         text = "<!-- a normal comment -->\ncontent\n"
         assert strip_annotations(text) == text
+
+
+# =====================================================================
+# `vera:diagnostic` — rendered-diagnostic replay (#1291)
+# =====================================================================
+
+_E130_EXAMPLE = (
+    '<!-- vera:diagnostic file="main.vera" stage="check" error_code="E130" -->\n'
+    "```vera\n"
+    "type Meters = Int;\n"
+    "type Feet = Int;\n"
+    "\n"
+    "private fn excess(@Meters, @Feet -> @Int)\n"
+    "  requires(true)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  @Metres.0 - @Feet.0 / 3\n"
+    "}\n"
+    "```\n"
+    "<!-- /vera:diagnostic -->\n"
+    "```text\n"
+    "[E130] Error at main.vera, line 9, column 3:\n"
+    "\n"
+    "      @Metres.0 - @Feet.0 / 3\n"
+    "      ^\n"
+    "\n"
+    "  Cannot resolve @Metres.0: no Metres bindings in scope.\n"
+    "\n"
+    "  Slot reference @Metres.0 requires at least 1 binding(s) of type Metres.\n"
+    "\n"
+    "  Fix:\n"
+    "\n"
+    "    Ensure enough Metres bindings are in scope, or use a lower index."
+    " Available bindings: @Feet.0: Int; @Meters.0: Int.\n"
+    "\n"
+    '  See: Chapter 3, Section 3.4 "Reference Resolution"\n'
+    "```\n"
+)
+
+
+class TestScanDiagnosticExamples:
+    def test_well_formed_example_is_extracted(self, tmp_path: Path) -> None:
+        p = _md(tmp_path, _E130_EXAMPLE)
+        examples, problems = scan_diagnostic_examples(p)
+        assert problems == []
+        assert len(examples) == 1
+        ex = examples[0]
+        assert ex.file == "main.vera"
+        assert ex.stage == "check"
+        assert ex.error_code == "E130"
+        assert "@Metres.0 - @Feet.0 / 3" in ex.program
+        assert "[E130] Error at main.vera" in ex.fence_content
+
+    def test_stage_defaults_to_check_when_omitted(self, tmp_path: Path) -> None:
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nprogram\n```\n"
+            "<!-- /vera:diagnostic -->\n"
+            "```text\nx\n```\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert problems == []
+        assert examples[0].stage == "check"
+        assert examples[0].error_code is None
+
+    def test_dangling_open_with_no_close_is_a_problem(
+        self, tmp_path: Path,
+    ) -> None:
+        text = '<!-- vera:diagnostic file="main.vera" -->\nprogram\n'
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1 and "no matching" in problems[0]
+
+    def test_close_with_no_open_is_a_problem(self, tmp_path: Path) -> None:
+        text = "prose\n<!-- /vera:diagnostic -->\n"
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1 and "no preceding" in problems[0]
+
+    def test_bare_unfenced_body_is_a_problem(self, tmp_path: Path) -> None:
+        """CodeRabbit #1377: a program left bare between the two
+        annotation comments (not wrapped in its own ```vera fence) is
+        invisible to `run_parse_only_gate`, which only collects fenced
+        blocks — so the scanner must refuse it rather than silently
+        replay an example the sibling parse-only gate never sees."""
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "program\n<!-- /vera:diagnostic -->\n```text\nx\n```\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1
+        assert "must be wrapped in its own ```vera fence" in problems[0]
+
+    def test_missing_fence_after_close_is_a_problem(
+        self, tmp_path: Path,
+    ) -> None:
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\nno fence here\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1 and "not immediately followed" in problems[0]
+
+    def test_non_text_fence_after_close_is_a_problem(
+        self, tmp_path: Path,
+    ) -> None:
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\n```vera\nnope\n```\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1 and "not ```text" in problems[0]
+
+    def test_malformed_annotation_is_a_problem(self, tmp_path: Path) -> None:
+        text = "<!-- vera:diagnostic file=main.vera -->\nprogram\n"
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert any("malformed" in p for p in problems)
+
+    def test_two_examples_in_one_document(self, tmp_path: Path) -> None:
+        text = _E130_EXAMPLE + "\nmore prose\n\n" + _E130_EXAMPLE
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert problems == []
+        assert len(examples) == 2
+
+    def test_unterminated_fence_is_a_problem(self, tmp_path: Path) -> None:
+        """Keyed to the FENCE's own line (`fence_line`), not the
+        annotation's `start_line` — the one problem message in this
+        scanner with that anchor, so an off-by-one there would
+        otherwise stay invisible (CodeRabbit #1377)."""
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\n```text\nno close\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        # The fence opens on line 6, not on the annotation's line 1.
+        assert problems == [
+            "line 6: unterminated code fence "
+            "(no closing ``` before end of file)"
+        ]
+
+    def test_second_open_before_close_reports_and_reparses(
+        self, tmp_path: Path,
+    ) -> None:
+        """A second `vera:diagnostic` open before the first one closes
+        must both report the dangling first annotation AND re-process
+        the second one as its own example, not silently consume it."""
+        text = (
+            '<!-- vera:diagnostic file="a.vera" -->\n'
+            "program\n" + _E130_EXAMPLE
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert len(examples) == 1
+        assert examples[0].file == "main.vera"
+        assert len(problems) == 1
+        assert "no matching" in problems[0] and "line 1:" in problems[0]
+
+
+class TestReplayDiagnosticExamples:
+    def test_matching_fence_produces_no_failures(self, tmp_path: Path) -> None:
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, _E130_EXAMPLE))
+        assert replay_diagnostic_examples(examples) == []
+
+    def test_stale_fence_is_a_failure(self, tmp_path: Path) -> None:
+        """The #1262 shape: the fix text is extended in vera/errors.py-
+        adjacent code, but the doc's fence is not updated."""
+        stale = _E130_EXAMPLE.replace(
+            "Ensure enough Metres bindings are in scope, or use a lower index.",
+            "Ensure enough Metres bindings are in scope, or use a lower index."
+            " NEW TEXT.",
+        )
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, stale))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "does not match live output" in failures[0]
+
+    def test_wrong_error_code_is_a_failure(self, tmp_path: Path) -> None:
+        wrong_code = _E130_EXAMPLE.replace('error_code="E130"', 'error_code="E999"')
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, wrong_code))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "found 0" in failures[0]
+
+    def test_no_error_code_requires_exactly_one_diagnostic(
+        self, tmp_path: Path,
+    ) -> None:
+        no_code = _E130_EXAMPLE.replace(' error_code="E130"', "")
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, no_code))
+        # The program produces exactly one diagnostic (E130), so omitting
+        # error_code must still resolve unambiguously.
+        assert replay_diagnostic_examples(examples) == []
+
+    def test_no_error_code_with_multiple_diagnostics_is_ambiguous(
+        self, tmp_path: Path,
+    ) -> None:
+        """The complement of the test above: a second `@Metres` typo
+        makes the program produce two E130 diagnostics, so an example
+        with no error_code to disambiguate must fail rather than
+        silently pick one (CodeRabbit #1377)."""
+        two_diagnostics = _E130_EXAMPLE.replace(
+            "  @Metres.0 - @Feet.0 / 3\n",
+            "  @Metres.0 - @Metres.1 - @Feet.0 / 3\n",
+        ).replace(' error_code="E130"', "")
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, two_diagnostics))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "found 2" in failures[0]
+
+    def test_explicit_error_code_with_multiple_matches_is_ambiguous(
+        self, tmp_path: Path,
+    ) -> None:
+        """CodeRabbit #1377 (the ninth thread): the test above covers
+        only the NO-error_code branch. A regression that accepts
+        multiple matches for a SELECTED code — e.g. `!= 1` weakened to
+        `< 1` — would pass every existing test if this one did not
+        exist, since the two `@Metres` typos here both carry the SAME
+        error_code, `error_code="E130"` kept (not stripped)."""
+        two_diagnostics = _E130_EXAMPLE.replace(
+            "  @Metres.0 - @Feet.0 / 3\n",
+            "  @Metres.0 - @Metres.1 - @Feet.0 / 3\n",
+        )
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, two_diagnostics))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "found 2" in failures[0]
+
+    def test_zero_diagnostics_is_a_failure(self, tmp_path: Path) -> None:
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\n"
+            "public fn main(@Unit -> @Unit)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ () }\n"
+            "```\n"
+            "<!-- /vera:diagnostic -->\n"
+            "```text\nsomething\n```\n"
+        )
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, text))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1 and "found 0" in failures[0]
+
+    def test_unsupported_stage_is_a_failure(self, tmp_path: Path) -> None:
+        verify_stage = _E130_EXAMPLE.replace('stage="check"', 'stage="verify"')
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, verify_stage))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1 and "not replayed yet" in failures[0]
+
+    def test_unparseable_program_is_a_failure_not_a_raise(
+        self, tmp_path: Path,
+    ) -> None:
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nthis is not valid vera at all {{{\n```\n"
+            "<!-- /vera:diagnostic -->\n"
+            "```text\nanything\n```\n"
+        )
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, text))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1 and "raised" in failures[0]
+
+
+class TestDeBruijnHasTheLiveExample:
+    """The actual DE_BRUIJN.md annotation this issue was filed about must
+    stay live-accurate — the same regression pin `check_diagnostic_examples.py`
+    runs, exercised here too so `pytest tests/` alone catches a drift."""
+
+    def test_de_bruijn_diagnostic_examples_match_live_output(self) -> None:
+        path = Path(__file__).parent.parent / "DE_BRUIJN.md"
+        examples, problems = scan_diagnostic_examples(path)
+        assert problems == []
+        assert len(examples) >= 1
+        assert replay_diagnostic_examples(examples) == []

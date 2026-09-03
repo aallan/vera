@@ -69,17 +69,52 @@ class TestErrorCodes:
         data = d.to_dict()
         assert "error_code" not in data
 
-    def test_error_codes_registry_valid(self) -> None:
-        """All codes in ERROR_CODES are valid Exxx/Wxxx patterns and unique."""
+    def test_error_codes_registry_format_and_size(self) -> None:
+        """Every code in ERROR_CODES matches the Exxx/Wxxx pattern.
+
+        Does NOT assert key uniqueness — `ERROR_CODES` is a `dict`, so
+        its keys are unique by construction and iterating them can
+        never find a duplicate; that used to be exactly what this test
+        asserted, so the check could never fail (#828). The property
+        that actually needs enforcing — one code emitted by exactly
+        one diagnostic CONCEPT, not just one dict entry — is a
+        source-level question `ERROR_CODES` alone cannot answer, and
+        is covered by `test_error_code_collision_gate_is_clean` below
+        via `scripts/check_diagnostic_fields.py`.
+        """
         import re
         from vera.errors import ERROR_CODES
         pattern = re.compile(r"^[EW]\d{3}$")
-        seen: set[str] = set()
         for code in ERROR_CODES:
             assert pattern.match(code), f"Invalid code format: {code}"
-            assert code not in seen, f"Duplicate code: {code}"
-            seen.add(code)
         assert len(ERROR_CODES) >= 70  # sanity: we defined ~80 codes
+
+    def test_error_code_collision_gate_is_clean(self) -> None:
+        """The MEANINGFUL uniqueness property: no error_code is emitted
+        from more than one distinct (file, function) site unless that
+        exact site set is declared (and human-verified) in
+        `scripts/check_diagnostic_fields.py`'s
+        `KNOWN_MULTI_SITE_ERROR_CODES` — the collision shape that let
+        E130/E210/E320/E600 each mean two unrelated things before
+        #682's manual audit caught them (#828)."""
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        script_path = root / "scripts" / "check_diagnostic_fields.py"
+        spec = importlib.util.spec_from_file_location(
+            "check_diagnostic_fields", script_path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("check_diagnostic_fields", mod)
+        spec.loader.exec_module(mod)
+
+        files = mod.iter_vera_files(root / "vera")
+        violations = mod.error_code_collision_violations(files)
+        report = "\n".join(
+            f"  {v.file}:{v.line} {v.missing[0]}" for v in violations)
+        assert violations == [], f"{len(violations)} collision(s):\n{report}"
 
     def test_slot_ref_error_has_code_E130(self) -> None:
         """Unresolved slot reference produces E130."""

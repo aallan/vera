@@ -14,10 +14,13 @@ checkable contract, mirroring `scripts/check_walker_coverage.py`
 (#597).  It AST-parses every `Diagnostic(...)` constructor and every
 `self._error(...)` / `self._warning(...)` call under `vera/` and fails
 if a required field is missing.  It also validates that every present
-`spec_ref` resolves to a real spec section/chapter and that every
-literal `error_code` is *registered* in `vera/errors.py` `ERROR_CODES`
-(a cheap emission-side check; making each code *unique* per concept and
-enforcing error_code presence are tracked in #828).
+`spec_ref` resolves to a real spec section/chapter, that every literal
+`error_code` is *registered* in `vera/errors.py` `ERROR_CODES`, and
+(#828) that every literal `error_code` emitted from more than one
+distinct (file, enclosing-function) site has that exact site set
+declared in `KNOWN_MULTI_SITE_ERROR_CODES` — the deterministic half of
+making each code unique per concept; enforcing `error_code` *presence*
+is a tracked follow-up.
 
 Design — explicit over implicit (DESIGN.md §"Explicitness over
 convenience"; no silently-inferred exemptions):
@@ -771,10 +774,19 @@ def _load_error_codes(errors_py: Path) -> set[str]:
     return set()
 
 
-def _diagnostic_call_sites(source: str, filename: str) -> Iterator[ast.Call]:
+def _diagnostic_call_sites(
+    source: str, filename: str, tree: ast.AST | None = None,
+) -> Iterator[ast.Call]:
     """Yield each Diagnostic() / ._error() / ._warning() Call node, skipping the
-    plumbing Diagnostic() construction inside an _error/_warning helper def."""
-    tree = ast.parse(source, filename=filename)
+    plumbing Diagnostic() construction inside an _error/_warning helper def.
+
+    Accepts an already-parsed `tree` so a caller that also needs its OWN
+    walk over the same source (e.g. mapping each Call's enclosing
+    function) can share one AST — `ast.parse` on the same text twice
+    produces two unrelated node objects, so `id()`-keyed maps built from
+    a second parse never match nodes yielded from a first one."""
+    if tree is None:
+        tree = ast.parse(source, filename=filename)
     plumbing = _plumbing_ctors(tree)
 
     for n in ast.walk(tree):
@@ -826,16 +838,226 @@ def error_code_registration_violations(
     return out
 
 
+# ---------------------------------------------------------------------------
+# error_code uniqueness (#828): `ERROR_CODES` is a naming authority (code ->
+# title) but not an allocation authority — nothing stops two UNRELATED
+# diagnostic concepts from independently choosing the same registered code.
+# Four such collisions accreted across separate PRs before #682's manual
+# audit caught them (E130, E210, E320, E600 each meant two different things
+# at two different call sites).  This is the deterministic layer that would
+# have caught all four: it does not try to judge whether two DESCRIPTIONS
+# read as the same concept (a fuzzy, hard-to-calibrate heuristic that this
+# repo's own multi-site codes show produces false positives even on
+# genuinely-one-concept text — see KNOWN_MULTI_SITE_ERROR_CODES below); it
+# instead requires every code emitted from more than one distinct (file,
+# enclosing-function) SITE to have that exact site set pre-declared, with a
+# reason, exactly like STRUCTURAL_EXEMPTIONS above.  A code gaining an
+# additional site — including a THIRD site added to an already-declared
+# multi-site code — changes the recorded set and must fail until a human
+# re-verifies and updates the declaration, closing the loophole a
+# count-only or code-only allowlist would leave open.
+# ---------------------------------------------------------------------------
+
+
+def _enclosing_qualified_names(tree: ast.AST) -> dict[int, str]:
+    """Map ``id(node)`` to the dotted qualified name of its nearest
+    enclosing function/method (``ClassName.method_name``, or just
+    ``function_name`` at module scope, or ``<module>`` for top-level
+    code) — a far more stable site identity than a line number, which
+    shifts on any unrelated edit above it in the file."""
+    result: dict[int, str] = {}
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def label(child: ast.AST, stack: list[str]) -> None:
+        result[id(child)] = ".".join(stack) if stack else "<module>"
+
+    def visit(node: ast.AST, stack: list[str]) -> None:
+        if isinstance(node, defs):
+            # A definition's name scopes only its BODY.  Python evaluates
+            # decorators, parameter defaults, annotations, base classes and
+            # class keywords in the enclosing scope, so a diagnostic emitted
+            # from one of those belongs to the enclosing site, not to the
+            # definition it decorates.
+            inner = stack + [node.name]
+            for field, value in ast.iter_fields(node):
+                scope = inner if field == "body" else stack
+                for child in (value if isinstance(value, list) else [value]):
+                    if isinstance(child, ast.AST):
+                        label(child, scope)
+                        visit(child, scope)
+            return
+        for child in ast.iter_child_nodes(node):
+            label(child, stack)
+            visit(child, stack)
+
+    visit(tree, [])
+    return result
+
+
+# (error_code) -> frozenset of (relative-file, qualified-name) sites that
+# are the CURRENT, human-verified site set for a code legitimately shared
+# by one diagnostic concept applied at more than one call shape.  Each
+# entry's reason is why the sites are the same concept, not different ones
+# — verified against the actual description/rationale text at every site
+# (2026-09-03 audit, alongside this gate's introduction).
+KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
+    # Uninferred generic type argument: codegen's own monomorphization
+    # discovery pass and the verifier's independent mirror of the same
+    # check both report it where they find it (#1368).
+    "E622": frozenset({
+        ("vera/codegen/monomorphize.py", "MonomorphizationMixin._report_uninferred_type_args"),
+        ("vera/verifier.py", "ContractVerifier._report_one_uninferred"),
+    }),
+    # Call-site effect subeffecting: a named function call and an
+    # apply_fn-applied closure value are two call SHAPES for one rule.
+    "E125": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+    }),
+    # Call arity mismatch: named call vs. apply_fn, same rule.
+    "E201": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+    }),
+    # Argument type mismatch: named call vs. apply_fn, same rule.
+    "E202": frozenset({
+        ("vera/checker/calls.py", "CallsMixin._check_apply_fn"),
+        ("vera/checker/calls.py", "CallsMixin._check_fn_call_with_info"),
+    }),
+    # Zero-size element type has no WASM representation: the array-literal
+    # inferred form and the written Array/Map/Set type-expression form.
+    "E135": frozenset({
+        ("vera/checker/expressions.py", "ExpressionsMixin._check_array_lit"),
+        ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
+    }),
+    # Integer-literal range: a generic helper forwarding a caller-supplied
+    # description, and the negation special case coded the same way.
+    "E149": frozenset({
+        ("vera/checker/core.py", "TypeChecker._literal_range_error"),
+        ("vera/checker/expressions.py", "ExpressionsMixin._check_unary"),
+    }),
+    # Reserved `Vera*` prelude namespace: declaration name, type parameter
+    # name, and the reference-side hit — one rule, three trigger points.
+    "E154": frozenset({
+        ("vera/checker/registration.py",
+         "RegistrationMixin._check_reserved_decl_name"),
+        ("vera/checker/registration.py",
+         "RegistrationMixin._check_reserved_type_params"),
+        ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
+    }),
+    # Tier-3 refinement demotion: a single dispatcher picks between the
+    # runtime-checked and the unguarded phrasing of one classification.
+    "E506": frozenset({
+        ("vera/verifier.py", "ContractVerifier._report_refined_runtime"),
+        ("vera/verifier.py", "ContractVerifier._report_refined_unguarded"),
+    }),
+    # Codegen cannot lower this function/closure — skipped, enclosing
+    # function dropped.  Every site is this one family (unsupported WASM
+    # type, CodegenSkip, recursion-depth cap, cyclic-refinement closure,
+    # contract-predicate skip, and the parent-drop wrapper); their
+    # comments already cross-reference each other as one concept.
+    "E602": frozenset({
+        ("vera/codegen/closures.py",
+         "ClosureLiftingMixin._compile_lifted_closure"),
+        ("vera/codegen/closures.py",
+         "ClosureLiftingMixin._lift_pending_closures"),
+        ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
+        ("vera/codegen/functions.py",
+         "FunctionCompilationMixin._emit_contract_predicate_skip"),
+        ("vera/codegen/functions.py",
+         "FunctionCompilationMixin._lift_closures_or_drop"),
+    }),
+    # Ability-not-satisfied: the Eq-derivability failure and the generic
+    # constraint-checking failure both name "Type T does not satisfy
+    # ability A", spec §9.8.
+    "E613": frozenset({
+        ("vera/codegen/functions.py",
+         "FunctionCompilationMixin._emit_adt_eq_not_derivable"),
+        ("vera/codegen/monomorphize.py",
+         "MonomorphizationMixin._check_constraints"),
+    }),
+    # Internal-compiler-error envelope: by nature emitted from any
+    # unexpected-exception site; the concept is "something crashed",
+    # not tied to one spec section (some sites carry none at all, a
+    # STRUCTURAL_EXEMPTIONS case above).
+    "E699": frozenset({
+        ("vera/cli.py", "_internal_error_envelope"),
+        ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
+        ("vera/codegen/functions.py",
+         "FunctionCompilationMixin._lift_closures_or_drop"),
+    }),
+}
+
+
+def error_code_collision_violations(paths: Iterable[Path]) -> list[Violation]:
+    """Flag a literal error_code emitted from more than one distinct
+    (file, enclosing-function) site unless that EXACT site set is
+    declared in KNOWN_MULTI_SITE_ERROR_CODES — the collision shape
+    that let E130/E210/E320/E600 each carry two unrelated concepts
+    (#682) until a manual audit found them."""
+    sites_by_code: dict[str, set[tuple[str, str, int]]] = {}
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix() if p.is_absolute() else p.as_posix()
+        source = p.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=rel)
+        qualnames = _enclosing_qualified_names(tree)
+        for call in _diagnostic_call_sites(source, rel, tree=tree):
+            for kw in call.keywords:
+                if kw.arg != "error_code":
+                    continue
+                v = kw.value
+                if isinstance(v, ast.Constant) and isinstance(v.value, str) and v.value:
+                    qualname = qualnames.get(id(call), "<module>")
+                    sites_by_code.setdefault(v.value, set()).add(
+                        (rel, qualname, call.lineno))
+
+    out: list[Violation] = []
+    for code, site_triples in sorted(sites_by_code.items()):
+        distinct_sites = {(f, q) for f, q, _ in site_triples}
+        if len(distinct_sites) < 2:
+            continue
+        declared = KNOWN_MULTI_SITE_ERROR_CODES.get(code)
+        if declared == frozenset(distinct_sites):
+            continue
+        first_file = min(f for f, _, _ in site_triples)
+        first_line = min(ln for f, _, ln in site_triples if f == first_file)
+        site_list = ", ".join(
+            f"{f}::{q}" for f, q in sorted(distinct_sites)
+        )
+        if declared is None:
+            detail = (
+                f"error_code {code!r} is emitted from {len(distinct_sites)} "
+                f"distinct sites not declared in KNOWN_MULTI_SITE_ERROR_CODES: "
+                f"{site_list} — if these are genuinely one diagnostic concept "
+                f"applied at different call shapes, add an entry with a "
+                f"one-line reason; if they are unrelated concepts that "
+                f"happen to share a code, give one of them a new code "
+                f"(the #682 collision shape)"
+            )
+        else:
+            detail = (
+                f"error_code {code!r}'s live site set no longer matches its "
+                f"KNOWN_MULTI_SITE_ERROR_CODES declaration — live: {site_list}; "
+                f"re-verify the new/changed site is still the same concept "
+                f"and update the declaration"
+            )
+        out.append(Violation(first_file, first_line, "error_code_collision",
+                              [detail], None))
+    return out
+
+
 def main() -> int:
     files = iter_vera_files(ROOT / "vera")
     presence = check_paths(files)
     validity = spec_ref_violations(files)
     registry = _load_error_codes(ROOT / "vera" / "errors.py")
     codes = error_code_registration_violations(files, registry)
-    violations = presence + validity + codes
+    collisions = error_code_collision_violations(files)
+    violations = presence + validity + codes + collisions
     if not violations:
         print("check_diagnostic_fields: OK — every diagnostic is fully tagged, "
-              "every spec_ref resolves, and every error_code is registered.")
+              "every spec_ref resolves, every error_code is registered, and "
+              "every multi-site error_code is a declared, verified reuse.")
         return 0
     by_file: dict[str, list[Violation]] = {}
     for v in violations:
@@ -844,18 +1066,22 @@ def main() -> int:
           f"{len(by_file)} file(s).\n")
     print("Every diagnostic MUST carry rationale + spec_ref, and an error-"
           "severity one a fix too (warnings are fix-exempt) — spec §0.5.1; the "
-          "spec_ref must also resolve to a real section/chapter, and any "
-          "error_code must be registered in vera/errors.py ERROR_CODES.")
+          "spec_ref must also resolve to a real section/chapter, any "
+          "error_code must be registered in vera/errors.py ERROR_CODES, and a "
+          "code emitted from more than one (file, function) site must have "
+          "that exact site set declared in KNOWN_MULTI_SITE_ERROR_CODES.")
     print("Populate the missing field(s) / fix the spec_ref / register the "
-          "error_code.  `# diag-fields-exempt: <reason>` waives a missing "
-          "field or an unresolvable (non-literal) severity/spec_ref for a "
-          "genuinely fix-less internal/defensive site — it does NOT waive a "
-          "spec_ref citing the wrong/nonexistent section, or an unregistered "
-          "error_code: those are content errors, not tagging gaps.\n")
+          "error_code / declare or fix the multi-site set.  "
+          "`# diag-fields-exempt: <reason>` waives a missing field or an "
+          "unresolvable (non-literal) severity/spec_ref for a genuinely "
+          "fix-less internal/defensive site — it does NOT waive a spec_ref "
+          "citing the wrong/nonexistent section, an unregistered error_code, "
+          "or an undeclared error_code collision: those are content errors, "
+          "not tagging gaps.\n")
     for fname in sorted(by_file):
         print(f"  {fname}")
         for v in sorted(by_file[fname], key=lambda x: x.line):
-            if v.target in ("spec_ref", "error_code"):
+            if v.target in ("spec_ref", "error_code", "error_code_collision"):
                 print(f"    line {v.line:<5} {v.target:<11} {v.missing[0]}")
             else:
                 print(f"    line {v.line:<5} {v.target:<11} missing: "

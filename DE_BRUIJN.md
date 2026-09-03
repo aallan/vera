@@ -376,6 +376,20 @@ Each type has exactly one binding, so every reference is `.0` and there is no or
 
 Aliases turn a positional question into a named one without reintroducing names the model can misspell. A misspelled `@Metres.0` does not quietly resolve to something else — there are no `Metres` bindings, so it fails to type-check:
 
+<!-- vera:diagnostic file="main.vera" stage="check" error_code="E130" -->
+```vera
+type Meters = Int;
+type Feet = Int;
+
+private fn excess(@Meters, @Feet -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Metres.0 - @Feet.0 / 3
+}
+```
+<!-- /vera:diagnostic -->
 ```text
 [E130] Error at main.vera, line 9, column 3:
 

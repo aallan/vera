@@ -26,7 +26,10 @@ or rewording switches the gate off.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -965,6 +968,97 @@ class TestBugRows:
         assert len(errors) == 1 and "not found" in errors[0]
 
 
+# ---------------------------------------------------------------------------
+# ROADMAP's burndown header word vs. its own table vs. KNOWN_ISSUES' Bugs
+# table (#1370-class): two parallel PRs each hand-wrote "Nineteen" from a
+# stale 20-count independently on the same night, and whichever merged
+# second was silently wrong.  This is the gate that ends the class.
+# ---------------------------------------------------------------------------
+
+
+def _roadmap_burndown(header_word: str, *issue_numbers: int) -> str:
+    rows = "\n".join(
+        f"| [#{n}](https://github.com/aallan/vera/issues/{n}) | Something. |"
+        for n in issue_numbers
+    )
+    return (
+        "# Roadmap\n\n"
+        "## Where we are\n\n"
+        "12,290 tests, 244 conformance programs, 43 examples, 14 spec chapters.\n\n"
+        "## The v0.1.14 burndown\n\n"
+        f"*{header_word} open bugs, driven to zero.*\n\n"
+        "| Issue | What |\n|---|---|\n"
+        f"{rows}\n\n"
+        "## Stage 19 — next stage\n\n"
+        "Some stage content.\n"
+    )
+
+
+class TestBurndownHeaderMatchesRows:
+    def test_the_shipped_roadmap_is_consistent(self) -> None:
+        """Regression pin against the real files: the header word, the
+        burndown table's own row count, and KNOWN_ISSUES.md's Bugs
+        table row count must already agree."""
+        roadmap = (Path(__file__).parent.parent / "ROADMAP.md").read_text(
+            encoding="utf-8"
+        )
+        known_issues = (
+            Path(__file__).parent.parent / "KNOWN_ISSUES.md"
+        ).read_text(encoding="utf-8")
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_all_three_agreeing_is_clean(self) -> None:
+        roadmap = _roadmap_burndown("Two", 101, 102)
+        known_issues = _bugs(_row(101), _row(102))
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_header_word_stale_relative_to_both_tables_is_an_error(self) -> None:
+        """The exact #1370 shape: the header still says a count from
+        before a row was removed, while both tables already agree with
+        each other at the new (lower) count."""
+        roadmap = _roadmap_burndown("Twenty", 101)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+        assert "Twenty" in errors[0] and "20" in errors[0] and "1" in errors[0]
+
+    def test_burndown_table_row_count_disagreeing_is_an_error(self) -> None:
+        """Header and KNOWN_ISSUES agree; the burndown table itself
+        has a stray extra (or missing) row — a copy/rebase slip in the
+        table rather than in the header word."""
+        roadmap = _roadmap_burndown("One", 101, 102)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+
+    def test_known_issues_row_count_disagreeing_is_an_error(self) -> None:
+        """Header and the burndown table agree with each other; only
+        KNOWN_ISSUES.md's Bugs table has drifted from both."""
+        roadmap = _roadmap_burndown("Two", 101, 102)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1
+
+    def test_hyphenated_compound_number_words_parse(self) -> None:
+        roadmap = _roadmap_burndown(
+            "Twenty-one", *range(101, 122)
+        )
+        known_issues = _bugs(*(_row(n) for n in range(101, 122)))
+        assert _MOD.check_burndown_header_matches_rows(roadmap, known_issues) == []
+
+    def test_an_unrecognised_header_word_is_an_error(self) -> None:
+        roadmap = _roadmap_burndown("Several", 101)
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1 and "Several" in errors[0]
+
+    def test_a_missing_burndown_section_is_an_error_not_a_skip(self) -> None:
+        roadmap = "# Roadmap\n\n## Where we are\n\nNo burndown here.\n"
+        known_issues = _bugs(_row(101))
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1 and "burndown" in errors[0]
+
+
 class TestBugIssueParity:
     def test_a_matching_pair_of_sets_is_clean(self) -> None:
         assert _MOD.check_bug_issue_parity([101, 102], [102, 101]) == []
@@ -1149,3 +1243,129 @@ class TestFaqExampleCount:
         faq = (root / "FAQ.md").read_text(encoding="utf-8")
         live = len(list((root / "examples").glob("*.vera")))
         assert _MOD.check_faq_example_count(faq, live) == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-checkout import isolation (plan-file S13): a gate's `from vera...`
+# imports must resolve against the SAME tree its own `root` (derived from
+# `__file__`) points at — never a stale PYTHONPATH entry (or, in the real
+# failure mode, a venv's `__editable__.veralang-*.pth` finder pinned to
+# whatever checkout `pip install -e` last ran in) pointing at a DIFFERENT
+# checkout.  That finder — and a stale PYTHONPATH entry alike — only
+# resolves `vera` when nothing earlier on `sys.path` already has; a plain
+# `sys.path.insert(0, root)` wins over either, which is the fix
+# `check_doc_counts.py`'s `main()` now applies before its own `from
+# vera...` imports run.  Distinct from the pytest-rootdir trap TESTING.md's
+# "Running against ANOTHER checkout" section documents (a different
+# mechanism — pytest's own rootdir detection — with a different remedy:
+# relocate the test file into the target tree, not a sys.path insertion).
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_checkout(root: Path, marker: str) -> None:
+    (root / "vera").mkdir(parents=True)
+    (root / "vera" / "__init__.py").write_text(
+        f'MARKER = "{marker}"\n', encoding="utf-8")
+    (root / "scripts").mkdir()
+
+
+class TestCrossCheckoutImportIsolation:
+    def test_root_insertion_wins_over_a_stale_pythonpath(
+        self, tmp_path: Path,
+    ) -> None:
+        """The FIX: a script that inserts its own `__file__`-derived root
+        at sys.path[0] before importing `vera` resolves ITS OWN
+        checkout's package even when PYTHONPATH points at a different
+        one — the same pattern `check_doc_counts.py`'s `main()` uses."""
+        _make_fake_checkout(tmp_path / "checkout_a", "A")
+        _make_fake_checkout(tmp_path / "checkout_b", "B")
+
+        probe = tmp_path / "checkout_a" / "scripts" / "probe.py"
+        probe.write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "root = Path(__file__).resolve().parent.parent\n"
+            "sys.path.insert(0, str(root))\n"
+            "import vera\n"
+            "print(vera.MARKER)\n",
+            encoding="utf-8",
+        )
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(tmp_path / "checkout_b")
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env, check=False,
+        )
+        assert result.stdout.strip() == "A", (
+            f"expected checkout_a's vera (MARKER='A'), got "
+            f"{result.stdout!r} (stderr: {result.stderr})"
+        )
+
+    def test_without_the_fix_a_stale_pythonpath_wins(
+        self, tmp_path: Path,
+    ) -> None:
+        """The NEGATIVE CONTROL: without the root-insertion line, the
+        identical two-checkout setup resolves the WRONG package —
+        proving this is a real trap the fix actually closes, not a
+        test that would pass regardless of the fix's presence."""
+        _make_fake_checkout(tmp_path / "checkout_a", "A")
+        _make_fake_checkout(tmp_path / "checkout_b", "B")
+
+        probe = tmp_path / "checkout_a" / "scripts" / "probe_unfixed.py"
+        probe.write_text("import vera\nprint(vera.MARKER)\n", encoding="utf-8")
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(tmp_path / "checkout_b")
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            capture_output=True, text=True, encoding="utf-8",
+            env=env, check=False,
+        )
+        assert result.stdout.strip() == "B", (
+            "expected the unfixed probe to resolve checkout_b's vera via "
+            f"PYTHONPATH (the trap this class exists to close), got "
+            f"{result.stdout!r} (stderr: {result.stderr})"
+        )
+
+    def test_check_doc_counts_main_inserts_root_before_vera_imports(self) -> None:
+        """Structural pin on the real fix: `main()` must insert `root`
+        at sys.path BEFORE any `from vera` import STATEMENT runs, not
+        after — inserting it after the first one already executed
+        would be a no-op for that import.  Matches an actual `from
+        vera.x import y` statement (line-anchored, optional leading
+        whitespace) rather than a bare substring search, which would
+        also match this very requirement described in a comment."""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        main_start = source.index("\ndef main() -> int:")
+        main_body = source[main_start:]
+        insert_idx = main_body.index("sys.path.insert(0, str(root))")
+        import_match = re.search(r"^[ \t]*from vera\.\w+ import\b", main_body, re.M)
+        assert import_match is not None, (
+            "main() no longer imports anything from vera — this test's "
+            "premise (there is a from-vera import to race against) no "
+            "longer holds; re-check whether the ordering still matters"
+        )
+        assert insert_idx < import_match.start(), (
+            "sys.path.insert(0, str(root)) must appear before the first "
+            "`from vera.<x> import ...` statement in main() — found it "
+            "after instead"
+        )
+
+
+class TestEnglishNumberWordRejectsInvalidCompounds:
+    """A hyphenated compound's tail is a units word and nothing else:
+    ``twenty-ten`` and ``thirty-nineteen`` are not English numbers, and
+    accepting them would let a malformed burndown header pass whenever the
+    arithmetic happened to equal the live row count."""
+
+    def test_valid_compounds_still_parse(self) -> None:
+        mod = _MOD
+        assert mod._english_number_word_to_int("twenty-one") == 21
+        assert mod._english_number_word_to_int("Ninety-nine") == 99
+
+    def test_invalid_compounds_are_not_numbers(self) -> None:
+        mod = _MOD
+        for word in ("twenty-zero", "twenty-ten", "thirty-nineteen", "forty-twenty"):
+            assert mod._english_number_word_to_int(word) is None, word
