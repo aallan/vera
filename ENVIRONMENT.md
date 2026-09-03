@@ -16,6 +16,7 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 | [`VERA_JS_COVERAGE`](#vera_js_coverage) | Opt-in V8 coverage during browser-parity tests | dev / CI | optional |
 | [`VERA_Z3_TIMEOUT_MS`](#vera_z3_timeout_ms) | Per-query Z3 budget in milliseconds — raises or lowers the Tier 1 / Tier 3 boundary | verify / test / language server | optional (defaults to `10000`) |
 | [`VERA_EAGER_GC`](#vera_eager_gc) | Force `$gc_collect` on every allocation — debugging knob for GC-rooting bugs | compile-time (dev) | optional |
+| [`VERA_GC_CHECK_MARKS`](#vera_gc_check_marks) | Trap if a GC mark store targets an address that is not an object body — debugging knob for conservative-scan false positives | compile-time (dev) | optional |
 | [`VERA_DEBUG_HOST_ERRORS`](#vera_debug_host_errors) | Re-raise a host callback's original exception instead of converting it — debugging knob for host-binding bugs | runtime (dev) | optional |
 
 ## Inference provider keys
@@ -122,6 +123,22 @@ Read by `vera/codegen/assembly.py::AssemblyMixin._emit_alloc`; affects the WAT t
 This was the diagnostic that cracked [#593](https://github.com/aallan/vera/issues/593): the rebuilt minimum reproducer crashed at generation 0 under `VERA_EAGER_GC=1` rather than around generation 20 without it, and the much smaller stack trace pinpointed the missing return-value root in `_compile_lifted_closure`.
 
 **Cost.**  Programs run orders of magnitude slower with `$gc_collect` on every allocation — never enable it in production or in normal test runs.  It's a debugging knob, not a release-build option.  Tests that exercise this knob live in `tests/test_codegen_closures.py::TestClosureReturnShadowPushBalance`.
+
+## `VERA_GC_CHECK_MARKS`
+
+A diagnostic knob for the collector's own soundness, not for a program's.
+
+```bash
+VERA_GC_CHECK_MARKS=1 VERA_EAGER_GC=1 vera run program.vera
+```
+
+Set to `1`, `true`, `yes` or `on` — the same spellings [`VERA_EAGER_GC`](#vera_eager_gc) accepts, because both read the one predicate in `vera/envflags.py` — to make the mark phase assert, before every mark store, that the address it is about to write is a real object body.
+
+The mark phase is conservative: it classifies a word as a heap pointer from two cheap tests (heap range, and `(val - $gc_heap_start) & 7 == 4`). Those are sound for the *reads* a conservative collector makes — a false positive costs retention and nothing more — but marking also **writes**, ORing the mark bit into the word four bytes below the candidate. A false positive that lands inside a live object therefore corrupts it ([#1382](https://github.com/aallan/vera/issues/1382)).
+
+Candidates are now validated against an object-base bitmap that Phase 1 fills as it walks, so the store cannot escape its object. This knob is the independent check on that: it re-derives the answer by walking the heap from `$gc_heap_start` along the allocator's own `align_up(size + 4, 8)` chain and traps when the target is not a body address it reached. Deliberately independent of the bitmap — dropped into a pre-#1382 collector it fires, which is what makes it a check rather than a restatement of the fix.
+
+O(heap) per mark store on top of whatever `VERA_EAGER_GC` already costs, so it is slower still than that knob. Pair the two when a wrong answer smells like heap corruption; use neither in production.
 
 ## `VERA_DEBUG_HOST_ERRORS`
 
