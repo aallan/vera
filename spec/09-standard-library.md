@@ -2289,6 +2289,44 @@ public fn md_parse(@String -> @Result<MdBlock, String>)
 
 Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure — it transforms one value to another with no side effects.
 
+Every runtime produces the same `MdBlock` (§12.9.3), and the rules below are what makes that a checkable claim rather than a coincidence of two hand-written parsers. They pin the *grammar*, where the constructors above pin only the result: a document that parses to different ADTs on two hosts is a §12.9.3 violation even when the two render to the same text, because a program can `match` on a paragraph's children and count them.
+
+**Character classes.** The grammar names its own, and MUST NOT be written in a host regex language's shorthands, which denote different sets in different hosts — `\s` matches Unicode whitespace in some and a different Unicode set in others, `\d` matches Unicode digits in some and `0`–`9` in others, and `.` excludes a carriage return in some and not others. A grammar written in shorthands is a different grammar on each host: the same pattern read a CRLF document's heading in one and refused it in the other.
+
+- *whitespace* is one of space, tab, carriage return, line tabulation (U+000B), form feed (U+000C) — never a line feed, which the line split consumes;
+- *digit* is `0`–`9`;
+- *any* is any character but a line feed.
+
+Trimming, wherever these rules call for it, removes *whitespace* from both ends — not whatever a host's own string-trim function happens to remove.
+
+**Block structure.** The parser walks lines in order, and each line is claimed by the FIRST construct below whose pattern matches it. The order is part of the grammar: a line two constructs could open belongs to the earlier one.
+
+| # | construct | pattern (`ws` = *whitespace*, `any` = *any*) |
+|---|---|---|
+| 1 | blank line — skipped | the whole line is *whitespace* |
+| 2 | `MdHeading` | `^(#{1,6})ws+(any*?)(?:ws+#+ws*)?$` — level is the run of `#`, content is group 2 trimmed |
+| 3 | `MdCodeBlock` | ``^(`{3,}\|~{3,})ws*(any*?)$`` — closes on `^<same char>{n,}ws*$` for the opener's length `n`, or at the end of input |
+| 4 | `MdThematicBreak` | `^(?:---+\|\*\*\*+\|___+)ws*$` — three or more of one character, with no interior *whitespace*, so `* * *` is a list, not a break |
+| 5 | `MdBlockQuote` | `^>ws?(any*)` — a following line with no marker continues the quote unless it opens a block (2, 3, 4, 5, 7 or 8) |
+| 6 | `MdTable` | `^\|(any+)\|?ws*$` on the line AND `^\|[ws:]*-[-ws:\|]*\|?ws*$` on the next; body rows continue while the row pattern matches. A row without that separator line beneath it is not a table |
+| 7 | `MdList` (unordered) | `^[-*+]ws+(any*)` — `-`, `*` and `+` are the same marker |
+| 8 | `MdList` (ordered) | `^(digit+)[.)]ws+(any*)` — `.` and `)` are the same marker |
+| 9 | `MdParagraph` | anything else, taking lines until a blank one or one matching 2, 3, 4, 5, 7 or 8 |
+
+Rule 9's stopping set is exactly the patterns of the constructs that claim a line, which is what makes the walk terminate: a line no construct claims is a line the paragraph takes. (Rule 6 is absent from it because a table needs its second line, so its first line alone belongs to the paragraph.)
+
+**A list item's continuation loses a fixed width.** A line under an item, indented by at least the marker's width — two spaces unordered, three ordered — belongs to that item with exactly that many characters removed, not with all its leading whitespace removed. The excess is what distinguishes a third nesting level from a second: under `- a`, the line `  - b` is an item of a nested list and `    - c` is an item nested inside *that*.
+
+**A blank line does not close a list** while the next non-blank line is another item of the same kind. `- a`, blank, `- b` is one list of two items.
+
+**Inline structure.** Within a heading, a paragraph, a quote's text or a table cell:
+
+- **Text runs are maximal.** Adjacent characters that open no other node form ONE `MdText`, the characters of a delimiter that failed to open one included. Emitting one node per scan step produces a different ADT that renders to the same string, which is why this rule is stated rather than left to the implementation.
+- **A code span closes at the next occurrence of its own run length.** An opening run of *n* backticks closes at the next *n* consecutive backticks. Where that occurrence is the leading *n* of a longer run, the opener MUST still close there and the remainder of the run stays literal text, so `` `x`` `` is a span holding `x` followed by a literal backtick. That is what makes the renderer's fence rule sufficient: a fence one backtick longer than the longest run inside the content cannot be entered early. If no such occurrence follows, the opening run is literal text. One leading and one trailing space are removed together when the fenced text is at least two characters long and both of its ends are spaces, so `` ` ` `` keeps its single space and `` `  ` `` is an empty span.
+- **A delimiter run is measured before it is read.** A run of `*` or `_` two or more long opens `MdStrong` if a closing pair follows; the run's leftover delimiters are resolved after that span closes, a single leftover as an `MdEmph` reaching the next lone delimiter and a larger leftover as literal text. If no closing pair follows, the run is retried as an `MdEmph` opened by its FIRST character and closing on the next lone delimiter — which the run's own second character supplies. So a run of two or more with no partner yields an EMPTY emphasis and re-scans what is left, rather than falling back to literal text: `**unclosed` is `[MdEmph([]), MdText("unclosed")]` and `****unclosed` is two empty emphases followed by the text. Only a LONE unpaired delimiter is literal text.
+- **A link or image label ends at its MATCHING bracket**, so `[a[b]c](url)` is one link.
+
+
 <!-- vera:skip-parse category="FUTURE" reason="md_render" -->
 ```
 public fn md_render(@MdBlock -> @String)

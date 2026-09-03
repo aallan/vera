@@ -188,16 +188,20 @@ class TestIssueColumnScoping:
         assert wide == {self.OPEN_N, self.CLOSED_N}
 
     def test_real_known_issues_prose_cites_are_excluded(self) -> None:
-        """The eight live citations that failed the nightly, pinned.
+        """The live citations that failed the nightly, pinned.
 
         These are references to issues closed in v0.1.12 that appear ONLY
         in row prose.  The narrow scan must not see them; the wide scan
         must, so the pin fails if the scoping is applied to both.
+
+        The set tracks the live document: #1294 dropped out when #1301's
+        row was removed, that row's "Successor to #1294" having been its
+        last prose citation anywhere in the file.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268, 1277, 1281, 1285, 1294, 1304, 1305, 1309}
+        prose_only = {1268, 1277, 1281, 1285, 1304, 1305, 1309}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

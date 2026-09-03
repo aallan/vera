@@ -22,6 +22,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from vera.markdown_grammar import (
+    CONTINUATION_INDENT,
+    PATTERNS,
+    fence_close,
+    is_blank,
+    trim,
+)
+
 
 # =====================================================================
 # ADT dataclasses — mirrors Vera MdInline / MdBlock
@@ -130,15 +138,19 @@ MdBlock = (
 # Block-level parser
 # =====================================================================
 
-# Regex patterns for block-level constructs
-_ATX_HEADING = re.compile(r"^(#{1,6})\s+(.*?)(?:\s+#+\s*)?$")
-_FENCE_OPEN = re.compile(r"^(`{3,}|~{3,})\s*(.*?)$")
-_THEMATIC_BREAK = re.compile(r"^(?:---+|\*\*\*+|___+)\s*$")
-_BLOCKQUOTE_LINE = re.compile(r"^>\s?(.*)")
-_UNORDERED_ITEM = re.compile(r"^[-*+]\s+(.*)")
-_ORDERED_ITEM = re.compile(r"^(\d+)[.)]\s+(.*)")
-_TABLE_ROW = re.compile(r"^\|(.+)\|?\s*$")
-_TABLE_SEP = re.compile(r"^\|[\s:]*-[-\s:|]*\|?\s*$")
+# Block-level patterns.  Every one of them comes from
+# ``vera/markdown_grammar.py``, which the browser runtime carries a
+# generated copy of: the same pattern spelled twice is what made a ``+``
+# bullet, an ``n)`` ordered marker and a separator-less table three
+# different grammars across the two hosts (#1301).
+_ATX_HEADING = re.compile(PATTERNS["atx_heading"])
+_FENCE_OPEN = re.compile(PATTERNS["fence_open"])
+_THEMATIC_BREAK = re.compile(PATTERNS["thematic_break"])
+_BLOCKQUOTE_LINE = re.compile(PATTERNS["blockquote_line"])
+_UNORDERED_ITEM = re.compile(PATTERNS["unordered_item"])
+_ORDERED_ITEM = re.compile(PATTERNS["ordered_item"])
+_TABLE_ROW = re.compile(PATTERNS["table_row"])
+_TABLE_SEP = re.compile(PATTERNS["table_sep"])
 
 
 def parse_markdown(text: str) -> MdDocument:
@@ -164,7 +176,7 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
         line = lines[i]
 
         # Blank line — skip
-        if not line.strip():
+        if is_blank(line):
             i += 1
             continue
 
@@ -172,7 +184,7 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
         m = _ATX_HEADING.match(line)
         if m:
             level = len(m.group(1))
-            content = m.group(2).strip()
+            content = trim(m.group(2))
             blocks.append(MdHeading(level, tuple(_parse_inlines(content))))
             i += 1
             continue
@@ -182,13 +194,12 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
         if m:
             fence_char = m.group(1)[0]
             fence_len = len(m.group(1))
-            lang = m.group(2).strip()
+            lang = trim(m.group(2))
             code_lines: list[str] = []
             i += 1
             while i < end:
                 close_match = re.match(
-                    rf"^{re.escape(fence_char)}{{{fence_len},}}\s*$",
-                    lines[i],
+                    fence_close(fence_char, fence_len), lines[i],
                 )
                 if close_match:
                     i += 1
@@ -212,7 +223,9 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
                 bq_m = _BLOCKQUOTE_LINE.match(lines[i])
                 if bq_m:
                     bq_lines.append(bq_m.group(1))
-                elif lines[i].strip() and not _is_block_start(lines[i]):
+                elif not is_blank(lines[i]) and not _is_block_start(
+                    lines[i],
+                ):
                     # Lazy continuation
                     bq_lines.append(lines[i])
                 else:
@@ -246,12 +259,18 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
                     break
                 item_lines = [ul_m.group(1)]
                 i += 1
-                # Continuation lines (indented)
-                while i < end and lines[i].startswith("  ") and lines[i].strip():
-                    item_lines.append(lines[i][2:])
+                # Continuation lines lose a FIXED width — the marker plus
+                # its space — not all their leading whitespace, which is
+                # what keeps a third nesting level distinguishable from a
+                # second (§9.7.3, #1301 class 6).
+                width = CONTINUATION_INDENT["unordered"]
+                indent = " " * width
+                while (i < end and lines[i].startswith(indent)
+                       and not is_blank(lines[i])):
+                    item_lines.append(lines[i][width:])
                     i += 1
                 # Skip blank lines between items
-                while i < end and not lines[i].strip():
+                while i < end and is_blank(lines[i]):
                     i += 1
                     # But only if next line is still a list item
                     if i < end and not _UNORDERED_ITEM.match(lines[i]):
@@ -271,12 +290,15 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
                     break
                 item_lines_ol = [ol_m.group(2)]
                 i += 1
-                # Continuation lines (indented)
-                while i < end and lines[i].startswith("   ") and lines[i].strip():
-                    item_lines_ol.append(lines[i][3:])
+                # Continuation lines (fixed width, as above)
+                width_ol = CONTINUATION_INDENT["ordered"]
+                indent_ol = " " * width_ol
+                while (i < end and lines[i].startswith(indent_ol)
+                       and not is_blank(lines[i])):
+                    item_lines_ol.append(lines[i][width_ol:])
                     i += 1
                 # Skip blank lines between items
-                while i < end and not lines[i].strip():
+                while i < end and is_blank(lines[i]):
                     i += 1
                     if i < end and not _ORDERED_ITEM.match(lines[i]):
                         break
@@ -289,7 +311,8 @@ def _parse_blocks(lines: list[str], start: int, end: int) -> list[MdBlock]:
 
         # Paragraph (default fallback — collect until blank or block start)
         para_lines: list[str] = []
-        while i < end and lines[i].strip() and not _is_block_start(lines[i]):
+        while (i < end and not is_blank(lines[i])
+               and not _is_block_start(lines[i])):
             para_lines.append(lines[i])
             i += 1
         if para_lines:
@@ -321,13 +344,13 @@ def _is_block_start(line: str) -> bool:
 def _parse_table_row(line: str) -> tuple[tuple[MdInline, ...], ...]:
     """Parse a GFM table row into cells of inline content."""
     # Strip leading/trailing pipes and split
-    content = line.strip()
+    content = trim(line)
     if content.startswith("|"):
         content = content[1:]
     if content.endswith("|"):
         content = content[:-1]
     cells = content.split("|")
-    return tuple(tuple(_parse_inlines(cell.strip())) for cell in cells)
+    return tuple(tuple(_parse_inlines(trim(cell))) for cell in cells)
 
 
 # =====================================================================

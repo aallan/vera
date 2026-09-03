@@ -517,164 +517,289 @@ class MdThematicBreak { constructor() { this.tag = 'MdThematicBreak'; } }
 class MdTable { constructor(rows) { this.tag = 'MdTable'; this.rows = rows; } }
 class MdDocument { constructor(children) { this.tag = 'MdDocument'; this.children = children; } }
 
+// --- BEGIN GENERATED: §9.7.3 Markdown grammar ---
+// Source of truth: vera/markdown_grammar.py.  Do not hand-edit — the
+// #1301 gate in tests/test_browser.py asserts this block is byte-for-byte
+// what the generator emits.  Regenerate with:
+//   python -c "from vera.markdown_grammar import js_grammar_block as g; print(g())"
+
+const MD_WS_CHARS = " \t\r\u000b\f";
+const MD_WS = "[ \\t\\r\\x0b\\x0c]";
+const MD_PATTERNS = {
+  "atx_heading": "^(#{1,6})[ \\t\\r\\x0b\\x0c]+([^\\n]*?)(?:[ \\t\\r\\x0b\\x0c]+#+[ \\t\\r\\x0b\\x0c]*)?$",
+  "fence_open": "^(`{3,}|~{3,})[ \\t\\r\\x0b\\x0c]*([^\\n]*?)$",
+  "thematic_break": "^(?:---+|\\*\\*\\*+|___+)[ \\t\\r\\x0b\\x0c]*$",
+  "blockquote_line": "^>[ \\t\\r\\x0b\\x0c]?([^\\n]*)",
+  "unordered_item": "^[-*+][ \\t\\r\\x0b\\x0c]+([^\\n]*)",
+  "ordered_item": "^([0-9]+)[.)][ \\t\\r\\x0b\\x0c]+([^\\n]*)",
+  "table_row": "^\\|([^\\n]+)\\|?[ \\t\\r\\x0b\\x0c]*$",
+  "table_sep": "^\\|[ \\t\\r\\x0b\\x0c:]*-[- \\t\\r\\x0b\\x0c:|]*\\|?[ \\t\\r\\x0b\\x0c]*$",
+};
+const MD_CONTINUATION_INDENT = {
+  "unordered": 2,
+  "ordered": 3,
+};
+const MD_RE = {};
+for (const [key, pattern] of Object.entries(MD_PATTERNS)) {
+  MD_RE[key] = new RegExp(pattern);
+}
+function mdFenceClose(fenceChar, fenceLen) {
+  const escaped = fenceChar === '`' ? '\\`' : '~';
+  return new RegExp('^' + escaped + '{' + fenceLen + ',}' + MD_WS + '*$');
+}
+// --- END GENERATED: §9.7.3 Markdown grammar ---
+
+/**
+ * `str.strip()` over the grammar's own whitespace class.
+ *
+ * NOT `String.prototype.trim`, which strips a different set from
+ * Python's `str.strip` — Unicode space separators and U+FEFF on one
+ * side, the C1-adjacent controls on the other.  Two hosts trimming
+ * different characters is the same drift the shared patterns close, one
+ * level down (#1301).
+ */
+function mdTrim(text) {
+  let start = 0;
+  let end = text.length;
+  while (start < end && MD_WS_CHARS.includes(text[start])) start++;
+  while (end > start && MD_WS_CHARS.includes(text[end - 1])) end--;
+  return text.slice(start, end);
+}
+
+/** Is this line nothing but grammar whitespace? */
+function mdIsBlank(line) {
+  return mdTrim(line) === '';
+}
+
 // -- Inline parser --
 
+/**
+ * Parse inline content, mirroring `_parse_inlines` in vera/markdown.py
+ * statement for statement (#1301).
+ *
+ * Two properties of that mirror are load-bearing and were both absent
+ * before.  Plain text accumulates in ONE buffer that is flushed only
+ * when a real node is emitted, so a paragraph's text runs are maximal —
+ * the browser used to push one `MdText` per scan segment, which renders
+ * to the same string and is a different ADT, and that alone was 82% of
+ * the measured divergence.  And a delimiter run is scanned by its
+ * LENGTH rather than two characters at a time, so `***both***` opens a
+ * three-long run whose leftover delimiter is resolved after the strong
+ * span closes, instead of being read as `**` plus a stray `*`.
+ */
 function parseInlines(text) {
   const result = [];
   let i = 0;
-  const n = text.length;
+  let buf = '';  // accumulator for plain text
 
-  while (i < n) {
-    // Code span: a run of N backticks closes on the next run of N,
-    // mirroring _parse_inlines in vera/markdown.py.  This scanned for
-    // the next *single* backtick, so ``x`` opened an empty span at the
-    // first tick and dropped the content out of the span entirely.
-    // With no closing run the scan falls through to the plain-text
-    // accumulator below, as it did before.
-    if (text[i] === '`') {
-      let runEnd = i;
-      while (runEnd < n && text[runEnd] === '`') runEnd++;
-      const runLen = runEnd - i;
-      const closeIdx = text.indexOf('`'.repeat(runLen), runEnd);
-      if (closeIdx !== -1) {
-        let content = text.slice(runEnd, closeIdx);
-        // Undo the renderer's padding: exactly one leading and one
-        // trailing space, and only when both are present.
-        if (content.length >= 2 && content.startsWith(' ')
-            && content.endsWith(' ')) {
-          content = content.slice(1, -1);
-        }
-        result.push(new MdCode(content));
-        i = closeIdx + runLen;
-        continue;
-      }
+  function flushText() {
+    if (buf) {
+      result.push(new MdText(buf));
+      buf = '';
     }
-
-    // Image: ![alt](url)
-    if (text[i] === '!' && i + 1 < n && text[i + 1] === '[') {
-      const altEnd = text.indexOf(']', i + 2);
-      if (altEnd !== -1 && altEnd + 1 < n && text[altEnd + 1] === '(') {
-        const urlEnd = text.indexOf(')', altEnd + 2);
-        if (urlEnd !== -1) {
-          const alt = text.slice(i + 2, altEnd);
-          const url = text.slice(altEnd + 2, urlEnd);
-          result.push(new MdImage(alt, url));
-          i = urlEnd + 1;
-          continue;
-        }
-      }
-    }
-
-    // Link: [text](url)
-    if (text[i] === '[') {
-      const textEnd = text.indexOf(']', i + 1);
-      if (textEnd !== -1 && textEnd + 1 < n && text[textEnd + 1] === '(') {
-        const urlEnd = text.indexOf(')', textEnd + 2);
-        if (urlEnd !== -1) {
-          const linkText = text.slice(i + 1, textEnd);
-          const url = text.slice(textEnd + 2, urlEnd);
-          result.push(new MdLink(parseInlines(linkText), url));
-          i = urlEnd + 1;
-          continue;
-        }
-      }
-    }
-
-    // Strong: ** or __
-    if ((text[i] === '*' && i + 1 < n && text[i + 1] === '*') ||
-        (text[i] === '_' && i + 1 < n && text[i + 1] === '_')) {
-      const marker = text.slice(i, i + 2);
-      const end = text.indexOf(marker, i + 2);
-      if (end !== -1) {
-        result.push(new MdStrong(parseInlines(text.slice(i + 2, end))));
-        i = end + 2;
-        continue;
-      }
-    }
-
-    // Emphasis: * or _
-    if (text[i] === '*' || text[i] === '_') {
-      const marker = text[i];
-      // Avoid matching ** as emphasis
-      if (i + 1 < n && text[i + 1] !== marker) {
-        const end = text.indexOf(marker, i + 1);
-        if (end !== -1) {
-          result.push(new MdEmph(parseInlines(text.slice(i + 1, end))));
-          i = end + 1;
-          continue;
-        }
-      }
-    }
-
-    // Plain text — accumulate until next special character
-    let textStart = i;
-    i++;
-    while (i < n && !'`*_!['.includes(text[i])) {
-      i++;
-    }
-    result.push(new MdText(text.slice(textStart, i)));
   }
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    // Inline code span: a run of N backticks closes on the next run of N.
+    if (ch === '`') {
+      const runStart = i;
+      while (i < text.length && text[i] === '`') i++;
+      const runLen = i - runStart;
+      const closePat = '`'.repeat(runLen);
+      const closeIdx = text.indexOf(closePat, i);
+      if (closeIdx !== -1) {
+        flushText();
+        let codeContent = text.slice(i, closeIdx);
+        // Strip one leading/trailing space if both present — the pad the
+        // renderer adds so a span's own spaces survive.
+        if (codeContent.length >= 2 && codeContent[0] === ' '
+            && codeContent[codeContent.length - 1] === ' ') {
+          codeContent = codeContent.slice(1, -1);
+        }
+        result.push(new MdCode(codeContent));
+        i = closeIdx + runLen;
+      } else {
+        buf += closePat;
+      }
+      continue;
+    }
+
+    // Image: ![alt](src)
+    if (ch === '!' && i + 1 < text.length && text[i + 1] === '[') {
+      const closeBracket = findMatchingBracket(text, i + 1);
+      if (closeBracket !== null && closeBracket + 1 < text.length
+          && text[closeBracket + 1] === '(') {
+        const closeParen = text.indexOf(')', closeBracket + 2);
+        if (closeParen !== -1) {
+          flushText();
+          result.push(new MdImage(
+            text.slice(i + 2, closeBracket),
+            text.slice(closeBracket + 2, closeParen),
+          ));
+          i = closeParen + 1;
+          continue;
+        }
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    // Link: [text](url).  The closing bracket is the MATCHING one, so a
+    // nested `[b]` inside the label does not end it early.
+    if (ch === '[') {
+      const closeBracket = findMatchingBracket(text, i);
+      if (closeBracket !== null && closeBracket + 1 < text.length
+          && text[closeBracket + 1] === '(') {
+        const closeParen = text.indexOf(')', closeBracket + 2);
+        if (closeParen !== -1) {
+          flushText();
+          result.push(new MdLink(
+            parseInlines(text.slice(i + 1, closeBracket)),
+            text.slice(closeBracket + 2, closeParen),
+          ));
+          i = closeParen + 1;
+          continue;
+        }
+      }
+      buf += ch;
+      i++;
+      continue;
+    }
+
+    // Strong (**) or emphasis (*), by delimiter-run length.
+    if (ch === '*' || ch === '_') {
+      const delim = ch;
+      const runStart = i;
+      while (i < text.length && text[i] === delim) i++;
+      let runLen = i - runStart;
+
+      if (runLen >= 2) {
+        // Try strong first.
+        const closeIdx = text.indexOf(delim + delim, i);
+        if (closeIdx !== -1) {
+          flushText();
+          result.push(new MdStrong(parseInlines(text.slice(i, closeIdx))));
+          i = closeIdx + 2;
+          // Handle remaining delimiters from the opening run.
+          const remaining = runLen - 2;
+          if (remaining > 0) {
+            const closeSingle = text.indexOf(delim, i);
+            if (remaining === 1 && closeSingle !== -1) {
+              result.push(new MdEmph(parseInlines(text.slice(i, closeSingle))));
+              i = closeSingle + 1;
+            } else {
+              buf += delim.repeat(remaining);
+            }
+          }
+          continue;
+        }
+        // Fall through to try single emphasis.
+        i = runStart + 1;
+        runLen = 1;
+      }
+
+      if (runLen === 1) {
+        const closeIdx = text.indexOf(delim, i);
+        if (closeIdx !== -1) {
+          flushText();
+          result.push(new MdEmph(parseInlines(text.slice(i, closeIdx))));
+          i = closeIdx + 1;
+        } else {
+          buf += delim;
+        }
+        continue;
+      }
+    }
+
+    // Plain character
+    buf += ch;
+    i++;
+  }
+
+  flushText();
   return result;
+}
+
+/** Find the matching `]` for a `[` at `start`; null if there is none. */
+function findMatchingBracket(text, start) {
+  if (start >= text.length || text[start] !== '[') return null;
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    if (text[i] === '[') depth++;
+    else if (text[i] === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return null;
 }
 
 // -- Block parser --
 
 /**
- * Does this line open a block-level construct?  Mirrors
- * `_is_block_start` in vera/markdown.py, regex for regex.  It is the
- * predicate that bounds a blockquote's lazy continuation: an unmarked
- * line belongs to the open quote unless it starts a block of its own.
+ * Does this line open a block-level construct?  The disjunction of the
+ * six branch predicates in `parseBlocks`, and the SAME regexes those
+ * branches use — mirroring `_is_block_start` in vera/markdown.py.
+ *
+ * That identity is what makes the paragraph fallback terminate.  The old
+ * port hand-wrote a second, slightly different list here and a third
+ * inside the paragraph loop, so a line could be excluded from the
+ * paragraph while no branch claimed it: `md_parse("# heading\r")` — an
+ * ordinary CRLF document — spun forever, because ECMAScript's `.` does
+ * not match `\r` and the heading branch therefore declined a line the
+ * paragraph loop still refused.
  */
 function isBlockStart(line) {
-  return /^#{1,6}\s/.test(line)              // ATX heading
-    || /^(`{3,}|~{3,})/.test(line)           // fence
-    || /^(?:---+|\*{3,}|_{3,})\s*$/.test(line)  // thematic break
-    || /^>/.test(line)                       // block quote
-    || /^[-*+]\s/.test(line)                 // unordered item
-    || /^\d+[.)]\s/.test(line);              // ordered item
+  return MD_RE.atx_heading.test(line)
+    || MD_RE.fence_open.test(line)
+    || MD_RE.thematic_break.test(line)
+    || MD_RE.blockquote_line.test(line)
+    || MD_RE.unordered_item.test(line)
+    || MD_RE.ordered_item.test(line);
 }
 
-function parseBlocks(text) {
-  const lines = text.split('\n');
+/**
+ * Parse `lines[start..end)` into blocks, mirroring `_parse_blocks` in
+ * vera/markdown.py — including the ORDER the constructs are tried in,
+ * which decides which branch claims a line two of them could open.
+ */
+function parseBlocks(lines, start, end) {
   const blocks = [];
-  let i = 0;
+  let i = start;
 
-  while (i < lines.length) {
+  while (i < end) {
     const line = lines[i];
 
-    // Empty line — skip
-    if (line.trim() === '') {
+    // Blank line — skip
+    if (mdIsBlank(line)) {
       i++;
       continue;
     }
 
-    // ATX heading: # ... ######
-    const headingMatch = line.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?$/);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const content = headingMatch[2].trim();
-      blocks.push(new MdHeading(level, parseInlines(content)));
+    // ATX heading
+    const heading = MD_RE.atx_heading.exec(line);
+    if (heading) {
+      blocks.push(new MdHeading(
+        heading[1].length, parseInlines(mdTrim(heading[2])),
+      ));
       i++;
       continue;
     }
 
-    // Thematic break: --- or *** or ___ (3+ characters)
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
-      blocks.push(new MdThematicBreak());
-      i++;
-      continue;
-    }
-
-    // Fenced code block: ``` or ~~~
-    const fenceMatch = line.match(/^(`{3,}|~{3,})(.*?)$/);
-    if (fenceMatch) {
-      const fence = fenceMatch[1];
-      const lang = fenceMatch[2].trim();
+    // Fenced code block
+    const fence = MD_RE.fence_open.exec(line);
+    if (fence) {
+      const closeRe = mdFenceClose(fence[1][0], fence[1].length);
+      const lang = mdTrim(fence[2]);
       const codeLines = [];
       i++;
-      while (i < lines.length) {
-        if (lines[i].startsWith(fence[0].repeat(fence.length)) &&
-            lines[i].trim() === fence[0].repeat(fence.length)) {
+      while (i < end) {
+        if (closeRe.test(lines[i])) {
           i++;
           break;
         }
@@ -685,76 +810,38 @@ function parseBlocks(text) {
       continue;
     }
 
-    // Block quote: '>' optionally followed by ONE whitespace character,
-    // mirroring _BLOCKQUOTE_LINE = ^>\s? in vera/markdown.py.  The old
-    // predicate demanded the space, so `>no space` fell through to the
-    // paragraph branch and parsed as literal text where the reference
-    // read a quote.
-    if (/^>/.test(line)) {
-      const quoteLines = [];
-      while (i < lines.length) {
-        const marked = lines[i].match(/^>\s?(.*)$/);
+    // Thematic break
+    if (MD_RE.thematic_break.test(line)) {
+      blocks.push(new MdThematicBreak());
+      i++;
+      continue;
+    }
+
+    // Block quote
+    if (MD_RE.blockquote_line.test(line)) {
+      const bqLines = [];
+      while (i < end) {
+        const marked = MD_RE.blockquote_line.exec(lines[i]);
         if (marked) {
-          quoteLines.push(marked[1]);
-        } else if (lines[i].trim() !== '' && !isBlockStart(lines[i])) {
-          // Lazy continuation (markdown.py's `elif` in the same loop):
-          // an unmarked, non-blank line that opens no block of its own
-          // continues the quote's paragraph.  Without this branch the
-          // line escaped the quote entirely.
-          quoteLines.push(lines[i]);
+          bqLines.push(marked[1]);
+        } else if (!mdIsBlank(lines[i]) && !isBlockStart(lines[i])) {
+          // Lazy continuation
+          bqLines.push(lines[i]);
         } else {
           break;
         }
         i++;
       }
-      const inner = parseBlocks(quoteLines.join('\n'));
-      blocks.push(new MdBlockQuote(inner));
+      blocks.push(new MdBlockQuote(parseBlocks(bqLines, 0, bqLines.length)));
       continue;
     }
 
-    // Unordered list: - or * (with space)
-    if (/^[-*]\s/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^[-*]\s/.test(lines[i])) {
-        const itemLines = [lines[i].slice(2)];
-        i++;
-        // Continuation lines (indented)
-        while (i < lines.length && /^\s{2,}/.test(lines[i]) && lines[i].trim() !== '') {
-          itemLines.push(lines[i].trimStart());
-          i++;
-        }
-        items.push(parseBlocks(itemLines.join('\n')));
-      }
-      blocks.push(new MdList(false, items));
-      continue;
-    }
-
-    // Ordered list: 1. 2. etc.
-    if (/^\d+\.\s/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
-        const dotIdx = lines[i].indexOf('. ');
-        const itemLines = [lines[i].slice(dotIdx + 2)];
-        i++;
-        while (i < lines.length && /^\s{2,}/.test(lines[i]) && lines[i].trim() !== '') {
-          itemLines.push(lines[i].trimStart());
-          i++;
-        }
-        items.push(parseBlocks(itemLines.join('\n')));
-      }
-      blocks.push(new MdList(true, items));
-      continue;
-    }
-
-    // GFM table: | ... | ... |
-    if (line.includes('|') && i + 1 < lines.length && /^\|?\s*[-:]+/.test(lines[i + 1])) {
-      const rows = [];
-      // Header row
-      rows.push(parseTableRow(line));
-      i++; // skip separator
-      i++;
-      // Body rows
-      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+    // GFM table (must have header + separator row)
+    if (MD_RE.table_row.test(line) && i + 1 < end
+        && MD_RE.table_sep.test(lines[i + 1])) {
+      const rows = [parseTableRow(line)];
+      i += 2;  // skip separator
+      while (i < end && MD_RE.table_row.test(lines[i])) {
         rows.push(parseTableRow(lines[i]));
         i++;
       }
@@ -762,27 +849,73 @@ function parseBlocks(text) {
       continue;
     }
 
-    // Paragraph — collect consecutive non-blank, non-special lines
+    // Unordered list
+    if (MD_RE.unordered_item.test(line)) {
+      const items = [];
+      const width = MD_CONTINUATION_INDENT.unordered;
+      const indent = ' '.repeat(width);
+      while (i < end) {
+        const item = MD_RE.unordered_item.exec(lines[i]);
+        if (!item) break;
+        const itemLines = [item[1]];
+        i++;
+        // Continuation lines lose a FIXED width — the marker plus its
+        // space — not all their leading whitespace, which is what keeps
+        // a third nesting level distinguishable from a second.
+        while (i < end && lines[i].startsWith(indent) && !mdIsBlank(lines[i])) {
+          itemLines.push(lines[i].slice(width));
+          i++;
+        }
+        // Skip blank lines between items, but only while the list
+        // continues — a loose list is ONE list, not two.
+        while (i < end && mdIsBlank(lines[i])) {
+          i++;
+          if (i < end && !MD_RE.unordered_item.test(lines[i])) break;
+        }
+        items.push(parseBlocks(itemLines, 0, itemLines.length));
+      }
+      blocks.push(new MdList(false, items));
+      continue;
+    }
+
+    // Ordered list
+    if (MD_RE.ordered_item.test(line)) {
+      const items = [];
+      const width = MD_CONTINUATION_INDENT.ordered;
+      const indent = ' '.repeat(width);
+      while (i < end) {
+        const item = MD_RE.ordered_item.exec(lines[i]);
+        if (!item) break;
+        const itemLines = [item[2]];
+        i++;
+        while (i < end && lines[i].startsWith(indent) && !mdIsBlank(lines[i])) {
+          itemLines.push(lines[i].slice(width));
+          i++;
+        }
+        while (i < end && mdIsBlank(lines[i])) {
+          i++;
+          if (i < end && !MD_RE.ordered_item.test(lines[i])) break;
+        }
+        items.push(parseBlocks(itemLines, 0, itemLines.length));
+      }
+      blocks.push(new MdList(true, items));
+      continue;
+    }
+
+    // Paragraph (default fallback — collect until blank or block start).
+    // Reached only when `isBlockStart(line)` is false, so it always
+    // consumes at least this line: that is the termination argument.
     const paraLines = [];
-    while (i < lines.length && lines[i].trim() !== '' &&
-           !lines[i].match(/^#{1,6}\s/) &&
-           !lines[i].match(/^(`{3,}|~{3,})/) &&
-           // '^>' , not "starts with '> '": a paragraph ends at any
-           // quote marker, spaced or not (mirrors _BLOCKQUOTE_LINE).
-           !/^>/.test(lines[i]) &&
-           !/^[-*]\s/.test(lines[i]) &&
-           !/^\d+\.\s/.test(lines[i]) &&
-           !/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
+    while (i < end && !mdIsBlank(lines[i]) && !isBlockStart(lines[i])) {
       paraLines.push(lines[i]);
       i++;
     }
     if (paraLines.length > 0) {
-      // #1294: joined with a space, not a newline.  Spec §9.7.3 excludes
-      // hard and soft line breaks from the ADT — "collapsed into
-      // paragraph text" — so a paragraph's internal breaks have to go
-      // somewhere at parse time or they survive into MdText, where no
-      // renderer can tell them from text the author wrote.  This is what
-      // `" ".join(para_lines)` does in vera/markdown.py.
+      // Joined with a space, not a newline.  Spec §9.7.3 excludes hard
+      // and soft line breaks from the ADT — "collapsed into paragraph
+      // text" — so a paragraph's internal breaks have to go somewhere at
+      // parse time or they survive into MdText, where no renderer can
+      // tell them from text the author wrote.
       blocks.push(new MdParagraph(parseInlines(paraLines.join(' '))));
     }
   }
@@ -791,15 +924,23 @@ function parseBlocks(text) {
 
 function parseTableRow(line) {
   // Strip leading/trailing pipes and split
-  let trimmed = line.trim();
-  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-  return trimmed.split('|').map(cell => parseInlines(cell.trim()));
+  let content = mdTrim(line);
+  if (content.startsWith('|')) content = content.slice(1);
+  if (content.endsWith('|')) content = content.slice(0, -1);
+  return content.split('|').map(cell => parseInlines(mdTrim(cell)));
 }
 
 function parseMarkdown(text) {
-  return new MdDocument(parseBlocks(text));
+  const lines = text.split('\n');
+  return new MdDocument(parseBlocks(lines, 0, lines.length));
 }
+
+// Exported for the cross-runtime `md_parse` parity gate (#1301), which
+// compares THIS parser's ADT against the Python reference's directly.  A
+// comparison routed through `md_render` cannot see how a paragraph's
+// plain-text runs are grouped — the runs concatenate to the same string —
+// and that class was 82% of the measured divergence.
+export { parseMarkdown };
 
 // -- Renderer --
 
