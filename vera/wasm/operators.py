@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import ClassVar
 
 from vera import ast, naming
+from vera.monomorphize import resolve_type_alias
+from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv, state_type_arg
 
@@ -1469,14 +1471,45 @@ class OperatorsMixin:
     # String interpolation
     # -----------------------------------------------------------------
 
-    # Type -> to_string builtin dispatch (must match checker's map)
-    _INTERP_TO_STRING: ClassVar[dict[str, str]] = {
-        "Int": "to_string",
-        "Nat": "nat_to_string",
-        "Bool": "bool_to_string",
-        "Byte": "byte_to_string",
-        "Float64": "float_to_string",
-    }
+    def _interp_resolved_type_name(self, name: str | None) -> str | None:
+        """Resolve an inferred type NAME to the shape that renders it.
+
+        Interpolation is a representation-level question — "which
+        `*_to_string` builtin takes this value?" — so it uses the walker
+        every representation-level classifier shares
+        (:func:`vera.monomorphize.resolve_type_alias`): refinement layers
+        unwrap, alias chains follow, and a name that is neither is
+        returned unchanged.  Returns *name* untouched when there is no
+        alias environment to resolve against or the chain is cyclic
+        (E132 rejects that upstream), so the dispatch falls to its loud
+        skip rather than guessing.
+
+        The name arrives RENDERED, so a parameterised spelling
+        (``Identity<Int>`` for ``type Identity<T> = T``) does not match
+        the alias table and is returned unchanged — deliberately, rather
+        than re-parsing a rendered name.  Nothing is lost: a value of a
+        generic-alias type has no WASM representation at all, so codegen
+        refuses such a program at its ``let`` (measured at this revision
+        and at the merge base, with and without an interpolation in the
+        body).  Should that gap close, this is the seam to thread the
+        type arguments through.
+        """
+        if name is None:
+            return None
+        env = getattr(self, "_alias_env", None)
+        if env is None:
+            return name
+        resolved = resolve_type_alias(
+            ast.NamedType(name=name, type_args=None),
+            env.aliases, env.alias_params,
+        )
+        if isinstance(resolved, ast.NamedType):
+            return resolved.name
+        return name
+
+    # Type -> to_string builtin dispatch: the checker's table itself
+    # (#1347), not a copy that has to be kept matching it by comment.
+    _INTERP_TO_STRING: ClassVar[dict[str, str]] = TO_STRING_BUILTINS
 
     def _translate_interpolated_string(
         self, expr: ast.InterpolatedString, env: "WasmSlotEnv",
@@ -1502,8 +1535,19 @@ class OperatorsMixin:
                 if p:  # skip empty string fragments
                     parts.append(ast.StringLit(value=p, span=expr.span))
             else:
-                # Determine Vera type for auto-conversion
-                vera_type = self._infer_vera_type(p)
+                # Determine Vera type for auto-conversion, on its
+                # RESOLVED form (#1347).  `_infer_vera_type` answers with
+                # the type's SPELLING — `Celsius` for a `type Celsius =
+                # Float64` slot — and this dispatch used to look that up
+                # directly, so every alias and every refinement missed
+                # the table and fell into the loud-skip branch below: a
+                # check-green program dropped with "Cannot interpolate
+                # value of unknown type".  The walker unwraps refinements
+                # and follows alias chains to the terminal shape, which
+                # is what actually decides how the value renders.
+                vera_type = self._interp_resolved_type_name(
+                    self._infer_vera_type(p),
+                )
                 if vera_type == "String":
                     parts.append(p)
                 elif vera_type in self._INTERP_TO_STRING:

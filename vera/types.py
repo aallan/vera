@@ -162,6 +162,32 @@ REMOVED_ALIASES: dict[str, str] = {
 NUMERIC_TYPES: frozenset[Type] = frozenset({INT, NAT, FLOAT64})
 ORDERABLE_TYPES: frozenset[Type] = frozenset({INT, NAT, FLOAT64, BYTE, STRING})
 
+# The primitives a string interpolation can render, and the built-in that
+# renders each (#1347).  ONE table, because it is one language rule asked
+# by two subsystems: the checker decides whether `"\(e)"` is well-typed
+# and code generation picks the conversion to emit.  They were separate
+# copies — `ExpressionsMixin._TO_STRING_TYPES` and
+# `OperatorsMixin._INTERP_TO_STRING`, the second carrying the comment
+# "must match checker's map" — and a comment is not a mechanism: the two
+# sides disagreed about what was interpolable at all, so a program the
+# checker accepted was dropped by codegen with no diagnostic naming the
+# rule.  `String` is absent deliberately: it needs no conversion, and both
+# consumers test it before consulting this table.
+#
+# Membership is decided on the type's RESOLVED form, never its spelling:
+# an alias and a refinement over one of these render exactly as the
+# primitive they resolve to (`vera.monomorphize.resolve_type_alias` is the
+# shared walker that answers that, unwrapping refinements and following
+# alias chains).  A predicate constrains which values exist; it says
+# nothing about how one prints.
+TO_STRING_BUILTINS: dict[str, str] = {
+    "Int": "to_string",
+    "Nat": "nat_to_string",
+    "Bool": "bool_to_string",
+    "Byte": "byte_to_string",
+    "Float64": "float_to_string",
+}
+
 
 # =====================================================================
 # Utility functions

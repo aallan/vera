@@ -179,11 +179,18 @@ Every function has this exact structure. No part is optional except `decreases` 
 private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition_expression)
   ensures(postcondition_expression)
+  decreases(measure_expression)
   effects(effect_row)
 {
   body_expression
 }
 ```
+
+The order is fixed: every contract clause first (`requires`, `ensures` and
+`decreases` — in any order among themselves, and each may appear more than
+once), then exactly one `effects` clause, then the body.  A contract clause
+written after `effects` is a parse error (`E032`) naming the move.
+(`invariant` is a `data` declaration's clause, not a function's.)
 
 Complete example:
 
@@ -2439,11 +2446,7 @@ These are known limitations in the current reference implementation. Most are tr
 
 ## Known Bugs and Workarounds
 
-Current reference-implementation bugs that an agent writing Vera code is likely to hit. Most entries have a confirmed reproducer and a known workaround; an observed one-off CI flake is tracked with reporting guidance instead. The full curated list is in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md); the issue tracker is the source of truth.
-
-| Shape | Bug summary | Workaround | Issue |
-|---|---|---|---|
-| Interpolating a refinement-typed value | `"n=\(@PosInt.0)"` under `type PosInt = { @Int \| @Int.0 > 0 };` is rejected with `E148`, although the identical interpolation through a plain alias (`type Plain = Int;`) checks clean — the conversion test reads the written type rather than the resolved one. | Convert explicitly and concatenate: `string_concat("n=", int_to_string(@PosInt.0))` checks clean. Use `float_to_string` for a `Float64` refinement. | [#1347](https://github.com/aallan/vera/issues/1347) |
+No known bugs.
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `host_error` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 

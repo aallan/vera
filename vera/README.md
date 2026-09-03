@@ -152,7 +152,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  server.py` | 150 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
 | `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 813 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 929 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | 127 | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | 35 | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
@@ -750,11 +750,11 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (163 entries — 161 `E` codes and the two `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (164 entries — 162 `E` codes and the two `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 12,597 tests across 190 files: compiler-internals unit tests plus a **conformance suite** (247 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 12,645 tests across 192 files: compiler-internals unit tests plus a **conformance suite** (247 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
