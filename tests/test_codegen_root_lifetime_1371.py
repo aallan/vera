@@ -365,3 +365,236 @@ public fn f(@Unit -> @String)
         assert execute(_compile_ok(source), fn_name="f", args=[]).value == (
             expected
         )
+
+
+class TestCallResultsAreRootedWhereTheyLand1379:
+    """The other half of the rule: a root must EXIST from the moment a value
+    lands, not merely die when the value does.
+
+    A call's result arrives on the operand stack, where the conservative scan
+    cannot see it, so whatever is evaluated NEXT can allocate over it.  A Vera
+    function's epilogue re-roots its return into the caller's shadow stack, so
+    user calls were covered; a HOST import has no epilogue and was not.  In
+    the emitted WAT the gap is literal: `call $vera.decimal_from_string`
+    followed directly by the sibling argument's `call $alloc`, with no push
+    between.
+
+    Four Decimal builtins returned host-allocated heap results with a bare
+    `call` and no root — `decimal_from_string` and `decimal_div` (an
+    `Option<Decimal>` pointer), `decimal_compare` (an `Ordering` pointer) and
+    `decimal_to_string`, whose result is a **(ptr, len) pair**.  The pair is
+    why the rule reads its shape from `_stack_shape_of` rather than testing
+    for "one i32": a rule keyed on the scalar case roots three of the four and
+    silently misses the String.
+
+    Every claim here is a PAD SWEEP, never a single layout.  #1382 showed a
+    single-layout observation can inverate its own meaning, and two of these
+    cells were green at one layout while being wrong at all of them — the
+    earlier `decimal_to_string` cell passed only because it read the LENGTH,
+    which survives a use-after-free that corrupts the bytes.  Measured over
+    pad lengths 0..95, at this PR's base and at its head:
+
+        cell                                base failing   head failing
+        decimal_from_string (Option ptr)        96 / 96         0 / 96
+        decimal_div (Option ptr)                96 / 96         0 / 96
+        decimal_to_string (String pair)         96 / 96         0 / 96
+        decimal_compare (Ordering ptr)           0 / 96         0 / 96
+
+    `decimal_compare` is named by the audit and covered by the rule, but no
+    cell reaching it could be constructed: its `Ordering` arms carry no heap
+    payload to lose.  It stays as a control rather than as a claim.
+
+    Six migrated Map / Set builtins (`map_new`, `map_insert`, `map_remove`,
+    `set_new`, `set_add`, `set_remove`) carried a per-site `_emit_root_result`
+    push for the same reason; the rule retires all six.  That it really covers
+    them is shown by MUTATION, because the existing suites do not
+    discriminate: with `_root_landed_value` disabled and the per-site pushes
+    removed, `test_codegen_gc_rooting`, `test_codegen_gc_reclamation`,
+    `test_codegen_gc_alloc` and `test_db_marshalling` stay green (123 tests)
+    while three of the Map cells below die with a **bus error** — an unrooted
+    wrapper corrupting memory outright rather than returning a wrong number.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # #1379's own shape: an Option<Decimal> landing from a host
+            # import while the sibling argument allocates.  Wrong at all 96
+            # pad lengths at base.  The expected value is 1 against a
+            # fallback of 0, and the fallback is what the defect produces.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Decimal = option_unwrap_or(decimal_from_string("7"), decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(7)) then { 1 } else { 0 }
+}
+""",
+                1,
+            ),
+            # The same for `decimal_div`, whose Option is built by a
+            # different host import.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Decimal = option_unwrap_or(
+      decimal_div(decimal_from_int(84), decimal_from_int(2)),
+      decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+""",
+                1,
+            ),
+            # THE PAIR CELL.  `decimal_to_string` returns (ptr, len); only
+            # the pointer half is a reference.  Asserted on CONTENT, with
+            # same-sized churn allocations forcing block reuse — at base
+            # this reads back '\x00\x00\x00\x005…' for '12345…', which a
+            # length assertion would not have noticed.
+            (
+                """private fn churn(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(int_to_string(@Int.0 + 1000), int_to_string(@Int.0 + 2000))
+}
+
+""" + """public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(decimal_to_string(decimal_from_int(12345)),
+                string_concat(string_concat(churn(1), churn(2)),
+                              string_concat(churn(3), churn(4))))
+}
+""",
+                "1234510012001100220021003200310042004",
+            ),
+            # A Map wrapper landing from a host import, the sibling key
+            # allocating over it.  Bus error when unrooted.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map_size(map_insert(map_insert(map_new(), "a", 1),
+                      string_concat("b", "c"), 2))
+}
+""",
+                2,
+            ),
+            # The same wrapper read back through `map_get`, whose own key
+            # argument allocates.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match map_get(map_insert(map_new(), "k", 77), string_concat("k", "")) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+""",
+                77,
+            ),
+            # A landed wrapper consumed by a builtin that allocates its own
+            # backing array.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(map_values(map_insert(map_insert(map_new(), "a", 1),
+                                     string_concat("b", "c"), 2)))
+}
+""",
+                2,
+            ),
+            # CONTROL: a Vera function's result in the same position.  Its
+            # epilogue already re-roots into the caller, so this holds with
+            # or without the rule — it shows the rule did not have to change
+            # the user-function path to cover the host one.
+            (
+                """private fn g(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ string_concat("g", int_to_string(@Int.0)) }
+
+private fn h(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ string_concat("h", int_to_string(@Int.0)) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ string_length(string_concat(g(1), h(2))) }
+""",
+                4,
+            ),
+            # CONTROL: `decimal_compare`'s Ordering, which the audit names
+            # but which carries no heap payload to lose.
+            (
+                """private fn churn(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(int_to_string(@Int.0 + 1000), int_to_string(@Int.0 + 2000))
+}
+
+""" + """public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match decimal_compare(decimal_from_int(1), decimal_from_int(2)) {
+    Less -> string_concat("LT", string_concat(churn(1), churn(2))),
+    Equal -> string_concat("EQ", churn(3)),
+    Greater -> string_concat("GT", churn(4))
+  }
+}
+""",
+                "LT1001200110022002",
+            ),
+            # CONTROL: a Set wrapper chain — passes under both settings, so
+            # it pins the shape without claiming to discriminate.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  set_size(set_add(set_add(set_new(), string_concat("a", "1")),
+                   string_concat("b", "2")))
+}
+""",
+                2,
+            ),
+        ],
+        ids=["decimal-from-string-1379", "decimal-div-1379",
+             "decimal-to-string-pair", "map-insert-sibling-alloc",
+             "map-get-sibling-alloc", "map-values-of-landed-wrapper",
+             "control-user-fn-result", "control-decimal-compare",
+             "control-set-add-chain"],
+    )
+    def test_a_landed_call_result_survives_a_sibling_allocation(
+        self, source: str, expected: object, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert execute(_compile_ok(source), fn_name="main", args=[]).value == (
+            expected
+        )

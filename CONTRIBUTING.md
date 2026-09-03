@@ -103,6 +103,7 @@ The **commit-stage** hooks — 35 total, of which 34 are gated to relevant `file
 - mypy type checking
 - pytest test suite
 - All conformance programs hold at their declared level — positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses) with their `expected_error` E-code
+- The same conformance programs hold again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing
 - All `.vera` examples type-check and verify cleanly
 - README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase

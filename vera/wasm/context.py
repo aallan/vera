@@ -920,7 +920,10 @@ class WasmContext(
         the root outlives its value, which is wasteful and sound.
         """
         if not contains_shadow_push(instructions):
-            return instructions
+            # Nothing to reclaim — but a CALL still LANDS a value that no
+            # root holds yet, and the next sibling to be evaluated may
+            # allocate over it.
+            return self._root_landed_value(expr, instructions)
         if not self.needs_alloc:
             # A push was emitted, so `$gc_sp` must have been declared.  Every
             # producer sets the flag beside its push; a new one that forgets
@@ -1032,6 +1035,66 @@ class WasmContext(
                     and type_name not in _INLINE_I32_TYPES):
                 roots.append(local_idx)
         return roots
+
+    def _root_landed_value(
+        self, expr: ast.Expr, instructions: list[str]
+    ) -> list[str]:
+        """Root a heap value a CALL just landed, when nothing else has (#1379).
+
+        The other half of the root-lifetime rule.  Its first half says a
+        value's roots die when the value does; this one says they must EXIST
+        from the moment the value lands.  A call is exactly that moment, and
+        a call's result arrives on the operand stack — where the conservative
+        scan cannot see it — so anything evaluated next that allocates can
+        sweep it before it is ever stored.
+
+        Whether the callee already rooted it is not something the call SITE
+        can know, and that ignorance was the bug: a Vera function's epilogue
+        re-roots its return value into the caller's shadow stack, but a HOST
+        import has no epilogue, so `decimal_from_string("7")` left its
+        `Option<Decimal>` on the stack unrooted while the sibling argument
+        `decimal_from_int(0)` allocated over it — `check`-green,
+        `verify`-green, and wrong at every one of 200 heap layouts (#1379).
+        Rooting at the landing site is the rule that does not have to ask:
+        the redundant root a Vera callee's epilogue already planted costs one
+        slot, which the enclosing scope reclaims, and the missing root costs
+        the value.
+
+        This replaces the per-site ``_emit_root_result`` calls that six
+        migrated Map / Set builtins carried.  Six sites remembering to root
+        is the shape a rule exists to retire — the Decimal siblings beside
+        them never got one.
+
+        Only ``i32`` / ``i32_pair`` results of call-shaped expressions are
+        rooted.  A ``SlotRef`` or literal NAMES a value its binder already
+        rooted rather than producing one, and a constructor or array literal
+        pushed at its own ``$alloc`` and so took the branch above.
+        """
+        if not isinstance(
+            expr, (ast.FnCall, ast.QualifiedCall, ast.ModuleCall)
+        ):
+            return instructions
+        shape = self._stack_shape_of(expr)
+        if shape == "i32_pair":
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+            rooted = list(instructions)
+            self.needs_alloc = True
+            rooted.append(f"local.set {ret_len}")
+            rooted.append(f"local.set {ret_ptr}")
+            rooted.extend(gc_shadow_push(ret_ptr))
+            rooted.append(f"local.get {ret_ptr}")
+            rooted.append(f"local.get {ret_len}")
+            return rooted
+        if shape == "i32" and self._expr_result_is_pointer(expr):
+            ret_local = self.alloc_local("i32")
+            rooted = list(instructions)
+            self.needs_alloc = True
+            rooted.append(f"local.set {ret_local}")
+            rooted.extend(gc_shadow_push(ret_local))
+            rooted.append(f"local.get {ret_local}")
+            return rooted
+        return instructions
 
     def _stack_shape_of(self, expr: ast.Expr) -> str:
         """What *expr*'s lowering leaves on the operand stack.

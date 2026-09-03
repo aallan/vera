@@ -49,6 +49,13 @@ repos:
         pass_filenames: false
         files: '(tests/conformance/.*|vera/.*\.py$|vera/grammar\.lark$)'
 
+      - id: conformance-suite-eager-gc
+        name: conformance suite (eager GC)
+        entry: env VERA_EAGER_GC=1 .venv/bin/python scripts/check_conformance.py
+        language: system
+        pass_filenames: false
+        files: '(tests/conformance/.*|vera/.*\.py$|vera/grammar\.lark$)'
+
       - id: vera-examples
         name: vera examples
         entry: .venv/bin/python scripts/check_examples.py
