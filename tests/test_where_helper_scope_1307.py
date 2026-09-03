@@ -217,6 +217,51 @@ where {
 }
 """
 
+TWO_HELPERS_MUTUALLY_RECURSIVE = """public fn parity(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  even_helper(@Nat.0)
+}
+where {
+  fn even_helper(@Nat -> @Bool)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then {
+      true
+    } else {
+      odd_helper(@Nat.0 - 1)
+    }
+  }
+
+  fn odd_helper(@Nat -> @Bool)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then {
+      false
+    } else {
+      even_helper(@Nat.0 - 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if parity(6) then { 1 } else { 0 }
+}
+"""
+
+
 HELPER_SHADOWS_TOP_LEVEL = """private fn shared(@Int -> @Int)
   requires(true)
   ensures(true)
@@ -354,6 +399,23 @@ class TestAcceptedShapes:
     def test_helpers_in_one_block_see_each_other(self) -> None:
         _check_clean(SIBLING_HELPERS_IN_ONE_BLOCK)
         assert _run(SIBLING_HELPERS_IN_ONE_BLOCK, "top", [1]) == 2
+
+    def test_two_helpers_recurse_through_each_other(self) -> None:
+        """Mutual recursion BETWEEN two helpers, not through the parent.
+
+        spec §5.6.2's own example recurses a helper against its
+        top-level parent, which resolves through `_top_level_fn_infos`;
+        this pair resolves each call through the frame walk alone, in
+        both directions, with a `decreases` measure on each — the shape
+        where a scope rule that lost sibling-helper visibility would
+        show up as a termination failure rather than an unknown name.
+        """
+        _check_clean(TWO_HELPERS_MUTUALLY_RECURSIVE)
+        _verify_ok(TWO_HELPERS_MUTUALLY_RECURSIVE)
+        assert _run(TWO_HELPERS_MUTUALLY_RECURSIVE, "main", []) == 1
+        # A Bool export comes back as the i32 the module returns.
+        assert _run(TWO_HELPERS_MUTUALLY_RECURSIVE, "parity", [6]) == 1
+        assert _run(TWO_HELPERS_MUTUALLY_RECURSIVE, "parity", [7]) == 0
 
     def test_nested_helper_visible_to_its_own_parent(self) -> None:
         _check_clean(NESTED_HELPERS)
@@ -538,6 +600,45 @@ public fn main(@Unit -> @Int)
         assert any(
             "where-helper of 'parent_fn'" in d for _, d in check_errors
         ), check_errors
+
+    HELPER_CALL_MAIN = """import libhelpers(parent_fn);
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  inner_helper(3)
+}
+"""
+
+    def test_calling_an_imported_modules_helper_is_refused(
+        self, tmp_path: Path,
+    ) -> None:
+        """#1383 — the cross-file half, and the same invariant.
+
+        The importer imports the PARENT and then bare-calls its helper.
+        The name is not reachable (a helper has no visibility, so the
+        import injection never sees it) and codegen refuses the program
+        — but the checker only WARNED (E200, `ok: true`, exit 0), so
+        `vera check` passed a program `vera run` cannot build, exactly
+        as it did inside one file before this PR.  The advice was worse
+        across the boundary: "define it in this file" for a name that is
+        declared, is visible in the imported source, and cannot be
+        imported (`import libhelpers(inner_helper)` is E150).
+        """
+        check_errors, _result, _cg = build_multi_module_past_check(
+            tmp_path, {
+                "main.vera": self.HELPER_CALL_MAIN,
+                "libhelpers.vera": self.LIB,
+            },
+        )
+        codes = [c for c, _ in check_errors]
+        assert "E178" in codes, check_errors
+        described = " ".join(d for _, d in check_errors)
+        assert "inner_helper" in described and "parent_fn" in described
+        assert "libhelpers" in described, check_errors
+        assert "E200" not in codes, check_errors
 
     def test_importing_the_parent_still_works(self, tmp_path: Path) -> None:
         from tests.module_fixture_helpers import build_multi_module, module_value

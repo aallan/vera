@@ -629,10 +629,24 @@ class TypeChecker(
                 self._top_level_fn_infos[decl.name] = self._fn_info_for_decl(
                     decl, visibility=tld.visibility,
                 )
-        self._where_helper_parents = where_helper_parents(
-            tld.decl for tld in program.declarations
-            if isinstance(tld.decl, ast.FnDecl)
-        )
+        # #1307/#1383: which declaration owns each `where`-helper name, over
+        # THIS program and every module it resolves.  A helper is local to
+        # its parent whichever file it is written in — it carries no
+        # visibility, so the import injection never offers it — and the
+        # importer's bare call therefore resolves to nothing on both tables.
+        # Indexing the module graph is what lets the diagnostic say so:
+        # across a file boundary E200's "define it in this file" is worse
+        # advice than within one, because the name IS declared, IS visible
+        # in the imported source, and cannot be imported (E150).
+        self._where_helper_parents = {}
+        for label, decls in self._helper_index_sources(program):
+            for name, parents in where_helper_parents(decls).items():
+                owners = self._where_helper_parents.setdefault(name, set())
+                owners.update(
+                    f"'{parent}'" if label is None
+                    else f"'{parent}' in module '{label}'"
+                    for parent in parents
+                )
         for tld in program.declarations:
             # #815: a built-in redefinition (E151) is already reported and not
             # registered; skip checking its body so it isn't re-checked against
@@ -891,6 +905,30 @@ class TypeChecker(
         self.env.current_return_type = saved_return
         self.env.current_effect_row = saved_effect
         self.env.current_effect_order = saved_effect_order
+
+    def _helper_index_sources(
+        self, program: ast.Program,
+    ) -> list[tuple[str | None, list[ast.FnDecl]]]:
+        """(module label, function declarations) for the helper index.
+
+        ``None`` labels this program's own declarations; a resolved
+        module is labelled by its dotted path, so E178 can name the file
+        the helper lives in.  Transitive modules are included: their
+        helpers are no more callable here than a direct import's, and a
+        bare call to one fails codegen the same way.
+        """
+        sources: list[tuple[str | None, list[ast.FnDecl]]] = [(
+            None,
+            [tld.decl for tld in program.declarations
+             if isinstance(tld.decl, ast.FnDecl)],
+        )]
+        for mod in self._resolved_modules or ():
+            sources.append((
+                ".".join(mod.path),
+                [tld.decl for tld in mod.program.declarations
+                 if isinstance(tld.decl, ast.FnDecl)],
+            ))
+        return sources
 
     def _fn_info_for_decl(
         self, decl: ast.FnDecl, visibility: str | None = None,
