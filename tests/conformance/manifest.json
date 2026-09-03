@@ -1230,7 +1230,7 @@
     "id": "ch07_state_clause_transform",
     "file": "ch07_state_clause_transform.vera",
     "chapter": 7,
-    "title": "State clause bodies execute — intrinsic-hybrid semantics (#976)",
+    "title": "State clause bodies execute \u2014 intrinsic-hybrid semantics (#976)",
     "level": "run",
     "spec_ref": "Section 7.5.2",
     "features": [
@@ -1289,9 +1289,9 @@
     "id": "ch07_exn_string",
     "file": "ch07_exn_string.vera",
     "chapter": 7,
-    "title": "Exn<String> effect handler — String payload",
+    "title": "Exn<String> effect handler \u2014 String payload",
     "level": "run",
-    "spec_ref": "Section 7.4 Exn<E> handler — String payload",
+    "spec_ref": "Section 7.4 Exn<E> handler \u2014 String payload",
     "features": [
       "exn_handler",
       "string_exception"
@@ -1724,7 +1724,7 @@
     "id": "ch08_transitive_module_import_base",
     "file": "ch08_transitive_module_import_base.vera",
     "chapter": 8,
-    "title": "Transitive import chain — base module",
+    "title": "Transitive import chain \u2014 base module",
     "level": "check",
     "spec_ref": "Section 8.6.4",
     "features": [
@@ -1736,7 +1736,7 @@
     "id": "ch08_transitive_module_import_mid",
     "file": "ch08_transitive_module_import_mid.vera",
     "chapter": 8,
-    "title": "Transitive import chain — middle module",
+    "title": "Transitive import chain \u2014 middle module",
     "level": "verify",
     "spec_ref": "Section 8.6.4",
     "features": [
@@ -3489,6 +3489,19 @@
       "prelude_adt_shadow",
       "alias_resolution",
       "assert"
+    ]
+  },
+  {
+    "id": "ch08_builtin_adt_redefinition_rejected",
+    "file": "ch08_builtin_adt_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not redefine a special-cased built-in ADT",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
     ]
   },
   {

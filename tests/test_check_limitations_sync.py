@@ -207,8 +207,9 @@ class TestIssueColumnScoping:
         The set tracks the FILE, which is the fixture: a row retired by a
         fix takes its citations with it.  ``#1309`` left when the three
         rows that cited it — the branch-order siblings #1316, #1321 and
-        #1331 — were closed by the one resolution spine, and nothing else
-        in the file names it.  Seven citations still carry the property,
+        #1331 — were closed by the one resolution spine, and ``#1277`` and
+        ``#1305`` left with those same rows and the #1312 row beside them.
+        Five citations still carry the property,
         which is what this pins; the scoping itself is pinned
         independently on synthetic tables above, so the file's contents
         cannot make the SCAN untested.

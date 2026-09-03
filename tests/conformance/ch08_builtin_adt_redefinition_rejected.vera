@@ -1,0 +1,19 @@
+-- Conformance: a `data` name the compiler special-cases is reserved (Chapter 8, Section 8.4.1)
+-- Tests: E158 — `data Future` is rejected at check (#1397).
+-- The prelude's data types (Option, Result, Ordering, UrlParts) stay
+-- declarable: a program may shadow those, and §8.4.1 says so. `Future` is the one whose SEMANTICS codegen recognises by name — how a
+-- value is rendered, compared and laid out — so a declaration of either
+-- could not be told apart from the built-in. Accepting it was silent:
+-- `show(MkShadow(7))` under this declaration printed `(7)`, dropping the
+-- constructor name, and equality was refused against the built-in's fields.
+private data Future {
+  MkShadow(Int)
+}
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

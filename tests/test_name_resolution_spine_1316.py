@@ -62,6 +62,7 @@ Structure of this file, and why each part is here:
 """
 from __future__ import annotations
 
+
 import pytest
 
 from vera import ast, naming
@@ -79,6 +80,17 @@ from tests.codegen_helpers import (
     _run,
     wat_fn_body,
 )
+
+
+def _check(source: str) -> list[object]:
+    """The CHECK-phase diagnostics for *source*.
+
+    `_compile` runs code generation, which never sees a program the checker
+    refuses — so a check-phase rail has to be asked at the check phase.
+    """
+    from tests.checker_helpers import _errors
+
+    return list(_errors(source))
 
 
 def _nt(name: str, args: tuple[ast.TypeExpr, ...] | None = None) -> ast.NamedType:
@@ -333,6 +345,18 @@ class TestResolveNamedIsDrivenByTheSpine:
 # =====================================================================
 
 
+#: The name a `data` declaration may no longer take (#1397, E158): the
+#: compiler special-cases their SEMANTICS by name, so a declaration of either
+#: cannot be told apart from the built-in.  They stay in the ALIAS battery —
+#: `type Tuple = Int;` is still legal and still has to resolve correctly.
+_UNDECLARABLE = ("Future",)
+
+
+def _declarable_type_names() -> list[str]:
+    """:func:`_builtin_type_names` minus the names E158 now refuses."""
+    return [n for n in _builtin_type_names() if n not in _UNDECLARABLE]
+
+
 def _builtin_type_names() -> list[str]:
     """Every name a user ``data`` declaration could shadow, from the LIVE
     registries, so a name added later joins the battery without anyone
@@ -377,18 +401,24 @@ _CONTROL_ADT = "ZzShadowCtl"
 # them needs a per-namespace "declared HERE" set on the wasm side, which is
 # the same per-owner keying PR-C3 builds; skipped rather than asserted wrong
 # so the cell turns green by itself when that lands.
-_SHOW_RESIDUE = {
+#: The ability-dispatch residue that remains OPEN (#1397).  `Future` is
+#: refused at declaration now (E158), but `Tuple` cannot be: this tree
+#: deliberately supports a user `data Tuple` — `vera/wasm/data.py`'s FIX-3
+#: discriminates the built-in variadic carrier from it, and
+#: `TestFix3UserTupleGate` plus two verifier cells pin that it constructs,
+#: verifies and runs.  So the show/eq misbehaviour stays measured and
+#: skipped rather than asserted wrong, and turns green by itself when #1397
+#: is ruled on.  Identical at `release/v0.2.0`.
+_SHOW_RESIDUE: dict[str, str] = {
     "Tuple": (
-        "pre-existing: `_composite_ctor_plans` renders a declared `data "
-        "Tuple` through the built-in variadic-product path, dropping the "
-        "constructor name (`(7)`); identical at release/v0.2.0"
-    ),
-    "Future": (
-        "pre-existing: the show/hash grounding peels a declared `data "
-        "Future` as a transparent wrapper; identical at release/v0.2.0"
+        "open (#1397): `_composite_ctor_plans` renders a user `data Tuple` "
+        "through the built-in variadic-product path, dropping the "
+        "constructor name (`(7)`), and Eq is refused (E243) against the "
+        "built-in's fields; identical at release/v0.2.0.  Cannot be closed "
+        "by reserving the name — this tree supports a user `Tuple` on "
+        "purpose (vera/wasm/data.py FIX-3, TestFix3UserTupleGate)"
     ),
 }
-
 
 def _shadow_program(name: str) -> str:
     """The same program, parameterised by the declared ADT's name."""
@@ -423,11 +453,11 @@ class TestDeclaredAdtBeatsTheBuiltinName:
     for a wrong reason.
     """
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_a_data_declaration_of_a_builtin_name_runs(self, name: str) -> None:
         assert _run(_shadow_program(name), fn="main") == 7
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_it_emits_the_control_program_byte_for_byte(
         self, name: str,
     ) -> None:
@@ -442,14 +472,14 @@ class TestDeclaredAdtBeatsTheBuiltinName:
             assert wat_fn_body(shadowed.wat, fn) == wat_fn_body(
                 control.wat, fn), f"{name}: {fn} differs from the control"
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_no_diagnostic_at_all(self, name: str) -> None:
         """Base: ``[E602]`` at the match arm plus an ``[E620]`` cascade."""
         result = _compile(_shadow_program(name))
         assert [d.error_code for d in result.diagnostics] == []
         assert sorted(result.exports) == ["main", "unwrap"]
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_show_over_a_shadow_renders_the_declaration(
         self, name: str,
     ) -> None:
@@ -462,6 +492,8 @@ class TestDeclaredAdtBeatsTheBuiltinName:
         nothing on stack``.  Measured by withdrawing the guard, so the cell
         is known to bite rather than assumed to.
         """
+        if name in _SHOW_RESIDUE:
+            pytest.skip(_SHOW_RESIDUE[name])
         source = (
             f"private data {name} {{ MkShadowS(Int) }}\n\n"
             "public fn main(@Unit -> @String)\n"
@@ -470,16 +502,16 @@ class TestDeclaredAdtBeatsTheBuiltinName:
             "  show(MkShadowS(7))\n"
             "}\n"
         )
-        if name in _SHOW_RESIDUE:
-            pytest.skip(_SHOW_RESIDUE[name])
         result = _compile_ok(source)
         assert execute(result, fn_name="main").value == "MkShadowS(7)"
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_equality_over_a_shadow_compares_the_declaration(
         self, name: str,
     ) -> None:
         """The structural-Eq arm of the same dispatch."""
+        if name in _SHOW_RESIDUE:
+            pytest.skip(_SHOW_RESIDUE[name])
         source = (
             f"private data {name} {{ MkShadowS(Int) }}\n\n"
             "public fn main(@Unit -> @Int)\n"
@@ -488,11 +520,9 @@ class TestDeclaredAdtBeatsTheBuiltinName:
             f"  if MkShadowS(7) == MkShadowS(7) then {{ 7 }} else {{ 0 }}\n"
             "}\n"
         )
-        if name in _SHOW_RESIDUE:
-            pytest.skip(_SHOW_RESIDUE[name])
         assert _run(source, fn="main") == 7
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_a_shadow_INSIDE_a_container_is_never_silently_miscompiled(
         self, name: str,
     ) -> None:
@@ -674,6 +704,52 @@ def _alias_program(name: str) -> str:
     )
 
 
+class TestSpecialCasedBuiltinAdtsAreRefused:
+    """#1397 — `data Tuple` / `data Future` are refused at check (E158).
+
+    The spine tells a declared `Array` / `Map` / `Set` / `Decimal` apart from
+    the container of that name, which is what #1321/#1331 established.  It
+    cannot do that for these two: `Tuple` is registered by
+    `_register_builtin_adts` AND rendered through a variadic-product path
+    keyed on its name, and `Future` is the transparent wrapper several
+    derivations peel before asking what the name means.  Measured at
+    `release/v0.2.0`: `show(MkShadowS(7))` under `data Tuple` printed `(7)`,
+    dropping the constructor name, and the same program under `data Future`
+    compiled to a module that fails to load.
+
+    So the name is refused, on the rule E151 already applies to built-in
+    functions and E152 to built-in effects.
+    """
+
+    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    def test_the_declaration_is_refused(self, name: str) -> None:
+        codes = [d.error_code for d in _check(_shadow_program(name))]
+        assert "E158" in codes, codes
+
+    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    def test_an_alias_of_the_same_name_is_still_legal(self, name: str) -> None:
+        """Only the DATA namespace is reserved.  `type Tuple = Int;` shadows
+        nothing the compiler special-cases by name — it resolves through the
+        spine like any other alias, and #1309's battery covers it."""
+        assert _run(_alias_program(name), fn="main") == 42
+
+    @pytest.mark.parametrize(
+        "name", ["Option", "Result", "Ordering", "UrlParts", "Array", "Map"])
+    def test_every_other_builtin_name_stays_declarable(
+        self, name: str,
+    ) -> None:
+        """The reservation is exactly two names.
+
+        §8.4.1 makes the prelude's data types ordinary declarations a program
+        may shadow, `examples/vera/collections.vera` ships a `public data
+        Option<T>`, and #1312's E623 rail is built on entry-file shadowing
+        being legal — so widening this would refuse programs the language
+        documents as valid.
+        """
+        assert "E158" not in [
+            d.error_code for d in _check(_shadow_program(name))]
+
+
 class TestPreludeNamespaceScope:
     """A main-file shadow reaches the main file's bodies and nothing else."""
 
@@ -696,7 +772,7 @@ class TestPreludeNamespaceScope:
         """The whole-name sweep, now with no residuals."""
         assert _run(_alias_program(name), fn="main") == 42
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_a_data_shadow_of_any_builtin_name_leaves_the_prelude_alone(
         self, name: str,
     ) -> None:
@@ -881,7 +957,7 @@ class TestCrossDerivationDifferential:
             "element wasm type": ctx._element_wasm_type(name),
         }
 
-    @pytest.mark.parametrize("name", _builtin_type_names())
+    @pytest.mark.parametrize("name", _declarable_type_names())
     def test_a_declared_shadow_answers_as_a_fresh_name_does(
         self, name: str,
     ) -> None:
