@@ -15,13 +15,32 @@ class RegistrationMixin:
     """Methods for Pass 1 registration and ADT layout computation."""
 
     def _register_all(self, program: ast.Program) -> None:
-        """Register all function signatures, ADT layouts, and type aliases."""
+        """Register all function signatures, ADT layouts, and type aliases.
+
+        TYPES FIRST, then functions.  A function's WASM signature is derived
+        by asking the resolution spine what each parameter's type NAME means
+        (``_type_expr_to_wasm_type`` -> :func:`vera.naming.classify_named`),
+        and the spine reads ``_alias_env`` — so every declaration this
+        namespace makes has to be in that env before the first signature is
+        derived, or a function declared above a ``data`` or ``type`` it names
+        is measured against a namespace that does not contain it.  One
+        source-order walk over the TYPE declarations keeps the shared
+        declaration-index space (#1208) exactly as it was: only ``data`` and
+        ``type`` are stamped, and their relative order is unchanged by
+        skipping the functions between them.
+
+        Pre-split, the walk registered in one pass and synced at the end, so
+        Pass 1 ran entirely against the PREVIOUS env and leaned on the
+        Pass-1.9 re-registration to repair whatever came out
+        ``"unsupported"``.  That repair is still there — it also covers the
+        prelude's ADTs, which register later still — but it is now a backstop
+        rather than the mechanism.
+        """
         self._register_builtin_adts()
+        self._sync_alias_env()
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl):
-                self._register_fn(decl)
-            elif isinstance(decl, ast.DataDecl):
+            if isinstance(decl, ast.DataDecl):
                 self._register_data(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 # #1208: aliases and ADTs share ONE index space, so the stamp
@@ -31,8 +50,35 @@ class RegistrationMixin:
                 self._type_aliases[decl.name] = decl.type_expr
                 if decl.type_params:
                     self._type_alias_params[decl.name] = decl.type_params
-        # #1208: the naming env describes the maps just populated.
-        self._sync_alias_env()
+            else:
+                continue
+            # #1208: the naming env describes the maps, so it is re-derived
+            # as each TYPE declaration lands — not once at the end.  A
+            # constructor field naming an earlier `type` or `data` is
+            # measured through this env (`_resolve_field_wasm_type` ->
+            # `_type_expr_to_wasm_type` -> `classify_named`), so a
+            # once-at-the-end sync would measure `data PA { MkPA(U, BB) }`
+            # under `type U = Unit;` against an env that held neither, and
+            # the erased field would take a 4-byte i32 slot construction
+            # never writes (#1043's differential).
+            self._sync_alias_env()
+        # #1316: this namespace's own `data` names join `_namespace_declared
+        # _adts`, which is what `_adt_members_in_scope` subtracts from the
+        # registered layouts to recover global infrastructure.  A UNION, not
+        # an assignment: `_build_adt_membership` (Pass 0.5) has already put
+        # every module's there and states the same thing about the entry
+        # program, and it returns early for a single-file program — where
+        # nothing else records the entry's declarations at all, and the
+        # PRELUDE's membership would then take `data Array { … }` for
+        # infrastructure and read its own `Array<T>` parameters as a one-word
+        # ADT pointer.
+        self._namespace_declared_adts |= frozenset(
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        )
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                self._register_fn(tld.decl)
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function's WASM signature."""

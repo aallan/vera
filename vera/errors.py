@@ -900,6 +900,7 @@ ERROR_CODES: dict[str, str] = {
     "E155": "Bare function name supplied by two imports",
     "E156": "Bare data type name supplied by two imports",
     "E157": "Bare constructor name supplied by two imports",
+    "E158": "Data type redefines a special-cased built-in ADT",
     "E160": "Array index must be Int or Nat",
     "E161": "Cannot index non-array type",
     "E170": "Let binding type mismatch",
@@ -1013,6 +1014,7 @@ ERROR_CODES: dict[str, str] = {
     "E620": "Function dropped: skipped callee or no function table",
     "E621": "Name collision: module ADT contends with a prelude data type",
     "E622": "Cannot infer a generic call's type argument",
+    "E623": "Name collision: entry-file ADT contends with a module data type",
     "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",

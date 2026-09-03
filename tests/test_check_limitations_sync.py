@@ -203,11 +203,21 @@ class TestIssueColumnScoping:
         when #1298 was fixed.  A citation is pinned here for the SCOPING
         behaviour it exercises, so one whose host row is gone is dropped
         rather than kept as a reference to text that no longer exists.
+
+        The set tracks the FILE, which is the fixture: a row retired by a
+        fix takes its citations with it.  ``#1309`` left when the three
+        rows that cited it — the branch-order siblings #1316, #1321 and
+        #1331 — were closed by the one resolution spine, and ``#1277`` and
+        ``#1305`` left with those same rows and the #1312 row beside them.
+        Five citations still carry the property,
+        which is what this pins; the scoping itself is pinned
+        independently on synthetic tables above, so the file's contents
+        cannot make the SCAN untested.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268, 1277, 1281, 1304, 1305, 1309}
+        prose_only = {1268, 1281, 1304}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

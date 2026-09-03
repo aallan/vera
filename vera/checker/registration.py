@@ -870,10 +870,66 @@ class RegistrationMixin:
         elif isinstance(decl, ast.AbilityDecl):
             self._register_ability(decl)
 
+    #: The built-in ADT names whose SEMANTICS the compiler special-cases, so
+    #: a user declaration of the name cannot be told apart from the built-in
+    #: (#1397).  ``Future`` is the transparent wrapper: several derivations
+    #: peel a ``Future<…>`` spelling before asking what the name means, so a
+    #: declared ``data Future`` compiled to a module that fails to load.
+    #:
+    #: ``Tuple`` is NOT here, though it has the same disease — ``show`` under
+    #: a user ``data Tuple`` drops the constructor name and prints ``(7)``,
+    #: and equality is refused (E243) against the BUILT-IN's non-Eq fields.
+    #: Reserving it is a language change this tree already decided against:
+    #: ``vera/wasm/data.py``'s FIX-3 discriminates the built-in variadic
+    #: carrier from a user ``data Tuple<A, B>`` on purpose, and
+    #: ``TestFix3UserTupleGate`` plus two verifier cells pin that a user
+    #: ``Tuple`` constructs, verifies and runs.  Refusing it would retract
+    #:support those tests assert.  Left open on #1397 for a ruling.
+    #:
+    #: NOT the other built-in ADTs either.  §8.4.1 makes the prelude's data
+    #: types ordinary declarations a program may shadow, ``examples/vera/
+    #: collections.vera`` ships a ``public data Option<T>``, and #1312's E623
+    #: rail is built on entry-file shadowing being legal.  NOT the containers
+    #: (``Array``, ``Map``, ``Set``, ``Decimal``): the resolution spine tells
+    #: those apart from a declaration correctly, which is #1321/#1331.
+    _SPECIAL_CASED_BUILTIN_ADTS = ("Future",)
+
+    def _check_special_cased_builtin_adt(self, decl: ast.DataDecl) -> None:
+        """Refuse a `data` whose name the compiler special-cases (#1397).
+
+        The same rule E151 applies to built-in FUNCTIONS and E152 to built-in
+        EFFECTS: a name whose meaning the compiler hard-codes cannot also be
+        a user declaration, because nothing downstream can tell the two
+        apart.  Accepting it was silent for ``Tuple`` — ``show`` dropped the
+        constructor name — which is the outcome DESIGN §0.2 excludes.
+        """
+        if decl.name not in self._SPECIAL_CASED_BUILTIN_ADTS:
+            return
+        self._error(
+            decl,
+            f"'{decl.name}' is a built-in type whose meaning the compiler "
+            f"special-cases, so it cannot be redeclared as a data type.",
+            rationale=(
+                f"Unlike the prelude's data types, which a program may "
+                f"shadow, '{decl.name}' is recognised by name throughout "
+                f"code generation — how it is rendered, compared and laid "
+                f"out. A declaration of that name cannot be told apart from "
+                f"the built-in, so the program would compile against a "
+                f"mixture of the two."
+            ),
+            fix=(
+                f"Rename the declaration. If you meant the built-in "
+                f"'{decl.name}', use it directly instead of declaring it."
+            ),
+            spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
+            error_code="E158",
+        )
+
     def _register_data(
         self, decl: ast.DataDecl, visibility: str | None = None,
     ) -> None:
         """Register an ADT and its constructors."""
+        self._check_special_cased_builtin_adt(decl)
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
         # #1208: allocate the declaration index BEFORE resolving anything, so

@@ -712,11 +712,11 @@ public fn main(@Unit -> @Int)
         generics = {("a",): frozenset({"gen"}), ("b",): frozenset({"gen"})}
         # Neither is qualified-only: both own the entry's bare name, so both
         # sets of clones mangle to `gen$…`.
-        assert not gen._generics_cannot_collide(
+        assert not gen._declarations_cannot_collide(
             "gen", ("a",), ("b",), generics, {("a",): set(), ("b",): set()},
         )
         # One qualified-only: distinct namespaces, so the pair is fine.
-        assert gen._generics_cannot_collide(
+        assert gen._declarations_cannot_collide(
             "gen", ("a",), ("b",), generics,
             {("a",): {"gen"}, ("b",): set()},
         )
@@ -807,3 +807,150 @@ public fn main(@Unit -> @Int)
         assert _errors(cg_errors, "E608"), (
             f"two same-named non-generics were let through: {cg_errors}"
         )
+
+
+# =====================================================================
+# #1387 — E155's prescribed remedy must actually compile
+# =====================================================================
+
+
+_LIBA_PICK = """\
+module liba;
+
+public fn pick(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 100
+}
+"""
+
+_LIBB_PICK = _LIBA_PICK.replace("module liba;", "module libb;").replace(
+    "+ 100", "+ 200")
+
+_ENTRY_LOCAL_PLUS_QUALIFIED = """\
+import liba;
+import libb;
+
+private fn pick(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(1) + liba::pick(1) + libb::pick(1)
+}
+"""
+
+
+class TestPrescribedRemedyCompiles:
+    """E155 and E608 must not prescribe contradictory fixes (#1387).
+
+    §8.5.2.2's diagnostic tells the reader, verbatim, to "declare 'pick' in
+    this file — a local declaration takes every bare call — and use the
+    module-qualified form 'liba::pick(...)' for the imported ones".  Doing
+    exactly that was `[E608]` at compile, whose own fix text then said to
+    rename the declaration in one of the source modules — so the remedy the
+    checker named was unreachable, and #187's "no way to resolve the
+    collision without renaming" was still literally true.
+
+    No bare-name collision exists in that shape: with a local `pick`
+    declared, BOTH modules' functions are shadowed and
+    `_register_shadowed_import` emits each under its own `mod$<path>$pick`.
+    The rail fired on provenance alone, before that ran — the over-breadth
+    #1281 removed for generics, still in place for non-generics, which land
+    in distinct namespaces by exactly the same rule.
+    """
+
+    def test_the_remedy_the_checker_prescribes_runs(
+        self, tmp_path: Path,
+    ) -> None:
+        """Base: `[E608]` at compile on a check-green program."""
+        _verr, result, cg_errors = build_multi_module(
+            tmp_path / "remedy",
+            {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
+             "main.vera": _ENTRY_LOCAL_PLUS_QUALIFIED},
+        )
+        assert cg_errors == [], cg_errors
+        # 1 (local) + 101 (liba) + 201 (libb): each qualified call reaches its
+        # OWN module, which a first-wins bare emission could not do.
+        assert module_value(result) == ("ok", 303)
+
+    def test_each_module_keeps_its_own_symbol(self, tmp_path: Path) -> None:
+        """Both are emitted, under distinct owner-qualified names.
+
+        The run value alone would also be satisfied by one body being
+        emitted twice if the two happened to agree; these are the symbols.
+        """
+        _verr, result, _cg = build_multi_module(
+            tmp_path / "symbols",
+            {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
+             "main.vera": _ENTRY_LOCAL_PLUS_QUALIFIED},
+        )
+        assert "$mod$liba$pick" in result.wat, "liba's body is missing"
+        assert "$mod$libb$pick" in result.wat, "libb's body is missing"
+
+    def test_without_a_local_declaration_the_checker_still_refuses(
+        self, tmp_path: Path,
+    ) -> None:
+        """The negative twin: nothing owns the bare name, so §8.5.2.2 stands.
+
+        Relaxing the compile rail must not relax the CHECK-phase ambiguity —
+        two imports supplying one bare name is refused there, and that is
+        the diagnostic whose fix text this change makes true.
+        """
+        entry = """\
+import liba;
+import libb;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  liba::pick(1) + libb::pick(1)
+}
+"""
+        check_errors, _result, _cg = build_multi_module_past_check(
+            tmp_path / "no-local",
+            {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
+             "main.vera": entry},
+        )
+        assert "E155" in [c for c, _ in check_errors], check_errors
+
+    def test_a_genuinely_colliding_bare_export_still_gets_e608(
+        self, tmp_path: Path,
+    ) -> None:
+        """The rail must keep the case it exists for.
+
+        With `liba`'s `pick` imported bare and unshadowed, it OWNS the flat
+        `$pick`; `libb`'s would overwrite it.  One owner is one too many for
+        the relaxation, which requires that NEITHER module owns the name.
+        """
+        entry = """\
+import liba(pick);
+import libb;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pick(1) + libb::pick(1)
+}
+"""
+        errors, _result, cg_errors = build_multi_module_past_check(
+            tmp_path / "real-collision",
+            {"liba.vera": _LIBA_PICK, "libb.vera": _LIBB_PICK,
+             "main.vera": entry},
+        )
+        codes = [c for c, _ in errors] + [c for c, _ in cg_errors]
+        assert "E155" in codes or "E608" in codes, codes

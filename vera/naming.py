@@ -101,6 +101,7 @@ is what makes the iterative resolution's dependency graph a DAG.
 
 from __future__ import annotations
 
+import enum
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -127,9 +128,13 @@ from vera.types import (
 
 __all__ = [
     "EMPTY_ALIAS_ENV",
+    "UNBOUNDED",
     "AliasEnv",
+    "NameSort",
     "RefinementBinder",
+    "alias_body",
     "alias_env_from_environment",
+    "classify_named",
     "family_base_name",
     "family_name",
     "predicate_binder_key",
@@ -279,6 +284,130 @@ and only by its own declaration index.  A sentinel rather than
 runs past the alias count.
 """
 
+UNBOUNDED = _UNBOUNDED
+"""Public spelling of the unbounded visibility limit, for callers of
+:func:`classify_named` outside an alias body — which is every consumer that
+is not this module's own alias resolution."""
+
+
+class NameSort(enum.Enum):
+    """Which branch of the ONE resolution spine a type NAME takes.
+
+    The spine is :func:`classify_named`, and this is its answer.  Every
+    derivation that needs to know what a name MEANS — the checker's
+    ``_resolve_named``, codegen's WAT-width derivation, the WASM layer's
+    canonicalisation — asks for this rather than re-implementing the branch
+    order, because a derivation that orders the branches differently
+    disagrees with the type the program was checked and verified against
+    (#1309, #1316, #1321, #1331).
+    """
+
+    TYPE_PARAM = "type_param"
+    """A ``forall`` variable or an alias's own parameter.  Shadows everything."""
+
+    PRIMITIVE = "primitive"
+    """A member of :data:`vera.types.PRIMITIVES`, written without arguments."""
+
+    ALIAS = "alias"
+    """A ``type`` alias visible here, applied at its declared arity.
+    :func:`alias_body` gives the body with the supplied arguments substituted."""
+
+    ALIAS_ARITY_MISMATCH = "alias_arity_mismatch"
+    """A visible alias applied at the WRONG arity — the checker reports E133
+    and produces an unknown type.  A separate sort because the name IS the
+    alias's; it is only unusable at this application."""
+
+    DECLARED_ADT = "declared_adt"
+    """A ``data`` declaration this namespace can see, at or before this
+    point in the shared declaration-index space.  Ahead of every built-in
+    interpretation of the name: §8.4.1 lets a declaration take a name the
+    prelude or a built-in container already uses, and the declaration wins."""
+
+    BUILTIN = "builtin"
+    """Nothing this namespace declares — so whatever the name means globally:
+    a built-in container (``Array`` / ``Map`` / ``Set`` / ``Tuple``), the
+    opaque ``Decimal``, a removed alias, or an unknown name that resolves to
+    an opaque ADT.  Which of those it is a REPRESENTATION question, and the
+    caller answers it; the spine's job ends at "not declared here"."""
+
+
+def classify_named(
+    te: ast.NamedType,
+    env: AliasEnv,
+    *,
+    type_params: frozenset[str] | None = None,
+    limit: int = _UNBOUNDED,
+) -> NameSort:
+    """THE resolution spine: which branch does ``te.name`` take in *env*?
+
+    Type parameter (SHADOWS everything) -> primitive -> alias (arity-checked)
+    -> DECLARED ADT -> everything built-in.  This is the order
+    :func:`_resolve_named` documents and the order the checker resolves in;
+    it lives here, once, so no consumer can hold a different one.
+
+    *type_params* defaults to ``env.type_params``; *limit* bounds visibility
+    to declarations with index ``< limit`` and is only ever narrowed inside an
+    alias BODY (see :func:`_resolve_alias`).  Every other caller leaves it
+    :data:`UNBOUNDED`.
+
+    Pure and total: no diagnostics, no exceptions, no state.
+    """
+    params = env.type_params if type_params is None else type_params
+    name = te.name
+    if name in params:
+        return NameSort.TYPE_PARAM
+    if name in PRIMITIVES and not te.type_args:
+        return NameSort.PRIMITIVE
+    idx = env._order.get(name)
+    # ``name in env.aliases`` is what makes the branch TOTAL: the two maps
+    # agree for every environment this module builds, but an env assembled
+    # elsewhere with an ``_order`` entry and no body must fall through to the
+    # ADT branch rather than raise.
+    if idx is not None and idx < limit and name in env.aliases:
+        declared = env.alias_params.get(name) or ()
+        supplied = len(te.type_args) if te.type_args else 0
+        if supplied != len(declared):
+            return NameSort.ALIAS_ARITY_MISMATCH
+        return NameSort.ALIAS
+    adt_idx = env.data_types.get(name)
+    if adt_idx is not None and adt_idx < limit:
+        return NameSort.DECLARED_ADT
+    return NameSort.BUILTIN
+
+
+def alias_body(
+    te: ast.NamedType,
+    env: AliasEnv,
+    *,
+    type_params: frozenset[str] | None = None,
+    limit: int = _UNBOUNDED,
+) -> ast.TypeExpr:
+    """The SYNTACTIC body an :attr:`NameSort.ALIAS` classification names,
+    with ``te``'s arguments substituted for the alias's own parameters.
+
+    The syntactic counterpart of the semantic substitution
+    :func:`_resolve_named` performs — for the consumers that must keep
+    walking type EXPRESSIONS (codegen's width derivation, the WASM layer's
+    canonicalisation) rather than land on a :class:`~vera.types.Type`.  Both
+    halves therefore take one branch decision from :func:`classify_named` and
+    substitute the same arguments into the same body.
+
+    Only meaningful when :func:`classify_named` returned
+    :attr:`NameSort.ALIAS`; calling it otherwise raises ``KeyError``.
+    """
+    # Imported inside the call because :mod:`vera.monomorphize` imports THIS
+    # module.  ``substitute_type_vars`` is a pure ``TypeExpr -> TypeExpr``
+    # walker with no monomorphization state, and it is the substitution every
+    # existing consumer of an alias body already performs — sharing it is what
+    # keeps the syntactic half of the spine identical to the semantic half.
+    from vera.monomorphize import substitute_type_vars
+
+    body = env.aliases[te.name]
+    declared = env.alias_params.get(te.name) or ()
+    if te.type_args and declared and len(declared) == len(te.type_args):
+        return substitute_type_vars(body, dict(zip(declared, te.type_args)))
+    return body
+
 
 def resolve_type_expr(te: ast.TypeExpr, env: AliasEnv) -> Type:
     """Resolve *te* to the semantic :class:`~vera.types.Type` the checker's
@@ -325,6 +454,10 @@ def _resolve_named(
 ) -> Type:
     """``_resolve_named_type``'s branch order, exactly.
 
+    The order itself lives in :func:`classify_named` — the ONE spine every
+    derivation asks — and this function is its semantic arm: given the
+    branch, produce the :class:`~vera.types.Type` the checker would.
+
     Type parameter (SHADOWS everything) -> primitive -> alias (arity-checked,
     substituted) -> DECLARED ADT -> ``Decimal`` (opaque, arguments dropped)
     -> removed alias (``?``) -> opaque ADT.  The checker's built-in-container
@@ -351,29 +484,23 @@ def _resolve_named(
     whichever branch it takes.
     """
     name = te.name
-    if name in type_params:
+    sort = classify_named(te, env, type_params=type_params, limit=limit)
+    if sort is NameSort.TYPE_PARAM:
         # `env.type_params` maps every name to `TypeVar(name)`.
         return TypeVar(name)
-    if name in PRIMITIVES and not te.type_args:
+    if sort is NameSort.PRIMITIVE:
         return PRIMITIVES[name]
-    idx = env._order.get(name)
-    # ``name in env.aliases`` is what makes the branch TOTAL: the two maps
-    # agree for every environment this module builds, but an env assembled
-    # elsewhere with an ``_order`` entry and no body must fall through to the
-    # ADT branch rather than raise.
-    if idx is not None and idx < limit and name in env.aliases:
+    if sort is NameSort.ALIAS_ARITY_MISMATCH:
+        return UnknownType()  # checker: E133, then UnknownType
+    if sort is NameSort.ALIAS:
         params = env.alias_params.get(name) or ()
-        n_supplied = len(te.type_args) if te.type_args else 0
-        if n_supplied != len(params):
-            return UnknownType()  # checker: E133, then UnknownType
         body = _resolve_alias(name, env)
         if te.type_args and params:
             args = tuple(
                 _resolve(a, env, type_params, limit) for a in te.type_args)
             return substitute(body, dict(zip(params, args)))
         return body
-    adt_idx = env.data_types.get(name)
-    if adt_idx is None or adt_idx >= limit:
+    if sort is NameSort.BUILTIN:
         if name == "Decimal":
             return AdtType("Decimal", ())  # checker: E134 when args supplied
         if name in REMOVED_ALIASES:

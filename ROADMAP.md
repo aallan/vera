@@ -12,21 +12,17 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,724 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,972 tests, 248 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
-*Five open bugs, driven to zero.*
+*One open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
 | Issue | What |
 |---|---|
-| [#1331](https://github.com/aallan/vera/issues/1331) | A user `data` declaration named after a built-in container compiles at the container's width, so a check-green program loses its exports to an E602 refusal. |
-| [#1316](https://github.com/aallan/vera/issues/1316) | A main-file `type` alias named after a prelude ADT leaks into the prelude's own bodies. |
 | [#1317](https://github.com/aallan/vera/issues/1317) | `E609` and `E610` refuse two modules' same-named declarations by declaration rather than by use. |
-| [#1312](https://github.com/aallan/vera/issues/1312) | An entry-file `data` declaration and a module's of the same name silently drop the caller when their shapes differ. |
-| [#1321](https://github.com/aallan/vera/issues/1321) | Codegen tests its container branches before `_adt_layouts`, so a user `data` named after a container is misclassified. |
 
 ## Stage 19 — The verification completeness sprint
 

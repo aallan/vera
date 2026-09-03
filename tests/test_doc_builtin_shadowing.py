@@ -95,6 +95,82 @@ def test_ignores_prose_mention() -> None:
     assert find_shadowing_defs("Use the `fn abs` built-in directly.\n", reject) == []
 
 
+def test_a_nested_checkout_is_not_a_doc_surface(tmp_path: Path) -> None:
+    """#1374 — `scripts/check_corpus_differential.py` materialises a base
+    checkout under `.corpus-differential/`, and the walk descended into it.
+
+    Every one of that checkout's `spec/09-standard-library.md` definitions is
+    then reported as a doc example redefining a built-in, so running the
+    documented burndown instrument turns `pytest tests/` red — which reads as
+    a regression from whatever change is in flight.  The tree belongs to
+    another revision of this repo and is not an authored doc surface of THIS
+    one, so it must not be walked at all.
+    """
+    root = tmp_path / "repo"
+    (root / "spec").mkdir(parents=True)
+    (root / "spec" / "real.md").write_text(
+        "Authored surface.\n", encoding="utf-8")
+    base = root / ".corpus-differential" / "vera-base-abc123456789"
+    (base / "spec").mkdir(parents=True)
+    (base / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    (base / "spec" / "09-standard-library.md").write_text(
+        "```vera\nfn abs(@Int -> @Int)\n```\n", encoding="utf-8")
+
+    found = {f.relative_to(root).as_posix() for f in _mod.doc_files(root)}
+    assert "spec/real.md" in found, found
+    assert not [f for f in found if f.startswith(".corpus-differential/")], (
+        f"the base checkout was walked: {sorted(found)}"
+    )
+
+
+def test_any_nested_checkout_is_pruned_not_just_that_one_name(
+    tmp_path: Path,
+) -> None:
+    """The rule is "a tree carrying its own `.git` is another repo", not a
+    name list.
+
+    `--work-dir` is settable, so the directory need not be called
+    `.corpus-differential` at all; and a stray clone or worktree under the
+    repo root is the same hazard whatever it is called.  Pinning the general
+    rule keeps a renamed work dir from re-opening this.
+    """
+    root = tmp_path / "repo"
+    (root / "spec").mkdir(parents=True)
+    (root / "spec" / "real.md").write_text("Fine.\n", encoding="utf-8")
+    nested = root / "scratch-checkout"
+    (nested / "spec").mkdir(parents=True)
+    (nested / ".git").mkdir()
+    (nested / "spec" / "x.md").write_text(
+        "```vera\nfn abs(@Int -> @Int)\n```\n", encoding="utf-8")
+
+    found = {f.relative_to(root).as_posix() for f in _mod.doc_files(root)}
+    assert found == {"spec/real.md"}, found
+
+
+def test_a_renamed_checkout_with_a_git_FILE_is_pruned(tmp_path: Path) -> None:
+    """A worktree's `.git` is a FILE, not a directory — outside `_SKIP_DIRS`.
+
+    The two cells above cover the file form only under `.corpus-differential`,
+    which `_SKIP_DIRS` prunes by name anyway, and the directory form elsewhere.
+    So both stay green if `.exists()` becomes `.is_dir()` — and a worktree
+    under any other `--work-dir` would be scanned again (PR #1372 review).
+    `git worktree add` produces exactly this shape, which is what the
+    differential creates.
+    """
+    root = tmp_path / "repo"
+    (root / "spec").mkdir(parents=True)
+    (root / "spec" / "real.md").write_text("Fine.\n", encoding="utf-8")
+    nested = root / "my-other-base"
+    (nested / "spec").mkdir(parents=True)
+    (nested / ".git").write_text(
+        "gitdir: /elsewhere/.git/worktrees/base\n", encoding="utf-8")
+    (nested / "spec" / "x.md").write_text(
+        "```vera\nfn abs(@Int -> @Int)\n```\n", encoding="utf-8")
+
+    found = {f.relative_to(root).as_posix() for f in _mod.doc_files(root)}
+    assert found == {"spec/real.md"}, found
+
+
 def test_repo_docs_are_clean() -> None:
     """The shipped docs must currently pass the gate (the #817 cleanup holds)."""
     root = Path(__file__).parent.parent
