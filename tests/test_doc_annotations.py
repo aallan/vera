@@ -348,6 +348,7 @@ class TestStripAnnotations:
 
 _E130_EXAMPLE = (
     '<!-- vera:diagnostic file="main.vera" stage="check" error_code="E130" -->\n'
+    "```vera\n"
     "type Meters = Int;\n"
     "type Feet = Int;\n"
     "\n"
@@ -358,6 +359,7 @@ _E130_EXAMPLE = (
     "{\n"
     "  @Metres.0 - @Feet.0 / 3\n"
     "}\n"
+    "```\n"
     "<!-- /vera:diagnostic -->\n"
     "```text\n"
     "[E130] Error at main.vera, line 9, column 3:\n"
@@ -395,7 +397,7 @@ class TestScanDiagnosticExamples:
     def test_stage_defaults_to_check_when_omitted(self, tmp_path: Path) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
-            "program\n"
+            "```vera\nprogram\n```\n"
             "<!-- /vera:diagnostic -->\n"
             "```text\nx\n```\n"
         )
@@ -418,12 +420,27 @@ class TestScanDiagnosticExamples:
         assert examples == []
         assert len(problems) == 1 and "no preceding" in problems[0]
 
+    def test_bare_unfenced_body_is_a_problem(self, tmp_path: Path) -> None:
+        """CodeRabbit #1377: a program left bare between the two
+        annotation comments (not wrapped in its own ```vera fence) is
+        invisible to `run_parse_only_gate`, which only collects fenced
+        blocks — so the scanner must refuse it rather than silently
+        replay an example the sibling parse-only gate never sees."""
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "program\n<!-- /vera:diagnostic -->\n```text\nx\n```\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        assert len(problems) == 1
+        assert "must be wrapped in its own ```vera fence" in problems[0]
+
     def test_missing_fence_after_close_is_a_problem(
         self, tmp_path: Path,
     ) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
-            "program\n<!-- /vera:diagnostic -->\nno fence here\n"
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\nno fence here\n"
         )
         examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
         assert examples == []
@@ -434,7 +451,7 @@ class TestScanDiagnosticExamples:
     ) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
-            "program\n<!-- /vera:diagnostic -->\n```vera\nnope\n```\n"
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\n```vera\nnope\n```\n"
         )
         examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
         assert examples == []
@@ -451,6 +468,39 @@ class TestScanDiagnosticExamples:
         examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
         assert problems == []
         assert len(examples) == 2
+
+    def test_unterminated_fence_is_a_problem(self, tmp_path: Path) -> None:
+        """Keyed to the FENCE's own line (`fence_line`), not the
+        annotation's `start_line` — the one problem message in this
+        scanner with that anchor, so an off-by-one there would
+        otherwise stay invisible (CodeRabbit #1377)."""
+        text = (
+            '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\nprogram\n```\n<!-- /vera:diagnostic -->\n```text\nno close\n"
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert examples == []
+        # The fence opens on line 6, not on the annotation's line 1.
+        assert problems == [
+            "line 6: unterminated code fence "
+            "(no closing ``` before end of file)"
+        ]
+
+    def test_second_open_before_close_reports_and_reparses(
+        self, tmp_path: Path,
+    ) -> None:
+        """A second `vera:diagnostic` open before the first one closes
+        must both report the dangling first annotation AND re-process
+        the second one as its own example, not silently consume it."""
+        text = (
+            '<!-- vera:diagnostic file="a.vera" -->\n'
+            "program\n" + _E130_EXAMPLE
+        )
+        examples, problems = scan_diagnostic_examples(_md(tmp_path, text))
+        assert len(examples) == 1
+        assert examples[0].file == "main.vera"
+        assert len(problems) == 1
+        assert "no matching" in problems[0] and "line 1:" in problems[0]
 
 
 class TestReplayDiagnosticExamples:
@@ -487,12 +537,30 @@ class TestReplayDiagnosticExamples:
         # error_code must still resolve unambiguously.
         assert replay_diagnostic_examples(examples) == []
 
+    def test_no_error_code_with_multiple_diagnostics_is_ambiguous(
+        self, tmp_path: Path,
+    ) -> None:
+        """The complement of the test above: a second `@Metres` typo
+        makes the program produce two E130 diagnostics, so an example
+        with no error_code to disambiguate must fail rather than
+        silently pick one (CodeRabbit #1377)."""
+        two_diagnostics = _E130_EXAMPLE.replace(
+            "  @Metres.0 - @Feet.0 / 3\n",
+            "  @Metres.0 - @Metres.1 - @Feet.0 / 3\n",
+        ).replace(' error_code="E130"', "")
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, two_diagnostics))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "found 2" in failures[0]
+
     def test_zero_diagnostics_is_a_failure(self, tmp_path: Path) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
+            "```vera\n"
             "public fn main(@Unit -> @Unit)\n"
             "  requires(true) ensures(true) effects(pure)\n"
             "{ () }\n"
+            "```\n"
             "<!-- /vera:diagnostic -->\n"
             "```text\nsomething\n```\n"
         )
@@ -511,7 +579,7 @@ class TestReplayDiagnosticExamples:
     ) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'
-            "this is not valid vera at all {{{\n"
+            "```vera\nthis is not valid vera at all {{{\n```\n"
             "<!-- /vera:diagnostic -->\n"
             "```text\nanything\n```\n"
         )

@@ -93,13 +93,22 @@ _FENCE_CLOSE_RE = re.compile(r"^```$")
 # gate can tell the difference.
 #
 #     <!-- vera:diagnostic file="main.vera" stage="check" error_code="E130" -->
+#     ```vera
 #     type Meters = Int;
 #     ...
+#     ```
 #     <!-- /vera:diagnostic -->
 #     ```text
 #     [E130] Error at main.vera, line 9, column 3:
 #     ...
 #     ```
+#
+# The program is wrapped in its own ```vera fence — not left bare between
+# the two annotation comments — so the shared parse-only doc gate
+# (`run_parse_only_gate`, which only collects FENCED blocks) also parses it;
+# `scan_diagnostic_examples` strips the fence's opening and closing lines
+# before handing the body to the replay, so both gates cover the same
+# source with neither seeing the other's markers.
 #
 # `error_code` is optional: when given, the replay selects the one
 # diagnostic with that code (and fails if that is not unique); when
@@ -135,9 +144,13 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
     """Extract `vera:diagnostic`-annotated (program, expected-output) pairs
     from a Markdown file.  Returns ``(examples, problems)`` in the same
     shape :func:`scan_markdown` uses: a dangling open with no close, a
-    close with no preceding open, and a program not immediately followed
-    (blank lines aside) by a ```text fence are all reported as problems
-    rather than silently skipped.
+    close with no preceding open, a program not wrapped in its own
+    ```vera fence, and a program not immediately followed (blank lines
+    aside) by a ```text fence are all reported as problems rather than
+    silently skipped.  The returned :class:`DiagnosticExample`'s
+    ``program`` field holds the de-fenced source (the ```vera / ```
+    marker lines are stripped, not just skipped over) so it can be
+    handed to the parser exactly as `run_parse_only_gate` would.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     examples: list[DiagnosticExample] = []
@@ -169,6 +182,22 @@ def scan_diagnostic_examples(path: Path) -> tuple[list[DiagnosticExample], list[
                     f"annotation or end of file"
                 )
                 continue
+            program_open = _FENCE_OPEN_RE.match(program_lines[0]) if program_lines else None
+            malformed_fence = (
+                not program_lines
+                or program_open is None
+                or program_open.group(1).lower() != "vera"
+                or not _FENCE_CLOSE_RE.match(program_lines[-1])
+            )
+            if malformed_fence:
+                problems.append(
+                    f"line {start_line}: vera:diagnostic annotation body "
+                    f"must be wrapped in its own ```vera fence (so the "
+                    f"parse-only doc gate also covers it), not left bare "
+                    f"between the two annotation comments"
+                )
+                continue
+            program_lines = program_lines[1:-1]
             while i < len(lines) and lines[i].strip() == "":
                 i += 1
             if i >= len(lines) or not _FENCE_OPEN_RE.match(lines[i]):

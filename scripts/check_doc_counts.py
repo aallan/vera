@@ -1214,8 +1214,9 @@ def roadmap_burndown_rows(roadmap_text: str) -> list[int] | None:
             for number, url_number in _ISSUE_LINK.findall(cells[0])
             if number == url_number
         ]
-        if len(links) == 1:
-            numbers.append(links[0])
+        if len(links) != 1:
+            return None
+        numbers.append(links[0])
     return numbers or None
 
 

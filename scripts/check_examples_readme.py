@@ -113,9 +113,31 @@ def extract_backticked_names(demonstrates_cell: str) -> list[str]:
     return _BACKTICK_IDENTIFIER.findall(demonstrates_cell)
 
 
+# Mirrors vera/grammar.lark's own token precedence: `STRING_LIT` is a
+# distinct token from the `--`-to-end-of-line comment `%ignore` rule, so a
+# `--` INSIDE a string is part of the string, never a comment start —
+# `examples/regex.vera` relies on exactly this (`IO.print("-- Matching --")`).
+# Matching a full string literal first and passing it through unchanged
+# (rather than also stripping ITS contents) preserves that precedence;
+# only a `--...` span found OUTSIDE of one is a comment and gets removed.
+_STRING_OR_COMMENT = re.compile(r'"(?:[^"\\]|\\.)*"|--[^\n]*')
+
+
+def _strip_comments(source: str) -> str:
+    """Remove Vera line comments so a name mentioned only in PROSE — a
+    comment, never executed — cannot satisfy a Demonstrates-column claim
+    about the CODE (a real gap: `-- mentions phantom_builtin in prose
+    only` plus a matching Demonstrates entry passed before this)."""
+    def replace(match: re.Match[str]) -> str:
+        text = match.group(0)
+        return text if text.startswith('"') else ""
+    return _STRING_OR_COMMENT.sub(replace, source)
+
+
 def name_appears_in_source(vera_file: Path, name: str) -> bool:
-    """Return True if `name` appears as a whole word in the source."""
-    source = vera_file.read_text(encoding="utf-8")
+    """Return True if `name` appears as a whole word in the source,
+    outside of comments."""
+    source = _strip_comments(vera_file.read_text(encoding="utf-8"))
     return bool(re.search(rf"\b{re.escape(name)}\b", source))
 
 
@@ -161,9 +183,16 @@ def main() -> int:
     for lineno, vera_filename, demonstrates in example_rows:
         vera_file = root / "examples" / vera_filename
         if not vera_file.is_file():
-            # Already reported above via the Run-column check when this
-            # file is also missing there; avoid a second failure class
-            # for the same missing file.
+            # The Run-column loop above parses its OWN file path out of
+            # the `vera run` command, independently of this row's first
+            # cell — a row whose Run command happens to name a
+            # different (valid) path, or carries no `vera run` command
+            # matching that loop's pattern at all, would otherwise let
+            # this row's missing file go completely unreported.
+            failures.append(
+                f"  line {lineno}: example file not found: "
+                f"examples/{vera_filename}"
+            )
             continue
         for name in extract_backticked_names(demonstrates):
             names_checked += 1

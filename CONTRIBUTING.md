@@ -93,7 +93,7 @@ The repository configures 37 hooks across two stages: 35 run at the commit stage
 
 ![The gate pipeline: file-filtered commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI re-running everything against the platform matrix before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-The **commit-stage** hooks (34, each gated to relevant files) include:
+The **commit-stage** hooks — 35 total, of which 34 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity

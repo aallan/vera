@@ -1539,13 +1539,23 @@ class TestErrorCodeCollision:
         """Two call sites through one shared `_error` helper are two
         real sites needing a declaration — but the helper's OWN
         internal `Diagnostic(...)` construction must not be counted as
-        a third."""
+        a third.
+
+        The plumbing ctor's `error_code` is a LITERAL `'E996'`, not the
+        threaded `error_code=error_code` a real helper would use: a
+        non-literal is already excluded by the literal-constant filter
+        before `_plumbing_ctors` is ever consulted, which would make
+        this assertion hold even with the plumbing exclusion removed
+        entirely.  A literal keeps the exclusion load-bearing — without
+        it, this site would be a third, and the assertion below would
+        fail with 3 distinct sites instead of 2 (CodeRabbit #1377).
+        """
         monkeypatch.chdir(tmp_path)
         (tmp_path / "a.py").write_text(
             "class C:\n"
-            "    def _error(self, node, msg, *, error_code=''):\n"
+            "    def _error(self, node, msg):\n"
             "        self.diagnostics.append(Diagnostic(\n"
-            "            description=msg, location=loc, error_code=error_code))\n"
+            "            description=msg, location=loc, error_code='E996'))\n"
             "    def f(self):\n"
             "        self._error(node, 'd1', error_code='E996')\n"
             "    def g(self):\n"

@@ -998,8 +998,8 @@ def error_code_collision_violations(paths: Iterable[Path]) -> list[Violation]:
         declared = KNOWN_MULTI_SITE_ERROR_CODES.get(code)
         if declared == frozenset(distinct_sites):
             continue
-        first_line = min(ln for _, _, ln in site_triples)
         first_file = min(f for f, _, _ in site_triples)
+        first_line = min(ln for f, _, ln in site_triples if f == first_file)
         site_list = ", ".join(
             f"{f}::{q}" for f, q in sorted(distinct_sites)
         )
