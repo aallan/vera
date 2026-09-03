@@ -1483,6 +1483,16 @@ class OperatorsMixin:
         alias environment to resolve against or the chain is cyclic
         (E132 rejects that upstream), so the dispatch falls to its loud
         skip rather than guessing.
+
+        The name arrives RENDERED, so a parameterised spelling
+        (``Identity<Int>`` for ``type Identity<T> = T``) does not match
+        the alias table and is returned unchanged — deliberately, rather
+        than re-parsing a rendered name.  Nothing is lost: a value of a
+        generic-alias type has no WASM representation at all, so codegen
+        refuses such a program at its ``let`` (measured at this revision
+        and at the merge base, with and without an interpolation in the
+        body).  Should that gap close, this is the seam to thread the
+        type arguments through.
         """
         if name is None:
             return None

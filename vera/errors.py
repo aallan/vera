@@ -408,9 +408,11 @@ def module_call_dot_syntax(
 
 
 # The contract clauses spec §5.2 orders before `effects` (#1348).
-_CONTRACT_CLAUSE_KEYWORDS = frozenset(
-    {"requires", "ensures", "decreases", "invariant"}
-)
+# `invariant` is NOT among them: the grammar attaches it to `data`
+# declarations alone (`data_decl`), so an `invariant` in a function is not
+# a misplaced clause but a clause that has no place there — it keeps the
+# generic fallback rather than being told to move somewhere it cannot go.
+_CONTRACT_CLAUSE_KEYWORDS = frozenset({"requires", "ensures", "decreases"})
 
 
 def contract_clause_after_effects(
@@ -440,8 +442,8 @@ def contract_clause_after_effects(
         source_line=_get_source_line(source, line),
         rationale=(
             "A function declaration has a fixed clause order: the "
-            "signature, then its contract clauses ('requires', 'ensures', "
-            "'decreases', 'invariant') in any order among themselves, then "
+            "signature, then its contract clauses ('requires', 'ensures' "
+            "and 'decreases') in any order among themselves, then "
             "exactly one 'effects' clause, then the body. Once 'effects' "
             "has been read the parser expects the body, so a contract "
             "keyword here begins no construct it can accept."

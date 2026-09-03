@@ -65,10 +65,17 @@ class TestTerminalNamesAreDisplayable:
         assert "__ANON" not in d.description, d.description
 
     def test_the_literal_is_shown_instead(self) -> None:
-        """`__ANON_0` is `->`; showing it is the point, not hiding it."""
+        """`__ANON_0` is `->`; showing it is the point, not hiding it.
+
+        Asserted on the DIAGNOSTIC, not only on `terminal_display`: a
+        change that filtered anonymous terminals out of the expected set
+        instead of translating them would satisfy "no `__ANON`" while
+        removing the most useful entry in the list.
+        """
         d = _diag("public fn f(@Int @Int) requires(true) ensures(true)\n"
                   "effects(pure)\n{\n  @Int.0\n}\n")
         assert "__ANON" not in d.description
+        assert '"->"' in d.description, d.description
 
     def test_every_terminal_in_the_live_grammar_displays(self) -> None:
         """The completeness walk: no terminal renders as a raw Lark name.
@@ -115,8 +122,7 @@ class TestContractClauseAfterEffects:
 
     @pytest.mark.parametrize(
         "clause",
-        ["requires(true)", "ensures(true)", "decreases(@Int.0)",
-         "invariant(true)"],
+        ["requires(true)", "ensures(true)", "decreases(@Int.0)"],
     )
     def test_each_contract_keyword_after_effects(self, clause: str) -> None:
         d = _diag(_fn(CLAUSES_OK + f"  {clause}\n"))
@@ -137,6 +143,22 @@ class TestContractClauseAfterEffects:
         assert d.rationale and len(d.rationale) > 30
         assert d.spec_ref
         assert d.location.line == 5 and d.location.column == 3
+
+    def test_invariant_is_not_a_function_clause(self) -> None:
+        """`invariant` belongs to `data`, so E032's advice would be wrong.
+
+        The grammar attaches `invariant_clause` to `data_decl` alone, so
+        an `invariant` in a function is not a misplaced contract clause —
+        moving it above `effects`, which is what E032 instructs, produces
+        `[E002] Missing effect clause` rather than a working program.  It
+        keeps the generic fallback, and the cell pins that the E032 arm
+        does not reach for it.
+        """
+        after = _diag(_fn(CLAUSES_OK + "  invariant(true)\n"))
+        assert after.error_code != "E032", after.description
+        before = _diag(_fn("  requires(true)\n  ensures(true)\n"
+                           "  invariant(true)\n  effects(pure)\n"))
+        assert before.error_code == "E002", before.description
 
     def test_e032_is_registered(self) -> None:
         assert "E032" in ERROR_CODES and ERROR_CODES["E032"]

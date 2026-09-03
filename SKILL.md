@@ -187,10 +187,11 @@ private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 }
 ```
 
-The order is fixed: every contract clause first (`requires`, `ensures`,
-`decreases`, `invariant` — in any order among themselves), then exactly one
-`effects` clause, then the body.  A contract clause written after `effects`
-is a parse error (`E032`) naming the move.
+The order is fixed: every contract clause first (`requires`, `ensures` and
+`decreases` — in any order among themselves, and each may appear more than
+once), then exactly one `effects` clause, then the body.  A contract clause
+written after `effects` is a parse error (`E032`) naming the move.
+(`invariant` is a `data` declaration's clause, not a function's.)
 
 Complete example:
 

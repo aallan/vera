@@ -94,6 +94,11 @@ class TestEveryInterpolablePrimitiveThroughEverySpelling:
             ("Nat", "7", "v=7"),
             ("Float64", "21.5", "v=21.5"),
             ("Bool", "true", "v=true"),
+            # `Byte` is the fifth interpolable primitive and the only one
+            # whose renderer is not its own digits: `byte_to_string(65)`
+            # is "A", so a cell that passed by echoing the literal back
+            # would fail here.
+            ("Byte", "65", "v=A"),
         ],
     )
     @pytest.mark.parametrize("spelling", ["bare", "alias", "refinement",
