@@ -26,6 +26,7 @@ from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
     importer_occupied_bare_names,
@@ -35,6 +36,7 @@ from vera.monomorphize import (
     public_generic_names,
     qualify_nested_generic_decls,
     reroute_module_qualified_generic_calls,
+    uninferred_type_arg_fix,
 )
 
 if TYPE_CHECKING:
@@ -2312,7 +2314,64 @@ class ContractVerifier:
         self._collect_shadowed_qualified_instances(
             program, mono, generic_decls, result,
         )
+        # #1327/#1366: discovery is complete, so every type argument it could
+        # not infer is now known.  The verifier's discovered set is what the
+        # #732 differential holds codegen's emitted set against, and a set
+        # built on the phantom-var guess verifies a clone codegen does not
+        # emit while leaving codegen's real clone unverified — a false Tier 1.
+        # Report each as [E622] rather than tiering a proof about the wrong
+        # instantiation.
+        self._report_uninferred_type_args(mono)
         return result
+
+    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
+        """Turn discovery's un-inferable type arguments into [E622] errors.
+
+        The verifier's leg of the #1327/#1366 fail-closed: codegen refuses to
+        EMIT a specialisation resting on the phantom-var guess, and this
+        refuses to report a TIER for one.  Both consultors run the same shared
+        inference, so both record the same argument.
+        """
+        seen: set[tuple[str, str, object]] = set()
+        for rec in mono.uninferred_type_args:
+            span = getattr(rec.arg, "span", None)
+            key = (
+                rec.fn_name,
+                rec.type_var,
+                (span.line, span.column, span.end_line, span.end_column)
+                if span is not None else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            # #1368 review: a call site inside an IMPORTED module has that
+            # module's line numbers, so reporting it under the entry
+            # program's file and source buffer points the reader at another
+            # file's line and quotes another file's text.  The record carries
+            # the namespace the walk was in; this is the scope that makes
+            # every half of "which file is this?" agree (#1208/#1220).
+            with self._declaring_module_scope(rec.origin):
+                self._report_one_uninferred(rec)
+
+    def _report_one_uninferred(self, rec: UninferredTypeArg) -> None:
+        """The [E622] diagnostic for one record, in the caller's scope."""
+        self._error(
+            rec.arg,
+            f"Cannot infer the type argument '{rec.type_var}' of "
+            f"generic call '{rec.fn_name}' from its "
+            f"{rec.arg_kind} argument.",
+            rationale=(
+                "A generic is verified once per concrete type it is "
+                "called with, so the verifier must know the type of "
+                "every argument that fixes a type variable. This "
+                "argument's type could not be determined, and verifying "
+                "at a guessed type would report a tier for a "
+                "specialisation the compiler does not emit."
+            ),
+            fix=uninferred_type_arg_fix(rec, self._expr_types),
+            spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+            error_code="E622",
+        )
 
     def _collect_shadowed_qualified_instances(
         self,

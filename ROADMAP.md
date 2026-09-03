@@ -12,11 +12,11 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,320 tests, 244 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,347 tests, 244 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
-*Nineteen open bugs, driven to zero.*
+*Twenty-one open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
@@ -32,6 +32,8 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1312](https://github.com/aallan/vera/issues/1312) | An entry-file `data` declaration and a module's of the same name silently drop the caller when their shapes differ. |
 | [#1321](https://github.com/aallan/vera/issues/1321) | Codegen tests its container branches before `_adt_layouts`, so a user `data` named after a container is misclassified. |
 | [#1327](https://github.com/aallan/vera/issues/1327) | Monomorphization's type namer has no `IndexExpr` arm, so a generic argument that is an array index drops its caller. |
+| [#1366](https://github.com/aallan/vera/issues/1366) | The same namer has no `ModuleCall` arm, so a nested direct module-generic call never registers the outer clone and the importer loses its caller. |
+| [#1365](https://github.com/aallan/vera/issues/1365) | Both namers type a pipe from its left operand, so a chain whose stage changes the type instantiates at the pre-stage type and emits invalid WebAssembly. |
 | [#1357](https://github.com/aallan/vera/issues/1357) | A module generic never discovers an instantiation piped from an effect-operation result — the piped sibling of #1310, failing on both discovery walks. |
 | [#1307](https://github.com/aallan/vera/issues/1307) | The checker resolves a bare call to a sibling function's `where` helper. |
 | [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |

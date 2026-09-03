@@ -48,7 +48,7 @@ from vera.slots import (
     effect_op_result_names,
     fn_slot_scope,
 )
-from vera.types import PRIMITIVES, REMOVED_ALIASES
+from vera.types import PRIMITIVES, REMOVED_ALIASES, SpanTypeTable
 
 # Identifier tokens inside a rendered type name (`Map<String, Int>` →
 # `Map`, `String`, `Int`).  #1271 matches type-variable names against these
@@ -1344,6 +1344,150 @@ def unmangle_type_name(mangled: str) -> str:
 _FREE_TYPE_PARAM = "?"
 
 
+def uninferred_type_arg_fix(
+    rec: "UninferredTypeArg", table: SpanTypeTable | None,
+) -> str:
+    """The [E622] ``fix`` sentence for one un-inferable type argument.
+
+    Names the ARGUMENT's own type where the checker recorded one, because a
+    fix a reader applies literally has to check: `let @T = …` names the
+    generic's type VARIABLE, which is not in scope at the call site (E170,
+    then E121 on the slot reference), and is wrong outright for any forall
+    variable not spelled ``T``.  Spelling `let @Int = …` instead gives a
+    program that checks, verifies and runs.
+
+    Falls back to a shape-only instruction when nothing named the argument's
+    type — the honest answer when the compiler is reporting that it could not
+    name it.
+    """
+    named = (checker_clone_type_name(table, rec.arg)
+             if table is not None else None)
+    if named is not None:
+        return (
+            f"Bind the argument to a slot of its own and pass the slot "
+            f"reference: 'let @{named} = <the argument>;' then "
+            f"'{rec.fn_name}(@{named}.0)'. The type argument is then read "
+            f"from the declared slot type instead of being inferred from the "
+            f"argument expression."
+        )
+    return (
+        f"Bind the argument to a slot whose declared type is the argument's "
+        f"own type — 'let @<Type> = <the argument>;' — and pass that slot "
+        f"reference to '{rec.fn_name}'. The type argument is then read from "
+        f"the declared slot type instead of being inferred from the argument "
+        f"expression."
+    )
+
+
+def checker_clone_type_name(
+    table: SpanTypeTable | None, expr: ast.Expr,
+) -> str | None:
+    """The clone-name spelling of the checker's recorded type for *expr*.
+
+    Diagnostic-only here: [E622] uses it to name the argument's type in its
+    ``fix``.  Inference itself does not consult it in this change — that is
+    the single-sourcing repair, and it is deliberately not smuggled in
+    through a diagnostic.
+    """
+    if table is None:
+        return None
+    key = ast.span_key(expr)
+    if key is None:
+        return None
+    ty = table.get(key)
+    if ty is None:
+        return None
+    return _type_clone_name(ty)
+
+
+def _type_clone_name(ty: object) -> str | None:
+    """Render one checker ``Type`` as a Vera type name, or ``None``."""
+    from vera.types import AdtType, PrimitiveType, RefinedType
+
+    if isinstance(ty, PrimitiveType):
+        return None if ty.name == "Never" else ty.name
+    if isinstance(ty, AdtType):
+        if not ty.type_args:
+            return ty.name
+        parts = [_type_clone_name(a) for a in ty.type_args]
+        if any(part is None for part in parts):
+            return ty.name
+        return f"{ty.name}<{', '.join(p for p in parts if p is not None)}>"
+    if isinstance(ty, RefinedType):
+        return _type_clone_name(ty.base)
+    return None
+
+
+def _forall_vars_in(
+    te: ast.TypeExpr, forall_vars: tuple[str, ...],
+) -> list[str]:
+    """Every ``forall`` variable occurring anywhere in *te*, outermost first.
+
+    A parameter's type arguments determine a variable at any nesting depth —
+    ``Array<T>``, ``Map<K, Option<V>>`` — which is the same reach
+    :meth:`Monomorphizer._unify_type_arg_pair` binds over, so the fail-closed
+    net must see exactly as far as the binder does.
+    """
+    if isinstance(te, ast.RefinementType):
+        return _forall_vars_in(te.base_type, forall_vars)
+    if not isinstance(te, ast.NamedType):
+        return []
+    if te.name in forall_vars:
+        return [te.name]
+    found: list[str] = []
+    for sub in te.type_args or ():
+        found.extend(_forall_vars_in(sub, forall_vars))
+    return found
+
+
+@dataclass(frozen=True)
+class UninferredTypeArg:
+    """One generic call whose type argument could not be inferred (E622).
+
+    Recorded when a generic's parameter is *exactly* a type variable (``@T``)
+    and this walker cannot name the argument bound to it, so the type variable
+    stays unbound.  Before #1327/#1366 such a variable was silently substituted
+    with the phantom-var default ``Bool`` — a substitution the compiler has no
+    evidence for, which registers an instantiation that the call-site rewrite
+    (whose own namer may well succeed) never calls.  The program stays
+    check-green and verify-clean and loses its caller at codegen (E602/E620),
+    or loads as invalid WebAssembly.
+
+    The default itself is retained for the genuine phantom: a type variable
+    that no parameter position determines (``E`` in
+    ``result_unwrap_or(Ok(x), d)``) is not inferable from arguments *by
+    construction*, and the emitted WASM is identical whatever it is named.
+    This record marks only the other case — the variable a parameter DOES
+    determine, whose argument the walker could not type.
+
+    Attributes
+    ----------
+    fn_name:
+        The generic function being called.
+    type_var:
+        The ``forall`` variable left unbound.
+    arg_kind:
+        AST class name of the argument that could not be named (the shape
+        whose arm is missing, e.g. ``IndexExpr`` for #1327, ``ModuleCall``
+        for #1366).
+    arg:
+        The argument node itself, so the consumer can locate the diagnostic
+        on the expression (through its own span/prelude resolution) rather
+        than on the enclosing function.
+    origin:
+        The module whose namespace the walk was in when the call was seen,
+        or ``None`` for the entry program.  Without it a consumer pairs an
+        imported module's line number with the ENTRY file's name and source,
+        so the diagnostic points at the wrong file and quotes the wrong line.
+    """
+
+    fn_name: str
+    type_var: str
+    arg_kind: str
+    arg: ast.Expr
+    origin: tuple[str, ...] | None = None
+
+
 # Builtin function name → SIMPLE Vera return-type name (type args dropped).
 # Consulted by Monomorphizer._infer_fncall_vera_type_simple() (instantiation
 # discovery) AND by the WASM call-rewrite chain
@@ -1753,6 +1897,20 @@ class Monomorphizer:
         # entered, and `_bare_call_is_user_fn` then answers from the flat
         # `ctx.fn_names` alone — the pre-#1299 behaviour.
         self._scope_fn_names: frozenset[str] | None = None
+        # #1327/#1366: every type variable this walker could not infer from
+        # the argument a parameter binds it to DIRECTLY — the fail-closed
+        # record behind [E622].  Accumulated across the whole discovery run
+        # (seed walk + transitive worklist) and drained by the consumer, which
+        # turns each entry into a diagnostic: codegen refuses to emit a module
+        # whose instantiation set rests on a guess, and the verifier refuses to
+        # report a tier for a clone that may not be the one codegen emits.
+        # Deduplicated on (fn_name, type_var, span) because the same call site
+        # is walked once per re-seed round.
+        self.uninferred_type_args: list[UninferredTypeArg] = []
+        self._uninferred_seen: set[tuple[str, str, object]] = set()
+        # The module namespace the walk is currently in (`namespace_scope`),
+        # carried onto every record so a diagnostic names the right file.
+        self._namespace_path: tuple[str, ...] | None = None
 
     @contextlib.contextmanager
     def namespace_scope(
@@ -1772,14 +1930,29 @@ class Monomorphizer:
         entry's own declarations and its direct imports' public, in-filter
         names, and nothing else.
         """
-        if self.ctx.namespace_fn_names is None:
-            yield
-            return
+        # #1327 (PR #1368 review): the PATH is recorded whatever the
+        # consumer supplied, because a diagnostic raised from this walk has
+        # to name the file the call is written in — that is a fact about
+        # where the walk is, not about whether the consumer built visibility
+        # tables.  The fn-name narrowing below stays conditional.
+        # ONE save/restore for both fields.  Splitting it left the
+        # visible-tables branch — the common one, since the verifier always
+        # builds those tables and codegen builds them whenever
+        # `_namespace_tables` is populated — restoring `_scope_fn_names` and
+        # NOT `_namespace_path`, so the path stayed pinned after the block
+        # exited.  A later record made outside any scope (the verifier's
+        # `walk_seed` calls `_infer_type_args_from_args` directly) then took
+        # the stale path as its origin and named a previously-walked module's
+        # file: precisely the misattribution `origin` exists to prevent.
+        saved_path = self._namespace_path
         saved = self._scope_fn_names
-        self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
+        self._namespace_path = path
+        if self.ctx.namespace_fn_names is not None:
+            self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
         try:
             yield
         finally:
+            self._namespace_path = saved_path
             self._scope_fn_names = saved
 
     def _bare_call_is_user_fn(self, name: str) -> bool:
@@ -2311,10 +2484,16 @@ class Monomorphizer:
         # (`merge_inferred_types`) already accepted — keeping the monomorphizer
         # in lockstep so the emitted clone matches the type-checked call.
         partial_adt: dict[str, tuple[str, list[str | None]]] = {}
+        # #1327/#1366: per-var record of a DIRECT `@T` parameter whose argument
+        # this walker could not name.  Collected during unification and
+        # consulted only for vars that end up unbound — a var another parameter
+        # DID bind (`f(@T, @T)` with one nameable argument) is inferred, so the
+        # unnameable sibling is not a failure.
+        unnamed_direct: dict[str, ast.Expr] = {}
         for param_te, arg in zip(decl.params, args):
             self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
                                   mapping, generic_decls, constrained_vars,
-                                  partial_adt)
+                                  partial_adt, unnamed_direct)
 
         # Materialise any merged sparse-ADT recovery.
         #
@@ -2345,6 +2524,19 @@ class Monomorphizer:
         result = []
         for tv in forall_vars:
             if tv not in mapping:
+                # #1327/#1366 — FAIL CLOSED before defaulting.  A var a DIRECT
+                # `@T` parameter binds is determined by that argument's type;
+                # arriving here means the walker could not name the argument,
+                # so `Bool` would be a guess, not a phantom.  Record it: the
+                # consumer reports [E622] rather than emitting a module (or a
+                # tier) that rests on the guess.  Behaviour is otherwise
+                # unchanged — the default is still applied, so the caller's
+                # shape and every downstream table stay exactly as before and
+                # the record is the only new signal.
+                unnamed_arg = unnamed_direct.get(tv)
+                if unnamed_arg is not None:
+                    self._record_uninferred_type_arg(
+                        decl.name, tv, unnamed_arg)
                 # Phantom type variable (e.g. E in result_unwrap_or(Ok(x), d))
                 # — the generated WASM is identical regardless of this type.
                 # Use Bool (i32) rather than Unit (no WASM repr) so the
@@ -2352,6 +2544,33 @@ class Monomorphizer:
                 mapping[tv] = "Bool"
             result.append(mapping[tv])
         return tuple(result)
+
+    def _record_uninferred_type_arg(
+        self, fn_name: str, type_var: str, arg: ast.Expr,
+    ) -> None:
+        """Record an un-inferable DIRECT type argument (#1327/#1366, [E622]).
+
+        Deduplicated on ``(fn_name, type_var, span)``: discovery re-walks the
+        same call site once per worklist re-seed round, and one call site is
+        one diagnostic.
+        """
+        span = getattr(arg, "span", None)
+        key = (
+            fn_name,
+            type_var,
+            (span.line, span.column, span.end_line, span.end_column)
+            if span is not None else None,
+        )
+        if key in self._uninferred_seen:
+            return
+        self._uninferred_seen.add(key)
+        self.uninferred_type_args.append(UninferredTypeArg(
+            fn_name=fn_name,
+            type_var=type_var,
+            arg_kind=type(arg).__name__,
+            arg=arg,
+            origin=self._namespace_path,
+        ))
 
     def _unify_param_arg(
         self,
@@ -2363,12 +2582,19 @@ class Monomorphizer:
         generic_decls: dict[str, ast.FnDecl] | None = None,
         constrained_vars: frozenset[str] = frozenset(),
         partial_adt: dict[str, tuple[str, list[str | None]]] | None = None,
+        unnamed_direct: dict[str, ast.Expr] | None = None,
     ) -> None:
-        """Unify a parameter TypeExpr against an argument to bind type vars."""
+        """Unify a parameter TypeExpr against an argument to bind type vars.
+
+        ``unnamed_direct`` (#1327/#1366) collects, per type variable, the
+        argument of a DIRECT ``@T`` parameter this walker could not name — the
+        evidence [E622] is raised on.  Optional so a caller that only wants the
+        binding (no fail-closed reporting) is unaffected.
+        """
         if isinstance(param_te, ast.RefinementType):
             self._unify_param_arg(
                 param_te.base_type, arg, forall_vars, ctor_to_adt, mapping,
-                generic_decls, constrained_vars, partial_adt,
+                generic_decls, constrained_vars, partial_adt, unnamed_direct,
             )
             return
 
@@ -2415,6 +2641,16 @@ class Monomorphizer:
                                     slots[i] = name
             if vera_type and param_te.name not in mapping:
                 mapping[param_te.name] = vera_type
+            elif not vera_type and unnamed_direct is not None:
+                # #1327/#1366: the parameter IS the type variable, so this
+                # argument's type is the instantiation — and no arm named it.
+                # Remember the argument (first one wins, matching the
+                # first-binding-wins rule above) so the result loop can tell a
+                # genuine phantom from a walker gap.  Recorded even when
+                # `partial_adt` recovery ran: that path only fills a
+                # CONSTRAINED var's parameterized name, and leaves `vera_type`
+                # falsy exactly when nothing was recovered.
+                unnamed_direct.setdefault(param_te.name, arg)
             return
 
         # Parameterized type like Option<T> — match type args
@@ -2440,6 +2676,28 @@ class Monomorphizer:
                 return
 
             arg_info = self._get_arg_type_info(arg, ctor_to_adt)
+            # #1327/#1366 — the fail-closed net deliberately STOPS here, and
+            # the exclusion is not free.  Widening it to "a var this
+            # parameter's TYPE ARGUMENTS determine" was implemented and
+            # measured: it refuses the prelude's own combinators.
+            # `result_unwrap_or(result_map(Ok(100), f), 0)` has an argument no
+            # arm can name, so `VeraE` — reachable only through
+            # `Result<T, E>` — is recorded and reported, taking
+            # `ch09_prelude`, `ch09_option_result_combinators`, both dual-target
+            # cells and four unit tests red.  That variable is exactly the
+            # phantom the default documents, and the prelude relies on it.
+            #
+            # So the net covers the case where a wrong name is a wrong WASM
+            # TYPE — a bare `@T` parameter, whose clone takes the argument's
+            # own representation — and not the case where the variable is a
+            # type argument of a heap constructor the clone handles as a
+            # pointer.  That is a narrower claim than "sound by construction":
+            # a generic like `fn head(@Array<T> -> @T)` RETURNS at `T`, so a
+            # guessed `head$Bool` would return i32 where `Int` needs i64, and
+            # this net does not catch it.  The gap is real and is closed by
+            # inference rather than by refusal — once the type comes from the
+            # checker there is nothing left to guess, so the net stops being
+            # the thing that has to be exactly right.
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]
@@ -2506,7 +2764,22 @@ class Monomorphizer:
             return "Float64"
         if isinstance(expr, ast.UnitLit):
             return "Unit"
-        if isinstance(expr, ast.SlotRef):
+        if isinstance(expr, (ast.SlotRef, ast.ResultRef)):
+            # #1369: a `ResultRef` shares this arm.  `@T.result` carries the
+            # same declared @Type shape as a slot reference (`type_name` plus
+            # optional `type_args`, no index), and the WASM call-rewrite twin
+            # has read it that way since #912 — but discovery had no arm for
+            # it at all, so a generic called from an `ensures` with
+            # `@Int.result` left its type variable unbound and fell to the
+            # phantom-var default: `gok$Bool` registered against the rewrite's
+            # `gok$Int`.  A helper reached ONLY through the postcondition
+            # therefore dangled and dropped its caller (E602 → E620) on
+            # check-green, verify-green source; one also called from
+            # `requires` with a slot reference survived by coincidence,
+            # emitting a wasted `$Bool` clone beside the `$Int` one the call
+            # actually needed.  Arm-for-arm parity with the twin is the
+            # contract this family lives by (#1286), so the two now answer
+            # identically here as well.
             if expr.type_args:
                 # Include type args for parameterized types like Map<String, Int>
                 arg_names = []

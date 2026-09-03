@@ -23,8 +23,10 @@ from vera import ast
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
+    uninferred_type_arg_fix,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.skip import DERIVED_HELPER_DEPTH_CAP
@@ -168,6 +170,10 @@ class MonomorphizationMixin:
         # where-helper under an all-NON-generic ancestor chain is a mono base
         # too — without collecting it here, no clone is emitted and the
         # parent's concrete call lowers to a dangling unmangled name.
+        # #1327/#1366: records from the per-call throwaway walkers the
+        # shadowed/qualified discovery builds (`_mono_infer_shadowed`), which
+        # have no other way back to the drain at the end of this method.
+        self._shadowed_uninferred_type_args: list[UninferredTypeArg] = []
         generic_decls: dict[str, ast.FnDecl] = {}
         for tld in program.declarations:
             decl = tld.decl
@@ -387,7 +393,84 @@ class MonomorphizationMixin:
             round_decls = self._drain_generic_worklist(
                 reseed, seen, generic_decls, ctor_to_adt, mono,
             ) if reseed else []
+        # #1327/#1366: discovery is complete, so every type argument it could
+        # not infer is now known.  Report each as [E622] — an error, not a
+        # note: the instantiation set is what codegen emits clones from, and
+        # one built on the phantom-var guess emits a clone the call-site
+        # rewrite does not call (E602 with no explanation of why, or an
+        # invalid module).  Failing here names the argument the walker could
+        # not type, which is the fact the user can act on.
+        self._report_uninferred_type_args(mono)
         return emitted
+
+    def _report_uninferred_type_args(self, mono: Monomorphizer) -> None:
+        """Turn discovery's un-inferable type arguments into [E622] errors.
+
+        The fail-closed half of the #1327/#1366 family: the phantom-var
+        default is retained for a variable no parameter determines, and every
+        variable a DIRECT ``@T`` parameter DOES determine but whose argument
+        no arm could name is reported here instead of being guessed.
+        """
+        from vera.errors import Diagnostic
+        records = [
+            *mono.uninferred_type_args,
+            *getattr(self, "_shadowed_uninferred_type_args", []),
+        ]
+        # #1368 review: the shadowed/qualified discovery builds a THROWAWAY
+        # walker per qualified call, so its records reach this accumulator
+        # with no shared deduplication — only the per-walker one, which a
+        # fresh walker per call cannot supply.  One argument is one
+        # diagnostic, so the drain dedupes on the same key the walker uses
+        # (`_record_uninferred_type_arg`).  No program in the suite or the
+        # corpus currently reaches this second layer twice for one span —
+        # removing it changes no measured count — so it is the belt to the
+        # per-walker braces rather than a fix for an observed duplicate; the
+        # "exactly one" cells in tests/test_uninferred_type_arg_e622.py pin
+        # the property wherever it is supplied from.
+        seen: set[tuple[str, str, object]] = set()
+        for rec in records:
+            span = getattr(rec.arg, "span", None)
+            key = (
+                rec.fn_name,
+                rec.type_var,
+                (span.line, span.column, span.end_line, span.end_column)
+                if span is not None else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            # #1368 review: `_diag_location` resolves every non-prelude node
+            # against the ENTRY file and source, so a call written inside an
+            # imported module got that module's line number paired with the
+            # importer's file name and a source line quoted from whatever sits
+            # at that line there.  `_module_source_scope` is the existing scope
+            # for exactly this (#1186); the verifier's leg already enters its
+            # own equivalent.  A `None` origin is a no-op, which is the entry
+            # program's own answer.
+            with self._module_source_scope(rec.origin):
+                loc, source_line = self._diag_location(rec.arg)
+            self.diagnostics.append(Diagnostic(
+                description=(
+                    f"Cannot infer the type argument '{rec.type_var}' of "
+                    f"generic call '{rec.fn_name}' from its "
+                    f"{rec.arg_kind} argument."
+                ),
+                location=loc,
+                source_line=source_line,
+                rationale=(
+                    "A generic is compiled by specialising it at each "
+                    "concrete type it is called with, so the compiler must "
+                    "know the type of every argument that fixes a type "
+                    "variable. This argument's type could not be determined, "
+                    "and specialising at a guessed type would emit a "
+                    "specialisation nothing calls."
+                ),
+                fix=uninferred_type_arg_fix(
+                    rec, self._expr_semantic_types),
+                spec_ref='Chapter 5, Section 5.9 "Generic Functions"',
+                severity="error",
+                error_code="E622",
+            ))
 
     def _drain_generic_worklist(
         self,
@@ -798,6 +881,7 @@ class MonomorphizationMixin:
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
                 self._collect_shadowed_qualified_calls(
                     decl, path, decls_by_name, ctor_to_adt, instances,
+                    None, None,
                 )
         # #1029: also seed from the imported NON-generic bodies (and their
         # where-helpers), which after the loop-top reroute carry a
@@ -816,12 +900,17 @@ class MonomorphizationMixin:
         # node's own `path`, so widening the scan cannot pick up a foreign one.
         for _mp, fdecl in self._imported_fn_decls:
             if not fdecl.forall_vars:
+                # The decl is paired with the module it was declared in, so a
+                # record made inside it names THAT module's file (#1368
+                # review) rather than the importer's.
                 self._collect_shadowed_qualified_calls(
                     fdecl, path, decls_by_name, ctor_to_adt, instances,
+                    None, _mp,
                 )
         for mono_fn in mono_decls:
             self._collect_shadowed_qualified_calls(
                 mono_fn, path, decls_by_name, ctor_to_adt, instances,
+                None, self._mono_clone_origins.get(mono_fn.name),
             )
 
         # Transitive worklist over shadowed clones.  Each popped shadowed
@@ -1032,6 +1121,7 @@ class MonomorphizationMixin:
         ctor_to_adt: dict[str, str],
         instances: dict[str, set[tuple[str, ...]]],
         op_result_types: dict[str, str] | None = None,
+        origin: tuple[str, ...] | None = None,
     ) -> None:
         """Total AST walk collecting ``path::gen(...)`` instantiation sites.
 
@@ -1070,14 +1160,14 @@ class MonomorphizationMixin:
             for child in (node.effect, node.state, node.clauses):
                 self._collect_shadowed_qualified_calls(
                     child, path, decls_by_name, ctor_to_adt, instances,
-                    op_result_types,
+                    op_result_types, origin,
                 )
             merged = {
                 **op_result_types, **effect_op_result_names([node.effect]),
             }
             self._collect_shadowed_qualified_calls(
                 node.body, path, decls_by_name, ctor_to_adt, instances,
-                merged,
+                merged, origin,
             )
             return
 
@@ -1086,7 +1176,7 @@ class MonomorphizationMixin:
                 and node.name in decls_by_name):
             decl = decls_by_name[node.name]
             type_args = self._mono_infer_shadowed(
-                decl, node.args, ctor_to_adt, op_result_types,
+                decl, node.args, ctor_to_adt, op_result_types, origin,
             )
             if type_args is not None:
                 instances[node.name].add(type_args)
@@ -1096,13 +1186,13 @@ class MonomorphizationMixin:
                     continue
                 self._collect_shadowed_qualified_calls(
                     getattr(node, f.name), path, decls_by_name,
-                    ctor_to_adt, instances, op_result_types,
+                    ctor_to_adt, instances, op_result_types, origin,
                 )
         elif isinstance(node, (tuple, list)):
             for item in node:
                 self._collect_shadowed_qualified_calls(
                     item, path, decls_by_name, ctor_to_adt, instances,
-                    op_result_types,
+                    op_result_types, origin,
                 )
 
     def _mono_infer_shadowed(
@@ -1111,12 +1201,28 @@ class MonomorphizationMixin:
         args: tuple[ast.Expr, ...],
         ctor_to_adt: dict[str, str],
         op_result_types: dict[str, str] | None = None,
+        origin: tuple[str, ...] | None = None,
     ) -> tuple[str, ...] | None:
-        """Infer a shadowed generic's type args from a qualified call's args."""
+        """Infer a shadowed generic's type args from a qualified call's args.
+
+        *origin* is the module whose body the call is written in — the entry
+        program for ``None``.  This walker is built fresh per qualified call,
+        so it starts outside any namespace scope and would record every
+        [E622] as the entry program's; the call site inside an imported body
+        would then be reported against the importer's file and source line.
+        """
         m = Monomorphizer(self._build_mono_context({}, ctor_to_adt))
+        m._namespace_path = origin
         if op_result_types:
             m._op_result_types = op_result_types
-        return m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        result = m._infer_type_args_from_args(decl, args, ctor_to_adt, None)
+        # #1327/#1366: this walker is a THROWAWAY built per qualified call, so
+        # its fail-closed records would be dropped on the floor.  Carry them to
+        # the codegen-level accumulator `_monomorphize` drains, or the shadowed
+        # /qualified spelling of a shape (`mod$plib$gen2$Int`) would keep
+        # guessing where the unshadowed one refuses.
+        self._shadowed_uninferred_type_args.extend(m.uninferred_type_args)
+        return result
 
     def _collect_eq_full_type_names(
         self,

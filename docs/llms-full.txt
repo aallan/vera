@@ -3270,7 +3270,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 12,320 tests, including a 244-program conformance suite
+- 12,347 tests, including a 244-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
@@ -3495,6 +3495,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E619**: Cannot infer type argument for ability-constrained parameter
 - **E620**: Function dropped: skipped callee or no function table
 - **E621**: Name collision: module ADT contends with a prelude data type
+- **E622**: Cannot infer a generic call's type argument
 - **E699**: Internal compiler error
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs
