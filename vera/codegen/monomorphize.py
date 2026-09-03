@@ -439,7 +439,16 @@ class MonomorphizationMixin:
             if key in seen:
                 continue
             seen.add(key)
-            loc, source_line = self._diag_location(rec.arg)
+            # #1368 review: `_diag_location` resolves every non-prelude node
+            # against the ENTRY file and source, so a call written inside an
+            # imported module got that module's line number paired with the
+            # importer's file name and a source line quoted from whatever sits
+            # at that line there.  `_module_source_scope` is the existing scope
+            # for exactly this (#1186); the verifier's leg already enters its
+            # own equivalent.  A `None` origin is a no-op, which is the entry
+            # program's own answer.
+            with self._module_source_scope(rec.origin):
+                loc, source_line = self._diag_location(rec.arg)
             self.diagnostics.append(Diagnostic(
                 description=(
                     f"Cannot infer the type argument '{rec.type_var}' of "
@@ -872,6 +881,7 @@ class MonomorphizationMixin:
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
                 self._collect_shadowed_qualified_calls(
                     decl, path, decls_by_name, ctor_to_adt, instances,
+                    None, None,
                 )
         # #1029: also seed from the imported NON-generic bodies (and their
         # where-helpers), which after the loop-top reroute carry a
@@ -890,12 +900,17 @@ class MonomorphizationMixin:
         # node's own `path`, so widening the scan cannot pick up a foreign one.
         for _mp, fdecl in self._imported_fn_decls:
             if not fdecl.forall_vars:
+                # The decl is paired with the module it was declared in, so a
+                # record made inside it names THAT module's file (#1368
+                # review) rather than the importer's.
                 self._collect_shadowed_qualified_calls(
                     fdecl, path, decls_by_name, ctor_to_adt, instances,
+                    None, _mp,
                 )
         for mono_fn in mono_decls:
             self._collect_shadowed_qualified_calls(
                 mono_fn, path, decls_by_name, ctor_to_adt, instances,
+                None, self._mono_clone_origins.get(mono_fn.name),
             )
 
         # Transitive worklist over shadowed clones.  Each popped shadowed
@@ -1106,6 +1121,7 @@ class MonomorphizationMixin:
         ctor_to_adt: dict[str, str],
         instances: dict[str, set[tuple[str, ...]]],
         op_result_types: dict[str, str] | None = None,
+        origin: tuple[str, ...] | None = None,
     ) -> None:
         """Total AST walk collecting ``path::gen(...)`` instantiation sites.
 
@@ -1144,14 +1160,14 @@ class MonomorphizationMixin:
             for child in (node.effect, node.state, node.clauses):
                 self._collect_shadowed_qualified_calls(
                     child, path, decls_by_name, ctor_to_adt, instances,
-                    op_result_types,
+                    op_result_types, origin,
                 )
             merged = {
                 **op_result_types, **effect_op_result_names([node.effect]),
             }
             self._collect_shadowed_qualified_calls(
                 node.body, path, decls_by_name, ctor_to_adt, instances,
-                merged,
+                merged, origin,
             )
             return
 
@@ -1160,7 +1176,7 @@ class MonomorphizationMixin:
                 and node.name in decls_by_name):
             decl = decls_by_name[node.name]
             type_args = self._mono_infer_shadowed(
-                decl, node.args, ctor_to_adt, op_result_types,
+                decl, node.args, ctor_to_adt, op_result_types, origin,
             )
             if type_args is not None:
                 instances[node.name].add(type_args)
@@ -1170,13 +1186,13 @@ class MonomorphizationMixin:
                     continue
                 self._collect_shadowed_qualified_calls(
                     getattr(node, f.name), path, decls_by_name,
-                    ctor_to_adt, instances, op_result_types,
+                    ctor_to_adt, instances, op_result_types, origin,
                 )
         elif isinstance(node, (tuple, list)):
             for item in node:
                 self._collect_shadowed_qualified_calls(
                     item, path, decls_by_name, ctor_to_adt, instances,
-                    op_result_types,
+                    op_result_types, origin,
                 )
 
     def _mono_infer_shadowed(
@@ -1185,9 +1201,18 @@ class MonomorphizationMixin:
         args: tuple[ast.Expr, ...],
         ctor_to_adt: dict[str, str],
         op_result_types: dict[str, str] | None = None,
+        origin: tuple[str, ...] | None = None,
     ) -> tuple[str, ...] | None:
-        """Infer a shadowed generic's type args from a qualified call's args."""
+        """Infer a shadowed generic's type args from a qualified call's args.
+
+        *origin* is the module whose body the call is written in — the entry
+        program for ``None``.  This walker is built fresh per qualified call,
+        so it starts outside any namespace scope and would record every
+        [E622] as the entry program's; the call site inside an imported body
+        would then be reported against the importer's file and source line.
+        """
         m = Monomorphizer(self._build_mono_context({}, ctor_to_adt))
+        m._namespace_path = origin
         if op_result_types:
             m._op_result_types = op_result_types
         result = m._infer_type_args_from_args(decl, args, ctor_to_adt, None)

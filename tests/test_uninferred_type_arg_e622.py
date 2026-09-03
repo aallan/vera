@@ -324,6 +324,51 @@ public fn main(@Unit -> @Int)
 }
 """
 
+# The same un-nameable site, reached through the SHADOWED/qualified path: the
+# entry program owns the bare name `idg`, so `slib`'s generic is reachable only
+# as `slib::idg` and is discovered by a throwaway walker per qualified call.
+_MODULE_OWNED_SHADOWED = {
+    "slib.vera": """\
+module slib;
+
+public forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn compute(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [7, 8, 9];
+  idg(@Array<Int>.0[1])
+}
+""",
+    "main.vera": """\
+import slib(compute);
+
+private fn idg(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  compute(())
+}
+""",
+}
+
 # #1365's shape, which fail-closed does NOT catch (see the module docstring).
 _TYPE_CHANGING_PIPE = """\
 private forall<T> fn gid(@T -> @T)
@@ -504,7 +549,7 @@ class TestIndexArgumentFailsClosed1327:
     """An indexed generic argument is refused, not guessed."""
 
     def test_compile_reports_e622(self) -> None:
-        result = _compile(_INDEX_ARG)
+        result = _compile_checked(_INDEX_ARG)
         errs = _errors(result.diagnostics)
         assert [c for c, _ in errs] == ["E622"], errs
         # The diagnostic names the variable, the callee, and the shape whose
@@ -522,7 +567,7 @@ class TestIndexArgumentFailsClosed1327:
         # would satisfy, which is exactly how one clone impersonates another.
         from tests.codegen_helpers import wat_calls, wat_fn_names
 
-        result = _compile(_INDEX_ARG)
+        result = _compile_checked(_INDEX_ARG)
         emitted = sorted(n for n in wat_fn_names(result.wat) if "idg" in n)
         assert emitted == [], emitted
         for target in ("idg$Bool", "idg$Int", "idg"):
@@ -538,7 +583,7 @@ class TestIndexArgumentFailsClosed1327:
         assert "E622" in [c for c, _ in errs], errs
 
     def test_diagnostic_locates_the_argument_not_the_function(self) -> None:
-        result = _compile(_INDEX_ARG)
+        result = _compile_checked(_INDEX_ARG)
         e622 = [d for d in result.diagnostics if d.error_code == "E622"]
         assert len(e622) == 1, e622
         # `idg(@Array<Int>.0[1])` is the last line of the source; the caret
@@ -683,7 +728,7 @@ class TestDiagnosticIsActionable:
         # a call site once per worklist re-seed round, and the shadowed
         # /qualified path builds a fresh walker per qualified call, so the
         # count is a property worth pinning wherever it is supplied from.
-        result = _compile(_INDEX_ARG)
+        result = _compile_checked(_INDEX_ARG)
         assert len(
             [d for d in result.diagnostics if d.error_code == "E622"]) == 1
 
@@ -711,6 +756,73 @@ class TestDiagnosticIsActionable:
         assert e622[0].location.file.endswith("mlib.vera"), (
             e622[0].location.file)
         assert "idg(" in e622[0].source_line, e622[0].source_line
+
+    def test_module_owned_site_names_the_module_file_at_codegen(
+        self, tmp_path: Path,
+    ) -> None:
+        # Codegen emits E622 through its OWN path, with its own location
+        # resolution: `_diag_location` reads the ENTRY file and source unless
+        # the module scope is entered.  Asserting only the verifier's leg
+        # would pass while codegen quoted the importer's line.
+        _verify_errors, result, cg_errors = build_multi_module(
+            tmp_path / "owned_cg", _MODULE_OWNED_SITE,
+        )
+        assert "E622" in [c for c, _ in cg_errors], cg_errors
+        e622 = [d for d in result.diagnostics if d.error_code == "E622"]
+        assert len(e622) == 1, [d.description for d in result.diagnostics]
+        assert e622[0].location.file is not None
+        assert e622[0].location.file.endswith("mlib.vera"), (
+            e622[0].location.file)
+        assert "idg(" in e622[0].source_line, e622[0].source_line
+
+    def test_shadowed_module_site_names_the_module_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # The SHADOWED/qualified path builds a throwaway walker per qualified
+        # call, which starts outside any namespace scope — so without the
+        # origin threaded to it every record claims the entry program and the
+        # diagnostic names `main.vera`.
+        _verify_errors, result, cg_errors = build_multi_module(
+            tmp_path / "owned_shadow", _MODULE_OWNED_SHADOWED,
+        )
+        assert "E622" in [c for c, _ in cg_errors], cg_errors
+        e622 = [d for d in result.diagnostics if d.error_code == "E622"]
+        assert e622[0].location.file is not None
+        assert e622[0].location.file.endswith("slib.vera"), (
+            e622[0].location.file)
+
+    def test_namespace_scope_restores_the_path_it_saved(self) -> None:
+        # The context manager's visible-tables branch — the one every real
+        # multi-module program takes — restored `_scope_fn_names` and not
+        # `_namespace_path`, so the path stayed pinned after the block and a
+        # later record outside any scope inherited a previously-walked
+        # module's namespace.  Asserted directly: the leak is a property of
+        # the manager, and a program-level cell would only see it through
+        # whichever diagnostic happened to be misattributed.
+        from vera.monomorphize import (
+            MonoContext,
+            Monomorphizer,
+            NamespaceFnNames,
+        )
+
+        ctx = MonoContext(
+            generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
+            adt_tp_counts={}, type_aliases={}, type_alias_params={},
+            fn_ret_types={},
+            # A non-None table is what puts the manager on its COMMON branch —
+            # the one that leaked.  Its contents are irrelevant here.
+            namespace_fn_names=NamespaceFnNames({}, frozenset(), {}),
+        )
+        mono = Monomorphizer(ctx)
+        assert mono._namespace_path is None
+        with mono.namespace_scope(("outer",)):
+            assert mono._namespace_path == ("outer",)
+            with mono.namespace_scope(("inner",)):
+                assert mono._namespace_path == ("inner",)
+            assert mono._namespace_path == ("outer",), (
+                "inner scope did not restore the enclosing namespace")
+        assert mono._namespace_path is None, (
+            "namespace_scope left the path pinned after the block")
 
 
 # ---------------------------------------------------------------------

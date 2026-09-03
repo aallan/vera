@@ -1935,19 +1935,24 @@ class Monomorphizer:
         # to name the file the call is written in — that is a fact about
         # where the walk is, not about whether the consumer built visibility
         # tables.  The fn-name narrowing below stays conditional.
+        # ONE save/restore for both fields.  Splitting it left the
+        # visible-tables branch — the common one, since the verifier always
+        # builds those tables and codegen builds them whenever
+        # `_namespace_tables` is populated — restoring `_scope_fn_names` and
+        # NOT `_namespace_path`, so the path stayed pinned after the block
+        # exited.  A later record made outside any scope (the verifier's
+        # `walk_seed` calls `_infer_type_args_from_args` directly) then took
+        # the stale path as its origin and named a previously-walked module's
+        # file: precisely the misattribution `origin` exists to prevent.
         saved_path = self._namespace_path
-        self._namespace_path = path
-        if self.ctx.namespace_fn_names is None:
-            try:
-                yield
-            finally:
-                self._namespace_path = saved_path
-            return
         saved = self._scope_fn_names
-        self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
+        self._namespace_path = path
+        if self.ctx.namespace_fn_names is not None:
+            self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
         try:
             yield
         finally:
+            self._namespace_path = saved_path
             self._scope_fn_names = saved
 
     def _bare_call_is_user_fn(self, name: str) -> bool:
