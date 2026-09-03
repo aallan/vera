@@ -183,3 +183,17 @@ Runtime side from here (`$gc_collect`, the wrap table's Phase 2c eviction,
 * `layout_datasec.py` / `layout_wide.py` — the data-section pad sweep.
 * `minimize.py` — the four-way minimization.
 * `discriminate.py` — the ingredient table above.
+
+## Filed
+
+[#1382](https://github.com/aallan/vera/issues/1382) — "Element read of an
+allocating array builtin over a Map-produced Array<Int> returns wrong contents
+under VERA_EAGER_GC=1 (heap-base-selected)", labelled `bug`, with the minimal
+232-pad `main` reproducer, both pad tables, the ingredient discrimination and
+the candidate sites.  Cross-referenced #1379 as a possible sibling (same
+"intermediate result does not survive a collection between production and use"
+shape).
+
+D1b (#1371) merges only AFTER #1382's fix lands on `release/v0.2.0`; its gate
+battery then includes `VERA_EAGER_GC=1 python scripts/check_conformance.py`
+and examples-run under the same knob, green at the rebased head.
