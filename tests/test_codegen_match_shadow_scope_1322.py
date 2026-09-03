@@ -188,10 +188,15 @@ public fn main(@Unit -> @Int)
 def _pointer_result_matches(k: int):
     """K matches per frame whose RESULT is a heap pointer.
 
-    The arm where the cost is not zero: the re-root that keeps the result
-    alive past the match is itself frame-lifetime, so each match leaves one
-    root behind.  Pinned as the residual, not as a pass — see the module
-    docstring and #1371.
+    Written against #1322's head as the arm where the cost was NOT zero: the
+    re-root carrying the result past the match was itself frame-lifetime, so
+    each match left one root behind (2 / 3 / 5 roots per frame at K = 1 / 2 /
+    4, from 4 / 7 / 13 before that fix).  #1371 generalises the same
+    discipline to every expression and every block statement, so the
+    enclosing scope now reclaims that result and this shape is flat at one —
+    the frame's own parameter root — like the three beside it.  It joins the
+    family list for that reason, and keeps its own cell because the flip is
+    the point.
     """
     terms = " + ".join(
         'string_length(match @String.0 '
@@ -312,11 +317,13 @@ class TestMatchCostsNoShadowRoots1322:
         roots the frame legitimately needs, and roots-per-frame rather than
         depth drops the outermost frame's own constant.
 
-        The three shapes exercise three different roots.  The pair
+        The four shapes exercise four different roots.  The pair
         scrutinee's copies are DELETED by this fix; the constructor field
         binding's root is load-bearing (#705/#707) and is KEPT, only
-        re-scoped; and the allocating scrutinee's own allocation is what
-        makes the snapshot's placement before the scrutinee load-bearing.
+        re-scoped; the allocating scrutinee's own allocation is what makes
+        the snapshot's placement before the scrutinee load-bearing; and the
+        pointer RESULT's re-root, which #1322 left frame-lifetime, is
+        reclaimed by the enclosing scope under #1371.
         """
         one = _roots_per_frame(shape(1))
         assert _roots_per_frame(shape(k)) == one, (

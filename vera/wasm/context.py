@@ -1340,11 +1340,20 @@ class WasmContext(
         so the statement restores ``$gc_sp`` to where it stood on entry and
         then roots its new bindings, read from the environment delta.
 
-        That delta is why the producers no longer root their own bindings:
-        one rule decides which of a statement's bindings are heap pointers
-        and roots each exactly once, where before `let`, pair-`let` and
-        `let`-destructure each pushed for themselves — and a scoped restore
-        would have had to know, per producer, what to put back.
+        That delta is why one rule decides which of a statement's bindings
+        are heap pointers and roots each exactly once, where before `let`,
+        pair-`let` and `let`-destructure each pushed for themselves — and a
+        scoped restore would have had to know, per producer, what to put
+        back.
+
+        `let` and pair-`let` had their producer pushes removed; `let`-DESTRUCTURE
+        still pushes its own (``_destructure_let`` in ``vera/wasm/data.py``),
+        and that is correct rather than an oversight.  Those pushes land
+        inside the statement's instructions, so the restore below reclaims
+        them and the delta then plants the surviving root — one live root per
+        binding either way.  Removing them would be safe too; leaving them is
+        a smaller diff over a path whose field loads produce addresses that
+        live in no other local (#705/#707).
         """
         current_env = env
         instructions: list[str] = []

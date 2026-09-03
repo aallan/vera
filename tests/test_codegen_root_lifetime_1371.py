@@ -45,12 +45,71 @@ frame's pointer parameter, which is genuinely live for the frame.
 """
 from __future__ import annotations
 
+import functools
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from vera.codegen import execute
 from vera.codegen.assembly import GC_STACK_SIZE
+from vera.environment import TypeEnv
+from vera.types import AdtType, PrimitiveType
 
 from tests.codegen_helpers import _compile_ok
+
+
+# Data-section padding: an unused function holding one string literal, which
+# moves `gc_heap_start` without adding an allocation or a root.  #1382 is
+# selected by the heap BASE, so a GC claim measured at ONE layout can invert
+# its own meaning; every load-bearing cell below is swept across these.
+# Eight lengths covering every residue mod 8 — the alignment classes the heap
+# layout can land in — rather than one arbitrary length.  (Development sweeps
+# ran 0..95; these eight are what ships, to keep the suite's runtime sane.)
+_PADS = (0, 1, 2, 3, 4, 5, 6, 7)
+
+
+def _with_pad(source: str, pad: int) -> str:
+    if not pad:
+        return source
+    return source + (
+        "\npublic fn pad(-> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        f'  string_length("{"q" * pad}")\n'
+        "}\n"
+    )
+
+
+def _run_in_subprocess(source: str, tmp_path: Path) -> tuple[int, str]:
+    """Run *source* under `vera run` in a CHILD process, returning (rc, out).
+
+    Some rooting failures are not wrong VALUES but memory corruption: an
+    unrooted Map wrapper takes the interpreter down with SIGBUS.  In-process
+    `execute()` would kill the pytest worker — under `-n auto` that reads as
+    a lost worker rather than as a failed assertion, and the run reports
+    nothing about which cell died.  A child process turns the same crash
+    into a non-zero return code that an ordinary assertion can name.
+    """
+    src = tmp_path / "cell.vera"
+    src.write_text(source, encoding="utf-8")
+    # EXTEND the inherited environment rather than replacing it: a bare
+    # replacement drops SYSTEMROOT, which Windows needs before Python even
+    # starts, and the failure would then read as an unrooted wrapper.
+    env = dict(os.environ)
+    env["VERA_EAGER_GC"] = "1"
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    proc = subprocess.run(
+        [sys.executable, "-m", "vera.cli", "run", str(src)],
+        check=False,  # a crash IS the observation; the caller asserts on rc
+        capture_output=True, text=True, encoding="utf-8", env=env,
+    )
+    return proc.returncode, (proc.stdout or "").strip()
 
 
 _SHADOW_ROOTS = GC_STACK_SIZE // 4
@@ -65,8 +124,16 @@ _CALL = 'string_length(string_concat(@String.0, "!"))'
 
 
 def _runs(source: str) -> bool:
+    """Whether the program executes to completion (no shadow-stack trap).
+
+    The compile step is deliberately OUTSIDE the guard: `_compile_ok` raises
+    `AssertionError` for a compile error, and swallowing that would report a
+    program that stopped compiling as one that "costs more than one root per
+    frame" — a measurement failure disguised as a measurement.
+    """
+    compiled = _compile_ok(source)
     try:
-        execute(_compile_ok(source), fn_name="main", args=[])
+        execute(compiled, fn_name="main", args=[])
     except Exception:  # noqa: BLE001 - any trap counts as "did not run"
         return False
     return True
@@ -85,6 +152,11 @@ def _max_depth(make_source) -> int:
     return lo
 
 
+@functools.lru_cache(maxsize=None)
+def _roots_per_frame_cached(key: object, make_source) -> int:
+    return round(_SHADOW_ROOTS / _max_depth(make_source))
+
+
 def _roots_per_frame(make_source) -> int:
     """Shadow roots one recursive frame holds, from its trap depth.
 
@@ -94,7 +166,8 @@ def _roots_per_frame(make_source) -> int:
     slope; rounding the ratio drops it and keeps the slope, which is what
     the defect moved.
     """
-    return round(_SHADOW_ROOTS / _max_depth(make_source))
+    return _roots_per_frame_cached(
+        getattr(make_source, "__cache_key__", make_source), make_source)
 
 
 def _program(body: str, extra: str = ""):
@@ -388,17 +461,33 @@ class TestCallResultsAreRootedWhereTheyLand1379:
     silently misses the String.
 
     Every claim here is a PAD SWEEP, never a single layout.  #1382 showed a
-    single-layout observation can inverate its own meaning, and two of these
-    cells were green at one layout while being wrong at all of them — the
+    single-layout observation can invert its own meaning, and one of these
+    cells was green at one layout while being wrong at all of them — the
     earlier `decimal_to_string` cell passed only because it read the LENGTH,
-    which survives a use-after-free that corrupts the bytes.  Measured over
-    pad lengths 0..95, at this PR's base and at its head:
+    which survives a use-after-free that corrupts the bytes.
 
-        cell                                base failing   head failing
-        decimal_from_string (Option ptr)        96 / 96         0 / 96
-        decimal_div (Option ptr)                96 / 96         0 / 96
-        decimal_to_string (String pair)         96 / 96         0 / 96
-        decimal_compare (Ordering ptr)           0 / 96         0 / 96
+    WHICH HALF EACH CELL DISCRIMINATES.  Being red at the base is not the
+    same as discriminating the LANDING half, because the base had neither
+    half.  Disabling `_root_landed_value` alone and re-sweeping separates
+    them, and most of the Decimal cells turn out to pin the STATEMENT /
+    BINDING half — their results are `let`-bound, so the binding scope roots
+    them even with landing rooting gone:
+
+        cell                          base    landing-half OFF   head
+        decimal_from_string           96/96        96/96         0/96
+        decimal_div                   96/96         0/96         0/96
+        decimal_to_string (pair)      96/96         0/96         0/96
+        nested host call              96/96          —           0/96
+        decimal_compare (control)      0/96          —           0/96
+
+    So the LANDING half is carried by `decimal_from_string`, by the nested
+    host-call cell (whose intermediate is never bound), by the three Map
+    cells below, and above all by `TestEveryHeapReturningHostCallIsRooted`,
+    which is structural and cannot crash.  `decimal_div` and
+    `decimal_to_string` remain valuable — they pin the binding half over
+    host-call results — but they are not evidence for the landing rule, and
+    labelling them as such would have made the retirement of the six
+    per-site pushes rest on cells that do not test it.
 
     `decimal_compare` is named by the audit and covered by the rule, but no
     cell reaching it could be constructed: its `Ordering` arms carry no heap
@@ -476,49 +565,32 @@ class TestCallResultsAreRootedWhereTheyLand1379:
 """,
                 "1234510012001100220021003200310042004",
             ),
-            # A Map wrapper landing from a host import, the sibling key
-            # allocating over it.  Bus error when unrooted.
+            # NESTED host calls: the `decimal_div` Option and the
+            # `option_unwrap_or` Decimal are both intermediates that are
+            # never bound, so only the LANDING rule can root them.  96/96
+            # red at base, 0/96 at head.
             (
-                """public fn main(@Unit -> @Int)
+                """private fn churn(@Int -> @String)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  map_size(map_insert(map_insert(map_new(), "a", 1),
-                      string_concat("b", "c"), 2))
+  string_concat(int_to_string(@Int.0 + 1000), int_to_string(@Int.0 + 2000))
 }
-""",
-                2,
-            ),
-            # The same wrapper read back through `map_get`, whose own key
-            # argument allocates.
-            (
-                """public fn main(@Unit -> @Int)
+
+public fn main(@Unit -> @String)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  match map_get(map_insert(map_new(), "k", 77), string_concat("k", "")) {
-    Some(@Int) -> @Int.0,
-    None -> 0
-  }
+  string_concat(
+    decimal_to_string(option_unwrap_or(
+      decimal_div(decimal_from_int(84), decimal_from_int(2)),
+      decimal_from_int(0))),
+    string_concat(string_concat(churn(1), churn(2)), churn(3)))
 }
 """,
-                77,
-            ),
-            # A landed wrapper consumed by a builtin that allocates its own
-            # backing array.
-            (
-                """public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  array_length(map_values(map_insert(map_insert(map_new(), "a", 1),
-                                     string_concat("b", "c"), 2)))
-}
-""",
-                2,
+                "42100120011002200210032003",
             ),
             # CONTROL: a Vera function's result in the same position.  Its
             # epilogue already re-roots into the caller, so this holds with
@@ -586,15 +658,370 @@ public fn main(@Unit -> @Int)
             ),
         ],
         ids=["decimal-from-string-1379", "decimal-div-1379",
-             "decimal-to-string-pair", "map-insert-sibling-alloc",
-             "map-get-sibling-alloc", "map-values-of-landed-wrapper",
+             "decimal-to-string-pair", "nested-host-calls",
              "control-user-fn-result", "control-decimal-compare",
              "control-set-add-chain"],
     )
+    @pytest.mark.parametrize("pad", _PADS)
     def test_a_landed_call_result_survives_a_sibling_allocation(
-        self, source: str, expected: object, monkeypatch: pytest.MonkeyPatch,
+        self, source: str, expected: object, pad: int,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("VERA_EAGER_GC", "1")
-        assert execute(_compile_ok(source), fn_name="main", args=[]).value == (
-            expected
+        result = execute(
+            _compile_ok(_with_pad(source, pad)), fn_name="main", args=[])
+        assert result.value == expected
+
+
+class TestCrashingCellsRunOutOfProcess1379:
+    """Cells whose failure mode is memory corruption, not a wrong value.
+
+    An unrooted Map wrapper does not return the wrong number — it takes the
+    process down with SIGBUS.  Run in-process that would kill the pytest
+    worker, which under `-n auto` reports as a lost worker rather than as a
+    named failing cell, so these go through a child `vera run`: the same
+    crash becomes a non-zero return code an ordinary assertion can report.
+
+    These three are also the cells that carry the LANDING half for the Map /
+    Set family, so losing them to a crash would quietly remove the evidence
+    that retiring the six per-site `_emit_root_result` pushes is safe.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # A Map wrapper landing from a host import, the sibling key
+            # allocating over it.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map_size(map_insert(map_insert(map_new(), "a", 1),
+                      string_concat("b", "c"), 2))
+}
+""",
+                "2",
+            ),
+            # The same wrapper read back through `map_get`, whose own key
+            # argument allocates.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match map_get(map_insert(map_new(), "k", 77), string_concat("k", "")) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+""",
+                "77",
+            ),
+            # A landed wrapper consumed by a builtin that allocates its own
+            # backing array.
+            (
+                """public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(map_values(map_insert(map_insert(map_new(), "a", 1),
+                                     string_concat("b", "c"), 2)))
+}
+""",
+                "2",
+            ),
+        ],
+        ids=["map-insert-sibling-alloc", "map-get-sibling-alloc",
+             "map-values-of-landed-wrapper"],
+    )
+    @pytest.mark.parametrize("pad", _PADS)
+    def test_a_landed_wrapper_survives_out_of_process(
+        self, source: str, expected: str, pad: int, tmp_path: Path,
+    ) -> None:
+        rc, out = _run_in_subprocess(_with_pad(source, pad), tmp_path)
+        assert rc == 0, (
+            f"`vera run` exited {rc} (a negative code is a signal: an "
+            f"unrooted wrapper corrupts memory rather than returning a wrong "
+            f"value).  stdout: {out!r}"
+        )
+        assert out == expected, f"got {out!r}, want {expected!r}"
+
+
+# The scalar primitives, whose returns are values rather than references.
+_SCALAR_RETURNS = frozenset({"Int", "Nat", "Bool", "Byte", "Float64", "Unit"})
+
+# The wrapper families whose host calls this pin MUST observe.  Derived from
+# the registry rather than written out, so a heap-returning builtin added to
+# one of them fails here until the fixture exercises it.
+_WRAPPER_FAMILIES = ("decimal", "map", "set")
+
+_PUSH_OF = re.compile(r"global\.get \$gc_sp\s+local\.get (\d+)\s+i32\.store")
+# Map / Set host imports are type-specialised — `map_values$vi`,
+# `map_insert$si` — so the builtin name is the part before the `$`.
+_HOST_CALL = re.compile(r"call \$vera\.([A-Za-z0-9_]+)(?:\$[A-Za-z0-9_]+)?")
+
+
+def _heap_returning_builtins() -> set[str]:
+    """Builtins whose declared return type is heap-represented.
+
+    From `TypeEnv`, not a hand list: a hand list is exactly what the six
+    per-site `_emit_root_result` pushes were, and what let the Decimal
+    siblings beside them go unrooted for as long as they did.
+    """
+    out: set[str] = set()
+    for name, info in TypeEnv().functions.items():
+        ret = info.return_type
+        if isinstance(ret, PrimitiveType) and ret.name not in _SCALAR_RETURNS:
+            out.add(name)
+        elif isinstance(ret, AdtType):
+            out.add(name)
+    return out
+
+
+# Every heap-returning host call below sits in ARGUMENT position, never as a
+# `let` right-hand side: a bound result is rooted by the statement scope, so
+# a `let`-shaped fixture stays green with the landing rule disabled and pins
+# nothing.  Measured — as `let`s this fixture reports zero unrooted sites
+# either way; as arguments it reports seven with the rule off.
+_HOST_CALL_FIXTURE = """\
+public fn exercise(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_length(decimal_to_string(decimal_round(decimal_abs(decimal_neg(
+    decimal_mul(decimal_sub(decimal_add(decimal_from_int(7),
+      decimal_from_float(2.5)), decimal_from_int(1)), decimal_from_int(3)))), 2)))
+  + option_map_len(decimal_from_string("1.5"))
+  + option_map_len(decimal_div(decimal_from_int(8), decimal_from_int(2)))
+  + ordering_code(decimal_compare(decimal_from_int(1), decimal_from_int(2)))
+  + map_size(map_remove(map_insert(map_new(), "k", 1), "k"))
+  + opt_int(map_get(map_insert(map_new(), "j", 5), "j"))
+  + array_length(map_keys(map_insert(map_new(), "a", 1)))
+  + array_length(map_values(map_insert(map_new(), "b", 2)))
+  + set_size(set_remove(set_add(set_new(), 1), 1))
+  + array_length(set_to_array(set_add(set_new(), 9)))
+}
+
+private fn option_map_len(@Option<Decimal> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Option<Decimal>.0 {
+    Some(@Decimal) -> string_length(decimal_to_string(@Decimal.0)),
+    None -> 0
+  }
+}
+
+private fn ordering_code(@Ordering -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Ordering.0 { Less -> 1, Equal -> 2, Greater -> 3 }
+}
+
+private fn opt_int(@Option<Int> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
+}
+"""
+
+
+def _audit_host_call_rooting(wat: str) -> tuple[set[str], list[tuple[str, str]]]:
+    """Every heap-returning host call in *wat*, and those left unrooted.
+
+    A call site is rooted when its result is captured into a local and that
+    local is shadow-pushed within the window before the next allocation —
+    OR, for the #573 wrap/unwrap builtins, when the raw HANDLE the host
+    returned is consumed by a `$register_wrapper` sequence whose wrapper
+    pointer is pushed instead.  That second case is not an exemption: the
+    handle is not a heap pointer, and rooting it would root the wrong thing.
+    """
+    names = _heap_returning_builtins()
+    lines = [line.strip() for line in wat.splitlines()]
+    observed: set[str] = set()
+    unrooted: list[tuple[str, str]] = []
+    for i, line in enumerate(lines):
+        match = _HOST_CALL.fullmatch(line)
+        if not match or match.group(1) not in names:
+            continue
+        name = match.group(1)
+        observed.add(name)
+        window = lines[i + 1:i + 41]
+        # Truncate at the first allocation that could collect this result.
+        # The rule is that the result is rooted BEFORE anything can collect
+        # it, so a push emitted after an intervening `call $alloc` is the
+        # defect this pins and an untruncated window would accept it.
+        #
+        # The #573 wrap/unwrap builtins need the boundary one allocation
+        # later: the host returned a raw HANDLE, and the `$alloc` right after
+        # the call IS the wrapping — it is what BUILDS the value to be
+        # rooted, not something that can collect it.  So when the window
+        # wraps, the boundary is the first allocation AFTER
+        # `$register_wrapper`.  Truncating at the wrap's own `$alloc`
+        # reported all twelve Decimal call sites as unrooted.
+        wrap_at = next(
+            (n for n, e in enumerate(window)
+             if e.startswith("call $register_wrapper")), None)
+        first = 0 if wrap_at is None else wrap_at + 1
+        for stop in range(first, len(window)):
+            if window[stop].startswith("call $alloc"):
+                window = window[:stop]
+                break
+        captured: list[int] = []
+        for entry in window:
+            set_match = re.fullmatch(r"local\.set (\d+)", entry)
+            if not set_match:
+                break
+            captured.append(int(set_match.group(1)))
+        if not captured:
+            unrooted.append((name, "result not captured into a local"))
+            continue
+        # A pair pops its length first, so the pointer half is set last.
+        ptr_local = captured[-1]
+        text = "\n".join(window)
+        pushed = {int(x) for x in _PUSH_OF.findall(text)}
+        if ptr_local in pushed:
+            continue
+        if "call $register_wrapper" in text and pushed:
+            continue
+        unrooted.append((name, f"local {ptr_local} is never pushed"))
+    return observed, unrooted
+
+
+class TestEveryHeapReturningHostCallIsRooted1379:
+    """The structural pin: no host call may leave a heap result unrooted.
+
+    The behavioural cells above each exercise one builtin, and three of them
+    can only fail by crashing.  This one asks the emitted WAT the general
+    question instead, over a set derived from `TypeEnv` rather than written
+    by hand — so it cannot crash, and a heap-returning builtin added later
+    is covered without anyone remembering to add a cell.
+
+    Validated by mutation: with `_root_landed_value` disabled it reports
+    seven unrooted sites (`decimal_from_string`, four `map_new`, two
+    `set_new`); with the rule on, zero.
+    """
+
+    def test_no_heap_returning_host_call_is_left_unrooted(self) -> None:
+        wat = _compile_ok(_HOST_CALL_FIXTURE).wat
+        _observed, unrooted = _audit_host_call_rooting(wat)
+        assert not unrooted, (
+            "heap-returning host calls whose result is never rooted, so the "
+            "next allocation can sweep it: "
+            + "; ".join(f"{n} ({why})" for n, why in unrooted)
+        )
+
+    def test_the_fixture_exercises_every_wrapper_family_builtin(self) -> None:
+        """Non-vacuity, and a gate on new builtins.
+
+        The assertion above holds trivially over a fixture that calls
+        nothing.  The wrapper families are where the per-site pushes lived
+        and where the Decimal gap was, so every heap-returning builtin in
+        them must appear — a new one fails here until the fixture calls it.
+        """
+        expected = {
+            name for name in _heap_returning_builtins()
+            if name.split("_")[0] in _WRAPPER_FAMILIES
+        }
+        observed, _unrooted = _audit_host_call_rooting(
+            _compile_ok(_HOST_CALL_FIXTURE).wat)
+        missing = expected - observed
+        assert not missing, (
+            f"the fixture does not exercise {sorted(missing)}, so the pin "
+            "says nothing about them"
+        )
+        assert len(expected) >= 20, (
+            f"only {len(expected)} wrapper-family builtins return a heap "
+            "value; the registry derivation has probably broken"
+        )
+
+
+# Functions that emit `gc_shadow_push` without assigning `needs_alloc`, and
+# are correct anyway.  Each is guarded by construction, not by remembering:
+_NEEDS_ALLOC_EXEMPT = {
+    # Both emit their pushes inside an `if ctx.needs_alloc:` block — the
+    # flag is the precondition for the prologue existing at all.
+    "vera/codegen/functions.py:_compile_fn",
+    "vera/codegen/closures.py:_compile_lifted_closure",
+    # The scoping wrapper only runs when the lowering it wraps ALREADY
+    # pushed, and it raises `CodegenInvariantError` if the flag is unset.
+    "vera/wasm/context.py:_scope_shadow_roots",
+}
+
+
+def _push_sites_without_needs_alloc() -> list[str]:
+    """Every function emitting `gc_shadow_push` that never sets the flag."""
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted((root / "vera").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            pushes = [
+                n for n in ast.walk(node)
+                if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "gc_shadow_push"
+            ]
+            if not pushes:
+                continue
+            sets_flag = any(
+                isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Attribute)
+                        and t.attr == "needs_alloc" for t in n.targets)
+                for n in ast.walk(node)
+            )
+            if not sets_flag:
+                rel = path.relative_to(root).as_posix()
+                offenders.append(f"{rel}:{node.name}")
+    return offenders
+
+
+class TestEveryPushSiteDeclaresTheGlobal1376:
+    """`needs_alloc` is what declares `$gc_sp`; a push without it is a bug.
+
+    #1376 was one instance — five `show`/`hash` sites pushed without setting
+    the flag, so `hash(@Tuple<Int, Int>.0)` in a module whose only
+    GC-touching lowering was that hash emitted a reference to an undeclared
+    global and failed to compile.  Review then found four more of the same
+    shape (`array_fold`, `array_any`/`array_all`, the Decimal wrap, the
+    show/hash helper frame).  Nine sites over two rounds is a discipline no
+    one can hold by hand, so it is checked instead of remembered.
+
+    A structural sweep rather than a behavioural probe, because a site's
+    reachability depends on whether anything ELSE in the module allocates —
+    which is exactly what made #1376 invisible until a module was small
+    enough to have nothing else.
+    """
+
+    def test_no_push_site_omits_needs_alloc(self) -> None:
+        offenders = set(_push_sites_without_needs_alloc()) - _NEEDS_ALLOC_EXEMPT
+        assert not offenders, (
+            "these emit `gc_shadow_push` without setting `needs_alloc`, so a "
+            "module whose only GC-touching lowering is one of them references "
+            f"an undeclared `$gc_sp`: {sorted(offenders)}"
+        )
+
+    def test_the_exemptions_still_exist(self) -> None:
+        """A stale exemption would silently re-admit its site.
+
+        If one of these is renamed or gains a flag assignment, the entry
+        stops describing anything and the sweep quietly narrows.
+        """
+        live = set(_push_sites_without_needs_alloc())
+        stale = _NEEDS_ALLOC_EXEMPT - live
+        assert not stale, (
+            f"exemptions that no longer describe a real site: {sorted(stale)}"
         )

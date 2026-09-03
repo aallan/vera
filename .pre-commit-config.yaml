@@ -56,6 +56,13 @@ repos:
         pass_filenames: false
         files: '(tests/conformance/.*|vera/.*\.py$|vera/grammar\.lark$)'
 
+      - id: vera-examples-run-eager-gc
+        name: vera examples run (eager GC)
+        entry: env VERA_EAGER_GC=1 .venv/bin/python scripts/check_examples_run.py
+        language: system
+        pass_filenames: false
+        files: '(examples/.*|vera/.*\.py$)'
+
       - id: vera-examples
         name: vera examples
         entry: .venv/bin/python scripts/check_examples.py

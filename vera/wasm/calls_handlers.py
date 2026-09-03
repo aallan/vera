@@ -797,6 +797,11 @@ class CallsHandlersMixin:
         body locals.
         """
         gc_sp_save = self.alloc_local("i32")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to an
+        # undeclared global whenever nothing else in the module allocates —
+        # and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         prologue = [
             "global.get $gc_sp",
             f"local.set {gc_sp_save}",

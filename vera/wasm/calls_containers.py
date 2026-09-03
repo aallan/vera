@@ -162,6 +162,11 @@ class CallsContainersMixin:
         # these per-call pushes, so the shadow stack doesn't
         # grow unbounded across iterations of an enclosing
         # ``array_fold``.
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         seq.extend(gc_shadow_push(wrapper_temp))
         # #706: no wrap kind needs a bucket any more (``PyDecimal`` is
         # value-typed; #841 Future handles index a host-side future
@@ -582,7 +587,8 @@ class CallsContainersMixin:
 
         The host returns the wrapper pointer for a fresh empty Map (its
         bucket_ptr is 0 until the first insert builds a bucket); the
-        call-site shadow-roots it.  Reclaimed by ordinary mark-sweep
+        call result is rooted where it lands (#1379).  Reclaimed by
+        ordinary mark-sweep
         when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
@@ -591,7 +597,7 @@ class CallsContainersMixin:
         self._map_ops_used.add("map_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
-        # Map) directly; shadow-root it as the result.
+        # Map) directly; `_root_landed_value` roots it (#1379).
         ins: list[str] = [f"call {wasm_name}"]
         return ins
 
@@ -1099,7 +1105,7 @@ class CallsContainersMixin:
         self._set_ops_used.add("set_new")
         self.needs_alloc = True
         # #706: the host returns a wrapper_ptr (empty bucket-as-truth
-        # Set); shadow-root it as the result.
+        # Set); `_root_landed_value` roots it (#1379).
         ins: list[str] = [f"call {wasm_name}"]
         return ins
 

@@ -1282,6 +1282,11 @@ class CallsArraysMixin:
         instructions.extend(arr_instrs)
         instructions.append(f"local.set {arr_len}")
         instructions.append(f"local.set {arr_ptr}")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         instructions.extend(gc_shadow_push(arr_ptr))
 
         # 2. Evaluate init → U, save.  For pair U, stack order is
@@ -1789,6 +1794,11 @@ class CallsArraysMixin:
         ins.extend(arr_instrs)
         ins.append(f"local.set {arr_len}")
         ins.append(f"local.set {arr_ptr}")
+        # `needs_alloc` beside the push (#1376/#1379): the flag is what
+        # declares `$gc_sp`, so a push without it emits a reference to
+        # an undeclared global whenever nothing else in the module
+        # allocates — and `_scope_shadow_roots` refuses it outright.
+        self.needs_alloc = True
         ins.extend(gc_shadow_push(arr_ptr))
 
         ins.extend(fn_instrs)
