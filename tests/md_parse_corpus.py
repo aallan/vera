@@ -251,22 +251,48 @@ _INLINE_TEXTS: list[str] = [
 # literal text.  Both hosts already agree here — these keep it that way,
 # and keep the spec sentence honest about which reading is canonical.
 _SPAN_LINES: list[str] = [
-    "`x``",
-    "``x`",
-    "`x```",
-    "```x`",
-    "``x```",
+    # Named shapes.
+    "`a``",
+    "``a`",
+    "``a``",
+    "`a``b`",
+    "`a```",
+    "```a`",
+    "``a```",
     "`a`b`",
     "``a``b``",
+    # Unclosed runs of each length, alone and against text.
+    "`unclosed",
+    "``unclosed",
+    "```unclosed",
+    "a`b",
+    "a``b",
+    "a`b`c",
+    "a``b``c",
+    "x`y``z",
+    # Space stripping, which turns on the content's length.
     "` `",
     "`  `",
     "`   `",
+    # Emphasis runs: two or more with no closing pair is retried from the
+    # run's own second character, so it yields an EMPTY emphasis.
     "*unclosed",
     "**unclosed",
     "***unclosed",
     "****unclosed",
     "**a*b",
     "***a**b",
+]
+
+# Every opening run length against every closing run length, bare and
+# with trailing text.  The 3x3 matrix is what separates "closes on a run
+# of exactly n" from "closes at the next occurrence of n", which are the
+# same answer on the diagonal and differ off it (#1386 review).
+_SPAN_LINES += [
+    f"{'`' * o}a{'`' * c}{tail}"
+    for o in (1, 2, 3)
+    for c in (1, 2, 3)
+    for tail in ("", "b")
 ]
 
 # Carriage returns: a CRLF document split on "\n" leaves a trailing "\r"
