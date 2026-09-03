@@ -26,6 +26,7 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
+    pipe_desugared_call,
     uninferred_type_arg_fix,
 )
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
@@ -156,6 +157,12 @@ class MonomorphizationMixin:
                 ).items()
                 for name in by_name
             ),
+            # #1327/#1366/#1369: the checker's own answer, for the shapes this
+            # walker has no arm for.  The ENTRY program's table — the one the
+            # CLI hands BOTH codegen and the verifier — so the two consultors
+            # back off to identical answers and the #732 differential stays an
+            # equality (see `checker_clone_type_name`).
+            expr_types=self._expr_semantic_types,
         )
 
     def _monomorphize(
@@ -427,18 +434,17 @@ class MonomorphizationMixin:
         # per-walker braces rather than a fix for an observed duplicate; the
         # "exactly one" cells in tests/test_uninferred_type_arg_e622.py pin
         # the property wherever it is supplied from.
-        seen: set[tuple[str, str, object]] = set()
+        # One argument is one diagnostic.  That property is supplied by the
+        # WALKER's own `_uninferred_seen`, not here: a duplicate IS
+        # constructible (a shadowed module generic instantiated at two
+        # types, whose body carries an un-nameable argument — see
+        # `test_one_argument_yields_one_diagnostic_per_consultor`), and
+        # stripping this drain's guard while keeping the walker's leaves
+        # the count at one, while stripping all three raises it.  A
+        # second and third copy of a rule that nothing can distinguish
+        # from its absence is not defence in depth, it is two more places
+        # for the rule to drift, so the walker owns it alone.
         for rec in records:
-            span = getattr(rec.arg, "span", None)
-            key = (
-                rec.fn_name,
-                rec.type_var,
-                (span.line, span.column, span.end_line, span.end_column)
-                if span is not None else None,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
             # #1368 review: `_diag_location` resolves every non-prelude node
             # against the ENTRY file and source, so a call written inside an
             # imported module got that module's line number paired with the
@@ -1168,6 +1174,22 @@ class MonomorphizationMixin:
             self._collect_shadowed_qualified_calls(
                 node.body, path, decls_by_name, ctor_to_adt, instances,
                 merged, origin,
+            )
+            return
+
+        piped = (pipe_desugared_call(node)
+                 if isinstance(node, ast.Expr) else None)
+        if piped is not None:
+            # #1357: the piped spelling of a qualified-only generic call.  The
+            # raw right operand's `args` omit the piped value, so matching it
+            # here inferred the type arguments from an argument list missing
+            # its first element and registered the phantom `$Bool` clone
+            # instead of the one the call site needs — while the DIRECT
+            # spelling of the same call was discovered correctly.  Walk the
+            # desugared call, which carries the same children.
+            self._collect_shadowed_qualified_calls(
+                piped, path, decls_by_name, ctor_to_adt, instances,
+                op_result_types,
             )
             return
 

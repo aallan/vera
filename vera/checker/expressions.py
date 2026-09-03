@@ -18,6 +18,7 @@ from vera.types import (
     base_type,
     BOOL,
     BYTE,
+    ConcreteEffectRow,
     contains_fresh_typevar,
     contains_typevar,
     EffectInstance,
@@ -1457,6 +1458,7 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            self._check_effect_ref_declared(expr, ei, "old")
             return self._effect_state_type(ei)
         return UnknownType()
 
@@ -1480,8 +1482,68 @@ class ExpressionsMixin:
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
+            self._check_effect_ref_declared(expr, ei, "new")
             return self._effect_state_type(ei)
         return UnknownType()
+
+    def _check_effect_ref_declared(
+        self, expr: ast.Expr, ei: EffectInstance, form: str,
+    ) -> None:
+        """Refuse an ``old()`` / ``new()`` naming an effect the row omits (#1298).
+
+        Both forms read the same cell, so one rule serves both.  The cell is
+        keyed by effect FAMILY (`State<Bool>` and `State<Int>` are different
+        cells since #1285), and a family the enclosing row never declares has
+        no cell at all: `old()` finds no snapshot local and `new()` no
+        registered getter, so codegen raised E699 — the
+        internal-compiler-error diagnostic whose own text says the type
+        checker should have rejected the input, on a check-green program,
+        carrying a bug-report request the user should not act on.
+
+        Checked here because this is where the rest of the clause is checked
+        and where the declared row is in scope: `env.current_effect_row` is
+        the enclosing function's, restored around each declaration, and a
+        `handle` block extends it for its own body, so a form written under a
+        handler still sees what is actually available.
+        """
+        row = self.env.current_effect_row
+        if row is None:
+            return
+        declared: frozenset[EffectInstance] = (
+            row.effects if isinstance(row, ConcreteEffectRow) else frozenset()
+        )
+        if ei in declared:
+            return
+        if isinstance(row, ConcreteEffectRow) and row.row_var is not None:
+            # An OPEN row's tail may carry the family at a call site, so the
+            # declaration here does not settle it.  Refusing would reject a
+            # program that is legal under some instantiation.
+            return
+        def _render(e: EffectInstance) -> str:
+            if not e.type_args:
+                return e.name
+            return f"{e.name}<{', '.join(pretty_type(a) for a in e.type_args)}>"
+
+        named = _render(ei)
+        have = ", ".join(sorted(_render(e) for e in declared)) or "pure"
+        self._error(
+            expr,
+            f"{form}({named}) names an effect this function does not "
+            f"declare. Declared: {have}.",
+            rationale=(
+                f"{form}() reads the state cell of the effect it names, and "
+                f"cells are keyed by effect family — {named} and a different "
+                f"instantiation of the same effect are different cells. A "
+                f"family absent from the effect row has no cell in this "
+                f"function, so there is no state for the contract to refer to."
+            ),
+            fix=(
+                f"Add {named} to the effects row — effects(<{named}>) — or "
+                f"name a family the row already declares."
+            ),
+            spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
+            error_code="E177",
+        )
 
     def _effect_state_type(self, ei: EffectInstance) -> Type:
         """Get the state type of a State-like effect."""

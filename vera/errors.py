@@ -841,6 +841,7 @@ def diagnose_lark_error(
 ERROR_CODES: dict[str, str] = {
     # W0xx — Warnings
     "W001": "Typed hole",
+    "W003": "Unverified assumption (assume statement)",
     "W002": "Async argument evaluates eagerly",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
@@ -908,6 +909,7 @@ ERROR_CODES: dict[str, str] = {
     "E174": "old() outside ensures",
     "E175": "new() outside ensures",
     "E176": "Unknown expression type",
+    "E177": "old()/new() names an effect the row does not declare",
     "E178": "Bare call to a where-helper from outside its parent",
     "E180": "Unknown ability in constraint",
     "E181": "Constraint references undeclared type variable",
@@ -984,6 +986,8 @@ ERROR_CODES: dict[str, str] = {
     "E530": "Nat-to-Int widening out of i64 range",
     "E531": "Nat-to-Int widening unverified and not runtime-guarded",
     "E532": "Cannot verify call-site precondition (undecidable)",
+    "E535": "Cannot statically verify assertion (runtime-checked)",
+    "E534": "Contract holds only from a disclosed fact",
     "E533": "Instantiated handler state diverges from the State<T> cell type",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",

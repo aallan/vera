@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from vera import ast, naming
-from vera.monomorphize import resolve_type_alias
+from vera import ast, narrowing, naming
+from vera.monomorphize import pipe_desugared_call, resolve_type_alias
 from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
 from vera.wasm.helpers import WasmSlotEnv, state_type_arg
@@ -62,25 +62,24 @@ class OperatorsMixin:
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
         """Translate binary operators to WAT."""
-        # Pipe: a |> f(x, y) → f(a, x, y)
+        # Pipe: a |> f(x, y) → f(a, x, y), through the ONE shared desugar
+        # (`vera.monomorphize.pipe_desugared_call`) the checker, discovery and
+        # both type namers use.  #1357: the desugared call keeps the right
+        # operand's own node type, so `a |> m::g()` stays a `ModuleCall` and
+        # its `path` still routes to the declaring module's clone.  Rebuilding
+        # it as a bare-name `FnCall` discarded that path, and the call landed
+        # on a name the importer's flat namespace does not have — a
+        # check-green, verify-clean program whose caller was dropped at
+        # [E602] while the DIRECT spelling of the same call compiled.
         if expr.op == ast.BinOp.PIPE:
-            if isinstance(expr.right, ast.FnCall):
-                desugared = ast.FnCall(
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_call(desugared, env)
-            # C7e: a |> Module.f(x) → f(a, x)
-            if isinstance(expr.right, ast.ModuleCall):
-                desugared = ast.FnCall(
-                    name=expr.right.name,
-                    args=(expr.left,) + expr.right.args,
-                    span=expr.span,
-                )
-                return self._translate_call(desugared, env)
-            raise CodegenInvariantError(  # pragma: no cover
-                "pipe RHS is neither FnCall nor ModuleCall", expr)
+            desugared = pipe_desugared_call(expr)
+            if desugared is None:
+                raise CodegenInvariantError(  # pragma: no cover
+                    "pipe RHS is neither FnCall nor ModuleCall", expr)
+            # Through `translate_expr`, so each shape takes its OWN arm: a
+            # `ModuleCall` reaches the qualified-target resolver that consumes
+            # its `path`, exactly as the direct spelling of the same call does.
+            return self.translate_expr(desugared, env)
 
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
@@ -1887,52 +1886,27 @@ class OperatorsMixin:
     def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Nat.
 
-        Mirrors :py:meth:`ContractVerifier._is_nat_typed`.  Returns
-        True for SlotRef of type @Nat, non-negative IntLits,
-        arithmetic expressions where both operands are @Nat (per
-        vera/checker/expressions.py:264-267 Nat <: Int subtyping
-        rule), IfExpr / MatchExpr with all branches @Nat, and FnCall
-        returning @Nat.  Conservative False elsewhere — UnaryExpr
-        (negation) always produces @Int.
+        Delegates to :func:`vera.narrowing.is_static_nat_typed` — the rule now
+        lives in one place and both this and the verifier's classification read
+        it, so they cannot drift (#1205 parity, re-keyed in #1362).  What stays
+        here is the ORACLE: codegen infers a call's return type from its own
+        tables.
         """
-        if isinstance(expr, ast.SlotRef):
-            return expr.type_name == "Nat"
-        if isinstance(expr, ast.IntLit):
-            return expr.value >= 0
-        if isinstance(expr, ast.BinaryExpr):
-            if expr.op in (
-                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
-                ast.BinOp.DIV, ast.BinOp.MOD,
-            ):
-                return (self._is_static_nat_typed(expr.left)
-                        and self._is_static_nat_typed(expr.right))
-            return False
-        if isinstance(expr, ast.IfExpr):
-            if expr.else_branch is None:
-                return False
-            return (self._is_static_nat_typed(expr.then_branch)
-                    and self._is_static_nat_typed(expr.else_branch))
-        if isinstance(expr, ast.Block):
-            return self._is_static_nat_typed(expr.expr)
-        if isinstance(expr, ast.MatchExpr):
-            if not expr.arms:
-                return False
-            return all(
-                self._is_static_nat_typed(arm.body) for arm in expr.arms
-            )
-        if isinstance(expr, ast.FnCall):
-            ret_type_name = self._infer_fncall_vera_type(expr)
-            return ret_type_name == "Nat"
-        if isinstance(expr, ast.ModuleCall):
-            # ModuleCall is desugared to FnCall in
-            # vera/wasm/context.py:translate_expr (line 315), so the
-            # callee's return type is reachable via the same
-            # _infer_fncall_vera_type lookup once we synthesize the
-            # flattened FnCall shape.
+        return narrowing.is_static_nat_typed(
+            expr, self._infer_fncall_vera_type_for_narrowing)
+
+    def _infer_fncall_vera_type_for_narrowing(self, call: ast.Expr) -> str | None:
+        """Codegen's return-type oracle for the shared narrowing rule.
+
+        A `ModuleCall` is desugared to a `FnCall` before translation, so the
+        same lookup answers both once the flattened shape is synthesised.
+        """
+        if isinstance(call, ast.ModuleCall):
             return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
-            ) == "Nat"
-        return False
+                ast.FnCall(name=call.name, args=call.args, span=call.span))
+        if isinstance(call, ast.FnCall):
+            return self._infer_fncall_vera_type(call)
+        return None
 
     def _result_is_nat(self, expr: ast.Expr) -> bool:
         """Codegen mirror of ``ContractVerifier._result_is_nat`` (#813).
@@ -2410,30 +2384,13 @@ class OperatorsMixin:
                 ids.add(id(node))
 
     def _has_underflow_leaf(self, value: ast.Expr) -> bool:
-        """Codegen mirror of ``ContractVerifier._has_underflow_leaf`` (#552).
+        """Codegen mirror of the shared underflow-leaf rule (#552).
 
-        True iff a statically-@Nat *value*'s value-producing tree
-        contains a pure-literal subtraction (no @Nat provenance) — the
-        #520-exempt ``0 - 1`` idiom, however wrapped (block / if / match)
-        or nested in arithmetic.
+        Delegates to :func:`vera.narrowing.has_underflow_leaf`; the @Nat-origin
+        oracle stays here because it reads codegen's own tables.
         """
-        if isinstance(value, ast.BinaryExpr):
-            if (value.op == ast.BinOp.SUB
-                    and not self._has_nat_origin_codegen(value)):
-                return True
-            return (self._has_underflow_leaf(value.left)
-                    or self._has_underflow_leaf(value.right))
-        if isinstance(value, ast.Block):
-            return self._has_underflow_leaf(value.expr)
-        if isinstance(value, ast.IfExpr):
-            if value.else_branch is None:
-                return False
-            return (self._has_underflow_leaf(value.then_branch)
-                    or self._has_underflow_leaf(value.else_branch))
-        if isinstance(value, ast.MatchExpr):
-            return any(self._has_underflow_leaf(arm.body)
-                       for arm in value.arms)
-        return False
+        return narrowing.has_underflow_leaf(
+            value, self._has_nat_origin_codegen)
 
     # -----------------------------------------------------------------
     # @Int / @Nat integer-overflow runtime guard (#798)

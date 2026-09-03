@@ -121,7 +121,7 @@ fn(@Int -> @Int)
 }
 ```
 
-The compiler MUST emit a warning for every `assume` statement:
+The compiler MUST emit a warning (**W003**) for every `assume` statement:
 
 ```
 WARNING: unverified assumption at line 7: @Int.0 > 0
@@ -245,6 +245,8 @@ A practical implication: if a function `bad` has an implementation that doesn't 
 **Opaque effect values.** A `let` whose value is an effect operation's result (`let @Int = random_int(0, 9);`) binds a fresh *opaque* constant of the value's type in the verification model, and translation of the body continues past it ([#764](https://github.com/aallan/vera/issues/764), [#1199](https://github.com/aallan/vera/issues/1199)); the same applies per-component to a tuple destructure whose source cannot be projected.  Two rules govern how obligations over an opaque value classify:
 
 - **Preconditions stay strict.**  A call precondition that cannot be proven — because the argument is opaque — is reported (**E501**), exactly as for an opaque function result: establishing the precondition is the caller's obligation, and the repair is an `assert`/`assume` on the value, whose fact flows into the check ([#804](https://github.com/aallan/vera/issues/804)).
+- **A goal that holds only from a disclosed fact is Tier 3, not Tier 1.**  A declared-type fact whose own obligation was reported as neither proved nor guarded is not a fact the run established.  A postcondition provable only once it is assumed is reported **E534** and checked at run time; a call precondition in the same position takes the E532 demotion rather than an E501 violation, since no violating model exists.
+- **An `assert` that is neither proved nor refuted says so.**  A body `assert(P)` the solver cannot settle falls to a runtime check and MUST be reported (**E535**), so the construct that moved the tier count is named — the same disclosure `requires` (E521), `ensures` (E522) and `decreases` (E525) already carry.
 - **Refutations over opaque values are not violations.**  A postcondition, refined return, or primitive-operation obligation that *fails* to prove where the goal mentions an opaque constant demotes to a runtime-checked **Tier 3** obligation (`E522` for a postcondition) rather than reporting a definite violation — a countermodel over an unconstrained stand-in says nothing about the value the effect actually produces (`random_int(1, 9)` never returns `0`, but its stand-in would "witness" a zero divisor).  A proof that *succeeds* despite the opacity is kept at Tier 1: it holds for every value the constant could take.  The demotion is per-obligation, not per-function — a genuine violation elsewhere in the same body is still reported.
 
 Distinct effect-op bindings are distinct constants — two `random_int` results are never provably equal.  The variadic `Tuple` pseudo-constructor participates in the decidable fragment: a tuple literal in expression position, and a destructured tuple's components, translate via an on-demand single-constructor datatype sort keyed on the component types ([#747](https://github.com/aallan/vera/issues/747)), so tuple construction and projection are Tier-1-decidable when every component's type and value translate to the decidable fragment (a component of an unsupported type — a function value, for instance — leaves the tuple unmodelled, and the enclosing obligations fall to Tier 3 as before).

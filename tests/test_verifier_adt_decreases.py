@@ -480,6 +480,10 @@ private fn sum(@List<Int> -> @Int)
         -1 T1, +1 T3, +0 total: 271/81/352 -> 270/82/352.
         * 411/122/533 after `ephemeris.vera` (#143) contributed 47 T1 +
           2 T3 + 49 contracts.  The two T3s are the `ensures` clauses of
+        * 411/119/530 after #1362 stopped three `string_utilities.vera`
+          `nat_to_int` arguments claiming a runtime guard that does not
+          exist; they are disclosed (`tier3_unguarded`/E504) instead, and
+          `tier3_unguarded` is counted in neither tier by design.
           `vec_norm` and `declination`, each standing on the far side of a
           `sqrt` or an `asin` — float builtins are opaque to the solver by
           design, so the claims are runtime-guarded rather than proved, and
@@ -675,9 +679,26 @@ private fn sum(@List<Int> -> @Int)
         #
         # #143: `ephemeris.vera`, the first floating-point example, adds
         # 47 T1 + 2 T3: 364/120/484 -> 411/122/533.
+        #
+        # #1362 then disclosed three of `string_utilities.vera`'s
+        # `nat_to_int` arguments — 411/119/530 with 3 tier3_unguarded, the
+        # three leaving `tier3_runtime` without joining any other count —
+        # and PLANTING the missing guard put them back: `nat_to_int` now
+        # emits the same narrowing guard every other `@Nat` entry point
+        # does, so the obligations are runtime-guarded in fact and `tier3`
+        # is true of them again.  Same three obligations, three statuses
+        # across the two changes: a claimed guard that did not exist, an
+        # honest disclosure, then a guard that does.  Only the last is both
+        # true and quiet, which is why the corpus carries NO unguarded
+        # narrowing: 411/119/530/3 -> 411/122/533/0.
         assert t1 == 411, f"Expected 411 T1, got {t1}"
         assert t3 == 122, f"Expected 122 T3, got {t3}"
         assert total == 533, f"Expected 533 total, got {total}"
+        # Zero is the load-bearing value, not a vacuous one: every corpus
+        # narrowing is now covered by an emitted guard, so any reappearance
+        # is a REGRESSION in guard coverage rather than a new example.  The
+        # disclosure path itself is exercised synthetically, in
+        # `test_verifier_truth_consult_status.py`.
         assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 

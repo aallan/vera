@@ -285,8 +285,22 @@ class CallsMathMixin:
     def _translate_nat_to_int(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate nat_to_int(@Nat) → @Int.  Identity (both i64)."""
-        return self.translate_expr(arg, env)
+        """Translate nat_to_int(@Nat) → @Int.  Identity (both i64).
+
+        The VALUE is an identity; the BOUNDARY is not.  An `@Int` argument
+        narrowing into this `@Nat` formal is a narrowing like any other, and
+        this was the one `@Nat` builtin emitting no guard — its siblings got
+        theirs in #756, and this one was passed over precisely because it has
+        no lowering step for a check to fall out of.  Having no work to attach
+        a guard to is why it must be added deliberately, not a reason to omit
+        it: without it an unverified compile stores a negative through a
+        `@Nat` binder and returns it untrapped (#754's residual class,
+        measured in #1362).
+        """
+        instrs = self.translate_expr(arg, env)
+        if instrs is not None and self._narrows_into_nat(arg):
+            instrs = self._emit_nat_bind_guard(instrs)
+        return instrs
 
     def _translate_int_to_nat(
         self, arg: ast.Expr, env: WasmSlotEnv,

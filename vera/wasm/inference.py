@@ -6,10 +6,12 @@ from typing import ClassVar
 
 from vera import ast, naming
 from vera.monomorphize import (
+    Monomorphizer,
+    checker_clone_type_name,
     _BUILTIN_PARAMETERIZED_RETURNS,
     _BUILTIN_VERA_RETURN_TYPES,
-    Monomorphizer,
     declared_return_clone_key,
+    pipe_desugared_call,
     resolve_fn_type_alias,
     substitute_type_vars,
 )
@@ -934,7 +936,24 @@ class InferenceMixin:
         return type_name
 
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
-        """Infer the Vera type name of an expression for call rewriting.
+        """The Vera type name of an expression for call rewriting, from one
+        source: this walker first, the CHECKER second.
+
+        The precedence and its rationale are stated once, on
+        :func:`vera.monomorphize.checker_clone_type_name`.  The discovery twin
+        (``Monomorphizer._infer_vera_type_name``) asks the same two sources in
+        the same order over the same table, so a shape either walker cannot
+        name is named identically for both rather than becoming a clone only
+        one of them believes in — which is what every member of the #1327
+        family was.
+        """
+        walked = self._walk_vera_type(expr)
+        if walked is not None:
+            return walked
+        return checker_clone_type_name(self._expr_semantic_types, expr)
+
+    def _walk_vera_type(self, expr: ast.Expr) -> str | None:
+        """Infer the Vera type name of an expression, syntactically.
 
         # WALKER_COVERAGE: (#597 — every Expr subclass below has a
         # disposition; check_walker_coverage.py enforces completeness.)
@@ -1030,6 +1049,17 @@ class InferenceMixin:
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
                            ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "Bool"
+            piped = pipe_desugared_call(expr)
+            if piped is not None:
+                # #1365: a PIPE names its RIGHT-hand call's RESULT, not the
+                # piped-in value — see the discovery twin
+                # (`Monomorphizer._infer_vera_type_name`), which carries the
+                # identical arm over the identical shared desugar.  Reading
+                # the left operand made a type-CHANGING stage instantiate the
+                # generic at the pre-stage type, and since both consultors
+                # read it the same way they agreed confidently on the wrong
+                # clone: no diagnostic anywhere, and an invalid module.
+                return self._infer_vera_type(piped)
             return self._infer_vera_type(expr.left)
         if isinstance(expr, ast.UnaryExpr):
             if expr.op == ast.UnaryOp.NOT:
