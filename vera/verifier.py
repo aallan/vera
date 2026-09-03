@@ -2457,7 +2457,18 @@ class ContractVerifier:
         # `_collect_shadowed_qualified_calls`, keeping this walk in lockstep.
         def walk_seed(
             node: object, op_result_types: dict[str, str] | None = None,
+            origin: tuple[str, ...] | None = None,
         ) -> None:
+            """*origin* is the module whose body this node is written in.
+
+            #1389 review: this walk calls ``_infer_type_args_from_args``
+            directly, outside any namespace scope, so
+            ``Monomorphizer._namespace_path`` held whatever the last scope
+            left.  An [E622] recorded from a desugared pipe in an IMPORTED
+            body was then reported against the ENTRY file.  Codegen's mirror
+            (``_collect_shadowed_qualified_calls`` / ``_mono_infer_shadowed``)
+            already threads the same origin.
+            """
             if op_result_types is None:
                 op_result_types = {}
             if isinstance(node, ast.HandleExpr):
@@ -2479,12 +2490,12 @@ class ContractVerifier:
                     )
                     raise AssertionError(msg)
                 for child in (node.effect, node.state, node.clauses):
-                    walk_seed(child, op_result_types)
+                    walk_seed(child, op_result_types, origin)
                 merged = {
                     **op_result_types,
                     **effect_op_result_names([node.effect]),
                 }
-                walk_seed(node.body, merged)
+                walk_seed(node.body, merged, origin)
                 return
             piped = (pipe_desugared_call(node)
                      if isinstance(node, ast.Expr) else None)
@@ -2496,7 +2507,7 @@ class ContractVerifier:
                 # two walks must move together or this discovery finds a
                 # different instantiation from the one codegen emits, which
                 # is a false Tier 1 in whichever direction it lands.
-                walk_seed(piped, op_result_types)
+                walk_seed(piped, op_result_types, origin)
                 return
             if (isinstance(node, ast.ModuleCall)
                     and tuple(node.path) in shadowed
@@ -2505,9 +2516,12 @@ class ContractVerifier:
                 saved_ops = mono._op_result_types
                 mono._op_result_types = op_result_types
                 try:
-                    type_args = mono._infer_type_args_from_args(
-                        decl, node.args, ctor_to_adt, None,
-                    )
+                    # In *origin*'s namespace, so an [E622] recorded here
+                    # names the file the call is written in.
+                    with mono.namespace_scope(origin):
+                        type_args = mono._infer_type_args_from_args(
+                            decl, node.args, ctor_to_adt, None,
+                        )
                 finally:
                     mono._op_result_types = saved_ops
                 if type_args is not None:
@@ -2516,15 +2530,16 @@ class ContractVerifier:
                 for f in ast_fields(node):
                     if f.name == "span":
                         continue
-                    walk_seed(getattr(node, f.name), op_result_types)
+                    walk_seed(
+                        getattr(node, f.name), op_result_types, origin)
             elif isinstance(node, (tuple, list)):
                 for item in node:
-                    walk_seed(item, op_result_types)
+                    walk_seed(item, op_result_types, origin)
 
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
-                walk_seed(decl)
+                walk_seed(decl, None, None)
 
         # Also seed from every NORMAL (unshadowed) generic clone body already in
         # `result` (CR 3519063445): an unshadowed generic `caller<T>` whose body
@@ -2538,7 +2553,10 @@ class ContractVerifier:
                 continue
             genv = self._alias_env_for_generic(gname)  # #1208
             for gct in list(gcts):
-                walk_seed(mono.monomorphize_fn(gdecl, gct, genv))
+                walk_seed(
+                    mono.monomorphize_fn(gdecl, gct, genv), None,
+                    self._origin_module_for_generic(gname),
+                )
 
         # Transitive worklist over shadowed clones, mirroring codegen.
         shadowed_seen: set[tuple[tuple[str, ...], str, tuple[str, ...]]] = set()
