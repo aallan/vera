@@ -219,6 +219,29 @@ class TestConstructorPatternAgainstScrutinee:
             "@Option<Int>.0", "    Ok(@Int) -> @Int.0,\n    _ -> 0",
         )))
 
+    def test_tuple_pattern_arity_mismatch(self) -> None:
+        """The variadic carrier has no E321 field-count rule of its own.
+
+        `Tuple(@Int)` over a `Tuple<Int, Bool>` scrutinee bound component
+        0 and ignored the rest: check-green, and it RAN — the base
+        revision returned 7 for `Tuple(7, true)`.  The type-confusing
+        spelling is worse: `Tuple(@Bool) -> @Bool.0` over the same type
+        binds an `Int` component through a `Bool` binder and returns 0
+        for `Tuple(7, false)`, a value neither component holds.
+        """
+        _assert_e314(
+            _fn("@Tuple<Int, Bool>", _match(
+                "@Tuple<Int, Bool>.0", "    Tuple(@Int) -> @Int.0",
+            )),
+            needles=("Tuple", "Tuple<Int, Bool>"),
+        )
+        _assert_e314(
+            _fn("@Tuple<Int, Bool>", _match(
+                "@Tuple<Int, Bool>.0",
+                "    Tuple(@Int, @Bool, @Int) -> @Int.0",
+            )),
+        )
+
     def test_tuple_pattern_over_array(self) -> None:
         _assert_e314(_fn("@Array<Int>", _match(
             "@Array<Int>.0", "    Tuple(@Int, @Int) -> 1,\n    _ -> 2",

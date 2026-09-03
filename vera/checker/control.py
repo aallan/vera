@@ -413,7 +413,21 @@ class ControlFlowMixin:
 
         if isinstance(pat, ast.ConstructorPattern) and pat.name == "Tuple":
             if isinstance(scrut, AdtType) and scrut.name == "Tuple":
-                return False
+                # The variadic Tuple carrier has no registry entry, so the
+                # E321 field-count rule never sees it: a pattern with the
+                # wrong number of sub-patterns bound the components it did
+                # name POSITIONALLY, whatever their types.
+                width = len(scrut.type_args)
+                got = len(pat.sub_patterns)
+                if not width or width == got:
+                    return False
+                return self._pattern_mismatch(
+                    pat, f"Pattern 'Tuple' with {got} sub-pattern(s)",
+                    f"matches a tuple of {got} component(s)", scrut,
+                    fix=f"Give the pattern one sub-pattern per component "
+                        f"of {pretty_type(scrut)} ({width}), or match the "
+                        f"scrutinee with a wildcard '_'.",
+                )
             return self._pattern_mismatch(
                 pat, "Pattern 'Tuple(...)'", "matches a tuple", scrut,
             )
@@ -445,6 +459,7 @@ class ControlFlowMixin:
 
     def _pattern_mismatch(
         self, pat: ast.Pattern, subject: str, matches: str, scrut: Type,
+        *, fix: str | None = None,
     ) -> bool:
         """Emit E314 for *pat* against the scrutinee type *scrut*."""
         scrut_name = pretty_type(scrut)
@@ -463,9 +478,11 @@ class ControlFlowMixin:
                       "scrutinee's type, so a pattern of any other type "
                       "can never be taken — the arm is dead code the "
                       "backend has no way to lower.",
-            fix=f"Match a {scrut_name} scrutinee with "
+            fix=fix or (
+                f"Match a {scrut_name} scrutinee with "
                 f"{' or '.join(alternatives)}, or match a scrutinee this "
-                f"pattern can take.",
+                f"pattern can take."
+            ),
             spec_ref='Chapter 4, Section 4.9.1 "Patterns"',
             error_code="E314",
         )
