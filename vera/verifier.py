@@ -2440,6 +2440,36 @@ class ContractVerifier:
                     mono._op_result_types = saved_ops
                 if type_args is not None:
                     seed.add((tuple(node.path), node.name, type_args))
+            # #1357: mirrors codegen's own PIPE arm in
+            # ``_collect_shadowed_qualified_calls``, so a piped call to a
+            # shadowed generic gets checked here, not only emitted there.
+            if (
+                isinstance(node, ast.BinaryExpr)
+                and node.op == ast.BinOp.PIPE
+                and isinstance(node.right, ast.ModuleCall)
+                and tuple(node.right.path) in shadowed
+                and node.right.name in shadowed[tuple(node.right.path)]
+            ):
+                decl = shadowed[tuple(node.right.path)][node.right.name]
+                piped_args = (node.left,) + node.right.args
+                saved_ops = mono._op_result_types
+                mono._op_result_types = op_result_types
+                try:
+                    type_args = mono._infer_type_args_from_args(
+                        decl, piped_args, ctor_to_adt, None,
+                    )
+                finally:
+                    mono._op_result_types = saved_ops
+                if type_args is not None:
+                    seed.add(
+                        (tuple(node.right.path), node.right.name, type_args),
+                    )
+                # Walk operands directly, not ``node.right`` as a bare node:
+                # the ``ast.Node`` fallback below would re-match it with
+                # empty args and double-count a second, wrong instantiation.
+                for operand in piped_args:
+                    walk_seed(operand, op_result_types)
+                return
             if isinstance(node, ast.Node):
                 for f in ast_fields(node):
                     if f.name == "span":

@@ -1090,6 +1090,52 @@ class MonomorphizationMixin:
             )
             if type_args is not None:
                 instances[node.name].add(type_args)
+        # #1357: the piped LHS is prepended to the args only at the codegen
+        # boundary, not here, so this arm reconstructs that argument list.
+        # Unlike the #913 pipe arm in ``Monomorphizer._collect_calls`` (which
+        # falls through to the generic recursion so the RHS is still walked,
+        # and filters the phantom with ``_binds_a_type_var``), this arm hand-
+        # enumerates its children and returns early, so it is a structural
+        # workaround rather than the reference's principled filter, and needs
+        # its own field-drift guard.
+        if (
+            isinstance(node, ast.BinaryExpr)
+            and node.op == ast.BinOp.PIPE
+            and isinstance(node.right, ast.ModuleCall)
+            and tuple(node.right.path) == path
+            and node.right.name in decls_by_name
+        ):
+            # Same field-drift guard as the ``HandleExpr`` arm above: this
+            # arm hand-enumerates ``node.left``/``node.op``/``node.right``
+            # and returns early instead of falling through to the generic
+            # ``_fields()`` recursion, so a field added to ``BinaryExpr``
+            # would go silently unwalked.
+            enumerated = {"op", "left", "right"}
+            declared = {f.name for f in _fields(node)} - {"span"}
+            if declared != enumerated:  # pragma: no cover: guard
+                msg = (
+                    f"BinaryExpr fields changed: {sorted(declared)}; this "
+                    f"arm walks {sorted(enumerated)}.  Add the new field to "
+                    f"the piped-operand reconstruction below, an unwalked "
+                    f"field hides every generic call reachable through it."
+                )
+                raise AssertionError(msg)
+            decl = decls_by_name[node.right.name]
+            piped_args = (node.left,) + node.right.args
+            type_args = self._mono_infer_shadowed(
+                decl, piped_args, ctor_to_adt, op_result_types,
+            )
+            if type_args is not None:
+                instances[node.right.name].add(type_args)
+            # Walk operands directly, not ``node.right`` as a bare node:
+            # the ``ast.Node`` fallback below would re-match it with empty
+            # args and double-count a second, wrong instantiation.
+            for operand in piped_args:
+                self._collect_shadowed_qualified_calls(
+                    operand, path, decls_by_name, ctor_to_adt, instances,
+                    op_result_types,
+                )
+            return
         if isinstance(node, ast.Node):
             for f in _fields(node):
                 if f.name == "span":

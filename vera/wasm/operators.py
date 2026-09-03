@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields as _fields
 from typing import ClassVar
 
 from vera import ast, naming
@@ -71,9 +72,32 @@ class OperatorsMixin:
                 return self._translate_call(desugared, env)
             # C7e: a |> Module.f(x) → f(a, x)
             if isinstance(expr.right, ast.ModuleCall):
-                desugared = ast.FnCall(
+                # #1357: resolve through the same qualified-target table
+                # the unpiped desugar above uses, so a shadowed generic
+                # reaches its mangled clone instead of the bare name. This
+                # hand-rebuilds ``expr.right`` field by field, a structural
+                # workaround rather than a principled filter, so it carries
+                # the same field-drift guard as the discovery walkers.
+                enumerated = {"path", "name", "args"}
+                declared = {f.name for f in _fields(expr.right)} - {"span"}
+                if declared != enumerated:  # pragma: no cover: guard
+                    msg = (
+                        f"ModuleCall fields changed: {sorted(declared)}; "
+                        f"this pipe desugar rebuilds {sorted(enumerated)}. "
+                        f"Add the new field here too, an unwalked field "
+                        f"drops silently out of the desugared call."
+                    )
+                    raise CodegenInvariantError(msg, expr)
+                piped = ast.ModuleCall(
+                    path=expr.right.path,
                     name=expr.right.name,
                     args=(expr.left,) + expr.right.args,
+                    span=expr.span,
+                )
+                target = self._resolve_module_call_wasm_name(piped)
+                desugared = ast.FnCall(
+                    name=target,
+                    args=piped.args,
                     span=expr.span,
                 )
                 return self._translate_call(desugared, env)
