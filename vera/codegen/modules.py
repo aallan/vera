@@ -384,7 +384,7 @@ class CrossModuleMixin:
                 # Collision detection: same name from different module
                 if fn_name in fn_provenance:
                     prev_path = fn_provenance[fn_name]
-                    if prev_path != mod.path and not self._generics_cannot_collide(
+                    if prev_path != mod.path and not self._declarations_cannot_collide(
                         fn_name, prev_path, mod.path,
                         generics_by_path, qualified_by_path,
                     ):
@@ -931,7 +931,7 @@ class CrossModuleMixin:
             self._module_type_alias_params.get(path_b, {}),
         )
 
-    def _generics_cannot_collide(
+    def _declarations_cannot_collide(
         self,
         name: str,
         path_a: tuple[str, ...],
@@ -939,25 +939,31 @@ class CrossModuleMixin:
         generics_by_path: dict[tuple[str, ...], frozenset[str]],
         qualified_by_path: dict[tuple[str, ...], set[str]],
     ) -> bool:
-        """May two modules' same-named declarations share the namespace? (#1281)
+        """May two modules' same-named declarations share the namespace?
 
-        E608 exists because the flat compilation strategy emits every
-        imported function under one WASM name.  A GENERIC emits nothing under
-        its bare name — only clones — and since #1274 the clone namespace is
-        chosen per OWNER: one that owns the importer's bare name mangles to
-        ``gen$Bool``, and one that does not (private, outside the filter,
-        shadowed by a local, or reached only transitively) mangles to
-        ``mod$<path>$gen$Bool``.  Two generics in different owner namespaces
-        overwrite nothing, and the rail refused them anyway.
+        E608 exists because the flat compilation strategy emits an imported
+        function under one WASM name.  What decides whether two declarations
+        contend for it is OWNERSHIP of the bare name, which since #1274 is
+        per module: a declaration the entry's bare name denotes is emitted as
+        ``$name``, and one it does not (private, outside the filter, shadowed
+        by a local declaration, or reached only transitively) is emitted by
+        ``_register_shadowed_import`` as ``mod$<path>$name``.  Two
+        declarations in different owner namespaces overwrite nothing.
 
         Three conditions, and all three are load-bearing:
 
-        * **both declarations are top-level generics.**  A non-generic is
-          emitted under the bare ``$name`` in Pass 2.5 whatever its
-          visibility, so two of them collide for real.
-        * **at most one owns the bare name.**  Two directly-imported,
-          in-filter, public, unshadowed generics both mangle to ``gen$Bool``
-          — the collision the rail is actually for.
+        * **neither owns the bare name.**  Then both are shadowed emissions
+          and nothing shares ``$name``, whether or not either is generic.
+          This is exactly the shape §8.5.2.2's own diagnostic prescribes —
+          "declare 'pick' in this file … and use the module-qualified form
+          for the imported ones" — which the rail refused, so the remedy the
+          checker named did not compile (#1387).  #1281 relaxed this for
+          generics only; the ownership argument never depended on genericity.
+        * **one owner is survivable only between two top-level generics.**
+          The owner mangles to ``gen$Bool`` and the other to
+          ``mod$<path>$gen$Bool``, so the clone namespaces stay distinct.  A
+          non-generic owner takes the bare ``$name`` in Pass 2.5 and the
+          other would overwrite it — the collision this rail is for.
         * **no namespace can name both.**  A module importing two
           dependencies that each export ``gen``, and declaring none itself,
           would resolve its own bare ``gen`` to one of them — and spec §8.5
@@ -984,18 +990,41 @@ class CrossModuleMixin:
         in ``tests/test_codegen_modules.py`` and, for this condition
         specifically, ``build_multi_module_past_check`` in #1281's matrix.
         """
-        if not (
-            name in generics_by_path.get(path_a, frozenset())
-            and name in generics_by_path.get(path_b, frozenset())
-        ):
-            return False
         if name in self._ambiguous_imported_fn_names:
             return False
+        # OWNERSHIP of the bare `$name`, per module.  Two ways to not own it,
+        # and both have to be asked: `qualified_by_path` classifies GENERICS
+        # only (it is `module_qualified_generic_names`), while a local
+        # declaration in the entry shadows EVERY module's version of the name
+        # — generic or not — which is what routes each through
+        # `_register_shadowed_import` to its own `mod$<path>$name`.  Reading
+        # only the first left a non-generic pair with `owners == 2` and the
+        # rail firing on the very shape §8.5.2.2 prescribes (#1387).
+        local: set[str] = getattr(self, "_local_shadowed_fn_names", set())
         owners = sum(
             name not in qualified_by_path.get(path, set())
+            and name not in local
             for path in (path_a, path_b)
         )
-        return owners <= 1
+        if owners == 0:
+            # NEITHER declaration owns the bare name, so neither is emitted
+            # under it: `_register_shadowed_import` gives each its own
+            # `mod$<path>$name`, whether it is generic or not.  This is the
+            # shape §8.5.2.2's diagnostic prescribes — declare the name
+            # locally and reach the imports through `m::name(...)` — and the
+            # rail refused it, so the remedy the checker named did not
+            # compile (#1387, and why #187's "no way to resolve the collision
+            # without renaming" was still literally true).
+            return True
+        # ONE owner is survivable only between two top-level GENERICS: the
+        # owner mangles to `gen$Bool` and the other to `mod$<path>$gen$Bool`,
+        # so the clone namespaces stay distinct.  A non-generic owner takes
+        # the bare `$name` in Pass 2.5 and the other would overwrite it.  TWO
+        # owners is the collision this rail exists for, whatever they are.
+        return owners == 1 and (
+            name in generics_by_path.get(path_a, frozenset())
+            and name in generics_by_path.get(path_b, frozenset())
+        )
 
     def _collect_namespace_fn_names(self, program: ast.Program) -> None:
         """Which FUNCTION names each namespace can name (#1299).
