@@ -98,3 +98,88 @@ line naming the `vera` package it imported.
 The worktree has its own venv (`.venv`) whose editable install points at the
 worktree, so `import vera` resolves here either way; `PYTHONPATH=$PWD` is set
 on gate runs regardless (S13).
+
+---
+
+# ROOT FOUND (01:35) — pre-existing on `main`, layout-dependent
+
+**D1b is not the cause.**  The defect is latent on `main` (`6dc41d40`) and on
+this PR's base (`fdda84a8`), and is selected by the **heap base address**, not
+by anything D1b does.  D1b's scoping changes the emitted code size, which
+moves the data section, which moves `gc_heap_start` — landing on a failing
+layout.
+
+## The layout knob
+
+Adding an unused function whose only content is one string literal is pure
+data-section padding: no extra allocation on any path, no extra root.
+Sweeping the pad length over `ch09_nested_builtin_index`:
+
+| checkout | failing pads in 0..159 |
+|---|---|
+| `main` 6dc41d40 | **{32}** |
+| base `fdda84a8` (release/v0.2.0 + #1370) | **{32}** |
+
+Identical failure text to D1b's, at the same pad:
+
+    Postcondition violation in reverse_of_map_values( -> @Int)
+      ensures(@Int.result == 77) failed
+
+Adding *dead allocations* instead does NOT reproduce (25 variants, all 137) —
+the knob is the heap BASE, not the allocation sequence.  That is why the
+first layout test came back clean.
+
+## Minimal reproducer (fails on `main`)
+
+```vera
+public fn rev_map(-> @Int)
+  requires(true)
+  ensures(@Int.result == 77)
+  effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 77);
+  array_reverse(map_values(@Map<String, Int>.0))[0]
+}
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(@Int.result == 154)
+  effects(pure)
+{
+  rev_map() + rev_map()
+}
+```
+
+plus 232 characters of data-section padding, under `VERA_EAGER_GC=1`.
+Driver: `scratchpad/streamD/minimize.py`.
+
+## Ingredient discrimination (pads 0..299, on `main`)
+
+| program | failing pads |
+|---|---|
+| `array_reverse(map_values(m))[0]` | **{232}** |
+| `array_sort_by(map_values(m), cmp)[0]` | **{216}** |
+| `array_length(array_reverse(map_values(m)))` | none |
+| `array_reverse(map_keys(m))[0]` (String elements) | none |
+| `map_values(m)[0]` (no array builtin) | none |
+| `array_reverse([10,20,30])[2]` (no Map) | none |
+| one call instead of two | none |
+
+So all of these are required: a **Map-produced `Array<Int>`**, passed through
+an array builtin that **allocates a new backing array** (`array_reverse` or
+`array_sort_by`), then an **element read** — reading only the LENGTH is
+clean, and `map_keys` (pair-represented `String` elements) is clean.  Two
+calls are needed, so it takes a second collection to surface.
+
+That shape says the destination array's CONTENTS are wrong — the copy reads
+a source that has been reclaimed or reused — rather than the array handle
+being lost, which is what a length read would also have caught.
+
+Runtime side from here (`$gc_collect`, the wrap table's Phase 2c eviction,
+`map_values`' host-side `_ShadowGuard` rooting, `array_reverse`'s copy loop).
+
+## Driver added
+
+* `layout_datasec.py` / `layout_wide.py` — the data-section pad sweep.
+* `minimize.py` — the four-way minimization.
+* `discriminate.py` — the ingredient table above.
