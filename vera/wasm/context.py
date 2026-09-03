@@ -23,7 +23,11 @@ from typing import TYPE_CHECKING, Callable
 
 from vera import ast
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
-from vera.skip import DERIVED_HELPER_DEPTH_CAP, CodegenSkip
+from vera.skip import (
+    DERIVED_HELPER_DEPTH_CAP,
+    CodegenInvariantError,
+    CodegenSkip,
+)
 from vera.slots import bare_call_denotes_user_fn
 
 if TYPE_CHECKING:
@@ -35,7 +39,9 @@ from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
     StateClauseEntry,
     StringPool,
     WasmSlotEnv,
+    contains_shadow_push,
     gc_shadow_push,
+    is_gc_pointer_base,
     wasm_type,
 )
 from vera.wasm.inference import InferenceMixin
@@ -238,6 +244,9 @@ class WasmContext(
         # answer rather than silently owning NO name — an empty scope would
         # route every bare call to the op registries, which is the opposite
         # error and a far louder one.
+        # Stack shapes recorded by a lowering that installs its own
+        # scope, keyed by expression id (#1371).  See `_stack_shape_of`.
+        self._scoped_expr_shape: dict[int, str] = {}
         self._scoped_fns: set[str] = (
             self._known_fns if scoped_fns is None else scoped_fns
         )
@@ -846,10 +855,318 @@ class WasmContext(
     def translate_expr(
         self, expr: ast.Expr, env: WasmSlotEnv
     ) -> list[str] | None:
-        """Translate a Vera AST expression to WAT instructions.
+        """Translate a Vera AST expression, scoping its GC shadow roots.
+
+        THE root-lifetime rule (#1371), stated once: an expression's shadow
+        roots live exactly as long as the expression is forming its value.
+        Lower the expression, restore ``$gc_sp`` to where it stood before,
+        and re-root the value itself when the value is a heap pointer — so
+        what survives an expression is the one thing it produced, and its
+        temporaries are gone.
+
+        Before this, every root a lowering made lived for the FRAME: the only
+        reclamation was the function epilogue's ``$gc_sp`` restore, which runs
+        once, on the way out.  So a frame's shadow use grew with the number of
+        pointer-producing expressions its body contained, whether or not any
+        of them were still live — ``string_length(string_concat(s, "y"))``
+        repeated K times cost K permanent roots for K values that died
+        immediately.  With the shadow stack at 4 096 roots, the depth a
+        recursion could reach was a function of how much its body allocated
+        on the way past, and overflow is a bare ``unreachable``.  #1322 was
+        this defect in its match-shaped form; ``_scope_match_shadow_roots``
+        was its match-shaped fix, and this is that fix generalised — one
+        discipline, one place, with the match as an ordinary case of it.
 
         Returns a list of WAT instruction strings, or None if the
         expression contains unsupported constructs (function skipped).
+        """
+        instructions = self._translate_expr_unscoped(expr, env)
+        if instructions is None:
+            return None
+        return self._scope_shadow_roots(expr, instructions)
+
+    def _scope_shadow_roots(
+        self, expr: ast.Expr, instructions: list[str]
+    ) -> list[str]:
+        """Wrap *instructions* in a ``$gc_sp`` save / restore / re-root.
+
+        The emission discipline is the function epilogue's, verbatim
+        (``gc_prologue`` / ``gc_epilogue`` in ``vera/codegen/functions.py``):
+        save, lower, restore, push the result back if it is a pointer.
+
+        Emitted ONLY when this expression's lowering actually pushed
+        (:func:`contains_shadow_push`).  That is not an optimisation.  A
+        function whose lowering never sets ``needs_alloc`` gets no ``$gc_sp``
+        global at all, so an unconditional wrapper would read a global that
+        does not exist; and gating on the push keeps the emitted WAT of every
+        non-rooting expression — every literal, every slot reference, every
+        scalar arithmetic tree — byte-identical.
+
+        The re-root is load-bearing, and measured rather than asserted:
+        delete it and ``TestMatchResultReRootIsLoadBearing1322`` reads back a
+        freed-and-reused block.  The cells that show it need all three of a
+        result that is NOT ``let``-bound (a ``let`` roots what it binds and
+        supplies the missing root), a sibling call argument that allocates
+        while the result sits on the operand stack, and an assertion on
+        CONTENT — a freed block nothing has overwritten yet still reads back
+        correctly, so a length check passes on a real use-after-free.  Those
+        cells are this change's canary in the other direction too: a restore
+        placed too EAGERLY fails them the same way.
+
+        Declines, leaving the instructions untouched, when the expression's
+        stack shape is unrecoverable.  Guessing it wrong is not a missed
+        reclamation but invalid WASM (a ``local.set`` against an empty
+        operand stack), so an unknown shape keeps the pre-#1371 behaviour:
+        the root outlives its value, which is wasteful and sound.
+        """
+        if not contains_shadow_push(instructions):
+            # Nothing to reclaim — but a CALL still LANDS a value that no
+            # root holds yet, and the next sibling to be evaluated may
+            # allocate over it.
+            return self._root_landed_value(expr, instructions)
+        if not self.needs_alloc:
+            # A push was emitted, so `$gc_sp` must have been declared.  Every
+            # producer sets the flag beside its push; a new one that forgets
+            # would emit a module referencing an undeclared global, and this
+            # says so at the seam rather than at WAT assembly.
+            raise CodegenInvariantError(
+                f"{type(expr).__name__} lowering emitted a GC shadow push "
+                "without setting needs_alloc, so `$gc_sp` would not be "
+                "declared"
+            )
+        shape = self._stack_shape_of(expr)
+        if shape == "unknown":
+            return instructions
+        save_local = self.alloc_local("i32")
+        scoped = ["global.get $gc_sp", f"local.set {save_local}"]
+        scoped.extend(instructions)
+        restore = [f"local.get {save_local}", "global.set $gc_sp"]
+        if shape == "void":
+            scoped.extend(restore)
+            return scoped
+        if shape == "i32_pair":
+            # (ptr, len): the pointer half is a heap pointer by construction
+            # — the pair convention has no non-pointer form.
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+            scoped.append(f"local.set {ret_len}")
+            scoped.append(f"local.set {ret_ptr}")
+            scoped.extend(restore)
+            scoped.extend(gc_shadow_push(ret_ptr))
+            scoped.append(f"local.get {ret_ptr}")
+            scoped.append(f"local.get {ret_len}")
+            return scoped
+        ret_local = self.alloc_local(shape)
+        scoped.append(f"local.set {ret_local}")
+        scoped.extend(restore)
+        if shape == "i32" and self._expr_result_is_pointer(expr):
+            scoped.extend(gc_shadow_push(ret_local))
+        scoped.append(f"local.get {ret_local}")
+        return scoped
+
+    def _scope_statement_roots(
+        self,
+        stmt_instrs: list[str],
+        before_env: WasmSlotEnv,
+        after_env: WasmSlotEnv,
+        save_local: Callable[[], int],
+    ) -> list[str]:
+        """Give one statement's GC shadow roots STATEMENT lifetime (#1371).
+
+        Restores ``$gc_sp`` to where the statement found it and then roots
+        what the statement BOUND — the environment delta — so a statement
+        leaves behind exactly its bindings and none of the temporaries that
+        produced them.  An expression statement binds nothing, so its value
+        and every intermediate that built it are reclaimed; a `let` leaves
+        one root per heap-pointer binding, which is correct, since a binding
+        is live to the end of its block.
+
+        Which bindings are heap pointers is the rule the producers used
+        before this consolidated them: a pair binding roots its pointer half,
+        and any other ``i32`` binding whose type is not an inline scalar
+        roots its local.  Reading it off the delta means a binding is rooted
+        once, by one rule, wherever it came from — `let`, pair-`let` or
+        `let`-destructure.
+
+        Nothing allocates between the restore and the pushes that follow it,
+        so the bindings are never unrooted across a collection point.
+        """
+        roots = self._binding_roots(before_env, after_env)
+        if not contains_shadow_push(stmt_instrs):
+            # No temporaries to reclaim.  A binding may still need its root
+            # — `let @String = "literal";` roots a pointer without having
+            # pushed anything to get it.
+            if not roots:
+                return stmt_instrs
+            scoped = list(stmt_instrs)
+            self.needs_alloc = True
+            for local_idx in roots:
+                scoped.extend(gc_shadow_push(local_idx))
+            return scoped
+        save = save_local()
+        scoped = ["global.get $gc_sp", f"local.set {save}"]
+        scoped.extend(stmt_instrs)
+        scoped.append(f"local.get {save}")
+        scoped.append("global.set $gc_sp")
+        for local_idx in roots:
+            scoped.extend(gc_shadow_push(local_idx))
+        return scoped
+
+    def _binding_roots(
+        self, before_env: WasmSlotEnv, after_env: WasmSlotEnv
+    ) -> list[int]:
+        """The WASM locals a statement bound that hold heap pointers.
+
+        A pair binding (`String` / `Array<T>`) contributes its POINTER half,
+        which is the local the environment carries; the length lives at
+        ``local + 1`` and is a byte count, not a reference.  Any other
+        ``i32`` binding is a heap pointer unless its type is one of the
+        inline scalars — the `_INLINE_I32_TYPES` question, deliberately, and
+        not `is_gc_pointer_base`: rooting a host handle is what the `let`
+        rooting has always done, and narrowing that here would be a
+        reachability change riding a lifetime change.
+        """
+        roots: list[int] = []
+        for type_name, local_idx in after_env.bindings_added_since(before_env):
+            if self._is_pair_type_name(type_name):
+                roots.append(local_idx)
+                continue
+            if (self._slot_name_to_wasm_type(type_name) == "i32"
+                    and type_name not in _INLINE_I32_TYPES):
+                roots.append(local_idx)
+        return roots
+
+    def _root_landed_value(
+        self, expr: ast.Expr, instructions: list[str]
+    ) -> list[str]:
+        """Root a heap value a CALL just landed, when nothing else has (#1379).
+
+        The other half of the root-lifetime rule.  Its first half says a
+        value's roots die when the value does; this one says they must EXIST
+        from the moment the value lands.  A call is exactly that moment, and
+        a call's result arrives on the operand stack — where the conservative
+        scan cannot see it — so anything evaluated next that allocates can
+        sweep it before it is ever stored.
+
+        Whether the callee already rooted it is not something the call SITE
+        can know, and that ignorance was the bug: a Vera function's epilogue
+        re-roots its return value into the caller's shadow stack, but a HOST
+        import has no epilogue, so `decimal_from_string("7")` left its
+        `Option<Decimal>` on the stack unrooted while the sibling argument
+        `decimal_from_int(0)` allocated over it — `check`-green,
+        `verify`-green, and wrong at every one of 200 heap layouts (#1379).
+        Rooting at the landing site is the rule that does not have to ask:
+        the redundant root a Vera callee's epilogue already planted costs one
+        slot, which the enclosing scope reclaims, and the missing root costs
+        the value.
+
+        This replaces the per-site ``_emit_root_result`` calls that six
+        migrated Map / Set builtins carried.  Six sites remembering to root
+        is the shape a rule exists to retire — the Decimal siblings beside
+        them never got one.
+
+        Only ``i32`` / ``i32_pair`` results of call-shaped expressions are
+        rooted.  A ``SlotRef`` or literal NAMES a value its binder already
+        rooted rather than producing one, and a constructor or array literal
+        pushed at its own ``$alloc`` and so took the branch above.
+        """
+        if not isinstance(
+            expr, (ast.FnCall, ast.QualifiedCall, ast.ModuleCall)
+        ):
+            return instructions
+        shape = self._stack_shape_of(expr)
+        if shape == "i32_pair":
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+            rooted = list(instructions)
+            self.needs_alloc = True
+            rooted.append(f"local.set {ret_len}")
+            rooted.append(f"local.set {ret_ptr}")
+            rooted.extend(gc_shadow_push(ret_ptr))
+            rooted.append(f"local.get {ret_ptr}")
+            rooted.append(f"local.get {ret_len}")
+            return rooted
+        if shape == "i32" and self._expr_result_is_pointer(expr):
+            ret_local = self.alloc_local("i32")
+            rooted = list(instructions)
+            self.needs_alloc = True
+            rooted.append(f"local.set {ret_local}")
+            rooted.extend(gc_shadow_push(ret_local))
+            rooted.append(f"local.get {ret_local}")
+            return rooted
+        return instructions
+
+    def _stack_shape_of(self, expr: ast.Expr) -> str:
+        """What *expr*'s lowering leaves on the operand stack.
+
+        A shape recorded BY the lowering wins (#1371).  Most kinds answer the
+        same in any context, but a ``handle`` expression's value is its
+        body's, and the body's ops resolve through the effect-op registries
+        that handler installs — which exist only while it is being lowered,
+        and are keyed by bare op name, so two nested handlers' ``get``s are
+        indistinguishable once the inner one is popped.  Asked from here,
+        afterwards, a ``handle[State<Nat>]`` nested in a
+        ``handle[State<Option<Int>>]`` answered with the OUTER ``get``:
+        ``i32`` for a body worth ``i64``, and the wrapper then emitted
+        ``local.set`` at the wrong width.  So the lowering records the answer
+        at the one moment it is computable and this reads the record, rather
+        than re-deriving it in a context that no longer holds.
+        """
+        recorded = self._scoped_expr_shape.get(id(expr))
+        if recorded is not None:
+            return recorded
+        return self._compute_stack_shape(expr)
+
+    def _compute_stack_shape(self, expr: ast.Expr) -> str:
+        """Derive *expr*'s operand-stack shape from the CURRENT context.
+
+        One of ``"void"``, ``"i32_pair"``, a WAT value type, or
+        ``"unknown"``.  Reads the two predicates the rest of codegen already
+        decides stack shape with — ``_is_void_expr`` and
+        ``_is_pair_result_expr``, the pair that ``translate_block`` consults
+        to decide how many ``drop``s an expression statement needs — before
+        falling back to the width inferencer, so the scoping wrapper and the
+        drop it may sit beside can never disagree about how many words are
+        there.
+        """
+        if self._is_void_expr(expr):
+            return "void"
+        if self._is_pair_result_expr(expr):
+            return "i32_pair"
+        width = self._infer_expr_wasm_type(expr)
+        if width in ("i32", "i64", "f64"):
+            return width
+        if width == "i32_pair":
+            return "i32_pair"
+        return "unknown"
+
+    def _expr_result_is_pointer(self, expr: ast.Expr) -> bool:
+        """Whether an ``i32``-lowered result must be re-rooted (#1371).
+
+        Decided by :func:`is_gc_pointer_base` over the REPRESENTATION base of
+        the expression's Vera type — the same rule, from the same function,
+        that the function and closure epilogues use for their return values.
+
+        Defaults to ``True`` when the Vera type is unrecoverable.  The two
+        errors are not symmetric: re-rooting a non-pointer costs one shadow
+        slot and one candidate the mark phase's heap-range guard rejects,
+        while failing to re-root a pointer hands the value to the next
+        collection.  An unknown type takes the inert error.
+        """
+        vera_type = self._infer_vera_type(expr)
+        if vera_type is None:
+            return True
+        head = vera_type.split("<", 1)[0]
+        return is_gc_pointer_base(self._resolve_base_type_name(head))
+
+    def _translate_expr_unscoped(
+        self, expr: ast.Expr, env: WasmSlotEnv
+    ) -> list[str] | None:
+        """Translate a Vera AST expression to WAT instructions.
+
+        The per-kind dispatch.  Callers go through
+        :meth:`translate_expr`, which adds the #1371 root scoping around
+        whatever this returns.
 
         # WALKER_COVERAGE: (#597 — every Expr subclass below has a
         # disposition; check_walker_coverage.py enforces completeness.)
@@ -1013,11 +1330,55 @@ class WasmContext(
     def translate_block(
         self, block: ast.Block, env: WasmSlotEnv
     ) -> list[str] | None:
-        """Translate a block: process statements, then final expression."""
+        """Translate a block: process statements, then final expression.
+
+        Each statement is a GC root scope (#1371).  A statement's lowering
+        may root any number of temporaries — the allocations inside a `let`'s
+        right-hand side, the intermediates of an expression statement whose
+        value is dropped — and every one of them is dead the moment the
+        statement ends.  What outlives a statement is exactly what it BOUND,
+        so the statement restores ``$gc_sp`` to where it stood on entry and
+        then roots its new bindings, read from the environment delta.
+
+        That delta is why one rule decides which of a statement's bindings
+        are heap pointers and roots each exactly once, where before `let`,
+        pair-`let` and `let`-destructure each pushed for themselves — and a
+        scoped restore would have had to know, per producer, what to put
+        back.
+
+        `let` and pair-`let` had their producer pushes removed; `let`-DESTRUCTURE
+        still pushes its own (``_destructure_let`` in ``vera/wasm/data.py``),
+        and that is correct rather than an oversight.  Those pushes land
+        inside the statement's instructions, so the restore below reclaims
+        them and the delta then plants the surviving root — one live root per
+        binding either way.  Removing them would be safe too; leaving them is
+        a smaller diff over a path whose field loads produce addresses that
+        live in no other local (#705/#707).
+        """
         current_env = env
         instructions: list[str] = []
+        # One save local for the whole block: each statement re-snapshots it,
+        # so the K statements of a block share a local rather than each
+        # taking one.  Allocated on the first statement that needs it, so a
+        # block whose statements root nothing declares no extra local and its
+        # emitted WAT is unchanged.
+        stmt_save: int | None = None
+
+        def save_local() -> int:
+            """The block's shared ``$gc_sp`` snapshot local, allocated once.
+
+            Called only by a statement scope that is actually emitting a
+            restore, so a block whose statements root nothing declares no
+            extra local.
+            """
+            nonlocal stmt_save
+            if stmt_save is None:
+                stmt_save = self.alloc_local("i32")
+            return stmt_save
 
         for stmt in block.statements:
+            stmt_env = current_env
+            stmt_instrs: list[str] = []
             if isinstance(stmt, ast.LetStmt):
                 # Determine WAT type for this let binding.  Resolved BEFORE
                 # the value is translated because a `@Byte` target changes how
@@ -1047,22 +1408,21 @@ class WasmContext(
                 if self._is_pair_type_name(type_name):
                     ptr_idx = self.alloc_local("i32")
                     len_idx = self.alloc_local("i32")
-                    instructions.extend(val_instrs)
-                    instructions.append(f"local.set {len_idx}")
-                    instructions.append(f"local.set {ptr_idx}")
-                    # #846: pair-let sibling of the #705 scalar rooting
-                    # below and the #707 let-destruct pair fix: a host-import
-                    # pair (``IO.args`` → Array<String>, ``IO.read_line``
-                    # → String) is rooted only host-side during
-                    # construction, so without this push the next alloc
-                    # sweeps the block while the (ptr, len) locals still
-                    # point at it.  Vera-side producers masked the gap by
-                    # shadow-pushing their own ``dst`` at the alloc site.
-                    # Static / null ptrs fail the scan's heap range check,
-                    # so pushing unconditionally is harmless.
-                    self.needs_alloc = True
-                    instructions.extend(gc_shadow_push(ptr_idx))
+                    stmt_instrs.extend(val_instrs)
+                    stmt_instrs.append(f"local.set {len_idx}")
+                    stmt_instrs.append(f"local.set {ptr_idx}")
+                    # #846: a host-import pair (``IO.args`` → Array<String>,
+                    # ``IO.read_line`` → String) is rooted only host-side
+                    # during construction, so without a root here the next
+                    # alloc sweeps the block while the (ptr, len) locals still
+                    # point at it.  The root is now planted by the statement
+                    # scope below, from the environment delta, alongside every
+                    # other binding's (#1371) — pushing here as well would
+                    # root one address twice and hold the duplicate for the
+                    # rest of the frame.
                     current_env = current_env.push(type_name, ptr_idx)
+                    instructions.extend(self._scope_statement_roots(
+                        stmt_instrs, stmt_env, current_env, save_local))
                     continue
                 wat_t = self._slot_name_to_wasm_type(type_name)
                 if wat_t is None:
@@ -1081,61 +1441,54 @@ class WasmContext(
                 # target is guarded too (CR #756).
                 if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
-                    instructions.extend(
+                    stmt_instrs.extend(
                         self._emit_nat_bind_guard(val_instrs))
                 elif (self._resolve_base_type_name(type_name) == "Int"
                         and self._result_is_nat(stmt.value)):
                     # #813: guard a @Nat -> @Int let widening — a @Nat value
                     # above i64.MAX reinterprets to a negative @Int.
-                    instructions.extend(
+                    stmt_instrs.extend(
                         self._emit_int_widen_guard(val_instrs))
                 else:
                     # A `@Byte` target's literals were already marked before
                     # the translation above, so `val_instrs` is the i32
                     # lowering — nothing to override here (#865 / #1212).
-                    instructions.extend(val_instrs)
-                instructions.append(f"local.set {local_idx}")
-                # #705: shadow-push heap-pointer let bindings so
-                # subsequent allocations in the same block (e.g. a
-                # ``set_to_array`` host call after ``let @Set =
-                # build_set()``) can't reclaim them.  Bool / Byte /
-                # Unit are inline i32s that don't need rooting; any
-                # other i32 slot is a heap-pointer ADT.  The function
-                # epilogue's ``$gc_sp`` restore pops these on exit.
-                # Setting ``needs_alloc`` here ensures the GC
-                # infrastructure (``$gc_sp``, ``$gc_stack_limit``)
-                # gets emitted even for functions that don't otherwise
-                # allocate; without it the WAT references unknown
-                # globals.
-                if wat_t == "i32" and type_name not in _INLINE_I32_TYPES:
-                    self.needs_alloc = True
-                    instructions.extend(gc_shadow_push(local_idx))
+                    stmt_instrs.extend(val_instrs)
+                stmt_instrs.append(f"local.set {local_idx}")
+                # #705: a heap-pointer let binding must be rooted, or a
+                # later allocation in the same block (a ``set_to_array``
+                # host call after ``let @Set = build_set()``) reclaims it.
+                # The root is planted by the statement scope below, from the
+                # environment delta (#1371); rooting here as well would hold
+                # a duplicate of the same address for the rest of the frame.
                 current_env = current_env.push(type_name, local_idx)
             elif isinstance(stmt, ast.ExprStmt):
-                stmt_instrs = self.translate_expr(stmt.expr, current_env)
-                if stmt_instrs is None:
+                value_instrs = self.translate_expr(stmt.expr, current_env)
+                if value_instrs is None:
                     return None
-                instructions.extend(stmt_instrs)
+                stmt_instrs.extend(value_instrs)
                 # Drop the value if the expression produces one.
                 # QualifiedCalls (effect ops like IO.print) return void.
                 # UnitLit produces nothing.
                 if stmt_instrs and not self._is_void_expr(stmt.expr):
                     if self._is_pair_result_expr(stmt.expr):
-                        instructions.extend(["drop", "drop"])
+                        stmt_instrs.extend(["drop", "drop"])
                     else:
-                        instructions.append("drop")
+                        stmt_instrs.append("drop")
             elif isinstance(stmt, ast.LetDestruct):
                 result = self._translate_let_destruct(stmt, current_env)
                 if result is None:
                     return None
                 destr_instrs, current_env = result
-                instructions.extend(destr_instrs)
+                stmt_instrs.extend(destr_instrs)
             else:
                 # Unknown statement type
                 raise CodegenSkip(
                     stmt,
                     f"unsupported statement type {type(stmt).__name__}",
                 )
+            instructions.extend(self._scope_statement_roots(
+                stmt_instrs, stmt_env, current_env, save_local))
 
         # Final expression
         expr_instrs = self.translate_expr(block.expr, current_env)

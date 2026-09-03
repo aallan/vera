@@ -188,10 +188,15 @@ public fn main(@Unit -> @Int)
 def _pointer_result_matches(k: int):
     """K matches per frame whose RESULT is a heap pointer.
 
-    The arm where the cost is not zero: the re-root that keeps the result
-    alive past the match is itself frame-lifetime, so each match leaves one
-    root behind.  Pinned as the residual, not as a pass — see the module
-    docstring and #1371.
+    Written against #1322's head as the arm where the cost was NOT zero: the
+    re-root carrying the result past the match was itself frame-lifetime, so
+    each match left one root behind (2 / 3 / 5 roots per frame at K = 1 / 2 /
+    4, from 4 / 7 / 13 before that fix).  #1371 generalises the same
+    discipline to every expression and every block statement, so the
+    enclosing scope now reclaims that result and this shape is flat at one —
+    the frame's own parameter root — like the three beside it.  It joins the
+    family list for that reason, and keeps its own cell because the flip is
+    the point.
     """
     terms = " + ".join(
         'string_length(match @String.0 '
@@ -294,8 +299,10 @@ class TestMatchCostsNoShadowRoots1322:
             _int_valued_matches,
             _adt_field_matches,
             _allocating_scrutinee_matches,
+            _pointer_result_matches,
         ],
-        ids=["pair-scrutinee", "adt-field-binding", "allocating-scrutinee"],
+        ids=["pair-scrutinee", "adt-field-binding", "allocating-scrutinee",
+             "pointer-result"],
     )
     def test_frame_cost_does_not_rise_with_the_match_count(
         self, shape, k: int
@@ -310,11 +317,13 @@ class TestMatchCostsNoShadowRoots1322:
         roots the frame legitimately needs, and roots-per-frame rather than
         depth drops the outermost frame's own constant.
 
-        The three shapes exercise three different roots.  The pair
+        The four shapes exercise four different roots.  The pair
         scrutinee's copies are DELETED by this fix; the constructor field
         binding's root is load-bearing (#705/#707) and is KEPT, only
-        re-scoped; and the allocating scrutinee's own allocation is what
-        makes the snapshot's placement before the scrutinee load-bearing.
+        re-scoped; the allocating scrutinee's own allocation is what makes
+        the snapshot's placement before the scrutinee load-bearing; and the
+        pointer RESULT's re-root, which #1322 left frame-lifetime, is
+        reclaimed by the enclosing scope under #1371.
         """
         one = _roots_per_frame(shape(1))
         assert _roots_per_frame(shape(k)) == one, (
@@ -324,25 +333,26 @@ class TestMatchCostsNoShadowRoots1322:
         )
 
     @pytest.mark.parametrize("k", [1, 2, 4])
-    def test_pointer_result_match_still_costs_one_root_each(
+    def test_a_pointer_valued_match_no_longer_costs_a_root(
         self, k: int
     ) -> None:
-        """The residual, pinned: a POINTER-valued match keeps one root.
+        """The residual #1322 left behind, now gone — the #1371 flip.
 
-        Not a pass — a measurement of what this fix does not reach.  The
-        re-root that carries the arm's result past the match is itself
-        frame-lifetime, so K pointer-valued matches leave K roots: 4 → 7 →
-        13 roots per frame at the branch point, 2 → 3 → 5 here.  The
-        residual is #1371 — every heap-pointer-producing expression leaves
-        a frame-lifetime root, matches included — and its fix, the same
-        discipline applied per block statement, makes the block's restore
-        reclaim this result and turns this cell flat.  Pinning it makes
-        that a visible flip.
+        This cell was written against #1322's head as a MEASUREMENT of what
+        that fix did not reach: the re-root carrying an arm's result past
+        the match was itself frame-lifetime, so K pointer-valued matches
+        left K roots (4 → 7 → 13 roots per frame at the branch point,
+        2 → 3 → 5 after #1322).  #1371 generalises the same discipline to
+        every expression and every block statement, so the enclosing scope
+        reclaims that result and the count is flat at one — the frame's own
+        parameter root — like every other family above.
+
+        Kept as its own cell rather than folded into the family list it now
+        joins, because it is the one whose flip is the point.
         """
-        assert _roots_per_frame(_pointer_result_matches(k)) == 1 + k, (
-            "the residual frame-lifetime cost of a pointer-valued match "
-            f"moved at K={k}; if it went FLAT this is #1371 landing and "
-            "the assertion should become equality against K=1"
+        assert _roots_per_frame(_pointer_result_matches(k)) == 1, (
+            "a pointer-valued match still leaves a frame-lifetime root at "
+            f"K={k}: #1371's block-statement scoping should reclaim it"
         )
 
     def test_issue_repro_pair_scrutinee_passes_its_measured_ceiling(

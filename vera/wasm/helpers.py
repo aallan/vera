@@ -69,6 +69,28 @@ class WasmSlotEnv:
         new_stacks.setdefault(type_name, []).append(local_idx)
         return WasmSlotEnv(new_stacks)
 
+    def bindings_added_since(
+        self, older: WasmSlotEnv
+    ) -> list[tuple[str, int]]:
+        """The ``(type_name, local_idx)`` bindings this env has and *older*
+        does not, in binding order.
+
+        The statement-scoped GC rooting (#1371) asks exactly this question:
+        a statement reclaims every shadow root its lowering made and then
+        re-roots what it BOUND, and what it bound is the environment delta.
+        Reading the delta is what lets one rule serve `let`, pair-`let` and
+        `let`-destructure alike, instead of each producer remembering to
+        root its own binding and each then having to remember not to.
+
+        A binding only ever appends to its type's stack, so the delta is
+        the tail of each stack past the older env's length.
+        """
+        added: list[tuple[str, int]] = []
+        for type_name, stack in self._stacks.items():
+            previous = len(older._stacks.get(type_name, ()))
+            added.extend((type_name, idx) for idx in stack[previous:])
+        return added
+
 
 # =====================================================================
 # The two names one State cell answers to (#1218)

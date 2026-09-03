@@ -436,9 +436,22 @@ class InferenceMixin:
         # function — its DECLARED return width, not the ability-op width.  Defer
         # to `_fn_ret_types` (the same registry the general user-fn branch below
         # consults) when the name resolves to a user fn, so the field/element
-        # WASM type matches the emit.  A GENUINE ability op has no `_fn_ret_types`
-        # entry, so it falls through to the special-case width.
-        if expr.name in ("show", "hash") and expr.name in self._fn_ret_types:
+        # WASM type matches the emit.  A GENUINE ability op falls through to
+        # the special-case width.
+        #
+        # Which of the two it is comes from `_bare_call_denotes_op`, the
+        # SHARED gate (#1284/#1299), not from `_fn_ret_types` membership.
+        # That registry is flat: it holds every symbol the whole compilation
+        # absorbed, including another module's `fn show` that this
+        # declaration's lexical scope does not contain.  Asked by membership,
+        # this arm answered "the user's" for `show(42)` in a file that merely
+        # IMPORTS such a module, and typed a String result as `i64` — while
+        # `_translate_call`, narrowed to `_scoped_fns` by #1299, correctly
+        # lowered the ability operation.  The two consultors disagreeing is
+        # what #1299 fixed at the lowering and left here.
+        if (expr.name in ("show", "hash")
+                and not self._bare_call_denotes_op(expr.name)
+                and expr.name in self._fn_ret_types):
             return self._fn_ret_types[expr.name]
         if expr.name == "show":
             return "i32_pair"
@@ -1196,11 +1209,20 @@ class InferenceMixin:
         # checker doesn't reserve these ability-op names), so the Vera element
         # type falls through to the general non-generic user-fn resolution below
         # (which reads the DECLARED return type from `_fn_ret_type_exprs` /
-        # `_fn_ret_types`).  A GENUINE ability op has no `_fn_ret_types` entry, so
-        # it keeps the special-case.  Mirrors the WASM-width guard in
-        # `_infer_fncall_wasm_type` and the `not in self._known_fns` gate in
-        # `_translate_call`.
-        if call.name not in self._fn_ret_types:
+        # `_fn_ret_types`).
+        #
+        # Which of the two it is comes from `_bare_call_denotes_op`, the SHARED
+        # gate (#1284/#1299), not from `_fn_ret_types` membership — the same
+        # correction its WASM-width twin needed (#1379).  That registry is
+        # flat: it holds every symbol the whole compilation absorbed, including
+        # another module's `fn show` that this declaration's lexical scope does
+        # not contain.  Asked by membership, this arm handed back the OTHER
+        # module's declared return for a call the lowering resolves to the
+        # ability operation, so the Vera type and the emitted WASM result
+        # disagreed.  The two consultors and `_translate_call` now ask one
+        # question.
+        if (self._bare_call_denotes_op(call.name)
+                or call.name not in self._fn_ret_types):
             if call.name == "show":
                 return "String"
             if call.name == "hash":

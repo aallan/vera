@@ -9,9 +9,7 @@ from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
     WasmSlotEnv,
-    contains_shadow_push,
     gc_shadow_push,
-    is_gc_pointer_base,
 )
 
 if TYPE_CHECKING:
@@ -535,9 +533,10 @@ class DataMixin:
             # allocate-inside-the-arm probes under VERA_EAGER_GC=1 all stay
             # green".  What makes deleting them SAFE rather than merely
             # untested is the producer's root staying live across the arm,
-            # which ``_scope_match_shadow_roots`` now guarantees: its
-            # ``$gc_sp`` snapshot is taken BEFORE the scrutinee, so anything
-            # the scrutinee rooted is reclaimed only once the arm is done.
+            # which ``_scope_shadow_roots`` guarantees for every expression
+            # (#1371, generalising #1322's match-shaped fix): the ``$gc_sp``
+            # snapshot is taken BEFORE the scrutinee, so anything the
+            # scrutinee rooted is reclaimed only once the arm is done.
             #
             # The non-pair bindings below are a different case and keep their
             # pushes: a constructor FIELD load produces an address that lives
@@ -570,116 +569,7 @@ class DataMixin:
             return None
 
         instructions.extend(arm_instrs)
-        return self._scope_match_shadow_roots(expr, instructions, result_type)
-
-    def _scope_match_shadow_roots(
-        self,
-        expr: ast.MatchExpr,
-        instructions: list[str],
-        result_type: str | None,
-    ) -> list[str]:
-        """Give a match's GC shadow roots ARM lifetime instead of FRAME
-        lifetime (#1322).
-
-        Every root this match pushes — the pair scrutinee's pointer half, each
-        arm's pattern bindings, every allocation an arm body makes — is dead
-        once the arm has produced its value.  Nothing popped them: the only
-        reclamation was the function epilogue's ``$gc_sp`` restore, which runs
-        once, at frame exit.  A ``let``'s frame lifetime is correct (the
-        binding is live to the end of its block); a match arm's is not, so a
-        frame holding K sequential matches held 3K roots of which at most
-        three were live, and a recursion multiplied that by its depth.  With
-        the shadow stack at 4 096 roots the ceiling moved with K — measured
-        over a ``String`` scrutinee: 1 023 levels at K=1, 584 at K=2, 314 at
-        K=4 — and overflow is a bare ``unreachable`` from
-        :func:`gc_shadow_push`'s bound check: no diagnostic, no location, on a
-        program ``check`` and ``verify`` both pass.
-
-        The discipline is the function epilogue's, verbatim (``gc_prologue`` /
-        ``gc_epilogue`` in ``vera/codegen/functions.py``): snapshot ``$gc_sp``
-        before the scrutinee, restore it after the arm cascade, and re-root
-        the arm's result when the result is a heap pointer.  What survives the
-        match is then exactly the one value the match produced — and anything
-        that value reaches, which the conservative mark phase finds from it.
-
-        That re-root is load-bearing, unlike the two pushes this fix deletes,
-        and the difference is measured rather than asserted: delete it and
-        ``TestMatchResultReRootIsLoadBearing1322`` reads back a
-        freed-and-reused block.  The cells that show it need all three of a
-        result that is NOT ``let``-bound (a ``let`` roots what it binds and
-        supplies the missing root), a sibling call argument that allocates
-        while the result sits on the operand stack, and an assertion on
-        CONTENT — a freed block nothing has overwritten yet still reads back
-        correctly, so a length check passes on a real use-after-free.
-
-        The re-root is itself frame-lifetime, so a POINTER-valued match still
-        costs one root and K of them cost K.  That residual is #1371 — every
-        heap-pointer-producing expression leaves a frame-lifetime root — and
-        its fix, this discipline applied per block statement, makes the
-        block's own restore reclaim the result and this re-root redundant.
-
-        Emitted ONLY when this match actually pushed
-        (:func:`contains_shadow_push`).  That is not an optimization: a
-        function whose lowering never sets ``needs_alloc`` gets no ``$gc_sp``
-        global at all, so an unconditional wrapper would emit a
-        ``global.get $gc_sp`` with nothing to read.  It also keeps the emitted
-        WAT of every non-rooting match byte-identical.
-
-        The save is placed before the SCRUTINEE, not after it: a scrutinee
-        that allocates (``match json_keys(j) { … }``) roots its own result,
-        and that root dies with the match too.  Roots pushed by anything
-        lowered EARLIER — a preceding call argument, an enclosing ``let`` —
-        sit below the snapshot and are untouched.
-        """
-        if not contains_shadow_push(instructions):
-            return instructions
-        save_local = self.alloc_local("i32")
-        scoped = ["global.get $gc_sp", f"local.set {save_local}"]
-        scoped.extend(instructions)
-        restore = [f"local.get {save_local}", "global.set $gc_sp"]
-        if result_type == "i32_pair":
-            # A (ptr, len) result: the pointer half is a heap pointer by
-            # construction (the pair convention has no non-pointer form).
-            ret_ptr = self.alloc_local("i32")
-            ret_len = self.alloc_local("i32")
-            scoped.append(f"local.set {ret_len}")
-            scoped.append(f"local.set {ret_ptr}")
-            scoped.extend(restore)
-            scoped.extend(gc_shadow_push(ret_ptr))
-            scoped.append(f"local.get {ret_ptr}")
-            scoped.append(f"local.get {ret_len}")
-        elif result_type is not None:
-            ret_local = self.alloc_local(result_type)
-            scoped.append(f"local.set {ret_local}")
-            scoped.extend(restore)
-            if result_type == "i32" and self._match_result_is_pointer(expr):
-                scoped.extend(gc_shadow_push(ret_local))
-            scoped.append(f"local.get {ret_local}")
-        else:
-            # Void match — the cascade carries no result annotation and
-            # leaves nothing on the operand stack.
-            scoped.extend(restore)
-        return scoped
-
-    def _match_result_is_pointer(self, expr: ast.MatchExpr) -> bool:
-        """Whether an ``i32``-lowered match result must be re-rooted (#1322).
-
-        Decided by :func:`is_gc_pointer_base` over the REPRESENTATION base of
-        the match's Vera type — the same rule, from the same function, that
-        the function and closure epilogues use for their return values, so
-        the three cannot drift.
-
-        Defaults to ``True`` when the Vera type is unrecoverable.  The two
-        errors are not symmetric: re-rooting a non-pointer costs one shadow
-        slot and one candidate the mark phase's heap-range guard rejects,
-        while failing to re-root a pointer hands the arm's result to the next
-        collection.  An unknown type takes the inert error.
-        """
-        vera_type = self._infer_vera_type(expr)
-        if vera_type is None:
-            return True
-        head = vera_type.split("<", 1)[0]
-        return is_gc_pointer_base(self._resolve_base_type_name(head))
+        return instructions
 
     def _match_scrutinee_vera_type(self, scrutinee: ast.Expr) -> str | None:
         """Concrete Vera type of a match scrutinee for the #1060 wildcard walks.

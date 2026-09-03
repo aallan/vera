@@ -89,11 +89,11 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-The repository configures 37 hooks across two stages: 35 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_readme_examples.py` only runs when `README.md` or Vera sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
+The repository configures 39 hooks across two stages: 37 run at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) run at the push stage (after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_readme_examples.py` only runs when `README.md` or Vera sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
 ![The gate pipeline: file-filtered commit-stage hooks, the push-stage CHANGELOG and uv.lock gates, and CI re-running everything against the platform matrix before anything lands on protected main.](assets/diagrams/ci-gates.svg)
 
-The **commit-stage** hooks — 35 total, of which 34 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
+The **commit-stage** hooks — 37 total, of which 36 are gated to relevant `files:`/`types:` filters and one (`check-added-large-files`, a general `--maxkb=500` size check) applies unconditionally — include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -103,6 +103,7 @@ The **commit-stage** hooks — 35 total, of which 34 are gated to relevant `file
 - mypy type checking
 - pytest test suite
 - All conformance programs hold at their declared level — positives pass; the negatives fail at the stage their `expected_error_stage` names (`check` by default, or `compile` for a diagnostic the checker accepts and codegen refuses) with their `expected_error` E-code
+- The same conformance programs hold again under `VERA_EAGER_GC=1`, which forces a collection at every allocation so that a GC-rooting bug fails deterministically instead of by timing
 - All `.vera` examples type-check and verify cleanly
 - README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
