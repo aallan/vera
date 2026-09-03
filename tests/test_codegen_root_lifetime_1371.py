@@ -21,21 +21,27 @@ The oracle is ROOTS PER FRAME across a K axis, in every syntactic position a
 pointer-producing call can occupy.  Roots per frame rather than trap depth
 because a frame holding *r* roots exhausts the stack at 4 096 / *r* levels,
 so a raw depth also carries the outermost frame's own constant and would
-read that constant as slope.  Measured at the branch point and here:
+read that constant as slope.  Two baselines, because #1322 landed between
+them and already scoped one of these positions:
 
-    position              base K=1/2/4      head K=1/2/4
-    block statements         2 / 3 / 5         1 / 1 / 1
-    let right-hand side      2 / 3 / 5         1 / 1 / 1
-    call arguments           3 / 5 / 9         1 / 1 / 1
-    match arm bodies         4 / 7 / 13        1 / 1 / 1
-    where-helper call        1 / 1 / 1         1 / 1 / 1
-    handler clause body      1 / 1 / 1         1 / 1 / 1
+    position              pre-#1322    this PR's base    head
+                          K=1/2/4      K=1/2/4           K=1/2/4
+    block statements       2 / 3 / 5     2 / 3 / 5       1 / 1 / 1
+    let right-hand side    2 / 3 / 5     2 / 3 / 5       1 / 1 / 1
+    call arguments         3 / 5 / 9     3 / 5 / 9       1 / 1 / 1
+    match arm bodies       4 / 7 / 13    1 / 1 / 1       1 / 1 / 1
+    where-helper call      1 / 1 / 1     1 / 1 / 1       1 / 1 / 1
+    handler clause body    1 / 1 / 1     1 / 1 / 1       1 / 1 / 1
 
-The last two are controls, and they matter: a helper call and a handler
-clause each already scoped their roots, through the callee's own epilogue,
-so a fix that "improved" them would have been changing something that was
-not broken.  The one remaining root is the frame's pointer parameter, which
-is genuinely live for the frame.
+Twelve of these cells are red at this PR's base and green at its head.
+
+The bottom three rows are CONTROLS and they matter.  Match arm bodies are
+#1322's own family, already flat at this base — kept because the general
+discipline must not undo the special case it subsumes.  A helper call and a
+handler clause each already scoped their roots through the callee's own
+epilogue, so a family that MOVED there would mean this fix had reached
+something that was not broken.  The one remaining root everywhere is the
+frame's pointer parameter, which is genuinely live for the frame.
 """
 from __future__ import annotations
 
