@@ -31,6 +31,9 @@ from vera.checker import typecheck
 from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.transform import transform
+from vera.markdown import parse_markdown
+from vera.markdown_grammar import js_grammar_block
+from tests.md_parse_corpus import CLASS_REPROS, encode_json, md_corpus
 from tests.json_domain_helpers import (
     ERR_PREFIX,
     INT_ROUNDS_TO_INFINITY,
@@ -5091,4 +5094,131 @@ public fn main(@Unit -> @Unit)
 """
         assert _parity_stdout(src, tmp_path, "md_bq_children_adt") == (
             "> first\n>\n> second"
+        )
+
+
+class TestMdParseCrossHostAdtDifferential1301:
+    """`md_parse` produces the SAME ADT on both hosts, byte for byte (#1301).
+
+    Every other Markdown case in this file observes the parser through
+    ``md_render``, which is what let the largest divergence class hide:
+    the browser emitted one ``MdText`` per scan segment where the
+    reference coalesces adjacent runs, so ``**unclosed`` was
+    ``[MdEmph([]), MdText("unclosed")]`` natively and
+    ``[MdText("*"), MdText("*unclosed")]`` in the browser — two different
+    ADTs whose renders are the same string.  A Vera program that matches
+    on ``MdParagraph``'s children sees the difference, which makes it a
+    §12.9.3 violation rather than a cosmetic one.
+
+    So this gate compares the ADTs, not the renders, and it compares them
+    over a *generated* corpus rather than a curated list: the nine
+    measured classes, then every block-opening line template taken one,
+    two and three at a time (a dispatch-order difference shows up as soon
+    as two branches compete for a line), then every inline shape in the
+    four positions that reach the inline parser, then a seeded fuzz leg.
+    A tenth class cannot appear without landing in one of those.
+
+    Both legs are fed the identical corpus from
+    ``tests/md_parse_corpus.py`` — a corpus written twice would let the
+    gate pass on two hosts that were never asked the same question — and
+    the browser leg runs as ONE Node process for the whole corpus, so the
+    gate stays fast enough to actually be run.
+    """
+
+    @staticmethod
+    def _browser_encodings(inputs: list[str], tmp_path: Path) -> list[str]:
+        """Run the whole corpus through the browser parser in one process."""
+        payload = tmp_path / "md_corpus.json"
+        payload.write_text(
+            json.dumps(inputs, ensure_ascii=True), encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [NODE or "node", str(ROOT / "tests" / "md_parse_bridge.mjs"),
+             str(payload)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"md_parse bridge failed (rc={proc.returncode}):\n"
+                f"stderr: {proc.stderr}"
+            )
+        return proc.stdout.splitlines()
+
+    def test_every_corpus_input_parses_to_the_same_adt(
+        self, tmp_path: Path,
+    ) -> None:
+        corpus = md_corpus()
+        native = [encode_json(parse_markdown(text)) for _, text in corpus]
+        browser = self._browser_encodings(
+            [text for _, text in corpus], tmp_path,
+        )
+        assert len(browser) == len(native), (
+            f"bridge returned {len(browser)} encodings for "
+            f"{len(native)} inputs"
+        )
+        divergent = [
+            (case_id, text, n, b)
+            for (case_id, text), n, b in zip(corpus, native, browser)
+            if n != b
+        ]
+        if divergent:
+            shown = "\n".join(
+                f"  {case_id}: {text!r}\n"
+                f"    native : {n}\n"
+                f"    browser: {b}"
+                for case_id, text, n, b in divergent[:12]
+            )
+            raise AssertionError(
+                f"{len(divergent)} of {len(corpus)} inputs parse to "
+                f"different ADTs across the hosts:\n{shown}"
+            )
+
+    @pytest.mark.parametrize(
+        ("case_id", "markdown"),
+        CLASS_REPROS,
+        ids=[c[0] for c in CLASS_REPROS],
+    )
+    def test_measured_divergence_class_repro_agrees(
+        self, case_id: str, markdown: str, tmp_path: Path,
+    ) -> None:
+        """Each of the nine classes named in #1301, on its own repro.
+
+        The sweep above would catch these too; naming them one per cell
+        means a regression reports WHICH class came back rather than a
+        count.
+        """
+        native = encode_json(parse_markdown(markdown))
+        browser = self._browser_encodings([markdown], tmp_path)[0]
+        assert browser == native, (
+            f"{case_id} ({markdown!r}) diverges:\n"
+            f"  native : {native}\n"
+            f"  browser: {browser}"
+        )
+
+
+class TestMdGrammarSharedTable1301:
+    """The two parsers read ONE grammar table (#1301).
+
+    ``vera/markdown_grammar.py`` is the single source of every pattern
+    and numeric constant the block dispatch turns on; the browser
+    runtime carries a generated copy of it.  This asserts the copy is
+    byte-identical to what the generator emits, so a pattern edited on
+    one side and not the other cannot reach ``main`` — which is how the
+    ``+`` bullet, the ``n)`` ordered marker and the separator-less table
+    came to be three different grammars in the first place.
+    """
+
+    def test_runtime_mjs_carries_the_generated_block_verbatim(self) -> None:
+        source = (ROOT / "vera" / "browser" / "runtime.mjs").read_text(
+            encoding="utf-8",
+        )
+        assert js_grammar_block() in source, (
+            "vera/browser/runtime.mjs does not carry the generated grammar "
+            "block verbatim.  Regenerate it with:\n"
+            "  python -c \"from vera.markdown_grammar import "
+            "js_grammar_block; print(js_grammar_block())\""
         )
