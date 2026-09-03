@@ -217,7 +217,7 @@ class TestIssueColumnScoping:
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268, 1277, 1281, 1304, 1305}
+        prose_only = {1268, 1281, 1304}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):
