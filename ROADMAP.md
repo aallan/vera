@@ -12,11 +12,11 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-12,486 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+12,491 tests, 247 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.1.14 burndown
 
-*Eighteen open bugs, driven to zero.*
+*Sixteen open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.  The rows where the compiler reports success and is wrong anyway — a proof that does not hold, an accounting that misstates what was checked — lead it; the rest are grouped by root-cause family.
 
@@ -35,11 +35,9 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 | [#1357](https://github.com/aallan/vera/issues/1357) | A module generic never discovers an instantiation piped from an effect-operation result — the piped sibling of #1310, failing on both discovery walks. |
 | [#1298](https://github.com/aallan/vera/issues/1298) | A postcondition may name a `State<T>` the function's effect row never declares. |
 | [#1301](https://github.com/aallan/vera/issues/1301) | `md_parse` diverges between the native and browser runtimes on adversarial input. |
-| [#1328](https://github.com/aallan/vera/issues/1328) | The nightly stress workflow never exercises the host-handle reclamation battery. |
 | [#1347](https://github.com/aallan/vera/issues/1347) | String interpolation rejects a refinement type that resolves to an interpolable primitive, where a plain alias to the same primitive passes. |
 | [#1349](https://github.com/aallan/vera/issues/1349) | Internal Lark terminal names (`__ANON_0`) reach user-facing `Expected one of:` lists instead of the literals they stand for. |
 | [#1345](https://github.com/aallan/vera/issues/1345) | Chapter 6's MUST-warnings — one per `assume` statement, one per runtime-checked contract — are never emitted, so `vera verify` stays silent about work it did not prove. |
-| [#996](https://github.com/aallan/vera/issues/996) | `ch05_closure_nat_return` trapped once in a full conformance run and has not reproduced. |
 
 ## Stage 19 — The verification completeness sprint
 

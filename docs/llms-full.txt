@@ -2450,7 +2450,6 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 | Shape | Bug summary | Workaround | Issue |
 |---|---|---|---|
 | Interpolating a refinement-typed value | `"n=\(@PosInt.0)"` under `type PosInt = { @Int \| @Int.0 > 0 };` is rejected with `E148`, although the identical interpolation through a plain alias (`type Plain = Int;`) checks clean — the conversion test reads the written type rather than the resolved one. | Convert explicitly and concatenate: `string_concat("n=", int_to_string(@PosInt.0))` checks clean. Use `float_to_string` for a `Float64` refinement. | [#1347](https://github.com/aallan/vera/issues/1347) |
-| Rare conformance-gate flake | `ch05_closure_nat_return` trapped once in a full conformance run and never again (~960 clean attempts) — suspected runtime/GC timing interaction, not a compiler defect. | If CI reds on this program with `Reached unreachable` in `main`, re-run and report on the issue with wasmtime version + load conditions — do not chase the compiler. | [#996](https://github.com/aallan/vera/issues/996) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `host_error` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation (omitted for `contract_violation` and `host_error`, whose descriptions already carry the specific instruction, and for `unknown`, where there is nothing general to suggest), and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 
@@ -3270,7 +3269,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 14-chapter formal specification
-- 12,486 tests, including a 247-program conformance suite
+- 12,491 tests, including a 247-program conformance suite
 - 43 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
