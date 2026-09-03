@@ -9,7 +9,6 @@ from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
     WasmSlotEnv,
-    contains_shadow_push,
     gc_shadow_push,
 )
 

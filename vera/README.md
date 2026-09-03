@@ -97,7 +97,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `verifier.py` | 9,446 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
 | `narrowing.py` | 108 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
 | `wasm/` | 27,524 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
-| ` ├ context.py` | 1,292 | | Composed WasmContext, expression dispatcher, block translation | |
+| ` ├ context.py` | 1,685 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 561 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping | |
 | ` ├ inference.py` | 2,868 | | Type inference, slot/type utilities, operator tables; the wasm arm of the resolution spine — `_declares_adt` plus every width and array-element-layout decider, all of them methods so each is asked in the namespace it is deciding for (#1321/#1331) | |
 | ` ├ operators.py` | 2,798 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
@@ -755,7 +755,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 12,972 tests across 196 files: compiler-internals unit tests plus a **conformance suite** (248 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 13,087 tests across 197 files: compiler-internals unit tests plus a **conformance suite** (248 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
