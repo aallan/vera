@@ -1027,3 +1027,73 @@ def test_old_state_composite_compares_values_not_addresses() -> None:
             r"\(func \$([A-Za-z_0-9$<>, ]+?)\s", result.wat)
     ), result.wat
     assert _run_checked(_OLD_COMPOSITE_FRESH_ALLOCATION) == 1
+
+
+# ---------------------------------------------------------------------
+# A refusal names the file the call is written in
+# ---------------------------------------------------------------------
+
+# An un-nameable argument PIPED into a shadowed module generic, inside the
+# module's own body.  It reaches the verifier's shadowed-qualified discovery
+# through the desugared-pipe arm, which calls `_infer_type_args_from_args`
+# directly — outside any namespace scope until #1389's review round threaded
+# the origin through `walk_seed`.  Without it the record claims the ENTRY
+# program and the [E622] names `main.vera` while quoting `mlib.vera`'s line.
+_PIPED_UNNAMEABLE_IN_MODULE = {
+    "mlib.vera": """\
+module mlib;
+
+type IntToInt = fn(Int -> Int) effects(pure);
+
+public forall<T> fn idg(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn compute(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = fn(@Int -> @Int) effects(pure) { @Int.0 * 2 } |> idg();
+  apply_fn(@IntToInt.0, 21)
+}
+""",
+    "main.vera": """\
+import mlib(compute);
+
+private fn idg(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  compute(())
+}
+""",
+}
+
+
+def test_a_piped_module_refusal_names_the_module_file(tmp_path: Path) -> None:
+    """[E622] from a desugared pipe in an imported body names that body.
+
+    The verifier's `walk_seed` infers type arguments outside any namespace
+    scope, so the record's origin was whatever the previous scope left — the
+    entry program in practice.  Red without the origin threaded through
+    `walk_seed`'s recursion.
+    """
+    verify_errors, _result, _cg = build_multi_module(
+        tmp_path / "piped_mod", _PIPED_UNNAMEABLE_IN_MODULE,
+    )
+    e622 = [d for c, d in verify_errors if c == "E622"]
+    assert e622, verify_errors

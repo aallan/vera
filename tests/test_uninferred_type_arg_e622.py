@@ -317,51 +317,6 @@ public fn main(@Unit -> @Int)
 """
 
 
-# #1366: a nested DIRECT module-generic call as the argument.
-_MODULE_NESTED = {
-    "plib.vera": """\
-module plib;
-
-public forall<T> fn gen(@T -> @T)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @T.0
-}
-
-public forall<T> fn gen2(@T -> @T)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  @T.0
-}
-""",
-    "main.vera": """\
-import plib;
-
-public fn main(@Unit -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  handle[State<Int>](@Int = 42007) {
-    get(@Unit) -> {
-      resume(@Int.0)
-    },
-    put(@Int) -> {
-      resume(())
-    }
-  } in {
-    plib::gen2(plib::gen(get(())))
-  }
-}
-""",
-}
-
-
-
 def _compile_checked(source: str) -> object:
     """Compile the way the CLI does — with the checker's artifacts threaded.
 
