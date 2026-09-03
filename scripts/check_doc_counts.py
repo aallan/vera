@@ -1279,14 +1279,36 @@ def check_bug_issue_parity(rows: list[int], open_bugs: list[int]) -> list[str]:
             "all, so the Bugs table has nothing to be checked against. An "
             "empty query is a failed one, not a clean bill of health."
         ]
+    bug_set, row_set = set(open_bugs), set(rows)
+    matched = bug_set & row_set
+    missing_rows = sorted(bug_set - row_set)
     errors = [
         f"KNOWN_ISSUES.md: issue #{number} is an open bug with no Bugs row"
-        for number in sorted(set(open_bugs) - set(rows))
+        for number in missing_rows
     ]
     errors += [
         f"KNOWN_ISSUES.md: the Bugs row for #{number} is not an open bug issue"
-        for number in sorted(set(rows) - set(open_bugs))
+        for number in sorted(row_set - bug_set)
     ]
+    # Every open bug is either MATCHED (has a row) or reported above as a
+    # missing row — matched and missing_rows partition open_bugs exactly,
+    # by construction of the two set operations above.  This can only be
+    # violated by a bug in that construction itself (a future refactor
+    # that computes one of them some other way, or a type mismatch
+    # between `rows` and `open_bugs` — e.g. one holding strings where the
+    # other holds ints, which would make membership tests silently wrong
+    # rather than raise) — not by any state KNOWN_ISSUES.md or the
+    # tracker can be in, so this never fires against real data (#1377
+    # review: "a dropped issue should surface as an inconsistency rather
+    # than as silence").
+    if len(matched) + len(missing_rows) != len(bug_set):
+        errors.append(
+            "KNOWN_ISSUES.md: internal inconsistency in the parity check "
+            f"itself — {len(matched)} matched + {len(missing_rows)} "
+            f"missing-row divergences should account for all "
+            f"{len(bug_set)} open bugs; this is a bug in the "
+            f"reconciliation logic, not in KNOWN_ISSUES.md"
+        )
     return errors
 
 

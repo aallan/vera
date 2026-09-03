@@ -887,6 +887,13 @@ def _enclosing_qualified_names(tree: ast.AST) -> dict[int, str]:
 # — verified against the actual description/rationale text at every site
 # (2026-09-03 audit, alongside this gate's introduction).
 KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
+    # Uninferred generic type argument: codegen's own monomorphization
+    # discovery pass and the verifier's independent mirror of the same
+    # check both report it where they find it (#1368).
+    "E622": frozenset({
+        ("vera/codegen/monomorphize.py", "MonomorphizationMixin._report_uninferred_type_args"),
+        ("vera/verifier.py", "ContractVerifier._report_one_uninferred"),
+    }),
     # Call-site effect subeffecting: a named function call and an
     # apply_fn-applied closure value are two call SHAPES for one rule.
     "E125": frozenset({

@@ -553,6 +553,24 @@ class TestReplayDiagnosticExamples:
         assert len(failures) == 1
         assert "found 2" in failures[0]
 
+    def test_explicit_error_code_with_multiple_matches_is_ambiguous(
+        self, tmp_path: Path,
+    ) -> None:
+        """CodeRabbit #1377 (the ninth thread): the test above covers
+        only the NO-error_code branch. A regression that accepts
+        multiple matches for a SELECTED code — e.g. `!= 1` weakened to
+        `< 1` — would pass every existing test if this one did not
+        exist, since the two `@Metres` typos here both carry the SAME
+        error_code, `error_code="E130"` kept (not stripped)."""
+        two_diagnostics = _E130_EXAMPLE.replace(
+            "  @Metres.0 - @Feet.0 / 3\n",
+            "  @Metres.0 - @Metres.1 - @Feet.0 / 3\n",
+        )
+        examples, _ = scan_diagnostic_examples(_md(tmp_path, two_diagnostics))
+        failures = replay_diagnostic_examples(examples)
+        assert len(failures) == 1
+        assert "found 2" in failures[0]
+
     def test_zero_diagnostics_is_a_failure(self, tmp_path: Path) -> None:
         text = (
             '<!-- vera:diagnostic file="main.vera" -->\n'

@@ -26,6 +26,14 @@ import re
 import sys
 from pathlib import Path
 
+# This script's name_appears_in_source below imports vera.lexical
+# in-process.  A plain `import vera` falls through to whichever venv's
+# editable-install finder answers first -- a checkout that can differ
+# from the one this file lives in (#1377 review, S13).  Inserting this
+# file's own repo root ahead of that finder makes `vera` resolve as the
+# on-disk package under root/vera/ unambiguously.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 def extract_run_commands(readme: Path) -> list[tuple[int, str]]:
     """Return (line_number, command) for every vera run command in tables."""
@@ -113,31 +121,45 @@ def extract_backticked_names(demonstrates_cell: str) -> list[str]:
     return _BACKTICK_IDENTIFIER.findall(demonstrates_cell)
 
 
-# Mirrors vera/grammar.lark's own token precedence: `STRING_LIT` is a
-# distinct token from the `--`-to-end-of-line comment `%ignore` rule, so a
-# `--` INSIDE a string is part of the string, never a comment start —
-# `examples/regex.vera` relies on exactly this (`IO.print("-- Matching --")`).
-# Matching a full string literal first and passing it through unchanged
-# (rather than also stripping ITS contents) preserves that precedence;
-# only a `--...` span found OUTSIDE of one is a comment and gets removed.
-_STRING_OR_COMMENT = re.compile(r'"(?:[^"\\]|\\.)*"|--[^\n]*')
+# Vera has THREE comment forms (spec 1.3): `--` to end of line, `{- -}`
+# (NESTABLE), and `/* */` (an annotation comment, non-nesting).  A regex
+# cannot count nesting depth, so this reuses vera.lexical.blank_comments
+# -- the same scanner vera/parser.py itself runs on -- rather than a
+# second, independent comment matcher that could drift from the grammar
+# (the #1112 shape blank_comments exists to prevent; a #1377-review
+# finding: the original fix here only handled `--`, missing `{- -}` and
+# `/* */` entirely).
+#
+# blank_comments deliberately leaves STRING LITERAL CONTENTS untouched
+# (that is not its job), so a name mentioned only INSIDE a string --
+# data, not a call -- would still satisfy the Demonstrates claim after
+# comments alone are stripped; _blank_string_contents is the second,
+# independent pass that closes that gap, keeping the quotes (so a
+# whole-word search either side of the string is unaffected) but
+# blanking what is between them.
+_STRING_LIT = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
-def _strip_comments(source: str) -> str:
-    """Remove Vera line comments so a name mentioned only in PROSE — a
-    comment, never executed — cannot satisfy a Demonstrates-column claim
-    about the CODE (a real gap: `-- mentions phantom_builtin in prose
-    only` plus a matching Demonstrates entry passed before this)."""
+def _blank_string_contents(source: str) -> str:
     def replace(match: re.Match[str]) -> str:
         text = match.group(0)
-        return text if text.startswith('"') else ""
-    return _STRING_OR_COMMENT.sub(replace, source)
+        return '"' + " " * (len(text) - 2) + '"'
+    return _STRING_LIT.sub(replace, source)
+
+
+def _strip_non_code(source: str) -> str:
+    """Remove every comment and string-literal CONTENT, so a name
+    mentioned only in prose or as string DATA -- never executed, never
+    even parsed as an identifier -- cannot satisfy a Demonstrates-column
+    claim about the CODE (#1351 gate, #1377 review)."""
+    from vera.lexical import blank_comments
+    return _blank_string_contents(blank_comments(source))
 
 
 def name_appears_in_source(vera_file: Path, name: str) -> bool:
     """Return True if `name` appears as a whole word in the source,
-    outside of comments."""
-    source = _strip_comments(vera_file.read_text(encoding="utf-8"))
+    outside of comments and string-literal content."""
+    source = _strip_non_code(vera_file.read_text(encoding="utf-8"))
     return bool(re.search(rf"\b{re.escape(name)}\b", source))
 
 
