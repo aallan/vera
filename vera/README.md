@@ -95,6 +95,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `monomorphize.py` | 3,891 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | 9,446 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
+| `narrowing.py` | 108 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
 | `wasm/` | 27,524 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 1,292 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 643 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping, array element helpers | |
@@ -120,7 +121,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `obligations/` | 785 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
 | `  core.py` | 198 | | ProofObligation record: identity (content_key) + discharge outcome | |
 | `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache | |
-| `  session.py` | 311 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order | |
+| `  session.py` | 366 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |
 | `lsp/` | 1,718 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
 | `  convert.py` | 218 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
@@ -731,7 +732,7 @@ The proof that the two sides agree is a differential, not a unit test: `tests/te
 
 ### 9. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes) and `W002` (an eagerly evaluated `async` argument). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable code — errors `E001`–`E702`, warnings `W001` (typed holes), `W002` (an eagerly evaluated `async` argument) and `W003` (an unverified `assume`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 10. Stable error code taxonomy
 
@@ -750,11 +751,11 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (164 entries — 162 `E` codes and the two `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (168 entries — 165 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 12,682 tests across 193 files: compiler-internals unit tests plus a **conformance suite** (247 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 12,718 tests across 194 files: compiler-internals unit tests plus a **conformance suite** (247 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
