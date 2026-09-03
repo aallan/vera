@@ -870,6 +870,13 @@ class CallsMixin:
             self._unify_param_arg_wasm(
                 param_te, arg, forall_vars, mapping, constrained_vars,
                 partial_adt, unnamed_direct)
+        # #1395: the checker fills holes in a SECOND pass, mirroring the
+        # discovery twin exactly — see `Monomorphizer._infer_type_args_from_args`.
+        if any(tv not in mapping for tv in forall_vars):
+            for param_te, arg in zip(param_types, call.args):
+                self._unify_param_arg_wasm(
+                    param_te, arg, forall_vars, mapping, constrained_vars,
+                    partial_adt, unnamed_direct, True)
 
         for tv, (base_name, slots) in partial_adt.items():
             if all(s is not None for s in slots):
@@ -924,6 +931,7 @@ class CallsMixin:
         constrained_vars: frozenset[str] = frozenset(),
         partial_adt: dict[str, tuple[str, list[str | None]]] | None = None,
         unnamed_direct: set[str] | None = None,
+        consult_checker: bool = False,
     ) -> None:
         """Unify a parameter TypeExpr against an argument to bind type vars.
 
@@ -936,7 +944,7 @@ class CallsMixin:
         if isinstance(param_te, ast.RefinementType):
             self._unify_param_arg_wasm(
                 param_te.base_type, arg, forall_vars, mapping,
-                constrained_vars, partial_adt, unnamed_direct,
+                constrained_vars, partial_adt, unnamed_direct, consult_checker,
             )
             return
 
@@ -1013,6 +1021,14 @@ class CallsMixin:
                 return
 
             arg_info = self._get_arg_type_info_wasm(arg)
+            if arg_info is None and consult_checker:
+                # #1395: mirrors the discovery twin's parameterised branch —
+                # same missing arms, same hole, same ordering discipline.  The
+                # two sides must fill holes at the same moment or they fill
+                # different ones, which is the dangling clone this family is.
+                from vera.monomorphize import checker_arg_type_info
+                arg_info = checker_arg_type_info(
+                    self._expr_semantic_types, arg)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]
