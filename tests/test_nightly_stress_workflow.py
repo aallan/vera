@@ -197,6 +197,18 @@ def canonical_collected_ids() -> set[str]:
     return _collect_ids(["-m", "stress", *_canonical_testpaths()])
 
 
+def test_workflow_collect_argv_preserves_a_non_verbosity_flag() -> None:
+    """Pure-unit companion to the class below's verbatim-replay tests:
+    re-introducing the old marker+paths RECONSTRUCTION inside this
+    helper would silently drop any flag the reconstruction does not
+    know about, while every test below stays green on the unmutated
+    workflow.  A flag that is not a verbosity flag must survive."""
+    argv = _workflow_collect_argv(
+        "pytest -v -m stress --deselect=tests/test_x.py::test_y tests/"
+    )
+    assert "--deselect=tests/test_x.py::test_y" in argv
+
+
 class TestNightlyStressLaneCollection1328:
     """The nightly stress workflow's marker selection must collect
     every ``@pytest.mark.stress`` instance repo-wide, not just the
