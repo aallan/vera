@@ -451,13 +451,28 @@ class DataMixin:
         if not expr.arms:
             raise CodegenSkip(expr, "match expression has no arms")
 
+        # #1060: the scrutinee's CONCRETE Vera type (e.g. "Box<Unit>") drives
+        # the instantiation-aware width of a WILDCARD over a bare
+        # type-parameter field — that field registers generically as i32 but
+        # is laid out per the concrete type arg at construction (Unit → 0
+        # bytes).  #1065: a DIRECT-CALL scrutinee recovers its full
+        # instantiation from the callee's declared return type
+        # (`_infer_vera_type` alone drops the type args and a type-parameter
+        # wildcard then LOUD-skipped a check-green program); None only when
+        # the type is genuinely unrecoverable, and a type-parameter wildcard
+        # still LOUD-skips rather than reading a shifted offset.  #1380
+        # reads it one step earlier than #1060 did, because the pair guard
+        # below now needs to tell a String from an `Array<T>` of the same
+        # representation.
+        scrutinee_type = self._match_scrutinee_vera_type(expr.scrutinee)
+
         # Save scrutinee to a local
         instructions: list[str] = list(scr_instrs)
         if scr_wasm_type == "i32_pair":
-            # A WHITELIST, deliberately: exactly two pattern kinds have a
-            # lowering over a pair, and every other kind must be refused
-            # here rather than reach an emitter that will read one of the
-            # two words as something it is not.  A blacklist naming the
+            # A WHITELIST, deliberately: only the pattern kinds that HAVE a
+            # lowering over a pair pass, and every other kind is refused
+            # here rather than reaching an emitter that would read one of
+            # the two words as something it is not.  A blacklist naming the
             # constructor kinds was the first cut of this guard and was
             # strictly worse than the bug it was added beside — a pair has
             # no comparable scalar word either, so `true ->` and `1 ->`
@@ -468,19 +483,31 @@ class DataMixin:
             # integer twin shipped a `.wasm` that died at instantiation
             # with no diagnostic at all.  Enumerating what IS lowerable
             # cannot fail that way when a pattern kind is added.
+            #
+            # A STRING literal joined that list with #1380: `$eq_String`
+            # compares exactly a pair of (ptr, len) pairs, so the arm has a
+            # real lowering — but only where the pair IS a string.  An
+            # `Array<T>` has the same representation and none of the
+            # semantics, so the admission is keyed on the scrutinee's Vera
+            # type, and `_literal_arm_condition` re-checks it rather than
+            # trusting this gate: one of the two is the door, the other is
+            # the lock, and a future caller reaching the emitter another way
+            # still cannot compare an array's bytes as UTF-8.
             for arm in expr.arms:
-                if not isinstance(
+                if isinstance(arm.pattern, (ast.WildcardPattern,
+                                            ast.BindingPattern)):
+                    continue
+                if (isinstance(arm.pattern, ast.StringPattern)
+                        and scrutinee_type == "String"):
+                    continue
+                raise CodegenSkip(
                     arm.pattern,
-                    (ast.WildcardPattern, ast.BindingPattern),
-                ):
-                    raise CodegenSkip(
-                        arm.pattern,
-                        "pattern over a scrutinee whose representation is a "
-                        "(ptr, len) pair — only a wildcard or a binding "
-                        "pattern lowers over one, since a pair carries "
-                        "neither a constructor tag nor a comparable scalar "
-                        "word",
-                    )
+                    "pattern over a scrutinee whose representation is a "
+                    "(ptr, len) pair — only a wildcard, a binding pattern, "
+                    "or (for a String scrutinee) a string literal lowers "
+                    "over one, since a pair carries neither a constructor "
+                    "tag nor a comparable scalar word",
+                )
             ptr_local = self.alloc_local("i32")
             len_local = self.alloc_local("i32")  # consecutive: ptr + 1
             instructions.append(f"local.set {len_local}")
@@ -526,18 +553,6 @@ class DataMixin:
         # legal @Nat arm of a hetero join in a @Nat-RETURNING context).  The same
         # gate drives the FIX-1 tail-call collector, so the two stay in lockstep.
         guard_widen_arms = self._is_hetero_int_widen_join(expr)
-
-        # #1060: the scrutinee's CONCRETE Vera type (e.g. "Box<Unit>") drives the
-        # instantiation-aware width of a WILDCARD over a bare type-parameter
-        # field — that field registers generically as i32 but is laid out per
-        # the concrete type arg at construction (Unit → 0 bytes).  #1065: a
-        # DIRECT-CALL scrutinee recovers its full instantiation from the callee's
-        # declared return type (`_infer_vera_type` alone drops the type args and
-        # a type-parameter wildcard then LOUD-skipped a check-green program);
-        # None only when the type is genuinely unrecoverable, and a
-        # type-parameter wildcard still LOUD-skips rather than reading a shifted
-        # offset.
-        scrutinee_type = self._match_scrutinee_vera_type(expr.scrutinee)
 
         # Compile arms as chained if-else
         arm_instrs = self._compile_match_arms(
@@ -939,21 +954,111 @@ class DataMixin:
                     instrs.append("i32.and")
             return instrs
 
+        if isinstance(pattern, (ast.BoolPattern, ast.IntPattern,
+                                ast.StringPattern)):
+            return self._literal_arm_condition(
+                pattern, scr_local, scr_wasm_type, scrutinee_type,
+            )
+
+        if isinstance(pattern, (ast.WildcardPattern, ast.BindingPattern)):
+            return None  # unconditional — every value takes this arm
+
+        # Exhaustive over the pattern forms `grammar.lark` produces.  A form
+        # reaching here is one the grammar grew and this dispatch did not,
+        # which is a compiler defect rather than a program error — and the
+        # thing it must not do is fall through to whatever branch happens to
+        # be last.  That is how the integer arm below used to answer for a
+        # `Byte`: not by a decision, but by being the branch nothing stopped.
+        raise CodegenSkip(
+            pattern,
+            f"pattern form {type(pattern).__name__} has no match-arm "
+            f"lowering — this is a gap in the compiler, not in the program",
+        )
+
+    # -----------------------------------------------------------------
+    # Literal arm conditions
+    # -----------------------------------------------------------------
+
+    #: Which WAT comparison a literal arm uses, keyed by the SCRUTINEE's
+    #: representation.  `Byte` and `Bool` are i32, `Int` and `Nat` i64;
+    #: `Float64` is absent because the grammar has no float literal
+    #: pattern, so a `Float64` scrutinee is matched by a wildcard or a
+    #: binding and no f64 comparison is reachable from source.
+    _SCALAR_LITERAL_COMPARE = ("i32", "i64")
+
+    def _literal_arm_condition(
+        self,
+        pattern: ast.Pattern,
+        scr_local: int,
+        scr_wasm_type: str,
+        scrutinee_type: str | None,
+    ) -> list[str]:
+        """Compare a literal arm at the scrutinee's own representation.
+
+        The width is the SCRUTINEE's, never the literal's: an integer
+        literal is a `Byte` comparison over an i32 scrutinee and an `Int`
+        one over an i64, and deriving it from the pattern instead emitted
+        `i64.eq` against an i32 local — a module wasmtime refuses to load,
+        from a `vera compile` that reported success.
+
+        A `String` scrutinee is the (ptr, len) pair, compared through the
+        same `$eq_String` helper `==` uses, so the two spellings of "are
+        these strings equal" cannot drift apart.
+        """
+        if isinstance(pattern, ast.StringPattern):
+            # Gated on the scrutinee's Vera TYPE, not on its representation:
+            # `Array<T>` is the same pair and none of the semantics, and
+            # comparing one against an interned literal would read its
+            # element buffer as UTF-8.
+            if scr_wasm_type != "i32_pair" or scrutinee_type != "String":
+                raise CodegenSkip(
+                    pattern,
+                    f"string literal pattern over a scrutinee of type "
+                    f"{scrutinee_type or scr_wasm_type} — only a String "
+                    f"scrutinee has a content comparison",
+                )
+            offset, length = self.string_pool.intern(pattern.value)
+            self._request_string_eq_helper()
+            return [
+                f"local.get {scr_local}",       # scrutinee ptr
+                f"local.get {scr_local + 1}",   # scrutinee len (consecutive)
+                f"i32.const {offset}",
+                f"i32.const {length}",
+                "call $eq_String",
+            ]
+
+        if scr_wasm_type not in self._SCALAR_LITERAL_COMPARE:
+            raise CodegenSkip(
+                pattern,
+                f"literal pattern over a scrutinee represented as "
+                f"{scr_wasm_type} — a literal arm compares a scalar word, "
+                f"which this representation does not have",
+            )
+
         if isinstance(pattern, ast.BoolPattern):
+            if scr_wasm_type != "i32":
+                raise CodegenSkip(
+                    pattern,
+                    f"boolean literal pattern over an {scr_wasm_type} "
+                    f"scrutinee — a Bool is an i32",
+                )
+            # A Bool value is 0 or 1, so the value IS the condition.
             if pattern.value:
                 return [f"local.get {scr_local}"]
-            else:
-                return [f"local.get {scr_local}", "i32.eqz"]
+            return [f"local.get {scr_local}", "i32.eqz"]
 
         if isinstance(pattern, ast.IntPattern):
             return [
                 f"local.get {scr_local}",
-                f"i64.const {pattern.value}",
-                "i64.eq",
+                f"{scr_wasm_type}.const {pattern.value}",
+                f"{scr_wasm_type}.eq",
             ]
 
-        # WildcardPattern, BindingPattern — unconditional
-        return None
+        raise CodegenSkip(  # pragma: no cover — the caller's isinstance gate
+            pattern,
+            f"literal pattern form {type(pattern).__name__} has no "
+            f"comparison — this is a gap in the compiler",
+        )
 
     def _setup_match_arm_env(
         self,
@@ -973,8 +1078,15 @@ class DataMixin:
         type-parameter field advances the offset by the instantiation-aware
         width instead of the generic i32 placeholder.
         """
+        # #1380: a StringPattern joins the binding-free forms.  Its
+        # condition is a content comparison against an interned literal, so
+        # like the other literal forms it introduces no slot and needs no
+        # extraction — this list is about BINDINGS, and it read as "the
+        # forms I know" only because the two lists happened to coincide
+        # while the string arm did not exist.
         if isinstance(pattern, (ast.WildcardPattern, ast.NullaryPattern,
-                                ast.BoolPattern, ast.IntPattern)):
+                                ast.BoolPattern, ast.IntPattern,
+                                ast.StringPattern)):
             return ([], env)
 
         if isinstance(pattern, ast.BindingPattern):

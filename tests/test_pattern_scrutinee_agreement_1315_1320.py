@@ -477,17 +477,38 @@ class TestBoundaries:
     def test_integer_literal_over_a_byte_scrutinee_is_accepted(self) -> None:
         """A `Byte` is an integer 0..255, so an integer literal names one.
 
-        Accepted on the type question alone.  Codegen cannot lower this
-        arm today — a `Byte` is an i32 and the emitted comparison is
-        `i64.eq`, so the module fails to load — but that is a defect in
-        the comparison's width, not a claim that the pattern is
-        ill-typed, and a type rule saying "a Byte can only be matched by
-        a wildcard" would be false.  The rule refuses only what can never
-        match.
+        The type rule refuses only what can never match, and a `Byte`
+        literal arm can — so this is accepted here AND lowered: the same
+        PR fixes the i64-against-an-i32-local comparison that made this
+        program compile to a module no host would load ([#1381]).  The
+        cell runs the program rather than stopping at `check`, because a
+        type rule that accepts what the backend then drops is the very
+        shape #1320 is about; `tests/test_codegen_match_literal_arms.py`
+        carries the width matrix behind it.
         """
-        _check_clean(_fn("@Byte", _match(
-            "@Byte.0", "    1 -> 10,\n    _ -> 20",
-        )))
+        source = (
+            "public fn classify(@Byte -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  match @Byte.0 {\n"
+            "    200 -> 10,\n"
+            "    _ -> 20\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  classify(200)\n"
+            "}\n"
+        )
+        _check_clean(source)
+        from tests.codegen_helpers import _run
+        assert _run(source, "main", []) == 10
 
     def test_unresolvable_scrutinee_is_skipped(self) -> None:
         """An unresolved call's UnknownType result must not manufacture E314."""
