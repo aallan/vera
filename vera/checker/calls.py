@@ -207,6 +207,61 @@ class CallsMixin:
         if ab_op:
             return self._check_ability_op_call(ab_op, args, node)
 
+        # #1307: the name resolves to nothing HERE, but the program does
+        # declare it — as a `where` helper of another declaration, which
+        # spec §5.8 makes local to its parent.  Reported as its own error
+        # rather than E200's warning: E200's instruction ("define it in
+        # this file") is false for a name the file already declares, and
+        # codegen has no target for the call either way, so accepting the
+        # program would be a check-green module that cannot be built.
+        owners = self._where_helper_parents.get(name)
+        if owners:
+            # Each owner arrives ready to read: "'holder'" for a helper of
+            # this file, "'phost' in module 'hlib'" for an imported one.
+            owner_list = ", ".join(sorted(owners))
+            plural = "s" if len(owners) > 1 else ""
+            # The two fixes differ in kind, not just in wording: a caller
+            # in this file can move into the parent's body, and a caller in
+            # another file cannot — its repair is to call the parent it
+            # already imports, or to have the module export the helper.
+            imported = any("in module" in o for o in owners)
+            parents_only = ", ".join(
+                sorted(o.split(" in module ")[0] for o in owners)
+            )
+            if imported:
+                repair = (
+                    f"Call {parents_only} instead — a module reaches its "
+                    f"helpers, an importer reaches the module's public "
+                    f"declarations — or, if '{name}' is meant to be shared, "
+                    f"lift it out of the `where` block{plural} to a "
+                    f"top-level 'public fn {name}(...)' in that module and "
+                    f"import it."
+                )
+            else:
+                repair = (
+                    f"Call {parents_only} instead, move this call into the "
+                    f"body of {parents_only}, or — if '{name}' is meant to "
+                    f"be shared — lift it out of the `where` block{plural} "
+                    f"to a top-level 'private fn {name}(...)'."
+                )
+            self._error(
+                node,
+                f"'{name}' is a where-helper of {owner_list} and is not in "
+                f"scope here.",
+                rationale="A function declared in a `where` block is local "
+                          "to the function that declares it: it is visible "
+                          "to that function's body and to its sibling "
+                          "helpers, and to nothing else — not to another "
+                          "declaration in the same file, and not to a file "
+                          "that imports its parent's module.",
+                fix=repair,
+                spec_ref='Chapter 5, Section 5.8 "Function Visibility"',
+                error_code="E178",
+            )
+            for arg in args:
+                self._synth_expr(arg)
+            return UnknownType()
+
         # Unresolved — emit warning and continue
         self._error(
             node,

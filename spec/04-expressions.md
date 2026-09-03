@@ -192,10 +192,13 @@ match @Option<Int>.0 {
 |---------|---------|---------------------|
 | `ConstructorName(@T1, @T2, ...)` | ADT variant with fields | One per field |
 | `ConstructorName` | ADT variant with no fields | None |
+| `Tuple(@T1, @T2, ...)` | A tuple of exactly that many components | One per component |
 | `_` | Anything (wildcard) | None |
 | Literal (`42`, `"hi"`, `true`) | Exact value | None |
 
 Patterns are matched top-to-bottom. The first matching arm is taken.
+
+Every arm's pattern MUST be one the scrutinee's type can take: a constructor pattern names a constructor of that type, a literal pattern has that type (an integer literal matches `Int`, `Nat` or `Byte`), and a binding pattern `@T` names a type related to it by subtyping. A `Tuple` pattern supplies exactly one sub-pattern per component of the scrutinee's tuple type, and matches no other type. A pattern that can never match is rejected (**E314**) — a `Map<K, V>` has no constructors, so `Some(...)` over one is not an unreachable arm but a type error, and an `Int` can equal no `Bool`. The rule is decided from what the checker knows: it does not apply where the scrutinee's type is a type variable (a `forall<T>` body cannot know which type `T` will be) or a named type the module does not declare.
 
 ### 4.9.2 Exhaustiveness
 

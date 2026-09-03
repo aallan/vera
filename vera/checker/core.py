@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from vera import ast, naming
 from vera.errors import Diagnostic, SourceLocation
 from vera.naming import AliasEnv
+from vera.registration import where_helper_parents
 from vera.environment import (
     AdtInfo,
     FunctionInfo,
@@ -401,6 +402,13 @@ class TypeChecker(
         # per-decl infos for the scoped lookup.
         self._fn_scope_stack: list[ast.FnDecl] = []
         self._top_level_fn_infos: dict[str, FunctionInfo] = {}
+        # #1307: helper name -> the declarations that own one, for the E178
+        # instruction.  Registration no longer publishes helpers into the
+        # flat registry, so a bare call from outside the parent resolves to
+        # nothing; this is what lets the diagnostic say WHERE the name it
+        # cannot reach is declared, instead of E200's "define it in this
+        # file" for a name the file already declares.
+        self._where_helper_parents: dict[str, set[str]] = {}
         self._scoped_fn_info_cache: dict[
             tuple[int, str | None], FunctionInfo
         ] = {}
@@ -620,6 +628,24 @@ class TypeChecker(
                     and id(decl) not in self._rejected_builtin_redefs):
                 self._top_level_fn_infos[decl.name] = self._fn_info_for_decl(
                     decl, visibility=tld.visibility,
+                )
+        # #1307/#1383: which declaration owns each `where`-helper name, over
+        # THIS program and every module it resolves.  A helper is local to
+        # its parent whichever file it is written in — it carries no
+        # visibility, so the import injection never offers it — and the
+        # importer's bare call therefore resolves to nothing on both tables.
+        # Indexing the module graph is what lets the diagnostic say so:
+        # across a file boundary E200's "define it in this file" is worse
+        # advice than within one, because the name IS declared, IS visible
+        # in the imported source, and cannot be imported (E150).
+        self._where_helper_parents = {}
+        for label, decls in self._helper_index_sources(program):
+            for name, parents in where_helper_parents(decls).items():
+                owners = self._where_helper_parents.setdefault(name, set())
+                owners.update(
+                    f"'{parent}'" if label is None
+                    else f"'{parent}' in module '{label}'"
+                    for parent in parents
                 )
         for tld in program.declarations:
             # #815: a built-in redefinition (E151) is already reported and not
@@ -880,6 +906,30 @@ class TypeChecker(
         self.env.current_effect_row = saved_effect
         self.env.current_effect_order = saved_effect_order
 
+    def _helper_index_sources(
+        self, program: ast.Program,
+    ) -> list[tuple[str | None, list[ast.FnDecl]]]:
+        """(module label, function declarations) for the helper index.
+
+        ``None`` labels this program's own declarations; a resolved
+        module is labelled by its dotted path, so E178 can name the file
+        the helper lives in.  Transitive modules are included: their
+        helpers are no more callable here than a direct import's, and a
+        bare call to one fails codegen the same way.
+        """
+        sources: list[tuple[str | None, list[ast.FnDecl]]] = [(
+            None,
+            [tld.decl for tld in program.declarations
+             if isinstance(tld.decl, ast.FnDecl)],
+        )]
+        for mod in self._resolved_modules or ():
+            sources.append((
+                ".".join(mod.path),
+                [tld.decl for tld in mod.program.declarations
+                 if isinstance(tld.decl, ast.FnDecl)],
+            ))
+        return sources
+
     def _fn_info_for_decl(
         self, decl: ast.FnDecl, visibility: str | None = None,
     ) -> FunctionInfo:
@@ -917,7 +967,12 @@ class TypeChecker(
         helper-name scoping.  A helper rejected for redefining a built-in
         (E151, #815) is skipped — the built-in stays canonical.  With an
         empty stack (data invariants, op signatures) this is exactly the
-        old flat lookup.
+        flat lookup.
+
+        The frame walk is the ONLY route to a helper: since #1307 the flat
+        registry holds none, so this returns ``None`` for a helper named
+        from outside its parent (reported as E178 at the call site) rather
+        than another declaration's helper.
 
         A handler-clause operator name skips both scoped tiers and resolves
         against the flat registry alone, because that is the only place its
@@ -956,16 +1011,15 @@ class TypeChecker(
         passes ``_scoped_fns`` — its registry narrowed to the compiling
         declaration's lexical scope (#1299).
 
-        The two are not yet the same scope, and the residue is on THIS side:
-        ``register_fn`` recurses ``where`` helpers into the flat
-        ``TypeEnv``, and the lookup above falls back to it, so a bare call in
-        a SIBLING top-level function resolves to another function's helper —
-        which spec §5 makes local to its parent.  Codegen refuses that
-        program (the helper is emitted as ``parent$where$name``, so the bare
-        call has no target) and, where the helper's name is an operation's,
-        lowers the operation the spec prescribes while the checker reports
-        against the helper's signature.  Tracked as #1307; the fix is a
-        checker change with its own new rejections, not a table change here.
+        The two are the same scope since #1307: ``register_fn`` no longer
+        recurses ``where`` helpers into the flat ``TypeEnv``, so the
+        fallback below reaches built-ins, the prelude and imports but no
+        helper, and a helper is reachable only through the frame walk —
+        exactly the declarations codegen's ``_scoped_fns`` narrows to.  A
+        bare call naming a helper from outside its parent therefore
+        resolves to nothing on both tables: the checker reports E178 where
+        codegen would have had no target, and where the name is an
+        operation's, both lower the operation spec §7.4 prescribes.
         """
         return _ScopedFnNames(self._lookup_function_scoped)
 

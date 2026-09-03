@@ -236,7 +236,14 @@ _UNLOWERABLE_ARMS: list[tuple[str, str, str, str]] = [
     ("string-int", "@String", '"q"', "1 -> 100,"),
     ("array-bool", "@Array<Int>", "[1, 2]", "true -> 100,"),
     ("array-int", "@Array<Int>", "[1, 2]", "1 -> 100,"),
-    ("string-string", "@String", '"q"', '"yes" -> 100,'),
+    # #1380: a string literal over a STRING scrutinee left this table — it
+    # has a lowering now (`$eq_String`, the comparison `==` already uses),
+    # and `tests/test_codegen_match_literal_arms.py` runs it.  Its
+    # ARRAY-scrutinee twin stays, and is the cell that keeps the admission
+    # keyed on the scrutinee's Vera type rather than on its representation:
+    # an `Array<T>` is the same (ptr, len) pair, and comparing one against
+    # an interned literal would read the element buffer as UTF-8.
+    ("array-string", "@Array<Int>", "[1, 2]", '"yes" -> 100,'),
 ]
 
 
@@ -255,6 +262,11 @@ class TestPairScrutineeGuardIsAWhitelist:
     that died at instantiation with no diagnostic and no E-code.
 
     So the guard is a whitelist, and these cells are what makes it one.
+    What the whitelist admits is "the forms that HAVE a lowering", which is
+    why #1380 could add the string literal over a String scrutinee to it
+    without weakening the rule: the arm compares two (ptr, len) pairs
+    through `$eq_String`.  Everything here is a form that still has no
+    lowering over the representation it is written against.
     """
 
     @pytest.mark.parametrize(

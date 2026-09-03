@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import functools
 import re
 from collections.abc import Iterator
@@ -228,27 +227,6 @@ _RESERVED_FN_NAMES = (
      | _CONTEXTUAL_KEYWORD_FN_NAMES)
     - _HOST_INVOKED_FN_NAMES
 )
-
-
-def _strip_rejected_where_fns(decl: ast.FnDecl) -> ast.FnDecl:
-    """Return ``decl`` with any where-helper named after a built-in removed,
-    recursively (#815).
-
-    A rejected helper must not overwrite the canonical built-in entry in
-    ``env.functions`` (the shared ``register_fn`` registers every where-fn by
-    name).  Its E151 is emitted separately in
-    :meth:`RegistrationMixin._check_builtin_redefinition`; this only prevents
-    its registration so a sibling call still resolves to the built-in.
-    """
-    if not decl.where_fns:
-        return decl
-    reject = _builtin_reject_names()
-    kept = tuple(
-        _strip_rejected_where_fns(wfn)
-        for wfn in decl.where_fns
-        if wfn.name not in reject
-    )
-    return dataclasses.replace(decl, where_fns=kept or None)
 
 
 class RegistrationMixin:
@@ -1020,13 +998,19 @@ class RegistrationMixin:
     def _register_fn(
         self, decl: ast.FnDecl, visibility: str | None = None,
     ) -> None:
-        """Register a function signature."""
+        """Register a function signature.
+
+        Only the declaration itself: ``register_fn`` does not descend into
+        ``where`` helpers (#1307), so a helper named after a built-in can no
+        longer overwrite the canonical entry and needs no pre-registration
+        strip.  Its E151 is emitted in
+        :meth:`_check_builtin_redefinition`, and the checker's scoped lookup
+        skips a rejected helper by id, so the built-in stays canonical for
+        the parent's own calls too.
+        """
         from vera.registration import register_fn
-        # #815: drop where-helpers named after a built-in before registering,
-        # so a rejected helper can't overwrite the canonical entry (its E151 is
-        # emitted in _check_builtin_redefinition).
         register_fn(
-            self.env, _strip_rejected_where_fns(decl),
+            self.env, decl,
             self._resolve_type, self._resolve_effect_row,
             visibility=visibility,
         )

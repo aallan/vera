@@ -6,7 +6,11 @@ from vera import ast
 from vera.environment import Binding, FunctionInfo
 from vera.types import (
     BOOL,
+    BYTE,
+    INT,
+    NAT,
     NEVER,
+    STRING,
     UNIT,
     AdtType,
     ConcreteEffectRow,
@@ -23,6 +27,41 @@ from vera.types import (
     substitute,
     types_equal,
 )
+
+
+# #1315: the built-in ADTs that carry no constructors — the containers
+# `_resolve_named_type` builds directly rather than from a `data`
+# declaration.  Their absence from `env.data_types` is what let a
+# constructor pattern over one through: it reads as "type not registered"
+# to a lookup that cannot tell the two apart.  A user `data Array { ... }`
+# registers the name, and is then ruled on as the declared ADT it is.
+_CONSTRUCTORLESS_BUILTIN_TYPES = frozenset(
+    {"Array", "Map", "Set", "Tuple", "Decimal"}
+)
+
+# #1320: what each literal pattern form can be compared against — the
+# types whose values an integer / string / boolean literal can equal.
+# Every integer type is admitted, `Byte` included: the rule refuses what
+# can never match, and a `Byte` is an integer 0..255 that an integer
+# literal can name.  `Float64` is not an integer type and the grammar has
+# no float literal pattern, so a `Float64` scrutinee is matched by a
+# wildcard or a binding pattern.
+_LITERAL_PATTERN_TYPES: dict[type, tuple[str, tuple[Type, ...]]] = {
+    ast.IntPattern: ("Int", (INT, NAT, BYTE)),
+    ast.StringPattern: ("String", (STRING,)),
+    ast.BoolPattern: ("Bool", (BOOL,)),
+}
+
+
+def _render_literal_pattern(pat: ast.Pattern) -> str:
+    """The literal as written, for the E314 instruction."""
+    if isinstance(pat, ast.StringPattern):
+        return f'"{pat.value}"'
+    if isinstance(pat, ast.BoolPattern):
+        return "true" if pat.value else "false"
+    if isinstance(pat, ast.IntPattern):
+        return str(pat.value)
+    return "<literal>"  # pragma: no cover — only literal forms reach here
 
 
 class ControlFlowMixin:
@@ -264,12 +303,25 @@ class ControlFlowMixin:
     def _check_pattern(self, pat: ast.Pattern,
                        expected: Type | None) -> list[Binding]:
         """Check a pattern against an expected type, return bindings."""
+        # #1315/#1320: every form is first asked whether it can match the
+        # scrutinee at all.  A binding pattern is the exception only in
+        # WHERE the same rule runs: its type has to be resolved before it
+        # can be compared, resolution reports its own diagnostics (E133,
+        # …), and resolving twice would duplicate them — so
+        # `_check_binding_pattern` applies the rule with the type it has
+        # already resolved.
+        if isinstance(pat, ast.BindingPattern):
+            return self._check_binding_pattern(pat, expected)
+        if self._check_pattern_scrutinee(pat, expected):
+            # The head cannot match, so the scrutinee's type arguments say
+            # nothing about this constructor's fields: check sub-patterns
+            # without them rather than reporting a second mismatch derived
+            # from a type this pattern never sees.
+            expected = None
         if isinstance(pat, ast.ConstructorPattern):
             return self._check_ctor_pattern(pat, expected)
         if isinstance(pat, ast.NullaryPattern):
             return self._check_nullary_pattern(pat, expected)
-        if isinstance(pat, ast.BindingPattern):
-            return self._check_binding_pattern(pat, expected)
         if isinstance(pat, ast.WildcardPattern):
             return []
         if isinstance(pat, ast.IntPattern):
@@ -279,6 +331,162 @@ class ControlFlowMixin:
         if isinstance(pat, ast.BoolPattern):
             return []
         return []  # pragma: no cover — exhaustive isinstance chain above
+
+    # -----------------------------------------------------------------
+    # Pattern / scrutinee agreement (#1315, #1320)
+    # -----------------------------------------------------------------
+
+    def _scrutinee_for_pattern(self, expected: Type | None) -> Type | None:
+        """The type a pattern must be able to match, or None to skip.
+
+        Skipped wherever the question is not decidable from what this
+        checker knows:
+
+        * no expected type — a sub-pattern of a `Tuple` whose arity the
+          expected type does not supply;
+        * an unresolved scrutinee (`UnknownType`), or a `Never` one;
+        * a type variable — the deliberate boundary.  A `forall<T>` body
+          cannot decide `Some(@Int)` over `@T.0`, because `T` may be
+          instantiated at `Option<Int>`.  Only the HEAD has to be known:
+          `Map<T, U>` from `map_new()` still decides every pattern whose
+          answer depends on the head alone;
+        * a named type the checker does not know — #1315's own
+          distinction between "not registered" (an unresolved import's
+          type: stay quiet, as the exhaustiveness pass does) and
+          "registered as a constructor-less built-in" (`Array`, `Map`,
+          `Set`, `Tuple`, `Decimal`: rule on it).
+
+        A refinement wrapper is stripped: `{ @Int | ... }` is matched by
+        exactly the patterns `Int` is.
+        """
+        if expected is None:
+            return None
+        scrut = base_type(expected)  # refinements do not change matchability
+        if isinstance(scrut, UnknownType) or types_equal(scrut, NEVER):
+            return None
+        if isinstance(scrut, PrimitiveType):
+            return scrut
+        if isinstance(scrut, AdtType) and (
+                scrut.name in self.env.data_types
+                or scrut.name in _CONSTRUCTORLESS_BUILTIN_TYPES):
+            return scrut
+        return None
+
+    def _check_pattern_scrutinee(
+        self, pat: ast.Pattern, expected: Type | None,
+        *, bound: Type | None = None,
+    ) -> bool:
+        """Report E314 when *pat* cannot match a value of *expected*.
+
+        One rule over every pattern form (#1320), of which the
+        constructor-over-a-container case (#1315) is the instance the
+        containers make visible: `Array`, `Map` and `Set` are `AdtType`s
+        with no entry in the constructor registry, so `Some(...)` over one
+        cleared exhaustiveness ("unknown ADT, can't check") with nothing
+        else to object.  A literal pattern had no comparison at all.
+
+        Returns True when a mismatch was reported.  *bound* carries a
+        binding pattern's already-resolved type (see `_check_pattern`).
+        """
+        scrut = self._scrutinee_for_pattern(expected)
+        if scrut is None:
+            return False
+
+        if isinstance(pat, ast.BindingPattern):
+            # A binder's relatedness reads the type ARGUMENTS, not just the
+            # head, so an unresolved variable anywhere in either type makes
+            # the comparison undecidable here.
+            if (bound is None or isinstance(bound, UnknownType)
+                    or contains_typevar(bound) or contains_typevar(scrut)):
+                return False
+            # Relatedness in EITHER direction, not equality: `@Int` over a
+            # `Nat` scrutinee widens, and `@Nat` over an `Int` scrutinee is
+            # the verifier's narrowing obligation (E503), not a type error.
+            base_bound = base_type(bound)
+            if (is_subtype(scrut, base_bound)
+                    or is_subtype(base_bound, scrut)):
+                return False
+            return self._pattern_mismatch(
+                pat, f"Binding pattern '@{pretty_type(bound)}'",
+                f"binds a value of type {pretty_type(bound)}", scrut,
+            )
+
+        if isinstance(pat, ast.ConstructorPattern) and pat.name == "Tuple":
+            if isinstance(scrut, AdtType) and scrut.name == "Tuple":
+                # The variadic Tuple carrier has no registry entry, so the
+                # E321 field-count rule never sees it: a pattern with the
+                # wrong number of sub-patterns bound the components it did
+                # name POSITIONALLY, whatever their types.
+                width = len(scrut.type_args)
+                got = len(pat.sub_patterns)
+                if not width or width == got:
+                    return False
+                return self._pattern_mismatch(
+                    pat, f"Pattern 'Tuple' with {got} sub-pattern(s)",
+                    f"matches a tuple of {got} component(s)", scrut,
+                    fix=f"Give the pattern one sub-pattern per component "
+                        f"of {pretty_type(scrut)} ({width}), or match the "
+                        f"scrutinee with a wildcard '_'.",
+                )
+            return self._pattern_mismatch(
+                pat, "Pattern 'Tuple(...)'", "matches a tuple", scrut,
+            )
+
+        if isinstance(pat, (ast.ConstructorPattern, ast.NullaryPattern)):
+            ci = self.env.lookup_constructor(pat.name)
+            if ci is None:
+                return False  # E320/E322 own an unknown constructor name
+            if isinstance(scrut, AdtType) and scrut.name == ci.parent_type:
+                return False
+            owner = ci.parent_type
+            if ci.parent_type_params:
+                owner += f"<{', '.join(ci.parent_type_params)}>"
+            return self._pattern_mismatch(
+                pat, f"Pattern '{pat.name}'",
+                f"is a constructor of {owner}", scrut,
+            )
+
+        literal = _LITERAL_PATTERN_TYPES.get(type(pat))
+        if literal is None:
+            return False  # wildcard — matches every type
+        lit_name, accepts = literal
+        if any(types_equal(scrut, ok) for ok in accepts):
+            return False
+        return self._pattern_mismatch(
+            pat, f"Pattern literal {_render_literal_pattern(pat)}",
+            f"has type {lit_name}", scrut,
+        )
+
+    def _pattern_mismatch(
+        self, pat: ast.Pattern, subject: str, matches: str, scrut: Type,
+        *, fix: str | None = None,
+    ) -> bool:
+        """Emit E314 for *pat* against the scrutinee type *scrut*."""
+        scrut_name = pretty_type(scrut)
+        alternatives = [f"a binding pattern '@{scrut_name}'", "a wildcard '_'"]
+        if isinstance(scrut, AdtType):
+            info = self.env.data_types.get(scrut.name)
+            if info is not None and info.constructors:
+                ctors = ", ".join(sorted(info.constructors))
+                alternatives.insert(0, f"a constructor of {scrut_name} "
+                                       f"({ctors})")
+        self._error(
+            pat,
+            f"{subject} {matches}, but the scrutinee has type "
+            f"{scrut_name}.",
+            rationale="Every value reaching a match arm has the "
+                      "scrutinee's type, so a pattern of any other type "
+                      "can never be taken — the arm is dead code the "
+                      "backend has no way to lower.",
+            fix=fix or (
+                f"Match a {scrut_name} scrutinee with "
+                f"{' or '.join(alternatives)}, or match a scrutinee this "
+                f"pattern can take."
+            ),
+            spec_ref='Chapter 4, Section 4.9.1 "Patterns"',
+            error_code="E314",
+        )
+        return True
 
     def _check_ctor_pattern(self, pat: ast.ConstructorPattern,
                             expected: Type | None) -> list[Binding]:
@@ -388,6 +596,9 @@ class ControlFlowMixin:
         """Check a binding pattern (@Type)."""
         self._check_refinement_predicates(pat.type_expr)  # #861
         resolved = self._resolve_type(pat.type_expr)
+        # #1320: the pattern/scrutinee rule, applied here because the
+        # binder's type is resolved exactly once (see `_check_pattern`).
+        self._check_pattern_scrutinee(pat, expected, bound=resolved)
         tname = self._type_expr_to_slot_name(pat.type_expr)
         return [Binding(tname, resolved, "match")]
 
