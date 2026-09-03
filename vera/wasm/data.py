@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
 
 
+# Which base Vera types each literal pattern form can compare against —
+# the TYPE question, where `_SCALAR_LITERAL_COMPARE` is the width one.
+# `Bool` and `Byte` are both i32, so only this table separates them.
+_LITERAL_PATTERN_BASE_TYPES: dict[type, frozenset[str]] = {
+    ast.BoolPattern: frozenset({"Bool"}),
+    ast.IntPattern: frozenset({"Int", "Nat", "Byte"}),
+    ast.StringPattern: frozenset({"String"}),
+}
+
+
 class DataMixin:
     """Methods for translating constructors, match expressions, and arrays."""
 
@@ -1033,6 +1043,27 @@ class DataMixin:
                 f"literal pattern over a scrutinee represented as "
                 f"{scr_wasm_type} — a literal arm compares a scalar word, "
                 f"which this representation does not have",
+            )
+
+        # The scalar arms check the scrutinee's base Vera TYPE as well as
+        # its width, and the two are separate questions: `Bool` and `Byte`
+        # share the i32 representation, so a width test alone lets `true ->`
+        # lower over a `Byte` as a truthiness read — byte 200 taking the
+        # `true` arm.  E314 refuses that program, but the checker is not
+        # this emitter's only caller (`vera.codegen.compile()` is reachable
+        # directly, as `tests/codegen_helpers` does), so the rule is
+        # enforced where it is relied on rather than assumed from upstream.
+        base = (
+            self._resolve_base_type_name(scrutinee_type)
+            if scrutinee_type else None
+        )
+        if base is not None and base not in _LITERAL_PATTERN_BASE_TYPES.get(
+            type(pattern), frozenset()
+        ):
+            raise CodegenSkip(
+                pattern,
+                f"{type(pattern).__name__} over a scrutinee of type {base} — "
+                f"a literal arm compares values of its own type",
             )
 
         if isinstance(pattern, ast.BoolPattern):

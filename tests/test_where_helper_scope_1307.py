@@ -627,7 +627,7 @@ public fn main(@Unit -> @Int)
         declared, is visible in the imported source, and cannot be
         imported (`import libhelpers(inner_helper)` is E150).
         """
-        check_errors, _result, _cg = build_multi_module_past_check(
+        check_errors, result, cg_errors = build_multi_module_past_check(
             tmp_path, {
                 "main.vera": self.HELPER_CALL_MAIN,
                 "libhelpers.vera": self.LIB,
@@ -635,6 +635,13 @@ public fn main(@Unit -> @Int)
         )
         codes = [c for c, _ in check_errors]
         assert "E178" in codes, check_errors
+        # The other half of the contract, asserted rather than assumed:
+        # codegen refuses the same call, so the checker's new rejection
+        # matches what the backend was already going to do.  A future
+        # change that made codegen ACCEPT this would leave E178 refusing
+        # a program that compiles, and this is what would catch it.
+        assert "main" not in result.exports, result.exports
+        assert any("inner_helper" in d for _, d in cg_errors), cg_errors
         described = " ".join(d for _, d in check_errors)
         assert "inner_helper" in described and "parent_fn" in described
         assert "libhelpers" in described, check_errors

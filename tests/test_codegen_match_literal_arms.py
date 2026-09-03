@@ -275,6 +275,56 @@ class TestUnknownPatternFormIsLoud:
             )
         assert "FuturePattern" in str(excinfo.value)
 
+    def test_a_bool_literal_over_a_byte_is_refused_by_the_emitter(
+        self,
+    ) -> None:
+        """Width alone cannot separate `Bool` from `Byte` — both are i32.
+
+        E314 refuses this program, but the checker is not the emitter's
+        only caller (`vera.codegen.compile()` is reachable directly, as
+        these helpers do), so the emitter enforces the type rule it
+        relies on instead of assuming it: without the base-type check a
+        `true ->` arm over a `Byte` lowers to a truthiness read, and
+        byte 200 takes the `true` arm.
+        """
+        from vera import ast
+        from vera.skip import CodegenSkip
+
+        ctx = _fresh_context()
+        with pytest.raises(CodegenSkip) as excinfo:
+            ctx._translate_match_condition(
+                ast.BoolPattern(value=True), 0, "i32", "Byte",
+            )
+        assert "Byte" in str(excinfo.value)
+
+    def test_an_int_literal_over_a_bool_is_refused_by_the_emitter(
+        self,
+    ) -> None:
+        from vera import ast
+        from vera.skip import CodegenSkip
+
+        ctx = _fresh_context()
+        with pytest.raises(CodegenSkip) as excinfo:
+            ctx._translate_match_condition(
+                ast.IntPattern(value=1), 0, "i32", "Bool",
+            )
+        assert "Bool" in str(excinfo.value)
+
+    def test_the_admitted_pairs_still_lower(self) -> None:
+        """The other direction: every pair the checker admits still emits."""
+        from vera import ast
+
+        ctx = _fresh_context()
+        for pattern, wt, vera_type in (
+            (ast.BoolPattern(value=True), "i32", "Bool"),
+            (ast.IntPattern(value=200), "i32", "Byte"),
+            (ast.IntPattern(value=200), "i64", "Int"),
+            (ast.IntPattern(value=200), "i64", "Nat"),
+        ):
+            assert ctx._translate_match_condition(
+                pattern, 0, wt, vera_type,
+            ) is not None
+
     def test_wildcard_and_binding_stay_unconditional(self) -> None:
         """The control: the two forms that SHOULD answer None still do."""
         from vera import ast
