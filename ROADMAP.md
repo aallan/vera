@@ -28,11 +28,12 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 
 *`vera verify` tells the whole truth.*
 
-Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small; the `@Nat`-narrowing rows ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#765](https://github.com/aallan/vera/issues/765)) reuse the per-component target-type metadata the [#820](https://github.com/aallan/vera/issues/820) enabler provides, while the reporting-completeness row carries its own root cause:
+Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small; the `@Nat`-narrowing rows ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#765](https://github.com/aallan/vera/issues/765)) reuse the per-component target-type metadata the [#820](https://github.com/aallan/vera/issues/820) enabler provides, while the two fact-propagation rows each carry their own root cause — a fact the run holds that never reaches the goal that needs it:
 
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
+| [#1403](https://github.com/aallan/vera/issues/1403) | A `match` arm's `assert` is discharged without the arm's sub-pattern facts, so an assertion that follows from a bound payload's declared type can never prove and always falls to a runtime check (E535). |
 | [#754](https://github.com/aallan/vera/issues/754) | Effect-operation-argument runtime guard for `@Nat` narrowing, with a dedicated trap kind — first consumer of the per-component metadata enabler. |
 | [#757](https://github.com/aallan/vera/issues/757) | Generic-instantiated constructor-field runtime guard — second consumer of the same enabler. |
 | [#765](https://github.com/aallan/vera/issues/765) | Nested constructor sub-pattern binds (`Some(Some(@PosInt))`) runtime-guarded to match their static obligation. |
