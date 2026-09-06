@@ -102,6 +102,7 @@ is what makes the iterative resolution's dependency graph a DAG.
 from __future__ import annotations
 
 import enum
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -135,6 +136,7 @@ __all__ = [
     "alias_body",
     "alias_env_from_environment",
     "classify_named",
+    "display_adt_name",
     "family_base_name",
     "family_name",
     "predicate_binder_key",
@@ -268,6 +270,47 @@ def with_type_params(env: AliasEnv, params: Iterable[str]) -> AliasEnv:
         # to be keyed by it, or dropped here.
         _memo=env._memo,
     )
+
+
+# =====================================================================
+# Display — the one spelling a USER is shown for a compiler-minted symbol
+# =====================================================================
+
+_OWNER_QUALIFIED = re.compile(r"^mod\$(?:[A-Za-z_][A-Za-z_0-9]*\$)+")
+
+
+def display_adt_name(name: str) -> str:
+    """The spelling a USER sees for an ADT or constructor name (#1317).
+
+    #1317 gives a CONTENDED module ``data`` declaration and its
+    constructors an owner-qualified symbol, ``mod$<path>$<Name>``, so two
+    modules' ``Shape``s stop contending for one registry slot.  That symbol
+    is a WASM detail and is never a spelling the reader is asked to know
+    (#187's own design note), so every surface that renders such a name TO
+    A PERSON strips the prefix here — and nothing else does it, so the
+    answer cannot differ between two of them.
+
+    The surfaces, and they are the ones a battery in
+    ``tests/test_per_owner_adt_identity_1317.py`` greps for ``mod$``:
+    ``show``'s constructor head, which is baked into the data section and
+    is the one that reaches STDOUT; and codegen's diagnostics, through
+    ``CodeGenerator._unmangle_adt_names``, which rewrites inside prose and
+    so works from the rename table rather than from a bare symbol — the
+    two are pinned equal.  The check-phase surfaces (LSP hover, ``vera
+    ast --json``, ``vera parse``, every ``vera check`` diagnostic) need no
+    strip at all and must not grow one: the rename is applied to a REPLACED
+    list of resolved modules inside codegen, so no mangled name exists
+    before then.  WAT symbol names are the other side of that line and are
+    never passed through here — they are the identity the rename exists to
+    make unique.
+
+    Total and idempotent: a name with no prefix is returned unchanged, and
+    the prefix cannot be forged, since ``$`` is illegal in a Vera
+    identifier.  Applied to a function's ``mod$…`` mangling it would strip
+    too much (``mod$lib$compute$where$g`` is not an ADT name), which is why
+    it is documented as the ADT/constructor renderer and called only there.
+    """
+    return _OWNER_QUALIFIED.sub("", name, count=1)
 
 
 # =====================================================================

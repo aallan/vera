@@ -22,6 +22,7 @@ from vera.monomorphize import (
     public_generic_names,
     qualify_contended_data_decls,
 )
+from vera.naming import display_adt_name
 from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
 
 if TYPE_CHECKING:
@@ -55,6 +56,41 @@ _NOTHING = object()
 # which is the point: the entry's own `data` is E623's business (#1312) and
 # is only ever COUNTED here, never renamed.
 _ENTRY_OWNER: tuple[str, ...] = ()
+
+
+
+def _merged_import_filters(
+    decls: "tuple[ast.ImportDecl, ...] | list[ast.ImportDecl]",
+) -> dict[tuple[str, ...], set[str] | None]:
+    """One filter per imported PATH, unioned across repeated imports.
+
+    A namespace may name a declaration that ANY of its import lists admits,
+    so two statements naming one module contribute the union of their
+    lists and a wildcard dominates every list beside it.  Keying a dict
+    comprehension on the path instead made the LAST statement win and
+    discarded the others (PR review): with
+    ``import liba(aone); import liba(helper);`` the surviving filter admits
+    neither the type nor the signature that carries it, so #1317's flow
+    condition would stop seeing a crossing the entry can actually make and
+    the rename would qualify apart two declarations a value passes between.
+
+    Dedupe is idempotent by construction — repeating one statement adds
+    nothing — which is the semantics this records rather than a diagnostic:
+    a duplicate import is accepted by the checker today, so codegen reading
+    it differently from the checker would be its own divergence.
+    """
+    out: dict[tuple[str, ...], set[str] | None] = {}
+    for imp in decls:
+        names = set(imp.names) if imp.names is not None else None
+        if imp.path not in out:
+            out[imp.path] = names
+            continue
+        existing = out[imp.path]
+        if existing is None or names is None:
+            out[imp.path] = None  # a wildcard admits everything
+        else:
+            out[imp.path] = existing | names
+    return out
 
 
 class CrossModuleMixin:
@@ -973,7 +1009,7 @@ class CrossModuleMixin:
         is correct.  The closure is iterative and bounded by the alias set,
         so a cyclic alias chain terminates rather than recursing.
         """
-        surface: list[object] = []
+        surface: list[object]
         if isinstance(decl, ast.FnDecl):
             surface = [decl.params, decl.return_type, decl.effect]
         elif isinstance(decl, ast.DataDecl):
@@ -982,6 +1018,16 @@ class CrossModuleMixin:
             surface = [decl.operations]
         elif isinstance(decl, ast.TypeAliasDecl):
             surface = [decl.type_expr]
+        else:
+            # FAIL CLOSED (PR review).  An `else: surface = []` reads a
+            # declaration kind this dispatch has not learned as mentioning
+            # NO types, which is the unsafe direction: the flow condition
+            # would stop seeing a crossing that kind carries and the rename
+            # would qualify apart two declarations a value can still pass
+            # between.  Every whole declaration is walked instead, which
+            # over-counts mentions — the safe direction, since an extra
+            # mention can only refuse a rename, never admit an unsound one.
+            surface = [decl]
         out: set[str] = set()
 
         def walk(node: object) -> None:
@@ -1104,10 +1150,7 @@ class CrossModuleMixin:
         surface: dict[tuple[str, ...], dict[str, frozenset[str]]] = {}
         imports: dict[tuple[str, ...] | None, dict[
             tuple[str, ...], set[str] | None]] = {
-            None: {
-                imp.path: (set(imp.names) if imp.names is not None else None)
-                for imp in program.imports
-            },
+            None: _merged_import_filters(program.imports),
         }
         for mod in self._resolved_modules:
             own: dict[str, ast.DataDecl] = {}
@@ -1140,10 +1183,7 @@ class CrossModuleMixin:
                 name for name in pub if name in own
             }
             surface[mod.path] = surf
-            imports[mod.path] = {
-                imp.path: (set(imp.names) if imp.names is not None else None)
-                for imp in mod.program.imports
-            }
+            imports[mod.path] = _merged_import_filters(mod.program.imports)
         entry_declares = {
             tld.decl.name for tld in program.declarations
             if isinstance(tld.decl, ast.DataDecl)
@@ -1391,10 +1431,14 @@ class CrossModuleMixin:
                 continue
             if types or ctors:
                 out[ns] = (types, ctors)
+        # The display table is DERIVED, not remembered: its values come from
+        # `display_adt_name`, the one strip every user-facing surface uses,
+        # so the prose rewrite at the diagnostic boundary and the constructor
+        # head `show` bakes into the data section cannot answer differently.
         self._contended_adt_display_names = {
-            mangled: bare
+            mangled: display_adt_name(mangled)
             for types, ctors in out.values()
-            for bare, mangled in (*types.items(), *ctors.items())
+            for mangled in (*types.values(), *ctors.values())
         }
         return out
 

@@ -481,19 +481,116 @@ public fn aone(@Int -> @Int)
         assert answer == ("ok", 7), answer
 
     def test_every_reserved_name_is_held_back(self, tmp_path: Path) -> None:
-        """Structural, over the LIVE reservation rather than a list here.
+        """MEASURED over the LIVE reservation, not grepped (PR review).
 
-        The rename reads the Pass-0.5 built-in snapshot unioned with
-        ``prelude_adt_names()`` — the same two sets ``_adt_members_in_scope``
-        completes its membership floor from — so a prelude ADT added later
-        is reserved without this test being edited.
+        An earlier version of this cell asserted that the source of
+        ``_contended_adt_renames`` contained the string
+        ``builtin_adt_names | prelude_adt_names()`` — which tests the
+        spelling of one line and would stay green through any change that
+        computed the set and then ignored it.  This drives the rename
+        itself, once per name the prelude can provide, and asserts each is
+        left in the bare slot: two modules declaring it differently reach
+        E621 rather than being qualified apart.
+
+        Parameterless over the LIVE set, so a prelude ADT added later is
+        covered without this cell being edited.  Mutation: replacing
+        ``reserved`` with an empty frozenset reds every name here.
         """
-        import inspect
+        from vera.prelude import prelude_adt_names
 
-        from vera.codegen.modules import CrossModuleMixin
+        reserved = sorted(prelude_adt_names())
+        assert reserved, "the prelude declares no ADTs — the set is empty"
+        checked = 0
+        for name in reserved:
+            liba = f"""\
+module liba;
 
-        src = inspect.getsource(CrossModuleMixin._contended_adt_renames)
-        assert "builtin_adt_names | prelude_adt_names()" in src, src[:400]
+public data {name} {{ ZzOnlyA(Int) }}
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match ZzOnlyA(@Int.0) {{
+    ZzOnlyA(@Int) -> @Int.0
+  }}
+}}
+"""
+            libb = f"""\
+module libb;
+
+public data {name} {{ ZzOnlyB(Bool) }}
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match ZzOnlyB(true) {{
+    ZzOnlyB(@Bool) -> if @Bool.0 then {{ @Int.0 }} else {{ 0 }}
+  }}
+}}
+"""
+            _verify, _result, cg_errors = build_multi_module(
+                tmp_path / f"reserved-{name}",
+                {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
+            )
+            codes = _codes(cg_errors)
+            # Every prelude name must refuse this pair rather than qualify
+            # it apart.  Which CODE depends on whether the program demands
+            # the block (`Json`, `HtmlNode`, `Request`, `Response` inject
+            # only on demand, so an undemanded one falls to the ordinary
+            # module-versus-module rail); what is asserted is that the pair
+            # is REFUSED, never renamed.
+            assert codes, f"{name}: qualified apart instead of refused"
+            assert set(codes) <= {"E609", "E610", "E621"}, (name, codes)
+            checked += 1
+        assert checked == len(reserved)
+
+    def test_a_fresh_name_in_the_same_shape_is_admitted(
+        self, tmp_path: Path,
+    ) -> None:
+        """The control for the cell above, so "refused" is a property of
+        the RESERVATION and not of the shape those fixtures happen to
+        have."""
+        liba = """\
+module liba;
+
+public data ZzFreshName { ZzOnlyA(Int) }
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match ZzOnlyA(@Int.0) {
+    ZzOnlyA(@Int) -> @Int.0
+  }
+}
+"""
+        libb = """\
+module libb;
+
+public data ZzFreshName { ZzOnlyB(Bool) }
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match ZzOnlyB(true) {
+    ZzOnlyB(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }
+  }
+}
+"""
+        verify, codes, answer = _cell(
+            tmp_path / "fresh",
+            {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
+        )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
 
 
 # =====================================================================
@@ -1065,6 +1162,34 @@ class TestOneSymbolPerOwnerEverywhere:
             hits = renamed_bare & {k for k in value if isinstance(k, str)}
             assert not hits, f"{attr} still keys {sorted(hits)}"
 
+    def test_every_owner_still_has_an_entry(self, tmp_path: Path) -> None:
+        """The sweep's other half: nothing was DROPPED (PR review).
+
+        Asserting only that no stale bare key survives is satisfied just as
+        well by a rename that registered nothing at all — the entry would
+        simply be missing, and every "is the bare name gone" assertion
+        would pass.  So the qualified names are counted too: one layout per
+        renamed TYPE, and one constructor entry per renamed constructor,
+        with the constructor-to-owner map agreeing.
+        """
+        gen = _generator(tmp_path / "diff-count", _DIFFERENTIAL_FILES)
+        table = gen._contended_adt_display_names
+        types = {m for m in table if table[m] == "Shape"}
+        ctors = {m for m in table if table[m] in {"Sq", "Cr"}}
+        assert len(types) == 2, sorted(types)
+        assert len(ctors) == 2, sorted(ctors)
+        for mangled in types:
+            assert mangled in gen._adt_layouts, (
+                f"{mangled} has no registered layout — the rename dropped it"
+            )
+            assert mangled in gen._adt_layout_owners, mangled
+        registered_ctors = {
+            c for t in types for c in gen._adt_layouts[t]
+        }
+        assert registered_ctors == ctors, (
+            sorted(registered_ctors), sorted(ctors)
+        )
+
     def test_every_registry_that_answers_agrees_on_the_owner(
         self, tmp_path: Path,
     ) -> None:
@@ -1115,24 +1240,294 @@ class TestOneSymbolPerOwnerEverywhere:
 # =====================================================================
 
 
-class TestTheSymbolIsInternal:
-    """#187's own design note, answered: the mangled name is a WASM detail
-    and not a spelling the user is asked to know.
 
-    DEFENCE IN DEPTH rather than a rail behind a reachable leak: the
-    diagnostics that name an ADT today are the collision rails themselves
-    (E609/E610/E621/E623), and a declaration those report on is by
-    construction one the rename declined to touch.  It is kept because the
-    set of diagnostics that interpolate a type name is not closed — the
-    next one to be added would leak without it — and it is pinned directly
-    rather than through whichever diagnostic happens to reach it.
+# The two-`Shape` program with a `show` in each module's body, which is the
+# only surface that bakes a constructor name into the RUNTIME.  `alen`
+# measures the rendered length, so a leaked prefix is a wrong number rather
+# than only a wrong-looking string.
+_LIBA_SHOW = """\
+module liba;
+
+public data Shape { Sq(Int) }
+
+public fn arender(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Sq(@Int.0))
+}
+
+public fn alen(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_length(show(Sq(@Int.0)))
+}
+"""
+
+_LIBB_SHOW = """\
+module libb;
+
+public data Shape { Cr(Bool) }
+
+public fn brender(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Cr(true))
+}
+"""
+
+_ENTRY_SHOW = """\
+import liba(arender, alen);
+import libb(brender);
+
+public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  arender(3)
+}
+
+public fn rendered_length(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  alen(3)
+}
+
+public fn other(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  brender(0)
+}
+"""
+
+_SHOW_FILES = {
+    "liba.vera": _LIBA_SHOW, "libb.vera": _LIBB_SHOW,
+    "main.vera": _ENTRY_SHOW,
+}
+
+
+class TestTheSymbolIsInternal:
+    """#187's own design note, answered and then enforced: the qualified
+    symbol is a WASM detail and never a spelling the reader is shown.
+
+    This class was DEFENCE IN DEPTH and was wrong to be.  Adversarial
+    review found the leak that made it load-bearing: ``show``'s constructor
+    head is baked into the DATA SECTION from the registry key, so
+    ``show(Sq(3))`` printed ``mod$liba$Sq(3)`` and
+    ``string_length(show(Sq(3)))`` was 14 where 5 is right — a wrong string
+    and a wrong number on a program with no diagnostics at all.  The three
+    original cells could not see it: they read the diagnostic stream of
+    programs that produce none.
+
+    So the strip is one function — :func:`~vera.naming.display_adt_name` —
+    and every surface that renders an ADT or constructor name to a PERSON
+    goes through it, while no WAT symbol does.  The battery below drives
+    each surface over the two-``Shape`` programs and greps its whole output
+    for ``mod$``: runtime stdout, the codegen diagnostic stream, `vera
+    check` / `vera verify` JSON, `vera ast --json`, `vera parse`, and the
+    browser bundle.  A surface that starts rendering an ADT name without
+    the strip is caught by the grep rather than by someone reading it.
     """
+
+    def test_show_renders_the_users_spelling(self, tmp_path: Path) -> None:
+        """The measurement, kept: the head is the user's name, not the key."""
+        _verify, codes, answer = _cell(
+            tmp_path / "show", _SHOW_FILES,
+        )
+        assert codes == [], codes
+        assert answer == ("ok", "Sq(3)"), answer
+
+    def test_the_rendered_length_is_the_users_spellings(
+        self, tmp_path: Path,
+    ) -> None:
+        """And it is a NUMBER, so the cell cannot pass on a string that
+        merely looks plausible: ``Sq(3)`` is 5 characters, and the leak made
+        it 14."""
+        _verify, _result, cg_errors = build_multi_module(
+            tmp_path / "len", _SHOW_FILES,
+        )
+        assert cg_errors == [], cg_errors
+        assert module_value(_result, fn="rendered_length") == ("ok", 5)
+
+    def test_both_owners_render_their_own_constructor(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both sides of the contended pair, so a strip that happened to
+        fix one owner is not enough."""
+        _verify, result, cg_errors = build_multi_module(
+            tmp_path / "both", _SHOW_FILES,
+        )
+        assert cg_errors == [], cg_errors
+        assert module_value(result, fn="main") == ("ok", "Sq(3)")
+        assert module_value(result, fn="other") == ("ok", "Cr(true)")
+
+    def test_the_control_renders_identically_without_a_rename(
+        self, tmp_path: Path,
+    ) -> None:
+        """The control that says the strip restores the base behaviour
+        rather than inventing a new one: with ``libb``'s type renamed there
+        is no contention, no rename, and the same two strings."""
+        files = dict(_SHOW_FILES)
+        files["libb.vera"] = _LIBB_SHOW.replace("Shape", "Widget")
+        _verify, result, cg_errors = build_multi_module(
+            tmp_path / "control", files,
+        )
+        assert cg_errors == [], cg_errors
+        assert module_value(result, fn="main") == ("ok", "Sq(3)")
+        assert module_value(result, fn="other") == ("ok", "Cr(true)")
+
+    @pytest.mark.parametrize(
+        "files",
+        [_SHOW_FILES, _DIFFERENTIAL_FILES,
+         {"liba.vera": _ALPHA, "libb.vera": _BETA, "main.vera": _ENTRY},
+         {"deep.vera": _DEEP, "mid.vera": _MID, "other.vera": _OTHER,
+          "main.vera": _ENTRY_CHAIN}],
+        ids=["show", "types", "constructors", "chain"],
+    )
+    def test_no_user_facing_surface_carries_the_symbol(
+        self, tmp_path: Path, files: dict[str, str],
+    ) -> None:
+        """The battery.  Every surface, over every renamed shape, grepped.
+
+        The CLI surfaces are driven as subprocesses so what is inspected is
+        the bytes a user actually sees — stdout included, which is where
+        the leak was and which no in-process assertion on a diagnostic list
+        would have reached.
+        """
+        import subprocess
+        import sys
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        for name, text in files.items():
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        main_path = tmp_path / "main.vera"
+
+        def cli(*args: str) -> str:
+            proc = subprocess.run(
+                [sys.executable, "-m", "vera.cli", *args, str(main_path)],
+                capture_output=True, text=True, encoding="utf-8", check=False,
+            )
+            return proc.stdout + proc.stderr
+
+        for surface, out in (
+            ("run", cli("run")),
+            ("check --json", cli("check", "--json")),
+            ("verify --json", cli("verify", "--json")),
+            ("ast --json", cli("ast", "--json")),
+            ("parse", cli("parse")),
+        ):
+            assert "mod$" not in out, (surface, out[:400])
+
+        # And the in-process diagnostic stream, which the CLI surfaces above
+        # only show when something goes wrong.
+        gen = _generator(tmp_path / "gen", files)
+        for diag in gen._result.diagnostics:  # type: ignore[attr-defined]
+            for attr in ("description", "rationale", "fix"):
+                text = getattr(diag, attr, None) or ""
+                assert "mod$" not in text, (diag.error_code, attr, text)
+
+        # The BROWSER leg, which renders from the same compiled artefact.
+        # Two halves: the emitted bundle's text assets, and the DATA
+        # SECTION of the wasm the browser host loads — the latter is where
+        # `show`'s constructor head lives, so it is the half that can leak
+        # and the half a grep of the glue would miss.
+        from vera.browser.emit import emit_browser_bundle
+
+        written = emit_browser_bundle(
+            gen._result.wasm_bytes,  # type: ignore[attr-defined]
+            tmp_path / "bundle",
+            title="probe",
+        )
+        for path in written:
+            if path.suffix == ".wasm":
+                continue  # the binary legitimately carries WAT symbols
+            text = path.read_text(encoding="utf-8")
+            assert "mod$" not in text, (path.name, text[:300])
+        wasm = (tmp_path / "bundle" / "module.wasm").read_bytes()
+        for mangled in gen._contended_adt_display_names:
+            # The constructor STRINGS live in the data section; the symbol
+            # may appear elsewhere in the binary as a WAT identifier, which
+            # is the identity itself.  What must not be there is a rendered
+            # head — `mod$liba$Sq(` — since that is what a browser viewer
+            # would read.
+            assert mangled.encode() + b"(" not in wasm, mangled
+
+    def test_the_wat_keeps_the_qualified_symbol(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other side of the line, and the reason the strip is a
+        DISPLAY function rather than a rename undo.
+
+        The emitted symbol IS the per-owner identity; stripping it there
+        would put the two owners back in one slot.  A program whose two
+        owners each derive structural ``Eq`` forces those helpers into the
+        WAT under their qualified names.
+        """
+        liba = _LIBA.replace(
+            "  match Sq(@Int.0) {\n    Sq(@Int) -> @Int.0\n  }\n",
+            "  if Sq(@Int.0) == Sq(@Int.0) then { @Int.0 } else { 0 }\n")
+        libb = _LIBB.replace(
+            "  match Cr(true) {\n"
+            "    Cr(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }\n  }\n",
+            "  if Cr(true) == Cr(true) then { @Int.0 } else { 0 }\n")
+        gen = _generator(
+            tmp_path / "wat-keeps",
+            {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
+        )
+        wat = gen._result.wat  # type: ignore[attr-defined]
+        # `mangle_type_name` escapes `$` for a WAT identifier, so the
+        # qualified identity appears as `mod_U24_<path>_U24_<Name>` — which
+        # is also why no WAT symbol can ever read as a `mod$` leak in text
+        # output, and why the battery's grep and this assertion do not
+        # contradict each other.
+        assert "mod_U24_liba_U24_" in wat, wat[-400:]
+        assert "mod_U24_libb_U24_" in wat, wat[-400:]
+        assert "mod$" not in wat
+
+    def test_the_strip_and_the_rename_table_are_one_derivation(
+        self, tmp_path: Path,
+    ) -> None:
+        """The prose rewrite and the constructor head cannot disagree.
+
+        The diagnostic boundary substitutes inside sentences and so needs
+        the table; ``show`` strips a bare symbol and so needs the function.
+        The table's VALUES are produced by the function, which is what makes
+        that one answer rather than two.
+        """
+        from vera.naming import display_adt_name
+
+        gen = _generator(tmp_path / "one-derivation", _DIFFERENTIAL_FILES)
+        table = gen._contended_adt_display_names
+        assert table, "no rename happened, so the claim is untested here"
+        for mangled, bare in table.items():
+            assert display_adt_name(mangled) == bare, (mangled, bare)
+
+    def test_the_strip_leaves_an_unqualified_name_alone(self) -> None:
+        """Total and idempotent, so applying it at a surface that never
+        sees a qualified name costs nothing and changes nothing."""
+        from vera.naming import display_adt_name
+
+        for name in ("Sq", "Shape", "Option", "Some", "MdText"):
+            assert display_adt_name(name) == name
+        assert display_adt_name("mod$a$b$Shape") == "Shape"
+        assert display_adt_name(display_adt_name("mod$liba$Sq")) == "Sq"
 
     def test_the_strip_uses_the_rename_table_not_a_pattern(
         self, tmp_path: Path,
     ) -> None:
-        """So a FUNCTION mangled by #814's rerouting — a different rename
-        with its own reporting — is left exactly as it was."""
+        """The DIAGNOSTIC boundary rewrites inside prose from the table, so
+        a FUNCTION mangled by #814's rerouting — a different rename with its
+        own reporting — is left exactly as it was."""
         from vera.errors import Diagnostic, SourceLocation
 
         gen = _generator(tmp_path / "unmangle", _DIFFERENTIAL_FILES)
@@ -1161,21 +1556,342 @@ class TestTheSymbolIsInternal:
         gen._unmangle_adt_names([diag])
         assert diag.description == "mod$liba$Shape"
 
-    @pytest.mark.parametrize(
-        "files",
-        [
-            _DIFFERENTIAL_FILES,
-            {"liba.vera": _ALPHA, "libb.vera": _BETA, "main.vera": _ENTRY},
-            {"deep.vera": _DEEP, "mid.vera": _MID, "other.vera": _OTHER,
-             "main.vera": _ENTRY_CHAIN},
-        ],
-        ids=["types", "constructors", "chain"],
-    )
-    def test_no_diagnostic_of_a_renamed_program_carries_the_symbol(
-        self, tmp_path: Path, files: dict[str, str],
+
+# =====================================================================
+# Alias-hidden shapes, and the E623 asymmetry — both measured
+# =====================================================================
+
+
+class TestShapesReadThroughTheDeclaringModulesAliases:
+    """Contention is decided on RESOLVED shapes, not on spellings.
+
+    §8.4.1 makes an alias module-local, so two modules can spell one layout
+    differently and two layouts identically.  The rename is decided at the
+    top of ``_register_modules``, before the harvest fills
+    ``_module_type_aliases`` — so it builds each module's alias maps from
+    that module's own declarations rather than reading tables that are
+    still empty.  Both directions are measured, because reading unresolved
+    spellings gets each one wrong in the opposite way.
+    """
+
+    def test_one_layout_spelled_two_ways_is_not_contended(
+        self, tmp_path: Path,
     ) -> None:
-        gen = _generator(tmp_path / "sweep", files)
-        for diag in gen._result.diagnostics:  # type: ignore[attr-defined]
+        """Covered in full by
+        :meth:`TestRestatementIsStillNotAContention
+        .test_a_restatement_spelled_through_an_alias_is_not_renamed`; kept
+        here as the sibling of the cell below so the pair reads together."""
+        libb = _LIBA.replace("module liba", "module libb").replace(
+            "aone", "bone").replace(
+            "public data Shape { Sq(Int) }",
+            "type Count = Int;\n\npublic data Shape { Sq(Count) }").replace(
+            "Sq(@Int) -> @Int.0", "Sq(@Count) -> @Count.0")
+        gen = _generator(
+            tmp_path / "one-layout",
+            {"liba.vera": _LIBA, "libb.vera": libb, "main.vera": _ENTRY},
+        )
+        assert gen._contended_adt_display_names == {}
+
+    def test_two_layouts_spelled_one_way_are_contended(
+        self, tmp_path: Path,
+    ) -> None:
+        """The direction an unresolved read gets wrong the other way.
+
+        Both modules write ``data Shape { Sq(Count) }`` — the SAME
+        spelling — while ``Count`` is ``Int`` in one and ``Bool`` in the
+        other.  Compared as text the two look identical, so no contention
+        is seen, nothing is renamed, and the pair lands back on E609 with
+        both of #1317's import-side remedies failing.  Compared as resolved
+        layouts they are distinct, are qualified apart, and run.
+        """
+        liba = """\
+module liba;
+
+type Count = Int;
+
+public data Shape { Sq(Count) }
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(@Int.0) {
+    Sq(@Count) -> @Count.0
+  }
+}
+"""
+        libb = """\
+module libb;
+
+type Count = Bool;
+
+public data Shape { Sq(Count) }
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(true) {
+    Sq(@Count) -> if @Count.0 then { @Int.0 } else { 0 }
+  }
+}
+"""
+        verify, codes, answer = _cell(
+            tmp_path / "two-layouts",
+            {"liba.vera": liba, "libb.vera": libb, "main.vera": _ENTRY},
+        )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
+
+
+_E623_LIBB = """\
+module libb;
+
+public data Shape { Cr(Bool) }
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Cr(true) {
+    Cr(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }
+  }
+}
+"""
+
+_E623_ONE = """\
+import liba(aone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  aone(3) + 4
+}
+"""
+
+_E623_TWO = """\
+import liba(aone);
+import libb(bone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  aone(3) + bone(4)
+}
+"""
+
+
+class TestTheEntryRailIsNotMonotonicYet:
+    """A KNOWN asymmetry, pinned in both directions rather than left to be
+    rediscovered (PR review).
+
+    THE RULE a reader expects is that adding an unrelated module cannot
+    lift a refusal.  This pair violates it: an entry that declares ``Shape``
+    beside ONE module declaring it differently is E623, and adding a SECOND
+    module with a third ``Shape`` makes the two modules contend, qualifies
+    both away, leaves the entry alone in the bare slot — and E623 then has
+    no pair to report, so the program compiles and runs.
+
+    Both in-scope repairs were measured and both cost more than the
+    asymmetry does:
+
+    * qualifying a module's ``Shape`` whenever the ENTRY declares the name
+      makes both cases run, and reds
+      ``test_type_parameter_ARITY_alone_is_a_different_layout`` in
+      ``tests/test_data_namespace_contention_1312.py`` — it relaxes E623,
+      which is #1312's rail and not this change's to move;
+    * declining the rename whenever the entry declares the name makes both
+      cases refuse, and brings **E609** back with them — so #1317's own
+      second remedy (a local declaration in the importer) stops working,
+      which is the defect this change exists to close.
+
+    The asymmetry is therefore the entry-versus-module rail's own
+    over-breadth showing through, and belongs with #1312 rather than here.
+    These two cells pin the CURRENT verdicts so the resolution, whichever
+    way it goes, has to move them deliberately.
+    """
+
+    def test_one_contending_module_beside_the_entry_is_refused(
+        self, tmp_path: Path,
+    ) -> None:
+        _verify, codes, answer = _cell(
+            tmp_path / "e623-one",
+            {"liba.vera": _LIBA, "main.vera": _E623_ONE},
+        )
+        assert codes == ["E623"], codes
+        assert answer == ("no-run", "compilation had errors"), answer
+
+    def test_adding_a_second_contending_module_lifts_it(
+        self, tmp_path: Path,
+    ) -> None:
+        """The non-monotonic direction, stated as a measurement.
+
+        Not asserted as CORRECT — asserted as what the compiler does today,
+        so the #1312 resolution cannot change it silently.
+        """
+        verify, codes, answer = _cell(
+            tmp_path / "e623-two",
+            {"liba.vera": _LIBA, "libb.vera": _E623_LIBB,
+             "main.vera": _E623_TWO},
+        )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
+
+
+class TestTheFlowSurfaceFailsClosed:
+    """The inputs to the meeting condition, and how they fail.
+
+    Both of these decide whether a value can cross between two owners, and
+    both used to fail OPEN — reading "no crossing" from an input they did
+    not understand, which is the direction that admits an unsound rename.
+    """
+
+    def test_an_unknown_declaration_kind_is_walked_whole(self) -> None:
+        """A declaration kind the surface dispatch has not learned must
+        over-count mentions, not report none (PR review).
+
+        An ``else: surface = []`` reads such a kind as mentioning no types
+        at all, so the flow condition stops seeing what it carries.  The
+        fallback walks the whole declaration instead: an extra mention can
+        only refuse a rename, never admit one.
+        """
+        from dataclasses import dataclass
+
+        from vera import ast
+        from vera.codegen.modules import CrossModuleMixin
+
+        @dataclass(frozen=True)
+        class _FutureDecl(ast.Decl):
+            """A declaration kind the dispatch does not know."""
+
+            name: str = "Zz"
+            carried: ast.TypeExpr = ast.NamedType(name="Shape", type_args=None)
+
+        mentions = CrossModuleMixin._exported_type_mentions(
+            _FutureDecl(), {},
+        )
+        assert "Shape" in mentions, mentions
+
+    def test_repeated_imports_of_one_module_union_their_filters(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two import statements naming one module contribute BOTH lists.
+
+        Keyed by path in a dict comprehension the last statement won and
+        the others were discarded, so a filter admitting neither the type
+        nor the signature that carries it could hide a crossing the entry
+        can actually make.  A wildcard beside a list dominates it.
+        """
+        from vera import ast
+        from vera.codegen.modules import _merged_import_filters
+
+        def imp(path: tuple[str, ...], names: tuple[str, ...] | None):
+            return ast.ImportDecl(path=path, names=names)
+
+        merged = _merged_import_filters([
+            imp(("liba",), ("aone",)),
+            imp(("liba",), ("helper",)),
+            imp(("libb",), ("bone",)),
+        ])
+        assert merged[("liba",)] == {"aone", "helper"}
+        assert merged[("libb",)] == {"bone"}
+
+        wild = _merged_import_filters([
+            imp(("liba",), ("aone",)), imp(("liba",), None),
+        ])
+        assert wild[("liba",)] is None
+
+        idempotent = _merged_import_filters([
+            imp(("liba",), ("aone",)), imp(("liba",), ("aone",)),
+        ])
+        assert idempotent[("liba",)] == {"aone"}
+
+    def test_a_flow_behind_a_repeated_import_is_still_a_flow(
+        self, tmp_path: Path,
+    ) -> None:
+        """And end to end: the crossing the collapse would have hidden.
+
+        The entry imports ``liba`` twice — once for the signature that
+        returns a ``Shape``, once for an unrelated helper.  With only the
+        LAST list surviving, neither the type nor ``aone`` is admitted, the
+        crossing goes unseen, and the two owners are qualified apart while
+        ``bone(aone(6))`` still passes a value between them.
+        """
+        liba = _FLOW_A + """
+public fn helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+        entry = _ENTRY_FLOW.replace(
+            "import liba(aone);", "import liba(aone);\nimport liba(helper);")
+        _verify, codes, answer = _cell(
+            tmp_path / "dup-import",
+            {"liba.vera": liba, "libb.vera": _FLOW_B, "main.vera": entry},
+        )
+        assert "E609" in codes, codes
+        assert answer == ("no-run", "compilation had errors"), answer
+
+
+class TestADiagnosticStreamThatIsNotEmpty:
+    """The display sweep, driven over a program that actually reports.
+
+    The three original "symbol never reaches the reader" cells ran over
+    programs whose diagnostic list was EMPTY, so they were green on the
+    base and would have stayed green through any leak (PR review).  The
+    battery above fixed that for the surfaces a clean program has; this
+    class covers the diagnostic stream itself, by compiling a program that
+    HAS a rename and also reports.
+
+    What cannot be built today is a diagnostic that NAMES a renamed type:
+    the codegen diagnostics that interpolate an ADT name are the collision
+    rails (E609/E610/E621/E623), and a declaration those report on is by
+    construction one the rename declined to touch.  That is why the strip
+    at the diagnostic boundary is defence in depth and is pinned directly
+    on ``_unmangle_adt_names`` as well as here.
+    """
+
+    def test_a_renamed_program_with_real_diagnostics_leaks_nothing(
+        self, tmp_path: Path,
+    ) -> None:
+        # Two contending `Shape`s (renamed), beside a dropped function that
+        # makes the stream non-empty.
+        liba = _LIBA + """
+public fn broken(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  zz_no_such_builtin(@Int.0)
+}
+"""
+        entry = _ENTRY.replace(
+            "  aone(3) + bone(4)\n", "  aone(3) + bone(4)\n").replace(
+            "import liba(aone);", "import liba(aone, broken);")
+        _verify, result, _cg = build_multi_module(
+            tmp_path / "noisy",
+            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
+        )
+        assert result.diagnostics, (
+            "the stream is empty, so this cell measures nothing"
+        )
+        for diag in result.diagnostics:
             for attr in ("description", "rationale", "fix"):
                 text = getattr(diag, attr, None) or ""
                 assert "mod$" not in text, (diag.error_code, attr, text)
