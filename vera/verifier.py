@@ -43,6 +43,7 @@ from vera.monomorphize import (
 )
 
 if TYPE_CHECKING:
+    from vera.disclosure import ModuleDisclosureIndex
     from vera.resolver import ResolvedModule
 from vera.errors import Diagnostic, SourceLocation
 from vera.lexical import blank_comments
@@ -438,6 +439,18 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # #1399: the same question for an IMPORTED callee, whose obligations
+        # never enter this run's stream and so can never appear in the set
+        # above.  Answered from each module's own verification through
+        # `ModuleDisclosureIndex`, built lazily (below) because a program that
+        # imports a module but never matches on one of its calls must not pay
+        # for verifying it.
+        self._disclosure_index: ModuleDisclosureIndex | None = None
+        # #1399: which module supplies each bare name this program imported,
+        # recorded in `_register_modules` under the same first-wins rule as
+        # the namespace injection — the route from an unqualified call to the
+        # manifest that answers for it.
+        self._imported_fn_modules: dict[str, tuple[str, ...]] = {}
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -1097,6 +1110,12 @@ class ContractVerifier:
         3. Inject into ``self.env.functions`` for bare-call lookup.
         4. Store per-module dicts for ModuleCall qualified lookup.
         """
+        # #1399: rebuilt from scratch every registration, like the registries
+        # below it.  `register_program` runs again on each pass of the
+        # disclosure fixpoint and on each warm re-verify, and a first-wins map
+        # that survived a program with different imports would answer for a
+        # module this one does not import.
+        self._imported_fn_modules = {}
         if not self._resolved_modules:
             return
 
@@ -1237,6 +1256,16 @@ class ContractVerifier:
             for fn_name, fn_info in mod_fns.items():
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
+                    # #1399: and remember WHICH module supplied the bare
+                    # name, under the same first-wins rule the injection
+                    # above uses, so a bare call to a selectively imported
+                    # callee can be traced back to the module whose manifest
+                    # answers for it.  Recorded even when the injection lost
+                    # the `setdefault` race to a builtin — the name filter,
+                    # not the registry, is what decides which module a bare
+                    # call reaches, and the consult below re-checks locality
+                    # anyway.
+                    self._imported_fn_modules.setdefault(fn_name, mod.path)
 
             # 5. Harvest the module's PUBLIC data constructors so an
             #    imported ctor's @Nat field resolves its field types (#747
@@ -7825,12 +7854,71 @@ class ContractVerifier:
         return facts
 
     def _scrutinee_is_disclosed_call(self, scrutinee: ast.Expr) -> bool:
-        """Whether *scrutinee* is a call to a function this run disclosed."""
-        if not self._disclosed_fns:
+        """Whether *scrutinee* is a call to a function that was disclosed.
+
+        THREE places a disclosure can live, and a call has to be checked
+        against all of them or the taint stops at whichever spelling the
+        lookup does not know (#1399):
+
+        1. This run's own set — a local callee, and also an UNSHADOWED
+           imported generic, whose clone this run verifies under its bare
+           name (`_verify_shadowed_module_generics`).
+        2. The ``mod$<path>$<name>`` key a SHADOWED or private imported
+           generic's clone is verified under here.  ``ModuleCall.name`` stays
+           bare, so a disclosure that did reach this run's stream still
+           missed on the lookup (CR 3519156263) — the same key mismatch, one
+           layer in.
+        3. The defining module's own manifest, for an imported callee this
+           run never verifies at all.  That is the #1399 case: the library's
+           obligations are not in this stream and never will be, so no amount
+           of reading the stream can find them.
+
+        Route 3 is the only one that can trigger a module's verification, and
+        it is reached only for a call this walk has already found carries
+        declared-type facts — so a program that imports without matching on
+        an imported call pays nothing for the manifest.
+        """
+        if not isinstance(scrutinee, (ast.FnCall, ast.ModuleCall)):
             return False
-        name = getattr(scrutinee, "name", None)
-        return (isinstance(scrutinee, (ast.FnCall, ast.ModuleCall))
-                and name in self._disclosed_fns)
+        name = scrutinee.name
+        if name in self._disclosed_fns:
+            return True
+        if isinstance(scrutinee, ast.ModuleCall):
+            if self._module_qualified_base(
+                scrutinee.path, name,
+            ) in self._disclosed_fns:
+                return True
+            return name in self._imported_disclosed(scrutinee.path)
+        # A bare call: an import only supplies the name when this file does
+        # not declare it itself, so a local TOP-LEVEL declaration ends the
+        # question here.  Consulting the module's manifest for a name the call
+        # cannot reach would demote a program on the strength of a function it
+        # never calls (`ch08_shadowing`'s shape).  Top-level only, and
+        # deliberately: a `where` helper shadowing an imported name is
+        # lexically scoped, so a bare call elsewhere in the file still reaches
+        # the import — reading the flat registry instead would answer False
+        # for that call and lose a demotion, where this errs the other way and
+        # consults the manifest for a helper-scoped call that cannot reach it.
+        if name in self._top_level_fn_infos:
+            return False
+        owner = self._imported_fn_modules.get(name)
+        return owner is not None and name in self._imported_disclosed(owner)
+
+    def _imported_disclosed(self, path: tuple[str, ...]) -> frozenset[str]:
+        """The disclosed-function manifest of the module at *path* (#1399).
+
+        The index is built on first use rather than in ``__init__`` so the
+        cost — one verification per module actually consulted — lands only on
+        the runs that ask.  It lives on the verifier, not per pass, so the
+        disclosure fixpoint (`_rerun_until_disclosure_settles`) re-reads the
+        same answers instead of re-verifying the imports once per pass.
+        """
+        if self._disclosure_index is None:
+            from vera.disclosure import ModuleDisclosureIndex
+            self._disclosure_index = ModuleDisclosureIndex(
+                self._resolved_modules, self.timeout_ms,
+            )
+        return self._disclosure_index.disclosed_in(path)
 
     def _subpattern_source_facts_term(
         self,

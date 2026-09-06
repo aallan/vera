@@ -92,6 +92,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
 | `  control.py` | 929 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
+| `disclosure.py` | 255 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path, so the #1363 demotion crosses an import (#1399); content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex` |
 | `monomorphize.py` | 3,891 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | 9,446 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
@@ -521,6 +522,18 @@ When a contract or function body contains constructs that can't be translated to
 | `Nil`, `Cons(a, b)` | Z3 ADT sort constructor applications |
 | `decreases(e)` | Verified via `e_callee < e_caller` (Nat) or rank function (ADT) |
 | Handle, lambda, quantifier, old/new | `None` (Tier 3) |
+
+### Disclosed facts, and how they cross an import
+
+A declared-type fact is sound to assume only while the obligation establishing it was **discharged**.  When the run instead *disclosed* it — reported it as neither proved nor guarded — a caller's proof that needs it rests on something the run admitted it could not establish, so `check_valid` withholds such facts from the first attempt and reports a goal that then needs them as `disclosed`, which the verifier records as Tier 3 with **E534** (#1363).  `disclosed_fn_names()` is the ONE derivation of which functions are in that state, read by the cold `verify_program` fixpoint and by the warm session alike.
+
+It reads the run's obligation stream, and an imported callee's obligations are never in it — the importer harvests contracts, not proofs.  `disclosure.py` supplies the missing half (#1399): a `ModuleDisclosureIndex` built from the resolved-module closure answers "what did module *p* disclose?" by running *p*'s own verification and asking the same `disclosed_fn_names()`, so a library's disclosure reaches its importers without the importer carrying the library's obligation stream.  Three properties keep it honest:
+
+- **Lazy.** A module is verified only when a call this walk already found carries declared-type facts asks about it, so importing a module costs nothing until it matters.
+- **Content-addressed.** The cache key is the module's own source, its transitive closure's sources, and the solver budget — the complete set of inputs its disclosed set is a function of.  A diamond pays once; an edit to any module in the closure is a different key, which is what makes invalidation automatic for the warm `VerificationSession` rather than a step someone has to remember.
+- **Transitive by recursion.** Computing A's manifest runs A's own verification, which builds its own index over A's closure and asks it about B.  A three-hop chain taints hop by hop with no special case.
+
+`_scrutinee_is_disclosed_call` checks all three places a disclosure can live: this run's set (local callees, and unshadowed imported generics whose clones this run verifies), the `mod$<path>$<name>` key a shadowed or private imported generic's clone is verified under, and the defining module's manifest.  A bare call reaches the manifest through `_imported_fn_modules`, the name → owning-module map recorded where `_register_modules` injects the imported namespace.
 
 ### Counterexample extraction
 
