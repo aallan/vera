@@ -190,6 +190,16 @@ public fn ae(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
 { let @Array<Int> = [@Nat.0]; @Array<Int>.0[0] }
 """, "ae"),
+    # #757: a GENERIC field instantiated to @Int (`Some(@Nat.0)` into
+    # `Option<Int>`).  The per-ADT `int_fields` bitmap describes the DECLARED
+    # field type and is False for every instantiation of `Option<T>`, so this
+    # was E531-disclosed; the guard now keys on the argument's own recorded
+    # target — the same table the verifier's `_int_widening_target` reads.
+    ("generic_field", """
+public fn gf(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
+""", "gf"),
     # tuple construction: a @Nat component widening into an @Int tuple slot.
     # The Tuple carrier's layout has no per-component int flags; the target
     # type `Tuple<Int, Int>` supplies them, so construction guards each @Nat
@@ -271,14 +281,23 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 ]
 
 _DISCLOSED = [
-    # A generic-instantiated @Int field (`Some(@Nat.0)` into `Option<Int>`)
-    # erases to i64 with no per-field mono metadata — the #757 narrowing-dual
-    # blocker — so it stays honestly E531-disclosed, NOT runtime-guarded.
-    ("generic_field", """
-public fn gf(@Nat -> @Int)
+    # A tuple-DESTRUCTURE component: the widening happens at the read, and
+    # nothing guards a destructure component (the construction-side guard is a
+    # different site and this tuple is not built at one).  The source is an
+    # inline `if` over tuple literals so the value never crosses a function
+    # boundary — a `@Nat` at u64.MAX trips the boundary component check on the
+    # way out of any callee, which would trap for a reason that has nothing to
+    # do with the site under test and read as "the destructure is guarded".
+    ("tuple_destructure", """
+public fn td(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
-{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
-""", "gf"),
+{
+  let Tuple<@Int, @Int> =
+    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
+    else { Tuple(@Nat.0, @Nat.0) };
+  @Int.1
+}
+""", "td"),
 ]
 
 

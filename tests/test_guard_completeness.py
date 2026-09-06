@@ -311,3 +311,122 @@ class TestRefinedPatternBindsAreGuarded765:
         binds = [o for o in obs if o["kind"] == "refine_bind"]
         assert [o["status"] for o in binds] == ["tier3"], binds
         _assert_partition(envelope)
+
+
+# ===========================================================================
+# #757 — a @Nat field reached through a generic instantiation
+# ===========================================================================
+
+# The issue's shape: `Wrap(@Int.0)` building a `Box<Nat>`.  The reader binds
+# the field back at `@Int`, so the extraction guard cannot stand in for the
+# construction one — and the postcondition is exactly the fact the verifier
+# proves from the field's declared `@Nat`.
+_757_NARROW = """\
+private data Box<T> {
+  Wrap(T)
+}
+
+private fn peek(@Box<Nat> -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Box<Nat>.0 {
+    Wrap(@Int) -> @Int.0
+  }
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  peek(Wrap(@Int.0))
+}
+"""
+
+# The widening dual (#821's audit of the same blocker): a `@Nat` stored into a
+# generic field instantiated to `@Int`.
+_757_WIDEN = """\
+public fn gf(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = Some(@Nat.0);
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+"""
+
+_U64_MAX = "18446744073709551615"
+
+
+class TestGenericInstantiatedFieldsAreGuarded757:
+    """A constructor layout is per-ADT; the instantiation is per-SITE.
+
+    `nat_fields` / `int_fields` describe the DECLARED field types, so for
+    `data Box<T> { Wrap(T) }` every flag is False at every instantiation and
+    the guard that fires for a concrete `Wrap(Nat)` field was skipped.  The
+    guard now reads the argument's own recorded target — the same table, and
+    the same question, the verifier's `_nat_binding_target` consults — so the
+    obligation's `guarded` flag and the emitted guard cannot answer
+    differently.
+    """
+
+    def test_a_negative_into_a_generic_nat_field_traps_at_construction(
+        self, tmp_path: Path,
+    ) -> None:
+        """-5, and the trap must be in the CONSTRUCTOR's frame.
+
+        A reader that binds the field back at `@Nat` has its own guard and
+        would trap too, which is why the reader here binds at `@Int`: without
+        the construction guard the negative reaches the postcondition and
+        `ensures(@Int.result >= 0)` — proved from the field's declared
+        `@Nat` — fails at run time on a program `vera verify` accepted.
+        """
+        out = _run(tmp_path, _757_NARROW, "--fn", "f", "--", "-5",
+                   name="n757.vera")
+        assert "unreachable" in out, (
+            f"-5 was stored into a `Box<Nat>` field unguarded:\n{out}"
+        )
+        assert "Postcondition violation" not in out, (
+            f"the negative reached the reader and broke a PROVED "
+            f"postcondition — the guard is missing, not merely late:\n{out}"
+        )
+        assert "in f " in out, (
+            f"the trap is not in the constructing frame, so it came from the "
+            f"reader's own guard rather than from the construction:\n{out}"
+        )
+
+    def test_an_in_range_value_passes(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, _757_NARROW, "--fn", "f", "--", "7",
+                   name="n757ok.vera")
+        assert out.strip() == "7", out
+
+    def test_a_nat_above_i64_max_into_a_generic_int_field_traps(
+        self, tmp_path: Path,
+    ) -> None:
+        """The widening dual, at the only value that distinguishes it.
+
+        u64.MAX is the input because every smaller `@Nat` widens exactly; a
+        guard that never fires and a guard that fires correctly are
+        indistinguishable at 42.  Unguarded, this returned -1.
+        """
+        out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
+                   name="w757.vera")
+        assert "unreachable" in out, (
+            f"u64.MAX widened into a generic `@Int` field silently — the "
+            f"reinterpreted -1 flowed on:\n{out}"
+        )
+        out_ok = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", "42",
+                      name="w757ok.vera")
+        assert out_ok.strip() == "42", out_ok
+
+    def test_the_obligation_stream_says_guarded(self, tmp_path: Path) -> None:
+        obs, envelope = _obligations(tmp_path, _757_WIDEN, name="ob757.vera")
+        coerce = [o for o in obs if o["kind"] == "nat_to_int_coerce"]
+        assert [o["status"] for o in coerce] == ["tier3"], coerce
+        _assert_partition(envelope)

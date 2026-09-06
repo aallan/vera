@@ -5609,22 +5609,27 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="constructor field",
-                            # codegen guards a concrete @Nat field; a generic
-                            # field instantiated to @Nat here erases to i64, so
-                            # an untranslatable arg is genuinely unguarded.
-                            guarded=self._is_nat_type(field_ty),
+                            # Codegen guards a concrete @Nat field from the
+                            # layout bitmap and — since #757 — a GENERIC field
+                            # instantiated to @Nat here from the argument's own
+                            # recorded target, which is the same table (and the
+                            # same question) `_nat_binding_target` above just
+                            # consulted.  Reaching this arm therefore means the
+                            # guard is emitted, by either route.
+                            guarded=True,
                         )
                     elif (self._int_widening_target(arg, field_ty)
                             and self._result_is_nat(arg)):
                         # #813: dual — a @Nat argument widening into an @Int
                         # field can reinterpret above i64.MAX.  A concrete @Int
                         # field is codegen-guarded (the layout `int_fields`
-                        # bitmap); a generic-instantiated one erases to i64 with
-                        # no per-field mono metadata, so it is unguarded (E531).
+                        # bitmap); #757 gives the generic-instantiated one the
+                        # same guard, keyed on the argument's recorded target,
+                        # so this arm is guarded by whichever route applies.
                         self._check_int_widening_obligation(
                             decl, arg, smt, slot_env, list(assumptions),
                             site="constructor field",
-                            guarded=self._is_int_type(field_ty),
+                            guarded=True,
                         )
                     # #1410 (PR review F3): a field whose TYPE writes a
                     # refinement on a component.  A field like

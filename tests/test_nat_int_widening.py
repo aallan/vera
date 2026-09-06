@@ -228,12 +228,13 @@ public fn ctor_field(@Nat -> @Int)
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert co[0].status == "verified", [(o.kind, o.status) for o in co]
 
-    def test_generic_int_field_unguarded_disclosed_E531(self) -> None:
-        # `Some(@Nat.0)` into `Option<Int>` — the generic field erases to i64
-        # with no per-field mono metadata, so codegen cannot guard it.  The
-        # widening is disclosed UNGUARDED (E531) rather than silently assumed
-        # exact or claiming a runtime check it never gets (the dual of the
-        # generic-@Nat-field E504 narrowing case).
+    def test_generic_int_field_guarded_tier3(self) -> None:
+        # `Some(@Nat.0)` into `Option<Int>` — a GENERIC field instantiated to
+        # @Int.  The per-ADT `int_fields` bitmap describes the DECLARED field
+        # type, so it is False for every instantiation of `Option<T>` and this
+        # was E531-disclosed until #757; the guard now reads the argument's own
+        # recorded target instead, which is the same table (and the same
+        # question) `_int_widening_target` consults on the verifier side.
         result = _verify("""
 public fn opt_field(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -241,11 +242,7 @@ public fn opt_field(@Nat -> @Int)
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
-        assert co[0].status == "tier3_unguarded", [(o.kind, o.status) for o in co]
-        assert co[0].error_code == "E531", co[0].error_code
-        assert any(d.error_code == "E531" for d in result.diagnostics), [
-            d.error_code for d in result.diagnostics
-        ]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
 
     def test_the_unguarded_disclosure_names_its_actual_cause(self) -> None:
         """The E531 rationale must not claim a cause it did not have (#1251).
@@ -253,18 +250,30 @@ public fn opt_field(@Nat -> @Int)
         It read "The value is outside Z3's decidable fragment (untranslatable
         or the solver timed out)" for every demotion — the exact conflation
         #1251 removed from E506, in a family that had no reason plumbing at
-        all.  Neither half is what happened here: `@Nat.0` translates fine and
-        the solver answered promptly, twice.  It is simply unconstrained, so
-        `<= i64.MAX` and `> i64.MAX` both have countermodels, which is a fact
-        about the PROGRAM (add a bound) rather than about the solver.
+        all.  Neither half is what happened here: the value translates fine
+        and the solver answered promptly, twice.  It is simply unconstrained,
+        so `<= i64.MAX` and `> i64.MAX` both have countermodels, which is a
+        fact about the PROGRAM (add a bound) rather than about the solver.
+
+        Driven at a tuple-DESTRUCTURE component, which is where the E531
+        disclosure still lands: the generic constructor field this used to use
+        is guarded since #757, and a rationale cell on a shape that no longer
+        discloses would assert nothing.  The source is an inline `if` over
+        tuple literals, so the tuple is not built at a guarded construction
+        site.
         """
         result = _verify("""
-public fn opt_field(@Nat -> @Int)
+public fn td(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
-{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
+{
+  let Tuple<@Int, @Int> =
+    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
+    else { Tuple(@Nat.0, @Nat.0) };
+  @Int.1
+}
 """)
         warns = [d for d in result.diagnostics if d.error_code == "E531"]
-        assert len(warns) == 1, [
+        assert warns, [
             (d.error_code, d.description[:70]) for d in result.diagnostics
         ]
         rationale = warns[0].rationale

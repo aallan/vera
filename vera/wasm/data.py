@@ -30,6 +30,59 @@ class DataMixin:
     """Methods for translating constructors, match expressions, and arrays."""
 
     # -----------------------------------------------------------------
+    # Per-field monomorphization metadata (#757)
+    # -----------------------------------------------------------------
+
+    def _ctor_field_tp_index(self, ctor_name: str, index: int) -> int | None:
+        """Which ADT type PARAMETER a constructor field is, or ``None`` when
+        the field's declared type is concrete.
+
+        ``_ctor_adt_tp_indices`` is sparse and position-sensitive —
+        ``Err(e)``'s single field is ``Result``'s SECOND parameter — so a
+        consumer asking "is this field generic, and which parameter is it?"
+        reads it through here rather than indexing the table itself.
+        """
+        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
+        if tp_idx is None or index >= len(tp_idx):
+            return None
+        return tp_idx[index]
+
+    def _ctor_field_mono_base(self, arg: ast.Expr) -> str | None:
+        """Base type NAME a constructor field is instantiated to at this
+        construction site, read from the argument's own recorded target
+        (#757), or ``None`` when the table has no answer.
+
+        A constructor layout is registered ONCE per ADT, so its ``nat_fields``
+        / ``int_fields`` bitmaps describe the DECLARED field types: for
+        ``data Box<T> { Wrap(T) }`` every flag is False whatever ``Box`` is
+        instantiated to, and the ``@Int -> @Nat`` narrowing guard that fires
+        for a concrete ``Wrap(Nat)`` field was skipped for ``Wrap(@Int.0)``
+        building a ``Box<Nat>``.  The negative was stored, and only a reader
+        that happened to bind it back at ``@Nat`` caught it — a reader binding
+        it at ``@Int`` returned it, breaking a postcondition the verifier
+        proved from the field's ``>= 0``.
+
+        Keyed on the ARGUMENT rather than on the constructed ADT's type args
+        (which :meth:`_ctor_field_tp_index` could also map) because that is
+        the question the verifier asks: ``_nat_binding_target`` resolves a
+        generic field through ``_target_type_of(arg)``, the checker-side twin
+        of this table.  Asking the same question of the same table is what
+        keeps the obligation's ``guarded`` flag equal to whether a guard is
+        actually emitted; deriving the answer a second way would be a second
+        rule, free to disagree.
+
+        ``None`` when the target-type table was not threaded (an unverified
+        ``transform -> compile``) or the span carries no target — the caller
+        then falls back to the layout bitmaps rather than guessing.  A
+        refinement OVER the target unwraps to its base, so ``Box<{ @Nat | P }>``
+        takes the sign guard here and its predicate at the boundary.
+        """
+        target = self._target_codegen_type_full(arg)
+        if target is None:
+            return None
+        return getattr(getattr(target, "base", target), "name", None)
+
+    # -----------------------------------------------------------------
     # Narrowing-bind refinement guards (#765)
     # -----------------------------------------------------------------
 
@@ -281,10 +334,14 @@ class DataMixin:
                 field_val = arg_instrs_list[i]
                 # #747: runtime-guard an @Int -> @Nat narrowing into a
                 # concrete @Nat constructor field (`WrapN(@Int.0)` where
-                # `WrapN(Nat)`).  Generic fields instantiated to @Nat erase
-                # to i64 here (no `nat_fields` flag), so they stay
-                # statically-only — the verifier obligates them.
-                if (i < len(layout.nat_fields) and layout.nat_fields[i]
+                # `WrapN(Nat)`).  #757: and into a GENERIC field instantiated
+                # to @Nat here (`Wrap(@Int.0)` building a `Box<Nat>`), whose
+                # answer the per-ADT `nat_fields` bitmap cannot carry —
+                # `_ctor_field_mono_base` reads it from this site's
+                # instantiation instead.
+                mono_base = self._ctor_field_mono_base(expr.args[i])
+                if (((i < len(layout.nat_fields) and layout.nat_fields[i])
+                        or mono_base == "Nat")
                         and self._narrows_into_nat(expr.args[i])):
                     field_val = self._emit_nat_bind_guard(field_val)
                 # #813: dual — runtime-guard a @Nat -> @Int widening into a
@@ -292,9 +349,12 @@ class DataMixin:
                 # `WrapI(Int)`); a @Nat above i64.MAX would otherwise be stored
                 # and later extracted as a reinterpreted negative @Int.  #820
                 # extends this to a `Tuple<..., Int, ...>` component, whose @Int
-                # target comes from `tuple_target` rather than `int_fields`.
+                # target comes from `tuple_target` rather than `int_fields`;
+                # #757 closes the same direction for a generic field
+                # instantiated to @Int, which the bitmap cannot carry either.
                 elif (((i < len(layout.int_fields) and layout.int_fields[i])
-                        or self._adt_arg_is_int(tuple_target, i))
+                        or self._adt_arg_is_int(tuple_target, i)
+                        or mono_base == "Int")
                         and self._result_is_nat(expr.args[i])):
                     field_val = self._emit_int_widen_guard(field_val)
                 instructions.extend(field_val)
@@ -1280,9 +1340,19 @@ class DataMixin:
                 # only when the SOURCE field is @Nat (``layout.nat_fields[i]``),
                 # never on a genuine @Int field — unlike the narrowing guard it
                 # would otherwise wrongly trap a legitimately-negative @Int.
+                # #757: the source-field bitmap is per-ADT, so a GENERIC field
+                # instantiated to @Nat (`Box<Nat>` read as `Wrap(@Int)`) is
+                # False there and went unguarded — the extraction dual of the
+                # construction gap.  The instantiation comes from the
+                # scrutinee's own type args, resolved through the same #1060
+                # field-type recomputation the wildcard walk uses.
                 elif (self._resolve_base_type_name(type_name) == "Int"
-                        and i < len(layout.nat_fields)
-                        and layout.nat_fields[i]):
+                        and ((i < len(layout.nat_fields)
+                              and layout.nat_fields[i])
+                             or self._resolve_base_type_name(
+                                 self._resolve_nested_scrutinee_type(
+                                     pattern.name, i, scrutinee_type) or "",
+                             ) == "Nat")):
                     load = self._emit_int_widen_guard(load)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
@@ -1504,12 +1574,7 @@ class DataMixin:
           generic placeholder rather than skip a compilable function
           (``match parse_bool(s) { Ok(_) -> …, Err(_) -> … }``).
         """
-        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
-        pos = (
-            tp_idx[field_index]
-            if tp_idx is not None and field_index < len(tp_idx)
-            else None
-        )
+        pos = self._ctor_field_tp_index(ctor_name, field_index)
         if pos is None:
             # Not a bare type parameter — the registered width is correct.
             return generic_wt
