@@ -1086,6 +1086,17 @@ class CrossModuleMixin:
         # the three inputs every question below is asked of.
         decls: dict[tuple[str, ...], dict[str, ast.DataDecl]] = {}
         public: dict[tuple[str, ...], set[str]] = {}
+        # Each module's OWN alias namespace, read off its declarations.
+        # `self._module_type_aliases` is filled by the harvest loop, which
+        # runs AFTER this — so `shape()` below would compare declarations
+        # through empty maps and read an alias-spelled restatement as a
+        # different layout, renaming apart two declarations that
+        # `_adt_decls_share_a_layout` (which sees the populated maps) then
+        # calls compatible.  Two derivations of "can one layout serve both"
+        # disagreeing is exactly what the three rails share a derivation to
+        # prevent, so this one is given the same inputs (PR review).
+        aliases: dict[tuple[str, ...], dict[str, ast.TypeExpr]] = {}
+        alias_params: dict[tuple[str, ...], dict[str, tuple[str, ...]]] = {}
         # Each module's EXPORTED type surface: public declaration name -> the
         # type names its signature mentions.  A value of a type can cross a
         # namespace boundary through any of these even when the type itself
@@ -1107,6 +1118,12 @@ class CrossModuleMixin:
             # yet — this runs at the top of `_register_modules`, ahead of it.
             mod_aliases = {
                 tld.decl.name: tld.decl.type_expr
+                for tld in mod.program.declarations
+                if isinstance(tld.decl, ast.TypeAliasDecl)
+            }
+            aliases[mod.path] = mod_aliases
+            alias_params[mod.path] = {
+                tld.decl.name: tld.decl.type_params or ()
                 for tld in mod.program.declarations
                 if isinstance(tld.decl, ast.TypeAliasDecl)
             }
@@ -1156,10 +1173,19 @@ class CrossModuleMixin:
             return suppliers[0] if suppliers else None
 
         def shape(path: tuple[str, ...], name: str) -> object:
+            """The declaration's layout key, through ITS OWN aliases.
+
+            §8.4.1 makes an alias module-local, so a declaration resolves
+            through the aliases of the module that wrote it and no other —
+            the same rule, and the same
+            :func:`~vera.prelude.data_decl_shape` derivation, that
+            :meth:`_adt_decls_share_a_layout`, ``_contends_with_prelude``
+            and ``_check_entry_module_adt_contention`` are asked with.
+            """
             return data_decl_shape(
                 decls[path][name],
-                self._module_type_aliases.get(path, {}),
-                self._module_type_alias_params.get(path, {}),
+                aliases.get(path, {}),
+                alias_params.get(path, {}),
             )
 
         def seen_owners(

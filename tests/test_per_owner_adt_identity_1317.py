@@ -145,18 +145,40 @@ def _generator(tmp_path: Path, files: dict[str, str]) -> CodeGenerator:
 
     For the registry differential below, which asks the compiler's own
     tables what a name denotes rather than inferring it from the output.
+
+    Resolution failures and codegen errors are ASSERTED, not returned (PR
+    review).  ``resolve_imports`` records an unresolved import in
+    ``resolver.errors`` and returns whatever it did resolve, so a fixture
+    with a mistyped module name quietly becomes a single-file program —
+    and every cell here would then ask an empty registry a question it
+    answers vacuously.  Each of this helper's callers builds a
+    compile-clean fixture by construction, so either failure means the
+    FIXTURE is broken rather than the compiler.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     main_path = tmp_path / "main.vera"
     program = transform(parse_file(str(main_path)))
-    mods = ModuleResolver(tmp_path).resolve_imports(program, main_path)
+    resolver = ModuleResolver(tmp_path)
+    mods = resolver.resolve_imports(program, main_path)
+    resolve_errors = [d.description for d in resolver.errors]
+    assert not resolve_errors, f"module resolution errors: {resolve_errors}"
+    assert len(mods) == len(files) - 1, (
+        f"expected {len(files) - 1} resolved modules, got "
+        f"{[m.path for m in mods]}"
+    )
     gen = CodeGenerator(
         source=main_path.read_text(encoding="utf-8"), file=str(main_path),
     )
     gen._resolved_modules = mods
-    gen._result = gen.compile_program(program)  # type: ignore[attr-defined]
+    result = gen.compile_program(program)
+    cg_errors = [
+        (d.error_code, d.description)
+        for d in result.diagnostics if d.severity == "error"
+    ]
+    assert not cg_errors, f"codegen errors: {cg_errors}"
+    gen._result = result  # type: ignore[attr-defined]
     return gen
 
 
@@ -934,6 +956,57 @@ class TestRestatementIsStillNotAContention:
         )
         assert "Shape" in gen._adt_layouts
         assert gen._contended_adt_display_names == {}
+
+    def test_a_restatement_spelled_through_an_alias_is_not_renamed(
+        self, tmp_path: Path,
+    ) -> None:
+        """The rename asks the shape question with the SAME inputs the
+        other three rails are given (PR review).
+
+        §8.4.1 makes an alias module-local, so ``type Count = Int;`` beside
+        ``data Shape { Sq(Count) }`` is a restatement of ``Sq(Int)`` and
+        the one registered layout serves both.  The decision runs at the
+        top of ``_register_modules``, BEFORE the harvest fills
+        ``_module_type_aliases`` — so reading the shape from those maps
+        compared the two declarations through empty ones, called an
+        equivalent restatement contended, and renamed it apart while
+        ``_adt_decls_share_a_layout`` (which sees the populated maps) would
+        have called the same pair compatible.  Measured: two layouts,
+        ``mod$liba$Shape`` and ``mod$libb$Shape``, where one belongs.
+
+        No FLOW between the two modules, deliberately: with one
+        (``aone(@Int -> @Shape)`` into ``bone(@Shape -> @Int)``, which is
+        #1312's diamond) the meeting condition refuses the rename for its
+        own reason and the cell would pass without the shape question ever
+        being asked correctly.
+        """
+        libb = """\
+module libb;
+
+type Count = Int;
+
+public data Shape { Sq(Count) }
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(@Int.0) {
+    Sq(@Count) -> @Count.0
+  }
+}
+"""
+        gen = _generator(
+            tmp_path / "alias-restate",
+            {"liba.vera": _LIBA, "libb.vera": libb, "main.vera": _ENTRY},
+        )
+        assert gen._contended_adt_display_names == {}
+        assert "Shape" in gen._adt_layouts
+        assert not [k for k in gen._adt_layouts if k.startswith("mod$")]
+        assert module_value(
+            gen._result,  # type: ignore[attr-defined]
+        ) == ("ok", 7)
 
 
 # =====================================================================
