@@ -440,6 +440,7 @@ class OperatorsMixin:
         base = self._ctor_to_adt_name(operand.name)
         if base is None:
             return None
+        # ctor-owner-exempt: no owner available at this site
         tp_indices = self._ctor_adt_tp_indices.get(operand.name)
         tp_count = self._adt_tp_counts.get(base, 0)
         if not tp_indices or tp_count == 0:
@@ -820,14 +821,22 @@ class OperatorsMixin:
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, type_args))
 
-        adt_ctors = sorted(
-            (
-                (ctor_name, self._ctor_layouts[ctor_name])
-                for ctor_name, parent in self._ctor_to_adt.items()
-                if parent == base and ctor_name in self._ctor_layouts
-            ),
-            key=lambda x: x[1].tag,
-        )
+        # #1414: enumerate the constructors of the ADT being compared out
+        # of ITS OWN table.  Both maps here are keyed by bare constructor
+        # name across every ADT, so a user declaration sharing one of this
+        # type's constructor names displaces the layout AND the ownership
+        # entry.  LATENT under current coverage, and measured to be:
+        # forcing this branch back to the flat map leaves the whole
+        # tag-index battery green, because the writer fix in
+        # `data.py` already gives the value the right tag and this
+        # enumeration is only reached for types the collision does not
+        # reorder.  Converted anyway, on the same rule as the other
+        # owner-qualified reads — a site holding the owner must not ask a
+        # table that cannot represent one (PR #1419 review).
+        own = self._adt_ctor_layouts.get(base)
+        # Same measured-dead fallback as `_composite_ctor_plans`, removed on
+        # the same evidence.
+        adt_ctors = sorted((own or {}).items(), key=lambda x: x[1].tag)
         if not adt_ctors:
             raise CodegenInvariantError(  # pragma: no cover
                 "ADT equality on a type with no constructors")
@@ -866,6 +875,7 @@ class OperatorsMixin:
                 # resolves positionally to the matching concrete type argument;
                 # any other field deep-substitutes param NAMES nested inside a
                 # parameterized declared type (`List<T>` → `List<Int>`).
+                # ctor-owner-exempt: owner-qualified above; parsed-name path
                 tp_idx = self._ctor_adt_tp_indices.get(cname)
                 raw_types = (
                     layout.field_types

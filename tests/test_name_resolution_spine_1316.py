@@ -71,6 +71,7 @@ from vera.checker.registration import RegistrationMixin
 from vera.codegen import CodeGenerator, execute
 from vera.codegen.api import CompileResult
 from vera.naming import AliasEnv, NameSort, classify_named
+from vera.parser import parse_to_ast
 from vera.prelude import PRELUDE_NAMESPACE, prelude_adt_names
 from vera.types import PRIMITIVES
 from vera.wasm import WasmContext
@@ -911,13 +912,49 @@ public fn hashes_alike(@Unit -> @Int)
         )]
         assert "E158" in codes, codes
 
-    def test_a_constructor_of_an_unreserved_builtin_name_is_fine(self) -> None:
-        """The constructor reservation is exactly the reserved names.
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    def test_a_constructor_of_the_name_is_refused_in_a_module_too(
+        self, name: str, tmp_path: Path,
+    ) -> None:
+        """Both doors for the CONSTRUCTOR half as well as the type half.
 
-        `UrlParts` is a built-in ADT whose constructor shares its name, and
-        SKILL.md tells programs to redeclare it locally to match on it — so
-        the constructor namespace must stay open for every name the data
-        namespace leaves open.
+        The type reservation is measured at both declaration sites, and the
+        constructor one has to be too: the collision it prevents is a FLAT
+        `ctor_layouts` slot shared across every ADT in the compiled module,
+        so a module's declaration reaches the entry program's built-in tuple
+        constructions exactly as an entry-file one does.  Measured at
+        `release/v0.2.0`: accepted in a module, for both names.
+        """
+        from tests.module_fixture_helpers import build_multi_module_past_check
+
+        module = (
+            "module tlib;\n\n"
+            f"private data ZzBox {{ {name}(Bool) }}\n\n"
+            "public fn probe(@Int -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  @Int.0\n}\n"
+        )
+        check_errors, _result, _cg = build_multi_module_past_check(
+            tmp_path,
+            {"tlib.vera": module, "main.vera": _MODULE_SHADOW_MAIN},
+        )
+        assert "E158" in [code for code, _ in check_errors], check_errors
+
+    def test_a_constructor_of_an_unreserved_builtin_name_is_not_E158(
+        self,
+    ) -> None:
+        """E158 does not fire — which is all this measures.
+
+        Named for the assertion, not for a safety property it does not
+        establish (PR #1404 review, finding 7).  "Unreserved" is not "safe":
+        the flat-by-constructor-name layout table reaches every built-in
+        constructor, and for `Less` it was a silent wrong value while
+        `Some` / `None` / `Ok` / `Err` are loud (E213 / E215 / E121).  That
+        clobber is #1414, fixed in this PR by per-owner keying rather than
+        by widening the reservation — §8.4.1 makes the prelude's data types
+        shadowable and `examples/vera/collections.vera` declares `None` and
+        `Some`, so a reservation over prelude constructor names would refuse
+        a shipped example.  What stays true here is only the E158 boundary.
         """
         codes = [d.error_code for d in _check(
             "private data ZzBox { UrlParts(Bool) }\n\n"
@@ -926,6 +963,38 @@ public fn hashes_alike(@Unit -> @Int)
             "{\n  0\n}\n"
         )]
         assert "E158" not in codes, codes
+
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    def test_a_refused_constructor_is_not_registered(self, name: str) -> None:
+        """A name the checker refused must not stay resolvable (#1404 review).
+
+        Registration continues past `_error` so the rest of the declaration
+        still reports, which used to leave the refused constructor in
+        `env.constructors` — harmless today, because a check failure stops
+        the pipeline before anything reads it, but a table that disagrees
+        with the diagnostics is a trap for the next consumer.
+
+        Mutation-validated: withdrawing the `continue` in `_register_data`
+        puts the entry back and turns this red, so the cell is known to bite
+        rather than assumed to.
+        """
+        from vera.checker.core import TypeChecker
+
+        source = (
+            f"private data ZzBox {{ {name}(Bool) }}\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  0\n}\n"
+        )
+        checker = TypeChecker(source)
+        checker.check_program(parse_to_ast(source))
+        registered = checker.env.constructors.get(name)
+        # `Future` legitimately occupies the name already — the built-in ADT
+        # registers its own constructor in `environment.py` — so the property
+        # is OWNERSHIP, not absence: whatever sits under the name must not be
+        # the refused declaration's.
+        assert getattr(registered, "parent_type", None) != "ZzBox", (
+            f"{name!r} was refused but ZzBox's constructor was registered")
 
     def test_the_builtin_tuple_is_still_not_eq(self) -> None:
         """And the built-in's own limitation is unchanged either way.
@@ -947,6 +1016,753 @@ public fn same(@Unit -> @Bool)
 }
 """)]
         assert codes == ["E243"], codes
+
+
+
+class TestUserConstructorCannotDisplaceABuiltinOne:
+    """#1414 — a user constructor of a built-in/prelude constructor NAME must
+    not change what the built-in one means.
+
+    Codegen holds constructor layouts in one table keyed by bare constructor
+    name across every ADT (`ctor_layouts.update(layouts)` over
+    `_adt_layouts.items()`, built-ins first), so a later user ADT wins the
+    slot.  #1408 closed this for `Tuple` and `Future` by reserving those two
+    names, but the mechanism is general and reserving the rest is not
+    available: §8.4.1 makes the prelude's data types shadowable, #1277 says
+    so in terms, and `examples/vera/collections.vera` ships a `public data
+    Option<T> { None, Some(T) }` that a prelude-constructor reservation would
+    refuse.
+
+    So the fix is per-owner keying, and these are its two measured repros.
+    Both were check-clean AND verify-clean at `release/v0.2.0` and at the
+    #1404 merge tip.
+    """
+
+    def test_an_unrelated_declaration_does_not_change_what_compare_returns(
+        self,
+    ) -> None:
+        """Base: every `Ordering` rendered as the clobbering constructor.
+
+        `show(compare(1, 2))`, `(2, 1)` and `(2, 2)` all returned
+        `'Less(false)'` where the control returns `Less` / `Greater` /
+        `Equal`.  `ZzBox` is never used — its mere declaration changed the
+        answer for every input, on a program with zero diagnostics.
+        """
+        source = """\
+private data ZzBox { Less(Bool) }
+
+public fn lt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(1, 2))
+}
+
+public fn gt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(2, 1))
+}
+
+public fn eqq(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(2, 2))
+}
+"""
+        result = _compile_ok(source)
+        got = {
+            fn: execute(result, fn_name=fn).value
+            for fn in ("lt", "gt", "eqq")
+        }
+        assert got == {"lt": "Less", "gt": "Greater", "eqq": "Equal"}, got
+
+    def test_the_control_without_the_declaration_is_identical(self) -> None:
+        """The same three functions with no colliding declaration.
+
+        Green at every revision by construction — it is here so the cell
+        above cannot be satisfied by breaking `compare` for everyone.
+        """
+        source = """\
+public fn lt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(1, 2))
+}
+
+public fn gt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(2, 1))
+}
+
+public fn eqq(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(2, 2))
+}
+"""
+        result = _compile_ok(source)
+        got = {
+            fn: execute(result, fn_name=fn).value
+            for fn in ("lt", "gt", "eqq")
+        }
+        assert got == {"lt": "Less", "gt": "Greater", "eqq": "Equal"}, got
+
+    def test_a_colliding_declaration_does_not_drop_the_function(self) -> None:
+        """The second repro: a `[E602]` degrade rather than a wrong value.
+
+        Base: `show(@UrlParts.0)` beside `private data ZzBox {
+        UrlParts(Bool) }` was check-clean and verify-clean, then compiled to
+        a module with NO exports behind an `[E602]` warning.  No
+        `UrlParts(...)` pattern appears, so nothing collides at check.
+        """
+        source = """\
+private data ZzBox { UrlParts(Bool) }
+
+public fn render(@UrlParts -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(@UrlParts.0)
+}
+"""
+        result = _compile(source)
+        assert [d.error_code for d in result.diagnostics] == [], (
+            [(d.severity, d.error_code, d.description[:70])
+             for d in result.diagnostics]
+        )
+        assert "render" in result.exports, sorted(result.exports)
+
+    def test_the_user_constructor_still_works_on_its_own_type(self) -> None:
+        """Per-owner keying must not cost the DECLARATION its meaning.
+
+        §8.4.1 grants the shadow; the point is that both readings coexist,
+        so the user's `Less(Bool)` has to construct and match as its own
+        type while `Ordering`'s `Less` stays the prelude's.
+        """
+        source = """\
+private data ZzBox { Less(Bool) }
+
+public fn mine(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Less(true))
+}
+
+public fn theirs(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(1, 2))
+}
+"""
+        result = _compile_ok(source)
+        assert execute(result, fn_name="mine").value == "Less(true)"
+        assert execute(result, fn_name="theirs").value == "Less"
+
+
+    def test_the_nested_recovery_collision_is_refused_at_check(self) -> None:
+        """Why the nested-recovery site is LATENT, pinned so it stays so.
+
+        `_recover_ptype_via_nested_fields` reads a constructor's
+        `field_types` to rebuild a generic ADT's type arguments, and read
+        the flat by-name table to do it — the render site's defect, one pass
+        over (PR #1419 review).  It is owner-qualified now, and no program
+        reaches the old path, and since #1425 the reason is a rail rather
+        than a coincidence: two declarations in one namespace sharing a
+        constructor name are `[E159]` at the declaration, in either order.
+        Before that rail the shielding was accidental — the CHECKER
+        resolved the call through the same last-wins by-name rule, so when
+        the flat map held the wrong ADT the checker had already refused the
+        call against that same wrong resolution.
+
+        Two layers wrong in the same direction is a coincidence, not a
+        guarantee.  This cell pins the coincidence: if the checker is ever
+        taught per-owner resolution without code generation following, the
+        E212 disappears, this cell goes red, and it names the site whose
+        owner-qualified read then becomes load-bearing.
+        """
+        rose = "private data Rose<T> { Leaf(T), Node(T, Rose<T>) }"
+        zz = "private data ZzBox { Node(Bool) }"
+        body = (
+            "\n\npublic fn main(@Unit -> @String)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  show(Node(1, Leaf(2)))\n}\n"
+        )
+        # Since #1425 the pair is refused at the DECLARATION, in either
+        # order — stronger shielding than the E212-on-use it used to rely
+        # on, and it no longer depends on which declaration won the slot.
+        for src in (rose + "\n\n" + zz + body, zz + "\n\n" + rose + body):
+            codes = [d.error_code for d in _check(src)]
+            # E159 always; one order additionally carries the E212 the USE
+            # used to be shielded by, which is now redundant but harmless.
+            assert "E159" in codes, (
+                f"the shielding refusal is gone ({codes}) — see the docstring")
+
+
+#: A shadowing `Less` at each TAG INDEX.  The first entry is the shape the
+#: fix was first written against, and it is the one index where a
+#: reader-only fix cannot be caught: the user's `Less` sits at tag 0, which
+#: is also `Ordering`'s, so a value tagged through the wrong table still
+#: renders right.  Shifting the index separates the writer from the reader
+#: (PR #1419 review).
+_LESS_AT_INDEX = {
+    "tag0": "private data ZzBox { Less(Bool) }",
+    "tag1": "private data ZzBox { Pad(Bool), Less }",
+    "tag3": "private data ZzBox { A, B, C, Less }",
+}
+
+_COMPARE_TRIO = """
+public fn lt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(%(a)s, %(b)s))
+}
+
+public fn gt(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(%(b)s, %(a)s))
+}
+
+public fn eqq(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(%(b)s, %(b)s))
+}
+"""
+
+#: `compare` over each ordered primitive, so the fix is not pinned on `Int`
+#: alone — the desugaring is shared and a per-type regression would hide.
+_COMPARE_OPERANDS = {
+    "Int": {"a": "1", "b": "2"},
+    "String": {"a": '"a"', "b": '"b"'},
+    "Float64": {"a": "1.0", "b": "2.0"},
+}
+
+
+class TestShadowingConstructorTagIndex:
+    """#1414 — the tag a compiler-emitted constructor is WRITTEN with must
+    come from the same table it is READ through.
+
+    Converting only the reader left the value tagged through the user's ADT
+    and rendered through `Ordering`'s, which agree exactly when the
+    shadowing constructor sits at its namesake's index.  Measured on the
+    reader-only fix: `ZzBox { Pad(Bool), Less }` gave `Equal` / `Greater` /
+    `Equal` for lt / gt / eqq, and `ZzBox { A, B, C, Less }` gave
+    `Greater` / `Greater` / `Equal`, on programs `vera check` and
+    `vera verify` both call clean.
+    """
+
+    @pytest.mark.parametrize("index", sorted(_LESS_AT_INDEX))
+    @pytest.mark.parametrize("ty", sorted(_COMPARE_OPERANDS))
+    def test_compare_renders_correctly_at_every_shadow_index(
+        self, ty: str, index: str,
+    ) -> None:
+        source = (
+            _LESS_AT_INDEX[index] + "\n"
+            + _COMPARE_TRIO % _COMPARE_OPERANDS[ty]
+        )
+        result = _compile_ok(source)
+        got = {
+            fn: execute(result, fn_name=fn).value
+            for fn in ("lt", "gt", "eqq")
+        }
+        assert got == {"lt": "Less", "gt": "Greater", "eqq": "Equal"}, got
+
+    @pytest.mark.parametrize("index", sorted(_LESS_AT_INDEX))
+    def test_eq_and_hash_of_compare_results_agree_at_every_index(
+        self, index: str,
+    ) -> None:
+        """`show` is not the only reader of the tag.
+
+        A wrongly-tagged `Ordering` compares and hashes wrongly too, and
+        `eq(compare(1, 2), compare(2, 2))` returned 1 on the reader-only
+        fix — `Less` and `Equal` indistinguishable — with `hash` agreeing,
+        so neither would have caught it.
+        """
+        source = _LESS_AT_INDEX[index] + """
+
+public fn lt_vs_eq(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(compare(1, 2), compare(2, 2))
+}
+
+public fn hash_agrees(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(hash(compare(1, 2)), hash(compare(2, 2)))
+}
+"""
+        result = _compile_ok(source)
+        # A `@Bool` comes back as WASM's 0 / 1, not a Python bool.
+        assert execute(result, fn_name="lt_vs_eq").value == 0, (
+            "Less and Equal must not compare equal")
+        assert execute(result, fn_name="hash_agrees").value == 0, (
+            "Less and Equal must not hash alike")
+
+
+class TestStructuralEqEnumerationIsUnobservable:
+    """#1414 — why `operators.py`'s owner-qualified enumeration is INERT,
+    stated as the three legs that make it so.
+
+    Forcing `_generate_adt_eq_fn_body` back to the flat map leaves the whole
+    tag-index battery green, so no behavioural cell can red on it.  That is
+    not because the site is unreached — it runs, measured, as
+    `$eq_Ordering` — but because its output is insensitive for the only
+    shapes a program can build.  Each leg is asserted here, so if any of
+    them changes the argument fails loudly instead of rotting.
+    """
+
+    _SRC = """\
+private data ZzBox { Pad(Bool), Less }
+
+public fn cmp_eq(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(compare(1, 2), compare(2, 2))
+}
+"""
+
+    def test_leg1_the_flat_enumeration_really_does_lose_a_constructor(
+        self,
+    ) -> None:
+        """The collision is real at this site — the conversion is not a
+        no-op dressed up as one."""
+        _result, gen = _compile_with_generator(self._SRC)
+        flat_owner = {
+            c: adt for adt, ls in gen._adt_layouts.items() for c in ls
+        }
+        assert flat_owner["Less"] == "ZzBox", flat_owner["Less"]
+        flat_enum = sorted(c for c, p in flat_owner.items() if p == "Ordering")
+        assert flat_enum == ["Equal", "Greater"], flat_enum
+        assert sorted(gen._adt_layouts["Ordering"]) == [
+            "Equal", "Greater", "Less"]
+
+    def test_leg2_orderings_constructors_are_all_nullary(self) -> None:
+        """Which is why losing one cannot change the emitted equality: with
+        no fields anywhere, the generated body reduces to a tag comparison
+        and the per-constructor field plans contribute nothing."""
+        _result, gen = _compile_with_generator(self._SRC)
+        assert all(
+            not layout.field_offsets
+            for layout in gen._adt_layouts["Ordering"].values()
+        )
+
+    @pytest.mark.parametrize("decl,expected", [
+        # Two USER declarations sharing a name — E159, this PR.
+        ("private data A1 { Wrap(Int) }\n\nprivate data A2 { Wrap(Bool) }",
+         "E159"),
+        # Shadowing a FIELD-CARRYING prelude constructor — refused at the use.
+        ("private data ZzBox { Pad(Bool), Some(Bool) }", "E213"),
+    ])
+    def test_leg3_the_single_file_routes_to_that_shadow_are_refused(
+        self, decl: str, expected: str,
+    ) -> None:
+        """Both SINGLE-FILE routes to a field-carrying shadow are refused.
+
+        Deliberately narrower than the claim this cell first made.  "The
+        shadow is unbuildable" is FALSE: it is buildable across a module
+        boundary, where an entry-file declaration takes a constructor name
+        an imported type also declares — the shape #1419's review calls
+        finding A, which is miscompiled today and is not fixed by this PR.
+        What survives is the conclusion, for a different reason: no `$eq_`
+        helper is generated for that cross-namespace shape at all (the tag
+        is what goes wrong there), so this enumeration is still not the site
+        at fault, and no program reaches it with disagreeing tables.
+        """
+        source = decl + """
+
+private fn use_it(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+"""
+        codes = [d.error_code for d in _check(source)]
+        assert expected in codes, codes
+
+
+class TestRedeclaringAPreludeAdtNeverICEs:
+    """#1419 finding B — a legal redeclaration must not reach an internal
+    compiler error.
+
+    §8.4.1 lets a program redeclare a prelude data type, including with
+    FEWER constructors.  `_owned_ctor_layout` briefly raised
+    `CodegenInvariantError` when an owner-stamped reference named a
+    constructor its owner did not declare, and `private data Ordering {
+    Less, Equal }` + `show(compare(1, 2))` — check-clean and verify-clean —
+    became "Internal compiler error … Please file a bug report".  The door
+    degrades to no-layout instead, so the caller's `CodegenSkip` reports the
+    construct and drops the function, which is what the compiler did before
+    #1414.
+
+    What is NOT yet true, and is deliberately not asserted: that `compare`
+    still WORKS beside a user `Ordering`.  Making it work needs the render
+    side to become owner-aware at the same time — resolving only the
+    constructor against the built-in table was measured producing a module
+    that fails to load, which is worse than the skip.  That is the same
+    per-(owner, ADT, constructor) keying finding A needs.
+    """
+
+    @pytest.mark.parametrize("decl", [
+        "private data Ordering { Less, Equal }",
+        "public data Ordering { Lt, Eq, Gt }",
+        "private data Ordering { Less, Equal, Greater }",
+    ])
+    def test_no_internal_compiler_error(self, decl: str) -> None:
+        source = decl + """
+
+public fn probe(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(compare(1, 2))
+}
+"""
+        assert not _check(source), [d.error_code for d in _check(source)]
+        result = _compile(source)
+        # Either it compiles, or it is refused with a located diagnostic —
+        # never an invariant violation.
+        for d in result.diagnostics:
+            assert "Internal compiler error" not in d.description, d.description
+            assert d.error_code != "E999", d.description
+
+
+class TestNoUnannotatedBareConstructorLookup:
+    """#1414 — the STRUCTURAL rail: every constructor lookup that could
+    carry an owner must go through the one door.
+
+    `WasmContext._owned_ctor_layout` is that door.  Everything else in
+    `vera/wasm/` and `vera/smt.py` that reaches into the flat, by-name
+    `_ctor_layouts` map has to say why it cannot name an owner, with a
+    `# ctor-owner-exempt: <reason>` marker — the same shape the repo already
+    uses for `# encoding-exempt` and `# diag-fields-exempt`.
+
+    This is what the behavioural cells cannot do.  Two of the three
+    wrong-value sites in this issue were found one at a time, by review,
+    after the first fix looked complete; a new bare lookup added tomorrow
+    would be invisible to every program-level test until someone wrote the
+    program that observes it.  Here it is red immediately.
+    """
+
+    #: Every module that can reach a flat constructor projection — the whole
+    #: of `vera/wasm/` and `vera/codegen/` plus `vera/smt.py`, discovered by
+    #: globbing rather than listed, so a new module joins the rail by
+    #: existing.  The previous form named seven files by hand and included
+    #: `vera/smt.py` for an attribute it does not use, which made its
+    #: listing vacuous while `vera/codegen/monomorphize.py` — which builds
+    #: its own flat ownership map — was outside the rail entirely (PR #1419
+    #: review, finding C).
+    _DIRS = ("vera/wasm", "vera/codegen")
+    _EXTRA_FILES = ("vera/smt.py",)
+    #: All three flat projections, not just the layouts one: `_ctor_to_adt`
+    #: answers "which ADT owns this name" and `_ctor_adt_tp_indices` its
+    #: type-parameter positions, and both are keyed the same way.
+    _ATTRS = frozenset({
+        "_ctor_layouts", "_ctor_to_adt", "_ctor_adt_tp_indices",
+    })
+    #: The door itself, plus the constructors that store the maps.  Matched
+    #: on the (class, function) pair, not the bare name, so an `__init__`
+    #: elsewhere cannot inherit the exemption.
+    _ALLOWED = frozenset({
+        ("WasmContext", "_owned_ctor_layout"),
+        ("WasmContext", "__init__"),
+    })
+
+    def _files(self) -> list[str]:
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[1]
+        out: list[str] = []
+        for d in self._DIRS:
+            out += sorted(
+                str(f.relative_to(root)) for f in (root / d).glob("*.py"))
+        return out + list(self._EXTRA_FILES)
+
+    @staticmethod
+    def _exempt_at(lines: list[str], lineno: int) -> bool:
+        """Is the access at *lineno* carrying an exemption marker?
+
+        The marker may sit at the end of the access line, or — where that
+        would push the line past PEP 8, which most of the reasons do — in
+        the comment block immediately above it (PR #1419 review).  Only a
+        CONTIGUOUS run of comment lines counts, so a marker cannot drift
+        away from the access it excuses and keep working.
+        """
+        if "ctor-owner-exempt" in lines[lineno - 1]:
+            return True
+        i = lineno - 2
+        while i >= 0 and lines[i].lstrip().startswith("#"):
+            if "ctor-owner-exempt" in lines[i]:
+                return True
+            i -= 1
+        return False
+
+    def _bare_lookups(self) -> list[tuple[str, int, str]]:
+        import ast as pyast
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[1]
+        found: list[tuple[str, int, str]] = []
+        for rel in self._files():
+            src = (root / rel).read_text(encoding="utf-8")
+            lines = src.split("\n")
+            tree = pyast.parse(src)
+            spans: list[tuple[int, int, str, str]] = []
+            for cls in pyast.walk(tree):
+                if not isinstance(cls, pyast.ClassDef):
+                    continue
+                for fn in pyast.walk(cls):
+                    if isinstance(fn, (pyast.FunctionDef,
+                                       pyast.AsyncFunctionDef)):
+                        spans.append(
+                            (fn.lineno, fn.end_lineno, cls.name, fn.name))
+            for fn in pyast.walk(tree):
+                if isinstance(fn, (pyast.FunctionDef, pyast.AsyncFunctionDef)):
+                    if not any(s[0] == fn.lineno for s in spans):
+                        spans.append((fn.lineno, fn.end_lineno, "", fn.name))
+            for node in pyast.walk(tree):
+                if not (isinstance(node, pyast.Attribute)
+                        and node.attr in self._ATTRS):
+                    continue
+                cls, fn_name = next(
+                    ((c, f) for a, b, c, f in sorted(spans)
+                     if a <= node.lineno <= b),
+                    ("", "<module>"),
+                )
+                if (cls, fn_name) in self._ALLOWED:
+                    continue
+                if self._exempt_at(lines, node.lineno):
+                    continue
+                found.append((rel, node.lineno, f"{cls}.{fn_name}"))
+        return found
+
+    def test_every_bare_lookup_is_the_door_or_annotated(self) -> None:
+        found = self._bare_lookups()
+        assert not found, (
+            "constructor layouts resolved by bare name with no owner and no "
+            "`# ctor-owner-exempt:` reason — route through "
+            "`WasmContext._owned_ctor_layout`, or annotate why an owner is "
+            f"unavailable here: {found}"
+        )
+
+    def test_the_rail_is_not_vacuous(self) -> None:
+        """The walk must actually FIND the sites it is clearing.
+
+        A rail that matched nothing — a renamed attribute, a moved file —
+        would pass silently forever.  This asserts the walk still sees the
+        annotated population, so the cell above is known to be measuring
+        something.
+        """
+        import ast as pyast
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[1]
+        total = 0
+        per_attr = {a: 0 for a in self._ATTRS}
+        for rel in self._files():
+            tree = pyast.parse((root / rel).read_text(encoding="utf-8"))
+            for n in pyast.walk(tree):
+                if isinstance(n, pyast.Attribute) and n.attr in self._ATTRS:
+                    total += 1
+                    per_attr[n.attr] += 1
+        assert total >= 35, (
+            f"only {total} flat-projection accesses found — the walk has "
+            "probably stopped matching")
+        # And EVERY attribute the rail claims to cover is actually present,
+        # so the set cannot quietly include a name nothing uses (which is
+        # what made `vera/smt.py`'s listing vacuous before).
+        assert all(per_attr.values()), per_attr
+        # And the door is one of them, so the rail is anchored on the very
+        # method it exists to protect.
+        door = pyast.parse(
+            (root / "vera/wasm/context.py").read_text(encoding="utf-8"))
+        assert any(
+            isinstance(n, pyast.FunctionDef) and n.name == "_owned_ctor_layout"
+            for n in pyast.walk(door)
+        ), "the owner-qualified door has been renamed or removed"
+
+
+class TestCompareDesugaringIsOwnerKeyed:
+    """#1414 — the SMT desugaring of `compare` means `Ordering`'s
+    constructors, whatever the program declares.
+
+    `_desugar_compare`'s docstring promises it "mirrors codegen's Pass 1.6
+    exactly … so the verifier reasons over the SAME term the runtime
+    produces".  That was untrue once codegen started stamping the three
+    references with their owner and the SMT copy did not: the SMT node had
+    no recorded type of its own (its span is the `compare(...)` call's), so
+    sort resolution fell through to a scan keyed on the bare constructor
+    name, which a user declaration captures.
+    """
+
+    _REFUTED = """\
+%s
+public fn f(@Unit -> @Ordering)
+  requires(true)
+  ensures(@Ordering.result == Greater)
+  effects(pure)
+{
+  compare(1, 2)
+}
+"""
+
+    @pytest.mark.parametrize("decl", [
+        "",
+        "private data ZzBox { Less(Bool) }\n",
+        "private data ZzBox { Pad(Bool), Less }\n",
+        "private data ZzBox { A, B, C, Less }\n",
+    ])
+    def test_a_refuted_postcondition_over_compare_is_violated(
+        self, decl: str,
+    ) -> None:
+        """`compare(1, 2)` is `Less`, so `ensures(result == Greater)` is
+        statically false and must be reported.
+
+        Measured before the owner-keyed sort resolution: with any of the
+        colliding declarations present the obligation demoted to `tier3`
+        with NO diagnostic and `vera verify` exited 0 — a refuted
+        postcondition passing silently.  The empty-declaration row is the
+        control that reported `violated` all along, so the cell cannot pass
+        by refusing everything.
+        """
+        from tests.verifier_helpers import _verify
+
+        result = _verify(self._REFUTED % decl)
+        ensures = [o for o in result.obligations if o.kind == "ensures"]
+        assert len(ensures) == 1, ensures
+        assert ensures[0].status == "violated", (
+            f"a statically false postcondition demoted to "
+            f"{ensures[0].status!r} under {decl!r}")
+        assert "E500" in [
+            d.error_code for d in result.diagnostics if d.severity == "error"]
+
+
+class TestSiblingConstructorCollision:
+    """#1425 — constructor names are unique per NAMESPACE (spec §8.4).
+
+    The intra-namespace sibling of E610 (two modules) and E157 (two
+    imports).  Before it, two declarations sharing a constructor name were
+    accepted with no diagnostic, and a USE of the name produced `[E212]` /
+    `[E213]` describing whichever declaration registered last rather than
+    the collision — measured, `Rose<T> { Leaf(T), Node(T, Rose<T>) }` beside
+    `ZzBox { Node(Bool) }` gave "Constructor 'Node' expects 1 field(s), got
+    2", the OTHER type's arity.
+    """
+
+    _FN = (
+        "\n\npublic fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  0\n}\n"
+    )
+
+    @pytest.mark.parametrize("pair", [
+        ("private data A1 { Pair(Int, Int) }",
+         "private data A2 { Pair(Bool, Bool) }"),
+        ("private data Rose<T> { Leaf(T), Node(T, Rose<T>) }",
+         "private data ZzBox { Node(Bool) }"),
+    ])
+    def test_two_declarations_sharing_a_ctor_name_are_refused(
+        self, pair: tuple[str, str],
+    ) -> None:
+        first, second = pair
+        codes = [d.error_code for d in _check(first + "\n\n" + second + self._FN)]
+        assert codes == ["E159"], codes
+        # Order-independent: the rule is about the namespace, not the order.
+        codes = [d.error_code for d in _check(second + "\n\n" + first + self._FN)]
+        assert codes == ["E159"], codes
+
+    @pytest.mark.parametrize("decl", [
+        "private data Option<T> { None, Some(T) }",
+        "private data Result<T, E> { Ok(T), Err(E) }",
+        "private data Ordering { Less, Equal, Greater }",
+    ])
+    def test_restating_a_prelude_type_is_not_a_collision(
+        self, decl: str,
+    ) -> None:
+        """The first legal shadowing shape, which E159 must not touch.
+
+        §8.4.1 makes the prelude's data types ordinary declarations a
+        program may shadow, and `examples/vera/collections.vera` ships a
+        `public data Option<T> { None, Some(T) }` that a rail keyed on
+        `env.constructors` — which already holds the prelude's entries by
+        registration time — would refuse.
+        """
+        assert "E159" not in [d.error_code for d in _check(decl + self._FN)]
+
+    def test_one_declaration_listing_many_constructors_is_fine(self) -> None:
+        assert "E159" not in [d.error_code for d in _check(
+            "private data A1 { P1(Int), P2(Bool), P3 }" + self._FN)]
+
+    def test_shadowing_an_imported_constructor_is_not_a_collision(
+        self, tmp_path: Path,
+    ) -> None:
+        """The second legal shadowing shape (§8.5.2).
+
+        A local declaration shadows an imported constructor; that is one
+        declaration in this namespace and one in another, not two here.
+        """
+        from tests.module_fixture_helpers import build_multi_module
+
+        lib = (
+            "module shapelib;\n\n"
+            "public data Shape { Sq(Int), Ci(Int) }\n\n"
+            "public fn mk(@Int -> @Shape)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  Sq(@Int.0)\n}\n"
+        )
+        main = (
+            "import shapelib;\n\n"
+            "private data Local { Sq(Bool) }\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  7\n}\n"
+        )
+        # Raises on a check error, so reaching the assert IS the property.
+        verify_errors, _result, cg = build_multi_module(
+            tmp_path, {"shapelib.vera": lib, "main.vera": main})
+        assert not verify_errors and not cg, (verify_errors, cg)
 
 
 class TestPreludeNamespaceScope:

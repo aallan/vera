@@ -414,6 +414,7 @@ class CallsHandlersMixin:
         tp_count = self._adt_tp_counts.get(adt_name, 0)
         if tp_count == 0:
             return None  # non-generic ADT — bare name already correct
+        # ctor-owner-exempt: no owner available at this site
         field_tp_idx = self._ctor_adt_tp_indices.get(arg.name)
         if field_tp_idx is None:
             return None
@@ -459,7 +460,26 @@ class CallsHandlersMixin:
         tp_names = self._adt_tp_param_names.get(adt_name, ())
         # Parent parameter NAME → its slot index (`T` → 0).
         name_to_slot = {name: i for i, name in enumerate(tp_names)}
-        layout = self._ctor_layouts.get(arg.name)
+        # #1414: prefer the OWNER-qualified layout.  `adt_name` is the ADT
+        # whose parameters this pass is recovering, so its own table answers
+        # for `arg.name`; the flat by-name map would hand back another ADT's
+        # layout after a same-named constructor collision and the recovered
+        # generic type would be built from the wrong `field_types`.  LATENT
+        # today rather than a live miscompile, and for a reason worth
+        # stating exactly: the CHECKER resolves a constructor call through
+        # the same last-declaration-wins by-name rule, so whenever the flat
+        # map here holds the wrong ADT's layout the checker has already
+        # refused the call against that same wrong resolution — measured,
+        # `data Rose<T> { Leaf(T), Node(T, Rose<T>) }` followed by
+        # `data ZzBox { Node(Bool) }` makes `Node(1, Leaf(2))` an `[E212]`
+        # ("expects 1 field(s), got 2"), while the reverse declaration
+        # order leaves Rose in the slot and compiles.  Two layers being
+        # wrong the same way is a coincidence, not a rail, which is exactly
+        # why this read is owner-qualified: the next change to either
+        # resolution would inherit the wrong layout silently.  The flat map
+        # stays as the fallback for a namespace whose per-owner table was
+        # not threaded (PR #1419 review).
+        layout = self._owned_ctor_layout(adt_name, arg.name)
         field_types = layout.field_types if layout else ()
         for field_i, decl in enumerate(field_types):
             if field_i >= len(arg.args):
@@ -612,20 +632,33 @@ class CallsHandlersMixin:
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, type_args))
 
-        ctors = sorted(
-            (
-                (cname, self._ctor_layouts[cname])
-                for cname, parent in self._ctor_to_adt.items()
-                if parent == base and cname in self._ctor_layouts
-            ),
-            key=lambda x: x[1].tag,
-        )
+        # #1414: read the layouts of the ADT we are rendering, not whatever
+        # the flat by-name table happens to hold.  Both tables here are keyed
+        # by bare constructor name across every ADT, so a user declaration
+        # sharing one of this type's constructor names displaced BOTH the
+        # layout and the `_ctor_to_adt` ownership entry — measured, a
+        # `data ZzBox { Less(Bool) }` anywhere in the program dropped
+        # `Ordering`'s own `Less` out of this list and rendered every
+        # `Ordering` as the user's constructor.  The per-owner map answers
+        # for the type actually being rendered; the flat one is the fallback
+        # for a namespace whose layouts were not threaded.
+        # The flat-map fallback that used to sit here was instrumented over
+        # the full pytest suite, the conformance suite twice (the second
+        # under VERA_EAGER_GC=1), the examples' check/verify and run gates,
+        # and a compile of all 302 corpus programs: reached zero times.  It
+        # is gone rather than kept as a comfort branch, because re-resolving
+        # by bare name is the defect this method was fixed for.
+        own = self._adt_ctor_layouts.get(base)
+        if own is None:
+            return None
+        ctors = sorted(own.items(), key=lambda x: x[1].tag)
         if not ctors:
             return None
 
         plans: list[tuple[str, int, list[tuple[int, str, str]]]] = []
         for cname, layout in ctors:
             n_fields = len(layout.field_offsets)
+            # ctor-owner-exempt: owner-qualified above; parsed-name path
             tp_idx = self._ctor_adt_tp_indices.get(cname)
             raw_types = (
                 layout.field_types

@@ -234,6 +234,16 @@ class RegistrationMixin:
 
     def _register_all(self, program: ast.Program) -> None:
         """Register all top-level declarations (forward reference support)."""
+        # #1425: constructor names are unique per NAMESPACE, not per data
+        # type (spec §8.4).  This pass IS one namespace — the entry program
+        # here, a module's own declarations on the temporary checker
+        # `modules.py` builds — so tracking what this pass declares is
+        # exactly the right scope, and it deliberately does not consult
+        # `env.constructors`, which already holds the prelude's and the
+        # imports' entries by the time registration runs.  Shadowing one of
+        # those stays legal (§8.4.1, §8.5.2); declaring the same name twice
+        # HERE does not.
+        self._ns_ctor_owners: dict[str, str] = {}
         for tld in program.declarations:
             # C7c: require explicit visibility on fn/data declarations
             if (tld.visibility is None
@@ -934,28 +944,90 @@ class RegistrationMixin:
         """
         if name not in self._SPECIAL_CASED_BUILTIN_ADTS:
             return
-        subject = (
-            "redeclared as a data type" if kind == "data type"
-            else "used as a constructor name"
-        )
-        self._error(
-            node,
-            f"'{name}' is a built-in type whose meaning the compiler "
-            f"special-cases, so it cannot be {subject}.",
-            rationale=(
+        if kind == "data type":
+            subject = "redeclared as a data type"
+            rationale = (
                 f"Unlike the prelude's data types, which a program may "
                 f"shadow, '{name}' is recognised by name throughout "
                 f"code generation — how it is rendered, compared and laid "
                 f"out. A declaration of that name cannot be told apart from "
                 f"the built-in, so the program would compile against a "
                 f"mixture of the two."
-            ),
+            )
+        else:
+            subject = "used as a constructor name"
+            rationale = (
+                f"Constructor layouts are held in one table keyed by "
+                f"constructor name across every data type, so a "
+                f"constructor called '{name}' displaces the built-in's "
+                f"entry rather than sitting beside it. The declared "
+                f"constructor is then unreachable — a '{name}(...)' call "
+                f"still resolves to the built-in — while the built-in's own "
+                f"uses elsewhere in the program are compiled against this "
+                f"declaration's layout."
+            )
+        self._error(
+            node,
+            f"'{name}' is a built-in type whose meaning the compiler "
+            f"special-cases, so it cannot be {subject}.",
+            rationale=rationale,
             fix=(
                 f"Rename the {kind}. If you meant the built-in "
                 f"'{name}', use it directly instead of declaring it."
             ),
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
+        )
+
+    def _check_sibling_ctor_collision(
+        self, ctor: ast.Constructor, owner: str,
+    ) -> None:
+        """Refuse two data declarations in one namespace sharing a
+        constructor name (#1425, spec §8.4).
+
+        The intra-namespace sibling of E610 (two modules) and E157 (two
+        imports).  Spec §8.4 puts all three under one rule — a constructor
+        name clash is "rejected at check time, in whichever namespace holds
+        the clash: the entry program's, or any module's" — and this is the
+        namespace that had no rail.
+
+        Accepting it was not merely untidy: resolution is by bare name with
+        the last declaration winning, so the pair produced diagnostics that
+        named neither declaration (`[E212] Constructor 'Node' expects 1
+        field(s), got 2` — the OTHER type's arity) and, before #1414's
+        per-owner layout keying, a silently wrong value.
+
+        Deliberately NOT fired for the two shadowing shapes §8.4.1 and
+        §8.5.2 make legal, neither of which is a second declaration in this
+        namespace: restating a PRELUDE type (``examples/vera/
+        collections.vera`` declares `None` and `Some`), and shadowing an
+        IMPORTED constructor.
+        """
+        first = self._ns_ctor_owners.get(ctor.name)
+        if first is None:
+            self._ns_ctor_owners[ctor.name] = owner
+            return
+        if first == owner:
+            return  # the same declaration listing it twice is E211's job
+        self._error(
+            ctor,
+            f"Constructor '{ctor.name}' is already declared by data type "
+            f"'{first}' in this file.",
+            rationale=(
+                f"Constructor names are resolved by name alone, so one "
+                f"namespace cannot hold two constructors called "
+                f"'{ctor.name}' — a call could not say which type it "
+                f"builds, and the diagnostics it produces would describe "
+                f"whichever declaration was registered last rather than "
+                f"the collision itself."
+            ),
+            fix=(
+                f"Rename this constructor, or rename '{first}'s. The rule "
+                f"is two declarations in ONE file; shadowing a prelude "
+                f"type's constructor stays legal."
+            ),
+            spec_ref='Chapter 8, Section 8.4 "Visibility"',
+            error_code="E159",
         )
 
     def _register_data(
@@ -982,6 +1054,14 @@ class RegistrationMixin:
             self._check_special_cased_builtin_adt(
                 ctor, ctor.name, "constructor",
             )
+            self._check_sibling_ctor_collision(ctor, decl.name)
+            if ctor.name in self._SPECIAL_CASED_BUILTIN_ADTS:
+                # Registration continues past `_error` so the rest of the
+                # declaration still reports, but a REFUSED constructor must
+                # not land in `env.constructors` — nothing downstream should
+                # be able to resolve a name the checker has just rejected
+                # (PR #1404 review).
+                continue
             field_types = None
             if ctor.fields is not None:
                 field_types = tuple(

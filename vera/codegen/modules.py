@@ -711,9 +711,15 @@ class CrossModuleMixin:
                         self._adt_tp_counts.setdefault(
                             adt_name, temp._adt_tp_counts[adt_name])
                     for _ctor_name in layouts:
+                        # ctor-owner-exempt: builds the flat projection handed
+                        # to the wasm layer
                         if _ctor_name in temp._ctor_adt_tp_indices:
+                            # ctor-owner-exempt: builds the flat projection
+                            # handed to the wasm layer
                             self._ctor_adt_tp_indices.setdefault(
                                 _ctor_name,
+                                # ctor-owner-exempt: builds the flat projection
+                                # handed to the wasm layer
                                 temp._ctor_adt_tp_indices[_ctor_name])
                     self._needs_alloc = True
                     self._needs_memory = True

@@ -42,6 +42,8 @@ class DataMixin:
         consumer asking "is this field generic, and which parameter is it?"
         reads it through here rather than indexing the table itself.
         """
+        # ctor-owner-exempt: the shared by-name reader; callers hold the owner,
+        # the table does not (#1436)
         tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
         if tp_idx is None or index >= len(tp_idx):
             return None
@@ -160,7 +162,14 @@ class DataMixin:
 
         Emits: alloc → store tag → return pointer.
         """
-        layout = self._ctor_layouts.get(expr.name)
+        # #1414: the TAG comes from the same table the value will be READ
+        # through.  Converting only the reader left a compiler-emitted
+        # `Less` tagged out of the USER's ADT and rendered out of
+        # `Ordering`'s — agreeing only where the shadowing constructor
+        # happens to sit at its namesake's index.  Measured on that
+        # half-fix: `data ZzBox { Pad(Bool), Less }` made `compare(1, 2)`
+        # render `Equal`, and `{ A, B, C, Less }` made it `Greater`.
+        layout = self._owned_ctor_layout(expr.owner, expr.name)
         if layout is None:
             raise CodegenSkip(
                 expr, f"unknown nullary constructor {expr.name!r}"
@@ -188,6 +197,8 @@ class DataMixin:
         generic constructors (e.g. Some(T) instantiated as Some(Int))
         use the correct WASM types and alignment.
         """
+        # ctor-owner-exempt: a parsed call; the checker resolved it WITHIN its
+        # namespace — the flat map is still cross-namespace (#1436)
         layout = self._ctor_layouts.get(expr.name)
         if layout is None:
             raise CodegenSkip(
@@ -403,6 +414,7 @@ class DataMixin:
         unthreaded, or the target carries no matching argument — the
         literal then keeps its i64 translation (the pre-#1092 behaviour).
         """
+        # ctor-owner-exempt: no owner available at this site
         tp_idx = self._ctor_adt_tp_indices.get(expr.name)
         if not tp_idx or field_i >= len(tp_idx):
             return False
@@ -987,6 +999,8 @@ class DataMixin:
         """
         if isinstance(pattern, (ast.NullaryPattern, ast.ConstructorPattern)):
             name = pattern.name
+            # ctor-owner-exempt: a parsed pattern; checker-resolved within its
+            # namespace only — cross-namespace is #1436
             layout = self._ctor_layouts.get(name)
             if layout is None:
                 raise CodegenSkip(
@@ -1245,6 +1259,8 @@ class DataMixin:
             return (instrs, new_env)
 
         if isinstance(pattern, ast.ConstructorPattern):
+            # ctor-owner-exempt: a parsed pattern; checker-resolved within its
+            # namespace only — cross-namespace is #1436
             layout = self._ctor_layouts.get(pattern.name)
             if layout is None:
                 raise CodegenSkip(
@@ -1443,6 +1459,8 @@ class DataMixin:
                 # look up its layout, and recurse to extract its fields.
                 align = _aligns.get("i32", 4)
                 offset = (offset + align - 1) & ~(align - 1)
+                # ctor-owner-exempt: a parsed pattern; checker-resolved within
+                # its namespace only — cross-namespace is #1436
                 sub_layout = self._ctor_layouts.get(sub_pat.name)
                 if sub_layout is None:
                     raise CodegenSkip(
@@ -1639,6 +1657,8 @@ class DataMixin:
         outer instantiation is missing; the nested walk then LOUD-skips any
         type-parameter wildcard rather than reading a wrong offset.
         """
+        # ctor-owner-exempt: a parsed sub-pattern; checker-resolved within its
+        # namespace only — cross-namespace is #1436
         layout = self._ctor_layouts.get(ctor_name)
         if layout is None or field_index >= len(layout.field_types):
             return None
@@ -1646,6 +1666,8 @@ class DataMixin:
         base, type_args = self._split_param_type(scrutinee_type or "")
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, type_args))
+        # ctor-owner-exempt: a parsed sub-pattern; checker-resolved within its
+        # namespace only — cross-namespace is #1436
         tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
         return self._resolve_field_type_for_eq(
             raw, field_index, tp_idx, type_args, tp_mapping,
@@ -1705,6 +1727,8 @@ class DataMixin:
 
             if isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
                 name = sub_pat.name
+                # ctor-owner-exempt: a parsed sub-pattern; checker-resolved
+                # within its namespace only — cross-namespace is #1436
                 sub_layout = self._ctor_layouts.get(name)
                 if sub_layout is None:
                     raise CodegenSkip(

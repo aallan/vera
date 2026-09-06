@@ -679,6 +679,8 @@ class CallsMixin:
         # in `_known_fns`.
         if (self._known_fns
                 and call_target not in self._known_fns
+                # ctor-owner-exempt: membership test on a parsed call target,
+                # not a layout read
                 and call_target not in self._ctor_layouts):
             raise CodegenSkip(
                 call,

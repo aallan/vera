@@ -295,9 +295,17 @@ class RegistrationMixin:
         # for concrete (non-type-variable) fields.  This lets the monomorphizer
         # and WASM type inference correctly bind Err(e) to E (index 1 in
         # Result<T, E>), not to T (index 0) as naïve positional zipping would do.
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
         self._ctor_adt_tp_indices["None"] = ()         # Option<T>: no fields
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
         self._ctor_adt_tp_indices["Some"] = (0,)       # field 0 → T (index 0)
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
         self._ctor_adt_tp_indices["Ok"] = (0,)         # field 0 → T (index 0)
+        # ctor-owner-exempt: registers the built-in layouts; no user owner
+        # exists yet
         self._ctor_adt_tp_indices["Err"] = (1,)        # field 0 → E (index 1)
         self._adt_tp_counts["Option"] = 1
         self._adt_tp_counts["Result"] = 2
@@ -342,8 +350,13 @@ class RegistrationMixin:
                         indices.append(tp_index[field_te.name])
                     else:
                         indices.append(None)
+                # ctor-owner-exempt: keyed by bare ctor name, so a user
+                # declaration overwrites a built-in's entry; owner-keying it is
+                # #1436
                 self._ctor_adt_tp_indices[ctor.name] = tuple(indices)
             else:
+                # ctor-owner-exempt: same by-name write as above; owner-keying
+                # it is #1436
                 self._ctor_adt_tp_indices[ctor.name] = ()
 
     def _compute_constructor_layout(

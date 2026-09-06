@@ -324,6 +324,10 @@ class ClosureLiftingMixin:
         ctx = WasmContext(
             self.string_pool,
             ctor_layouts=ctor_layouts,
+            # #1414: the LIVE nested map, not a copy of it — the flat
+            # `ctor_layouts` above is already derived from it, and a
+            # third copy is one more thing to drift (PR #1419 review).
+            adt_ctor_layouts=self._adt_layouts,
             # #1253/#1316: the namespace's data types, as in `functions.py`
             # — a lifted closure body belongs to the declaration that
             # contains it, so it resolves names in that declaration's scope.
