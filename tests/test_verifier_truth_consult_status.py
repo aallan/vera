@@ -539,9 +539,14 @@ def test_every_obligation_kind_is_classified() -> None:
         "assert", "decreases", "ensures", "requires",
     ], sorted(_CONTRACT_KINDS)
     assert sorted(safety) == [
-        "call_pre", "div_zero", "float_to_int_domain", "index_bounds",
-        "int_overflow", "nat_bind", "nat_sub", "nat_to_int_coerce",
-        "refine_bind", "state_decl",
+        # `decreases_bound` is a per-site SAFETY guard, not a demoted
+        # contract: a range fact about one measure component, backed by a
+        # runtime check, exactly like `nat_to_int_coerce`.  The contract it
+        # is a premise of — `decreases` — is classified separately and keeps
+        # its own tier.
+        "call_pre", "decreases_bound", "div_zero", "float_to_int_domain",
+        "index_bounds", "int_overflow", "nat_bind", "nat_sub",
+        "nat_to_int_coerce", "refine_bind", "state_decl",
     ], (
         "a new ObligationKind appeared — decide whether a Tier-3 instance of "
         f"it means a DEMOTED CONTRACT (add to _CONTRACT_KINDS) or a per-site "

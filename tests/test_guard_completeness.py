@@ -361,6 +361,33 @@ public fn gf(@Nat -> @Int)
 }
 """
 
+# The construction site ALONE: nothing ever reads the field back, so the
+# store is the only place a negative can be caught.  `_757_NARROW` reads it,
+# which is what makes that fixture show the soundness consequence — and what
+# makes it useless for isolating the construction guard, since the read has a
+# guard of its own.
+_757_STORE_ONLY = """\
+private data Box<T> {
+  Wrap(T)
+}
+
+private fn size(@Box<Nat> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  size(Wrap(@Int.0))
+}
+"""
+
 _U64_MAX = "18446744073709551615"
 
 #: What a tripped `@Int` -> `@Nat` narrowing guard says since #754 gave it a
@@ -753,3 +780,307 @@ public fn main(@Unit -> @Int)
             "module does not declare the import"
         )
         assert proc.stdout.count("call $vera.nat_guard_trap") >= 1
+
+
+# ===========================================================================
+# #1222 — the decreases measure and the range its guard compares in
+# ===========================================================================
+
+# The measure halves each hop, so u64.MAX reaches the base case in 64 steps —
+# a `- 1` measure would need 2^64 of them and the observation would be a
+# timeout rather than a verdict.
+_1222_UNBOUNDED = """\
+public fn halve(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    halve(@Nat.0 / 2)
+  }
+}
+"""
+
+_1222_BOUNDED = _1222_UNBOUNDED.replace(
+    "requires(true)", "requires(@Nat.0 < 1000)")
+
+_1222_PROVABLY_OUT = _1222_UNBOUNDED.replace(
+    "requires(true)", "requires(@Nat.0 > 9223372036854775807)")
+
+_I64_MAX = "9223372036854775807"
+_I64_MAX_PLUS_1 = "9223372036854775808"
+
+
+class TestDecreasesMeasureFitsTheGuardsRange1222:
+    """The termination proof and the termination check must agree on the
+    value they are talking about.
+
+    The proof reasons over unbounded integers; the runtime guard compares
+    with `i64.lt_s` / `i64.ge_s`.  A `@Nat` is a u64 in that i64, so above
+    `i64.MAX` it reads NEGATIVE, the guard's non-negativity clause fails, and
+    a program whose termination the verifier PROVED at Tier 1 aborts with
+    "failed to decrease" — a true statement about the machine value and a
+    false one about the program.
+
+    The remedy is disclosure, not a wider comparison: this compiler treats a
+    `@Nat` above `i64.MAX` as an edge it discloses (E530 and E531 exist for
+    exactly that), so widening this one comparison would support a range the
+    rest of the language does not.  The shared fact is obligated instead —
+    Tier 1 where the measure is bounded, Tier 3 with a runtime backstop where
+    it is not, and a loud E536 where it provably does not hold.
+    """
+
+    def test_the_boundary_is_where_the_two_readings_part(
+        self, tmp_path: Path,
+    ) -> None:
+        """i64.MAX runs; i64.MAX + 1 does not.
+
+        The pair, not either alone: a guard that rejected both would be
+        indistinguishable from one that rejects everything, and one that
+        accepted both would not be measuring the boundary at all.
+        """
+        ok = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--", _I64_MAX,
+                  name="d1222a.vera")
+        assert ok.strip() == "0", (
+            f"a measure AT i64.MAX must still run:\n{ok}"
+        )
+        over = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--",
+                    _I64_MAX_PLUS_1, name="d1222b.vera")
+        assert "i64 range" in over, (
+            f"a measure past i64.MAX ran, or failed for another reason:\n"
+            f"{over}"
+        )
+
+    def test_the_failure_names_the_range_not_the_termination_rule(
+        self, tmp_path: Path,
+    ) -> None:
+        """It reported "failed to decrease", which is the wrong advice.
+
+        The measure decreases perfectly well; what it does not do is fit the
+        i64 the check compares in.  A reader told the metric fails to
+        decrease goes looking for a bug in a recursion that has none.
+        """
+        out = _run(tmp_path, _1222_UNBOUNDED, "--fn", "halve", "--",
+                   _I64_MAX_PLUS_1, name="d1222c.vera")
+        assert "failed to decrease" not in out, (
+            f"the trap still blames the termination rule for a range "
+            f"problem:\n{out}"
+        )
+        assert "@Nat above i64.MAX" in out, out
+
+    def test_an_unbounded_measure_is_a_guarded_tier3(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _1222_UNBOUNDED, name="d1222v.vera")
+        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
+        assert [o["status"] for o in bounds] == ["tier3"], obs
+        # The termination proof itself is unaffected — it was never wrong.
+        assert [o["status"] for o in obs if o["kind"] == "decreases"] == [
+            "verified"], obs
+        _assert_partition(envelope)
+
+    def test_a_bounded_measure_proves_at_tier_1(self, tmp_path: Path) -> None:
+        """The over-disclosure control.
+
+        Without it, "the obligation exists" is equally satisfied by one that
+        never discharges, which would put every terminating program on Tier 3
+        for a fact most of them establish.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _1222_BOUNDED, name="d1222w.vera")
+        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
+        assert [o["status"] for o in bounds] == ["verified"], obs
+        _assert_partition(envelope)
+
+    def test_a_provably_out_of_range_measure_is_a_loud_error(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _1222_PROVABLY_OUT, name="d1222x.vera")
+        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
+        assert [(o["status"], o.get("error_code")) for o in bounds] == [
+            ("violated", "E536")], obs
+        assert envelope["ok"] is False
+        assert "E536" in [d.get("error_code") for d in envelope["diagnostics"]]
+        _assert_partition(envelope)
+
+    def test_an_int_measure_records_nothing(self, tmp_path: Path) -> None:
+        """The scope control: only `@Nat` has two readings.
+
+        An `@Int` measure IS the i64 the guard compares in, so there is no
+        fact to obligate and no guard to emit; recording one would put every
+        `@Int`-measured recursion on Tier 3 for nothing, and the guard would
+        false-trip a legitimately negative first activation.
+        """
+        source = """\
+public fn down(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 <= 0 then { 0 } else { down(@Int.0 - 1) }
+}
+"""
+        obs, envelope = _obligations(tmp_path, source, name="d1222i.vera")
+        assert not [o for o in obs if o["kind"] == "decreases_bound"], obs
+        _assert_partition(envelope)
+
+
+# ===========================================================================
+# Mutation validation — every guard above is load-bearing
+# ===========================================================================
+
+def _observe_in_process(source: str, fn: str, args: list[object]) -> str:
+    """What running *source* DOES, as a short string.
+
+    ``"ran"`` when it completes, otherwise the trap's own text.  A boolean
+    is not enough for these mutations: neutering a guard does not always let
+    the value through — sometimes a second, later guard catches it, and
+    sometimes (as with the measure-range check) the pre-fix behaviour was a
+    trap with the WRONG message rather than no trap.  Both are real changes
+    and neither is visible to "did it run".
+
+    In-process because the mutations are monkeypatches on the emitters,
+    which a subprocess would not see.  The compile step is deliberately
+    outside the try: a program that stopped COMPILING is a measurement
+    failure, not evidence that a guard was load-bearing.
+
+    Compiled through the CHECKER's artifacts, not a bare
+    ``transform -> compile``: several of these guards read the checker's
+    recorded target types, which that shorter path does not thread, so a
+    bare compile silently emits no guard and every mutation below would
+    read as already-neutered.  Measured: the #757 store-only probe RAN
+    under the bare path and traps under this one.
+    """
+    import tempfile
+
+    from vera.checker import typecheck_with_artifacts
+    from vera.codegen import compile as codegen_compile
+    from vera.codegen import execute
+    from vera.parser import parse_to_ast
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as handle:
+        handle.write(source)
+        path = handle.name
+    try:
+        program = parse_to_ast(source)
+        diags, arts = typecheck_with_artifacts(program, source, file=path)
+        errors = [d for d in diags if d.severity == "error"]
+        assert not errors, f"the probe does not type-check: {errors}"
+        compiled = codegen_compile(
+            program, source=source, file=path,
+            expr_semantic_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
+        )
+        cg_errors = [d for d in compiled.diagnostics if d.severity == "error"]
+        assert not cg_errors, f"the probe does not compile: {cg_errors}"
+    finally:
+        Path(path).unlink(missing_ok=True)
+    try:
+        execute(compiled, fn_name=fn, args=args)
+    except Exception as exc:  # noqa: BLE001 — the trap IS the observation
+        return str(exc)
+    return "ran"
+
+
+def _guard_mutations() -> list[tuple]:
+    """(label, owner, method, neutered, probe, with_guard, without_guard).
+
+    Each probe is a program the guard exists to stop, run on the value it
+    exists to catch; the last two are substrings the observation must
+    contain WITH the guard and WITHOUT it.  They differ for every entry,
+    which is the whole content of the check.
+    """
+    from vera.codegen.contracts import ContractsMixin
+    from vera.wasm.calls import CallsMixin
+    from vera.wasm.data import DataMixin
+
+    return [
+        (
+            "765 refined pattern bind",
+            DataMixin, "_emit_bind_refine_guard",
+            lambda self, te, local, where, node, env: [],
+            (_765_DIRECT, "f", [-5]),
+            "Refinement violation", "ran",
+        ),
+        (
+            # The probe never reads the field back, so the store is the
+            # only place a negative can be caught.  `_757_NARROW` — which
+            # does read it — cannot isolate this guard: its read has a
+            # guard of its own and catches the same value one frame later.
+            "757 generic instantiated field",
+            DataMixin, "_ctor_field_mono_base",
+            lambda self, arg: None,
+            (_757_STORE_ONLY, "f", [-5]),
+            "Negative value bound into a @Nat slot", "ran",
+        ),
+        (
+            "754 effect-operation argument",
+            CallsMixin, "_guard_effect_op_arg",
+            lambda self, arg, instrs, formals, index: instrs,
+            (_754_OP_ARG, "f", [-5]),
+            "Negative value bound into a @Nat slot", "ran",
+        ),
+        (
+            # The pre-fix behaviour was not "runs": it was a trap blaming the
+            # termination rule for a measure that decreases perfectly well.
+            "1222 decreases measure range",
+            ContractsMixin, "_dec_measure_bound_check",
+            lambda self, ctx, contract, measured, name, indent="": [],
+            (_1222_UNBOUNDED, "halve", [2 ** 63]),
+            "i64 range", "failed to decrease",
+        ),
+    ]
+
+
+class TestEveryGuardIsLoadBearing:
+    """Neuter one guard; the probe's behaviour must change.
+
+    A green suite is necessary and not sufficient: a probe can refuse a
+    value for a reason that has nothing to do with the guard under test — an
+    unrelated fault, a second guard covering the same value, a fixture that
+    fails to run at all — and every cell above would stay green with the
+    guard removed.  So each guard's emitter is replaced with a pass-through
+    and the probe re-run, and BOTH observations are asserted: what the guard
+    produces, and what its absence produces.  Asserting only the first would
+    not separate "this guard acts" from "something acts".
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "owner", "method", "neutered", "probe", "with_guard",
+         "without_guard"),
+        _guard_mutations(),
+        ids=[m[0] for m in _guard_mutations()],
+    )
+    def test_removing_the_guard_changes_what_the_program_does(
+        self,
+        label: str,
+        owner: object,
+        method: str,
+        neutered: object,
+        probe: tuple,
+        with_guard: str,
+        without_guard: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source, fn, args = probe
+        assert with_guard != without_guard, f"{label}: nothing to tell apart"
+        before = _observe_in_process(source, fn, args)
+        assert with_guard in before, (
+            f"{label}: with the guard in place the program does not do what "
+            f"this cell says it does — {before!r} lacks {with_guard!r}"
+        )
+        monkeypatch.setattr(owner, method, neutered)
+        after = _observe_in_process(source, fn, args)
+        assert without_guard in after, (
+            f"{label}: neutering the guard did not change the outcome — "
+            f"{after!r} lacks {without_guard!r}, so something else is "
+            f"producing the behaviour the cells above attribute to it"
+        )

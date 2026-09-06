@@ -95,6 +95,18 @@ ObligationKind = Literal[
                   # `> i64.MAX` -> loud E530; else honest tier3 (the codegen
                   # coercion trap is the guard, so the postcondition stays
                   # sound).
+    "decreases_bound",  # a @Nat `decreases` measure component fitting the
+                  # i64 the runtime termination guard compares in (#1222).  The
+                  # proof reasons over unbounded integers and the guard uses
+                  # `i64.lt_s` / `i64.ge_s`, so the two agree only while the
+                  # measure IS an i64 — above i64.MAX a @Nat reads negative and
+                  # a Tier-1-proved termination aborts as "failed to decrease".
+                  # Two-check like `nat_to_int_coerce`: provably `<= i64.MAX` ->
+                  # tier-1; provably `> i64.MAX` -> loud E536; else tier3, with
+                  # `_dec_measure_bound_check` as the guard so the failure names
+                  # the range rather than borrowing the termination rule's
+                  # message.  Recorded only for a @Nat component: an @Int one IS
+                  # the i64, an ADT one is ranked by a heap-bounded size.
     "state_decl",  # a generic handler's declared state type diverging from
                   # the instantiated State<T> cell (#1206's E336 defers on a
                   # TypeVar cell; the monomorphized clone re-checks it and a

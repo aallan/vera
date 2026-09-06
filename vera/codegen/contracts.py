@@ -976,6 +976,69 @@ class ContractsMixin:
             comp_values.append([*instrs, f"call {size_fn}"])
         return comp_values
 
+    def _dec_measure_bound_check(
+        self,
+        ctx: WasmContext,
+        contract: ast.Decreases,
+        measured: list[int],
+        name: str,
+        indent: str = "",
+    ) -> list[str]:
+        """Trap when a measure component leaves the range the guard compares
+        in (#1222).
+
+        The termination guard below compares with ``i64.lt_s`` / ``i64.ge_s``
+        and the prover reasons over unbounded integers, so the two agree
+        exactly while the measure's value is an i64.  A ``@Nat`` measure is a
+        u64 in that i64: above ``i64.MAX`` it reads NEGATIVE, the guard's
+        ``m >= 0`` clause fails, and a program whose termination the verifier
+        PROVED at Tier 1 aborts with "failed to decrease" — a true statement
+        about the machine value and a false one about the program.  Measured:
+        `halve(2^63)` over `decreases(@Nat.0)` traps where `halve(2^63 - 1)`
+        returns.
+
+        The remedy is disclosure, not a wider comparison: the whole compiler
+        treats a ``@Nat`` above ``i64.MAX`` as an edge it discloses (E530 /
+        E531 exist for exactly that), so widening this one comparison would
+        support a range the rest of the language does not.  The verifier
+        obligates ``component <= i64.MAX`` and this is its Tier-3 backstop —
+        so the failure names its own cause instead of borrowing the
+        termination rule's.
+
+        Emitted only for a ``@Nat``-typed component: an ``@Int`` one IS the
+        i64 the guard compares in, and an ADT one is ranked by a structural
+        size bounded by the heap.  Returns ``[]`` when no component needs it.
+        """
+        checks: list[str] = []
+        for k, expr in enumerate(contract.exprs):
+            if k >= len(measured):
+                break
+            vera_ty = ctx._infer_vera_type(expr)
+            if vera_ty is None:
+                continue
+            if ctx._resolve_base_type_name(vera_ty) != "Nat":
+                continue
+            msg = (
+                f"decreases() measure in '{name}' is outside the i64 range "
+                f"the termination check compares in: a @Nat above i64.MAX "
+                f"reads as negative, so the metric cannot be compared"
+            )
+            ptr, length = self.string_pool.intern(msg)
+            self._needs_contract_fail = True
+            self._needs_memory = True
+            checks.extend([
+                f"{indent}local.get {measured[k]}",
+                f"{indent}i64.const 0",
+                f"{indent}i64.lt_s",
+                f"{indent}if",
+                f"{indent}  i32.const {ptr}",
+                f"{indent}  i32.const {length}",
+                f"{indent}  call $vera.contract_fail",
+                f"{indent}  unreachable",
+                f"{indent}end",
+            ])
+        return checks
+
     def _compile_decreases_entry(
         self,
         ctx: WasmContext,
@@ -1066,6 +1129,11 @@ class ContractsMixin:
         for k in range(n):
             entry.extend(comp_values[k])
             entry.append(f"local.set {measured[k]}")
+        # #1222: before the comparison, not after — a component outside the
+        # comparable range makes every verdict below meaningless, including
+        # the FIRST activation's, which records a baseline without comparing.
+        entry.extend(self._dec_measure_bound_check(
+            ctx, contract, measured, name))
 
         entry.append(f"local.get {saved_active}")
         entry.append("if")
@@ -1197,6 +1265,10 @@ class ContractsMixin:
         for k in range(n):
             prefix.extend(comp_values[k])
             prefix.append(f"local.set {measured[k]}")
+        # #1222, at the site too: a self-tail hop evaluates the measure here
+        # and compares it the same way, so it needs the same backstop.
+        prefix.extend(self._dec_measure_bound_check(
+            ctx, contract, measured, name))
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 

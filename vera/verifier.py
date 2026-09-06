@@ -3983,6 +3983,12 @@ class ContractVerifier:
 
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
+                # #1222: before the termination proof, because it is a
+                # premise of it.  The proof reasons over unbounded integers;
+                # the runtime check compares in i64, and the two agree only
+                # while the measure's value is one.
+                self._check_decreases_bound(
+                    decl, contract, smt, slot_env, assumptions)
                 if self._verify_decreases(
                     decl, contract, smt, slot_env, group_decls,
                 ):
@@ -4032,6 +4038,92 @@ class ContractVerifier:
     # -----------------------------------------------------------------
     # Decreases verification (termination)
     # -----------------------------------------------------------------
+
+    def _check_decreases_bound(
+        self,
+        decl: ast.FnDecl,
+        contract: ast.Decreases,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge ``component <= i64.MAX`` for every ``@Nat`` measure
+        component (#1222).
+
+        The termination proof reasons over unbounded integers; the runtime
+        guard compares with ``i64.lt_s`` / ``i64.ge_s``.  Those agree exactly
+        while the measure's value is an i64 — and a ``@Nat`` is a u64 in that
+        i64, so above ``i64.MAX`` it reads NEGATIVE, the guard's ``m >= 0``
+        clause fails, and a program whose termination was PROVED at Tier 1
+        aborts with "failed to decrease".  Measured: `halve(2^63)` over
+        `decreases(@Nat.0)` traps where `halve(2^63 - 1)` returns.
+
+        So the fact the two sides need in common is obligated rather than
+        assumed: Tier 1 where the measure is provably bounded, and otherwise
+        a Tier-3 obligation whose runtime backstop is
+        ``_dec_measure_bound_check`` — which reports the range as the cause
+        instead of borrowing the termination rule's message.  Provably OUT of
+        range is a loud E536: the program's termination argument is correct
+        and its measure is one this compiler cannot compare.
+
+        Recorded ONLY for a ``@Nat``-typed component, because that is the
+        only one where the two readings can differ: an ``@Int`` component IS
+        the i64 the guard compares in, and an ADT component is ranked by a
+        structural size bounded by the heap.  Widening the comparison instead
+        was the alternative and is the wrong shape for this language: the
+        whole compiler treats a ``@Nat`` above ``i64.MAX`` as an edge it
+        DISCLOSES — E530 and E531 exist for exactly that — so supporting the
+        range here alone would make this one boundary an outlier.
+        """
+        hi = z3.IntVal(_I64_MAX)
+        for expr in contract.exprs:
+            comp_ty = self._resolved_type_of(expr)
+            if comp_ty is None or not self._is_nat_type(comp_ty):
+                continue
+            term = smt.translate_expr(expr, slot_env)
+            if term is None:
+                # No term to test.  The measure still gets the runtime
+                # backstop (codegen keys it on the component's TYPE, which
+                # needs no SMT translation), so this is a guarded Tier-3.
+                self._record_obligation(
+                    decl.name, "decreases_bound", expr, "tier3")
+                continue
+            safe = smt.check_valid(term <= hi, list(assumptions))
+            if safe.status == "verified":
+                self._record_obligation(
+                    decl.name, "decreases_bound", expr, "verified")
+                continue
+            bad = smt.check_valid(term > hi, list(assumptions))
+            if bad.status == "verified":
+                self._record_obligation(
+                    decl.name, "decreases_bound", expr, "violated",
+                    error_code="E536", counterexample=safe.counterexample,
+                )
+                self._error(
+                    expr,
+                    f"Termination metric in '{decl.name}' is outside the "
+                    f"i64 range the runtime check compares in.",
+                    rationale=(
+                        "@Nat is u64 and the `decreases` runtime guard "
+                        "compares signed i64, so a measure above i64.MAX "
+                        "reads as negative and the guard's non-negativity "
+                        "clause fails — on a program whose termination the "
+                        "verifier proved.  The measure is provably in that "
+                        "range here, so the two readings provably disagree."
+                    ),
+                    fix=(
+                        "Bound the measure below i64.MAX — add a "
+                        "`requires` constraining it, or measure a derived "
+                        "quantity that stays small (a length, a depth, a "
+                        "count) rather than the raw @Nat."
+                    ),
+                    spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
+                    error_code="E536",
+                )
+                continue
+            # Neither bound settled: the runtime backstop covers it.
+            self._record_obligation(
+                decl.name, "decreases_bound", expr, "tier3")
 
     def _verify_decreases(
         self,
@@ -5602,7 +5694,6 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="constructor field",
-                            guarded=False,
                         )
                     elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
@@ -5688,7 +5779,7 @@ class ContractVerifier:
                             and self._narrows_into_refined(arg, comp_ty)):
                         self._check_refined_binding_obligation(
                             decl, arg, comp_ty, smt, slot_env, assumptions,
-                            site="tuple component", guarded=False,
+                            site="tuple component",
                         )
                     elif (self._is_nat_type(comp_ty)
                             and self._narrows_into_nat(arg)):
