@@ -277,6 +277,11 @@ class VerificationSession:
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
+        # #1407: functions that hand on a disclosed value, assembled the same
+        # way the obligation stream is — a fresh slice reads it off the
+        # verifier, a replayed one off the cache entry — so a replay cannot
+        # quietly drop a wrapper out of the disclosed set.
+        result_disclosed: set[str] = set()
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -305,6 +310,8 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
+                if cached.result_disclosed:
+                    result_disclosed.add(decl.name)
                 stats.replayed_fns += 1
                 continue
 
@@ -314,7 +321,10 @@ class VerificationSession:
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
+                result_disclosed=decl.name in verifier._result_disclosed_fns,
             )
+            if entry.result_disclosed:
+                result_disclosed.add(decl.name)
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
             out_obls.extend(entry.obligations)
@@ -338,7 +348,11 @@ class VerificationSession:
         # exactly as the cold `verify_program` path derives it from its own —
         # so the warm and cold summaries agree by construction (the tier counts
         # can't drift from the obligations a consumer reads).
-        disclosed = disclosed_fn_names(out_obls)
+        # #1407: the same union `ContractVerifier._disclosed_fn_names` takes —
+        # the obligation stream says which functions failed to establish their
+        # own declared type, `result_disclosed` says which hand such a value
+        # on, and the fixpoint below needs both or it settles one hop early.
+        disclosed = disclosed_fn_names(out_obls) | result_disclosed
         if not disclosed <= self._disclosed:
             # Re-run knowing what this pass disclosed, exactly as the cold
             # `verify_program` fixpoint does.  The set only grows, so this

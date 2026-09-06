@@ -183,10 +183,18 @@ class FnCacheEntry:
     :class:`~vera.verifier.VerifySummary` is *derived* from the assembled
     obligation stream at report-assembly time (#967), so no per-function
     summary deltas are cached — the cached ``obligations`` are the count.
+
+    ``result_disclosed`` is the one datum that is NOT recoverable from the
+    two lists (#1407): a function that merely hands on a disclosed value
+    contributes no obligation saying so, and the cold path collects it while
+    translating the body — which a replay does not do.  Left uncached, a
+    replayed wrapper would drop out of the disclosed set and the warm run
+    would prove at Tier 1 what the cold run demotes.
     """
 
     diagnostics: list[Diagnostic]
     obligations: list[ProofObligation]
+    result_disclosed: bool = False
 
 
 class DischargeCache:
