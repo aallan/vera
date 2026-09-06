@@ -3585,8 +3585,10 @@ class SmtContext:
         ``ite``: a value joined from two branches is disclosed on whichever
         branch discloses, and a value projected out of a disclosed one is the
         disclosed value's own component.  Over-approximating is the safe
-        direction — it demotes to Tier 3, which is a runtime check, where
-        under-approximating claims a proof.
+        direction — it demotes out of Tier 1, to a runtime check where one
+        exists (a postcondition's E534) and otherwise to an honest disclosure
+        (an unguarded narrowing's E506), where under-approximating claims a
+        proof the run does not have.
 
         Costs nothing on a clean run: ``_disclosed_terms`` is empty unless
         this function actually called something disclosed, and the walk is
