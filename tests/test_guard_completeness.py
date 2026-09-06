@@ -430,3 +430,104 @@ class TestGenericInstantiatedFieldsAreGuarded757:
         coerce = [o for o in obs if o["kind"] == "nat_to_int_coerce"]
         assert [o["status"] for o in coerce] == ["tier3"], coerce
         _assert_partition(envelope)
+
+
+# ===========================================================================
+# #1036 — a refined base with a non-plain type argument
+# ===========================================================================
+
+_1036_PRELUDE = (
+    "type NEPosArr = { @Array<{ @Int | @Int.0 > 0 }> | "
+    "array_length(@Array<{ @Int | @Int.0 > 0 }>.0) > 0 };\n"
+)
+
+_1036_NAMED_FORMAL = _1036_PRELUDE + """\
+private fn take(@NEPosArr -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@NEPosArr.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  take([])
+}
+"""
+
+_1036_FN_ARG_BASE = """\
+type IntToInt = fn(Int -> Int) effects(pure);
+
+type NonEmptyFns = { @Array<IntToInt> | array_length(@Array<IntToInt>.0) > 0 };
+
+public fn count(@NonEmptyFns -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@NonEmptyFns.0)
+}
+"""
+
+
+class TestNonPlainTypeArgBasesAreGuarded1036:
+    """`Array<{refined}>` and `Array<fn(…)>` bases carry their guard.
+
+    The disclosure said otherwise, on the premise that the binder slot name
+    could not be spelt.  It can: since #1208 the binder renders through
+    `vera.naming.slot_name`, whose ARGUMENTS go through the checker's own
+    renderer, so a refinement or a function type in argument position renders
+    like any other type.  The stale bail left the mirror wrong in the
+    direction opposite to the one PR #1034 fixed — under-counting a runtime
+    check that fires, and telling a reader to add a bound they already had.
+
+    What the guard checks is the base's OWN predicate (`array_length > 0`),
+    not the element refinement inside the type argument; element-wise
+    membership is a separate site with its own obligation, exactly as a tuple
+    component's is.
+    """
+
+    def test_an_empty_array_traps_at_the_refined_boundary(
+        self, tmp_path: Path,
+    ) -> None:
+        out = _run(tmp_path, _1036_NAMED_FORMAL, name="np1036.vera")
+        assert "Refinement violation" in out, (
+            f"an empty array crossed a NonEmpty-refined boundary whose type "
+            f"argument is itself refined:\n{out}"
+        )
+        assert "array_length" in out, (
+            f"the trap does not name the failing predicate:\n{out}"
+        )
+
+    def test_the_obligation_stream_says_guarded(self, tmp_path: Path) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _1036_NAMED_FORMAL, name="np1036v.vera")
+        binds = [o for o in obs if o["kind"] == "refine_bind"]
+        assert binds, obs
+        assert all(o["status"] != "tier3_unguarded" for o in binds), (
+            f"disclosed unguarded, but the boundary traps: "
+            f"{[(o['kind'], o['status']) for o in binds]}"
+        )
+        _assert_partition(envelope)
+
+    def test_a_function_typed_argument_base_is_guarded_too(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other non-plain argument shape the bail named.
+
+        Read from the emitted module rather than from a run: an array of
+        closures has no literal form the backend compiles yet, so there is no
+        way to hand this boundary an empty one.
+        """
+        proc = _cli(
+            "compile", "--wat",
+            str(_write(tmp_path, _1036_FN_ARG_BASE, "fnarg.vera")))
+        assert proc.returncode == 0, proc.stderr[-500:]
+        assert "call $vera.contract_fail" in proc.stdout, (
+            "no boundary guard for a refined base whose type argument is a "
+            "function type"
+        )

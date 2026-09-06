@@ -147,17 +147,23 @@ def _run(source: str, fn: str, arg: int) -> int | None:
         return exec_result.value
 
 
-def _trap_kind(source: str, fn: str, arg: int) -> str | None:
+def _trap_kind(source: str, fn: str, arg: int | None) -> str | None:
     """The normalized trap kind for running *fn(arg)*, or ``None`` if no trap
     — so trap assertions can pin the narrowing guard's bare ``unreachable``
-    net specifically (the widen dual's convention), not just "some trap"."""
+    net specifically (the widen dual's convention), not just "some trap".
+
+    ``arg=None`` calls with NO arguments, for a ``@Unit``-parameter entry
+    point.  Distinct from passing a null: a `@Unit` parameter is erased, so
+    the compiled function takes nothing and handing it one value is an arity
+    error, which would surface as a failure to run rather than as a verdict
+    about the guard."""
     with _resolved_pipeline(source) as (program, arts, resolved, path):
         result = codegen_compile(
             program, source=source, file=path, resolved_modules=resolved,
             expr_semantic_types=arts.expr_semantic_types,
         )
         try:
-            execute(result, fn_name=fn, args=[arg])
+            execute(result, fn_name=fn, args=[] if arg is None else [arg])
         except WasmTrapError as exc:
             return exc.kind
         return None
@@ -1221,16 +1227,24 @@ public fn mk(@Array<{ @Int | @Int.0 > 0 }> -> @NEPosArr)
 """
 
 
-class TestRefinedNonPlainBaseDisclosure1036:
+class TestRefinedNonPlainBaseParity1036:
     """A refinement base with a NON-PLAIN type argument (a nested refinement
-    or fn type, e.g. `Array<{ @Int | ... }>`) gets NO codegen guard at any
-    boundary — `_refinement_guard_parts` cannot spell the binder slot and
-    bails (#1036).  The verifier's `guarded=` must say so: these obligations
-    record `tier3_unguarded` (E506 disclosure, excluded from the runtime
-    totals), never a guarded `tier3` promise the runtime does not keep
-    (PR #1034 adversarial review: an empty array flowed through a
-    NonEmpty-refined closure boundary silently while verify claimed a
-    runtime check).
+    or fn type, e.g. `Array<{ @Int | ... }>`) IS guarded, at every boundary.
+
+    #1036 recorded these as `tier3_unguarded` on the premise that
+    `_refinement_guard_parts` could not spell the binder slot and bailed.
+    Since #1208 the binder is named by `vera.naming.slot_name`, whose
+    ARGUMENTS go through the checker's own renderer, so a refinement or a
+    function type in argument position renders like any other and the guard
+    is emitted.  The disclosure was then wrong in the opposite direction to
+    the one PR #1034 fixed: it under-counted a runtime check that does fire
+    and told the reader to add a bound they already had.
+
+    The cells below are a PARITY differential rather than a flag assertion:
+    each shape is COMPILED and RUN on an empty array — the value the
+    predicate forbids — and the verifier's classification is compared with
+    what the artifact does.  A flag assertion alone would move with the flag;
+    only running it can say the flag is true.
     """
 
     @pytest.mark.parametrize(
@@ -1239,12 +1253,14 @@ class TestRefinedNonPlainBaseDisclosure1036:
             (_NONPLAIN_CLOSURE_RET, "closure return"),
             (_NONPLAIN_CLOSURE_FORMAL, "closure argument"),
             (_NONPLAIN_NAMED_FORMAL, "call argument"),
-            (_NONPLAIN_NAMED_RET, "return type"),
         ],
-        ids=["closure-ret", "closure-formal", "named-formal", "named-ret"],
+        ids=["closure-ret", "closure-formal", "named-formal"],
     )
-    def test_nonplain_base_records_unguarded(self, src: str, site: str) -> None:
+    def test_the_classification_equals_what_the_module_does(
+        self, src: str, site: str,
+    ) -> None:
         statuses = _refine_bind_statuses(src)
+<<<<<<< HEAD
         # The property is the ABSENCE of a guarded promise, asserted directly
         # rather than through "every status is the unguarded one".  Since #1410
         # a call whose formal writes a refinement INSIDE its type raises an
@@ -1262,6 +1278,39 @@ class TestRefinedNonPlainBaseDisclosure1036:
             f"a non-plain-arg refined {site} has no codegen guard, so a "
             f"'tier3' is an unfulfilled runtime-guard promise: {statuses} "
             "(#1036)"
+=======
+        assert statuses, f"{site}: no refine_bind obligation to classify"
+        verifier_says_guarded = all(s != "tier3_unguarded" for s in statuses)
+        kind = _trap_kind(src, "go", None)
+        codegen_guards = kind == "contract_violation"
+        assert codegen_guards == verifier_says_guarded, (
+            f"{site}: the module "
+            f"{'traps' if codegen_guards else 'does NOT trap'} on the empty "
+            f"array (trap kind {kind!r}), verifier says "
+            f"{'guarded' if verifier_says_guarded else 'unguarded'} "
+            f"({statuses}) — the two sides have drifted"
+        )
+
+    def test_the_return_position_carries_the_guard_too(self) -> None:
+        """The one shape with no empty-array entry point of its own.
+
+        `mk` takes the array it returns, so a caller supplying an empty one
+        would trap at `mk`'s own boundary either way; the emitted module is
+        the oracle instead, and the classification is read beside it.
+        """
+        statuses = _refine_bind_statuses(_NONPLAIN_NAMED_RET)
+        assert statuses and all(s != "tier3_unguarded" for s in statuses), (
+            f"the return boundary discloses unguarded: {statuses}"
+        )
+        with _resolved_pipeline(_NONPLAIN_NAMED_RET) as (prog, arts, res, path):
+            wat = codegen_compile(
+                prog, source=_NONPLAIN_NAMED_RET, file=path,
+                resolved_modules=res,
+                expr_semantic_types=arts.expr_semantic_types,
+            ).wat
+        assert "call $vera.contract_fail" in wat, (
+            "the classification claims a guard the emitted module lacks"
+>>>>>>> 6bcf5a9e (Stop disclosing a guard that fires, for a refined base with a non-plain type argument)
         )
 
     def test_plain_base_still_promises_guard(self) -> None:
@@ -1371,7 +1420,7 @@ class TestRefinedBoundaryGuardableHelper:
     claiming it guardable would be the same unfulfilled-promise class
     (PR #1034 full review)."""
 
-    def test_erased_and_nonplain_bases_unguardable(self) -> None:
+    def test_erased_bases_unguardable(self) -> None:
         from vera.types import (
             INT, UNIT, AdtType, PrimitiveType, RefinedType,
         )
@@ -1381,10 +1430,14 @@ class TestRefinedBoundaryGuardableHelper:
         g = ContractVerifier._refined_boundary_codegen_guardable
         assert not g(RefinedType(UNIT, pred))
         assert not g(RefinedType(AdtType("Future", (UNIT,)), pred))
-        assert not g(
-            RefinedType(AdtType("Array", (RefinedType(INT, pred),)), pred))
+        # A refinement OVER a refinement is codegen's other bail (E618).
+        assert not g(RefinedType(RefinedType(INT, pred), pred))
         assert g(RefinedType(INT, pred))
         assert g(RefinedType(AdtType("Array", (PrimitiveType("Int"),)), pred))
+        # #1036: a NON-PLAIN type argument is guardable — the binder renders
+        # through `slot_name`, whose arguments go through the checker's own
+        # renderer, so the guard is emitted and the parity cells run it.
+        assert g(RefinedType(AdtType("Array", (RefinedType(INT, pred),)), pred))
 
 
 class TestClosureInteriorBindingDifferential779:

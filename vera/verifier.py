@@ -10773,18 +10773,27 @@ class ContractVerifier:
         *ty* — the semantic mirror of ``_refinement_guard_parts``'s bail
         conditions (``vera/codegen/contracts.py``); KEEP IN SYNC (#1036).
 
-        Codegen bails (emits NO guard) when (a) the base is the erased
-        ``@Unit`` (no local to check — the ``_is_unit_refinement`` case),
-        (b) the base is itself a REFINEMENT, which codegen refuses outright
-        rather than emitting a partial guard, or (c) the base carries a
-        NON-PLAIN type argument — a nested refinement or fn type, e.g.
-        ``Array<{ @Int | ... }>`` — whose binder slot name cannot be spelt.
-        A ``guarded=True`` Tier-3 for any of them was an unfulfilled
-        runtime-guard promise: an empty array flowed through a
-        NonEmpty-refined closure boundary silently while the obligation
-        stream claimed a runtime check (PR #1034 adversarial review).  Plain
-        named args (``Array<Int>``, nested ``Array<Array<Int>>`` via the
-        truncated-name convention) stay guarded."""
+        Codegen bails (emits NO guard) in exactly two cases: (a) the base is
+        the erased ``@Unit`` (no local to check — the ``_is_unit_refinement``
+        case), and (b) the base is itself a REFINEMENT, which it refuses
+        outright rather than emitting a partial guard.  A ``guarded=True``
+        Tier-3 for either was an unfulfilled runtime-guard promise: an empty
+        array flowed through a NonEmpty-refined closure boundary silently
+        while the obligation stream claimed a runtime check (PR #1034
+        adversarial review).
+
+        A base carrying a NON-PLAIN type argument — ``Array<{ @Int | ... }>``,
+        ``Array<fn(…)>`` — was a third bail, on the premise that the binder
+        slot name could not be spelt (#1036).  It can: since #1208 the binder
+        is named by :func:`vera.naming.slot_name`, whose ARGUMENTS go through
+        the checker's own renderer, so a refinement or a function type in
+        argument position renders like any other type and the guard is
+        emitted.  Keeping the clause made the mirror wrong in the opposite
+        direction — disclosing ``tier3_unguarded`` for a boundary that DOES
+        trap, which under-counts the runtime checks and tells a reader to add
+        a bound they already have.  Measured on both the named and the
+        closure path before removal, and held by the guard-parity
+        differential afterwards."""
         if not isinstance(ty, RefinedType):
             return False
         if erases_to_unit(ty):
@@ -10804,11 +10813,6 @@ class ContractVerifier:
             # honest answer is unguarded (the obligation discloses E506) and
             # E618 still refuses at compile.
             return False
-        if isinstance(ty.base, AdtType):
-            return all(
-                isinstance(arg, (PrimitiveType, AdtType))
-                for arg in ty.base.type_args
-            )
         return True
 
     @staticmethod
