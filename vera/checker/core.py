@@ -162,6 +162,7 @@ def typecheck_with_artifacts(
     file: str | None = None,
     resolved_modules: list[ResolvedModule] | None = None,
     collect_module_artifacts: bool = False,
+    body_check_memo: set[tuple[str, ...]] | None = None,
 ) -> tuple[list[Diagnostic], CheckArtifacts]:
     """Type-check and additionally collect LSP artifacts (#222 Phase D).
 
@@ -170,6 +171,17 @@ def typecheck_with_artifacts(
     of the #222 plan chose this eager side-table over re-synthesis at
     query time).  Existing callers keep using :func:`typecheck`; only
     the LSP layer pays the collection cost.
+
+    ``body_check_memo`` (#1399) is the set of module paths whose bodies have
+    already been checked, shared across a BATCH of calls over one closure.
+    ``_check_module_bodies`` is memoised per call by default, so a caller that
+    type-checks every module of an N-module closure re-checks the same bodies
+    N times over and recurses the import chain each time.  Threading one memo
+    collapses that to one check per module.  The trade it makes is that a
+    module's body diagnostics reach only the call that first checked them —
+    sound for the manifest, whose caller has already gated on the entry's own
+    check (which body-checks every resolved module, #1244), and whose gate is
+    about the module it is verifying rather than about that module's imports.
 
     ``collect_module_artifacts`` (#987, opt-in per PR #997 review) gates the
     per-resolved-module side-table pass.  Only the codegen-bound callers
@@ -191,6 +203,16 @@ def typecheck_with_artifacts(
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
     )
+    # #1399: a caller running MANY of these over one module closure — the
+    # disclosure manifest is the only one — passes a shared memo so each
+    # module's bodies are checked once across the whole batch instead of once
+    # per call.  Without it, `_check_module_bodies` recurses the full import
+    # chain inside every call: quadratic in the closure, and a Python frame
+    # per hop per call, which is what put a deep chain's `E699` on the stack
+    # rather than on the closure.  Left `None` (the default) every existing
+    # caller keeps its own fresh memo and its exact present behaviour.
+    if body_check_memo is not None:
+        checker._module_body_check_memo = body_check_memo
     checker.expr_types = {}
     checker.expr_semantic_types = {}
     checker.expr_target_types = {}

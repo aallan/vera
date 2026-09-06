@@ -49,12 +49,49 @@ from __future__ import annotations
 
 import hashlib
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from vera.resolver import ResolvedModule
 
-#: A module's disclosed-function set, keyed by the module's owner path.
-DisclosedManifest = dict[tuple[str, ...], frozenset[str]]
+
+@dataclass(frozen=True)
+class DisclosureSite:
+    """Where, and by what, one function's fact was disclosed (#1399).
+
+    A membership answer alone made the importer's diagnostic untrue of the
+    importing run: its rationale said "the run reported it as neither proved
+    nor guarded" when this run reported no such thing, and the ``E504`` that
+    identifies the culprit belongs to the library's run, whose diagnostics the
+    importer discards by design.  In one file that ``E504`` sits beside the
+    ``E534``; across an import the reader got one warning naming only their
+    own postcondition, and nothing to go and look at.  Carrying the site with
+    the name is what lets the importer cite it.
+    """
+
+    module: tuple[str, ...]
+    fn_name: str
+    file: str | None
+    line: int
+    column: int
+    error_code: str
+
+    def cite(self) -> str:
+        """One clause naming the callee, its file position, and its code."""
+        where = f"{self.file}:{self.line}" if self.file else "its own module"
+        code = f" ({self.error_code})" if self.error_code else ""
+        return (
+            f"'{'.'.join(self.module)}::{self.fn_name}', disclosed at "
+            f"{where}{code}"
+        )
+
+
+#: One module's disclosed functions, each with the site that disclosed it.
+#: Membership (`name in manifest`) is the question most callers ask; the
+#: value is what the importer's diagnostic cites.
+ModuleManifest = dict[str, DisclosureSite]
+
+#: Every module's manifest, keyed by the module's owner path.
+DisclosedManifest = dict[tuple[str, ...], ModuleManifest]
 
 #: Bounded, content-addressed, process-wide.  Bounded because a long-lived
 #: language-server session verifies many document states and each edit to any
@@ -62,7 +99,7 @@ DisclosedManifest = dict[tuple[str, ...], frozenset[str]]
 #: makes "invalidate when the module's source changes" automatic — a changed
 #: source simply does not hash to the entry that described the old one.
 _MAX_ENTRIES = 512
-_CACHE: dict[str, frozenset[str]] = {}
+_CACHE: dict[str, ModuleManifest] = {}
 
 
 def _sha(text: str) -> str:
@@ -83,11 +120,27 @@ class ModuleDisclosureIndex:
     """Answers "which functions did module *p* disclose?" for one verify run.
 
     Built from the resolved-module closure the importer already holds, so the
-    lookup travels the same path as every other imported artefact.  Each
-    module is computed at most once per index (and, via the content-addressed
-    cache, at most once per distinct content per process), and only when
-    something actually asks — a program that imports a module but never
-    matches on one of its calls pays nothing.
+    lookup travels the same path as every other imported artefact.  Two cost
+    properties are structural rather than incidental, and both were bought
+    with a defect (adversarial review of PR #1402):
+
+    * **Each module is verified at most once.**  The first ask walks the
+      import DAG BOTTOM-UP and computes every manifest the target depends on
+      in dependency order, so by the time a module's own verification runs,
+      each of its imports already has an answer in the content-addressed
+      cache.  Computing lazily and letting the answer recurse looks
+      equivalent and is not: it nests one whole verify pipeline per import
+      hop, which is quadratic in the chain and — the part that turns a valid
+      program into an internal compiler error — bounded by the interpreter's
+      stack rather than by the closure.  A 70-module chain reached ``E699``
+      where the same program verified clean without the manifest at all.
+    * **This module adds no recursion of its own.**  Both DAG walks are
+      iterative, so the only recursion in the path is the resolver's, which
+      ran before verification even started.
+
+    Laziness is unchanged and is the other half: a program that imports a
+    module but never matches on one of its calls asks nothing and pays
+    nothing.
     """
 
     def __init__(
@@ -99,21 +152,46 @@ class ModuleDisclosureIndex:
         self._by_path = {m.path: m for m in self._closure}
         self._timeout_ms = timeout_ms
         self._memo: DisclosedManifest = {}
+        # Per-index memos for the two derived values every consult needs.
+        # Keyed by (path, SOURCE), never by path alone: within one index a
+        # path names one module, but a caller may hand two indexes different
+        # content at the same path, and a path-keyed memo would then answer
+        # for the wrong one — the very confusion between an identity and its
+        # content that the content-addressed cache key exists to avoid.
+        self._sub_memo: dict[
+            tuple[tuple[str, ...], str], list[ResolvedModule]
+        ] = {}
+        self._key_memo: dict[tuple[tuple[str, ...], str], str] = {}
+        # Shared across every sub-check this index runs, so a module's bodies
+        # are checked once for the whole closure rather than once per module
+        # verified.  See `typecheck_with_artifacts(body_check_memo=...)`.
+        self._body_check_memo: set[tuple[str, ...]] = set()
 
-    def disclosed_in(self, path: tuple[str, ...]) -> frozenset[str]:
+    def disclosed_in(self, path: tuple[str, ...]) -> ModuleManifest:
         """The disclosed-function set of the module at *path*.
 
         Empty for a path this run never resolved: there is no module to have
         disclosed anything, and the name it would have supplied does not
         resolve either, so the honest answer is "nothing" rather than a guess.
+
+        Everything *path* depends on is computed first, in dependency order —
+        see the class docstring for why that is a correctness property and
+        not only a speed one.
         """
         cached = self._memo.get(path)
         if cached is not None:
             return cached
         mod = self._by_path.get(path)
-        result = frozenset() if mod is None else self._compute(mod)
-        self._memo[path] = result
-        return result
+        if mod is None:
+            self._memo[path] = {}
+            return {}
+        for dep_path in self._dependency_order(mod):
+            if dep_path in self._memo:
+                continue
+            dep = self._by_path.get(dep_path)
+            if dep is not None:
+                self._memo[dep_path] = self._compute(dep)
+        return self._memo[path]
 
     # -- internals ------------------------------------------------------
 
@@ -157,32 +235,20 @@ class ModuleDisclosureIndex:
           restatement of this paragraph.
         """
         # Source order, de-duplicated — what `resolve_imports` iterates.
+        memo_key = (mod.path, mod.source)
+        memoized = self._sub_memo.get(memo_key)
+        if memoized is not None:
+            return memoized
         own = list(dict.fromkeys(
             tuple(imp.path) for imp in mod.program.imports
         ))
         own_set = set(own)
 
         # `ModuleResolver._resolve_single`'s cache-insertion order: recurse
-        # first, insert after.  `visited` starts holding *mod* itself, which
-        # both keeps a hand-built self-import from recursing (the resolver
-        # refuses a cycle outright, E011) and makes the recursion strictly
-        # shrink the closure at every level.
-        cache_order: list[tuple[str, ...]] = []
-        visited: set[tuple[str, ...]] = {mod.path}
-
-        def visit(path: tuple[str, ...]) -> None:
-            if path in visited:
-                return
-            visited.add(path)
-            dep = self._by_path.get(path)
-            if dep is None:
-                return  # unresolvable here, as it would be for the resolver
-            for sub in dep.program.imports:
-                visit(tuple(sub.path))
-            cache_order.append(path)
-
-        for path in own:
-            visit(path)
+        # first, insert after.  *mod* itself is excluded, which both keeps a
+        # hand-built self-import from looping and matches the resolver, whose
+        # entry program is never one of its own imports.
+        cache_order = self._post_order(own, skip={mod.path})
 
         # `resolve_imports`' emission: the direct imports in source order,
         # then the remaining cache in insertion order, de-duplicated.
@@ -196,12 +262,71 @@ class ModuleDisclosureIndex:
                 continue
             emitted.add(path)
             out.append(replace(dep, direct=(path in own_set)))
+        self._sub_memo[memo_key] = out
         return out
 
-    def _cache_key(
-        self, mod: ResolvedModule, sub: list[ResolvedModule],
-    ) -> str:
+    def _post_order(
+        self,
+        roots: list[tuple[str, ...]],
+        skip: set[tuple[str, ...]],
+    ) -> list[tuple[str, ...]]:
+        """Depth-first POST-order over the import DAG, children in source order.
+
+        The order ``ModuleResolver._resolve_single`` inserts modules into its
+        cache: it recurses into a module's own imports before inserting the
+        module. Two callers want exactly this — :meth:`_sub_closure`, which
+        must reproduce the resolver's emission, and
+        :meth:`_dependency_order`, which needs every dependency before its
+        dependent.
+
+        ITERATIVE, with an explicit stack. The recursive spelling reads
+        better and costs a Python frame per import hop, on top of the frame
+        per hop the verification itself was taking; between them a 70-module
+        chain exhausted the interpreter stack and reported ``E699`` on a
+        program that verifies clean (adversarial review of PR #1402). This
+        walk now contributes no frames at all.
+        """
+        order: list[tuple[str, ...]] = []
+        seen = set(skip)
+        # Reversed so the first root pops first; likewise for each module's
+        # own imports below, which must be visited in source order.
+        stack: list[tuple[tuple[str, ...], bool]] = [
+            (p, False) for p in reversed(roots)
+        ]
+        while stack:
+            path, expanded = stack.pop()
+            if expanded:
+                order.append(path)
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            dep = self._by_path.get(path)
+            if dep is None:
+                continue  # unresolvable here, as it would be for the resolver
+            stack.append((path, True))
+            for sub in reversed(dep.program.imports):
+                stack.append((tuple(sub.path), False))
+        return order
+
+    def _dependency_order(
+        self, mod: ResolvedModule,
+    ) -> list[tuple[str, ...]]:
+        """*mod* and everything it reaches, dependencies before dependents.
+
+        The order the bottom-up computation walks: when a module's turn
+        comes, every import it could consult already has a manifest, so its
+        verification finds cached answers instead of starting another one.
+        """
+        return self._post_order([mod.path], skip=set())
+
+    def _cache_key(self, mod: ResolvedModule) -> str:
         """Everything the module's disclosed set is a function of.
+
+        Takes *mod* alone and derives the closure itself, rather than
+        accepting one: a key must cover every input it depends on, and a
+        second parameter is a second thing a memo or a caller can get wrong
+        while the key stays silent about it.
 
         Its own source; the sources of the closure it is verified against
         (a disclosure in a module it imports can flip one of its own
@@ -210,14 +335,20 @@ class ModuleDisclosureIndex:
         The module's own path goes in too, so two byte-identical files at
         different paths stay distinct entries.
         """
+        memo_key = (mod.path, mod.source)
+        memoized = self._key_memo.get(memo_key)
+        if memoized is not None:
+            return memoized
         parts = [".".join(mod.path), _sha(mod.source), str(self._timeout_ms)]
         parts.extend(
             ".".join(other.path) + "\x1f" + _sha(other.source)
-            for other in sorted(sub, key=lambda m: m.path)
+            for other in sorted(self._sub_closure(mod), key=lambda m: m.path)
         )
-        return _sha("\x1e".join(parts))
+        key = _sha("\x1e".join(parts))
+        self._key_memo[memo_key] = key
+        return key
 
-    def _compute(self, mod: ResolvedModule) -> frozenset[str]:
+    def _compute(self, mod: ResolvedModule) -> ModuleManifest:
         """Verify *mod* on its own and take the disclosed names off the run.
 
         Terminates without a re-entrancy guard, and structurally rather than
@@ -229,32 +360,44 @@ class ModuleDisclosureIndex:
         produce.
         """
         sub = self._sub_closure(mod)
-        key = self._cache_key(mod, sub)
+        key = self._cache_key(mod)
         cached = _CACHE.get(key)
         if cached is not None:
             return cached
-        result = _verify_for_disclosure(mod, sub, self._timeout_ms)
+        result = _verify_for_disclosure(
+            mod, sub, self._timeout_ms, self._body_check_memo,
+        )
         if key not in _CACHE and len(_CACHE) >= _MAX_ENTRIES:
             del _CACHE[next(iter(_CACHE))]
         _CACHE[key] = result
         return result
 
 
-def _all_fn_names(mod: ResolvedModule) -> frozenset[str]:
-    """Every function *mod* declares — the fail-closed answer."""
+def _all_fn_names(mod: ResolvedModule) -> ModuleManifest:
+    """Every function *mod* declares — the fail-closed answer.
+
+    Each carries a site naming the module and its file, with no line to point
+    at: nothing in it was verified, so there is no culprit obligation to cite,
+    and saying so is more honest than borrowing a position.
+    """
     from vera import ast
 
-    return frozenset(
-        tld.decl.name for tld in mod.program.declarations
+    return {
+        tld.decl.name: DisclosureSite(
+            module=mod.path, fn_name=tld.decl.name,
+            file=str(mod.file_path), line=0, column=0, error_code="",
+        )
+        for tld in mod.program.declarations
         if isinstance(tld.decl, ast.FnDecl)
-    )
+    }
 
 
 def _verify_for_disclosure(
     mod: ResolvedModule,
     sub: list[ResolvedModule],
     timeout_ms: int,
-) -> frozenset[str]:
+    body_check_memo: set[tuple[str, ...]] | None = None,
+) -> ModuleManifest:
     """Run *mod*'s own verification and return what it disclosed.
 
     Deliberately the WHOLE cold pipeline for that module — the same
@@ -272,11 +415,12 @@ def _verify_for_disclosure(
     module nobody managed to verify.
     """
     from vera.checker import typecheck_with_artifacts
-    from vera.verifier import disclosed_fn_names, verify
+    from vera.verifier import disclosed_fn_names, is_disclosing, verify
 
     file = str(mod.file_path)
     check_diags, artifacts = typecheck_with_artifacts(
         mod.program, mod.source, file=file, resolved_modules=sub,
+        body_check_memo=body_check_memo,
     )
     if any(d.severity == "error" for d in check_diags):
         return _all_fn_names(mod)
@@ -287,4 +431,16 @@ def _verify_for_disclosure(
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
     )
-    return disclosed_fn_names(result.obligations)
+    # WHICH functions is the shared derivation's answer; the walk below only
+    # decorates it with the obligation that earned each one, selected by the
+    # same predicate so the two cannot disagree about what disclosed what.
+    names = disclosed_fn_names(result.obligations)
+    manifest: ModuleManifest = {}
+    for o in result.obligations:
+        if o.fn_name in names and o.fn_name not in manifest and is_disclosing(o):
+            manifest[o.fn_name] = DisclosureSite(
+                module=mod.path, fn_name=o.fn_name,
+                file=o.file or file, line=o.line, column=o.column,
+                error_code=o.error_code or "",
+            )
+    return manifest

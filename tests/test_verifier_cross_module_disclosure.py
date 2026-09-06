@@ -843,7 +843,15 @@ public fn two(@Int -> @Int)
 }
 """)
     index = ModuleDisclosureIndex([mod], 10000)
-    assert index.disclosed_in(("broken",)) == frozenset({"one", "two"})
+    manifest = index.disclosed_in(("broken",))
+    assert set(manifest) == {"one", "two"}, sorted(manifest)
+    # Each carries a site naming the module, with no line to point at: nothing
+    # in it was verified, so there is no culprit obligation to borrow.
+    assert all(
+        site.module == ("broken",) and site.line == 0
+        and site.error_code == ""
+        for site in manifest.values()
+    ), manifest
 
 
 def test_1399_manifest_of_an_unresolved_path_is_empty(tmp_path: Path) -> None:
@@ -856,7 +864,7 @@ def test_1399_manifest_of_an_unresolved_path_is_empty(tmp_path: Path) -> None:
     from vera.disclosure import ModuleDisclosureIndex
 
     index = ModuleDisclosureIndex([], 10000)
-    assert index.disclosed_in(("nowhere",)) == frozenset()
+    assert index.disclosed_in(("nowhere",)) == {}
 
 
 def test_1399_the_shared_base_of_a_diamond_is_verified_once(
@@ -885,9 +893,9 @@ def test_1399_the_shared_base_of_a_diamond_is_verified_once(
     verified: list[tuple[str, ...]] = []
     original = disclosure._verify_for_disclosure
 
-    def counting(mod, sub, timeout_ms):  # type: ignore[no-untyped-def]
+    def counting(mod, *args, **kwargs):  # type: ignore[no-untyped-def]
         verified.append(mod.path)
-        return original(mod, sub, timeout_ms)
+        return original(mod, *args, **kwargs)
 
     disclosure.clear_cache()
     disclosure._verify_for_disclosure = counting
@@ -919,28 +927,58 @@ def test_1399_the_manifest_key_tracks_every_input_it_depends_on(
     """Same content, same key; any input changed, different key.
 
     A manifest is a function of the module's own source, its closure's
-    sources, and the solver budget — so those three, and nothing less, have to
-    be in the key.  Dropping the closure's sources is the interesting omission:
-    it is the three-hop case, where a module's own text is untouched and its
-    disclosed set changes anyway because something it imports began disclosing.
+    sources, and the solver budget — so those three, and nothing less, have
+    to be in the key.  The closure leg is the interesting one: it is the
+    three-hop case, where a module's own text is untouched and its disclosed
+    set changes anyway because something it imports began disclosing.
+
+    The closure is derived from the index rather than passed in, so each leg
+    varies an input by building the index over different content — which is
+    also what keeps the key honest: a key that accepted its closure as an
+    argument could be handed one that does not match the module it is keying.
     """
     from vera.disclosure import ModuleDisclosureIndex
 
-    lib = _resolved(tmp_path, "k_lib", _DISCLOSING_MK.format(
-        visibility="public"))
-    lib2 = _resolved(tmp_path / "b", "k_lib", _CLEAN_MK.format(
-        visibility="public"))
-    dep = _resolved(tmp_path, "k_dep", _CLEAN_MK.format(visibility="public"))
-    dep2 = _resolved(tmp_path / "b", "k_dep", _DISCLOSING_MK.format(
-        visibility="public"))
+    def index(lib_src: str, dep_src: str, timeout: int = 10000):
+        root = tmp_path / f"{abs(hash((lib_src, dep_src, timeout)))}"
+        dep = _resolved(root, "k_dep", dep_src)
+        lib = _resolved(root, "k_lib", "import k_dep;\n\n" + lib_src)
+        return ModuleDisclosureIndex([lib, dep], timeout), lib
 
-    index = ModuleDisclosureIndex([lib, dep], 10000)
-    base = index._cache_key(lib, [dep])
-    assert index._cache_key(lib, [dep]) == base            # deterministic
-    assert index._cache_key(lib2, [dep]) != base           # own source
-    assert index._cache_key(lib, [dep2]) != base           # closure source
-    assert ModuleDisclosureIndex(
-        [lib, dep], 20000)._cache_key(lib, [dep]) != base  # budget
+    disclosing = _DISCLOSING_MK.format(visibility="public")
+    clean = _CLEAN_MK.format(visibility="public")
+    clean_other = clean.replace("fn mk(", "fn dep_fn(")
+    disclosing_other = disclosing.replace("fn mk(", "fn dep_fn(")
+
+    idx, lib = index(disclosing, clean_other)
+    base = idx._cache_key(lib)
+    # The closure really is non-empty, or the closure leg below is vacuous.
+    assert [m.path for m in idx._sub_closure(lib)] == [("k_dep",)]
+
+    idx2, lib2 = index(disclosing, clean_other)
+    assert idx2._cache_key(lib2) == base                      # deterministic
+
+    idx3, lib3 = index(clean, clean_other)
+    assert idx3._cache_key(lib3) != base                      # own source
+
+    idx4, lib4 = index(disclosing, disclosing_other)
+    assert idx4._cache_key(lib4) != base                      # closure source
+
+    idx5, lib5 = index(disclosing, clean_other, timeout=20000)
+    assert idx5._cache_key(lib5) != base                      # solver budget
+
+    # ... and the module's own PATH, so two byte-identical files at different
+    # paths stay distinct entries in the shared cache rather than one
+    # answering for the other.  The key's docstring claimed this and nothing
+    # measured it (CodeRabbit, PR #1402).
+    root = tmp_path / "path_leg"
+    dep6 = _resolved(root, "k_dep", clean_other)
+    twin = _resolved(root, "k_twin", "import k_dep;\n\n" + disclosing)
+    idx6 = ModuleDisclosureIndex([twin, dep6], 10000)
+    assert twin.source == index(disclosing, clean_other)[1].source, (
+        "the path leg is only meaningful while the two sources are identical"
+    )
+    assert idx6._cache_key(twin) != base
 
 
 def test_1399_the_manifest_cache_is_bounded(tmp_path: Path) -> None:
@@ -968,8 +1006,15 @@ public fn f(@Int -> @Int)
 }}
 """)
             index = disclosure.ModuleDisclosureIndex([mod], 10000)
-            assert index.disclosed_in(("boundlib",)) == frozenset()
-            assert len(disclosure._CACHE) <= 2, len(disclosure._CACHE)
+            assert index.disclosed_in(("boundlib",)) == {}
+            # EXACT, not a bound: every module here discloses nothing, so a
+            # cache that declined to store an empty manifest would satisfy
+            # `<= 2` while storing nothing at all, and the cell would pass
+            # without exercising either insertion or eviction (CodeRabbit,
+            # PR #1402).
+            assert len(disclosure._CACHE) == min(i + 1, 2), (
+                i, len(disclosure._CACHE)
+            )
     finally:
         disclosure._MAX_ENTRIES = original_max
         disclosure.clear_cache()
@@ -1057,3 +1102,552 @@ def test_1399_sub_closure_equals_what_the_resolver_hands_a_standalone_run(
             f"but `vera verify` would resolve\n"
             f"  {theirs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cost: one verification per consulted module, and no stack per hop
+# ---------------------------------------------------------------------------
+
+def _chain_tree(tmp_path: Path, depth: int) -> Path:
+    """`entry` -> `m<depth-1>` -> ... -> `m0`, disclosing at the bottom.
+
+    Every hop matches on the hop below and rebuilds the payload through an
+    unguarded narrowing, so every module in the chain is genuinely consulted
+    and the bottom's disclosure has to travel the whole way up.  The worst
+    case for the manifest by construction.
+    """
+    files: dict[str, str] = {"m0": _DISCLOSING_MK.format(visibility="public")}
+    for i in range(1, depth):
+        files[f"m{i}"] = (
+            f"import m{i - 1};\n\n"
+            + _RELAY.format(name="mk", call=f"m{i - 1}::mk")
+        )
+    files["entry"] = (
+        f"import m{depth - 1};\n\n"
+        + _USE_IT.format(call=f"m{depth - 1}::mk").replace("use_it", "top")
+    )
+    return _tree(tmp_path, files)["entry"]
+
+
+def _checked(entry: Path):
+    """Everything `cmd_verify` does BEFORE contract verification.
+
+    Split out so a cell can wrap the verification phase alone.  The entry's
+    own type-check recurses once per import hop through
+    `_check_module_bodies`, which is base behaviour — 126 frames for a
+    40-module chain on `release/v0.2.0` and 124 on this branch — and folding
+    it into a stack budget would measure the checker rather than the manifest.
+    """
+    from vera.checker import typecheck_with_artifacts
+    from vera.parser import parse
+    from vera.resolver import ModuleResolver
+    from vera.transform import transform
+
+    source = entry.read_text(encoding="utf-8")
+    program = transform(parse(source, file=str(entry)))
+    resolver = ModuleResolver(_root=entry.parent)
+    resolved = resolver.resolve_imports(program, entry)
+    assert not resolver.errors, resolver.errors
+    diags, artifacts = typecheck_with_artifacts(
+        program, source, file=str(entry), resolved_modules=resolved,
+    )
+    assert not [d for d in diags if d.severity == "error"], diags
+    return source, program, resolved, artifacts
+
+
+def _verify_checked(entry: Path, source, program, resolved, artifacts):
+    from vera.verifier import verify
+
+    return verify(
+        program, source, file=str(entry), resolved_modules=resolved,
+        expr_types=artifacts.expr_semantic_types,
+        expr_target_types=artifacts.expr_target_types,
+    )
+
+
+def _cold_verify_path(entry: Path):
+    """`cmd_verify`'s pipeline, in-process, returning the VerifyResult."""
+    source, program, resolved, artifacts = _checked(entry)
+    return resolved, _verify_checked(
+        entry, source, program, resolved, artifacts,
+    )
+
+
+def _frame_depth() -> int:
+    frame, n = sys._getframe(), 0
+    while frame is not None:
+        n += 1
+        frame = frame.f_back
+    return n
+
+
+def test_1399_a_deep_chain_does_not_grow_the_python_stack(
+    tmp_path: Path,
+) -> None:
+    """The manifest must cost frames per RUN, not frames per import hop.
+
+    Computing a manifest lazily and letting the answer recurse nests a whole
+    verify pipeline per hop, and the Python stack — not the closure — then
+    becomes the binding limit: a 70-module chain reported `E699` on a program
+    that verifies clean without the manifest at all, and the warm session
+    raised `RecursionError` into the LSP (adversarial review of PR #1402).
+
+    Asserted by BUDGET rather than by counting frames, so it is deterministic:
+    the limit is set just above this test's own depth, leaving far less
+    headroom than a frame-per-hop implementation needs (~3 frames per module,
+    so ~190 at this depth) and far more than the bottom-up one does (a
+    constant ~50, whatever the depth).  Measured relative to the live depth
+    because pytest's own stack is not a constant, and wrapped around the
+    VERIFY phase alone — see :func:`_checked` for why the entry's own
+    type-check is deliberately outside it.
+    """
+    depth = 60
+    entry = _chain_tree(tmp_path, depth)
+    source, program, resolved, artifacts = _checked(entry)
+    original = sys.getrecursionlimit()
+    sys.setrecursionlimit(_frame_depth() + 120)
+    try:
+        result = _verify_checked(
+            entry, source, program, resolved, artifacts,
+        )
+    finally:
+        sys.setrecursionlimit(original)
+
+    assert len(resolved) == depth, len(resolved)
+    verdict = [
+        (o.status, o.error_code) for o in result.obligations
+        if o.kind == "ensures"
+    ]
+    assert verdict == [("tier3", "E534")], (
+        f"a {depth}-deep chain did not carry the disclosure: {verdict}"
+    )
+
+
+def test_1399_a_deep_chain_verifies_each_module_once(tmp_path: Path) -> None:
+    """Cost is LINEAR in the closure, not quadratic — counted, not timed.
+
+    Two numbers, both deterministic where a wall clock is not:
+
+    * one manifest verification per module, exactly — the bottom-up walk's
+      whole purpose, and what "verify each module once" means; and
+    * a `check_program` count linear in the closure.  Each manifest
+      verification type-checks its module against that module's own closure,
+      and `_check_module_bodies` recurses the whole chain inside every one of
+      them, so without a memo shared across the batch the same bodies are
+      re-checked once per module: ~1,800 sub-checks at this depth against the
+      ~120 a shared memo leaves.  The bound below separates those by an order
+      of magnitude, so it fails loudly rather than drifting.
+    """
+    from vera import disclosure
+    from vera.checker import core as checker_core
+
+    depth = 60
+    entry = _chain_tree(tmp_path, depth)
+
+    manifests: list[tuple[str, ...]] = []
+    checks = [0]
+    orig_verify = disclosure._verify_for_disclosure
+    orig_check = checker_core.TypeChecker.check_program
+
+    def counting_verify(mod, *args, **kwargs):  # type: ignore[no-untyped-def]
+        manifests.append(mod.path)
+        return orig_verify(mod, *args, **kwargs)
+
+    disclosure.clear_cache()
+    disclosure._verify_for_disclosure = counting_verify
+    try:
+        # Count `check_program` only across the VERIFY phase: the entry's own
+        # type-check runs one per resolved module on base too, and folding
+        # those in would hide the ratio this cell is about.
+        resolved, result = None, None
+        from vera.checker import typecheck_with_artifacts
+        from vera.parser import parse
+        from vera.resolver import ModuleResolver
+        from vera.transform import transform
+        from vera.verifier import verify
+
+        source = entry.read_text(encoding="utf-8")
+        program = transform(parse(source, file=str(entry)))
+        resolver = ModuleResolver(_root=entry.parent)
+        resolved = resolver.resolve_imports(program, entry)
+        _d, artifacts = typecheck_with_artifacts(
+            program, source, file=str(entry), resolved_modules=resolved,
+        )
+
+        def counting_check(self, prog):  # type: ignore[no-untyped-def]
+            checks[0] += 1
+            return orig_check(self, prog)
+
+        checker_core.TypeChecker.check_program = counting_check
+        try:
+            result = verify(
+                program, source, file=str(entry), resolved_modules=resolved,
+                expr_types=artifacts.expr_semantic_types,
+                expr_target_types=artifacts.expr_target_types,
+            )
+        finally:
+            checker_core.TypeChecker.check_program = orig_check
+    finally:
+        disclosure._verify_for_disclosure = orig_verify
+
+    assert sorted(manifests) == sorted({m.path for m in resolved}), (
+        f"{len(manifests)} manifest verifications for {len(resolved)} "
+        f"modules, {len(set(manifests))} distinct"
+    )
+    assert len(manifests) == depth, len(manifests)
+    assert checks[0] <= 3 * depth, (
+        f"{checks[0]} type-checks for a {depth}-module chain — linear is "
+        f"~{2 * depth}, quadratic is ~{depth * depth // 2}"
+    )
+    assert [
+        (o.status, o.error_code) for o in result.obligations
+        if o.kind == "ensures"
+    ] == [("tier3", "E534")]
+
+
+def test_1399_a_wide_fan_in_only_verifies_what_is_consulted(
+    tmp_path: Path,
+) -> None:
+    """Laziness is per module, not per import.
+
+    Thirty imports, one of them matched on: the manifest may verify that one
+    and must leave the other twenty-nine alone.  Without this the cost of the
+    feature would scale with a project's import list rather than with what it
+    actually reads.
+    """
+    from vera import disclosure
+
+    width = 30
+    # Distinct export names: 30 imports supplying one bare name is E155
+    # (spec 8.5.2.2), whatever the call sites say.
+    files = {
+        f"w{i}": _DISCLOSING_MK.format(
+            visibility="public",
+        ).replace("fn mk(", f"fn mk{i}(")
+        for i in range(width)
+    }
+    files["wentry"] = (
+        "".join(f"import w{i};\n" for i in range(width)) + "\n"
+        + _USE_IT.format(call="w7::mk7")
+    )
+    entry = _tree(tmp_path, files)["wentry"]
+
+    verified: list[tuple[str, ...]] = []
+    original = disclosure._verify_for_disclosure
+
+    def counting(mod, *args, **kwargs):  # type: ignore[no-untyped-def]
+        verified.append(mod.path)
+        return original(mod, *args, **kwargs)
+
+    disclosure.clear_cache()
+    disclosure._verify_for_disclosure = counting
+    try:
+        resolved, result = _cold_verify_path(entry)
+    finally:
+        disclosure._verify_for_disclosure = original
+
+    assert len(resolved) == width, len(resolved)
+    assert verified == [("w7",)], verified
+    assert [
+        (o.status, o.error_code) for o in result.obligations
+        if o.kind == "ensures"
+    ] == [("tier3", "E534")]
+
+
+# ---------------------------------------------------------------------------
+# The bare-name route must resolve the way the call does
+# ---------------------------------------------------------------------------
+
+#: `use_it` calls `mk`, and `mk` is BOTH a `where` helper of `use_it` and a
+#: public export of the imported module.  Lexical scope decides: the call
+#: reaches the helper, which is clean.
+_WHERE_SHADOW_MAIN = """\
+import wlib;
+
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0
+  }
+}
+where {
+  fn mk(@Int -> @Option<Nat>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    int_to_nat(@Int.0)
+  }
+}
+"""
+
+
+def test_1399_a_where_helper_shadow_is_not_read_as_the_import(
+    tmp_path: Path,
+) -> None:
+    """A `where` helper sharing a name with an import must not demote.
+
+    The over-rejecting side of a bare-name lookup is the safe one only while
+    it stays theoretical.  Here it lands as a false `E534` on a program whose
+    callee is local, lexically nearer, and clean — and the author's only route
+    to the answer is renaming a private helper (adversarial review of
+    PR #1402; base reports `verified`).
+
+    The verifier already resolves this call correctly everywhere else:
+    `_scoped_fn_lookup` walks the declaration's own `where_fns`, then each
+    enclosing parent's, before the flat imported registry.  The manifest
+    consult has to ask the same question, not a flatter one.
+    """
+    paths = _tree(tmp_path, {
+        "wlib": _DISCLOSING_MK.format(visibility="public"),
+        "wmain": _WHERE_SHADOW_MAIN,
+    })
+    result = _verify(paths["wmain"])
+    ens = _obl(result, "ensures", text="@Int.result >= 0")
+    assert (ens["status"], ens.get("error_code")) == ("verified", None), (
+        f"a clean `where` helper was demoted by a same-named import: "
+        f"{_triples(result)}"
+    )
+
+
+def test_1399_a_where_helper_does_not_hide_a_disclosed_import(
+    tmp_path: Path,
+) -> None:
+    """... and the scope walk must not become a blanket exemption.
+
+    The complement, and the reason the fix is a scope walk rather than "any
+    name a `where` block also declares is local": a DIFFERENT function in the
+    same file, with no helper of that name in scope, still reaches the import
+    and must still be demoted.  A guard keyed on the file rather than on the
+    call site would pass the cell above and lose this one.
+    """
+    paths = _tree(tmp_path, {
+        "wlib": _DISCLOSING_MK.format(visibility="public"),
+        "wmain": _WHERE_SHADOW_MAIN + "\n" + _USE_IT.format(
+            call="mk",
+        ).replace("use_it", "elsewhere"),
+    })
+    result = _verify(paths["wmain"])
+    verdicts = sorted(
+        (o["status"], o.get("error_code"))
+        for o in result["obligations"]
+        if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"
+    )
+    assert verdicts == [("tier3", "E534"), ("verified", None)], (
+        f"expected the helper-shadowed caller verified and the plain one "
+        f"demoted, got {verdicts}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The demotion has to say what caused it
+# ---------------------------------------------------------------------------
+
+def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
+    """Across an import, the E534 must name the callee, its file and its code.
+
+    In one file the reader already has the culprit: the `E504` that disclosed
+    the fact is in the same output. Across an import it is not, and cannot be
+    — the library's diagnostics belong to the library's run, which this one
+    discards on purpose — so a message that only says "a fact this run could
+    neither prove nor guard" is both uninformative and, of the importing run,
+    untrue: this run reported no such thing (adversarial review of PR #1402).
+
+    Four things are asserted, because three of them can be present while the
+    message is still useless: the callee's qualified name, the DEFINING file
+    (not the importing one), the line the library's own run put its `E504` on,
+    and that code.
+    """
+    paths = _tree(tmp_path, {
+        "lib": _DISCLOSING_MK.format(visibility="public"),
+        "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
+    })
+    lib_result = _verify(paths["lib"])
+    culprit = _obl(lib_result, "nat_bind")
+    assert culprit["status"] == "tier3_unguarded", culprit
+
+    result = _verify(paths["main"])
+    warnings = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(warnings) == 1, [w.get("error_code") for w in result["warnings"]]
+    text = warnings[0]["description"] + " " + warnings[0]["rationale"]
+    assert "lib::mk" in text, text
+    assert "lib.vera" in text, text
+    assert f":{culprit['location']['line']}" in text, (
+        f"the citation does not carry the library's own E504 line "
+        f"({culprit['location']['line']}): {text}"
+    )
+    assert "E504" in text, text
+    # ... and the untrue clause is gone: this run reported nothing of the kind.
+    assert "the run reported it as neither proved nor guarded" not in text, text
+
+
+def test_1399_the_in_module_e534_text_is_unchanged(tmp_path: Path) -> None:
+    """The one-file wording stays as #1373 left it.
+
+    There the `E504` really is beside the `E534`, and the run really did
+    report it — so the citation would be noise and the original sentence is
+    true. A fix that rewrote both would be changing a message it had no
+    finding against.
+    """
+    paths = _tree(tmp_path, {
+        "single": _DISCLOSING_MK.format(visibility="private")
+        + "\n" + _USE_IT.format(call="mk"),
+    })
+    result = _verify(paths["single"])
+    warnings = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(warnings) == 1, [w.get("error_code") for w in result["warnings"]]
+    # The WHOLE description, not a substring: a citation built from an empty
+    # site list renders "holds only from a fact of , which ..." — a sentence
+    # with a hole in it that every containment check still passes.
+    assert warnings[0]["description"] == (
+        "Postcondition in 'use_it' holds only from a fact this run could "
+        "neither prove nor guard. Contract will be checked at runtime."
+    ), warnings[0]["description"]
+    assert "the run reported it as neither proved nor guarded" in \
+        warnings[0]["rationale"], warnings[0]["rationale"]
+    # The culprit is in this output, which is why no citation is needed.
+    assert "E504" in [w.get("error_code") for w in result["warnings"]]
+
+
+def test_1399_a_citation_does_not_leak_between_functions(
+    tmp_path: Path,
+) -> None:
+    """A later function's demotion must not name an earlier one's callee.
+
+    The sites are per-function state with the same lifetime as the withheld
+    facts they describe. Left standing, the second `use_it` here would be
+    told its problem lies in a module it does not call — the failure mode of
+    every buffer that is appended to and not cleared.
+    """
+    paths = _tree(tmp_path, {
+        "liba": _DISCLOSING_MK.format(visibility="public"),
+        "libb": _DISCLOSING_MK.format(
+            visibility="public",
+        ).replace("fn mk(", "fn mk_b("),
+        "main": "import liba;\nimport libb;\n\n"
+        + _USE_IT.format(call="liba::mk").replace("use_it", "via_a")
+        + "\n"
+        + _USE_IT.format(call="libb::mk_b").replace("use_it", "via_b"),
+    })
+    result = _verify(paths["main"])
+    warnings = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(warnings) == 2, [w["description"] for w in warnings]
+    by_fn = {
+        ("via_a" if "via_a" in w["description"] else "via_b"):
+        w["description"]
+        for w in warnings
+    }
+    assert "liba::mk'" in by_fn["via_a"], by_fn["via_a"]
+    assert "libb::mk_b" not in by_fn["via_a"], by_fn["via_a"]
+    assert "libb::mk_b" in by_fn["via_b"], by_fn["via_b"]
+    assert "liba::mk'" not in by_fn["via_b"], by_fn["via_b"]
+
+
+# ---------------------------------------------------------------------------
+# The citation's grammar has to match what it is citing
+# ---------------------------------------------------------------------------
+
+#: A postcondition that needs a `@Nat` field from EACH of two calls: the inner
+#: match binds the more recent `@Nat`, so `@Nat.0` is the inner payload and
+#: `@Nat.1` the outer, and the sum is `>= 0` only if both are.
+_TWO_SITES_MAIN = """\
+{imports}
+
+public fn both(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{{
+  match {first}(@Int.0) {{
+    Some(@Nat) -> match {second}(@Int.0) {{
+      Some(@Nat) -> nat_to_int(@Nat.1) + nat_to_int(@Nat.0),
+      None -> nat_to_int(@Nat.0)
+    }},
+    None -> 0
+  }}
+}}
+"""
+
+
+def _e534(result: dict) -> dict:
+    hits = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(hits) == 1, [w.get("error_code") for w in result["warnings"]]
+    return hits[0]
+
+
+def test_1399_two_disclosed_modules_are_cited_in_the_plural(
+    tmp_path: Path,
+) -> None:
+    """Two callees in two modules: plural facts, plural modules.
+
+    The citation is assembled from a list, so it reached two sites and then
+    finished the sentence in the singular — "'liba::mk_a', … 'libb::mk_b', …,
+    which that module's own verification could neither prove nor guard",
+    naming two modules and then referring to one of them (review nit on
+    PR #1402).
+    """
+    paths = _tree(tmp_path, {
+        "liba": _DISCLOSING_MK.format(
+            visibility="public").replace("fn mk(", "fn mk_a("),
+        "libb": _DISCLOSING_MK.format(
+            visibility="public").replace("fn mk(", "fn mk_b("),
+        "main": _TWO_SITES_MAIN.format(
+            imports="import liba;\nimport libb;",
+            first="liba::mk_a", second="libb::mk_b"),
+    })
+    warning = _e534(paths["main"] and _verify(paths["main"]))
+    text = warning["description"]
+    assert "liba::mk_a" in text and "libb::mk_b" in text, text
+    assert "holds only from facts of" in text, text
+    assert "those modules' own verification" in text, text
+    assert "that module's own verification" not in text, text
+    rationale = warning["rationale"]
+    assert "These were disclosed instead" in rationale, rationale
+    assert "the defining modules' own verification reported them" in \
+        rationale, rationale
+
+
+def test_1399_two_functions_of_one_module_are_cited_as_one_module(
+    tmp_path: Path,
+) -> None:
+    """... but two callees in ONE module: plural facts, SINGULAR module.
+
+    The two nouns are counted separately, which is the whole reason the fix
+    is a count per noun rather than "more than one site, use plurals
+    everywhere". A single `len(sites) > 1` test passes the cell above and
+    gets this one wrong.
+    """
+    lib = (
+        _DISCLOSING_MK.format(visibility="public").replace("fn mk(", "fn mk_a(")
+        + "\n"
+        + _DISCLOSING_MK.format(visibility="public").replace("fn mk(", "fn mk_b(")
+    )
+    paths = _tree(tmp_path, {
+        "solo": lib,
+        "main": _TWO_SITES_MAIN.format(
+            imports="import solo;",
+            first="solo::mk_a", second="solo::mk_b"),
+    })
+    text = _e534(_verify(paths["main"]))["description"]
+    assert "solo::mk_a" in text and "solo::mk_b" in text, text
+    assert "holds only from facts of" in text, text
+    assert "that module's own verification" in text, text
+    assert "those modules'" not in text, text
+
+
+def test_1399_one_site_stays_singular(tmp_path: Path) -> None:
+    """The singular is not collateral damage of the plural."""
+    paths = _tree(tmp_path, {
+        "lib": _DISCLOSING_MK.format(visibility="public"),
+        "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
+    })
+    warning = _e534(_verify(paths["main"]))
+    assert "holds only from a fact of" in warning["description"], warning
+    assert "that module's own verification" in warning["description"], warning
+    assert "This one was disclosed instead" in warning["rationale"], warning
+    assert "the defining module's own verification reported it" in \
+        warning["rationale"], warning
