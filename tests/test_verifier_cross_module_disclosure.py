@@ -973,3 +973,87 @@ public fn f(@Int -> @Int)
     finally:
         disclosure._MAX_ENTRIES = original_max
         disclosure.clear_cache()
+
+
+# ---------------------------------------------------------------------------
+# The sub-closure IS what the resolver would hand a standalone run
+# ---------------------------------------------------------------------------
+
+#: A tree with a transitive level under a direct import, and a diamond inside
+#: it.  `otop` is where the orders can disagree: its own closure contains
+#: transitive-only modules (`oc`, `od`, `oe`) reached through two paths, and
+#: `od` is reachable from both arms.  Without that shape every module's
+#: closure is direct-only and any traversal order looks correct.
+_ORDER_TREE = {
+    "oc": [],
+    "od": [],
+    "oe": [],
+    "oa": ["oc", "od"],
+    "ob": ["od", "oe"],
+    "otop": ["oa", "ob"],
+    "oentry": ["otop"],
+}
+
+
+def _order_sources() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name, imports in _ORDER_TREE.items():
+        header = "".join(f"import {i};\n" for i in imports)
+        out[name] = (header + "\n" if header else "") + f"""\
+public fn {name}(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  @Int.0
+}}
+"""
+    return out
+
+
+def test_1399_sub_closure_equals_what_the_resolver_hands_a_standalone_run(
+    tmp_path: Path,
+) -> None:
+    """A DIFFERENTIAL, because the claim is a cross-component equality.
+
+    The manifest's premise is that it says exactly what `vera verify <module>`
+    says, and that only holds if the module is verified against the closure
+    that command would build — same members, same `direct` flags, IN THE SAME
+    ORDER.  Order is not cosmetic: several harvests over `_resolved_modules`
+    are first-wins `setdefault`s (imported return types feeding generic
+    discovery among them), so two orders can select different declarations.
+
+    A hand-rolled traversal is exactly the thing that drifts from the rule it
+    imitates, so this compares against `ModuleResolver` itself rather than
+    against a restatement of its ordering.  Found by CodeRabbit on PR #1402: a
+    LIFO stack walk emitted `otop`'s transitive-only modules as
+    `od, oc, oe` where the resolver emits `oc, od, oe`.
+    """
+    from vera.disclosure import ModuleDisclosureIndex
+    from vera.parser import parse
+    from vera.resolver import ModuleResolver
+    from vera.transform import transform
+
+    paths = _tree(tmp_path, _order_sources())
+    entry = paths["oentry"]
+    source = entry.read_text(encoding="utf-8")
+    program = transform(parse(source, file=str(entry)))
+    resolver = ModuleResolver(_root=entry.parent)
+    closure = resolver.resolve_imports(program, entry)
+    assert not resolver.errors, resolver.errors
+    assert len(closure) == len(_ORDER_TREE) - 1, [m.path for m in closure]
+
+    index = ModuleDisclosureIndex(closure, 10000)
+    for mod in closure:
+        mine = [(m.path, m.direct) for m in index._sub_closure(mod)]
+        standalone = ModuleResolver(_root=mod.file_path.parent)
+        theirs = [
+            (m.path, m.direct)
+            for m in standalone.resolve_imports(mod.program, mod.file_path)
+        ]
+        assert mine == theirs, (
+            f"{'.'.join(mod.path)}: the manifest verifies it against\n"
+            f"  {mine}\n"
+            f"but `vera verify` would resolve\n"
+            f"  {theirs}"
+        )

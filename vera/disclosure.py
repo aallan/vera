@@ -118,11 +118,12 @@ class ModuleDisclosureIndex:
     # -- internals ------------------------------------------------------
 
     def _sub_closure(self, mod: ResolvedModule) -> list[ResolvedModule]:
-        """*mod*'s OWN transitive import closure, `direct` re-derived.
+        """*mod*'s OWN closure, exactly as ``ModuleResolver`` would build it.
 
-        Exactly what ``vera verify <mod>`` resolves for itself, so the
-        manifest is the answer that command would give.  Two halves, and both
-        are load-bearing:
+        The manifest's premise is that it says what ``vera verify <mod>``
+        says, and that only holds if *mod* is verified against the closure
+        that command resolves for itself — same members, same ``direct``
+        flags, IN THE SAME ORDER.  Three parts, all load-bearing:
 
         * ``direct`` is re-derived from *mod*'s own ``import`` declarations.
           The flags on ``self._closure`` describe what the ENTRY program
@@ -139,29 +140,63 @@ class ModuleDisclosureIndex:
           base is declared wholly disclosed, both arms inherit it, and the
           entry is demoted on the strength of a type error in a file that
           type-checks perfectly well on its own.
+        * The ORDER mirrors ``ModuleResolver.resolve_imports``: direct
+          imports first in source order, then everything else in the order
+          ``_resolve_single`` inserts it into the cache, which recurses into
+          a module's own imports BEFORE inserting it — a depth-first
+          POST-order, each module's imports taken in source order.  Order is
+          not cosmetic here: several harvests over ``_resolved_modules`` are
+          first-wins ``setdefault``s — imported return types feeding
+          monomorphization discovery among them — so two orders can select
+          different declarations for one name.  A LIFO stack walk over a set
+          gave `otop` the transitive-only order ``od, oc, oe`` where the
+          resolver gives ``oc, od, oe`` (CodeRabbit, PR #1402), and iterating
+          a set of paths made even that much depend on hash order.  The
+          differential in ``tests/test_verifier_cross_module_disclosure.py``
+          compares against ``ModuleResolver`` itself rather than against a
+          restatement of this paragraph.
         """
-        own = {tuple(imp.path) for imp in mod.program.imports}
-        reachable: list[ResolvedModule] = []
-        seen = {mod.path}
-        stack = [p for p in own if p != mod.path]
-        while stack:
-            path = stack.pop()
-            if path in seen:
+        # Source order, de-duplicated — what `resolve_imports` iterates.
+        own = list(dict.fromkeys(
+            tuple(imp.path) for imp in mod.program.imports
+        ))
+        own_set = set(own)
+
+        # `ModuleResolver._resolve_single`'s cache-insertion order: recurse
+        # first, insert after.  `visited` starts holding *mod* itself, which
+        # both keeps a hand-built self-import from recursing (the resolver
+        # refuses a cycle outright, E011) and makes the recursion strictly
+        # shrink the closure at every level.
+        cache_order: list[tuple[str, ...]] = []
+        visited: set[tuple[str, ...]] = {mod.path}
+
+        def visit(path: tuple[str, ...]) -> None:
+            if path in visited:
+                return
+            visited.add(path)
+            dep = self._by_path.get(path)
+            if dep is None:
+                return  # unresolvable here, as it would be for the resolver
+            for sub in dep.program.imports:
+                visit(tuple(sub.path))
+            cache_order.append(path)
+
+        for path in own:
+            visit(path)
+
+        # `resolve_imports`' emission: the direct imports in source order,
+        # then the remaining cache in insertion order, de-duplicated.
+        emitted: set[tuple[str, ...]] = set()
+        out: list[ResolvedModule] = []
+        for path in [*own, *cache_order]:
+            if path in emitted:
                 continue
-            seen.add(path)
             dep = self._by_path.get(path)
             if dep is None:
                 continue
-            reachable.append(replace(dep, direct=(path in own)))
-            stack.extend(tuple(imp.path) for imp in dep.program.imports)
-        # Source order for the direct imports, matching what the resolver
-        # hands a standalone run (it emits direct imports first, in the order
-        # the file names them, then the transitive-only modules).
-        order = {tuple(imp.path): i for i, imp in enumerate(mod.program.imports)}
-        return sorted(
-            reachable,
-            key=lambda m: (0, order[m.path]) if m.direct else (1, 0),
-        )
+            emitted.add(path)
+            out.append(replace(dep, direct=(path in own_set)))
+        return out
 
     def _cache_key(
         self, mod: ResolvedModule, sub: list[ResolvedModule],
