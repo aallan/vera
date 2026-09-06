@@ -4678,17 +4678,39 @@ class ContractVerifier:
                     arm_env = self._fresh_pattern_env(
                         arm.pattern, slot_env, smt, track=True,
                     )
+                # #1403: the arm's sub-pattern bindings carry facts from
+                # their fields' DECLARED types, and this walk is the third
+                # consumer of them — the narrowing walk and `_walk_for_calls`
+                # already seed them, so a downstream `@Nat` narrowing and a
+                # call precondition in the arm body both discharge from a
+                # bound payload's type while a body `assert` over the same
+                # payload could not, and fell to a runtime check whatever the
+                # callee did.  The SAME pure helper, so the three consumers
+                # cannot come to disagree about what an arm establishes — and
+                # so the disclosure rule reaches the assert for free: when the
+                # callee's own obligation was disclosed the helper routes its
+                # facts to `smt._tainted_facts` and returns none, which is
+                # what keeps the honest E535 where the fact is not established.
+                arm_assumptions = assumptions
+                if scrutinee_z3 is not None and isinstance(
+                    arm.pattern, ast.ConstructorPattern,
+                ):
+                    arm_facts = self._subpattern_source_facts(
+                        expr.scrutinee, scrutinee_z3, arm.pattern, smt,
+                    )
+                    if arm_facts:
+                        arm_assumptions = [*assumptions, *arm_facts]
                 if pat_cond is not None:
                     smt._path_conditions.append(pat_cond)
                     try:
                         self._walk_for_primitive_op_obligations(
-                            decl, arm.body, smt, arm_env, assumptions,
+                            decl, arm.body, smt, arm_env, arm_assumptions,
                         )
                     finally:
                         smt._path_conditions.pop()
                 else:
                     self._walk_for_primitive_op_obligations(
-                        decl, arm.body, smt, arm_env, assumptions,
+                        decl, arm.body, smt, arm_env, arm_assumptions,
                     )
             return
 

@@ -105,6 +105,8 @@ Assertions serve two purposes:
 1. They document intermediate invariants for human readers.
 2. They provide "stepping stones" for the verifier, breaking complex proofs into smaller steps.
 
+An assertion inside a `match` arm is discharged against **the facts that arm establishes**, including the declared-type facts its constructor sub-pattern bindings carry ([#1403](https://github.com/aallan/vera/issues/1403)).  Binding `Some(@Nat)` off an `Option<Nat>` therefore proves `assert(nat_to_int(@Nat.0) >= 0)` at Tier 1, exactly as the same predicate discharges as a `@Nat` narrowing or as a callee's precondition in that arm — one arm establishes one set of facts, and every obligation in it reads them.  The disclosure rule of §6.4.2 applies unchanged: where the callee's own obligation for that fact was disclosed rather than discharged, the fact is withheld and the assertion falls to its runtime check (**E535**).
+
 ### 6.2.6 Assumptions (`assume`)
 
 An assumption is a predicate that the compiler MUST accept as true without proof:
