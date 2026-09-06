@@ -1501,9 +1501,31 @@ public fn handle(@Request -> @Response)
 
     def test_dispatch_table_is_32_slots(self) -> None:
         """Map family lands at slots 16+; the table must grow from the
-        cli world's 16 (design §1.3)."""
+        cli world's (design §1.3)."""
         wat = _emit_server(HTTP_SERVER_EXAMPLE)
         assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
+
+    def test_no_two_ops_share_a_dispatch_slot(self) -> None:
+        """The two op tables compose into ONE index space in this world.
+
+        `_OPS` and `_MAP_OPS` are written apart and their slots are picked
+        by hand, so nothing but this stops a new cli op from taking a map
+        op's `elem` index — which does not fail to parse, it silently
+        dispatches one to the other.  #754 nearly did exactly that.
+        """
+        from vera.codegen.wasi import _MAP_OPS, _OPS, _SERVER_TABLE_SIZE
+
+        seen: dict[int, str] = {}
+        for table in (_OPS, _MAP_OPS):
+            for name, spec in table.items():
+                assert spec.slot not in seen, (
+                    f"{name} and {seen[spec.slot]} share slot {spec.slot}"
+                )
+                seen[spec.slot] = name
+        assert max(seen) < _SERVER_TABLE_SIZE, (
+            f"slot {max(seen)} ({seen[max(seen)]}) is outside the server "
+            f"dispatch table ({_SERVER_TABLE_SIZE} entries)"
+        )
 
     def test_every_wasi_version_is_0_2_0(self) -> None:
         wat = _emit_server(MAP_ORDER_HANDLER)
@@ -1641,8 +1663,16 @@ class TestCliWorldPin:
         )
 
     def test_cli_emission_carries_no_server_machinery(self) -> None:
+        from vera.codegen.wasi import _CLI_TABLE_SIZE
+
         wat = emit_wasi_component(_compile_ok(KITCHEN_SINK))
-        assert '(table $wasi_tbl (export "wasi_tbl") 16 16 funcref)' in wat
+        # Read from the emitter's own constant rather than pinned: the size
+        # is one past the highest cli slot, so adding an op (#754 did) moves
+        # it, and a literal here would only record when someone last looked.
+        assert (
+            f'(table $wasi_tbl (export "wasi_tbl") '
+            f'{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)'
+        ) in wat
         assert "wasi:http" not in wat
         assert "serve_handle" not in wat
         assert "$op_map_" not in wat

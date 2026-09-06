@@ -169,8 +169,20 @@ def _run(tmp_path: Path, source: str, arg: int,
     return _cli("run", str(p), "--fn", fn, "--", str(arg))
 
 
+#: What a tripped `@Int` -> `@Nat` narrowing guard says.  Since #754 the guard
+#: signals `vera.nat_guard_trap` before its `unreachable`, so the trap carries
+#: its own kind and its own message instead of the generic instruction name —
+#: which is a STRONGER reading here, not merely a different one: "unreachable"
+#: also matches a non-exhaustive match and a shadow-stack overflow, either of
+#: which would have read as "the narrowing guard fired".
+_NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
+
+
 def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
-    return proc.returncode != 0 and "unreachable" in (proc.stdout + proc.stderr)
+    out = proc.stdout + proc.stderr
+    return proc.returncode != 0 and (
+        _NAT_GUARD_TRAP in out or "unreachable" in out
+    )
 
 
 # ---------------------------------------------------------------------------

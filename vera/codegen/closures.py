@@ -390,6 +390,10 @@ class ClosureLiftingMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard inside closure bodies too.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #754: per-formal base type names for every effect
+        # operation, so an op call site guards its narrowing
+        # arguments the way a function call site does.
+        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion inside closure bodies too.
         ctx.set_fn_byte_params(self._fn_byte_params)
@@ -913,6 +917,12 @@ class ClosureLiftingMixin:
         # propagation the per-function merge does in functions.py).
         self._needs_overflow_trap = (
             self._needs_overflow_trap or ctx._needs_overflow_trap
+        )
+        # #754: the narrowing guard's own trap signal, propagated at the
+        # SAME merge for the same reason — a guard emitted while lowering a
+        # postcondition or a lifted closure body sets it on that context.
+        self._needs_nat_guard_trap = (
+            self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
         )
         # #773: structural-Eq helpers generated inside a lifted closure body.
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)

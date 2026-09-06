@@ -361,6 +361,14 @@ class AssemblyMixin:
                 "(func $vera.overflow_trap))"
             )
 
+        # #754: import nat_guard_trap so the @Int -> @Nat narrowing guard
+        # surfaces the precise `kind="nat_guard"` diagnostic.
+        if self._needs_nat_guard_trap:
+            parts.append(
+                '  (import "vera" "nat_guard_trap" '
+                "(func $vera.nat_guard_trap))"
+            )
+
         # Import State<T> host functions if needed.
         # #914: composite T (`Tuple<Int, Int>`, `Option<Int>`) is routed
         # through the injective `mangle_type_name` (#775) for BOTH the

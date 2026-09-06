@@ -1588,6 +1588,7 @@ public fn main(@Unit -> @Int)
             "stack_exhausted",
             "unreachable",
             "overflow",
+            "nat_guard",
             "unknown",
         }
         assert set(_TRAP_FIX_PARAGRAPHS.keys()) == expected_kinds, (

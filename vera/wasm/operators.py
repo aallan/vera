@@ -2178,15 +2178,23 @@ class OperatorsMixin:
             end                ;;   by vera/codegen/api.py:_classify_trap
             local.get $tmp     ;; restore the (now-checked) value
 
-        Like the #520 guard, the bare ``unreachable`` trap reuses the
-        existing taxonomy; a dedicated "negative-nat" trap kind with a
-        tailored Fix paragraph (#754) needs the contract-fail host-import
-        channel wired through to a guard emitted mid-expression and is
-        tracked as a follow-up.  The guard never fires on a value
+        The trap carries its OWN kind since #754: the guard calls
+        ``vera.nat_guard_trap`` immediately before the ``unreachable``, so
+        the runtime reports ``kind="nat_guard"`` with a Fix naming the
+        `requires(... >= 0)` that would discharge it, instead of the generic
+        "Reached `unreachable`" paragraph about non-exhaustive matches and
+        shadow-stack overflow — three causes, none of which is this one.
+        Modelled on #808's ``kind="overflow"`` signal, which solved the same
+        problem for the arithmetic guards.  The guard never fires on a value
         the verifier proved non-negative, so a Tier-1-clean program pays
         only dead instructions, never a trap.
         """
-        return self._emit_negative_i64_guard(value)
+        # Beside the emission, not at module assembly: this flag is what
+        # declares the import, so a guard emitted without it would reference
+        # an undeclared `$vera.nat_guard_trap` (the #808 / #1376 discipline).
+        self._needs_nat_guard_trap = True
+        return self._emit_negative_i64_guard(
+            value, signal="$vera.nat_guard_trap")
 
     def _emit_int_widen_guard(self, value: list[str]) -> list[str]:
         """Emit a guarded value that traps if a @Nat exceeds i64.MAX (#813).
@@ -2207,21 +2215,30 @@ class OperatorsMixin:
         """
         return self._emit_negative_i64_guard(value)
 
-    def _emit_negative_i64_guard(self, value: list[str]) -> list[str]:
+    def _emit_negative_i64_guard(
+        self, value: list[str], *, signal: str | None = None,
+    ) -> list[str]:
         """Shared mechanism behind the @Int->@Nat narrowing guard (#552) and
         the @Nat->@Int widening guard (#813): leave *value* on the stack, but
-        trap (bare ``unreachable``, classified by ``api.py:_classify_trap``)
-        when it reads as a negative i64.  Both callers reduce to this same
-        sign-bit check today; they stay distinct entry points because each has
-        its own deferred dedicated trap kind (#754 narrowing, and a widening
-        kind modelled on #808's ``kind="overflow"``) that will give them
-        tailored Fix paragraphs.
+        trap when it reads as a negative i64.  Both callers reduce to this
+        same sign-bit check; they stay distinct entry points because they
+        are distinct BOUNDARIES with distinct remedies, which is what
+        *signal* carries.
+
+        *signal* is a host import called immediately before the
+        ``unreachable``, so the runtime classifies the trap by which guard
+        fired rather than by the instruction they share (#808's mechanism).
+        The narrowing entry point passes ``$vera.nat_guard_trap`` (#754); the
+        widening one passes ``None`` and keeps the generic kind until its own
+        dedicated one lands.  The CALLER raises the corresponding
+        ``_needs_…`` flag — the import's declaration and its call must be
+        decided together, and only the caller knows which import it wants.
 
             [value]
             local.tee $tmp     ;; leave value on stack, copy to temp
             i64.const 0
             i64.lt_s           ;; value < 0?
-            if unreachable end ;; trap
+            if <signal> unreachable end
             local.get $tmp     ;; restore the (now-checked) value
         """
         tmp = self.alloc_local("i64")
@@ -2231,6 +2248,7 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",
             "if",
+            *([f"  call {signal}"] if signal is not None else []),
             "  unreachable",
             "end",
             f"local.get {tmp}",

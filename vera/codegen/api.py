@@ -877,6 +877,23 @@ def execute(
         "vera", "overflow_trap", overflow_trap_type, host_overflow_trap,
     )
 
+    # Host function: vera.nat_guard_trap() -> ()  (#754)
+    # The narrowing twin of the channel above: signals that an @Int -> @Nat
+    # binding guard caught a negative, so the trap reports
+    # `kind="nat_guard"` and a Fix naming the `requires(... >= 0)` that would
+    # discharge it — rather than the generic `unreachable` paragraph, whose
+    # three stated causes are a non-exhaustive match, a compiler assertion,
+    # and shadow-stack overflow, none of which is this.
+    last_nat_guard: list[object] = []
+
+    def host_nat_guard_trap() -> None:
+        last_nat_guard.append(True)
+
+    nat_guard_trap_type = wasmtime.FuncType([], [])
+    linker.define_func(
+        "vera", "nat_guard_trap", nat_guard_trap_type, host_nat_guard_trap,
+    )
+
     # State<T> host functions
     state_store: dict[str, list[int | float]] = {}
     register_state(linker, result.state_types, initial_state, state_store)
@@ -1343,7 +1360,7 @@ def execute(
             # don't admit a generic suggestion: contract_violation /
             # unknown).
             kind, message, fix = _classify_trap(
-                exc, last_violation, last_overflow,
+                exc, last_violation, last_overflow, last_nat_guard,
             )
         else:
             # Diagnostic escape hatch (ENVIRONMENT.md,

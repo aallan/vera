@@ -93,9 +93,14 @@ def _assert_traps(source: str, fn: str, args: list[int]) -> None:
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
         execute(result, fn_name=fn, args=args)
-    # The widen guard is a bare `unreachable` net (no dedicated trap kind yet),
-    # so pin the kind to prove it is the guard firing, not an unrelated failure.
-    assert exc_info.value.kind == "unreachable", exc_info.value.kind
+    # Pin the kind to prove it is a GUARD firing, not an unrelated failure.
+    # Two kinds are admissible because two guards live at these sites: the
+    # `@Int` -> `@Nat` narrowing guard carries its own `nat_guard` kind
+    # (#754), while the `@Nat` -> `@Int` widen guard still trips the bare
+    # `unreachable` net (its dedicated kind is a follow-up).
+    assert exc_info.value.kind in ("unreachable", "nat_guard"), (
+        exc_info.value.kind
+    )
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:

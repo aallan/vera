@@ -5756,7 +5756,6 @@ class ContractVerifier:
                 # #754 unguarded class (`IO.sleep`'s `@Nat` formal, a
                 # user-declared effect's op) and discloses honestly.
                 op_effect = getattr(op, "parent_effect", None)
-                op_guarded = op_effect in ("State", "Exn")
                 op_site = ("State-op argument" if op_effect == "State"
                            else "effect-operation argument")
                 # The SHARED triple, not a local copy of two of its three
@@ -5781,12 +5780,29 @@ class ContractVerifier:
                 # Routing through `_obligate_binding_triple` means the three
                 # arms cannot drift apart again by omission.
                 for arg, formal in zip(expr.args, param_types):
+                    # Guardedness is PER FORMAL since #754.  Two routes reach
+                    # a guard and they answer different questions: `State`
+                    # and `Exn` are guarded whatever their formal says,
+                    # because their formal IS a type variable and the cell
+                    # supplies the width; every other operation is guarded
+                    # exactly when its DECLARED formal resolves to a concrete
+                    # `@Nat` or `@Int`, which is the condition codegen's
+                    # `_guard_effect_op_arg` reads off the same registry.  A
+                    # generic formal instantiated to `@Nat` at this call site
+                    # is obligated (the side-table sees it) and NOT guarded
+                    # (the declaration codegen reads does not), so the two
+                    # must be asked separately rather than folded into one
+                    # per-operation flag.
+                    op_guarded = (
+                        op_effect in ("State", "Exn")
+                        or self._effect_op_formal_guarded(op_effect, formal)
+                    )
                     self._obligate_binding_triple(
                         decl, arg, formal, smt, slot_env, assumptions,
                         site=op_site,
                         nat_guarded=op_guarded, widen_guarded=op_guarded,
                         # Only the `throw` payload boundary lowers a
-                        # refinement predicate (#1268); the State write
+                        # refinement predicate (#1268); the other write
                         # boundaries emit sign guards alone, so their
                         # refined arm stays honestly unguarded.
                         refined_guarded=op_effect == "Exn",
@@ -10754,6 +10770,36 @@ class ContractVerifier:
         runtime guard codegen never emits — unlike ``@Byte`` (an `i32`) or
         ``@Array`` (a pair), whose binders DO lower, so those stay guarded."""
         return isinstance(ty, RefinedType) and ty.base == UNIT
+
+    @staticmethod
+    def _effect_op_formal_guarded(
+        effect_name: str | None, formal: Type | None,
+    ) -> bool:
+        """Whether codegen guards an argument bound into effect-operation
+        *formal* — the semantic mirror of ``_guard_effect_op_arg``'s
+        condition (``vera/wasm/calls.py``); KEEP IN SYNC (#754).
+
+        Two conditions, and both are about whether a guard can exist at all.
+
+        First, the OPERATION has to be one codegen lowers: a user-declared
+        effect makes its whole enclosing function an E603 skip, so there is
+        no run for a guard to protect and claiming one would repeat #1268's
+        promise about a runtime that is never reached.  The roster is
+        :data:`~vera.narrowing.COMPILABLE_EFFECTS`, read by codegen's own
+        `_is_compilable` to make the same decision.
+
+        Second, the FORMAL has to resolve to a concrete `@Nat` or `@Int`,
+        which is what codegen's registry records and what its narrowing /
+        widening guards key on.  A formal that is a type PARAMETER records
+        nothing there, so a generic operation instantiated to `@Nat` at this
+        call site is obligated and unguarded — which is why this asks about
+        the declared formal rather than about the instantiated target
+        `_nat_binding_target` resolves.
+        """
+        if effect_name not in narrowing.COMPILABLE_EFFECTS:
+            return False
+        base = getattr(formal, "base", formal)
+        return getattr(base, "name", None) in ("Nat", "Int")
 
     @staticmethod
     def _refined_bind_site_guarded(site: str) -> bool:

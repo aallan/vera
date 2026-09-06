@@ -199,7 +199,19 @@ _OPS: dict[str, _OpSpec] = {
         ("get-stderr", "bwf"), ("error",),
     ),
     "overflow_trap": _op(15, "", ""),
+    # #754.  Slot 26, not 17: the SERVER world composes this table with
+    # `_MAP_OPS` (16-25) into one index space, so a cli-looking gap here is
+    # what keeps the two from sharing an `elem` index.  The cli table pads to
+    # match, which costs ten null funcrefs and no instructions.
+    "nat_guard_trap": _op(26, "", ""),
 }
+
+#: Entries the cli world's dispatch table holds — one past the highest slot
+#: in :data:`_OPS`, and the same number the core module imports.  Derived
+#: rather than written twice: the two spellings sat 100 lines apart and a
+#: new op had to remember both, which is one more thing than the slot it
+#: already has to pick (#754 added a slot and found them).
+_CLI_TABLE_SIZE = max(spec.slot for spec in _OPS.values()) + 1
 
 _ALLOC_OPS = frozenset(n for n, s in _OPS.items() if s.needs_alloc)
 
@@ -878,7 +890,10 @@ def _transform_main(
 
     # --- appended machinery -----------------------------------------
     out = list(kept)
-    out.append('  (table $wasi_tbl (export "wasi_tbl") 16 16 funcref)')
+    out.append(
+        f'  (table $wasi_tbl (export "wasi_tbl") '
+        f"{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)"
+    )
     out.append(
         f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
         f"(mut i32) (i32.const {bump_start}))"
@@ -992,7 +1007,7 @@ def _adapter_fields(used: set[str], lay: _Layout) -> list[str]:
 
     fields: list[str] = [
         '  (import "env" "memory" (memory 1))',
-        '  (import "env" "tbl" (table 16 funcref))',
+        f'  (import "env" "tbl" (table {_CLI_TABLE_SIZE} funcref))',
         '  (import "env" "arena_ptr" (global $arena_ptr (mut i32)))',
     ]
     if lay.has_alloc:
@@ -1530,6 +1545,18 @@ def _op_contract_fail(lay: _Layout) -> str:
 def _op_overflow_trap(lay: _Layout) -> str:
     return (
         "  (func $op_overflow_trap\n"
+        "    unreachable\n"
+        "  )"
+    )
+
+
+def _op_nat_guard_trap(lay: _Layout) -> str:
+    """#754: the narrowing guard's signal.  Like `overflow_trap`, the shim
+    body is the trap itself — the SHIM NAME is what the host reads out of
+    the backtrace to classify it, since a component carries no host-side
+    channel the core path's `last_nat_guard` list could stand in for."""
+    return (
+        "  (func $op_nat_guard_trap\n"
         "    unreachable\n"
         "  )"
     )
@@ -2408,6 +2435,7 @@ _OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
     "random_bool": _op_random_bool,
     "contract_fail": _op_contract_fail,
     "overflow_trap": _op_overflow_trap,
+    "nat_guard_trap": _op_nat_guard_trap,
 }
 
 
@@ -2675,7 +2703,7 @@ _MAP_OPS: dict[str, _OpSpec] = {
 _SERVER_IO_OPS = frozenset({
     "print", "stderr", "time", "sleep",
     "random_int", "random_float", "random_bool",
-    "contract_fail", "overflow_trap",
+    "contract_fail", "overflow_trap", "nat_guard_trap",
 })
 
 #: Stage-C ops the server world REJECTS, with the family/reason named

@@ -34,6 +34,7 @@ let stdoutBuf = '';    // Captured IO.print output
 let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
 let lastOverflow = false; // #808: #798 integer-overflow guard fired this call
+let lastNatGuard = false; // #754: @Int -> @Nat narrowing guard fired this call
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 // #920: the WASM value type (`i32`/`i64`/`f64`) of each State<T> cell, keyed
 // by the mangled type suffix — the SAME key as `stateCells`.  Populated from
@@ -490,6 +491,16 @@ function hostContractFail(ptr, len) {
  */
 function hostOverflowTrap() {
   lastOverflow = true;
+}
+
+/**
+ * vera.nat_guard_trap() → signal that an @Int -> @Nat narrowing guard caught a
+ * negative; WASM executes unreachable.
+ * #754: the narrowing twin of `hostOverflowTrap`, so `call()` reports the
+ * boundary that failed rather than the instruction both guards share.
+ */
+function hostNatGuardTrap() {
+  lastNatGuard = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1788,6 +1799,11 @@ function buildImportObject(module, moduleBytes) {
   // #808: integer-overflow trap signal (declared by the #798 overflow guard)
   if (needed.has('overflow_trap')) {
     imports.vera.overflow_trap = hostOverflowTrap;
+  }
+
+  // #754: @Int -> @Nat narrowing trap signal (declared by the bind guard)
+  if (needed.has('nat_guard_trap')) {
+    imports.vera.nat_guard_trap = hostNatGuardTrap;
   }
 
   // State<T> bindings — dynamically created from import names.
@@ -3939,6 +3955,7 @@ export function call(fnName, ...args) {
   exitCode = null;
   lastViolation = '';
   lastOverflow = false;
+  lastNatGuard = false;
   try {
     return fn(...args);
   } catch (e) {
@@ -3953,6 +3970,10 @@ export function call(fnName, ...args) {
     // #808: integer-overflow guard fired before the trap
     if (lastOverflow && e instanceof WebAssembly.RuntimeError) {
       throw new Error('Integer overflow');
+    }
+    // #754: the @Int -> @Nat narrowing guard fired before the trap
+    if (lastNatGuard && e instanceof WebAssembly.RuntimeError) {
+      throw new Error('Negative value bound into a @Nat slot');
     }
     throw e;
   }
@@ -4006,6 +4027,7 @@ export function reset() {
   stderrBuf = '';
   lastViolation = '';
   lastOverflow = false;
+  lastNatGuard = false;
   exitCode = null;
   resetState();
   stdinQueue = [];

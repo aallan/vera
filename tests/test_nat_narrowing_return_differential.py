@@ -49,6 +49,13 @@ from vera.verifier import verify
 
 _KIND = "nat_bind"
 
+#: The `@Int` -> `@Nat` narrowing guard's trap kind.  It was the generic
+#: `unreachable` until #754 gave the guard its own `vera.nat_guard_trap`
+#: signal; pinning the dedicated kind is a STRONGER reading, since
+#: `unreachable` is also what a non-exhaustive match and a shadow-stack
+#: overflow produce and either would have read as "the guard fired".
+_NAT_GUARD_KIND = "nat_guard"
+
 # u64.MAX stored in an i64 slot reads back as -1; used by the #984 closure
 # controls to prove an @Nat -> @Nat closure return is NOT false-trapped.
 U64_MAX = 18446744073709551615
@@ -431,11 +438,11 @@ class TestClosureReturnNarrowingDifferential984:
         # ...and codegen makes good on the promise: a negative input traps
         # rather than returning it silently through the @Nat slot (the #984 bug).
         kind = _trap_kind(source, "go", neg)
-        assert kind == "unreachable", (
+        assert kind == _NAT_GUARD_KIND, (
             f"{label}: the verifier obligated this closure return, but "
             f"run({neg}) gave trap kind {kind!r} — expected the narrowing "
-            f"guard's bare `unreachable` net (None = no trap at all: an "
-            f"unsound silent negative @Nat)"
+            f"guard's own kind (None = no trap at all: an unsound silent "
+            f"negative @Nat)"
         )
         # ...while a non-negative input passes the per-leaf guard unharmed.
         assert _run(source, "go", 7) is not None, (
@@ -521,18 +528,19 @@ public fn go(@Int -> @Nat) requires(true) ensures(true) effects(pure)
 class TestClosureNarrowingBoundary984:
     """Sign-boundary behavior of the closure return guard (`result >= 0`):
     zero must SURVIVE (an off-by-one `i64.le_s` mutant would false-trap it),
-    the tightest negative and i64.MIN must trap with the bare `unreachable`
-    net.  Behavioral pins — not WAT-string matches — so a guard-comparison
+    the tightest negative and i64.MIN must trap with the narrowing guard's
+    own kind.  Behavioral pins — not WAT-string matches — so a guard-comparison
     regression is caught by execution, not by implementation coupling."""
 
     def test_zero_survives_the_guard(self) -> None:
         assert _run(_CLOSURE_BOUNDARY, "go", 0) == 0
 
     def test_minus_one_traps(self) -> None:
-        assert _trap_kind(_CLOSURE_BOUNDARY, "go", -1) == "unreachable"
+        assert _trap_kind(_CLOSURE_BOUNDARY, "go", -1) == _NAT_GUARD_KIND
 
     def test_i64_min_traps(self) -> None:
-        assert _trap_kind(_CLOSURE_BOUNDARY, "go", -(2 ** 63)) == "unreachable"
+        assert (_trap_kind(_CLOSURE_BOUNDARY, "go", -(2 ** 63))
+                == _NAT_GUARD_KIND)
 
     def test_i64_max_passes(self) -> None:
         assert _run(_CLOSURE_BOUNDARY, "go", 2 ** 63 - 1) == 2 ** 63 - 1
@@ -705,10 +713,10 @@ class TestApplyFnArgNarrowingDifferential1017:
         )
         # ...and codegen makes good on it: a negative argument traps at the
         # call_indirect boundary rather than entering the @Nat formal silently.
-        assert _trap_kind(source, fn, -5) == "unreachable", (
-            f"{label}: the verifier obligated this arg, but run(-5) did not trap "
-            f"with the narrowing guard's bare `unreachable` net — a silent "
-            f"negative @Nat (the #1017 hole)"
+        assert _trap_kind(source, fn, -5) == _NAT_GUARD_KIND, (
+            f"{label}: the verifier obligated this arg, but run(-5) did not "
+            f"trap with the narrowing guard's kind — a silent negative @Nat "
+            f"(the #1017 hole)"
         )
         # ...while a non-negative argument passes the guard unharmed.
         assert _run(source, fn, 4) is not None, (

@@ -291,7 +291,14 @@ def _traps_on_negative(tmp_path: Path, name: str) -> bool:
     # String result instead of the i64 argument, so the module failed WASM
     # validation, and this helper read the failure as an honest no-guard answer.
     # So the artifact must be shown to RUN before its verdict is read.
-    if "unreachable" in out:
+    # #754: the narrowing guard names itself now — it signals
+    # `vera.nat_guard_trap` before its `unreachable`, so the trap reports
+    # `kind="nat_guard"` and the word "unreachable" no longer appears.  Both
+    # spellings are accepted because the builtins in this map do not all take
+    # the same guard: `string_repeat` and friends narrow into a `@Nat` formal
+    # (the nat guard), while a `@Nat` -> `@Int` widen at the same site still
+    # traps bare.
+    if "Negative value bound into a @Nat slot" in out or "unreachable" in out:
         return True
     assert proc.returncode == 0, (
         f"{name}: the fixture did not run, so it reports no verdict about "

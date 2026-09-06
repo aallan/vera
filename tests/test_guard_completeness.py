@@ -363,6 +363,12 @@ public fn gf(@Nat -> @Int)
 
 _U64_MAX = "18446744073709551615"
 
+#: What a tripped `@Int` -> `@Nat` narrowing guard says since #754 gave it a
+#: dedicated trap kind.  Asserted instead of the bare instruction name
+#: because "unreachable" is equally what a non-exhaustive match and a
+#: shadow-stack overflow produce.
+_NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
+
 
 class TestGenericInstantiatedFieldsAreGuarded757:
     """A constructor layout is per-ADT; the instantiation is per-SITE.
@@ -389,7 +395,7 @@ class TestGenericInstantiatedFieldsAreGuarded757:
         """
         out = _run(tmp_path, _757_NARROW, "--fn", "f", "--", "-5",
                    name="n757.vera")
-        assert "unreachable" in out, (
+        assert _NAT_GUARD_TRAP in out, (
             f"-5 was stored into a `Box<Nat>` field unguarded:\n{out}"
         )
         assert "Postcondition violation" not in out, (
@@ -417,6 +423,8 @@ class TestGenericInstantiatedFieldsAreGuarded757:
         """
         out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
                    name="w757.vera")
+        # The WIDEN guard, whose dedicated kind is still a follow-up, so its
+        # trap is the bare instruction rather than `_NAT_GUARD_TRAP`.
         assert "unreachable" in out, (
             f"u64.MAX widened into a generic `@Int` field silently — the "
             f"reinterpreted -1 flowed on:\n{out}"
@@ -531,3 +539,217 @@ class TestNonPlainTypeArgBasesAreGuarded1036:
             "no boundary guard for a refined base whose type argument is a "
             "function type"
         )
+
+
+# ===========================================================================
+# #754 — an effect operation's argument, and the guard's own trap kind
+# ===========================================================================
+
+# The issue's site, at the one built-in operation that has a `@Nat` formal.
+# A user-declared effect cannot serve as the reproducer: its enclosing
+# function is an E603 codegen skip, so there is no run to guard.
+_754_OP_ARG = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(@Int.0);
+  0
+}
+"""
+
+# The same site with an argument the solver cannot settle, so the obligation
+# lands UNDECIDED — the only leg on which the `guarded` flag is consulted.
+_754_OP_ARG_OPAQUE = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(array_length(string_lines("a")) - 5);
+  0
+}
+"""
+
+# A USER-declared effect: obligated, and honestly UNGUARDED, because the
+# enclosing function does not compile at all.
+_754_USER_EFFECT = """\
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<E>)
+{
+  E.wait(array_length(string_lines("a")) - 5)
+}
+"""
+
+
+class TestEffectOperationArgumentsAreGuarded754:
+    """An operation's argument is guarded from its FORMAL, like any call's.
+
+    `_effect_ops` carries a dispatch target and nothing about types, so an
+    operation argument was the one narrowing site with no formal to guard
+    against.  The registry is built from the same table the checker typed the
+    call against — `TypeEnv.effects` for the built-ins, the program's own
+    `effect` / `ability` declarations for the rest — so a formal cannot be
+    obligated by the verifier without being visible to codegen.
+    """
+
+    def test_a_negative_into_a_nat_op_formal_traps(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, _754_OP_ARG, "--fn", "f", "--", "-5",
+                   name="op754.vera")
+        assert _NAT_GUARD_TRAP in out, (
+            f"-5 reached the host through `IO.sleep`'s `@Nat` formal:\n{out}"
+        )
+
+    def test_a_valid_argument_passes(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, _754_OP_ARG, "--fn", "f", "--", "0",
+                   name="op754ok.vera")
+        assert out.strip() == "0", out
+
+    def test_the_classification_equals_what_the_module_does(
+        self, tmp_path: Path,
+    ) -> None:
+        """PARITY on the undecided leg, where the flag is actually read."""
+        obs, envelope = _obligations(
+            tmp_path, _754_OP_ARG_OPAQUE, name="op754v.vera")
+        binds = [o for o in obs if o["kind"] == "nat_bind"]
+        assert binds, obs
+        undecided = [o for o in binds
+                     if o["status"] in ("tier3", "tier3_unguarded", "timeout")]
+        assert undecided, (
+            f"every nat_bind settled statically ({[o['status'] for o in binds]}"
+            f"), so the guarded flag was never consulted"
+        )
+        verifier_says_guarded = any(
+            o["status"] != "tier3_unguarded" for o in undecided)
+        out = _run(tmp_path, _754_OP_ARG_OPAQUE, "--fn", "f", "--", "1",
+                   name="op754r.vera")
+        codegen_guards = _NAT_GUARD_TRAP in out
+        assert codegen_guards == verifier_says_guarded, (
+            f"module {'traps' if codegen_guards else 'does NOT trap'}, "
+            f"verifier says "
+            f"{'guarded' if verifier_says_guarded else 'unguarded'} "
+            f"({[o['status'] for o in undecided]})"
+        )
+        _assert_partition(envelope)
+
+    def test_a_user_effect_stays_honestly_unguarded(
+        self, tmp_path: Path,
+    ) -> None:
+        """The over-claiming control, and the reason the roster is consulted.
+
+        A user-declared effect makes its whole enclosing function an E603
+        codegen skip, so there is no run for a guard to protect.  Recording
+        `guarded` there would be #1268's mistake one boundary over — a
+        Tier-3 promise about a runtime that is never reached — so the
+        classification intersects the formal's base with
+        `narrowing.COMPILABLE_EFFECTS`, the roster codegen itself decides
+        compilability from.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _754_USER_EFFECT, name="user754.vera")
+        binds = [o for o in obs if o["kind"] == "nat_bind"]
+        assert [o["status"] for o in binds] == ["tier3_unguarded"], binds
+        assert [o.get("error_code") for o in binds] == ["E504"], binds
+        _assert_partition(envelope)
+
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _754_USER_EFFECT, "user754c.vera")))
+        assert "E603" in (proc.stdout + proc.stderr), (
+            "the fixture compiles after all, so the disclosure is about a "
+            "run that CAN happen and the reasoning above no longer applies"
+        )
+
+    def test_only_get_put_and_throw_have_a_bare_route(
+        self, tmp_path: Path,
+    ) -> None:
+        """The claim the unqualified dispatch loop rests on.
+
+        Codegen guards a bare operation argument from the CELL, not from the
+        declaration, and that is correct only while the bare-routable set is
+        exactly the three cell-carrying ops.  A fourth joining it would be
+        dispatched with no formal to guard against, silently — so the set is
+        asserted rather than remembered.
+        """
+        from vera.environment import TypeEnv
+
+        env = TypeEnv()
+        bare_ok: set[str] = set()
+        for eff_name, info in sorted(env.effects.items()):
+            for op_name in sorted(info.operations):
+                src = (
+                    f"public fn f(@Unit -> @Unit)\n"
+                    f"  requires(true)\n  ensures(true)\n"
+                    f"  effects(<{eff_name}>)\n"
+                    f"{{\n  {op_name}(())\n}}\n"
+                )
+                proc = _cli(
+                    "check",
+                    str(_write(tmp_path, src, f"bare_{eff_name}_{op_name}.vera")))
+                if "E217" not in (proc.stdout + proc.stderr):
+                    bare_ok.add(op_name)
+        assert bare_ok <= {"get", "put", "throw"}, (
+            f"these ops accept a BARE call and are not cell-carrying, so "
+            f"their arguments reach the unqualified dispatch loop with no "
+            f"formal to guard against: {sorted(bare_ok - {'get', 'put', 'throw'})}"
+        )
+
+
+class TestTheNarrowingGuardNamesItself754:
+    """The trap says which boundary failed, not which instruction ran.
+
+    A tripped narrowing guard reported `kind="unreachable"`, whose Fix
+    paragraph lists three causes — a non-exhaustive `match`, a compiler
+    assertion, a shadow-stack overflow — and a narrowing is none of them, so
+    the one piece of advice that would have helped (`requires(... >= 0)`)
+    was the one it did not give.  The guard now signals
+    `vera.nat_guard_trap` before its `unreachable`, the same channel #808
+    built for arithmetic overflow.
+    """
+
+    def test_the_trap_carries_the_narrowing_kind_and_its_fix(
+        self, tmp_path: Path,
+    ) -> None:
+        out = _run(tmp_path, _765_LET.replace("@Pos", "@Nat"),
+                   "--fn", "f", "--", "-5", name="kind754.vera")
+        assert _NAT_GUARD_TRAP in out, out
+        assert "requires(... >= 0)" in out, (
+            f"the Fix does not name the precondition that would discharge "
+            f"this:\n{out}"
+        )
+        assert "non-exhaustive" not in out, (
+            f"the generic `unreachable` paragraph is still being used:\n{out}"
+        )
+
+    def test_the_signal_declares_its_own_import(self, tmp_path: Path) -> None:
+        """A guard that calls an undeclared import fails WAT compilation.
+
+        The flag that emits the declaration is set beside the call, and has
+        to survive every per-scope merge — the body's, the postcondition's,
+        and a lifted closure's.  This drives the closure one, which is the
+        merge a guard emitted only inside a lifted body depends on.
+        """
+        source = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(array_map(array_range(0 - 2, 0),
+    fn(@Int -> @Int) effects(pure) { let @Nat = @Int.0; nat_to_int(@Nat.0) }))
+}
+"""
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, source, "sig754.vera")))
+        assert proc.returncode == 0, proc.stderr[-600:]
+        assert 'import "vera" "nat_guard_trap"' in proc.stdout, (
+            "the guard inside the lifted closure calls the signal, but the "
+            "module does not declare the import"
+        )
+        assert proc.stdout.count("call $vera.nat_guard_trap") >= 1

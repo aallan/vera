@@ -315,6 +315,10 @@ class WasmContext(
         # emits the import) in functions.py after each function is compiled (and
         # in closures.py for lifted-closure bodies).
         self._needs_overflow_trap: bool = False
+        # #754: set when a @Int -> @Nat narrowing guard emits a
+        # `vera.nat_guard_trap` call, so assembly.py declares the host
+        # import and the trap reports its own kind.
+        self._needs_nat_guard_trap: bool = False
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A
@@ -413,6 +417,12 @@ class WasmContext(
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
+        # #754: `(effect_name, op_name)` -> per-formal base type name, so an
+        # effect-operation call site can guard its arguments the way a
+        # function call site guards its own.  Seeded empty; codegen calls
+        # `set_effect_op_params` before translation.
+        self._effect_op_params: dict[
+            tuple[str, str], tuple[str | None, ...]] = {}
         # #813: per-parameter concrete-@Int flags, the dual, for the runtime
         # @Nat -> @Int widening guard at call sites.
         self._fn_int_params: dict[str, tuple[bool, ...]] = {}
@@ -632,6 +642,13 @@ class WasmContext(
         """Set per-parameter concrete-@Nat flags for the call-site
         runtime narrowing guard (#747)."""
         self._fn_nat_params = nat_params
+
+    def set_effect_op_params(
+        self, op_params: dict[tuple[str, str], tuple[str | None, ...]],
+    ) -> None:
+        """Set the per-formal base type names of every effect operation, for
+        the op-call-site narrowing / widening guards (#754)."""
+        self._effect_op_params = op_params
 
     def set_fn_int_params(
         self, int_params: dict[str, tuple[bool, ...]],

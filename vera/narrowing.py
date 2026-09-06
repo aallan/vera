@@ -31,6 +31,29 @@ from collections.abc import Callable
 
 from vera import ast
 
+#: The effects whose operations code generation can lower at all (#754).
+#:
+#: A guard is a claim about a RUN, so an operation of an effect codegen
+#: refuses cannot be "guarded" in any useful sense: the enclosing function is
+#: dropped with a loud E603 and there is no run to guard.  The verifier's
+#: op-argument classification therefore has to intersect its guard question
+#: with this set, or it repeats the #1268 mistake one boundary over —
+#: recording a Tier-3 runtime check for a program that never reaches a
+#: runtime.
+#:
+#: Here rather than in the backend because both sides read it: codegen's
+#: `_is_compilable` decides membership FROM this set, and the verifier's
+#: `_effect_op_formal_guarded` asks about it.  Two copies of the roster is
+#: exactly the drift this module exists to prevent.
+COMPILABLE_EFFECTS = frozenset({
+    "IO", "State", "Exn", "Http", "Async", "HttpServer",
+    "Inference", "DB", "Random",
+})
+
+#: The subset of :data:`COMPILABLE_EFFECTS` whose lowering touches linear
+#: memory, so a function carrying one needs the memory section emitted.
+MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
+
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]
 
