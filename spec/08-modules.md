@@ -64,7 +64,7 @@ A selective import makes only the named declarations available. Each name in the
 Error: Cannot import 'helper' from module 'vera.math': it is private.
 ```
 
-**Design note.** Vera does not support wildcard exclusion syntax (e.g., `import m hiding(x)`). When a module exports names that conflict with local definitions or other imports, the canonical mechanism is selective import: list exactly the names needed — advice for the local-definition case (§8.5.2), and a requirement for the two-import case (§8.5.2.2). Wildcard exclusion would be a semantic equivalent of selective import — the same import set expressible two ways — violating the one-canonical-form principle (§0.2.3). When wildcard import causes a name clash, the local definition shadows the import (§8.5.2), and the imported version remains accessible via module-qualified call syntax (§8.5.3). Both mechanisms address **function** names. A clashing data type or constructor name is not resolved by either: the flat compilation strategy refuses two modules' same-named data declarations however the importer filters or shadows them (§11.16), so the remedy there is to rename the declaration in one of the source modules (§8.5.2.2).
+**Design note.** Vera does not support wildcard exclusion syntax (e.g., `import m hiding(x)`). When a module exports names that conflict with local definitions or other imports, the canonical mechanism is selective import: list exactly the names needed — advice for the local-definition case (§8.5.2), and a requirement for the two-import case (§8.5.2.2). Wildcard exclusion would be a semantic equivalent of selective import — the same import set expressible two ways — violating the one-canonical-form principle (§0.2.3). When wildcard import causes a name clash, the local definition shadows the import (§8.5.2), and the imported version remains accessible via module-qualified call syntax (§8.5.3). Both mechanisms address a clashing data type or constructor name as well, under one further condition: they must leave the two declarations unable to *meet* — no namespace importing the bare name from both, and none holding an imported signature that carries a value of the type from one while it can reach the other. Each declaration is then compiled under its own owner-qualified symbol (§11.16). Where a namespace can meet them, the remedy is to rename the declaration in one of the source modules (§8.5.2.2).
 
 ### 8.3.3 Grammar
 
@@ -229,8 +229,8 @@ three declaration namespaces, each with its own code:
 | Clashing name | Code | Compilation backstop |
 |---------------|------|----------------------|
 | function | **E155** | E608 |
-| data type | **E156** | E609 (differing shapes only) |
-| constructor | **E157** | E610 (differing shapes only) |
+| data type | **E156** | E609 (differing shapes that can meet) |
+| constructor | **E157** | E610 (differing shapes that can meet) |
 
 A constructor is admitted by its parent type's name (§8.5.4), so
 `import m(Shape)` supplies `Sq` without naming it, and two modules exporting
@@ -259,15 +259,17 @@ suppliers the namespace can still reach:
   then the local one, so the imports no longer compete, and each import's
   declaration remains reachable through the module-qualified form (§8.5.3).
 
-For a clashing **data type** or **constructor** name, neither of those applies.
-If the two declarations describe the same layout — the same constructors, in the
-same order, with the same field types, type parameters compared by position —
-they share one layout in the compiled program and only the check-time ambiguity
-has to be resolved. If they describe different layouts, the resolution is to
-rename the declaration in one of the two modules: the flat compilation strategy
-refuses a differently-shaped pair whatever the importing namespace does with
-them (§11.16), so narrowing an import or shadowing the name locally removes the
-ambiguity without making the program compile.
+Both apply to a clashing **data type** or **constructor** name as well, and one
+further condition decides whether they suffice. If the two declarations describe
+the same layout — the same constructors, in the same order, with the same field
+types, type parameters compared by position — they share one layout in the
+compiled program and only the check-time ambiguity has to be resolved. If they
+describe different layouts, each compiles under its own owner-qualified symbol
+(§11.16) provided no namespace can **meet** both: a namespace meets two
+declarations when it imports the bare name from both, or when a signature it
+imports carries a value of the type from one while it can reach the other. Where
+a namespace can meet them, the resolution is to rename the declaration in one of
+the two modules; the compiler reports that case as E609 / E610.
 
 Two modules may therefore declare this and share the one compiled layout —
 the constructor names, their order and their field types all agree, and the
@@ -288,7 +290,9 @@ public data Box<U> {
 ```
 
 while these two describe different layouts — the constructors are reordered,
-so the tags differ — and one of them has to be renamed:
+so the tags differ. They may still both be declared, each compiling under its
+own owner-qualified symbol, as long as no namespace meets both; where one does,
+one of them has to be renamed:
 
 ```
 -- in module `shapes`
@@ -357,8 +361,9 @@ share under one `data` name is a LAYOUT, not merely a namespace. Two
 declarations describing the same layout — the same constructors, in the same
 order, with the same field types, type parameters compared by position — share
 the single registered one and compile, and their shared constructor names
-compile with them. Two describing different layouts **MUST NOT** both be
-declared at all, whatever any namespace imports or shadows (§11.16).
+compile with them. Two describing different layouts each get their own layout,
+under an owner-qualified symbol, and **MUST NOT** both be declared where some
+namespace can meet them (§11.16).
 
 Sharing a layout settles compilation, not scope: where two imports both
 supply the bare name, §8.5.2.2's ambiguity refusal applies first and
@@ -645,6 +650,5 @@ The current module system has the following limitations, each tracked as a GitHu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| Two modules may not declare the same `data` name | [#1317](https://github.com/aallan/vera/issues/1317) | The flat namespace's collision rails (§11.16) key on the declarations rather than on what any namespace can name, so neither a selective import, a local declaration (§8.5.2), nor `private` resolves the clash — only renaming in a source module does |
 | No re-exports | [#127](https://github.com/aallan/vera/issues/127) | A module cannot re-export declarations imported from other modules |
 | No package system | [#130](https://github.com/aallan/vera/issues/130) | Module resolution is file-system-only; no package manager or registry |

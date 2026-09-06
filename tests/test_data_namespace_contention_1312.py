@@ -29,13 +29,16 @@ Both are now the same question, asked through the same
   LOCKSTEP — two modules restating one type share its constructor names too,
   so relaxing E609 alone would close nothing.
 
-What still refuses, and why it is not an oversight: two modules whose
-declarations describe DIFFERENT layouts stay E609/E610 whatever the entry
-file's import filter, local shadowing, or the declarations' visibility says.
-Both modules' BODIES are compiled into the one WASM module (Passes 2.5/2.6)
-and each needs its own layout for its own constructor sites; what the ENTRY
-can name does not change that.  :class:`TestDifferingShapesStillRefused` pins
-those measurements so the claim cannot rot into a relaxation nobody measured.
+Two modules whose declarations describe DIFFERENT layouts each get their
+OWN layout, under an owner-qualified ``mod$<path>$<Name>`` symbol (#1317) —
+both modules' bodies are compiled into the one WASM module (Passes 2.5/2.6)
+and each needs its own layout for its own constructor sites, which per-owner
+identity gives them.  What still refuses is a pair some namespace can MEET:
+by importing the bare name from both, or through an imported signature that
+carries a value of the type from one while the namespace can reach the
+other.  :class:`TestDifferingShapesAdmittedWhenNothingMeetsThem` and
+:class:`TestMeetingStillRefused` pin the two sides of that boundary;
+``tests/test_per_owner_adt_identity_1317.py`` holds the full matrix.
 """
 from __future__ import annotations
 
@@ -624,70 +627,128 @@ public fn main(@Unit -> @Int)
 """
 
 
-class TestDifferingShapesStillRefused:
-    """The measurements behind #1317's residual, pinned.
+class TestDifferingShapesAdmittedWhenNothingMeetsThem:
+    """What #1317 turned green here, kept in place rather than moved.
 
-    Every cell here is a shape whose two declarations need two layouts and
-    can have one, so the refusal is the mechanism speaking and not a
-    conservative rail.  Lifting them needs per-owner ADT layouts and
-    per-owner CONSTRUCTOR symbols — the ADT analogue of the ``mod$…``
-    function rerouting — which is a separate change; these cells are what
-    would go green when it lands, so they are written to fail loudly rather
-    than to be quietly deleted.
+    Every cell below is a shape whose two declarations need two layouts and
+    could only have one, so the refusal was the flat namespace speaking
+    rather than the language.  Each was ``E609`` / ``E610`` on a
+    check-green, verify-green program, and each is now compiled under
+    per-owner symbols (``mod$<path>$<Name>``) and RUN, because "no longer
+    refused" and "right answer" are different claims.
+
+    They stay in this file, opposite :class:`TestMeetingStillRefused`, so
+    the boundary between the two is visible in one place: what decides it
+    is not the declarations but whether any namespace can reach both.
+    ``tests/test_per_owner_adt_identity_1317.py`` holds the full matrix.
     """
 
-    def test_a_selective_import_excluding_the_type_does_not_lift_it(
+    def test_a_selective_import_excluding_the_type_lifts_it(
         self, tmp_path: Path,
     ) -> None:
-        _verr, _result, cg_errors = build_multi_module(
+        _verr, result, cg_errors = build_multi_module(
             tmp_path / "narrow",
             {"liba.vera": _LIBA_DIFFER, "libb.vera": _LIBB_DIFFER,
              "main.vera": _ENTRY_DIFFER},
         )
-        assert "E609" in _codes(cg_errors), cg_errors
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
-    def test_a_private_declaration_does_not_lift_it(
+    def test_a_private_declaration_lifts_it(
         self, tmp_path: Path,
     ) -> None:
         libb = _LIBB_DIFFER.replace(
             "public data Shape", "private data Shape")
-        _verr, _result, cg_errors = build_multi_module(
+        _verr, result, cg_errors = build_multi_module(
             tmp_path / "private",
             {"liba.vera": _LIBA_DIFFER, "libb.vera": libb,
              "main.vera": _ENTRY_DIFFER},
         )
-        assert "E609" in _codes(cg_errors), cg_errors
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
-    def test_a_local_shadow_does_not_lift_it(self, tmp_path: Path) -> None:
-        """And the entry's own declaration meets BOTH modules', so the #1312
-        rail speaks here too — the two rails coexist on one program."""
+    def test_a_local_shadow_lifts_it_and_leaves_e623_nothing_to_report(
+        self, tmp_path: Path,
+    ) -> None:
+        """The one direction in which the two rails interact.
+
+        The entry declares ``Shape`` too, and can name neither module's —
+        so both modules' declarations are qualified away, and the entry's
+        is then alone in the slot.  E623 is silent because there is no pair
+        left, not because it was relaxed: :class:`TestEntryVersusModule`
+        above is unchanged, and a SINGLE module contending with the entry
+        still reports.
+        """
         entry = _ENTRY_DIFFER.replace(
             "import libb(bone);\n",
             "import libb(bone);\n\nprivate data Shape { Own(Int) }\n",
         )
-        _verr, _result, cg_errors = build_multi_module(
+        _verr, result, cg_errors = build_multi_module(
             tmp_path / "shadow",
             {"liba.vera": _LIBA_DIFFER, "libb.vera": _LIBB_DIFFER,
              "main.vera": entry},
         )
-        assert "E609" in _codes(cg_errors), cg_errors
-        assert "E623" in _codes(cg_errors), cg_errors
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
-    def test_two_types_sharing_a_constructor_stay_e610(
+    def test_two_types_sharing_a_constructor_are_admitted_too(
         self, tmp_path: Path,
     ) -> None:
-        """The constructor axis: two DIFFERENT types sharing only the name
-        ``Sq`` still contend for the one ctor-layout slot."""
+        """The constructor axis, relaxed in lockstep with the type axis.
+
+        Two DIFFERENT types sharing only the name ``Sq`` contended for the
+        one ctor-layout slot; each declaration now carries its owner's
+        prefix, constructors included, because §8.5.4 admits a constructor
+        by its type's name.
+        """
         liba = _LIBA_DIFFER.replace("Shape", "Alpha")
         libb = _LIBB_DIFFER.replace("Shape", "Beta").replace(
             "Cr(Bool)", "Sq(Bool)").replace("Cr(true)", "Sq(true)").replace(
             "Cr(@Bool)", "Sq(@Bool)")
-        _verr, _result, cg_errors = build_multi_module(
+        _verr, result, cg_errors = build_multi_module(
             tmp_path / "ctor",
             {"liba.vera": liba, "libb.vera": libb,
              "main.vera": _ENTRY_DIFFER},
         )
-        assert "E610" in _codes(cg_errors), cg_errors
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
+
+
+class TestMeetingStillRefused:
+    """And what did NOT move: two owners a namespace can still MEET.
+
+    Nameability is not the whole condition.  Two same-named cross-module
+    ADTs unify, so a value can cross between them through the signatures a
+    namespace imports even under filters that exclude the type — and
+    qualifying the two apart would then read one module's value through the
+    other's tags.  Measured with the flow condition removed: a check-green,
+    verify-green program answering ``100`` where ``7`` is correct.
+    """
+
+    def test_a_value_crossing_between_two_owners_stays_e609(
+        self, tmp_path: Path,
+    ) -> None:
+        liba = _LIBA_DIFFER.replace(
+            "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
+        ).replace(
+            "  match Sq(@Int.0) {\n    Sq(@Int) -> @Int.0\n  }\n",
+            "  Sq(@Int.0)\n")
+        libb = _LIBB_DIFFER.replace(
+            "public data Shape { Cr(Bool) }", "public data Shape { Sq(Bool) }",
+        ).replace(
+            "public fn bone(@Int -> @Int)", "public fn bone(@Shape -> @Int)",
+        ).replace(
+            "  match Cr(true) {\n"
+            "    Cr(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }\n  }\n",
+            "  match @Shape.0 {\n"
+            "    Sq(@Bool) -> if @Bool.0 then { 1 } else { 0 }\n  }\n")
+        entry = _ENTRY_DIFFER.replace(
+            "  aone(3) + bone(4)\n", "  bone(aone(3))\n")
+        _verr, _result, cg_errors = build_multi_module(
+            tmp_path / "meet",
+            {"liba.vera": liba, "libb.vera": libb, "main.vera": entry},
+        )
+        assert "E609" in _codes(cg_errors), cg_errors
 
 
 @pytest.mark.parametrize("builder", [build_multi_module])

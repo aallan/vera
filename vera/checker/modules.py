@@ -319,16 +319,19 @@ class ModulesMixin:
         at ``run`` with an ``E609`` located at line 0 of the entry file,
         naming two modules the entry never imported.
 
-        Unlike the function side, the data side has no in-source escape
-        hatch: E609/E610 refuse two modules' same-named ADTs by DECLARATION,
-        with no visibility, filter, or shadowing relaxation (E608 got one in
-        #1281; E609 did not).  Measured — narrowing the second import to
-        exclude the type, and declaring the type locally, both leave the
-        program ``E609`` at compile.  So these two diagnostics prescribe
-        renaming, which is what actually works, rather than repeating the
-        function side's remedies.  Every program they refuse is one
-        E609/E610 already refused later and less precisely, so this moves a
-        rejection rather than adding one.
+        The data side's escape hatches are the function side's, with one
+        extra condition (#1317).  E609/E610 once refused two modules'
+        same-named ADTs by DECLARATION, so neither narrowing an import nor
+        declaring the type locally made such a program compile and these
+        diagnostics prescribed renaming alone.  Per-owner ADT identity
+        changed that: a ``data`` declaration no namespace can reach is
+        compiled under ``mod$<path>$<Name>``, so both remedies carry
+        through — while the two declarations cannot MEET, by name or
+        through an imported signature that carries a value of the type.
+        :meth:`_ambiguous_data_fix` states the condition rather than
+        leaving it to be discovered at compile.  Every program these codes
+        refuse is one E609/E610 already refused later and less precisely,
+        so this moves a rejection rather than adding one.
 
         A name the BUILT-IN registry already owns is never ambiguous: every
         injection below is a ``setdefault`` onto an environment the built-ins
@@ -414,20 +417,29 @@ class ModulesMixin:
 
     @staticmethod
     def _ambiguous_data_fix(name: str, kind: str, labels: list[str]) -> str:
-        """The remedy that works for a clashing TYPE or CONSTRUCTOR name.
+        """The remedies that work for a clashing TYPE or CONSTRUCTOR name.
 
-        Renaming, and only renaming.  The function side's two remedies are
-        deliberately NOT offered here: both were measured against this shape
-        and both still fail at compile with E609, because that rail refuses
-        two modules' same-named data declarations however the importer
-        filters or shadows them (spec §11.16).
+        The same two the function side offers, with the condition that
+        makes them work stated rather than left to be discovered (#1317).
+        Until per-owner ADT identity landed neither of them did: E609/E610
+        refused two modules' same-named ``data`` declarations however the
+        importer filtered or shadowed them, so this text prescribed
+        renaming alone.  Now a declaration no namespace can reach is
+        compiled under its own owner-qualified symbol, and both remedies
+        carry through to the runtime value — but only while the two
+        declarations cannot MEET, which the compilation rail decides and
+        reports as E609/E610 when they can (spec §11.16).
         """
         return (
-            f"Rename the {kind} '{name}' in one of the two modules — "
-            f"'{labels[0]}' or '{labels[-1]}'. Narrowing an import or "
-            f"declaring '{name}' in this file does not resolve it: "
-            "compilation refuses two modules' same-named data declarations "
-            "whatever the importer does with them."
+            f"Import at most one supplier of '{name}': name the other "
+            f"import's declarations selectively, as "
+            f"'import {labels[-1]}(<other-name>);' (replace <other-name> "
+            f"with a declaration you need from that module). Declaring "
+            f"'{name}' in this file resolves it too. Either works while no "
+            "namespace can reach both declarations — neither by importing "
+            "the name nor through an imported signature that carries a "
+            f"value of it; where one can, rename the {kind} '{name}' in "
+            f"'{labels[0]}' or '{labels[-1]}'."
         )
 
     def _check_module_bodies(self, mod: ResolvedModule) -> None:

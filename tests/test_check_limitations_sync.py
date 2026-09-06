@@ -499,15 +499,17 @@ class TestIssueColumnScoping:
         rows that cited it — the branch-order siblings #1316, #1321 and
         #1331 — were closed by the one resolution spine, and ``#1277`` and
         ``#1305`` left with those same rows and the #1312 row beside them.
-        Five citations still carry the property,
-        which is what this pins; the scoping itself is pinned
-        independently on synthetic tables above, so the file's contents
-        cannot make the SCAN untested.
+        ``#1281`` and ``#1304`` left with the #1317 row, which per-owner
+        ADT identity retired — and with it the last Bugs row, so the
+        remaining citation is in the Limitations table.  One citation still
+        carries the property, which is what this pins; the scoping itself
+        is pinned independently on synthetic tables above, so the file's
+        contents cannot make the SCAN untested.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268, 1281, 1304}
+        prose_only = {1268}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

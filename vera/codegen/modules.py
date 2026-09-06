@@ -7,7 +7,8 @@ call detection) of the code generation pipeline.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from dataclasses import fields as dc_fields
 from typing import TYPE_CHECKING
 
 from vera import ast
@@ -19,11 +20,41 @@ from vera.monomorphize import (
     module_qualified_generic_targets,
     namespace_fn_names,
     public_generic_names,
+    qualify_contended_data_decls,
 )
-from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape
+from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
+
+
+class _Ambiguous:
+    """Two imports supply this name, so it denotes no one declaration.
+
+    §8.5.2.2 refuses that shape rather than resolving it, so #1317's ADT
+    rename must not treat it as an answer either — a distinct sentinel
+    rather than ``None``, which means "denotes no MODULE declaration" and
+    is an ordinary, renameable state.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — debugging aid
+        return "<ambiguous>"
+
+
+_AMBIGUOUS = _Ambiguous()
+
+# "No declaration keeps the bare spelling" — distinct from every
+# `data_decl_shape` value, so a keeper comparison against it is always
+# False rather than accidentally matching a shape.
+_NOTHING = object()
+
+# The ENTRY file, standing in a set of module paths.  No module's path is
+# empty, so it can never name a declaration the #1317 rename could target —
+# which is the point: the entry's own `data` is E623's business (#1312) and
+# is only ever COUNTED here, never renamed.
+_ENTRY_OWNER: tuple[str, ...] = ()
 
 
 class CrossModuleMixin:
@@ -197,26 +228,44 @@ class CrossModuleMixin:
         # nested generics stay DISTINCT bases instead of collapsing first-seen-wins
         # (which left a lying namesake unemitted/unverified: a false Tier-1).  The
         # main program keeps the bare prefix (core.py Pass 0).
+        #
+        # Pre-register builtin ADTs so we can identify them during collision
+        # detection.  Every CodeGenerator registers Option, Result, Ordering,
+        # UrlParts, Tuple, MdInline, MdBlock, etc. via _register_builtin_adts()
+        # — they are global infrastructure, not owned by any particular module.
+        # Seeing them in two imported modules must not trigger E609/E610.
+        # Registered BEFORE the transform below rather than after it (#1317):
+        # the ADT rename reads this snapshot to hold the prelude's names back
+        # from the rename, so it has to exist by then.  The call writes
+        # `_adt_layouts` and nothing else, and is idempotent.
+        self._register_builtin_adts()
+        builtin_adt_names: frozenset[str] = frozenset(self._adt_layouts.keys())
+
+        # #1317 / #187 (data half): the ADT analogue of the ``mod$…``
+        # rerouting above.  A module ``data`` declaration that CONTENDS with
+        # another module's — same bare name, layouts that cannot be one
+        # layout — is renamed to ``mod$<path>$<Name>`` (with its
+        # constructors) inside every namespace that can name it, so ADT
+        # identity becomes ``(owner, name)`` by construction and the flat
+        # registries stop being the thing that decides.  Computed over all
+        # the modules at once, and EMPTY for every program with no contended
+        # name, which is why no corpus program's emitted WAT moves.
+        adt_renames = self._contended_adt_renames(program, builtin_adt_names)
         self._resolved_modules = [
             dataclasses.replace(
                 mod,
                 program=self._hoist_nongeneric_where_helpers(
                     qualify_nested_generic_decls(
-                        mod.program,
+                        qualify_contended_data_decls(
+                            mod.program,
+                            *adt_renames.get(mod.path, ({}, {})),
+                        ),
                         name_prefix="mod$" + "$".join(mod.path) + "$",
                     ),
                 ),
             )
             for mod in self._resolved_modules
         ]
-
-        # Pre-register builtin ADTs so we can identify them during collision
-        # detection.  Every CodeGenerator registers Option, Result, Ordering,
-        # UrlParts, Tuple, MdInline, MdBlock, etc. via _register_builtin_adts()
-        # — they are global infrastructure, not owned by any particular module.
-        # Seeing them in two imported modules must not trigger E609/E610.
-        self._register_builtin_adts()
-        builtin_adt_names: frozenset[str] = frozenset(self._adt_layouts.keys())
 
         # 1. Build import filter: path -> set of names (or None for wildcard)
         import_names: dict[tuple[str, ...], set[str] | None] = {}
@@ -892,6 +941,436 @@ class CrossModuleMixin:
             name: tuple(paths) for name, paths in declarers.items()
         }
         return members
+
+    # =================================================================
+    # #1317 / #187 — per-owner ADT identity
+    # =================================================================
+
+    @classmethod
+    def _exported_type_mentions(
+        cls, decl: ast.Decl, aliases: Mapping[str, ast.TypeExpr],
+    ) -> frozenset[str]:
+        """Every type name *decl*'s EXPORTED surface mentions (#1317).
+
+        The surface is what a value can cross a namespace boundary through:
+        a function's parameters and return type, an ADT's constructor field
+        types, an effect or ability operation's parameters and result.  A
+        function BODY is deliberately excluded — a type mentioned only
+        inside one cannot escape it, and counting it would refuse the
+        rename on the very shape #1317 is about (a module that keeps its
+        own ``data`` entirely to itself).  Contracts are excluded for the
+        same reason: an ``@Shape.0`` in a `requires` names a PARAMETER
+        already counted, and adds no route of its own.
+
+        *aliases* are the DECLARING module's own, and the answer is closed
+        over them.  A module-local alias is not importable (§8.4.1), so an
+        importer can never name one — but a signature written through one
+        still carries the underlying type, and reading only the spelling
+        misses the crossing entirely.  Measured before the closure existed:
+        ``type Sh = Shape;`` with ``aone(@Int -> @Sh)`` and
+        ``bone(@Sh -> @Int)`` in two modules whose ``Shape``s differ by
+        constructor order compiled clean and answered ``100`` where ``7``
+        is correct.  The closure is iterative and bounded by the alias set,
+        so a cyclic alias chain terminates rather than recursing.
+        """
+        surface: list[object] = []
+        if isinstance(decl, ast.FnDecl):
+            surface = [decl.params, decl.return_type, decl.effect]
+        elif isinstance(decl, ast.DataDecl):
+            surface = [decl.constructors]
+        elif isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
+            surface = [decl.operations]
+        elif isinstance(decl, ast.TypeAliasDecl):
+            surface = [decl.type_expr]
+        out: set[str] = set()
+
+        def walk(node: object) -> None:
+            if isinstance(node, ast.NamedType):
+                out.add(node.name)
+            elif isinstance(node, (ast.SlotRef, ast.ResultRef)):
+                out.add(node.type_name)
+            if isinstance(node, ast.Node):
+                for f in dc_fields(node):
+                    walk(getattr(node, f.name))
+            elif isinstance(node, (tuple, list)):
+                for item in node:
+                    walk(item)
+
+        for part in surface:
+            walk(part)
+        pending = out & set(aliases)
+        expanded: set[str] = set()
+        while pending:
+            name = pending.pop()
+            expanded.add(name)
+            before = set(out)
+            walk(aliases[name])
+            pending |= (out - before) & set(aliases) - expanded
+        return frozenset(out)
+
+    def _contended_adt_renames(
+        self, program: ast.Program, builtin_adt_names: frozenset[str],
+    ) -> dict[tuple[str, ...], tuple[dict[str, str], dict[str, str]]]:
+        """Which module ADTs must be renamed, and what each namespace calls
+        them afterwards (#1317, the data half of #187).
+
+        Returns, per module path, the ``({type renames}, {constructor
+        renames})`` that namespace's program is rewritten with.  EMPTY for
+        every program without a contended name — which is the whole reason
+        the corpus's emitted WAT does not move.
+
+        **What is contended.**  A ``data`` name declared by more than one
+        MODULE, whose declarations do not all describe one layout
+        (:func:`~vera.prelude.data_decl_shape`, the derivation the E609 /
+        E621 / E623 rails already share).  A restatement is NOT contended:
+        the single registered slot serves both, so renaming it would move
+        emitted WAT for no reason.  The CONSTRUCTOR axis is asked
+        separately, because the flat constructor registry holds one layout
+        per constructor NAME — two modules may declare differently-named
+        types that share a constructor spelling (E610's case) — and a
+        rename there takes the whole declaration with it, since a
+        constructor belongs to its type (§8.5.4 admits it by the type's
+        name).
+
+        **What keeps the bare spelling.**  The declaration the ENTRY's bare
+        name denotes, if there is one.  That is not a preference: the entry
+        program is never rewritten, so a declaration the entry can name
+        must keep the spelling the entry writes.  Everything else is
+        renamed — which makes every rename a declaration the entry could
+        not name, and the relaxation therefore exactly the shape #1317
+        calls provably distinct.
+
+        **What is refused instead of renamed.**  A name TWO namespaces'
+        imports both supply is ambiguous, and spec §8.5.2.2 refuses it
+        rather than picking (E156 at check, E609/E610 as the codegen
+        backstop) — so nothing is renamed for such a name and the rail
+        speaks as before.  This is the ADT twin of
+        :meth:`_declarations_cannot_collide`'s ambiguity condition, and it
+        is asked of EVERY namespace, not just the entry's: a rename is only
+        sound while each namespace agrees which declaration a bare name
+        denotes.
+
+        And a name is refused for a second reason that NAMEABILITY alone
+        does not catch: two owners' declarations can MEET in a namespace
+        that can name neither, because a VALUE of the type flows between
+        them through the signatures the namespace imports.  With
+        ``liba::aone(@Int -> @Shape)`` and ``libb::bone(@Shape -> @Int)``
+        imported under filters that exclude the type, an entry may still
+        write ``bone(aone(6))``: the checker unifies two same-named
+        cross-module ADTs, so the composition type-checks, and renaming the
+        two apart would hand ``bone`` a value laid out to ``liba``'s tags.
+        Measured, before the flow condition existed: a check-green,
+        verify-green program returning ``100`` where ``7`` is the answer —
+        a silent wrong answer, which is worse than the refusal it replaced.
+        So :func:`seen_owners` counts the owners a namespace can reach
+        through its imports' TYPE SURFACE as well as by name, and a
+        namespace reaching two of them makes the name unrenameable.
+
+        **The prelude is exempt** (maintainer ruling R7): a module ``data``
+        named after a prelude ADT stays E621's, exactly as a built-in
+        function name stays E151's, an effect name E152's and a built-in
+        ADT name E158's.  Per-owner ADT identity is a rule between USER
+        modules; the prelude's names are reserved.  Without the exemption
+        the rename would dissolve the very pairs E621 exists to refuse.
+
+        **The ENTRY's own declaration is not a party.**  Its contention
+        with a module's is E623's (#1312) and that rail is unchanged.  The
+        two interact in one direction only: where several modules contend
+        with each other AND the entry also declares the name, the entry can
+        name none of the modules' declarations, so all of them are renamed
+        and E623 correctly has no pair left to report.
+        """
+        reserved = builtin_adt_names | prelude_adt_names()
+
+        # Per-module declarations, their visibility, and their imports —
+        # the three inputs every question below is asked of.
+        decls: dict[tuple[str, ...], dict[str, ast.DataDecl]] = {}
+        public: dict[tuple[str, ...], set[str]] = {}
+        # Each module's EXPORTED type surface: public declaration name -> the
+        # type names its signature mentions.  A value of a type can cross a
+        # namespace boundary through any of these even when the type itself
+        # is unimportable, which is what the flow condition below reads.
+        surface: dict[tuple[str, ...], dict[str, frozenset[str]]] = {}
+        imports: dict[tuple[str, ...] | None, dict[
+            tuple[str, ...], set[str] | None]] = {
+            None: {
+                imp.path: (set(imp.names) if imp.names is not None else None)
+                for imp in program.imports
+            },
+        }
+        for mod in self._resolved_modules:
+            own: dict[str, ast.DataDecl] = {}
+            pub: set[str] = set()
+            surf: dict[str, frozenset[str]] = {}
+            # Read off the module's own declarations rather than from
+            # `_module_type_aliases`, which the harvest loop has not filled
+            # yet — this runs at the top of `_register_modules`, ahead of it.
+            mod_aliases = {
+                tld.decl.name: tld.decl.type_expr
+                for tld in mod.program.declarations
+                if isinstance(tld.decl, ast.TypeAliasDecl)
+            }
+            for tld in mod.program.declarations:
+                d = tld.decl
+                if isinstance(d, ast.DataDecl):
+                    own.setdefault(d.name, d)
+                if (tld.visibility or "private") != "public":
+                    continue
+                pub.add(d.name)
+                surf[d.name] = self._exported_type_mentions(d, mod_aliases)
+            decls[mod.path] = own
+            public[mod.path] = {
+                name for name in pub if name in own
+            }
+            surface[mod.path] = surf
+            imports[mod.path] = {
+                imp.path: (set(imp.names) if imp.names is not None else None)
+                for imp in mod.program.imports
+            }
+        entry_declares = {
+            tld.decl.name for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        }
+
+        namespaces: list[tuple[str, ...] | None] = [None, *decls]
+
+        def resolve(
+            ns: tuple[str, ...] | None, name: str,
+        ) -> tuple[str, ...] | None | _Ambiguous:
+            """Which module declaration does *ns*'s bare *name* denote?
+
+            ``None`` when it denotes no module declaration — the namespace's
+            OWN (which shadows every import, §8.5.4), the prelude's, or
+            nothing at all.  :data:`_AMBIGUOUS` when two imports supply it,
+            the shape §8.5.2.2 refuses rather than resolves.
+            """
+            if name in (entry_declares if ns is None else decls[ns]):
+                return ns
+            suppliers = [
+                dep for dep, filt in imports[ns].items()
+                if name in public.get(dep, ()) and (
+                    filt is None or name in filt)
+            ]
+            if len(suppliers) > 1:
+                return _AMBIGUOUS
+            return suppliers[0] if suppliers else None
+
+        def shape(path: tuple[str, ...], name: str) -> object:
+            return data_decl_shape(
+                decls[path][name],
+                self._module_type_aliases.get(path, {}),
+                self._module_type_alias_params.get(path, {}),
+            )
+
+        def seen_owners(
+            ns: tuple[str, ...] | None, name: str,
+        ) -> set[tuple[str, ...]] | None:
+            """Every owner of *name* whose declaration reaches *ns*.
+
+            By NAME — its own declaration, or an import that supplies the
+            type — and by FLOW: an imported declaration whose type surface
+            mentions *name* hands this namespace values of whichever owner
+            the EXPORTING module resolves the name to.  ``None`` when the
+            answer is ambiguous, which is refused rather than counted.
+
+            The ENTRY's own declaration counts, under :data:`_ENTRY_OWNER`:
+            it is never renamed, so a module declaration renamed out from
+            under it would leave E623 with no pair to refuse while the
+            entry's own constructors still read a module's value.  It can
+            never BE a rename target, since ``()`` is no module's path.
+
+            A namespace that declares the name itself does not count what
+            its imports SUPPLY: §8.5.4 shadowing means it can name none of
+            them, so they meet nothing here.  What can still reach it is a
+            flow, and that is asked separately and unconditionally.
+            """
+            own = name in (entry_declares if ns is None else decls[ns])
+            seen: set[tuple[str, ...]] = set()
+            if own:
+                seen.add(_ENTRY_OWNER if ns is None else ns)
+            for dep, filt in imports[ns].items():
+                if dep not in decls:  # pragma: no cover — defensive
+                    continue
+                supplied = not own and name in public[dep] and (
+                    filt is None or name in filt)
+                flowed = any(
+                    name in mentions and (filt is None or dname in filt)
+                    for dname, mentions in surface[dep].items()
+                )
+                if not (supplied or flowed):
+                    continue
+                owner = resolve(dep, name)
+                if owner is _AMBIGUOUS:
+                    return None
+                if isinstance(owner, tuple):
+                    seen.add(owner)
+            return seen
+
+        # Which MODULE declarations own each constructor spelling, and under
+        # which of their type names.  Both axes read it: the type axis to
+        # check its constructors are unambiguous everywhere before it moves
+        # them, and the constructor axis as its own contention input.
+        by_ctor: dict[str, dict[tuple[str, ...], set[str]]] = {}
+        for path, own in decls.items():
+            for name, d in own.items():
+                for ctor in d.constructors:
+                    by_ctor.setdefault(ctor.name, {}).setdefault(
+                        path, set()).add(name)
+
+        def ctor_reach(
+            ns: tuple[str, ...] | None, ctor_name: str,
+        ) -> set[tuple[str, ...]] | None:
+            """Every owner whose declaration of *ctor_name* reaches *ns*.
+
+            §8.5.4 admits a constructor by its TYPE's name, so this is the
+            type question asked once per owning type and collected by owner.
+            """
+            owners: set[tuple[str, ...]] = set()
+            for path, names in by_ctor.get(ctor_name, {}).items():
+                for name in names:
+                    seen = seen_owners(ns, name)
+                    if seen is None:
+                        return None
+                    if path in seen:
+                        owners.add(path)
+                        break
+            return owners
+
+        # A name no namespace resolves unambiguously cannot be renamed:
+        # renaming needs every namespace to agree which declaration its bare
+        # spelling denotes, and an ambiguous one has no such answer.  Nor can
+        # one two owners' declarations MEET in — by name or by flow — since
+        # the checker unifies same-named cross-module ADTs and renaming them
+        # apart would let a value cross between two layouts.  Asked once,
+        # over every namespace, so the two axes below share it.
+        def unrenameable(name: str) -> bool:
+            if name in reserved:
+                return True
+            for ns in namespaces:
+                if resolve(ns, name) is _AMBIGUOUS:
+                    return True
+                seen = seen_owners(ns, name)
+                if seen is None or len(seen) > 1:
+                    return True
+            return False
+
+        def ctor_unrenameable(ctor_name: str) -> bool:
+            """The constructor namespace's own ambiguity condition.
+
+            Two owners' declarations of one constructor spelling that a
+            namespace can reach BOTH of leave its bare use ambiguous
+            (§8.5.2.2, E157) — and a rename would answer it by fiat, since
+            the rewrite maps that namespace's bare ``Sq`` to exactly one
+            owner's symbol.  So the pair stays refused, and E610 keeps its
+            backstop.  Asked separately from the type axis because the
+            spellings are independent: two DIFFERENTLY-named types can
+            share a constructor and be a clash on the constructor alone.
+            """
+            for ns in namespaces:
+                reach = ctor_reach(ns, ctor_name)
+                if reach is None or len(reach) > 1:
+                    return True
+            return False
+
+        def decl_unrenameable(path: tuple[str, ...], name: str) -> bool:
+            """A declaration moves whole or not at all, so BOTH namespaces
+            have to admit it — §8.5.4 ties a constructor to its type."""
+            return unrenameable(name) or any(
+                ctor_unrenameable(ctor.name)
+                for ctor in decls[path][name].constructors
+            )
+
+        renamed: set[tuple[tuple[str, ...], str]] = set()
+
+        # -------- the TYPE axis (E609) --------
+        by_name: dict[str, list[tuple[str, ...]]] = {}
+        for path, own in decls.items():
+            for name in own:
+                by_name.setdefault(name, []).append(path)
+        for name, owners in by_name.items():
+            if len(owners) < 2:
+                continue
+            if any(decl_unrenameable(path, name) for path in owners):
+                continue
+            shapes = {path: shape(path, name) for path in owners}
+            if len(set(shapes.values())) < 2:
+                continue  # every declaration describes the one layout
+            keeper = resolve(None, name)
+            keeps = (
+                shapes[keeper] if isinstance(keeper, tuple) and keeper in decls
+                else _NOTHING
+            )
+            for path in owners:
+                if shapes[path] != keeps:
+                    renamed.add((path, name))
+
+        # -------- the CONSTRUCTOR axis (E610) --------
+        # Two modules may declare DIFFERENTLY-named types that share a
+        # constructor spelling, and the flat constructor registry holds one
+        # layout per constructor name.  The whole declaration moves, not just
+        # the constructor: §8.5.4 admits a constructor by its type's name, so
+        # splitting them would leave a type holding a constructor it no longer
+        # names.
+        for ctor_name, owners_types in by_ctor.items():
+            if len(owners_types) < 2:
+                continue
+            pairs = {
+                (name, shape(path, name))
+                for path, names in owners_types.items() for name in names
+            }
+            if len(pairs) < 2:
+                continue  # one type, restated; the single slot serves both
+            if any(decl_unrenameable(path, name)
+                   for path, names in owners_types.items() for name in names):
+                continue
+            keeps_ctor = {
+                path for path, names in owners_types.items()
+                if any(resolve(None, name) == path for name in names)
+            }
+            if len(keeps_ctor) > 1:  # pragma: no cover — `ctor_unrenameable`
+                continue             # already refused every such pair
+            for path, names in owners_types.items():
+                if path in keeps_ctor:
+                    continue
+                for name in names:
+                    renamed.add((path, name))
+
+        if not renamed:
+            return {}
+
+        # -------- what each namespace calls them afterwards --------
+        # Read through :func:`resolve`, so an IMPORTER of a renamed
+        # declaration renames its references in lockstep with the declaring
+        # module: `entry -> mid -> deep` keeps one answer for `Shape`.
+        out: dict[tuple[str, ...], tuple[dict[str, str], dict[str, str]]] = {}
+        for ns in namespaces:
+            types: dict[str, str] = {}
+            ctors: dict[str, str] = {}
+            for owner, name in renamed:
+                if resolve(ns, name) != owner:
+                    continue
+                prefix = "mod$" + "$".join(owner) + "$"
+                types[name] = prefix + name
+                for ctor in decls[owner][name].constructors:
+                    ctors[ctor.name] = prefix + ctor.name
+            if ns is None:
+                # The entry program is NOT rewritten, so a rename it can name
+                # would leave its own references dangling.  By construction
+                # the keeper IS the entry's resolution, so this is empty; it
+                # is asserted rather than assumed because the alternative
+                # failure is silent (an unresolvable constructor reported as
+                # an E602 skip, not as this rule being wrong).
+                if types or ctors:  # pragma: no cover — defended, not reached
+                    return {}
+                continue
+            if types or ctors:
+                out[ns] = (types, ctors)
+        self._contended_adt_display_names = {
+            mangled: bare
+            for types, ctors in out.values()
+            for bare, mangled in (*types.items(), *ctors.items())
+        }
+        return out
 
     def _adt_decls_share_a_layout(
         self, name: str, path_a: tuple[str, ...], path_b: tuple[str, ...],
