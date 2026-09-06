@@ -1084,3 +1084,105 @@ class TestEveryGuardIsLoadBearing:
             f"{after!r} lacks {without_guard!r}, so something else is "
             f"producing the behaviour the cells above attribute to it"
         )
+
+
+# ---------------------------------------------------------------------------
+# #1222, self-review: the range check does not ride on the CHAIN guard
+# ---------------------------------------------------------------------------
+
+# The chain guard is declined for a function that declares `Exn` (a throw
+# unwinds past the exit restores and would leave stale chain state)...
+_1222_EXN = _1222_UNBOUNDED.replace("effects(pure)", "effects(<Exn<Int>>)", 1)
+
+# ...and for a measure with a component the backend cannot rank, which here is
+# the SIBLING of a `@Nat` component that translates perfectly well (#1177's
+# parameterized-ADT limitation).
+_1222_UNRANKABLE_SIBLING = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+public fn walk(@Nat, @List<Int> -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, @List<Int>.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    walk(@Nat.0 / 2, @List<Int>.0)
+  }
+}
+"""
+
+
+class TestTheRangeCheckSurvivesADeclinedChainGuard1222:
+    """A declined CHAIN guard must not take the RANGE check with it.
+
+    Found reviewing this PR's own first cut, which folded the range check
+    into `_compile_decreases_entry`'s success path.  Three shapes decline the
+    chain guard — an `Exn`-declaring function, an untranslatable component,
+    an ADT component with no structural-rank helper — and every one of them
+    is a statement about state carried ACROSS activations.  A `@Nat`
+    component's range check reads one locally-evaluated value and compares it
+    against a constant; it carries nothing.  So the obligation recorded a
+    guarded Tier 3 for a module with no guard in it at all, which is the
+    exact class of false claim this PR exists to close, introduced by the
+    fix for it.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "source", "fn"),
+        [
+            ("exn_declared", _1222_EXN, "halve"),
+            ("unrankable_sibling", _1222_UNRANKABLE_SIBLING, "walk"),
+        ],
+        ids=["exn_declared", "unrankable_sibling"],
+    )
+    def test_the_measure_range_is_still_checked(
+        self, label: str, source: str, fn: str, tmp_path: Path,
+    ) -> None:
+        # The premise: this shape really does decline the chain guard, so the
+        # cell is about the range check surviving alone rather than about a
+        # chain guard that happens to cover it.
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, source, f"{label}_c.vera")))
+        assert proc.returncode == 0, proc.stderr[-500:]
+        assert "dec_prev" not in proc.stdout, (
+            f"{label}: the chain guard IS emitted here, so this cell no "
+            f"longer isolates the range check"
+        )
+        assert "i64 range" in proc.stdout, (
+            f"{label}: the chain guard is declined and took the range check "
+            f"with it — the obligation claims a runtime check the module "
+            f"does not contain"
+        )
+
+    def test_the_exn_shape_traps_past_the_boundary_and_runs_below_it(
+        self, tmp_path: Path,
+    ) -> None:
+        """The artifact, not the WAT: the pair that settles it."""
+        over = _run(tmp_path, _1222_EXN, "--fn", "halve", "--",
+                    _I64_MAX_PLUS_1, name="exn1222a.vera")
+        assert "i64 range" in over, over
+        ok = _run(tmp_path, _1222_EXN, "--fn", "halve", "--", "10",
+                  name="exn1222b.vera")
+        assert ok.strip() == "0", ok
+
+    def test_the_obligation_was_already_claiming_this(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both shapes recorded a guarded `tier3` before the guard existed.
+
+        Kept as the statement of what made the gap a defect rather than a
+        missing feature: the claim came first.
+        """
+        for label, source in (("exn", _1222_EXN),
+                              ("sibling", _1222_UNRANKABLE_SIBLING)):
+            obs, envelope = _obligations(
+                tmp_path, source, name=f"{label}_ob.vera")
+            bounds = [o for o in obs if o["kind"] == "decreases_bound"]
+            assert [o["status"] for o in bounds] == ["tier3"], (label, obs)
+            _assert_partition(envelope)
