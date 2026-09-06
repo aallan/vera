@@ -530,12 +530,14 @@ public fn f(@Int -> @Int)
         assert len(obls) == 1
         assert obls[0].status == "tier3"
 
-    def test_refined_let_in_closure_discloses_unguarded(self) -> None:
-        """A refined narrowing inside a closure has no interior codegen
-        guard and an untranslatable predicate under the empty env — it
-        must disclose honestly: `tier3_unguarded` + the E506 warning (the
-        only user-visible signal), never a silent pass or a false
-        verdict."""
+    def test_refined_let_in_closure_is_guarded_tier3(self) -> None:
+        """A refined narrowing inside a closure has an untranslatable
+        predicate under the empty env, so it stays Tier-3 — but since #765
+        the closure body DOES carry the interior guard, so the honest
+        disclosure is the guarded `tier3` + its informational E506, not the
+        `tier3_unguarded` this asserted while the guard was missing.
+        Measured: `array_map` over a negative element traps on the
+        refinement violation inside the lifted closure."""
         result = _verify("""
 type Pos = { @Int | @Int.0 > 0 };
 
@@ -551,11 +553,11 @@ public fn f(@Array<Int> -> @Array<Int>)
         assert not errors
         refined = [o for o in result.obligations if o.kind == "refine_bind"]
         assert len(refined) == 1
-        assert refined[0].status == "tier3_unguarded"
+        assert refined[0].status == "tier3"
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
         assert any(w.error_code == "E506" for w in warnings), (
             "the E506 disclosure is the only user-visible signal of an "
-            "unguarded unproven refinement narrowing in a closure"
+            "unproven refinement narrowing in a closure"
         )
 
     def test_refined_let_literal_in_closure_proves(self) -> None:

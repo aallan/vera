@@ -30,6 +30,57 @@ class DataMixin:
     """Methods for translating constructors, match expressions, and arrays."""
 
     # -----------------------------------------------------------------
+    # Narrowing-bind refinement guards (#765)
+    # -----------------------------------------------------------------
+
+    def _emit_bind_refine_guard(
+        self,
+        te: ast.TypeExpr,
+        value_local: int,
+        where: str,
+        node: ast.Node,
+        env: WasmSlotEnv,
+    ) -> list[str]:
+        """The §2.6.5 predicate guard for a value bound into a REFINED slot by
+        a pattern (#765) — the refined twin of ``_emit_nat_bind_guard``, which
+        already covers the ``@Nat`` case at these same three sites.
+
+        ``@Nat`` is a refinement whose predicate codegen happens to know how
+        to write by hand (``>= 0``), so the sign guard covered one member of
+        the family and the rest went unchecked: a `Pos = { @Int | @Int.0 > 0 }`
+        bound by ``match x { @Pos -> }``, by ``let Tuple<@Pos, …> = …``, or by
+        a constructor sub-pattern ``MkBox(@Pos)`` — at any nesting depth —
+        was obligated by the verifier (`refine_bind`) and guarded by nobody.
+        A negative flowed straight through the refined slot and the arm body
+        then reasoned from a predicate that does not hold.
+
+        Emitted UNGATED for every refined bind, the same choice #1268 made for
+        the refined ``throw`` payload rather than the sign guards' narrowing
+        test: a value already at the refinement satisfies its own predicate,
+        so a redundant guard costs a dead check, while a missing one is a
+        false ``guarded`` claim in the obligation stream.  Returns ``[]`` for
+        the shapes with no guard to emit — an unrefined type, an erased base,
+        a nested refinement (E618) — which is exactly the set the verifier's
+        ``_refined_boundary_codegen_guardable`` mirrors.
+
+        Fails CLOSED when no emitter is installed: a context that can bind a
+        refined slot but cannot guard it must not silently produce one, since
+        the verifier's mirror has no way to see that this particular context
+        was the one without the machinery.
+        """
+        emitter = self._refinement_guard_emitter
+        if emitter is None:
+            raise CodegenSkip(
+                node,
+                "no refinement-guard emitter is installed on this "
+                f"translation context, so the refined bind in {where} cannot "
+                "be guarded",
+            )
+        head = (f"Refinement violation in {where}\n"
+                f"  {ast.format_type_expr(te)} binding")
+        return emitter(te, value_local, head, env) or []
+
+    # -----------------------------------------------------------------
     # Constructors
     # -----------------------------------------------------------------
 
@@ -366,6 +417,12 @@ class DataMixin:
                 # ``wt == "i32"`` non-inline branch).
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(ptr_local))
+                # #765: refined pair-typed destructure component, guarded
+                # over the pointer half (see the sub-pattern twin).
+                instrs.extend(self._emit_bind_refine_guard(
+                    te, ptr_local, f"let {stmt.constructor}(…) destructure",
+                    stmt, new_env,
+                ))
                 new_env = new_env.push(type_name, ptr_local)
                 offset += 8
                 continue
@@ -404,6 +461,13 @@ class DataMixin:
                 load = self._emit_int_widen_guard(load)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
+            # #765: the refined twin of the `@Nat` sign guard above — a
+            # `let Tuple<@Pos, @Int> = …` component narrows into a refined
+            # slot with nothing between it and the rest of the block.
+            instrs.extend(self._emit_bind_refine_guard(
+                te, local_idx, f"let {stmt.constructor}(…) destructure",
+                stmt, new_env,
+            ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)
             # and the ``BindingPattern`` branch (line ~408).
@@ -1037,6 +1101,11 @@ class DataMixin:
                 # in ``_translate_match`` is not: this local receives the
                 # scrutinee's address verbatim, and the shadow stack roots
                 # addresses.  See the note there.
+                # #765: refined pair scrutinee bind, guarded over the pointer.
+                instrs.extend(self._emit_bind_refine_guard(
+                    pattern.type_expr, ptr_local, "match binding pattern",
+                    pattern, env,
+                ))
                 return (instrs, env.push(type_name, ptr_local))
             local_idx = self.alloc_local(scr_wasm_type)
             bind_val = [f"local.get {scr_local}"]
@@ -1061,6 +1130,13 @@ class DataMixin:
                 *bind_val,
                 f"local.set {local_idx}",
             ]
+            # #765: the refined twin of the sign guards above — a top-level
+            # `match x { @Pos -> … }` narrows the scrutinee into a refined
+            # slot, and the arm body then reasons from the predicate.
+            instrs.extend(self._emit_bind_refine_guard(
+                pattern.type_expr, local_idx, "match binding pattern",
+                pattern, env,
+            ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (below) —
             # ``match @Json.0 { @Json -> set_add(set_new(), @Json.0) }``
@@ -1162,6 +1238,15 @@ class DataMixin:
                     # rooting needed.
                     self.needs_alloc = True
                     instrs.extend(gc_shadow_push(ptr_local))
+                    # #765: a pair-typed field (String, Array<T>) narrowed
+                    # into a refined slot — guarded over the POINTER half,
+                    # the same representation the refined String / Array
+                    # parameter and return guards check.
+                    instrs.extend(self._emit_bind_refine_guard(
+                        sub_pat.type_expr, ptr_local,
+                        f"constructor sub-pattern {pattern.name}(…)",
+                        sub_pat, new_env,
+                    ))
                     new_env = new_env.push(type_name, ptr_local)
                     offset += 8  # two i32s
                     continue
@@ -1201,6 +1286,16 @@ class DataMixin:
                     load = self._emit_int_widen_guard(load)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
+                # #765: the refined twin of the sign guards above — a
+                # `MkBox(@Pos)` sub-pattern, at ANY nesting depth (this method
+                # recurses), narrows the field into a refined slot with no
+                # boundary between it and the arm body.  The value is already
+                # in its local, which is what the predicate lowering needs.
+                instrs.extend(self._emit_bind_refine_guard(
+                    sub_pat.type_expr, local_idx,
+                    f"constructor sub-pattern {pattern.name}(…)",
+                    sub_pat, new_env,
+                ))
                 # #705: shadow-push heap-pointer match bindings so
                 # subsequent allocations (e.g. ``set_new()`` inside
                 # ``set_add(set_new(), @Json.0)``) can't reclaim

@@ -1420,6 +1420,13 @@ class WasmContext(
                     # other binding's (#1371) — pushing here as well would
                     # root one address twice and hold the duplicate for the
                     # rest of the frame.
+                    # #765: refined pair-typed let binding, guarded over the
+                    # pointer half — the same representation the refined
+                    # String / Array parameter and return guards check.
+                    stmt_instrs.extend(self._emit_bind_refine_guard(
+                        stmt.type_expr, ptr_idx, "let binding", stmt,
+                        current_env,
+                    ))
                     current_env = current_env.push(type_name, ptr_idx)
                     instructions.extend(self._scope_statement_roots(
                         stmt_instrs, stmt_env, current_env, save_local))
@@ -1455,6 +1462,15 @@ class WasmContext(
                     # lowering — nothing to override here (#865 / #1212).
                     stmt_instrs.extend(val_instrs)
                 stmt_instrs.append(f"local.set {local_idx}")
+                # #765: the refined twin of the `@Nat` sign guard above.  A
+                # `let @Pos = <@Int>` narrows into a refined slot with no
+                # boundary between it and the rest of the block, exactly as
+                # the pattern binds in `data.py` do; every statement after it
+                # then reads a slot whose predicate nothing established.
+                stmt_instrs.extend(self._emit_bind_refine_guard(
+                    stmt.type_expr, local_idx, "let binding", stmt,
+                    current_env,
+                ))
                 # #705: a heap-pointer let binding must be rooted, or a
                 # later allocation in the same block (a ``set_to_array``
                 # host call after ``let @Set = build_set()``) reclaims it.

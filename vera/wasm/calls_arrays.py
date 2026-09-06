@@ -1270,6 +1270,20 @@ class CallsArraysMixin:
         fn_tmp = self.alloc_local("i32")
         idx = self.alloc_local("i32")
         src_slot = self.alloc_local("i32")
+        # The ADDRESS of the accumulator's shadow slot, captured at push time
+        # (PR #1384 review).  The per-iteration write-back used to compute it
+        # as `$gc_sp - 8` — "arr_ptr, acc, fn_tmp, so the accumulator is two
+        # slots down".  That arithmetic reads the LAYOUT off a count of the
+        # pushes this method makes, and the callback expression between them
+        # makes pushes of its own: an anonymous-function `fn` argument lowers
+        # to a closure allocation whose result is re-rooted, so the real
+        # layout is `arr_ptr, acc, <closure re-root>, fn_tmp` and `- 8`
+        # addresses the closure's slot.  It is sound only by accident (the
+        # closure handle is also held by `fn_tmp`'s root), and stops being so
+        # the moment the callback lowering pushes a different number of roots.
+        # The address does not have to be inferred — it is known exactly at
+        # the moment of the push — so capture it there and store through it.
+        acc_root_addr = self.alloc_local("i32")
         if u_is_pair:
             acc_ptr = self.alloc_local("i32")
             acc_len = self.alloc_local("i32")
@@ -1292,13 +1306,19 @@ class CallsArraysMixin:
         # 2. Evaluate init → U, save.  For pair U, stack order is
         # (ptr, len) from most recent push; pop len then ptr.
         instructions.extend(init_instrs)
+        # `gc_shadow_push` stores at `$gc_sp` and THEN advances it, so the
+        # slot's address is the pre-push `$gc_sp`.  Read once, here.
         if u_is_pair:
             instructions.append(f"local.set {acc_len}")
             instructions.append(f"local.set {acc_ptr}")
+            instructions.append("global.get $gc_sp")
+            instructions.append(f"local.set {acc_root_addr}")
             instructions.extend(gc_shadow_push(acc_ptr))
         else:
             instructions.append(f"local.set {acc}")
             if u_needs_root:
+                instructions.append("global.get $gc_sp")
+                instructions.append(f"local.set {acc_root_addr}")
                 instructions.extend(gc_shadow_push(acc))
 
         # 3. Evaluate fn → handle, save, shadow-push.
@@ -1390,19 +1410,15 @@ class CallsArraysMixin:
             instructions.append("    global.set $gc_sp")
 
         if u_is_pair:
-            # Overwrite shadow-stack root with the new acc_ptr.
-            # The slot was pushed second-to-last (after arr_ptr and
-            # before fn_tmp), so its address is gc_sp - 8.
-            instructions.append("    global.get $gc_sp")
-            instructions.append("    i32.const 8")
-            instructions.append("    i32.sub")
+            # Overwrite the accumulator's shadow root with the new acc_ptr,
+            # through the address captured at push time — not through a
+            # count of the pushes between here and there.
+            instructions.append(f"    local.get {acc_root_addr}")
             instructions.append(f"    local.get {acc_ptr}")
             instructions.append("    i32.store")
         elif u_needs_root:
-            # ADT handle acc: slot is at gc_sp - 8 (same layout).
-            instructions.append("    global.get $gc_sp")
-            instructions.append("    i32.const 8")
-            instructions.append("    i32.sub")
+            # ADT handle acc: same slot, same captured address.
+            instructions.append(f"    local.get {acc_root_addr}")
             instructions.append(f"    local.get {acc}")
             instructions.append("    i32.store")
 

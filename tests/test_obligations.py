@@ -565,11 +565,17 @@ class TestObligationKinds:
         assert result.summary.tier3_runtime >= 1
         _assert_summary_consistent("refine-bind-tier3", result)
 
-    def test_refine_bind_unguarded_internal_site(self) -> None:
-        """An *internal* Tier-3 refinement narrowing (a `let` over a
-        non-primitive base) has no codegen guard, so it is `tier3_unguarded`
-        and excluded from the totals — NOT overstated as a runtime-checked
-        `tier3_runtime` (the guarded/unguarded distinction mirrors `nat_bind`)."""
+    def test_refine_bind_guarded_narrowing_bind(self) -> None:
+        """A Tier-3 refinement narrowing at a `let` over a non-primitive base
+        IS codegen-guarded since #765, so it counts `tier3_runtime`.
+
+        It read `tier3_unguarded` until the guard existed; the claim is about
+        the artifact, and the artifact now traps — an empty array bound to a
+        `NonEmptyArray` `let` raises the `$vera.contract_fail` refinement
+        violation rather than flowing on.  What stays unguarded is a
+        constructor field or tuple component AT CONSTRUCTION, and a user
+        effect operation's argument (#754); the sibling cell below holds one
+        of those, so this pair still separates the two legs."""
         source = (
             "type NonEmptyArray = "
             "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
@@ -583,18 +589,18 @@ class TestObligationKinds:
             "{ let @NonEmptyArray = mk(()); 0 }\n"
         )
         result = self._verify_source(source)
-        unguarded = [
+        guarded = [
             o for o in result.obligations
-            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+            if o.kind == "refine_bind" and o.status == "tier3"
         ]
-        assert len(unguarded) == 1
-        assert unguarded[0].error_code == "E506"
-        # Excluded from totals and NOT counted as a runtime check.
+        assert len(guarded) == 1
+        assert guarded[0].error_code == "E506"
+        # Counted as a runtime check, and no unguarded disclosure remains.
         assert not any(
-            o.kind == "refine_bind" and o.status == "tier3"
+            o.kind == "refine_bind" and o.status == "tier3_unguarded"
             for o in result.obligations
         )
-        _assert_summary_consistent("refine-bind-unguarded", result)
+        _assert_summary_consistent("refine-bind-guarded-let", result)
 
     def test_violated_ensures_carries_counterexample(self) -> None:
         source = (

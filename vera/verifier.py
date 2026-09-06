@@ -129,6 +129,38 @@ _NESTED_SITE_GUARD_NOTE = (
 )
 
 
+#: The SITE half of "does codegen plant a §2.6.5 refinement guard here?" —
+#: THE table, consulted by every `refine_bind` leg rather than restated as a
+#: literal at each of them (#765).
+#:
+#: Scattered literals is how the answer went stale: #765 planted the guard at
+#: the pattern-bind sites and every one of the eight legs that record a
+#: `refine_bind` there would have had to be found and flipped by hand, in a
+#: file where a leg can be reached by five routes (literal argument, projected
+#: accessor, opaque scrutinee, unprojectable nest, monomorphised clone).  A
+#: site whose guard is added tomorrow is added HERE, once.
+#:
+#: The TYPE half is :py:meth:`Verifier._refined_boundary_codegen_guardable` —
+#: whether the guard can be emitted for this particular refinement's base —
+#: and the two are intersected wherever a type is in hand.  A site absent from
+#: this set is unguarded whatever its type: a constructor field or tuple
+#: component AT CONSTRUCTION (the composing boundary guard is the callee's
+#: parameter check, a different site), and a user effect operation's argument,
+#: whose dispatch carries only a target (#754).
+_REFINED_BIND_GUARDED_SITES = frozenset({
+    # Function boundaries: the parameter / return predicate guards (#746).
+    "return type",
+    "call argument",
+    "closure argument",
+    "closure return",
+    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
+    "let binding",
+    "match binding",
+    "tuple destructure",
+    "ADT sub-pattern bind",
+})
+
+
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
 #: question (#1362, narrowed in #757's completion).
 #:
@@ -5840,7 +5872,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, stmt.value, let_ty, smt, cur_env,
                             block_assumptions,
-                            site="let binding", guarded=False,
+                            site="let binding",
                         )
                     elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
@@ -5925,7 +5957,6 @@ class ContractVerifier:
                                     decl, sub, comp_ty, smt, cur_env,
                                     block_assumptions,
                                     site="tuple destructure",
-                                    guarded=False,
                                 )
                             elif (self._is_nat_type(comp_ty)
                                     and self._narrows_into_nat(sub)):
@@ -6120,7 +6151,6 @@ class ContractVerifier:
                             self._check_refined_binding_obligation(
                                 decl, expr.scrutinee, pat_ty, smt, slot_env,
                                 assumptions, site="match binding",
-                                guarded=False,
                             )
                         elif (self._is_nat_type(pat_ty)
                                 and self._narrows_into_nat(expr.scrutinee)):
@@ -7331,7 +7361,7 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool,
+        guarded: bool | None = None,
     ) -> None:
         """Discharge a refinement-predicate obligation at one binding site.
 
@@ -7364,12 +7394,19 @@ class ContractVerifier:
           ``opaque`` countermodel, distinguished by
           :py:meth:`_undecided_reason`.
 
-        *guarded* says whether codegen runtime-guards this site (a call
-        argument, caught by the callee's entry guard, is ``True``; an internal
-        narrowing is ``False``) — see :py:meth:`_record_refined_bind_tier3`.
+        *guarded* says whether codegen runtime-guards this site.  ``None`` —
+        the default — reads it from :py:data:`_REFINED_BIND_GUARDED_SITES`,
+        which is where the answer belongs: the site string is already a
+        parameter here, so a caller restating the same fact as a literal is a
+        second copy that can disagree with the first.  A caller passes an
+        explicit flag only where the site alone does not settle it — an
+        effect-operation argument, whose guard depends on the parent EFFECT
+        rather than on the syntactic position.
         """
         # A `@Unit` refinement is codegen-UNguarded (erased binder), so its
         # Tier-3 fallback must not claim a runtime guard (CR db24433).
+        if guarded is None:
+            guarded = self._refined_bind_site_guarded(site)
         eff_guarded = (
             guarded
             and self._refined_boundary_codegen_guardable(refined_ty)
@@ -8225,9 +8262,10 @@ class ContractVerifier:
         value_node: ast.Expr,
         site: str,
         *,
-        guarded: bool,
+        guarded: bool | None = None,
         reason: str,
         guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
+        refined_ty: Type | None = None,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
         discharged statically — distinguishing codegen-guarded boundary sites
@@ -8246,19 +8284,25 @@ class ContractVerifier:
         :py:meth:`_undecided_reason` wherever the answer depends on
         state, and pass a literal only where the site itself is the cause.
 
-        Codegen emits a runtime guard at the function boundary: a refined
-        parameter at entry and a refined return at exit, so a *return* narrowing
-        and a *call argument* (caught by the callee's entry guard) are
-        ``guarded=True`` — counted ``tier3_runtime`` with an informational E506,
-        like any other Tier-3 contract Vera checks at run time.  An *internal*
-        narrowing — ``let`` / constructor-field / effect-op-arg / match-bind /
-        tuple-destructure / ADT-sub-pattern — has no codegen guard, so it is
-        ``guarded=False`` — surfaced as an E506 warning and excluded from the
-        totals rather than overstating a runtime check it never gets (R7).
+        Codegen emits a runtime guard at the function boundary — a refined
+        parameter at entry, a refined return at exit — and, since #765, at
+        every narrowing PATTERN BIND (``let`` / match-bind / tuple-destructure
+        / ADT-sub-pattern, at any nesting depth).  Those are
+        ``tier3_runtime`` with an informational E506, like any other Tier-3
+        contract Vera checks at run time.  What is left unguarded is a
+        constructor field or tuple component AT CONSTRUCTION and a user
+        effect operation's argument (#754): E506 warnings excluded from the
+        totals rather than overstating a runtime check they never get (R7).
 
         Required and non-EMPTY: an empty string is a caller that has not
         decided wearing the shape of one that has, and it renders the same
         broken sentence a missing reason would.
+
+        *guarded* defaults to ``None`` — read the site from
+        :py:data:`_REFINED_BIND_GUARDED_SITES` rather than restating it — and
+        is intersected with :py:meth:`_refined_boundary_codegen_guardable`
+        when *refined_ty* is supplied, since a guarded site still emits
+        nothing for a base codegen cannot check.
 
         *guard_note* is the UNGUARDED report's closing sentence — what codegen
         does and does not check at this site.  The default names the #746
@@ -8274,6 +8318,10 @@ class ContractVerifier:
                 "a refinement Tier-3 demotion emits an E506 that must say "
                 f"why (site {site!r} in {decl.name!r}): `reason` is empty"
             )
+        if guarded is None:
+            guarded = self._refined_bind_site_guarded(site)
+        if guarded and refined_ty is not None:
+            guarded = self._refined_boundary_codegen_guardable(refined_ty)
         if guarded:
             self._record_obligation(
                 decl.name, "refine_bind", value_node, "tier3",
@@ -8440,14 +8488,16 @@ class ContractVerifier:
         that NAMES its cause (#1251): a base the verifier does not model or a
         predicate outside the fragment, via
         :py:meth:`_refined_untranslatable_reason`, and either non-verdict via
-        :py:meth:`_undecided_reason`.  These projection sites are
-        internal narrowings with no codegen guard, hence ``guarded=False``.
-        *node* gives the diagnostic location.
+        :py:meth:`_undecided_reason`.  Whether these projection sites are
+        codegen-guarded is read from :py:data:`_REFINED_BIND_GUARDED_SITES`
+        (they are, since #765) intersected with the refinement's own
+        guardability, never restated here.  *node* gives the diagnostic
+        location.
         """
         goal = self._translate_refined_predicate(smt, refined_ty, term)
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, node, site, guarded=False,
+                decl, node, site, refined_ty=refined_ty,
                 reason=self._refined_untranslatable_reason(refined_ty))
             return
         local_assumptions = list(assumptions)
@@ -8467,7 +8517,7 @@ class ContractVerifier:
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
-                decl, node, site, guarded=False,
+                decl, node, site, refined_ty=refined_ty,
                 reason=self._undecided_reason(result.status))
 
     def _term_source_fact(
@@ -9039,7 +9089,6 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, lit_args[i], target, smt, slot_env,
                             assumptions, site="ADT sub-pattern bind",
-                            guarded=False,
                         )
                 elif sort is not None and idx is not None:
                     field_term = sort.accessor(idx, i)(scrutinee_z3)
@@ -9053,8 +9102,8 @@ class ContractVerifier:
                     # no codegen guard, so this is an unguarded E506 Tier-3
                     # (excluded from totals), not a silent pass (R7).
                     self._record_refined_bind_tier3(
-                        decl, scrutinee, "ADT sub-pattern bind", guarded=False,
-                        reason=_OPAQUE_SCRUTINEE_REASON)
+                        decl, scrutinee, "ADT sub-pattern bind",
+                        refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
             if (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
@@ -9141,8 +9190,8 @@ class ContractVerifier:
             if (self._is_refined_type(target)
                     and self._refined_field_narrows(target, field_ty)):
                 self._record_refined_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", guarded=False,
-                    reason=_OPAQUE_SCRUTINEE_REASON)
+                    decl, scrutinee, "ADT sub-pattern bind",
+                    refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
             elif (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
                 self._record_nat_bind_tier3(
@@ -9233,9 +9282,10 @@ class ContractVerifier:
                 self._record_nat_bind_tier3(
                     decl, stmt.value, "tuple destructure", "tier3",
                     guarded=True)
-            for _ in refined_narrowing:
+            for _, refined_target in refined_narrowing:
                 self._record_refined_bind_tier3(
-                    decl, stmt.value, "tuple destructure", guarded=False,
+                    decl, stmt.value, "tuple destructure",
+                    refined_ty=refined_target,
                     reason=(
                         "the destructured value cannot be projected into its "
                         "components (an effect-op result, or another term the "
@@ -10699,6 +10749,18 @@ class ContractVerifier:
         runtime guard codegen never emits — unlike ``@Byte`` (an `i32`) or
         ``@Array`` (a pair), whose binders DO lower, so those stay guarded."""
         return isinstance(ty, RefinedType) and ty.base == UNIT
+
+    @staticmethod
+    def _refined_bind_site_guarded(site: str) -> bool:
+        """The SITE half of the refinement-guard question (#765).
+
+        Reads :py:data:`_REFINED_BIND_GUARDED_SITES`, which is the one place
+        the answer is written down; intersect with
+        :py:meth:`_refined_boundary_codegen_guardable` wherever the
+        refinement's own type is in hand, since a guarded site still emits
+        nothing for a base codegen cannot check.
+        """
+        return site in _REFINED_BIND_GUARDED_SITES
 
     @staticmethod
     def _refined_boundary_codegen_guardable(ty: Type) -> bool:
