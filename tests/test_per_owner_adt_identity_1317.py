@@ -365,14 +365,56 @@ public fn bone(@Int -> @Int)
 
 
 class TestThePreludeIsReserved:
-    """R7: a module ``data`` named after a prelude ADT stays E621's.
+    """R7: a prelude name bypasses the RENAME, and E621 decides it
+    unchanged.
 
-    Per-owner ADT identity is a rule between USER modules.  The prelude's
-    names are reserved exactly as built-in function names are (E151),
-    built-in effect names (E152) and built-in ADT names (E158) — so the
-    rename must hold back from them, or it would dissolve the very pairs
-    E621 exists to refuse.
+    Per-owner ADT identity is a rule between USER modules, so the rename
+    holds back from every name the prelude can provide — otherwise it would
+    dissolve the very pairs E621 exists to refuse.  What the exemption is
+    NOT is a ban on the name: E621 is a CONTENTION check, and a module
+    restating the prelude's exact shape shares the one layout and compiles.
+    ``examples/vera/collections.vera`` is that shape in this repository —
+    a module declaring ``public data Option<T> { None, Some(T) }`` that
+    ``examples/modules.vera`` imports — so a blanket refusal would refuse a
+    shipped example.  :meth:`test_a_module_restating_the_prelude_still_
+    compiles` is the cell that keeps the two apart.
     """
+
+    def test_a_module_restating_the_prelude_still_compiles(
+        self, tmp_path: Path,
+    ) -> None:
+        """The half a blanket refusal would break.
+
+        ``liba`` declares the prelude's ``Option`` with the prelude's own
+        shape, beside a module whose unrelated ``Shape`` is not contended
+        at all.  E621 is silent — the single registered layout serves both
+        declarations — and the program runs.  Read against the two cells
+        below, this is what shows the exemption withholds the RENAME and
+        leaves E621's shape test to decide, rather than refusing the name.
+        """
+        liba = """\
+module liba;
+
+public data Option<T> { None, Some(T) }
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(@Int.0) {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+        verify, codes, answer = _cell(
+            tmp_path / "restate-prelude",
+            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": _ENTRY},
+        )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
 
     def test_two_modules_declaring_a_prelude_name_stay_e621(
         self, tmp_path: Path,
