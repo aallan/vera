@@ -872,27 +872,34 @@ class RegistrationMixin:
 
     #: The built-in ADT names whose SEMANTICS the compiler special-cases, so
     #: a user declaration of the name cannot be told apart from the built-in
-    #: (#1397).  ``Future`` is the transparent wrapper: several derivations
-    #: peel a ``Future<…>`` spelling before asking what the name means, so a
-    #: declared ``data Future`` compiled to a module that fails to load.
+    #: (#1397).
     #:
-    #: ``Tuple`` is NOT here, though it has the same disease — ``show`` under
-    #: a user ``data Tuple`` drops the constructor name and prints ``(7)``,
-    #: and equality is refused (E243) against the BUILT-IN's non-Eq fields.
-    #: Reserving it is a language change this tree already decided against:
-    #: ``vera/wasm/data.py``'s FIX-3 discriminates the built-in variadic
-    #: carrier from a user ``data Tuple<A, B>`` on purpose, and
-    #: ``TestFix3UserTupleGate`` plus two verifier cells pin that a user
-    #: ``Tuple`` constructs, verifies and runs.  Refusing it would retract
-    #:support those tests assert.  Left open on #1397 for a ruling.
+    #: ``Future`` is the transparent wrapper: several derivations peel a
+    #: ``Future<…>`` spelling before asking what the name means, so a declared
+    #: ``data Future`` compiled to a module that fails to load.
     #:
-    #: NOT the other built-in ADTs either.  §8.4.1 makes the prelude's data
-    #: types ordinary declarations a program may shadow, ``examples/vera/
+    #: ``Tuple`` is the variadic product carrier, recognised by name at render
+    #: time: ``show`` under a user ``data Tuple`` dropped the constructor name
+    #: and printed ``(7)``, and equality was refused (E243) against the
+    #: BUILT-IN's non-Eq fields.  Applying the declared-ADT guard there was
+    #: measured REGRESSING the built-in (``show(Tuple(1, 2))`` rendered
+    #: ``Tuple(1, 2)`` instead of ``(1, 2)``), so the answer is the one Vera
+    #: already gives in the neighbouring namespaces: the name is reserved.
+    #:
+    #: NOT the other built-in ADTs.  §8.4.1 makes the prelude's data types
+    #: ordinary declarations a program may shadow, ``examples/vera/
     #: collections.vera`` ships a ``public data Option<T>``, and #1312's E623
     #: rail is built on entry-file shadowing being legal.  NOT the containers
     #: (``Array``, ``Map``, ``Set``, ``Decimal``): the resolution spine tells
     #: those apart from a declaration correctly, which is #1321/#1331.
-    _SPECIAL_CASED_BUILTIN_ADTS = ("Future",)
+    #:
+    #: The complement is what keeps this honest rather than a hand list left
+    #: to rot: every name NOT here is exercised end to end — declared, run,
+    #: shown, compared, WAT-differenced against a fresh-name control — by
+    #: ``tests/test_name_resolution_spine_1316.py``, which reads this tuple
+    #: instead of restating it.  A new special-cased built-in that nobody
+    #: adds here fails there.
+    _SPECIAL_CASED_BUILTIN_ADTS = ("Future", "Tuple")
 
     def _check_special_cased_builtin_adt(self, decl: ast.DataDecl) -> None:
         """Refuse a `data` whose name the compiler special-cases (#1397).

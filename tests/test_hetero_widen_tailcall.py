@@ -21,6 +21,9 @@ FIX 3 — a user ``data Tuple<A, B>`` fools the ``expr.name == "Tuple"`` gate: t
 construction takes the builtin-Tuple target-table path and emits a widen guard
 (``run`` traps) while the verifier routes the user construction through the
 generic-ctor-field path and emits NO obligation (opposite-direction desync).
+Its discrimination is RETRACTED as of #1397 — the name is reserved in the data
+namespace (E158), so there is no second Tuple to tell apart — and the class
+that pinned it now measures the refusal plus the genuine carrier's guard.
 
 Constants:
     I64_MAX  = 9223372036854775807   ( 2^63 - 1 )  -- sign bit clear, in-range
@@ -268,13 +271,15 @@ class TestFix4TargetBlindGate:
 
 
 # =====================================================================
-# FIX 3 — user `data Tuple<A, B>` fools the builtin-Tuple gate
+# FIX 3 — the user `data Tuple<A, B>` that fooled the builtin-Tuple gate
+# is refused at check (#1397)
 # =====================================================================
 
-# A user ADT named Tuple.  The verifier routes the construction through the
-# generic-ctor-field path (no coerce obligation, tier3_unguarded at most); at
-# head codegen mis-took it for the builtin Tuple carrier and emitted a widen
-# guard, so run(u64.MAX) trapped — an opposite-direction desync.
+# A user ADT named Tuple.  The desync FIX 3 guarded against no longer has a
+# program to happen in: #1397 reserves the name in the data namespace, so the
+# checker refuses this declaration with E158 and neither the verifier's
+# generic-ctor-field routing nor codegen's target-table path can be reached
+# with a second Tuple in scope.
 _FIX3_USER_TUPLE = """
 private data Tuple<A, B> { Tuple(A, B) }
 public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
@@ -289,20 +294,32 @@ public fn tc(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 """
 
 
-class TestFix3UserTupleGate:
-    def test_user_tuple_verifier_emits_no_guarded_coerce(self) -> None:
-        # The verifier does not runtime-guard the user-Tuple construction.
-        assert "tier3" not in _coerce_statuses(_FIX3_USER_TUPLE)
+class TestFix3UserTupleIsRefused:
+    """#1397 — the collision FIX 3 discriminated is now refused at check.
 
-    def test_user_tuple_run_does_not_trap(self) -> None:
-        # BUG at head: codegen emitted a widen guard the verifier never
-        # obligated, so run(u64.MAX) trapped.  After the fix the user Tuple's
-        # generic field stays unguarded and the value round-trips bit-exactly
-        # (read back as a signed i64, so compare under the u64 mask).
-        _assert_no_trap(_FIX3_USER_TUPLE, "f", [U64_MAX], U64_MAX)
+    FIX 3 taught codegen to tell the builtin variadic carrier (empty
+    ``field_offsets``) from a user ``data Tuple<A, B>`` (a fixed layout), so
+    only the carrier took the target-table widen-guard path.  That
+    discrimination is retracted: `Tuple` is reserved in the data namespace
+    (E158) on the rule that reserves built-in function names (E151) and
+    built-in effect names (E152), because the same name collision ALSO made
+    ``show`` under a user ``data Tuple`` drop the constructor name, and the
+    carrier cannot be told apart at render time.
 
-    def test_user_tuple_in_range(self) -> None:
-        _assert_no_trap(_FIX3_USER_TUPLE, "f", [42], 42)
+    What the class still measures is the half that must not move: the
+    genuine carrier's #820 widen guard is intact, so the retraction is not a
+    quiet withdrawal of the guard it was narrowing.
+    """
+
+    def test_user_tuple_declaration_is_refused_at_check(self) -> None:
+        # The declaration FIX 3 existed to accommodate no longer type-checks,
+        # so codegen never sees a second Tuple and the desync it guarded
+        # against (a widen guard the verifier never obligated, trapping a
+        # legal @Nat at u64.MAX) is unreachable rather than discriminated.
+        program = parse_to_ast(_FIX3_USER_TUPLE)
+        diags, _arts = typecheck_with_artifacts(program, _FIX3_USER_TUPLE)
+        codes = [d.error_code for d in diags if d.severity == "error"]
+        assert "E158" in codes, codes
 
     def test_builtin_tuple_still_traps(self) -> None:
         # Control: the genuine builtin Tuple carrier's widen guard is intact.
@@ -310,3 +327,10 @@ class TestFix3UserTupleGate:
 
     def test_builtin_tuple_in_range(self) -> None:
         _assert_no_trap(_FIX3_BUILTIN_TUPLE, "tc", [42], 42)
+
+    def test_builtin_tuple_coerce_is_still_runtime_guarded(self) -> None:
+        # And the verifier still OBLIGATES it — the half `_coerce_statuses`
+        # used to check on the user side.  Retracting the discrimination must
+        # not leave codegen guarding a site the verifier stopped obligating,
+        # which is the desync in the other direction.
+        assert "tier3" in _coerce_statuses(_FIX3_BUILTIN_TUPLE)

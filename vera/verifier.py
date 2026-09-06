@@ -7738,10 +7738,10 @@ class ContractVerifier:
             # a `Tuple<Nat, Nat>` parameter bound its `@Nat` components
             # with no source fact (a valid ensures over one was falsely
             # violated) and a genuine `@Nat` narrowing of an Int component
-            # was silently unobligated.  A USER `data Tuple` never reaches
-            # here — its constructor IS registered, so the lookup above
-            # succeeds and it keeps registry semantics (the verifier twin
-            # of codegen's FIX-3 discrimination in wasm/data.py).
+            # was silently unobligated.  There is no second `Tuple` to
+            # confuse it with: #1397 reserves the name in the data
+            # namespace (E158), so a registered constructor of that name
+            # cannot exist and the lookup above fails only for the carrier.
             if ctor_name == "Tuple":
                 base_ty = (scrut_ty.base
                            if isinstance(scrut_ty, RefinedType) else scrut_ty)

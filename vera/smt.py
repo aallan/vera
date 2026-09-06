@@ -3166,18 +3166,24 @@ class SmtContext:
         # below cannot resolve it — a literal `Tuple(5, 3)` was
         # untranslatable while `f()` returning the same tuple translated
         # fine.  Its sort is total in the argument sorts, so route through
-        # the #747 on-demand synthesis door and apply directly.  The
-        # registry guard keeps the #882/#918 never-newly-enables posture
-        # intact: a user `data Tuple<A, B>` is legal (the codegen twin of
-        # this collision is the FIX-3 discrimination in wasm/data.py), and
-        # its constructor must take the registry path below, which only
-        # reuses cached instantiations — this branch's reverse-mapped
-        # argument types (Nat recovers as Int from Z3's IntSort) would
-        # materialise a fresh `Tuple<Int, Int>` instantiation of the user
-        # ADT instead of reusing the declared-side sort (CR PR #1200).
-        # For the builtin carrier there is no registry entry and no cached
+        # the #747 on-demand synthesis door and apply directly.  For the
+        # builtin carrier there is no registry entry and no cached
         # instantiation to desync from: the synthesised sort is keyed by
         # the same argument-derived types every ctor call recovers.
+        #
+        # The registry test is what makes that "for the builtin carrier"
+        # a condition rather than an assumption.  It was load-bearing while
+        # a user `data Tuple<A, B>` was legal: such a constructor must take
+        # the registry path below, which only reuses cached instantiations,
+        # because this branch's reverse-mapped argument types (Nat recovers
+        # as Int from Z3's IntSort) would materialise a fresh `Tuple<Int,
+        # Int>` instantiation of the user ADT instead of reusing the
+        # declared-side sort, breaking the #882/#918 never-newly-enables
+        # posture (CR PR #1200).  #1397 reserves the name in the data
+        # namespace (E158) — the codegen twin of that collision, the FIX-3
+        # discrimination in wasm/data.py, is retracted with it — so nothing
+        # registers under the name any more and the test now states the
+        # door's precondition rather than resolving a live collision.
         if expr.name == "Tuple" and "Tuple" not in self._adt_registry:
             if not z3_args or any(t is None for t in arg_types):
                 return None

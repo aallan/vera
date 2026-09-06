@@ -1694,9 +1694,9 @@ class TestBuiltinTupleMatchComponentFacts:
     fallback a match over a `Tuple<Nat, Nat>` PARAMETER bound its `@Nat`
     components with no non-negativity fact, so a valid ensures over a
     component was reported violated (false E500, #1201) while the
-    isomorphic user-`data` twin proved.  A registered user `data Tuple`
-    still takes the registry path (the FIX-3 discrimination's verifier
-    twin)."""
+    isomorphic user-`data` twin proved.  Since #1397 the fallback is the
+    carrier's only reader: `Tuple` is reserved in the data namespace
+    (E158), so no registered constructor of that name can reach it."""
 
     def test_tuple_nat_param_component_ensures_proves(self) -> None:
         """The #1201 repro: E500 before the fallback, Tier-1 after."""

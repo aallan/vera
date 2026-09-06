@@ -3505,6 +3505,19 @@
     ]
   },
   {
+    "id": "ch08_builtin_tuple_redefinition_rejected",
+    "file": "ch08_builtin_tuple_redefinition_rejected.vera",
+    "chapter": 8,
+    "title": "A data type may not redefine the built-in Tuple carrier",
+    "level": "check",
+    "spec_ref": "Section 8.4.1",
+    "expected_error": "E158",
+    "features": [
+      "builtin_adt_redefinition",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch04_match_pair_scrutinee",
     "file": "ch04_match_pair_scrutinee.vera",
     "chapter": 4,
