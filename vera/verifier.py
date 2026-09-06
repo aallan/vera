@@ -7738,10 +7738,13 @@ class ContractVerifier:
             # a `Tuple<Nat, Nat>` parameter bound its `@Nat` components
             # with no source fact (a valid ensures over one was falsely
             # violated) and a genuine `@Nat` narrowing of an Int component
-            # was silently unobligated.  There is no second `Tuple` to
-            # confuse it with: #1397 reserves the name in the data
-            # namespace (E158), so a registered constructor of that name
-            # cannot exist and the lookup above fails only for the carrier.
+            # was silently unobligated.  #1397 reserves `Tuple` in BOTH the
+            # data and the constructor namespace (E158), so no user
+            # declaration registers under the name and the lookup above
+            # fails only for the carrier.  Do not lean on that alone: the
+            # `base_ty.name == "Tuple"` test below is what actually keeps
+            # this arm to the carrier, and it must stay even if the
+            # reservation is ever narrowed.
             if ctor_name == "Tuple":
                 base_ty = (scrut_ty.base
                            if isinstance(scrut_ty, RefinedType) else scrut_ty)

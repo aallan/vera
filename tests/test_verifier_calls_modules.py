@@ -2100,8 +2100,22 @@ public fn g(@Int -> @Int)
 """
 
 #: The same program with the declaration removed, so `Tuple` is the BUILTIN
-#: variadic carrier: the shape the SMT synthesis door is for.
-_BUILTIN_TUPLE_PROGRAM = _USER_TUPLE_ADT_PROGRAM.split("}\n\n", 1)[1]
+#: variadic carrier: the shape the SMT synthesis door is for.  Written out
+#: rather than derived from the fixture above by string surgery, which
+#: silently yields a different program the moment the fixture is reformatted
+#: (PR #1404 review).
+_BUILTIN_TUPLE_PROGRAM = """
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(5, 3);
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.1 - @Int.0
+  }
+}
+"""
 
 #: And its isomorphic user-ADT twin, under a name nothing special-cases.
 _PAIR_ADT_PROGRAM = _USER_TUPLE_ADT_PROGRAM.replace("Tuple", "Pair")
@@ -2173,6 +2187,10 @@ class TestUserTupleCtorRegistryRouting:
             (o.fn_name, o.kind, o.status)
             for o in _verify(_BUILTIN_TUPLE_PROGRAM).obligations
         ]
+        assert builtin_profile, (
+            "no obligations at all — an all() over an empty profile would "
+            "pass vacuously, so the shape is pinned before its statuses"
+        )
         assert all(status == "verified" for _, _, status in builtin_profile), (
             f"the builtin tuple destructure must still prove Tier 1, got "
             f"{builtin_profile}"

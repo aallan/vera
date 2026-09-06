@@ -328,6 +328,34 @@ class TestFix3UserTupleIsRefused:
     def test_builtin_tuple_in_range(self) -> None:
         _assert_no_trap(_FIX3_BUILTIN_TUPLE, "tc", [42], 42)
 
+    def test_a_user_tuple_CONSTRUCTOR_cannot_disarm_the_carrier_guard(
+        self,
+    ) -> None:
+        """The constructor-namespace twin, found in PR #1404 review.
+
+        `ctor_layouts` is flattened by CONSTRUCTOR name, so a user ADT with
+        a constructor called `Tuple` won the built-in carrier's flat slot
+        with its own FIXED layout.  At `release/v0.2.0` the FIX-3 clause
+        then read that layout, concluded "user ADT", and skipped the widen
+        guard on a GENUINE built-in tuple construction elsewhere in the same
+        program: `tc(u64.MAX)` returned a reinterpreted negative `@Int` with
+        NO trap, on a program the verifier had nothing to say about.
+
+        A `Bool` payload is load-bearing: with an `Int` one the clobbered
+        layout's `int_fields` coincidentally re-guards the same component,
+        which is why the hole is invisible to the obvious repro.
+
+        #1397 closes it at the source — the constructor name is reserved
+        (E158) — so the program is refused before either layout exists.
+        """
+        poisoned = """
+private data ZzBox { Tuple(Bool) }
+""" + _FIX3_BUILTIN_TUPLE
+        program = parse_to_ast(poisoned)
+        diags, _arts = typecheck_with_artifacts(program, poisoned)
+        codes = [d.error_code for d in diags if d.severity == "error"]
+        assert "E158" in codes, codes
+
     def test_builtin_tuple_coerce_is_still_runtime_guarded(self) -> None:
         # And the verifier still OBLIGATES it — the half `_coerce_statuses`
         # used to check on the user side.  Retracting the discrimination must

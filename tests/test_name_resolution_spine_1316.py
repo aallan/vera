@@ -359,6 +359,17 @@ class TestResolveNamedIsDrivenByTheSpine:
 #: forget.
 _UNDECLARABLE = tuple(RegistrationMixin._SPECIAL_CASED_BUILTIN_ADTS)
 
+#: The reservation #1397 makes, written out.  Every cell that asserts a
+#: REFUSAL is parametrized over this rather than over `_UNDECLARABLE`, so
+#: running these files against a compiler that does not reserve a name
+#: cannot make the cell for that name silently disappear: a derived
+#: parametrize collapses to whatever the tree under test happens to reserve,
+#: which at `release/v0.2.0` is `Future` alone — so the name this issue is
+#: about would drop out and the cell would pass on both sides (PR #1404
+#: review, finding 6).  `test_the_compiler_reserves_exactly_these` holds the
+#: two against each other, so the pair cannot drift.
+_EXPECTED_RESERVED = ("Future", "Tuple")
+
 
 def _declarable_type_names() -> list[str]:
     """:func:`_builtin_type_names` minus the names E158 now refuses."""
@@ -737,26 +748,31 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
     functions and E152 to built-in effects.
     """
 
-    @pytest.mark.parametrize("name", ["Tuple", "Future"])
-    def test_both_names_the_issue_is_about_are_in_the_reserved_set(
-        self, name: str,
-    ) -> None:
-        """The ruling, pinned by name.
+    def test_the_compiler_reserves_exactly_these(self) -> None:
+        """The ruling, pinned as an EQUALITY against an explicit set.
 
-        Every other cell here reads :data:`_UNDECLARABLE` from the compiler,
-        which is what keeps them honest — and also what would let the set
-        shrink to nothing without a single red cell.  #1397 is about exactly
-        these two names, so they are named once, here, and the derived cells
-        do the rest.
+        Red-capable in both directions, which the previous complement-based
+        assertion was not (PR #1404 review, finding 3):
+        `_declarable_type_names()` is *defined* as `live - _UNDECLARABLE`, so
+        any "the halves partition the live set" assertion holds by
+        construction — measured, a fake special-cased built-in added to the
+        registry and left unreserved leaves such an assertion green.  This
+        one fails if the compiler stops reserving a name #1397 reserves, and
+        equally if it starts reserving one this file does not expect, so a
+        new special-cased built-in cannot be added to the compiler's tuple
+        without a deliberate edit here.
         """
-        assert name in _UNDECLARABLE, _UNDECLARABLE
+        assert set(_UNDECLARABLE) == set(_EXPECTED_RESERVED), (
+            f"compiler reserves {sorted(_UNDECLARABLE)}, "
+            f"this file expects {sorted(_EXPECTED_RESERVED)}"
+        )
 
-    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_the_declaration_is_refused(self, name: str) -> None:
         codes = [d.error_code for d in _check(_shadow_program(name))]
         assert "E158" in codes, codes
 
-    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_the_declaration_is_refused_in_a_module_too(
         self, name: str, tmp_path: Path,
     ) -> None:
@@ -780,7 +796,7 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         )
         assert "E158" in [code for code, _ in check_errors], check_errors
 
-    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_an_alias_of_the_same_name_is_still_legal(self, name: str) -> None:
         """Only the DATA namespace is reserved.  `type Tuple = Int;` shadows
         nothing the compiler special-cases by name — it resolves through the
@@ -803,26 +819,27 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         assert "E158" not in [
             d.error_code for d in _check(_shadow_program(name))]
 
-    def test_the_reserved_set_is_a_partition_of_the_live_names(self) -> None:
-        """The reservation is DERIVED, not a hand list this file restates.
+    def test_every_reserved_name_is_one_the_compiler_knows(self) -> None:
+        """A reserved name must be a name the live registry actually has.
 
-        Two properties, together:  every reserved name is a name the
-        compiler actually knows (a typo would otherwise reserve nothing and
-        every cell above would pass vacuously over an empty parametrize),
-        and reserved-plus-declarable is the whole live set with no name in
-        both halves.  The declarable half is then exercised END TO END by
-        :class:`TestDeclaredAdtBeatsTheBuiltinName` with no skips, so a new
-        special-cased built-in that nobody reserves fails there rather than
-        going unmeasured.
+        Measured red by perturbation: `"Tupl"` in the reserved set fails
+        the subset test, and a set shrunk to `()` fails non-emptiness —
+        which matters because a parametrize over an empty set makes every
+        refusal cell pass vacuously.
+
+        Behavioural totality is NOT asserted here and cannot be: it lives in
+        :class:`TestDeclaredAdtBeatsTheBuiltinName`, which runs every
+        unreserved name end to end with no skips, so an unreserved
+        special-cased built-in turns those cells red the moment its
+        semantics misbehave under a user declaration — which is exactly what
+        `Tuple` did before #1397.
         """
         live = set(_builtin_type_names())
-        assert _UNDECLARABLE, "the reserved set must not be empty"
-        assert set(_UNDECLARABLE) <= live, (
+        assert _EXPECTED_RESERVED, "the reserved set must not be empty"
+        assert set(_EXPECTED_RESERVED) <= live, (
             f"reserved names the compiler does not know: "
-            f"{sorted(set(_UNDECLARABLE) - live)}"
+            f"{sorted(set(_EXPECTED_RESERVED) - live)}"
         )
-        assert set(_declarable_type_names()) | set(_UNDECLARABLE) == live
-        assert not set(_declarable_type_names()) & set(_UNDECLARABLE)
 
     def test_the_builtin_tuple_is_untouched_by_the_reservation(self) -> None:
         """Reserving the NAME must not disturb the built-in it protects.
@@ -864,6 +881,51 @@ public fn hashes_alike(@Unit -> @Int)
         assert execute(result, fn_name="shown").value == "(1, 2)"
         assert execute(result, fn_name="summed").value == 7
         assert execute(result, fn_name="hashes_alike").value == 7
+
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    def test_a_constructor_of_the_name_is_refused_too(self, name: str) -> None:
+        """The CONSTRUCTOR namespace, which the type reservation does not
+        reach (PR #1404 review, CodeRabbit).
+
+        `ctor_layouts` is flattened by CONSTRUCTOR name across every ADT
+        (`vera/codegen/functions.py`), and both retracted sites key on
+        `expr.name` — a constructor name.  So `private data Box { Tuple(Bool) }`
+        put its FIXED layout in the built-in carrier's flat slot: measured,
+        `ctor_layouts["Tuple"].field_offsets` became `((8, "i64"),)` where
+        the carrier's is `()`.
+
+        Measured at `release/v0.2.0`, that silently disabled the #820
+        widen guard on a GENUINE built-in tuple construction elsewhere in
+        the same program — `tc(u64.MAX)` returned a reinterpreted negative
+        `@Int` with no trap — and the verifier stopped obligating it, because
+        `_lookup_constructor_info("Tuple")` found `Box`'s constructor and
+        skipped the carrier fallback.  A declaration in one corner of a file
+        changing what a built-in means in another is the same disease the
+        type reservation cures, so the name is refused in both namespaces.
+        """
+        codes = [d.error_code for d in _check(
+            f"private data ZzBox {{ {name}(Bool) }}\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  0\n}\n"
+        )]
+        assert "E158" in codes, codes
+
+    def test_a_constructor_of_an_unreserved_builtin_name_is_fine(self) -> None:
+        """The constructor reservation is exactly the reserved names.
+
+        `UrlParts` is a built-in ADT whose constructor shares its name, and
+        SKILL.md tells programs to redeclare it locally to match on it — so
+        the constructor namespace must stay open for every name the data
+        namespace leaves open.
+        """
+        codes = [d.error_code for d in _check(
+            "private data ZzBox { UrlParts(Bool) }\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  0\n}\n"
+        )]
+        assert "E158" not in codes, codes
 
     def test_the_builtin_tuple_is_still_not_eq(self) -> None:
         """And the built-in's own limitation is unchanged either way.

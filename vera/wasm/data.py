@@ -182,9 +182,15 @@ class DataMixin:
         # it goes through `layout.int_fields` (empty for a generic field, so it
         # stays E531-disclosed, #757).
         #
-        # `expr.name == "Tuple"` is the whole test: #1397 reserves the name in
-        # the data namespace (E158), so the only declaration this can ever
-        # name is the builtin carrier.  It used to need a second clause — the
+        # `expr.name == "Tuple"` is the whole test.  `expr.name` is a
+        # CONSTRUCTOR name, and #1397 reserves `Tuple` in the constructor
+        # namespace as well as the data one (E158) — both were needed, since
+        # `ctor_layouts` is flattened by constructor name across every ADT,
+        # so a `data Box { Tuple(Bool) }` used to win the carrier's flat slot
+        # with its own fixed layout and DISARM the guard below on a genuine
+        # builtin construction elsewhere in the same program.  With both
+        # namespaces closed the only declaration this can name is the
+        # builtin carrier.  It used to need a second clause — the
         # FIX-3 discrimination, `not layout.field_offsets` — because a user
         # `data Tuple<A, B>` matched the name too and its FIXED layout took a
         # widen guard the verifier (routing the construction through the
