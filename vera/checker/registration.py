@@ -872,54 +872,87 @@ class RegistrationMixin:
 
     #: The built-in ADT names whose SEMANTICS the compiler special-cases, so
     #: a user declaration of the name cannot be told apart from the built-in
-    #: (#1397).  ``Future`` is the transparent wrapper: several derivations
-    #: peel a ``Future<…>`` spelling before asking what the name means, so a
-    #: declared ``data Future`` compiled to a module that fails to load.
+    #: (#1397).
     #:
-    #: ``Tuple`` is NOT here, though it has the same disease — ``show`` under
-    #: a user ``data Tuple`` drops the constructor name and prints ``(7)``,
-    #: and equality is refused (E243) against the BUILT-IN's non-Eq fields.
-    #: Reserving it is a language change this tree already decided against:
-    #: ``vera/wasm/data.py``'s FIX-3 discriminates the built-in variadic
-    #: carrier from a user ``data Tuple<A, B>`` on purpose, and
-    #: ``TestFix3UserTupleGate`` plus two verifier cells pin that a user
-    #: ``Tuple`` constructs, verifies and runs.  Refusing it would retract
-    #:support those tests assert.  Left open on #1397 for a ruling.
+    #: ``Future`` is the transparent wrapper: several derivations peel a
+    #: ``Future<…>`` spelling before asking what the name means, so a declared
+    #: ``data Future`` compiled to a module that fails to load.
     #:
-    #: NOT the other built-in ADTs either.  §8.4.1 makes the prelude's data
-    #: types ordinary declarations a program may shadow, ``examples/vera/
-    #: collections.vera`` ships a ``public data Option<T>``, and #1312's E623
-    #: rail is built on entry-file shadowing being legal.  NOT the containers
+    #: ``Tuple`` is the variadic product carrier, recognised by name at render
+    #: time: ``show`` under a user ``data Tuple`` dropped the constructor name
+    #: and printed ``(7)``, and equality was refused (E243) against the
+    #: BUILT-IN's non-Eq fields.  Applying the declared-ADT guard there was
+    #: measured REGRESSING the built-in (``show(Tuple(1, 2))`` rendered
+    #: ``Tuple(1, 2)`` instead of ``(1, 2)``), so the answer is the one Vera
+    #: already gives in the neighbouring namespaces: the name is reserved.
+    #:
+    #: NOT the other built-in ADTs.  §8.4.1 makes the prelude's data types
+    #: ordinary declarations a program may shadow: the MODULE
+    #: ``examples/vera/collections.vera`` ships a ``public data Option<T>``
+    #: (legal because it restates the prelude's shape, §11.16 / #1277), and
+    #: #1312's E623 rail is built on entry-file shadowing being legal.  Both
+    #: doors would close if these names were reserved, since E158 fires in
+    #: ``_register_data`` wherever the declaration is.  NOT the containers
     #: (``Array``, ``Map``, ``Set``, ``Decimal``): the resolution spine tells
     #: those apart from a declaration correctly, which is #1321/#1331.
-    _SPECIAL_CASED_BUILTIN_ADTS = ("Future",)
+    #:
+    #: The complement is what keeps this honest rather than a hand list left
+    #: to rot: every name NOT here is exercised end to end — declared, run,
+    #: shown, compared, WAT-differenced against a fresh-name control — by
+    #: ``tests/test_name_resolution_spine_1316.py``, which reads this tuple
+    #: instead of restating it.  A new special-cased built-in that nobody
+    #: adds here fails there.
+    _SPECIAL_CASED_BUILTIN_ADTS = ("Future", "Tuple")
 
-    def _check_special_cased_builtin_adt(self, decl: ast.DataDecl) -> None:
-        """Refuse a `data` whose name the compiler special-cases (#1397).
+    def _check_special_cased_builtin_adt(
+        self, node: ast.Node, name: str, kind: str,
+    ) -> None:
+        """Refuse a declaration whose name the compiler special-cases (#1397).
 
         The same rule E151 applies to built-in FUNCTIONS and E152 to built-in
         EFFECTS: a name whose meaning the compiler hard-codes cannot also be
         a user declaration, because nothing downstream can tell the two
         apart.  Accepting it was silent for ``Tuple`` — ``show`` dropped the
         constructor name — which is the outcome DESIGN §0.2 excludes.
+
+        Asked in BOTH namespaces a declaration can put the name in, because
+        the collision is keyed differently downstream in each and closing
+        only one leaves the other open (PR #1404 review):
+
+        * as a ``data`` TYPE name — the render, compare and layout
+          derivations branch on the type's base name;
+        * as a CONSTRUCTOR name inside any ADT — codegen flattens
+          ``ctor_layouts`` by constructor name across every ADT, and both
+          the tuple construction site and the SMT synthesis door key on
+          ``expr.name``.  A ``data Box { Tuple(Bool) }`` therefore won the
+          built-in carrier's flat layout slot with its own fixed layout, and
+          was measured DISARMING the #820 widening guard on a genuine
+          built-in tuple construction elsewhere in the same program (a
+          ``@Nat`` above ``i64.MAX`` stored and read back negative, no trap),
+          while the verifier stopped obligating it because
+          ``_lookup_constructor_info`` found the user's constructor.
         """
-        if decl.name not in self._SPECIAL_CASED_BUILTIN_ADTS:
+        if name not in self._SPECIAL_CASED_BUILTIN_ADTS:
             return
+        subject = (
+            "redeclared as a data type" if kind == "data type"
+            else "used as a constructor name"
+        )
         self._error(
-            decl,
-            f"'{decl.name}' is a built-in type whose meaning the compiler "
-            f"special-cases, so it cannot be redeclared as a data type.",
+            node,
+            f"'{name}' is a built-in type whose meaning the compiler "
+            f"special-cases, so it cannot be {subject}.",
             rationale=(
                 f"Unlike the prelude's data types, which a program may "
-                f"shadow, '{decl.name}' is recognised by name throughout "
+                f"shadow, '{name}' is recognised by name throughout "
                 f"code generation — how it is rendered, compared and laid "
                 f"out. A declaration of that name cannot be told apart from "
                 f"the built-in, so the program would compile against a "
                 f"mixture of the two."
             ),
             fix=(
-                f"Rename the declaration. If you meant the built-in "
-                f"'{decl.name}', use it directly instead of declaring it."
+                f"Rename the {kind}. If you meant the built-in "
+                f"'{name}', use it directly instead of declaring it."
             ),
             spec_ref='Chapter 8, Section 8.4.1 "Visibility Rules"',
             error_code="E158",
@@ -929,7 +962,7 @@ class RegistrationMixin:
         self, decl: ast.DataDecl, visibility: str | None = None,
     ) -> None:
         """Register an ADT and its constructors."""
-        self._check_special_cased_builtin_adt(decl)
+        self._check_special_cased_builtin_adt(decl, decl.name, "data type")
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
         # #1208: allocate the declaration index BEFORE resolving anything, so
@@ -945,6 +978,9 @@ class RegistrationMixin:
         for ctor in decl.constructors:
             self._check_reserved_decl_name(
                 ctor, ctor.name, "constructor", prelude_occupies=False,
+            )
+            self._check_special_cased_builtin_adt(
+                ctor, ctor.name, "constructor",
             )
             field_types = None
             if ctor.fields is not None:

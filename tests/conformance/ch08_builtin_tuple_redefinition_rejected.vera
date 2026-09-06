@@ -1,0 +1,21 @@
+-- Conformance: a `data` name the compiler special-cases is reserved (Chapter 8, Section 8.4.1)
+-- Tests: E158 — `data Tuple` is rejected at check (#1397).
+-- The sibling of ch08_builtin_adt_redefinition_rejected, for the other
+-- reserved name. `Tuple` is the variadic product carrier, recognised by
+-- name at render time, so a declaration of it could not be told apart
+-- from the built-in. Accepting it was silent: `show(MkShadow(7))` under
+-- this declaration printed `(7)`, dropping the constructor name, and
+-- `MkShadow(7) == MkShadow(7)` was refused against the BUILT-IN's non-Eq
+-- fields. The prelude's data types (Option, Result, Ordering, UrlParts)
+-- stay declarable: a program may shadow those, and §8.4.1 says so.
+private data Tuple {
+  MkShadow(Int)
+}
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

@@ -62,10 +62,12 @@ Structure of this file, and why each part is here:
 """
 from __future__ import annotations
 
+from pathlib import Path
 
 import pytest
 
 from vera import ast, naming
+from vera.checker.registration import RegistrationMixin
 from vera.codegen import CodeGenerator, execute
 from vera.codegen.api import CompileResult
 from vera.naming import AliasEnv, NameSort, classify_named
@@ -345,11 +347,28 @@ class TestResolveNamedIsDrivenByTheSpine:
 # =====================================================================
 
 
-#: The name a `data` declaration may no longer take (#1397, E158): the
-#: compiler special-cases their SEMANTICS by name, so a declaration of either
-#: cannot be told apart from the built-in.  They stay in the ALIAS battery —
+#: The names a `data` declaration may not take (#1397, E158), read from the
+#: COMPILER's own reservation rather than restated here: the compiler
+#: special-cases their SEMANTICS by name, so a declaration of one cannot be
+#: told apart from the built-in.  They stay in the ALIAS battery —
 #: `type Tuple = Int;` is still legal and still has to resolve correctly.
-_UNDECLARABLE = ("Future",)
+#:
+#: Imported, not copied, so the two halves of this file's partition —
+#: refused here, fully working there — cannot drift apart from what the
+#: checker actually refuses.  A second hand list is a second place to
+#: forget.
+_UNDECLARABLE = tuple(RegistrationMixin._SPECIAL_CASED_BUILTIN_ADTS)
+
+#: The reservation #1397 makes, written out.  Every cell that asserts a
+#: REFUSAL is parametrized over this rather than over `_UNDECLARABLE`, so
+#: running these files against a compiler that does not reserve a name
+#: cannot make the cell for that name silently disappear: a derived
+#: parametrize collapses to whatever the tree under test happens to reserve,
+#: which at `release/v0.2.0` is `Future` alone — so the name this issue is
+#: about would drop out and the cell would pass on both sides (PR #1404
+#: review, finding 6).  `test_the_compiler_reserves_exactly_these` holds the
+#: two against each other, so the pair cannot drift.
+_EXPECTED_RESERVED = ("Future", "Tuple")
 
 
 def _declarable_type_names() -> list[str]:
@@ -390,35 +409,6 @@ def _builtin_type_names() -> list[str]:
 
 _CONTROL_ADT = "ZzShadowCtl"
 
-# Names whose ABILITY dispatch is still keyed on the bare name, measured
-# identical at `release/v0.2.0` and here — pre-existing, and NOT reachable by
-# the `_declares_adt` guard the `Array` / `Map` / `Set` / `Decimal` / `Future`
-# arms use.  Those five names are not registered built-in ADTs, so
-# "this namespace declares it" and "it is in `_adt_type_names`" coincide for
-# them; `Tuple` IS registered (as are `Option`, `Result`, `Json`, …), so the
-# same guard there disables the BUILT-IN path unconditionally — measured:
-# `show(Tuple(1, 2))` rendered `Tuple(1, 2)` instead of `(1, 2)`.  Separating
-# them needs a per-namespace "declared HERE" set on the wasm side, which is
-# the same per-owner keying PR-C3 builds; skipped rather than asserted wrong
-# so the cell turns green by itself when that lands.
-#: The ability-dispatch residue that remains OPEN (#1397).  `Future` is
-#: refused at declaration now (E158), but `Tuple` cannot be: this tree
-#: deliberately supports a user `data Tuple` — `vera/wasm/data.py`'s FIX-3
-#: discriminates the built-in variadic carrier from it, and
-#: `TestFix3UserTupleGate` plus two verifier cells pin that it constructs,
-#: verifies and runs.  So the show/eq misbehaviour stays measured and
-#: skipped rather than asserted wrong, and turns green by itself when #1397
-#: is ruled on.  Identical at `release/v0.2.0`.
-_SHOW_RESIDUE: dict[str, str] = {
-    "Tuple": (
-        "open (#1397): `_composite_ctor_plans` renders a user `data Tuple` "
-        "through the built-in variadic-product path, dropping the "
-        "constructor name (`(7)`), and Eq is refused (E243) against the "
-        "built-in's fields; identical at release/v0.2.0.  Cannot be closed "
-        "by reserving the name — this tree supports a user `Tuple` on "
-        "purpose (vera/wasm/data.py FIX-3, TestFix3UserTupleGate)"
-    ),
-}
 
 def _shadow_program(name: str) -> str:
     """The same program, parameterised by the declared ADT's name."""
@@ -491,9 +481,13 @@ class TestDeclaredAdtBeatsTheBuiltinName:
         compiled to a module that fails to load with ``expected i32 but
         nothing on stack``.  Measured by withdrawing the guard, so the cell
         is known to bite rather than assumed to.
+
+        Total over the declarable names since #1397: the one name that had
+        to be skipped here — ``Tuple``, whose declaration rendered ``(7)``
+        through the built-in variadic-product path — is refused at check
+        instead, so it is asserted by :class:`TestSpecialCasedBuiltinAdtsAreRefused`
+        rather than excused here.
         """
-        if name in _SHOW_RESIDUE:
-            pytest.skip(_SHOW_RESIDUE[name])
         source = (
             f"private data {name} {{ MkShadowS(Int) }}\n\n"
             "public fn main(@Unit -> @String)\n"
@@ -509,9 +503,12 @@ class TestDeclaredAdtBeatsTheBuiltinName:
     def test_equality_over_a_shadow_compares_the_declaration(
         self, name: str,
     ) -> None:
-        """The structural-Eq arm of the same dispatch."""
-        if name in _SHOW_RESIDUE:
-            pytest.skip(_SHOW_RESIDUE[name])
+        """The structural-Eq arm of the same dispatch.
+
+        Total for the same reason as its ``show`` twin: the ``Tuple``
+        declaration that was refused ``[E243]`` here against the BUILT-IN's
+        fields is now refused at check.
+        """
         source = (
             f"private data {name} {{ MkShadowS(Int) }}\n\n"
             "public fn main(@Unit -> @Int)\n"
@@ -704,6 +701,35 @@ def _alias_program(name: str) -> str:
     )
 
 
+_MODULE_SHADOW = """\
+module tlib;
+
+private data {name} {{ MkShadow(Int) }}
+
+public fn probe(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match MkShadow(@Int.0) {{
+    MkShadow(@Int) -> @Int.0
+  }}
+}}
+"""
+
+_MODULE_SHADOW_MAIN = """\
+import tlib;
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  tlib::probe(7)
+}
+"""
+
+
 class TestSpecialCasedBuiltinAdtsAreRefused:
     """#1397 — `data Tuple` / `data Future` are refused at check (E158).
 
@@ -714,19 +740,63 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
     keyed on its name, and `Future` is the transparent wrapper several
     derivations peel before asking what the name means.  Measured at
     `release/v0.2.0`: `show(MkShadowS(7))` under `data Tuple` printed `(7)`,
-    dropping the constructor name, and the same program under `data Future`
-    compiled to a module that fails to load.
+    dropping the constructor name and refusing `[E243]` on equality against
+    the BUILT-IN's fields, and the same program under `data Future` compiled
+    to a module that fails to load.
 
     So the name is refused, on the rule E151 already applies to built-in
     functions and E152 to built-in effects.
     """
 
-    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    def test_the_compiler_reserves_exactly_these(self) -> None:
+        """The ruling, pinned as an EQUALITY against an explicit set.
+
+        Red-capable in both directions, which the previous complement-based
+        assertion was not (PR #1404 review, finding 3):
+        `_declarable_type_names()` is *defined* as `live - _UNDECLARABLE`, so
+        any "the halves partition the live set" assertion holds by
+        construction — measured, a fake special-cased built-in added to the
+        registry and left unreserved leaves such an assertion green.  This
+        one fails if the compiler stops reserving a name #1397 reserves, and
+        equally if it starts reserving one this file does not expect, so a
+        new special-cased built-in cannot be added to the compiler's tuple
+        without a deliberate edit here.
+        """
+        assert set(_UNDECLARABLE) == set(_EXPECTED_RESERVED), (
+            f"compiler reserves {sorted(_UNDECLARABLE)}, "
+            f"this file expects {sorted(_EXPECTED_RESERVED)}"
+        )
+
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_the_declaration_is_refused(self, name: str) -> None:
         codes = [d.error_code for d in _check(_shadow_program(name))]
         assert "E158" in codes, codes
 
-    @pytest.mark.parametrize("name", _UNDECLARABLE)
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    def test_the_declaration_is_refused_in_a_module_too(
+        self, name: str, tmp_path: Path,
+    ) -> None:
+        """One rule, both declaration sites.
+
+        The entry file and a module are separate registration passes, and
+        the neighbouring data-namespace rails answer them differently — a
+        module `data Option` is E621 at CODEGEN while the entry's is
+        accepted (#1312's asymmetry).  A reservation that held only where
+        the checker happened to be asked first would leave the other door
+        open, so the module door is measured rather than assumed.
+        """
+        from tests.module_fixture_helpers import build_multi_module_past_check
+
+        check_errors, _result, _cg = build_multi_module_past_check(
+            tmp_path,
+            {
+                "tlib.vera": _MODULE_SHADOW.format(name=name),
+                "main.vera": _MODULE_SHADOW_MAIN,
+            },
+        )
+        assert "E158" in [code for code, _ in check_errors], check_errors
+
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
     def test_an_alias_of_the_same_name_is_still_legal(self, name: str) -> None:
         """Only the DATA namespace is reserved.  `type Tuple = Int;` shadows
         nothing the compiler special-cases by name — it resolves through the
@@ -738,7 +808,7 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
     def test_every_other_builtin_name_stays_declarable(
         self, name: str,
     ) -> None:
-        """The reservation is exactly two names.
+        """The reservation is exactly the special-cased names.
 
         §8.4.1 makes the prelude's data types ordinary declarations a program
         may shadow, `examples/vera/collections.vera` ships a `public data
@@ -748,6 +818,135 @@ class TestSpecialCasedBuiltinAdtsAreRefused:
         """
         assert "E158" not in [
             d.error_code for d in _check(_shadow_program(name))]
+
+    def test_every_reserved_name_is_one_the_compiler_knows(self) -> None:
+        """A reserved name must be a name the live registry actually has.
+
+        Measured red by perturbation: `"Tupl"` in the reserved set fails
+        the subset test, and a set shrunk to `()` fails non-emptiness —
+        which matters because a parametrize over an empty set makes every
+        refusal cell pass vacuously.
+
+        Behavioural totality is NOT asserted here and cannot be: it lives in
+        :class:`TestDeclaredAdtBeatsTheBuiltinName`, which runs every
+        unreserved name end to end with no skips, so an unreserved
+        special-cased built-in turns those cells red the moment its
+        semantics misbehave under a user declaration — which is exactly what
+        `Tuple` did before #1397.
+        """
+        live = set(_builtin_type_names())
+        assert _EXPECTED_RESERVED, "the reserved set must not be empty"
+        assert set(_EXPECTED_RESERVED) <= live, (
+            f"reserved names the compiler does not know: "
+            f"{sorted(set(_EXPECTED_RESERVED) - live)}"
+        )
+
+    def test_the_builtin_tuple_is_untouched_by_the_reservation(self) -> None:
+        """Reserving the NAME must not disturb the built-in it protects.
+
+        Retracting codegen's FIX-3 discrimination (which existed only to
+        tell a user `data Tuple` from the variadic carrier) leaves the
+        carrier on the `expr.name == "Tuple"` path it always had; this pins
+        that construction, `show`, `match` and `hash` over the built-in
+        still answer as §9 specifies.
+        """
+        source = """\
+public fn shown(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Tuple(1, 2))
+}
+
+public fn summed(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Tuple(3, 4) {
+    Tuple(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+
+public fn hashes_alike(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if hash(Tuple(1, 2)) == hash(Tuple(1, 2)) then { 7 } else { 0 }
+}
+"""
+        result = _compile_ok(source)
+        assert execute(result, fn_name="shown").value == "(1, 2)"
+        assert execute(result, fn_name="summed").value == 7
+        assert execute(result, fn_name="hashes_alike").value == 7
+
+    @pytest.mark.parametrize("name", _EXPECTED_RESERVED)
+    def test_a_constructor_of_the_name_is_refused_too(self, name: str) -> None:
+        """The CONSTRUCTOR namespace, which the type reservation does not
+        reach (PR #1404 review, CodeRabbit).
+
+        `ctor_layouts` is flattened by CONSTRUCTOR name across every ADT
+        (`vera/codegen/functions.py`), and both retracted sites key on
+        `expr.name` — a constructor name.  So `private data Box { Tuple(Bool) }`
+        put its FIXED layout in the built-in carrier's flat slot: measured,
+        `ctor_layouts["Tuple"].field_offsets` became `((8, "i64"),)` where
+        the carrier's is `()`.
+
+        Measured at `release/v0.2.0`, that silently disabled the #820
+        widen guard on a GENUINE built-in tuple construction elsewhere in
+        the same program — `tc(u64.MAX)` returned a reinterpreted negative
+        `@Int` with no trap — and the verifier stopped obligating it, because
+        `_lookup_constructor_info("Tuple")` found `Box`'s constructor and
+        skipped the carrier fallback.  A declaration in one corner of a file
+        changing what a built-in means in another is the same disease the
+        type reservation cures, so the name is refused in both namespaces.
+        """
+        codes = [d.error_code for d in _check(
+            f"private data ZzBox {{ {name}(Bool) }}\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  0\n}\n"
+        )]
+        assert "E158" in codes, codes
+
+    def test_a_constructor_of_an_unreserved_builtin_name_is_fine(self) -> None:
+        """The constructor reservation is exactly the reserved names.
+
+        `UrlParts` is a built-in ADT whose constructor shares its name, and
+        SKILL.md tells programs to redeclare it locally to match on it — so
+        the constructor namespace must stay open for every name the data
+        namespace leaves open.
+        """
+        codes = [d.error_code for d in _check(
+            "private data ZzBox { UrlParts(Bool) }\n\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  0\n}\n"
+        )]
+        assert "E158" not in codes, codes
+
+    def test_the_builtin_tuple_is_still_not_eq(self) -> None:
+        """And the built-in's own limitation is unchanged either way.
+
+        `Tuple` is Hash- and Show-derivable but NOT Eq-derivable (§9.8;
+        SKILL.md's ability table says so), so `==` over the carrier is
+        `[E243]` at check.  Measured identical at `release/v0.2.0` — it is
+        pinned here so the retraction cannot be read as having caused it,
+        and so a later fix to the built-in's Eq is a deliberate change to
+        this cell rather than a silent one.
+        """
+        codes = [d.error_code for d in _check("""\
+public fn same(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(1, 2) == Tuple(1, 2)
+}
+""")]
+        assert codes == ["E243"], codes
 
 
 class TestPreludeNamespaceScope:

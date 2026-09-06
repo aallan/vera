@@ -2079,8 +2079,7 @@ private fn f(@Int -> @Box<Nat>)
 
 # =====================================================================
 # User-declared `data Tuple` vs the builtin tuple pseudo-constructor
-# (PR #1200 review round; the SMT twin of codegen's FIX-3 discrimination
-# in vera/wasm/data.py)
+# (PR #1200 review round; refused at check since #1397)
 # =====================================================================
 
 _USER_TUPLE_ADT_PROGRAM = """
@@ -2100,78 +2099,138 @@ public fn g(@Int -> @Int)
 }
 """
 
+#: The same program with the declaration removed, so `Tuple` is the BUILTIN
+#: variadic carrier: the shape the SMT synthesis door is for.  Written out
+#: rather than derived from the fixture above by string surgery, which
+#: silently yields a different program the moment the fixture is reformatted
+#: (PR #1404 review).
+_BUILTIN_TUPLE_PROGRAM = """
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(5, 3);
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.1 - @Int.0
+  }
+}
+"""
+
+#: And its isomorphic user-ADT twin, under a name nothing special-cases.
+_PAIR_ADT_PROGRAM = _USER_TUPLE_ADT_PROGRAM.replace("Tuple", "Pair")
+
 
 class TestUserTupleCtorRegistryRouting:
-    """A registered user `data Tuple<A, B>` takes the registry-backed
-    constructor path, never the builtin pseudo-constructor synthesis door.
+    """The `Tuple` name collision, now settled by reserving the name.
 
-    The synthesis door reverse-maps argument sorts to types (a Nat-typed
-    argument recovers as Int from Z3's IntSort), so routing a REGISTERED
-    Tuple through it would materialise fresh instantiations of the user
-    ADT (`Tuple<Int, Int>`) that the declared-type side never created —
+    The SMT layer's synthesis door reverse-maps argument sorts to types (a
+    Nat-typed argument recovers as Int from Z3's IntSort), so routing a
+    REGISTERED Tuple through it would materialise fresh instantiations of a
+    user ADT (`Tuple<Int, Int>`) that the declared-type side never created —
     violating the #882/#918 never-newly-enables posture and desyncing the
-    constructor term's sort from the declared-side sort (`Tuple<Nat,
-    Nat>`).  Codegen discriminates the same name collision (the FIX-3
-    path in vera/wasm/data.py, pinned by TestFix3UserTupleGate); these
-    tests pin the SMT side: the name "Tuple" confers no special SMT
-    behaviour once it names a registry ADT.
+    constructor term's sort from the declared-side sort.  The registry guard
+    (`expr.name == "Tuple" and "Tuple" not in self._adt_registry`) kept the
+    door shut for a user declaration.
+
+    #1397 removes the collision at its source: `Tuple` is reserved in the
+    data namespace (E158), so no declaration ever registers under that name
+    and the door's registry test can only see the builtin carrier.  The
+    guard stays — it is the condition that makes that true rather than
+    assumed — and these cells pin the two halves it now separates: the
+    declaration is refused, and the BUILTIN carrier still translates through
+    the synthesis door with a profile identical to an isomorphic user ADT.
     """
 
-    def test_user_tuple_profile_matches_isomorphic_user_adt(self) -> None:
-        """Differential: a user `data Tuple` program and its `data Pair`
-        rename must produce identical obligation profiles.
+    def test_a_user_tuple_declaration_is_refused_at_check(self) -> None:
+        """The registry can never hold a user `Tuple` to route.
 
-        The rename is mechanical (every `Tuple` token becomes `Pair`), so
-        the two programs are isomorphic; any profile divergence can only
-        come from name-keyed special-casing in the SMT layer.  Before the
-        registry guard the Tuple spelling proved its ensures Tier-1 by
-        materialising a fresh `Tuple<Int, Int>` instantiation while the
-        Pair spelling honestly demoted — this asserts that divergence can
-        never return.
+        This is the premise every claim below rests on, so it is measured
+        rather than assumed: without it the two cells here would be
+        asserting things about the builtin carrier while a second Tuple
+        could still reach the same door.
         """
-        tuple_profile = [
-            (o.fn_name, o.kind, o.status)
-            for o in _verify(_USER_TUPLE_ADT_PROGRAM).obligations
+        codes = [
+            d.error_code
+            for d in typecheck(
+                parse_to_ast(_USER_TUPLE_ADT_PROGRAM),
+                _USER_TUPLE_ADT_PROGRAM,
+            )
+            if d.severity == "error"
         ]
+        assert "E158" in codes, codes
+
+    def test_the_two_doors_keep_their_own_postures(self) -> None:
+        """The synthesis door and the registry path, each measured directly.
+
+        The old cell here was an ISOMORPHIC-RENAME differential: a user
+        `data Tuple` and its mechanical `data Pair` rename had to produce
+        identical obligation profiles, so a name-keyed shortcut in the SMT
+        layer could not give the `Tuple` spelling a proof the `Pair`
+        spelling did not earn.  Its two sides can no longer both exist —
+        #1397 reserves the name — so what remains is to measure each door
+        on its own program rather than assert an equality between one that
+        compiles and one that does not.
+
+        They answer DIFFERENTLY, on purpose.  The builtin carrier has no
+        registry entry and therefore no declared-side sort to desync from,
+        so #764's synthesis door translates its constructor from the
+        argument sorts and the destructure proves Tier 1.  A registry ADT
+        of the same shape takes the registry path, which only reuses cached
+        instantiations (#882/#918 never-newly-enables), so its ensures
+        honestly demotes.  Pinning both is what would catch the synthesis
+        door widening to registry ADTs — the divergence the rename
+        differential existed to prevent, now stated as the two postures it
+        was really about.
+        """
+        builtin_profile = [
+            (o.fn_name, o.kind, o.status)
+            for o in _verify(_BUILTIN_TUPLE_PROGRAM).obligations
+        ]
+        assert builtin_profile, (
+            "no obligations at all — an all() over an empty profile would "
+            "pass vacuously, so the shape is pinned before its statuses"
+        )
+        assert all(status == "verified" for _, _, status in builtin_profile), (
+            f"the builtin tuple destructure must still prove Tier 1, got "
+            f"{builtin_profile}"
+        )
         pair_profile = [
             (o.fn_name, o.kind, o.status)
-            for o in _verify(
-                _USER_TUPLE_ADT_PROGRAM.replace("Tuple", "Pair"),
-            ).obligations
+            for o in _verify(_PAIR_ADT_PROGRAM).obligations
         ]
-        assert tuple_profile == pair_profile, (
-            f"user Tuple diverged from isomorphic user Pair:\n"
-            f"  Tuple: {tuple_profile}\n  Pair:  {pair_profile}"
+        assert ("g", "ensures", "tier3") in pair_profile, (
+            f"an isomorphic registry ADT must stay on the conservative "
+            f"registry path, got {pair_profile}"
         )
 
-    def test_user_tuple_uncached_ctor_instantiation_demotes(self) -> None:
-        """A user-Tuple ctor call whose argument-pinned instantiation was
-        never cached demotes; it must not mint the instantiation itself.
+    def test_uncached_user_adt_ctor_instantiation_demotes(self) -> None:
+        """A ctor call whose argument-pinned instantiation was never cached
+        demotes; the SMT layer must not mint the instantiation itself.
 
         `pick`'s parameter type materialises the user ADT at `<Nat, Nat>`;
-        the call argument `Tuple(@Nat.0, @Nat.0)` pins `<Int, Int>` (Nat
+        the call argument `Pair(@Nat.0, @Nat.0)` pins `<Int, Int>` (Nat
         reverse-maps to Int), which is uncached — so the constructor is
-        untranslatable and `f`'s ensures, which depends on the call
-        result, honestly demotes to the runtime tier.  Before the guard
-        the synthesis door minted the `<Int, Int>` instantiation and the
-        ensures "proved" against a term whose sort disagreed with the
-        declared side.  A future improvement may legitimately flip this
-        obligation back to verified — but only by REUSING the declared
+        untranslatable and `f`'s ensures, which depends on the call result,
+        honestly demotes to the runtime tier.  Spelled `Pair` since #1397:
+        the shape is what is under test, and the `Tuple` spelling of it is
+        no longer a program.  A future improvement may legitimately flip
+        this obligation back to verified — but only by REUSING the declared
         `<Nat, Nat>` sort (e.g. recorded-type-hint routing), never by
         minting; the isomorphic-rename differential above still governs.
         """
         result = _verify("""
-private data Tuple<A, B> {
-  Tuple(A, B)
+private data Pair<A, B> {
+  Pair(A, B)
 }
 
-private fn pick(@Tuple<Nat, Nat> -> @Int)
+private fn pick(@Pair<Nat, Nat> -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  match @Tuple<Nat, Nat>.0 {
-    Tuple(@Nat, @Nat) -> nat_to_int(@Nat.0)
+  match @Pair<Nat, Nat>.0 {
+    Pair(@Nat, @Nat) -> nat_to_int(@Nat.0)
   }
 }
 
@@ -2180,7 +2239,7 @@ public fn f(@Nat -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  pick(Tuple(@Nat.0, @Nat.0))
+  pick(Pair(@Nat.0, @Nat.0))
 }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -2194,6 +2253,6 @@ public fn f(@Nat -> @Int)
         ]
         assert len(f_ensures) == 1
         assert f_ensures[0].status == "tier3", (
-            f"f's ensures depends on an uncached user-Tuple instantiation; "
+            f"f's ensures depends on an uncached ctor instantiation; "
             f"expected honest tier3 demotion, got {f_ensures[0].status!r}"
         )

@@ -182,19 +182,25 @@ class DataMixin:
         # it goes through `layout.int_fields` (empty for a generic field, so it
         # stays E531-disclosed, #757).
         #
-        # FIX-3: a USER `data Tuple<A, B>` also matches `expr.name == "Tuple"`,
-        # but its layout is a FIXED user ADT (non-empty `field_offsets`, built
-        # parallel to its declared fields) — the verifier routes such a
-        # construction through the generic-ctor-field path and emits NO coerce
-        # obligation, so taking the tuple-target path here would emit a widen
-        # guard the verifier never obligated (an opposite-direction desync that
-        # trapped a legal @Nat).  Discriminate the builtin variadic carrier
-        # (empty `field_offsets`) from the user ADT, so only the builtin carrier
-        # uses the target table; the user Tuple's generic fields stay unguarded
-        # via the (empty) `int_fields` path, exactly like any other generic ADT.
+        # `expr.name == "Tuple"` is the whole test.  `expr.name` is a
+        # CONSTRUCTOR name, and #1397 reserves `Tuple` in the constructor
+        # namespace as well as the data one (E158) — both were needed, since
+        # `ctor_layouts` is flattened by constructor name across every ADT,
+        # so a `data Box { Tuple(Bool) }` used to win the carrier's flat slot
+        # with its own fixed layout and DISARM the guard below on a genuine
+        # builtin construction elsewhere in the same program.  With both
+        # namespaces closed the only declaration this can name is the
+        # builtin carrier.  It used to need a second clause — the
+        # FIX-3 discrimination, `not layout.field_offsets` — because a user
+        # `data Tuple<A, B>` matched the name too and its FIXED layout took a
+        # widen guard the verifier (routing the construction through the
+        # generic-ctor-field path) never obligated, an opposite-direction
+        # desync that trapped a legal @Nat.  With the name reserved there is
+        # no second Tuple to tell apart, and the extra clause would be a
+        # discrimination against a declaration the checker cannot admit.
         tuple_target = (
             self._target_codegen_type_full(expr)
-            if (expr.name == "Tuple" and not layout.field_offsets)
+            if expr.name == "Tuple"
             else None
         )
 
