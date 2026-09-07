@@ -134,7 +134,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  api.py` | 1,402 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
 | `  memory.py` | 105 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
 | `  core.py` | 3,361 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
-| `  modules.py` | 2,026 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — and the #1317 per-owner ADT rename (`_contended_adt_renames`), which decides which contended `data` declarations are qualified to `mod$<path>$<Name>` and what each namespace calls them afterwards | |
+| `  modules.py` | 2,096 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — and the #1317 per-owner ADT rename (`_contended_adt_renames`), which decides which contended `data` declarations are qualified to `mod$<path>$<Name>` and what each namespace calls them afterwards | |
 | `  registration.py` | 499 | | Pass 1 forward declarations, ADT layout | |
 | `  monomorphize.py` | 1,759 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
 | `  functions.py` | 1,455 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
