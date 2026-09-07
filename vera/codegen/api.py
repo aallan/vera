@@ -924,6 +924,21 @@ def execute(
         "vera", "nat_guard_trap", nat_guard_trap_type, host_nat_guard_trap,
     )
 
+    # Host function: vera.widen_trap() -> ()  (#1438)
+    # The WIDENING twin: a `@Nat` above `i64.MAX` reinterprets to a negative
+    # `@Int`, and the guard that catches it shared the bare `unreachable`
+    # with everything else until this channel existed.  Its remedy is a
+    # `requires(... <= i64.MAX)`, which the generic paragraph never named.
+    last_widen: list[object] = []
+
+    def host_widen_trap() -> None:
+        last_widen.append(True)
+
+    widen_trap_type = wasmtime.FuncType([], [])
+    linker.define_func(
+        "vera", "widen_trap", widen_trap_type, host_widen_trap,
+    )
+
     # State<T> host functions
     state_store: dict[str, list[int | float]] = {}
     register_state(linker, result.state_types, initial_state, state_store)
@@ -1391,6 +1406,7 @@ def execute(
             # unknown).
             kind, message, fix = _classify_trap(
                 exc, last_violation, last_overflow, last_nat_guard,
+                last_widen,
             )
         else:
             # Diagnostic escape hatch (ENVIRONMENT.md,

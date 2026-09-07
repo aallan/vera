@@ -204,6 +204,10 @@ _OPS: dict[str, _OpSpec] = {
     # what keeps the two from sharing an `elem` index.  The cli table pads to
     # match, which costs ten null funcrefs and no instructions.
     "nat_guard_trap": _op(26, "", ""),
+    # #1438: the widening twin, at the next free slot past the composed
+    # `_MAP_OPS` range for the same reason — the server world puts both
+    # tables in ONE index space, so a slot reused here would collide there.
+    "widen_trap": _op(27, "", ""),
 }
 
 #: Entries the cli world's dispatch table holds — one past the highest slot
@@ -1562,6 +1566,18 @@ def _op_nat_guard_trap(lay: _Layout) -> str:
     )
 
 
+def _op_widen_trap(lay: _Layout) -> str:
+    """#1438: the widening guard's signal, on the same terms as its
+    narrowing twin above — the shim NAME is what the host reads out of the
+    backtrace, a component having no host-side channel to stand in for the
+    core path's sentinel list."""
+    return (
+        "  (func $op_widen_trap\n"
+        "    unreachable\n"
+        "  )"
+    )
+
+
 def _op_time(lay: _Layout) -> str:
     now = lay.slab("now")
     return (
@@ -2436,6 +2452,7 @@ _OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
     "contract_fail": _op_contract_fail,
     "overflow_trap": _op_overflow_trap,
     "nat_guard_trap": _op_nat_guard_trap,
+    "widen_trap": _op_widen_trap,
 }
 
 
@@ -2703,7 +2720,7 @@ _MAP_OPS: dict[str, _OpSpec] = {
 _SERVER_IO_OPS = frozenset({
     "print", "stderr", "time", "sleep",
     "random_int", "random_float", "random_bool",
-    "contract_fail", "overflow_trap", "nat_guard_trap",
+    "contract_fail", "overflow_trap", "nat_guard_trap", "widen_trap",
 })
 
 #: Stage-C ops the server world REJECTS, with the family/reason named

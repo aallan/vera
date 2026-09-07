@@ -501,15 +501,22 @@ class TestIssueColumnScoping:
         ``#1305`` left with those same rows and the #1312 row beside them.
         ``#1281`` and ``#1304`` left with the #1317 row, which per-owner
         ADT identity retired — and with it the last Bugs row, so the
-        remaining citation is in the Limitations table.  One citation still
-        carries the property, which is what this pins; the scoping itself
-        is pinned independently on synthetic tables above, so the file's
-        contents cannot make the SCAN untested.
+        remaining citation is in the Limitations table.
+
+        ``#1268`` left the same way: its last prose citations lived in the
+        two rows retired when #1439 and #1440 were fixed, and a citation is
+        pinned here for the SCOPING behaviour it exercises, so one whose
+        host row is gone is dropped rather than kept as a reference to text
+        that no longer exists.  ``#1312`` and ``#1317`` carry the property
+        now.  The scoping itself is pinned independently on synthetic
+        tables above, so this cell's job is to keep a REAL example in the
+        loop — which is why the set is re-derived from the file when a fix
+        retires a row, rather than emptied.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268}
+        prose_only = {1312, 1317}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

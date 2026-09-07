@@ -1063,7 +1063,7 @@ public fn gf(@Nat -> @Int)
   match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
 }
 """,
-    fn="gf", arg="18446744073709551615", trap_marker="unreachable",
+    fn="gf", arg="18446744073709551615", trap_marker="i64.MAX",
 )
 
 _NONPLAIN_BASE = _GuardShape(
@@ -1177,7 +1177,7 @@ public fn td(@Nat -> @Int)
   @Int.1
 }
 """,
-    fn="td", arg="18446744073709551615", trap_marker="unreachable",
+    fn="td", arg="18446744073709551615", trap_marker="i64.MAX",
 )
 
 

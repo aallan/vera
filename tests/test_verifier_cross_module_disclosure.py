@@ -161,23 +161,26 @@ public fn use_it(@Int -> @Int)
 #: the E534 propagation it measures (#1422).  The narrowing is still here and
 #: still demotes — it is simply guarded now, so it no longer discloses.
 #:
-#: The witness is what restores the premise.  `MkWit`'s field is REFINED, and a
-#: refined constructor field at CONSTRUCTION is one of the two sites this
-#: release leaves unguarded on purpose (#1416): it records `refine_bind` /
-#: `tier3_unguarded` / E506.  Its predicate is `>= 0`, which the bound `@Nat`
-#: payload's declared fact discharges exactly — so with the bottom module
-#: DISCLOSED the fact is withheld and the witness cannot prove (relay is
-#: disclosed in turn), and with the bottom module CLEAN the fact is there and
-#: the witness proves at Tier 1 (relay is clean).  That is the same
-#: discriminator the narrowing used to provide, moved to a site the guards do
-#: not reach.
+#: The witness is what restores the premise.  It was a refined constructor
+#: field (`MkWit(NonNeg)`), which #1416 left unguarded at CONSTRUCTION — until
+#: #1426 gave every construction-position store the §2.6.5 guard, at which
+#: point that site stopped disclosing and took the premise with it.
+#:
+#: The witness is now `string_slice`'s `@Nat` index, which is the LAST site
+#: disclosed by design rather than by omission: code generation deliberately
+#: plants no guard there because the builtin CLAMPS the index to `[0, len]`
+#: (#475), so a negative becomes a valid `0` and no invalid `@Nat` escapes —
+#: the roster is `_NAT_ARG_UNGUARDED_BUILTINS`.  Being disclosed for a REASON
+#: rather than for a gap, it is not a site a future guard-completeness change
+#: can take away, which is what a witness has to be.
+#:
+#: The discriminator is unchanged in shape: the index is `nat_to_int(@Nat.0)`,
+#: whose `>= 0` obligation the bound `@Nat` payload's declared fact discharges
+#: exactly.  With the bottom module DISCLOSED the fact is withheld, the
+#: obligation cannot prove, and it records `tier3_unguarded` / E504 — so the
+#: relay is disclosed in turn.  With the bottom module CLEAN the fact is there
+#: and it proves at Tier 1, so the relay is clean.
 _RELAY = """\
-type NonNeg = {{ @Int | @Int.0 >= 0 }};
-
-private data Wit {{
-  MkWit(NonNeg)
-}}
-
 public fn {name}(@Int -> @Option<Nat>)
   requires(true)
   ensures(true)
@@ -185,7 +188,7 @@ public fn {name}(@Int -> @Option<Nat>)
 {{
   match {call}(@Int.0) {{
     Some(@Nat) -> {{
-      let @Wit = MkWit(nat_to_int(@Nat.0));
+      let @String = string_slice("ab", nat_to_int(@Nat.0), 1);
       Some(nat_to_int(@Nat.0))
     }},
     None -> None
@@ -452,21 +455,27 @@ def test_1399_three_hop_middle_module_is_tainted(tmp_path: Path) -> None:
     narrowings do still exist: `string_slice`'s clamping index arguments
     keep their E504 disclosure by design, and a user-declared effect
     operation's argument keeps its own, its enclosing function being dropped
-    with E603.  Neither is a shape this fixture can put in a middle module
-    whose provability the imported fact decides, which is what the
-    discriminator needs.)  The relay's disclosed obligation is now the witness's
-    REFINED constructor field, `refine_bind` / `tier3_unguarded` / E506, a
-    site #1412 leaves unguarded on purpose (#1426).  The narrowing is still
-    there and still demotes; it is simply guarded, which is the
-    improvement.  The property this cell measures
-    is the demotion — that the middle module does not PROVE from a fact the
-    bottom module could not establish — and that is read directly rather
-    than through the spelling, which the guard moved.  The consequence for
-    the cells further down the chain is #1422.
+    with E603.)  The relay's disclosed obligation is `string_slice`'s own
+    `@Nat` index — `nat_bind` / `tier3_unguarded` / E504 — reached by passing
+    it `nat_to_int(@Nat.0)`, so the obligation the disclosure hangs on is one
+    the imported fact decides.
+
+    It was the witness's refined CONSTRUCTOR FIELD until #1426 guarded every
+    construction-position store; before that it was the `Some(...)` narrowing
+    itself, until #757 guarded that.  Twice the discriminator was a site left
+    unguarded by OMISSION, and twice a guard-completeness change took it
+    away.  `string_slice` is unguarded by DESIGN — the builtin clamps its
+    index to `[0, len]` (#475), so no invalid `@Nat` escapes and there is
+    nothing for a future guard to close — which is the property a witness
+    needs and the earlier two never had.
+
+    The property this cell measures is unchanged and is read directly: the
+    middle module does not PROVE from a fact the bottom module could not
+    establish.  Only the spelling moves, and it moves with the site.
     """
     paths = _tree(tmp_path, _CHAIN)
     result = _verify(paths["ca"])
-    assert ("refine_bind", "tier3_unguarded", "E506") in _triples(result), (
+    assert ("nat_bind", "tier3_unguarded", "E504") in _triples(result), (
         f"the middle module proved from the bottom module's disclosed fact: "
         f"{_triples(result)}"
     )
@@ -498,14 +507,14 @@ def test_1399_three_hop_control_clean_bottom(tmp_path: Path) -> None:
     })
     mid = _verify(paths["ca"])
     assert ("nat_bind", "verified", None) in _triples(mid), _triples(mid)
-    # The leg the TAINT cell actually reads.  Its discriminator is the
-    # witness's refined field, not the narrowing, so a `refine_bind` that
-    # were `tier3_unguarded` for every bottom module — which is the posture
-    # a refined constructor field has in general — would make the taint cell
-    # pass with no taint present, and a control asserting only `nat_bind`
-    # would not notice.  With a clean bottom the witness's `>= 0` predicate
-    # is discharged by the bound `@Nat`'s declared fact, so it must PROVE.
-    assert ("refine_bind", "verified", None) in _triples(mid), _triples(mid)
+    # The leg the TAINT cell actually reads: the witness's own `@Nat` index
+    # obligation.  `string_slice`'s index is `tier3_unguarded` whenever it
+    # cannot be proved — that is its by-design posture — so a taint cell
+    # reading only "is there an unguarded record" would pass with no taint
+    # present.  This control is what separates the two: with a CLEAN bottom
+    # the bound `@Nat`'s declared fact discharges `nat_to_int(@Nat.0) >= 0`,
+    # so the same obligation must PROVE rather than disclose.
+    assert ("nat_bind", "verified", None) in _triples(mid), _triples(mid)
     entry = _verify(paths["centry"])
     ens = _obl(entry, "ensures")
     assert (ens["status"], ens.get("error_code")) == ("verified", None), (

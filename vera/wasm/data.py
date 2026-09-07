@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vera import ast, naming
+from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
@@ -150,6 +150,123 @@ class DataMixin:
         head = (f"Refinement violation in {where}\n"
                 f"  {ast.format_type_expr(te)} binding")
         return emitter(te, value_local, head, env) or []
+
+    def _emit_construction_refine_guard(
+        self,
+        value: list[str],
+        arg: ast.Expr,
+        site: str,
+        where: str,
+        env: WasmSlotEnv,
+        *,
+        component_ty: object | None = None,
+        declared_te: ast.TypeExpr | None = None,
+    ) -> list[str]:
+        """Guard a value being STORED into a refined component (#1426).
+
+        The pattern-bind sites already have the bound value in a local, so
+        they call :py:meth:`_emit_bind_refine_guard` directly.  A
+        construction site has it on the stack instead, so this tees it into
+        a temporary, runs the same lowering over that, and leaves the value
+        where the store expects it — the value is not recomputed, which
+        matters for an argument with an effect.
+
+        Gated on ``site`` being in
+        :py:data:`vera.narrowing.REFINED_BIND_GUARDED_SITES`, the same table
+        the verifier's classification reads.  That is the whole point of the
+        gate: a site added to the table turns on the guard AND the guarded
+        status together, and a site absent from it can be neither.  Codegen
+        used to emit at a hard-coded set that happened to agree with the
+        verifier's, and "happened to agree" is not a property anything
+        checks.
+
+        The component's type comes from the first of three sources that has
+        one, in decreasing precision.  *declared_te* is the constructor's own
+        declared field expression, kept by the layout since #1426; it is
+        preferred because it is the SYNTAX the guard is written against, with
+        no minting step.  *component_ty* is the checker's semantic type for
+        the component, which is what a `Tuple` carrier has.  Failing both,
+        the argument's own recorded target is read.  The latter two are
+        minted into a ``TypeExpr`` by :py:meth:`refined_type_expr`.  A
+        component with no refinement from any source returns *value*
+        untouched — including a GENERIC field instantiated at a refinement,
+        whose declared type is a variable and whose argument carries no
+        recorded target, so it stays obligated and disclosed.
+        """
+        if site not in narrowing.REFINED_BIND_GUARDED_SITES:
+            return value
+        if declared_te is not None:
+            te: ast.TypeExpr | None = declared_te
+        else:
+            resolved = (component_ty if component_ty is not None
+                        else self._target_codegen_type_refined(arg))
+            te = self.refined_type_expr(resolved)
+        if te is None:
+            return value
+        wasm_ty = self._refined_component_wasm_type(te, self._alias_env)
+        if wasm_ty is None:
+            return value
+        tmp = self.alloc_local(wasm_ty)
+        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env)
+        if not guard:
+            return value
+        return [*value, f"local.tee {tmp}", *guard]
+
+    def _emit_construction_nat_guard(
+        self,
+        value: list[str],
+        arg: ast.Expr,
+        component_ty: object | None,
+    ) -> list[str]:
+        """The SIGN guard at a construction-position store (#1440).
+
+        The predicate guard beside this one lands at all four construction
+        positions; the sign guard reached only the constructor field (#747 /
+        #757) and the tuple component (#1416), so an array element and a
+        `Map` value had their two obligations at ONE store treated
+        differently — the predicate checked, the `@Nat >= 0` disclosed E504.
+        Nothing about the store justified the split; it was simply where the
+        earlier work stopped.
+
+        Reads the component type the caller already resolved for the
+        predicate guard, so the two arms cannot disagree about what the slot
+        holds, and narrows on the same `_narrows_into_nat` rule every other
+        sign site uses.
+        """
+        base = getattr(component_ty, "base", component_ty)
+        if getattr(base, "name", None) != "Nat":
+            return value
+        if not self._narrows_into_nat(arg):
+            return value
+        return self._emit_nat_bind_guard(value)
+
+    @staticmethod
+    def _refined_component_wasm_type(
+        te: ast.TypeExpr, alias_env: naming.AliasEnv,
+    ) -> str | None:
+        """The WASM type of a refined component's value, or ``None`` when the
+        guard cannot hold it in one scalar local.
+
+        The base is read through :func:`naming.refinement_binder_parts`, the
+        same alias chase the guard lowering itself performs, rather than off
+        the node: a declared field type is usually the alias NAME (`Pos`),
+        whose refinement is one or more hops away, and reading `base_type`
+        off that node finds nothing.
+
+        Only the scalar bases the §2.6.5 lowering compares against are
+        handled; a refinement over a heap or pair representation would need
+        the two-local shape the pair branches of the bind sites use, and
+        returning ``None`` leaves such a component exactly as it was —
+        obligated and disclosed — rather than half-guarded.
+        """
+        parts = naming.refinement_binder_parts(te, alias_env)
+        if parts is None:
+            return None
+        name = getattr(parts.base, "name", None)
+        if not isinstance(name, str):
+            return None
+        return {"Int": "i64", "Nat": "i64", "Float64": "f64",
+                "Bool": "i32", "Byte": "i32"}.get(name)
 
     # -----------------------------------------------------------------
     # Constructors
@@ -389,6 +506,32 @@ class DataMixin:
                         or mono_base == "Int")
                         and self._result_is_nat(expr.args[i])):
                     field_val = self._emit_int_widen_guard(field_val)
+                # #1426: and the §2.6.5 PREDICATE beside the sign pair.  A
+                # refined component was obligated at this store and checked
+                # by nobody, so a value its own component type forbids went
+                # in and only a reader that happened to bind it back at the
+                # refinement caught it.  The component type comes from the
+                # `Tuple` carrier's threaded target where there is one, and
+                # otherwise from the argument's own recorded target — the
+                # same two sources the sign guards above read, so a field
+                # cannot be sign-guarded from one table and predicate-guarded
+                # from another.
+                tuple_comp = self._adt_arg_type(tuple_target, i)
+                declared_te = (
+                    layout.field_type_exprs[i]
+                    if i < len(layout.field_type_exprs)
+                    else None
+                )
+                field_val = self._emit_construction_refine_guard(
+                    field_val, expr.args[i],
+                    "tuple component" if expr.name == "Tuple"
+                    else "constructor field",
+                    f"{expr.name}(…) construction",
+                    env, component_ty=tuple_comp,
+                    declared_te=(declared_te
+                                 if isinstance(declared_te, ast.TypeExpr)
+                                 else None),
+                )
                 instructions.extend(field_val)
                 instructions.append(f"{wt}.store offset={fo}")
 
@@ -1849,6 +1992,21 @@ class DataMixin:
                 return None
             if target_elem_is_int and self._result_is_nat(elem):
                 elem_instrs = self._emit_int_widen_guard(elem_instrs)
+            # #1426: the §2.6.5 predicate at the same store.  The element
+            # target comes from the same threaded table the widening guard
+            # above reads, with the refinement left ON — the literal is typed
+            # by its element VALUES, so the element's own type says nothing
+            # about the slot it is going into.
+            elem_component = self._adt_arg_type(
+                self._target_codegen_type_refined(expr), 0)
+            elem_instrs = self._emit_construction_refine_guard(
+                elem_instrs, elem, "array element", "array element store",
+                env, component_ty=elem_component,
+            )
+            # #1440: and the SIGN obligation at the same store, so the two
+            # obligations this position carries are checked alike.
+            elem_instrs = self._emit_construction_nat_guard(
+                elem_instrs, elem, elem_component)
             offset = i * elem_size
             if is_pair:
                 # Pair type (String, Array<T>): element pushes (ptr, len)

@@ -102,6 +102,8 @@ class WasmTrapError(RuntimeError):
         * ``unreachable`` — ``unreachable`` instruction executed (the
           WASM panic primitive — typically a non-exhaustive match).
         * ``overflow`` — integer overflow trap.
+        * ``widen_guard`` — a ``@Nat`` above ``i64.MAX`` was widened into
+          an ``@Int`` slot, where it would reinterpret as negative (#1438).
         * ``nat_guard`` — a negative ``@Int`` was bound into a ``@Nat``
           slot and the narrowing guard caught it (#754).
         * ``host_error`` — a host import (an effect operation
@@ -425,6 +427,17 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
         "(`if x >= 0 then { ... }`), so Z3 discharges it at compile time and "
         "the check becomes dead."
     ),
+    "widen_guard": (
+        "A `@Nat` value above `i64.MAX` was widened into an `@Int` slot — a "
+        "return, a `let`, a call argument, a constructor field, an array "
+        "element or a tuple component whose target is `@Int`.  `Nat` (u64) "
+        "and `Int` (i64) share one machine representation, so such a value "
+        "REINTERPRETS as a negative `@Int` (`u64.MAX` becomes `-1`); the "
+        "verifier could not prove it in range, so it left a runtime check "
+        "here (Tier 3).  Add a `requires(... <= i64.MAX)` precondition, or "
+        "keep the value in `@Nat` and widen only where a bound is known, so "
+        "Z3 discharges it at compile time and the check becomes dead."
+    ),
     "contract_violation": "",
     "host_error": "",
     "unknown": "",
@@ -470,6 +483,7 @@ def _classify_trap(
     last_violation: list[str],
     last_overflow: list[object] | None = None,
     last_nat_guard: list[object] | None = None,
+    last_widen: list[object] | None = None,
 ) -> tuple[str, str, str]:
     """Classify a wasmtime trap into ``(kind, description, fix)``.
 
@@ -535,6 +549,18 @@ def _classify_trap(
             "nat_guard",
             "Negative value bound into a @Nat slot",
             _TRAP_FIX_PARAGRAPHS["nat_guard"],
+        )
+
+    # #1438: the @Nat -> @Int WIDENING guard, on the same terms as its
+    # narrowing twin above.  The two share the `unreachable` and have
+    # different remedies — `>= 0` on one side, `<= i64.MAX` on the other —
+    # so a reader told only that an `unreachable` was reached is told
+    # nothing they can act on.
+    if last_widen:
+        return (
+            "widen_guard",
+            "@Nat value above i64.MAX widened into an @Int slot",
+            _TRAP_FIX_PARAGRAPHS["widen_guard"],
         )
 
     msg = str(exc).lower()
