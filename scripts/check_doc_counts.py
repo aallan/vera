@@ -1618,9 +1618,12 @@ def check_conformance_level_prose(
 ) -> list[str]:
     """TESTING.md's per-level program enumerations, against the manifest.
 
-    Two shapes, both spelled out by hand and both carrying their own
-    count word: "<Count> programs (…) are at the `<level>` level", and
-    the negative subset, "<Count> of them — … — are **negative tests**".
+    Three shapes, each spelled out by hand and each carrying its own
+    count word: "<Count> programs (…) are at the `<level>` level", the
+    check-stage negatives among them ("<Count> of them — … — are
+    **negative tests**"), and the compile-stage negatives, which the
+    prose introduces separately because the property they pin is
+    different — the checker ACCEPTS the program and codegen refuses it.
     A shape that matches nothing is an error, not a skip.
     """
     errors: list[str] = []
