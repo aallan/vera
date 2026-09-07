@@ -1586,6 +1586,82 @@ _COMPILE_NEGATIVE_PROSE = re.compile(
 )
 
 
+# The prose does not only NAME the negatives — it lists their diagnostic
+# codes "respectively", a fourth hand-maintained parallel list, and the
+# one where drift is silent: a fixture appended to the names without a
+# code shifts every code after it onto the wrong fixture.
+_CODE = re.compile(r"\bE\d{3}\b")
+_RESPECTIVE_CODES = re.compile(
+    r"that assert a specific diagnostic \((?P<codes>[^)]*)respectively\)"
+)
+_COMPILE_CODES = re.compile(r"beside `expected_error: (?P<codes>E\d{3})`")
+
+
+def _codes_after(
+    text: str, match: re.Match[str], pattern: re.Pattern[str]
+) -> list[str] | None:
+    """The diagnostic codes the prose attaches to the list `match` found.
+
+    Read from a window after the names rather than from the whole
+    document, so one sentence's codes cannot be checked against another
+    sentence's names.  ``None`` means the sentence no longer carries
+    them at all.
+    """
+    tail = text[match.end() : match.end() + 600]
+    found = pattern.search(tail)
+    return None if found is None else _CODE.findall(found.group("codes"))
+
+
+def _check_respective_codes(
+    where: str,
+    names: list[str],
+    codes: list[str] | None,
+    by_name: dict[str, str],
+) -> list[str]:
+    """The codes list against the manifest, one per name, in order.
+
+    "Respectively" is a positional claim, so this is a positional check:
+    a count comparison alone would pass a list that names the right
+    codes against the wrong fixtures.
+    """
+    if not names:
+        return []
+    if codes is None:
+        return [
+            f"{where}: names {len(names)} fixture(s) but no"
+            f" 'respectively' code list follows — it moved or was"
+            f" reworded, so the codes are no longer gated"
+        ]
+    if len(codes) != len(names):
+        return [
+            f"{where}: names {len(names)} fixture(s) but lists"
+            f" {len(codes)} diagnostic code(s); 'respectively' needs one"
+            f" per name, in the same order"
+        ]
+    errors: list[str] = []
+    for position, (name, code) in enumerate(zip(names, codes), start=1):
+        want = by_name.get(name)
+        # A name the manifest does not hold is already reported as such;
+        # reporting its code too would be the same fault twice.
+        if want is not None and code != want:
+            errors.append(
+                f"{where}: position {position} is `{name}`, whose manifest"
+                f" `expected_error` is {want}, but the codes list says"
+                f" {code}"
+            )
+    return errors
+
+
+def _expected_error_codes(
+    manifest: list[dict[str, object]],
+) -> dict[str, str]:
+    return {
+        str(entry["file"]).removesuffix(".vera"): str(entry["expected_error"])
+        for entry in manifest
+        if entry.get("expected_error") is not None
+    }
+
+
 def _negatives_at_stage(
     manifest: list[dict[str, object]], stage: str
 ) -> set[str]:
@@ -1644,15 +1720,18 @@ def check_conformance_level_prose(
         )
         errors += found
 
-    for pattern, stage, label, cue in (
+    by_name = _expected_error_codes(manifest)
+    for pattern, codes_pattern, stage, label, cue in (
         (
             _NEGATIVE_PROSE,
+            _RESPECTIVE_CODES,
             "check",
             "the check-stage negative-test subset",
             "'<Count> of them — ... — are **negative tests**'",
         ),
         (
             _COMPILE_NEGATIVE_PROSE,
+            _COMPILE_CODES,
             "compile",
             "the compile-stage negative(s)",
             "'<Count> more — ... — is a negative at the `compile` stage'",
@@ -1666,13 +1745,20 @@ def check_conformance_level_prose(
                 f" gated"
             )
         for match in matches:
+            where = f"TESTING.md: {label}"
             _, found = _check_enumeration(
-                f"TESTING.md: {label}",
+                where,
                 match,
                 _negatives_at_stage(manifest, stage),
                 f"{stage}-stage negative tests",
             )
             errors += found
+            errors += _check_respective_codes(
+                where,
+                _FIXTURE_NAME.findall(match.group("names")),
+                _codes_after(testing_text, match, codes_pattern),
+                by_name,
+            )
     return errors
 
 

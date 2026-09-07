@@ -1882,19 +1882,37 @@ def _level_prose(
     negative_word: str,
     compile_names: tuple[str, ...] = (),
     compile_word: str = "Zero",
+    negative_codes: dict[str, str] | None = None,
 ) -> str:
     def listed(names: tuple[str, ...]) -> str:
         return ", ".join(f"`{name}`" for name in names)
 
+    def codes(names: tuple[str, ...], overrides: dict[str, str]) -> str:
+        return ", ".join(overrides.get(n, "E123") for n in names)
+
+    compile_codes = (
+        ""
+        if not compile_names
+        else " beside `expected_error: "
+        + codes(compile_names, {n: "E621" for n in compile_names})
+        + "`"
+    )
     compile_part = (
         f" {compile_word} more — {listed(compile_names)} — is a negative"
-        " at the `compile` stage rather than at `check`."
+        f" at the `compile` stage rather than at `check`:{compile_codes}."
+    )
+    respective = (
+        ""
+        if not negative_names
+        else " that assert a specific diagnostic ("
+        + codes(negative_names, negative_codes or {})
+        + " respectively)"
     )
     return (
         "Almost all programs are at the `run` level. "
         f"{check_word} programs ({listed(check_names)}) are at the `check`"
         f" level. {negative_word} of them — {listed(negative_names)} — are"
-        " **negative tests** that assert a specific diagnostic."
+        f" **negative tests**{respective}."
         f"{compile_part}\n"
     )
 
@@ -2020,10 +2038,14 @@ class TestConformanceLevelProse:
             compile_word="One",
         )
         errors = _MOD.check_conformance_level_prose(text, manifest)
-        assert len(errors) == 2
+        # Three symptoms of the one duplication: the fixture is not a
+        # check-stage negative, the count is one too high, and the
+        # respective code the prose gives it is not its manifest code.
+        assert len(errors) == 3
         assert any("ch08_late_rejected" in e and "does not hold" in e
                    for e in errors)
         assert any("'Two'" in e and "check-stage" in e for e in errors)
+        assert any("position 2" in e and "E621" in e for e in errors)
 
     def test_the_two_stages_are_gated_as_separate_sets(self) -> None:
         """Split correctly, both sentences are clean — the compile-stage
@@ -2056,6 +2078,114 @@ class TestConformanceLevelProse:
         errors = _MOD.check_conformance_level_prose(text, manifest)
         assert len(errors) == 2
         assert any("ch08_late_rejected" in e for e in errors)
+
+    def test_a_stale_respective_code_is_reported(self) -> None:
+        """"Respectively" is a positional claim, so the check is
+        positional: a code that no longer matches its fixture's
+        `expected_error` is caught at its position."""
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            negative_codes={"ch08_b_rejected": "E999"},
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1
+        assert "position 2" in errors[0]
+        assert "ch08_b_rejected" in errors[0]
+        assert "E123" in errors[0] and "E999" in errors[0]
+
+    def test_a_missing_code_shifts_the_rest_and_is_reported(self) -> None:
+        """The silent shape: a fixture appended to the names without a
+        code slides every code after it onto the wrong fixture.  Counted
+        rather than matched pairwise, because the count is what tells a
+        reader the correspondence is broken at all."""
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+        ).replace("diagnostic (E123, E123 ", "diagnostic (E123 ", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1
+        assert "2 fixture(s)" in errors[0] and "1 diagnostic code" in errors[0]
+
+    def test_a_removed_code_list_is_an_error_not_a_skip(self) -> None:
+        manifest = _manifest("ch02_a_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected",),
+            ("ch02_a_rejected",),
+            check_word="One",
+            negative_word="One",
+        ).replace(" that assert a specific diagnostic (E123 respectively)", "")
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1 and "no longer gated" in errors[0]
+
+    def test_a_stale_compile_stage_code_is_reported(self) -> None:
+        """The compile sentence carries its code inline rather than in a
+        parenthetical, and is gated the same way."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        ).replace("`expected_error: E621`", "`expected_error: E622`")
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1 and "E621" in errors[0] and "E622" in errors[0]
+
+    def test_an_empty_list_needs_no_codes(self) -> None:
+        """"Respectively" over no names is vacuous, so a stage with no
+        fixtures must not be asked for a code list."""
+        manifest = _manifest(positives=1, compile_stage=())
+        text = _level_prose(
+            (), (), check_word="Zero", negative_word="Zero"
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_each_list_reads_its_own_codes(self) -> None:
+        """The codes are read from a window after THIS list's names.
+
+        Searching the whole document instead would have a second
+        occurrence validated against the first one's parenthetical — its
+        own stale code never looked at — which is the same
+        one-of-two blindness the every-occurrence case pins one level up.
+        """
+        manifest = _manifest("ch01_a_rejected", "ch01_b_rejected")
+        good = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+        )
+        stale = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            negative_codes={"ch01_b_rejected": "E999"},
+        )
+        errors = _MOD.check_conformance_level_prose(good + stale, manifest)
+        assert len(errors) == 1
+        assert "position 2" in errors[0] and "E999" in errors[0]
+
+    def test_the_shipped_codes_match_the_manifest_in_order(self) -> None:
+        """The live parenthetical, read positionally against the
+        manifest — so the gate cannot be checking an empty list."""
+        text = (_ROOT / "TESTING.md").read_text(encoding="utf-8")
+        match = _MOD._NEGATIVE_PROSE.search(text)
+        assert match is not None
+        names = _MOD._FIXTURE_NAME.findall(match.group("names"))
+        codes = _MOD._codes_after(text, match, _MOD._RESPECTIVE_CODES)
+        assert codes is not None
+        assert len(names) == len(codes) > 20
 
     def test_the_shipped_file_is_actually_read(self) -> None:
         """Both shapes must match the live TESTING.md, or the gate is
