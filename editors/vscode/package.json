@@ -86,7 +86,7 @@
 		"vscode:prepublish": "npm run build"
 	},
 	"dependencies": {
-		"vscode-languageclient": "^10.1.0"
+		"vscode-languageclient": "^10.1.1"
 	},
 	"devDependencies": {
 		"@vscode/vsce": "3.9.2",
