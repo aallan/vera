@@ -154,14 +154,40 @@ public fn use_it(@Int -> @Int)
 #: available and `tier3_unguarded` (E504) the moment it is withheld.  That
 #: flip is what makes `relay` disclosed IN TURN, and so what carries the taint
 #: to a third module.
+#: A relay whose OWN obligation the imported fact decides, and which no guard
+#: in #1412 covers.  It used to be the `Some(nat_to_int(@Nat.0))` narrowing
+#: alone: a generic-instantiated constructor field, which #757 runtime-guarded,
+#: so the relay stopped being DISCLOSED and every cell downstream of it lost
+#: the E534 propagation it measures (#1422).  The narrowing is still here and
+#: still demotes — it is simply guarded now, so it no longer discloses.
+#:
+#: The witness is what restores the premise.  `MkWit`'s field is REFINED, and a
+#: refined constructor field at CONSTRUCTION is one of the two sites this
+#: release leaves unguarded on purpose (#1416): it records `refine_bind` /
+#: `tier3_unguarded` / E506.  Its predicate is `>= 0`, which the bound `@Nat`
+#: payload's declared fact discharges exactly — so with the bottom module
+#: DISCLOSED the fact is withheld and the witness cannot prove (relay is
+#: disclosed in turn), and with the bottom module CLEAN the fact is there and
+#: the witness proves at Tier 1 (relay is clean).  That is the same
+#: discriminator the narrowing used to provide, moved to a site the guards do
+#: not reach.
 _RELAY = """\
+type NonNeg = {{ @Int | @Int.0 >= 0 }};
+
+private data Wit {{
+  MkWit(NonNeg)
+}}
+
 public fn {name}(@Int -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {{
   match {call}(@Int.0) {{
-    Some(@Nat) -> Some(nat_to_int(@Nat.0)),
+    Some(@Nat) -> {{
+      let @Wit = MkWit(nat_to_int(@Nat.0));
+      Some(nat_to_int(@Nat.0))
+    }},
     None -> None
   }}
 }}
@@ -411,14 +437,21 @@ _CHAIN = {
 def test_1399_three_hop_middle_module_is_tainted(tmp_path: Path) -> None:
     """Hop one: verifying the MIDDLE module must see the bottom one.
 
-    `relay`'s `Some(nat_to_int(@Nat.0))` is an unguarded narrowing that the
-    disclosed fact alone decides.  With `cb`'s disclosure invisible it proved
-    at Tier 1; with the manifest in place it is `tier3_unguarded` + E504 —
-    which is exactly what makes `relay` disclosed in `ca`'s OWN manifest.
+    `relay`'s `Some(nat_to_int(@Nat.0))` is a narrowing that the disclosed
+    fact alone decides.  With `cb`'s disclosure invisible it proved at Tier 1;
+    with the manifest in place it demotes.
+
+    It demoted to `tier3_unguarded` + E504 until #1412 closed #757: a
+    generic-instantiated constructor field is runtime-guarded now, so the
+    same demotion lands on the guarded leg.  The property this cell measures
+    is the demotion — that the middle module does not PROVE from a fact the
+    bottom module could not establish — and that is read directly rather
+    than through the spelling, which the guard moved.  The consequence for
+    the cells further down the chain is #1422.
     """
     paths = _tree(tmp_path, _CHAIN)
     result = _verify(paths["ca"])
-    assert ("nat_bind", "tier3_unguarded", "E504") in _triples(result), (
+    assert ("refine_bind", "tier3_unguarded", "E506") in _triples(result), (
         f"the middle module proved from the bottom module's disclosed fact: "
         f"{_triples(result)}"
     )
