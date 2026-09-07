@@ -1517,32 +1517,161 @@ def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
 # the result-derived one, which is the same union `_disclosed_fn_names` takes
 # on this side.
 # ---------------------------------------------------------------------------
-# #1418 review G1 — RETIRED, because #1412 closed the gap at its source
+# #1418 review G1/J1 — a forwarder INSIDE an imported module publishes too
 # ---------------------------------------------------------------------------
+
+# #1399's manifest is what an importer asks about a module it does not verify,
+# and built from `disclosed_fn_names(obligations)` alone it cannot see a
+# FORWARDER: a function whose declared return is the SAME refined type as its
+# callee's NARROWS nothing, so #1412 — which obligates narrowings — gives it no
+# obligation to be found by.
 #
-# The cells that stood here measured a manifest that emitted the UNION of the
-# obligation-derived disclosed set with the result-derived one, because a
-# FORWARDER made no claim and so recorded no obligation: one inside an
-# imported module was invisible to its importer while the same declarations
-# in one file demoted correctly.
+# This was removed once, on the argument that #1412 had closed the gap: a
+# forwarder either publishes the refinement and is obligated for it, or drops
+# it and hands on no fact.  The second half holds.  The FIRST IS FALSE, and a
+# survey of six carriers did not show it, because a survey can only ever be
+# evidence about the carriers surveyed (#1418 review J1).
 #
-# #1412 obligates a refined return at every position that publishes it, which
-# closes that gap where it opens.  The dichotomy is now complete, and it was
-# measured rather than argued over five shapes, each with the union reverted
-# on a scratch tree: a forwarder that DROPS the refinement from its declared
-# return, one reaching its result through a `where` helper, one returning a
-# tuple carrying the disclosed payload, one two import hops away, and one in
-# an `Exn`-declared function whose guard is spec-excluded.
+# The carrier that shows it is a HANDLER-CLAUSE `@Nat` payload narrowing: the
+# handler is declared `Exn<Int>`, so `throw`'s payload is an `@Int`, and the
+# clause pattern `throw(@Nat)` narrows it into a `@Nat` slot.  That site is
+# #1362's category, which #1412's guards do not cover, so it stays
+# `nat_bind`/`tier3_unguarded`/E504 — and `wrap` forwarding it publishes no
+# refinement of its own.
 #
-#   * publishes the refinement -> #1412 obligates it, unguarded, so
-#     `disclosed_fn_names` names it and the union adds nothing;
-#   * drops the refinement -> it hands on no fact, and the consumer's
-#     postcondition is REFUTED (E500) rather than falsely proved.
-#
-# No shape differed with the union and without it, and removing it changed no
-# cell in this file.  So the union is gone and the manifest consumes the
-# obligation-derived set alone; keeping an unreachable mechanism beside a
-# reachable one is how a set acquires two spellings for a member.
+# THE ONE-FILE ORACLE IS THE POINT.  The same three declarations in one file
+# demote; across an import they did not.  So the cells below assert EQUALITY
+# with that oracle rather than a literal status: if the rule changes what a
+# disclosed forwarder does, both sides move together or the cell fails.
+_J1_LIB = """public fn mk(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  int_to_nat(handle[Exn<Int>] {
+    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  } in {
+    throw(@Int.0)
+  })
+}
+
+public fn wrap(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(@Int.0)
+}
+"""
+
+_J1_MID = """import lib;
+
+public fn reexport(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  lib::wrap(@Int.0)
+}
+"""
+
+_J1_USE = """
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match %s(@Int.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0
+  }
+}
+"""
+
+_J1_ONEFILE = _J1_LIB + _J1_USE % "wrap"
+
+
+def _j1_ensures(result: dict) -> tuple[str, str | None]:
+    hits = [o for o in result["obligations"]
+            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
+    assert len(hits) == 1, [
+        (o["kind"], o["description"], o["status"]) for o in result["obligations"]
+    ]
+    return hits[0]["status"], hits[0].get("error_code")
+
+
+def _j1_importer(tmp_path: Path, callee: str, *, mid: bool = False) -> dict:
+    (tmp_path / "lib.vera").write_text(_J1_LIB, encoding="utf-8")
+    if mid:
+        (tmp_path / "mid.vera").write_text(_J1_MID, encoding="utf-8")
+    imp = "import mid;\n" if mid else "import lib;\n"
+    return _verify(tmp_path, imp + _J1_USE % callee, name="main.vera")
+
+
+@pytest.mark.parametrize(
+    "callee,mid",
+    [("lib::mk", False), ("lib::wrap", False), ("mid::reexport", True)],
+    ids=["direct", "forwarder", "two_hops"],
+)
+def test_1418_j1_an_imported_forwarder_publishes_its_disclosure(
+    tmp_path: Path, callee: str, mid: bool,
+) -> None:
+    """The importer agrees with the one-file oracle, whichever route it takes.
+
+    Measured with the manifest publishing the obligation-derived set alone:
+    `lib::mk` `tier3`/E534, `lib::wrap` **`verified`**, `mid::reexport`
+    **`verified`**, and the same declarations in ONE file `tier3`/E534.  The
+    same value, and the verdict turned on which side of an import the
+    forwarder sat.
+
+    The exhibit is that ASYMMETRY, not a runtime refutation: `int_to_nat`
+    filters a negative into `None`, so the program returns 0 and keeps its
+    postcondition.  What is wrong is a Tier-1 claim resting on a fact the same
+    run reported as neither proved nor guarded — which the in-module half of
+    this rule already refuses.
+    """
+    # The premise: the library discloses exactly once, at the handler clause.
+    (tmp_path / "lib.vera").write_text(_J1_LIB, encoding="utf-8")
+    lib = _verify(tmp_path, _J1_LIB, name="lib.vera")
+    disclosing = [(o["kind"], o["status"], o.get("error_code"))
+                  for o in lib["obligations"]
+                  if o["status"] == "tier3_unguarded"
+                  or (o["status"] == "tier3" and o.get("error_code") == "E534")]
+    assert disclosing == [("nat_bind", "tier3_unguarded", "E504")], (
+        f"the library must disclose exactly once, at the handler-clause "
+        f"`@Nat` payload bind — got {disclosing}"
+    )
+
+    result = _j1_importer(tmp_path, callee, mid=mid)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _j1_ensures(result) == ("tier3", "E534"), (
+        f"{callee}: a disclosed value reached the importer, so its "
+        f"postcondition is a Tier-3 truth — got {_j1_ensures(result)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "callee,mid",
+    [("lib::mk", False), ("lib::wrap", False), ("mid::reexport", True)],
+    ids=["direct", "forwarder", "two_hops"],
+)
+def test_1418_j1_the_import_boundary_changes_nothing(
+    tmp_path: Path, callee: str, mid: bool,
+) -> None:
+    """EQUALITY with the one-file oracle, not a literal status.
+
+    A cell asserting `tier3`/E534 outright would go red for a change that
+    moved BOTH sides — the rule being adjusted, rather than broken.  What must
+    hold is that splitting a program across files changes nothing, so the
+    oracle is computed here and compared.
+    """
+    oracle = _j1_ensures(_verify(tmp_path, _J1_ONEFILE, name="oracle.vera"))
+    across = _j1_ensures(_j1_importer(tmp_path, callee, mid=mid))
+    assert across == oracle, (
+        f"{callee}: the same declarations report {across} across an import "
+        f"and {oracle} in one file — a verdict that depends on which side of "
+        f"an import a forwarder sits on"
+    )
 
 
 # ---------------------------------------------------------------------------

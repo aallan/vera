@@ -476,6 +476,16 @@ class VerifyResult:
     # discharge order.  Empty-list default keeps existing constructors
     # (tests, tooling) source-compatible.
     obligations: list[ProofObligation] = field(default_factory=list)
+    #: The functions this run found to be handing on a disclosed value,
+    #: mapped to the import sites behind each.  NOT derivable from
+    #: `obligations`: a forwarder whose declared return is the same refined
+    #: type as its callee's NARROWS nothing, so #1412 obligates it nothing,
+    #: so a consumer reading only the obligation stream misses it.
+    #: `vera/disclosure.py`'s manifest is such a consumer, and without this
+    #: an importer calling that forwarder proved at Tier 1 what the same
+    #: program in one file demotes (#1418 review J1).
+    result_disclosed: dict[str, list[DisclosureSite]] = field(
+        default_factory=dict)
 
 
 def verify(
@@ -524,6 +534,7 @@ def verify(
         diagnostics=verifier.errors,
         summary=verifier.summary,
         obligations=verifier.obligations,
+        result_disclosed=dict(verifier._result_disclosed_fns),
     )
 
 

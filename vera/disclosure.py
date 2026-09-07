@@ -473,4 +473,41 @@ def _verify_for_disclosure(
                 file=o.file or file, line=o.line, column=o.column,
                 error_code=o.error_code or "",
             )
+    # A forwarder that narrows nothing has no obligation to decorate, so the
+    # loop above skipped it (#1418 review J1).  Cite the import behind it when
+    # there is one, and otherwise the forwarder's own declaration — the
+    # position a reader of the importing diagnostic should open, from which
+    # the local disclosure it hands on is one call away and carries its own
+    # E504/E506 in that module's run.
+    for name, sites in result.result_disclosed.items():
+        if name in manifest:
+            continue
+        if sites:
+            manifest[name] = sites[0]
+            continue
+        manifest[name] = DisclosureSite(
+            module=mod.path, fn_name=name, file=file,
+            line=_decl_line(mod, name), column=0, error_code="",
+        )
     return manifest
+
+
+def _decl_line(mod: ResolvedModule, name: str) -> int:
+    """The line *name* is declared on in *mod*, or 0 when it cannot be found.
+
+    Walks the declarations rather than trusting a registry, because a
+    forwarder may be a ``where`` helper, which the flat last-wins registries
+    cannot name (#1418 review G1).
+    """
+    from vera import ast
+
+    stack = [
+        tld.decl for tld in mod.program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+    ]
+    while stack:
+        decl = stack.pop()
+        if decl.name == name and decl.span is not None:
+            return int(decl.span.line)
+        stack.extend(decl.where_fns or ())
+    return 0
