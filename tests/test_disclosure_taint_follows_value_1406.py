@@ -1136,6 +1136,96 @@ where {
 """
 
 
+#: Two owners, two helpers of the SAME bare name, and NO forwarding: each
+#: helper discloses (or does not) through an obligation of its OWN.  The
+#: `_collide_source` family reaches the disclosed set through
+#: `_result_disclosed_fns` — the result-derived half — so it cannot tell
+#: whether the obligation-derived half is scoped too.  This one contains no
+#: `mk` at all, so the ONLY route into the set is `disclosed_fn_names`.
+_F3_OWN_OBLIGATION = """type PosInt = { @Int | @Int.0 > 0 };
+
+public fn tainted(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match h(@Float64.0) {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 41
+  }
+}
+where {
+  fn h(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    Some(float_to_int(@Float64.0))
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match h(@Float64.0) {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 41
+  }
+}
+where {
+  fn h(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    Some(7)
+  }
+}
+"""
+
+
+def test_1418_f3_the_obligation_derived_half_is_scoped_too(
+    tmp_path: Path,
+) -> None:
+    """The other half of the union, isolated — no forwarding anywhere.
+
+    The disclosed set is the UNION of two derivations: the obligation-derived
+    `disclosed_fn_names` and the result-derived `_result_disclosed_fns`.  F3
+    scoped the second.  The first went on keying a ``where`` helper by its
+    bare `fn_name`, which means a different function in every owner, so one
+    owner's disclosing helper demoted another owner's clean caller.
+
+    Measured, not inferred: this shape reports BOTH callers `tier3`/E534 on
+    `release/v0.2.0` at `212f1a1d` AND at the tip `35ff4def`, with this branch
+    absent.  So the defect is not #1420's — it was latent in that half from
+    the start, reachable whenever a helper carried a disclosing obligation of
+    its own.  What #1420 changed is the REACH: obligating a helper's return
+    made a merely FORWARDING helper carry one too, which is what turned
+    `test_1418_f3_a_shared_helper_name_does_not_demote_a_clean_caller[h]` red
+    on the rebase and is why both cells are needed — that one goes green
+    again if only the result-derived half is scoped, and this one does not.
+
+    Both halves now spell a helper's key with one function, `disclosed_key`,
+    since a set consulted as a union cannot have two spellings for a member.
+    """
+    result = _verify(tmp_path, _F3_OWN_OBLIGATION)
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses, (
+        f"the disclosing helper did not disclose, so this measures nothing "
+        f"about the obligation-derived half — {statuses}"
+    )
+    ensures = [(o["status"], o.get("error_code")) for o in result["obligations"]
+               if o["kind"] == "ensures" and o["description"] == "@Int.result > 0"]
+    assert ensures == [("tier3", "E534"), ("verified", None)], (
+        f"the owner whose helper discloses must demote and the other must "
+        f"not — got {ensures}"
+    )
+
+
 @pytest.mark.parametrize("second_helper", ["h", "h2"])
 def test_1418_f3_a_shared_helper_name_does_not_demote_a_clean_caller(
     tmp_path: Path, second_helper: str,

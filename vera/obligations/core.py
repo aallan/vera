@@ -156,6 +156,15 @@ class ProofObligation:
     #: obligation ``_record_obligation`` reifies carries one whenever the
     #: verifier was given a file at all.
     file: str | None = None
+    #: The TOP-LEVEL function owning this obligation's `where` helper, or ``""``
+    #: for an obligation of a top-level function.  `fn_name` alone is a helper's
+    #: bare name, which means a different function in every owner, so the
+    #: disclosed set keyed on it let one owner's tainted helper demote another
+    #: owner's clean caller (#1418 review F3).  Deliberately NOT part of
+    #: `content_key`: the span and file already separate two helpers of the
+    #: same name, so hashing it would split cache entries without
+    #: distinguishing anything.
+    owner: str = ""
 
     def content_key(self) -> str:
         """Stable identity digest for this obligation.

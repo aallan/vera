@@ -335,6 +335,35 @@ class VerifySummary:
     total: int = 0
 
 
+def disclosed_key(name: str, owner: str) -> str:
+    """The name a disclosure is recorded under: bare, or scoped to its owner.
+
+    ONE spelling, shared by the two halves of the disclosed set — the
+    obligation-derived :func:`disclosed_fn_names` and the result-derived
+    ``_result_disclosed_fns`` — because the set is consulted as their UNION
+    and a key spelled two ways is a member the lookup cannot find.
+
+    A top-level name is its own key: it is visible program-wide.  A ``where``
+    helper's is qualified by its top-level owner, because its bare name means
+    a DIFFERENT function in every owner, and a bare key made one owner's
+    tainted helper demote another owner's clean caller (#1418 review F3).
+    That defect was latent in the obligation-derived half from the start and
+    only became reachable when a helper first carried a disclosing obligation
+    of its own; #1420 widened the reachable set to forwarding helpers, which
+    is what turned the F3 cell red, but the isolated shape reproduces on
+    `release/v0.2.0` before #1420 too.
+
+    Scoping cannot LOSE a demotion that was needed, which is the direction
+    that would matter.  A helper is reachable only through its owner's
+    lexical chain (`_scope_fn_names`), and #1383 refuses a bare call to an
+    imported module's helper, so every caller of a helper sits inside the
+    owner and looks it up under this same key.  The residual is unchanged and
+    still errs toward demotion: two helpers of one name under ONE owner share
+    a key.
+    """
+    return f"{owner}\x1fwhere\x1f{name}" if owner else name
+
+
 def disclosed_fn_names(
     obligations: "list[ProofObligation]",
 ) -> frozenset[str]:
@@ -361,7 +390,8 @@ def disclosed_fn_names(
     disclosed and the taint stopped one hop short.
     """
     return frozenset(
-        o.fn_name for o in obligations if is_disclosing(o)
+        disclosed_key(o.fn_name, o.owner)
+        for o in obligations if is_disclosing(o)
     )
 
 
@@ -612,6 +642,10 @@ class ContractVerifier:
         # caller.  Set beside `_scope_fn_names`, from the same `(decl,
         # enclosing)`, so visibility and keying cannot disagree.
         self._scope_owner: str = ""
+        # Whether that owner is a PARENT (a helper is under verification) or
+        # the function's own name (a top-level one is) — `_scope_owner` alone
+        # cannot say, being the function's own name in the top-level case.
+        self._scope_is_helper: bool = False
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -1028,6 +1062,14 @@ class ContractVerifier:
             error_code=error_code,
             counterexample=counterexample,
             file=self._current_file,
+            # An obligation belongs to the scope that records it: every one
+            # of this method's call sites passes the `decl.name` of the
+            # function `_verify_fn` is verifying, so `fn_name` IS the scope's
+            # own name.  A guard comparing the two was written here and
+            # removed: it never differed, over 919 cells and 251 example and
+            # conformance programs, which makes it a term no test could
+            # distinguish rather than a safety net.
+            owner=self._scope_owner if self._scope_is_helper else "",
         ))
 
     @staticmethod
@@ -9316,6 +9358,11 @@ class ContractVerifier:
         # (CodeRabbit, PR #1418).  One owner per top-level function is
         # the whole point of the key.
         self._scope_owner = enclosing[0].name if enclosing else decl.name
+        # Which of the two the obligations recorded under this scope belong to.
+        # `_scope_owner` alone cannot say: for a top-level function it IS the
+        # function's own name, so a helper and its owner are indistinguishable
+        # by it.
+        self._scope_is_helper = bool(enclosing)
         self._tainted_sites = []
 
     def _result_disclosed_key(self, name: str, *, is_helper: bool) -> str:
@@ -9335,7 +9382,7 @@ class ContractVerifier:
         further means carrying the whole lexical chain as the key rather than
         its root.
         """
-        return f"{self._scope_owner}\x1fwhere\x1f{name}" if is_helper else name
+        return disclosed_key(name, self._scope_owner if is_helper else "")
 
     def _scoped_forwarder_hit(self, name: str) -> bool:
         """Whether *name*, called from the scope under verification, resolves
