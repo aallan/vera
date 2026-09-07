@@ -1739,6 +1739,31 @@ class CodeGenerator(
         reachable.  E608/E609/E610/E621 all report one instruction per
         collision, and reporting the module's declaration as well would say
         the same thing twice.
+
+        WHICH PAIRS REACH HERE is decided upstream, by the same can-meet
+        test E609 is decided by (#1423).  The entry file is an owner like
+        any other: per-owner ADT identity qualifies a module declaration
+        the entry cannot MEET — cannot name, and cannot be handed a value
+        of through an imported signature — to ``mod$<path>$<Name>``, so
+        that pair is not in ``_module_adt_declarers`` when this runs and
+        there is nothing here to refuse.  What is left is exactly the pairs
+        that meet, and this rail refuses them.  It is not a second opinion
+        about compatibility: one rule decides, and the CODE says which pair
+        it caught — E609 between two modules, E623 between the entry and a
+        module, because only the second can point the reader at the file
+        they compiled.
+
+        The entry keeps the bare slot, which is why the rename never
+        targets its declarations: ``program`` is the object codegen was
+        handed and is never rewritten, so the spelling the entry writes has
+        to go on meaning the entry's own type.
+
+        A RESERVED name is the one case where two declarations meet without
+        either being able to reach the other.  The prelude's names are
+        never qualified away (maintainer ruling R7), so an entry ``data
+        Json`` and a module's share the one slot whatever either can name —
+        they meet by construction, and this rail refuses them on the same
+        rule rather than by an exception to it.
         """
         if not self._module_adt_declarers:
             return

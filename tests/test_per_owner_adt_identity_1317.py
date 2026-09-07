@@ -963,14 +963,31 @@ public fn main(@Unit -> @Int)
         assert "E609" in codes, codes
 
 
-class TestTheEntryIsNotAParty:
-    """E623 (#1312) is untouched, in both directions."""
+class TestTheEntryIsAnOwnerToo:
+    """The entry file is an owner like any other (#1423).
 
-    def test_one_module_against_the_entry_is_still_e623(
+    Per-owner identity applied to the modules alone left E623 deciding a
+    DIFFERENT question from E609, and the two disagreed: an entry declaring
+    ``Shape`` beside one contending module was refused, and adding a second
+    contending module qualified both away and lifted the refusal.  The
+    entry is now a party to the same rule — it owns its declarations, keeps
+    the bare slot (its program is the one codegen was handed and is never
+    rewritten), and a module declaration it cannot MEET is qualified away
+    exactly as a second module's would be.
+
+    E623 keeps its own code and its own location, at the entry declaration
+    naming the module's file and line: which pair meets decides which code
+    speaks, and the entry-versus-module pair is the one whose diagnostic
+    can point at the file `vera compile` was given.
+    """
+
+    def test_a_module_the_entry_cannot_name_is_qualified_away(
         self, tmp_path: Path,
     ) -> None:
-        """Nothing contends among the modules — there is only one — so no
-        rename fires and the entry-versus-module rail speaks as before."""
+        """The entry declares ``Shape``, so §8.5.4 shadows the import of
+        the same name and ``aone``'s signature carries no ``Shape``.  The
+        two cannot meet, so ``liba``'s declaration takes its own symbol and
+        the program runs."""
         entry = """\
 import liba(aone, Shape);
 
@@ -984,11 +1001,50 @@ public fn main(@Unit -> @Int)
   aone(3)
 }
 """
-        _verify, codes, _answer = _cell(
+        verify, codes, answer = _cell(
             tmp_path / "e623",
             {"liba.vera": _LIBA, "main.vera": entry},
         )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 3), answer
+
+    def test_a_module_whose_value_reaches_the_entry_is_still_e623(
+        self, tmp_path: Path,
+    ) -> None:
+        """And the half #1312 exists for, unchanged in substance.
+
+        ``aone`` RETURNS ``liba``'s ``Shape``, so a value of it reaches the
+        entry, whose own declaration of the name is a different layout.
+        The two meet, neither can be qualified away, and the rail refuses
+        the pair at the entry declaration.
+        """
+        liba = _LIBA.replace(
+            "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
+        ).replace(
+            "  match Sq(@Int.0) {\n    Sq(@Int) -> @Int.0\n  }\n",
+            "  Sq(@Int.0)\n")
+        entry = """\
+import liba(aone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match aone(6) {
+    Own(@Int) -> @Int.0
+  }
+}
+"""
+        _verify, codes, answer = _cell(
+            tmp_path / "e623-meets",
+            {"liba.vera": liba, "main.vera": entry},
+        )
         assert "E623" in codes, codes
+        assert answer == ("no-run", "compilation had errors"), answer
 
     def test_the_entrys_declaration_counts_as_an_owner(
         self, tmp_path: Path,
@@ -1743,54 +1799,42 @@ public fn main(@Unit -> @Int)
 """
 
 
-class TestTheEntryRailIsNotMonotonicYet:
-    """A KNOWN asymmetry, pinned in both directions rather than left to be
-    rediscovered (PR review).
+class TestTheEntryRailIsMonotonic:
+    """A verdict does not change when an unrelated module is added (#1423).
 
-    THE RULE a reader expects is that adding an unrelated module cannot
-    lift a refusal.  This pair violates it: an entry that declares ``Shape``
-    beside ONE module declaring it differently is E623, and adding a SECOND
-    module with a third ``Shape`` makes the two modules contend, qualifies
-    both away, leaves the entry alone in the bare slot — and E623 then has
-    no pair to report, so the program compiles and runs.
+    THE RULE, and it is a design principle rather than a convenience: a
+    program the compiler refuses must not become one it accepts because
+    something unrelated joined the build.  Per-owner identity applied to
+    the modules alone broke it — an entry declaring ``Shape`` beside ONE
+    contending module was E623, and adding a SECOND contending module made
+    the two modules contend with each other, qualified both away, left the
+    entry alone in the bare slot, and lifted the refusal.
 
-    Both in-scope repairs were measured and both cost more than the
-    asymmetry does:
-
-    * qualifying a module's ``Shape`` whenever the ENTRY declares the name
-      makes both cases run, and reds
-      ``test_type_parameter_ARITY_alone_is_a_different_layout`` in
-      ``tests/test_data_namespace_contention_1312.py`` — it relaxes E623,
-      which is #1312's rail and not this change's to move;
-    * declining the rename whenever the entry declares the name makes both
-      cases refuse, and brings **E609** back with them — so #1317's own
-      second remedy (a local declaration in the importer) stops working,
-      which is the defect this change exists to close.
-
-    The asymmetry is therefore the entry-versus-module rail's own
-    over-breadth showing through, and belongs with #1312 rather than here.
-    These two cells pin the CURRENT verdicts so the resolution, whichever
-    way it goes, has to move them deliberately.
+    Making the entry an owner in the same rule settles it in the accepting
+    direction, and both cells below assert the SAME verdict: neither module
+    can meet the entry's declaration, so each is qualified away whether
+    there is one of them or two.  The refusing direction is asserted by
+    :class:`TestTheEntryIsAnOwnerToo` — a module whose value reaches the
+    entry is still refused with one module or with two, because the rename
+    declines for the pair that meets rather than for the pair that happens
+    to be there.
     """
 
-    def test_one_contending_module_beside_the_entry_is_refused(
+    def test_one_contending_module_beside_the_entry(
         self, tmp_path: Path,
     ) -> None:
-        _verify, codes, answer = _cell(
+        verify, codes, answer = _cell(
             tmp_path / "e623-one",
             {"liba.vera": _LIBA, "main.vera": _E623_ONE},
         )
-        assert codes == ["E623"], codes
-        assert answer == ("no-run", "compilation had errors"), answer
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
 
-    def test_adding_a_second_contending_module_lifts_it(
+    def test_adding_a_second_contending_module_changes_nothing(
         self, tmp_path: Path,
     ) -> None:
-        """The non-monotonic direction, stated as a measurement.
-
-        Not asserted as CORRECT — asserted as what the compiler does today,
-        so the #1312 resolution cannot change it silently.
-        """
+        """The monotonicity assertion proper: same verdict, same value."""
         verify, codes, answer = _cell(
             tmp_path / "e623-two",
             {"liba.vera": _LIBA, "libb.vera": _E623_LIBB,
@@ -1799,6 +1843,52 @@ class TestTheEntryRailIsNotMonotonicYet:
         assert codes == [], codes
         assert verify == [], verify
         assert answer == ("ok", 7), answer
+
+    def test_a_meeting_is_refused_with_one_module_and_with_two(
+        self, tmp_path: Path,
+    ) -> None:
+        """And the refusing direction is monotonic too.
+
+        ``aone`` returns ``liba``'s ``Shape``, so it meets the entry's
+        declaration of the name.  Adding an unrelated second contending
+        module must not lift that refusal any more than removing it should
+        create one — the rename declines for the pair that MEETS, and which
+        other modules happen to be in the build does not enter into it.
+        """
+        liba = _LIBA.replace(
+            "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
+        ).replace(
+            "  match Sq(@Int.0) {\n    Sq(@Int) -> @Int.0\n  }\n",
+            "  Sq(@Int.0)\n")
+        entry_one = """\
+import liba(aone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match aone(6) {
+    Own(@Int) -> @Int.0
+  }
+}
+"""
+        entry_two = entry_one.replace(
+            "import liba(aone);", "import liba(aone);\nimport libb(bone);",
+        ).replace("    Own(@Int) -> @Int.0\n  }\n",
+                  "    Own(@Int) -> @Int.0\n  } + bone(1)\n")
+        _v1, one, ans1 = _cell(
+            tmp_path / "meet-one",
+            {"liba.vera": liba, "main.vera": entry_one})
+        _v2, two, ans2 = _cell(
+            tmp_path / "meet-two",
+            {"liba.vera": liba, "libb.vera": _E623_LIBB,
+             "main.vera": entry_two})
+        assert "E623" in one, one
+        assert "E623" in two, two
+        assert ans1 == ans2 == ("no-run", "compilation had errors")
 
 
 class TestTheFlowSurfaceFailsClosed:
@@ -1992,3 +2082,223 @@ public fn aone(@Int -> @Int)
         )
         assert "Shape" in described, described[:200]
         assert "mod$" not in described, described[:200]
+
+
+# =====================================================================
+# #1423 — the entry file is an owner, and one rule decides both pairs
+# =====================================================================
+
+
+class TestOneRuleDecidesBothPairs:
+    """E609 and E623 stop deciding different questions (#1423).
+
+    Per-owner identity applied to the modules alone left two rails asking
+    different things about the same slot, and a verdict that changed when
+    an unrelated module joined the build.  The entry is now a party to the
+    same rule, so a `data` declaration is refused exactly when some
+    namespace can MEET another of the same name — and which CODE reports it
+    says which pair was caught, not which test was run.
+    """
+
+    def test_the_entry_keeps_the_bare_slot(self, tmp_path: Path) -> None:
+        """The entry is an owner, and its declarations are never renamed.
+
+        ``program`` is the object codegen was handed and is never
+        rewritten, so the spelling the entry writes has to go on meaning
+        the entry's own type: the entry holds ``Shape`` and the module it
+        cannot meet is the one that moves.
+        """
+        entry = _ENTRY.replace(
+            "import libb(bone);\n",
+            "import libb(bone);\n\nprivate data Shape { Own(Int) }\n",
+        )
+        gen = _generator(
+            tmp_path / "entry-keeps",
+            {"liba.vera": _LIBA, "libb.vera": _LIBB, "main.vera": entry},
+        )
+        assert "Shape" in gen._adt_layouts
+        assert list(gen._adt_layouts["Shape"]) == ["Own"]
+        assert "mod$liba$Shape" in gen._adt_layouts
+        assert "mod$libb$Shape" in gen._adt_layouts
+
+    def test_a_module_restating_the_entrys_type_still_shares_the_slot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Shape still decides, so the relaxation costs no sharing.
+
+        A module whose declaration matches the entry's describes the one
+        layout, so it keeps the bare name beside it rather than being given
+        a second registration of the same thing — which is what keeps the
+        corpus's emitted WAT where it is.
+        """
+        libb = _LIBB.replace(
+            "public data Shape { Cr(Bool) }",
+            "public data Shape { Own(Int) }").replace(
+            "  match Cr(true) {\n"
+            "    Cr(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }\n  }\n",
+            "  match Own(@Int.0) {\n    Own(@Int) -> @Int.0\n  }\n")
+        entry = _ENTRY.replace(
+            "import libb(bone);\n",
+            "import libb(bone);\n\nprivate data Shape { Own(Int) }\n",
+        )
+        gen = _generator(
+            tmp_path / "entry-restated",
+            {"libb.vera": libb, "main.vera": entry.replace(
+                "import liba(aone);\n", "").replace("aone(3) + ", "3 + ")},
+        )
+        assert gen._contended_adt_display_names == {}
+        assert list(gen._adt_layouts["Shape"]) == ["Own"]
+
+    def test_a_reserved_name_meets_whatever_either_can_reach(
+        self, tmp_path: Path,
+    ) -> None:
+        """The one pair that meets without either side reaching the other.
+
+        The prelude's names are never qualified away (R7), so an entry
+        ``data Json`` and a module's share the one slot however the
+        importer filters or shadows them — they meet by construction, and
+        the rail refuses them on the same rule rather than by an exception
+        to it.  This is why #1312's own cells for `Json` stay exactly as
+        they were.
+        """
+        libb = """\
+module blib;
+
+private data Json { JBlob(Int) }
+
+public fn probe(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match JBlob(@Int.0) {
+    JBlob(@Int) -> @Int.0
+  }
+}
+"""
+        entry = """\
+import blib(probe);
+
+private data Json { JMine(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  probe(3)
+}
+"""
+        _verify, codes, _answer = _cell(
+            tmp_path / "reserved-meets",
+            {"blib.vera": libb, "main.vera": entry},
+        )
+        assert "E623" in codes, codes
+
+    def test_the_code_says_which_pair_was_caught(
+        self, tmp_path: Path,
+    ) -> None:
+        """One rule, two codes, and the code is not a second opinion.
+
+        The same shape — declarations that meet and cannot share a layout —
+        reports E623 when the entry is one of the pair and E609 when both
+        are modules.  E623 is the one that can point the reader at the file
+        they compiled, which is why the distinction is kept.
+        """
+        flowing = _LIBA.replace(
+            "public fn aone(@Int -> @Int)", "public fn aone(@Int -> @Shape)",
+        ).replace(
+            "  match Sq(@Int.0) {\n    Sq(@Int) -> @Int.0\n  }\n",
+            "  Sq(@Int.0)\n")
+        entry_pair = """\
+import liba(aone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match aone(6) {
+    Own(@Int) -> @Int.0
+  }
+}
+"""
+        _v, entry_codes, _a = _cell(
+            tmp_path / "pair-entry",
+            {"liba.vera": flowing, "main.vera": entry_pair},
+        )
+        assert entry_codes == ["E623"], entry_codes
+
+        # The same meeting, between two MODULES instead.
+        _v2, module_codes, _a2 = _cell(
+            tmp_path / "pair-modules",
+            {"liba.vera": _FLOW_A, "libb.vera": _FLOW_B,
+             "main.vera": _ENTRY_FLOW},
+        )
+        assert module_codes == ["E609"], module_codes
+
+    def test_the_entry_keeps_its_constructors_on_the_ctor_axis_too(
+        self, tmp_path: Path,
+    ) -> None:
+        """The constructor axis has its own entry-keeper, and this is the
+        cell that makes it load-bearing.
+
+        The entry's ``Own { Sq(Int) }`` and ``liba``'s ``Alpha { Sq(Bool) }``
+        are differently-named types sharing one constructor spelling, so the
+        flat constructor registry contends on ``Sq`` while the TYPE axis
+        sees nothing.  Neither can reach the other, so the pair is qualified
+        apart — and it must be ``liba``'s that moves: the entry's program is
+        never rewritten, so a rename there would leave its own ``Sq(3)``
+        naming a constructor that no longer exists.
+
+        Measured: dropping ``_ENTRY_OWNER`` from the constructor axis's
+        keeper set leaves every other cell in this file and in
+        ``tests/test_data_namespace_contention_1312.py`` green and reds this
+        one alone.
+        """
+        liba = """\
+module liba;
+
+public data Alpha { Sq(Bool) }
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(true) {
+    Sq(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }
+  }
+}
+"""
+        entry = """\
+import liba(aone);
+
+private data Own { Sq(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(3) {
+    Sq(@Int) -> @Int.0
+  } + aone(4)
+}
+"""
+        verify, codes, answer = _cell(
+            tmp_path / "ctor-entry",
+            {"liba.vera": liba, "main.vera": entry},
+        )
+        assert codes == [], codes
+        assert verify == [], verify
+        assert answer == ("ok", 7), answer
+        gen = _generator(
+            tmp_path / "ctor-entry-sym",
+            {"liba.vera": liba, "main.vera": entry},
+        )
+        assert list(gen._adt_layouts["Own"]) == ["Sq"]
+        assert "mod$liba$Alpha" in gen._adt_layouts
+        assert list(gen._adt_layouts["mod$liba$Alpha"]) == ["mod$liba$Sq"]

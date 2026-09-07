@@ -383,13 +383,53 @@ class TestEntryVersusModule:
         self, tmp_path: Path,
     ) -> None:
         """The second axis a single-constructor fixture cannot reach: same
-        constructor, same field type, different declared arity."""
-        _verr, result, cg_errors = build_multi_module(
+        constructor, same field type, different declared arity.
+
+        Asked here where the two declarations MEET, because since #1423 a
+        different arity is only refused when they do.  ``probe`` is given
+        ``Box<T>`` in its signature, so the module's declaration reaches the
+        entry, which declares a zero-arity ``Box`` of its own; neither can
+        be qualified away and the pair is refused at the entry declaration.
+        The sibling below is the same two declarations with nothing
+        carrying one to the other.
+        """
+        module = _MODULE_ARITY_ONE + """
+public fn boxer(@Int -> @Box<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Wrap(@Int.0)
+}
+"""
+        entry = _ENTRY_ARITY_ZERO.replace(
+            "import blib(probe);", "import blib(probe, boxer);")
+        _verr, _result, cg_errors = build_multi_module(
             tmp_path / "arity",
-            {"blib.vera": _MODULE_ARITY_ONE, "main.vera": _ENTRY_ARITY_ZERO},
+            {"blib.vera": module, "main.vera": entry},
         )
         assert _codes(cg_errors) == ["E623"], cg_errors
-        assert not result.ok
+
+    def test_a_differing_arity_the_entry_cannot_reach_is_admitted(
+        self, tmp_path: Path,
+    ) -> None:
+        """Its sibling, and the shape #1423 changed.
+
+        The same two declarations — ``Box<T>`` in the module, ``Box`` in the
+        entry — with ``probe`` narrowed to ``@Int -> @Int`` so nothing
+        carries one to the other and the entry's own declaration shadows the
+        name.  They cannot meet, so the module's is compiled under its own
+        owner-qualified symbol and the program runs.  Before #1423 this was
+        E623, and adding an unrelated second module that also declared
+        ``Box`` lifted that refusal — the non-monotonicity the entry-owner
+        rule ends.
+        """
+        _verr, result, cg_errors = build_multi_module(
+            tmp_path / "arity-apart",
+            {"blib.vera": _MODULE_ARITY_ONE, "main.vera": _ENTRY_ARITY_ZERO},
+        )
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", 7)
 
     def test_the_code_is_registered(self) -> None:
         assert "E623" in ERROR_CODES
