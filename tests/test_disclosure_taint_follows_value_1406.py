@@ -283,6 +283,27 @@ private fn wrap(@Float64 -> @Option<PosInt>)
 _MOVERS = tuple(s for s in sorted(_SPELLINGS) if s != "direct")
 
 
+#: THE RUNTIME HALF, after #1412.  A REFUSED run is the exhibit; which guard
+#: refuses it is #1412's business, not this file's.  Before it, an ADT payload
+#: was guarded nowhere, so the bad value travelled all the way to `f`'s
+#: postcondition and refuted it.  #1412 checks every obligated narrowing at
+#: the place that obligates it, so the constructor sub-pattern guard (#765)
+#: now fires first and the program is refused there instead.  Both are the
+#: same value being refused at run time — which is the claim — and naming
+#: only the older site is what turned seven cells red on a base move that
+#: strengthened the compiler.
+_REFUSALS = ("Postcondition violation", "Refinement violation")
+
+
+def _assert_refused(out: str, what: str = "") -> None:
+    """The run must REFUSE the value, at whichever guard reaches it first."""
+    assert any(m in out for m in _REFUSALS), (
+        f"{what}the run was not refused, so this fixture reports no verdict "
+        f"about soundness — a trap or a setup failure earlier in the run "
+        f"looks identical to a passing contract here:\n{out[-700:]}"
+    )
+
+
 def _source(spelling: str, *, disclosed: bool) -> str:
     mk = _MK_DISCLOSED if disclosed else _MK_CLEAN
     return _POSINT + mk + _SPELLINGS[spelling]
@@ -375,12 +396,7 @@ def test_1406_the_demoted_contract_is_one_the_program_refutes(
     source = _source(spelling, disclosed=True)
     assert _f_ensures(_verify(tmp_path, source)) == ("tier3", "E534")
     out = _run(tmp_path, source)
-    assert "Postcondition violation in f" in out, (
-        f"{spelling}: the fixture did not reach the postcondition, so it "
-        f"reports no verdict about soundness — a trap or a setup failure "
-        f"earlier in the run looks identical to a passing contract "
-        f"here:\n{out[-700:]}"
-    )
+    _assert_refused(out, f"{spelling}: ")
 
 
 @pytest.mark.parametrize("spelling", ["let_bound", "wrap1", "rebuild_ctor"])
@@ -484,7 +500,7 @@ def test_1410_the_argument_position_is_unchanged_by_this_fix(
         f"measurement it moved from: {[o['status'] for o in consume_ens]}"
     )
     out = _run(tmp_path, _ARGUMENT)
-    assert "Postcondition violation in consume" in out, out[-700:]
+    _assert_refused(out)
 
 
 # ---------------------------------------------------------------------------
@@ -764,20 +780,34 @@ def test_1413_a_renarrowing_off_a_disclosed_value_is_not_tier_1(
 
     Before this change both were `verified` — a Tier-1 claim — while the
     program returned `-7` for a value declared `Big` (`> -3`) and trapped
-    nowhere: a refined ADT sub-pattern bind and a destructured component
-    re-narrowing carry no codegen guard.
+    nowhere.
+
+    THE ASSERTION IS THE CLAIM, NOT ITS ENCODING.  It read
+    `[("tier3_unguarded", "E506")]`, and #1412 moved the tier under it: every
+    obligated narrowing is now checked at the place that obligates it, so a
+    refined ADT sub-pattern bind and a destructured component re-narrowing DO
+    carry a guard, the obligation lands at `tier3` rather than
+    `tier3_unguarded`, and the run is refused instead of handing `-7` back.
+    That is the compiler getting stronger, and pinning the exact tier made
+    this cell red for it.
+
+    What the cell is FOR is unchanged and still load-bearing, which was
+    measured rather than assumed: with the gate reverted both come back
+    `verified`, so the demotion is still this mechanism's doing and not
+    #1412's.  So the claim asserted here is that the narrowing is not a
+    Tier-1 proof, and that the run refuses the value at whichever guard now
+    reaches it first.
     """
     result = _verify(tmp_path, source)
     assert result["ok"] is True, result.get("diagnostics")
-    assert _narrowing_binds(result) == [("tier3_unguarded", "E506")], (
+    binds = _narrowing_binds(result)
+    assert binds, f"{label}: no consumer narrowing was obligated at all"
+    assert all(status != "verified" for status, _code in binds), (
         f"{label}: the narrowing holds only from a fact this run could "
-        f"neither prove nor guard — got {_narrowing_binds(result)}"
+        f"neither prove nor guard, so it must not be a Tier-1 proof — "
+        f"got {binds}"
     )
-    out = _run(tmp_path, source)
-    assert out.strip().endswith("-7"), (
-        f"{label}: the fixture did not produce the offending value, so it "
-        f"reports no verdict about soundness:\n{out[-700:]}"
-    )
+    _assert_refused(_run(tmp_path, source), f"{label}: ")
 
 
 @pytest.mark.parametrize(
@@ -1120,21 +1150,22 @@ _F1_BODIES = {
 
 #: BOTH HALVES AT ONCE: a lost value behind a forwarder, so the inter-function
 #: taint has to survive the mint too.  It lives outside `_F1_BODIES` because
-#: it needs a different carrier, for the reason #1418 review H1 gives: after
-#: #1420/#1435 an `Option<PosInt>` forwarder carries its own
-#: `tier3_unguarded`, which reaches the importer through the
-#: obligation-derived set and leaves the mint doing nothing — measured, the
-#: previous `wrapper_through_tuple` shape passed with the mint reverted, so
-#: `M_mint` reddened two F1 cells rather than three.
+#: it launders through an ARRAY rather than a tuple: an array relates to its
+#: elements by axiom, so the value is genuinely LOST and the stand-in's
+#: inheritance is what carries the disclosure across, which is the thing this
+#: pair is for.
 #:
-#: `Option<Nat>` makes the forwarder record nothing, but a TUPLE of it
-#: translates — `_fresh_opaque_slot` is reached zero times — so the tuple
-#: launder would quietly stop being a lost value at all.  An ARRAY is related
-#: to its elements by axiom whatever the payload, so it stays lost on either
-#: carrier.  Array + `Nat` is the intersection: the value is genuinely lost,
-#: AND the forwarder contributes nothing of its own.
-_F1_FORWARDER = """
-private fn mk(@Float64 -> @Option<Nat>)
+#: It briefly carried `Option<Nat>`, to make the forwarder record no
+#: obligation of its own.  #1412 ended both halves of that: a `@Nat` payload
+#: narrowing is now GUARDED, so it discloses nothing at all, and a forwarder
+#: publishing any refinement is obligated for it — there is no longer a
+#: carrier that discloses while its forwarder stays silent.  That the mint is
+#: still load-bearing here is therefore asserted the only way left, by
+#: measurement: reverting the stand-in's inheritance takes `f` back to
+#: `verified`, which is what `M_mint` checks.
+_F1_FORWARDER = """type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1142,22 +1173,22 @@ private fn mk(@Float64 -> @Option<Nat>)
   Some(%s)
 }
 
-private fn warr(@Float64 -> @Option<Nat>)
+private fn warr(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Array<Option<Nat>> = [mk(@Float64.0)];
-  @Array<Option<Nat>>.0[0]
+  let @Array<Option<PosInt>> = [mk(@Float64.0)];
+  @Array<Option<PosInt>>.0[0]
 }
 
 public fn f(@Float64 -> @Int)
   requires(true)
-  ensures(@Int.result >= 0)
+  ensures(@Int.result > 0)
   effects(pure)
 {
   match warr(@Float64.0) {
-    Some(@Nat) -> nat_to_int(@Nat.0),
+    Some(@PosInt) -> @PosInt.0,
     None -> 41
   }
 }
@@ -1169,32 +1200,18 @@ def test_1418_f1_a_lost_value_behind_a_clean_forwarder_still_carries_it(
 ) -> None:
     """The mint and the forwarder hop, composed — and the mint load-bearing.
 
-    `verified` at Tier 1 on `d88bf490` and `tier3`/E534 here; with the
-    stand-in's inheritance reverted it goes back to `verified`, which is what
-    makes this a third cell `M_mint` reds rather than a third cell that
-    happens to pass.
+    `tier3`/E534 here; with the stand-in's inheritance reverted it goes back
+    to `verified`, which is what makes this a third cell `M_mint` reds rather
+    than a third cell that happens to pass.
     """
     src = _F1_FORWARDER % "float_to_int(@Float64.0)"
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
     statuses = [(o["kind"], o["status"], o.get("error_code"))
                 for o in result["obligations"]]
-    assert ("nat_bind", "tier3_unguarded", "E504") in statuses, statuses
-    # The premise: the forwarder contributes nothing, so the mint is the only
-    # route by which its result can be known to be disclosed.
-    disclosing = [o for o in result["obligations"]
-                  if o["status"] == "tier3_unguarded"
-                  or (o["status"] == "tier3"
-                      and o.get("error_code") == "E534")]
-    assert [o["kind"] for o in disclosing] == ["nat_bind", "ensures"], (
-        f"only `mk`'s narrowing and `f`'s demoted postcondition may disclose "
-        f"here; a forwarder carrying its own would make the mint redundant "
-        f"and this cell vacuous — {statuses}"
-    )
-    hits = [o for o in result["obligations"]
-            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
-    assert len(hits) == 1, statuses
-    assert (hits[0]["status"], hits[0].get("error_code")) == ("tier3", "E534")
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses, statuses
+    assert _f_ensures(result) == ("tier3", "E534"), statuses
+    _assert_refused(_run(tmp_path, src))
 
 
 def test_1418_f1_a_lost_clean_value_behind_a_forwarder_still_proves(
@@ -1204,13 +1221,13 @@ def test_1418_f1_a_lost_clean_value_behind_a_forwarder_still_proves(
     src = _F1_FORWARDER % "7"
     result = _verify(tmp_path, src)
     assert result["ok"] is True, result.get("diagnostics")
-    hits = [o for o in result["obligations"]
-            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
-    assert len(hits) == 1, result["obligations"]
-    assert (hits[0]["status"], hits[0].get("error_code")) == ("verified", None), [
+    assert _f_ensures(result) == ("verified", None), [
         (o["kind"], o["status"], o.get("error_code"))
         for o in result["obligations"]
     ]
+    out = _run(tmp_path, src)
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]
 
 
 @pytest.mark.parametrize("shape", sorted(_F1_BODIES))
@@ -1235,10 +1252,7 @@ def test_1418_f1_a_lost_value_still_carries_its_disclosure(
     ], "the producer did not disclose, so this cell measures nothing"
     assert _f_ensures(result) == ("tier3", "E534"), _f_ensures(result)
     out = _run(tmp_path, source)
-    assert "Postcondition violation in f" in out, (
-        f"{shape}: the fixture did not reach the postcondition, so it reports "
-        f"no verdict about soundness:\n{out[-700:]}"
-    )
+    _assert_refused(out, f"{shape}: ")
 
 
 @pytest.mark.parametrize("shape", sorted(_F1_BODIES))
@@ -1490,185 +1504,33 @@ def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
 # sits.  The manifest now emits the union of the obligation-derived set and
 # the result-derived one, which is the same union `_disclosed_fn_names` takes
 # on this side.
-#: THE CARRIER IS THE MEASUREMENT HERE, and it is not the one the rest of
-#: this file uses.  After #1420/#1435 a refined RETURN is obligated at every
-#: position that publishes it, so an `Option<PosInt>` forwarder carries its
-#: OWN `tier3_unguarded`/E506 — which puts it in the obligation-derived set
-#: directly, and the cell then passes on `release/v0.2.0` without this PR at
-#: all.  That is what happened: measured on `d88bf490`, the library reported
-#: three unguarded obligations (`mk`, `wrap`, `outer`) and the importer
-#: demoted with the manifest union reverted.  The cell had stopped measuring
-#: G1 (#1418 review H1).
-#:
-#: `Option<Nat>` restores it.  The narrowing is obligated at the CONSTRUCTION
-#: site only, so the library's standalone run carries exactly ONE unguarded
-#: obligation — `mk`'s `nat_bind`/E504 — and the forwarders record nothing of
-#: their own.  The manifest union is then the only route by which the
-#: importer can learn they hand on a disclosed value, which is the claim.
-#: `float_to_int` supplies the opacity exactly as elsewhere: the `>= 0` can
-#: be neither proved nor refuted, which is what `tier3_unguarded` means.
-_G1_MK_DISCLOSED = """
-public fn mk(@Float64 -> @Option<Nat>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  Some(float_to_int(@Float64.0))
-}
-"""
-
-_G1_MK_CLEAN = """
-public fn mk(@Float64 -> @Option<Nat>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  Some(7)
-}
-"""
-
-_G1_WRAP = """
-public fn wrap(@Float64 -> @Option<Nat>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  mk(@Float64.0)
-}
-"""
-
-_G1_OUTER = """
-public fn outer(@Float64 -> @Option<Nat>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  wrap(@Float64.0)
-}
-"""
-
-_G1_LIB_ONE_HOP = _G1_MK_DISCLOSED + _G1_WRAP
-_G1_LIB_TWO_HOP = _G1_LIB_ONE_HOP + _G1_OUTER
-_G1_LIB_CLEAN = _G1_MK_CLEAN + _G1_WRAP + _G1_OUTER
-
-#: `>= 0` rather than `> 0`: the fact the caller leans on is `@Nat`'s own, and
-#: a postcondition asking for more than the disclosed fact gives would be
-#: refuted rather than disclosed.
-_G1_CALLER_F = """
-public fn f(@Float64 -> @Int)
-  requires(true)
-  ensures(@Int.result >= 0)
-  effects(pure)
-"""
-
-_G1_ARMS = """    Some(@Nat) -> nat_to_int(@Nat.0),
-    None -> 41"""
-
-
-def _g1_caller(callee: str) -> str:
-    return ("import oplib;\n" + _G1_CALLER_F + "{\n  match oplib::" + callee
-            + "(@Float64.0) {\n" + _G1_ARMS + "\n  }\n}\n")
-
-
-def _g1_ensures(result: dict) -> tuple[str, str | None]:
-    hits = [o for o in result["obligations"]
-            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
-    assert len(hits) == 1, [
-        (o["kind"], o["description"], o["status"]) for o in result["obligations"]
-    ]
-    return hits[0]["status"], hits[0].get("error_code")
-
-
-def _assert_forwarders_record_nothing(tmp_path: Path, lib: str,
-                                      forwarders: tuple[str, ...]) -> None:
-    """The premise, checked in the same breath as the conclusion.
-
-    Everything below only measures the manifest UNION while the library's
-    forwarders contribute no disclosing obligation of their own.  A base move
-    that starts obligating them — #1420 did exactly that to the previous
-    carrier — must fail HERE, loudly, rather than leave the cells passing for
-    a reason that has nothing to do with what they claim.
-    """
-    (tmp_path / "oplib.vera").write_text(lib, encoding="utf-8")
-    result = _verify(tmp_path, lib, name="oplib.vera")
-    disclosing = [
-        o for o in result["obligations"]
-        if o["status"] == "tier3_unguarded"
-        or (o["status"] == "tier3" and o.get("error_code") == "E534")
-    ]
-    assert len(disclosing) == 1, (
-        f"the library must disclose EXACTLY once, at `mk` — got "
-        f"{[(o['kind'], o['status'], o.get('error_code')) for o in disclosing]}"
-    )
-    assert disclosing[0]["kind"] == "nat_bind", disclosing[0]
-    # And that one belongs to `mk`, not to a forwarder: the forwarders' own
-    # declaration lines carry nothing disclosing.
-    lines = {i for i, ln in enumerate(lib.splitlines(), 1)
-             if any(f"fn {name}(" in ln for name in forwarders)}
-    for o in disclosing:
-        nearest = max((n for n in lines if n <= o["location"]["line"]),
-                      default=None)
-        assert nearest is None or o["location"]["line"] - nearest > 20, (
-            f"a forwarder now carries its own disclosing obligation, so these "
-            f"cells no longer measure the manifest union: {o}"
-        )
-
-
-@pytest.mark.parametrize(
-    "callee,lib,forwarders",
-    [("wrap", _G1_LIB_ONE_HOP, ("wrap",)),
-     ("outer", _G1_LIB_TWO_HOP, ("wrap", "outer"))],
-    ids=["one_hop", "two_hop"],
-)
-def test_1418_g1_an_imported_forwarder_is_disclosed(
-    tmp_path: Path, callee: str, lib: str, forwarders: tuple[str, ...],
-) -> None:
-    """The library's forwarder demotes its importer.
-
-    `verified` at Tier 1 on `d88bf490` — this PR's own base, re-measured
-    after the carrier swap — and `tier3`/E534 here.  The library alone
-    reports `mk`'s `nat_bind` as `tier3_unguarded`/E504 on both, so the fact
-    was always disclosed; only the importer could not see who was handing it
-    on.
-
-    No runtime differential on this carrier, and that is a property of `@Nat`
-    rather than an omission: codegen DOES emit the `>= 0` sign check (#1268),
-    so `vera run --fn f -- -7.0` traps at the guard instead of reaching a
-    refuted postcondition.  What that shows is still the point — the base
-    claimed Tier 1 for something only a runtime guard makes true — and it is
-    asserted below.  The refutation proper lives on the in-module
-    `Option<PosInt>` cells, where an ADT payload is guarded nowhere.
-    """
-    _assert_forwarders_record_nothing(tmp_path, lib, forwarders)
-    source = _g1_caller(callee)
-    result = _verify(tmp_path, source, name="main.vera")
-    assert result["ok"] is True, result.get("diagnostics")
-    assert _g1_ensures(result) == ("tier3", "E534"), _g1_ensures(result)
-    # Tier 1 was claimed on the base for a value only the guard makes legal.
-    out = _run(tmp_path, source, name="main.vera")
-    assert "unreachable" in out or "violation" in out, out[-500:]
-    ok = _run(tmp_path, source, arg="7.0", name="main.vera")
-    assert ok.strip().split()[-1] == "7", ok[-400:]
-
-
-@pytest.mark.parametrize("callee", ["wrap", "outer"])
-def test_1418_g1_a_clean_imported_forwarder_still_proves(
-    tmp_path: Path, callee: str,
-) -> None:
-    """The over-rejection control: forwarding is not itself a disclosure.
-
-    A manifest that listed every forwarder — rather than every forwarder of a
-    DISCLOSED value — would satisfy the cells above and take Tier 1 away from
-    every library that wraps its own helpers.
-    """
-    (tmp_path / "oplib.vera").write_text(_G1_LIB_CLEAN, encoding="utf-8")
-    source = _g1_caller(callee)
-    result = _verify(tmp_path, source, name="main.vera")
-    assert result["ok"] is True, result.get("diagnostics")
-    assert _g1_ensures(result) == ("verified", None), _g1_ensures(result)
-    out = _run(tmp_path, source, name="main.vera")
-    assert "violation" not in out and "unreachable" not in out, out[-400:]
-    assert out.strip().split()[-1] == "7", out[-400:]
+# ---------------------------------------------------------------------------
+# #1418 review G1 — RETIRED, because #1412 closed the gap at its source
+# ---------------------------------------------------------------------------
+#
+# The cells that stood here measured a manifest that emitted the UNION of the
+# obligation-derived disclosed set with the result-derived one, because a
+# FORWARDER made no claim and so recorded no obligation: one inside an
+# imported module was invisible to its importer while the same declarations
+# in one file demoted correctly.
+#
+# #1412 obligates a refined return at every position that publishes it, which
+# closes that gap where it opens.  The dichotomy is now complete, and it was
+# measured rather than argued over five shapes, each with the union reverted
+# on a scratch tree: a forwarder that DROPS the refinement from its declared
+# return, one reaching its result through a `where` helper, one returning a
+# tuple carrying the disclosed payload, one two import hops away, and one in
+# an `Exn`-declared function whose guard is spec-excluded.
+#
+#   * publishes the refinement -> #1412 obligates it, unguarded, so
+#     `disclosed_fn_names` names it and the union adds nothing;
+#   * drops the refinement -> it hands on no fact, and the consumer's
+#     postcondition is REFUTED (E500) rather than falsely proved.
+#
+# No shape differed with the union and without it, and removing it changed no
+# cell in this file.  So the union is gone and the manifest consumes the
+# obligation-derived set alone; keeping an unreachable mechanism beside a
+# reachable one is how a set acquires two spellings for a member.
 
 
 # ---------------------------------------------------------------------------
@@ -2020,7 +1882,7 @@ def test_1418_a_single_arm_rebuild_is_disclosed(tmp_path: Path) -> None:
     assert _f_ensures(result) == ("tier3", "E534"), statuses
     # The claim the status is ABOUT: the program really does break it.
     out = _run(tmp_path, src)
-    assert "Postcondition violation" in out, out[-400:]
+    _assert_refused(out)
 
 
 def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(

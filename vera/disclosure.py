@@ -437,14 +437,21 @@ def _verify_for_disclosure(
     #
     # This loop decorates the OBLIGATION-derived half; the loop after it adds
     # the RESULT-derived half (G1).  A function is disclosed when its result
-    # is a disclosed value, and that has two kinds of evidence: an obligation
-    # of its own that was neither proved nor guarded, and — for a FORWARDER,
-    # which makes no claim and so records nothing — the value leaving its
-    # body.  Emitting only the first made a forwarder inside an imported
-    # module invisible to its importer, while the same three declarations in
-    # ONE file demoted correctly: the importer's postcondition was `verified`
-    # at Tier 1 and the program refuted it.  The rule cannot depend on which
-    # side of an import the forwarder sits.
+    # is a disclosed value.  Since #1412 that has ONE kind of evidence: an
+    # obligation of its own that was neither proved nor guarded.  A forwarder
+    # used to make no claim and so record nothing, which made it invisible
+    # here while the same declarations in one file demoted correctly — so
+    # this emitted the union of the obligation-derived set with the
+    # result-derived one.  #1412 obligates a refined return at every position
+    # that publishes it, which closes that gap at its source: a forwarder
+    # that hands on a refined value now carries its own unguarded obligation,
+    # and one that does NOT publish the refinement hands on no fact for a
+    # consumer to lean on.  Measured over both halves of that dichotomy —
+    # a forwarder dropping the refinement, one through a `where` helper, one
+    # returning a tuple carrying the payload, one two import hops away, and
+    # one in an `Exn`-declared function — the union changed no verdict, and
+    # removing it changed no cell in the suite.  So the manifest consumes the
+    # obligation-derived set alone.
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
@@ -454,40 +461,4 @@ def _verify_for_disclosure(
                 file=o.file or file, line=o.line, column=o.column,
                 error_code=o.error_code or "",
             )
-    # A forwarder has no obligation to decorate it, so the loop above skipped
-    # it.  Cite the import behind it when there is one, and otherwise the
-    # forwarder's own declaration — the position a reader of the importing
-    # diagnostic should open, from which the local disclosure it hands on is
-    # one call away and carries its own E504/E506 in that module's run.
-    for name, sites in result.result_disclosed.items():
-        if name in manifest:
-            continue
-        if sites:
-            manifest[name] = sites[0]
-            continue
-        manifest[name] = DisclosureSite(
-            module=mod.path, fn_name=name, file=file,
-            line=_decl_line(mod, name), column=0, error_code="",
-        )
     return manifest
-
-
-def _decl_line(mod: ResolvedModule, name: str) -> int:
-    """The line *name* is declared on in *mod*, or 0 when it cannot be found.
-
-    Walks the declarations rather than trusting a registry, because a
-    forwarder may be a ``where`` helper, which the flat last-wins registries
-    cannot name (#1418 review G1).
-    """
-    from vera import ast
-
-    stack = [
-        tld.decl for tld in mod.program.declarations
-        if isinstance(tld.decl, ast.FnDecl)
-    ]
-    while stack:
-        decl = stack.pop()
-        if decl.name == name and decl.span is not None:
-            return int(decl.span.line)
-        stack.extend(decl.where_fns or ())
-    return 0

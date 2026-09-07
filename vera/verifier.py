@@ -476,18 +476,6 @@ class VerifyResult:
     # discharge order.  Empty-list default keeps existing constructors
     # (tests, tooling) source-compatible.
     obligations: list[ProofObligation] = field(default_factory=list)
-    #: #1407/G1: the functions this run found to be handing on a disclosed
-    #: value, mapped to the import sites behind each.  NOT derivable from
-    #: `obligations` — a forwarder makes no claim and so records none — and a
-    #: consumer that reads only the obligation stream therefore misses it.
-    #: `vera/disclosure.py`'s manifest is such a consumer: it emitted only
-    #: `disclosed_fn_names(obligations)`, so a forwarder INSIDE an imported
-    #: module was invisible to its importer while the same three declarations
-    #: in one file demoted correctly.  Surfaced here so the two sides of an
-    #: import answer the one question — is this function's result a disclosed
-    #: value — from the one derivation.
-    result_disclosed: dict[str, list[DisclosureSite]] = field(
-        default_factory=dict)
 
 
 def verify(
@@ -536,7 +524,6 @@ def verify(
         diagnostics=verifier.errors,
         summary=verifier.summary,
         obligations=verifier.obligations,
-        result_disclosed=dict(verifier._result_disclosed_fns),
     )
 
 
@@ -8216,36 +8203,6 @@ class ContractVerifier:
         except (AttributeError, z3.Z3Exception):  # pragma: no cover
             return False
         return _is_locally_constructed(val, sort)
-
-    def _value_source_disclosed(self, expr: ast.Expr) -> bool:
-        """Whether the value *expr* PRODUCES came from a call this run
-        disclosed (#1410).
-
-        :py:meth:`_scrutinee_is_disclosed_call` answers of one expression, and
-        that is the wrong grain here: `decl.body` is ALWAYS a ``Block``, so at
-        the return position the bare test answered False for every function
-        there is — measured, and it is what let a `wrap` forwarding a disclosed
-        `mk` publish `Option<PosInt>` at Tier 1.  An argument can be a
-        ``Block`` or a branch just as easily.
-
-        Descend to the value-producing leaves and take ``any``, the same
-        conservatism :py:func:`_is_locally_constructed` takes over an ``ite``
-        and :py:meth:`_all_leaves_construct` over its arms: one leaf standing on a
-        disclosed producer is one path on which the declared type was never
-        established, and the fact must not be granted on the strength of the
-        other.
-        """
-        if isinstance(expr, ast.Block):
-            return (expr.expr is not None
-                    and self._value_source_disclosed(expr.expr))
-        if isinstance(expr, ast.IfExpr):
-            return (self._value_source_disclosed(expr.then_branch)
-                    or (expr.else_branch is not None
-                        and self._value_source_disclosed(expr.else_branch)))
-        if isinstance(expr, ast.MatchExpr):
-            return any(self._value_source_disclosed(arm.body)
-                       for arm in expr.arms)
-        return self._scrutinee_is_disclosed_call(expr)
 
     def _nested_refinement_formal(
         self, arg: ast.Expr, formal: Type | None,
