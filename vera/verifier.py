@@ -11776,6 +11776,38 @@ class ContractVerifier:
         return None
 
     @staticmethod
+    def _refined_chain(ty: Type) -> "tuple[Type, list[ast.Expr]] | None":
+        """The PRIMITIVE base of a refinement chain and every predicate on it.
+
+        `_refined_parts` answers one level, which is all a `{ @Int | P }` needs.
+        A refinement over a refinement — `type Small = { @Pos | @Pos.0 < 10 }`
+        over `type Pos = { @Int | @Int.0 > 0 }` — has its meaning spread over
+        the whole chain, and reading only the outermost level took the base to
+        `Pos`, which is not a modelled primitive, so
+        `_translate_refined_predicate` declined and the type was unmodelled
+        (#1434).  Membership in `Small` is `P AND Q`, and this is what collects
+        both.
+
+        Innermost predicate first, so the conjunction reads in the order the
+        aliases were declared; the conjunction itself is commutative, so the
+        order is for the reader.
+
+        Terminates on any well-formed type: each step is a strict sub-term.  A
+        cyclic alias never reaches here — the checker refuses it (see
+        `ch02_alias_cycle_rejected`) — so this is a walk, not a fixpoint, and
+        it must not silently tolerate a cycle by capping its depth.
+        """
+        predicates: list[ast.Expr] = []
+        current = ty
+        while isinstance(current, RefinedType):
+            predicates.append(current.predicate)
+            current = current.base
+        if not predicates:
+            return None
+        predicates.reverse()
+        return (current, predicates)
+
+    @staticmethod
     def _base_slot_name(base: Type) -> str | None:
         """The slot type-name a refinement predicate's binder uses.
 
@@ -11830,34 +11862,47 @@ class ContractVerifier:
         Returns None when the base isn't a primitive or the predicate falls
         outside the decidable fragment (caller treats None as Tier 3, #746).
         """
-        parts = ContractVerifier._refined_parts(refined_ty)
+        parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:
             return None
-        base, predicate = parts
+        base, predicates = parts
         base_name = ContractVerifier._base_slot_name(base)
         if base_name is None:
             return None
-        inner_env = SlotEnv().push(base_name, value_term)
-        # The predicate may reference its binder by a syntactic alias
-        # (`@Age.0` for `type Age = Nat`) that differs from the resolved
-        # primitive `base_name`; bind the value under that key too so the
-        # predicate resolves instead of falsely falling to Tier 3 (CR e6f17b7).
-        # The key is the whole reference RENDERED — against the env the
-        # predicate is about to be translated in, so the push side and the
-        # lookup side are one derivation over one environment.  Its head alone
-        # is not the key for a parameterised binder (`@Box<Cnt>.0` resolves
-        # `Box<Nat>`), and the miss took a provable refinement to Tier 3
-        # (#1226).
-        binder_key = ContractVerifier._predicate_binder_key(
-            predicate, smt._alias_env)
-        if binder_key is not None and binder_key != base_name:
-            inner_env = inner_env.push(binder_key, value_term)
-        translated = smt.translate_expr(predicate, inner_env)
-        if translated is None:
-            return None
+        conjuncts: list[z3.ExprRef] = []
+        for predicate in predicates:
+            # One env per LEVEL: each predicate binds its own name — the
+            # inner `{ @Int | @Int.0 > 0 }` binds `@Int`, the outer
+            # `{ @Pos | @Pos.0 < 10 }` binds `@Pos` — over the same value.
+            inner_env = SlotEnv().push(base_name, value_term)
+            # The predicate may reference its binder by a syntactic alias
+            # (`@Age.0` for `type Age = Nat`) that differs from the resolved
+            # primitive `base_name`; bind the value under that key too so the
+            # predicate resolves instead of falsely falling to Tier 3
+            # (CR e6f17b7).  The key is the whole reference RENDERED —
+            # against the env the predicate is about to be translated in, so
+            # the push side and the lookup side are one derivation over one
+            # environment.  Its head alone is not the key for a parameterised
+            # binder (`@Box<Cnt>.0` resolves `Box<Nat>`), and the miss took a
+            # provable refinement to Tier 3 (#1226).
+            binder_key = ContractVerifier._predicate_binder_key(
+                predicate, smt._alias_env)
+            if binder_key is not None and binder_key != base_name:
+                inner_env = inner_env.push(binder_key, value_term)
+            translated = smt.translate_expr(predicate, inner_env)
+            if translated is None:
+                # One untranslatable level makes the whole membership
+                # undecidable: the conjunction is only as strong as its
+                # weakest conjunct, and dropping one would ASSERT a
+                # membership the run cannot establish.  Tier 3, as before.
+                return None
+            conjuncts.append(translated)
         if base == NAT:
-            return z3.And(value_term >= 0, translated)
-        return translated
+            # The base intrinsic, re-introduced once for the whole chain.
+            conjuncts.insert(0, value_term >= 0)
+        if len(conjuncts) == 1:
+            return conjuncts[0]
+        return z3.And(*conjuncts)
 
     @staticmethod
     def _concrete_refined_verdict(

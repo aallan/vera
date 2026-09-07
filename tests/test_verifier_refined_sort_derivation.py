@@ -429,7 +429,11 @@ def test_1421_a_refinement_chain_stays_unmodelled(tmp_path: Path) -> None:
     branch, and flips to E526 the moment `strip_refinements` loops.  That is
     the mutation this cell exists to kill (review of PR #1431, F1/F4).
 
-    Conjoining a chain's predicates so the strip becomes correct is #1434.
+    #1434 conjoined the chain's predicates, which decides the chain's own
+    BINDING.  It did NOT make the whole-chain strip safe: measured on this
+    program, looping the helper still yields a false `violated`/E526,
+    because the division reads no facts from its arm until #1415 lands.
+    The strip stays one level and this discriminator keeps its job.
     """
     result = _verify(_tree(tmp_path, {"p": _TUPLE_CHAIN})["p"])
     assert result["ok"] is True, result["diagnostics"]
@@ -441,7 +445,8 @@ def test_1421_a_refinement_chain_stays_unmodelled(tmp_path: Path) -> None:
         f"a refinement chain stopped being refused — an E526 here is the "
         f"unconstrained-Int false positive: {_kinds(result)}"
     )
-    # The chain's own binding is honestly disclosed rather than proved.
-    assert ("refine_bind", "tier3_unguarded", "E506") in _kinds(result), (
-        _kinds(result)
-    )
+    # #1434 changed the other half of this cell: the chain's own binding
+    # is now DECIDED, because the predicates are conjoined rather than
+    # the outer level alone being read.  It was `tier3_unguarded`/E506 —
+    # the honest answer for a type nothing modelled.
+    assert ("refine_bind", "verified", None) in _kinds(result), _kinds(result)
