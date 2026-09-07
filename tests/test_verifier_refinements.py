@@ -2250,12 +2250,14 @@ public fn f(@Int -> @Int)
     @pytest.mark.parametrize(
         ("body", "status"),
         [
-            # An internal narrowing — no codegen guard, so the demotion lands
-            # on the unguarded leg...
-            ("let @Small = 200;\n  0", "tier3_unguarded"),
-            # ... and a call argument, which the callee's entry guard covers,
-            # on the runtime-guarded one.  Both must demote, and neither may
-            # keep the rejection the reachability question failed to justify.
+            # A `let` narrowing, guarded in the body since #765...
+            ("let @Small = 200;\n  0", "tier3"),
+            # ... and a call argument, which the callee's entry guard covers.
+            # Both must demote, and neither may keep the rejection the
+            # reachability question failed to justify.  They now land on the
+            # same leg, so the pair tests two ROUTES to the demotion rather
+            # than two guard verdicts; the guarded/unguarded split itself is
+            # held by the constructor-field and effect-op-argument cells.
             ("byte_to_int(narrow(200))", "tier3"),
         ],
     )

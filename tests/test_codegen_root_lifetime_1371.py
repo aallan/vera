@@ -59,7 +59,7 @@ from vera.codegen.assembly import GC_STACK_SIZE
 from vera.environment import TypeEnv
 from vera.types import AdtType, PrimitiveType
 
-from tests.codegen_helpers import _compile_ok
+from tests.codegen_helpers import _compile_ok, wat_fn_body
 
 
 # Data-section padding: an unused function holding one string literal, which
@@ -1024,4 +1024,309 @@ class TestEveryPushSiteDeclaresTheGlobal1376:
         stale = _NEEDS_ALLOC_EXEMPT - live
         assert not stale, (
             f"exemptions that no longer describe a real site: {sorted(stale)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PR #1384 review — the fold accumulator's root address is CAPTURED, not
+# inferred from a count of the pushes around it
+# ---------------------------------------------------------------------------
+
+_FOLD_ANON_CALLBACK = """\
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  string_length(array_fold(
+    array_map(array_range(0, 3),
+      fn(@Int -> @String) effects(pure) { int_to_string(@Int.0) }),
+    "",
+    fn(@String, @String -> @String) effects(pure) {
+      string_concat(@String.1, @String.0)
+    }))
+}
+"""
+
+
+def _shadow_slot_trace(
+    body: str,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int, str]]]:
+    """Symbolically execute *body*'s ``$gc_sp`` arithmetic.
+
+    Returns ``(pushes, stores)`` — every ``gc_shadow_push`` as
+    ``(depth, value_local)`` and every in-place shadow write-back as
+    ``(depth, value_local, how)``.  Depth is counted in slots from the
+    frame's entry ``$gc_sp``, so the two are directly comparable: a
+    write-back of local *V* at the depth *V* was pushed to lands in *V*'s own
+    slot, and one at any other depth lands in somebody else's.
+
+    Simulating is the only way to read the property.  Both spellings — a
+    captured address and ``$gc_sp - 8`` — are a ``local.get`` followed by an
+    ``i32.store``, so grepping for either says nothing about WHICH slot is
+    written; the layout between the push and the write-back is what decides,
+    and that layout is what the callback expression changes.
+    """
+    lines = [ln.strip() for ln in body.splitlines()]
+    depth = 0
+    captures: dict[int, int] = {}
+    pushes: list[tuple[int, int]] = []
+    stores: list[tuple[int, int, str]] = []
+    pending_call_root = False
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("call_indirect") or ln.startswith("call $"):
+            # A call whose callee re-roots a heap return leaves the shadow
+            # stack one deeper; this flag is consumed by the explicit pop
+            # that follows, and the two cancel.  It does NOT raise `depth`
+            # on its own, so a call whose root is NOT popped — a callback
+            # produced by a call rather than written inline — is under-
+            # counted by one and a misaddressed store there would read as
+            # correct.  The committed cell's callback is a literal `fn`, so
+            # its verdict is unaffected; a reuse of this helper on a
+            # call-produced pointer needs the push modelled, which means
+            # knowing which callees re-root — the reason it is not modelled
+            # here.
+            pending_call_root = True
+            i += 1
+            continue
+        # `global.get $gc_sp` / `local.set N` — capture the CURRENT depth.
+        if (ln == "global.get $gc_sp" and i + 1 < len(lines)
+                and lines[i + 1].startswith("local.set ")
+                and lines[i + 1].split()[1].isdigit()):
+            captures[int(lines[i + 1].split()[1])] = depth
+            i += 2
+            continue
+        # The push tail: `global.get $gc_sp` / `local.get V` / `i32.store` /
+        # `global.get $gc_sp` / `i32.const 4` / `i32.add` / `global.set`.
+        if (ln == "global.get $gc_sp"
+                and lines[i + 1:i + 2] and lines[i + 1].startswith("local.get ")
+                and lines[i + 1].split()[1].isdigit()
+                and lines[i + 2:i + 3] == ["i32.store"]
+                and lines[i + 3:i + 7] == ["global.get $gc_sp", "i32.const 4",
+                                           "i32.add", "global.set $gc_sp"]):
+            pushes.append((depth, int(lines[i + 1].split()[1])))
+            depth += 1
+            i += 7
+            continue
+        # A bare advance / retreat of `$gc_sp`.
+        if (ln == "global.get $gc_sp" and lines[i + 1:i + 4]
+                == ["i32.const 4", "i32.add", "global.set $gc_sp"]):
+            depth += 1
+            i += 4
+            continue
+        if (ln == "global.get $gc_sp" and lines[i + 1:i + 4]
+                == ["i32.const 4", "i32.sub", "global.set $gc_sp"]):
+            # A pop directly after a call CANCELS the root that call's
+            # epilogue pushed (#570) — the callee re-roots its heap return
+            # where it lands, and this lowering drops that root because it is
+            # about to overwrite the accumulator's own slot instead.  Both
+            # sides are invisible in this function's text, so modelling only
+            # the pop would put the trace one slot BELOW the running machine
+            # — and one slot is exactly the error being measured.
+            if pending_call_root:
+                pending_call_root = False
+            else:
+                depth -= 1
+            i += 4
+            continue
+        # A scope restore: `local.get N` / `global.set $gc_sp`.
+        if (ln.startswith("local.get ") and ln.split()[1].isdigit()
+                and lines[i + 1:i + 2] == ["global.set $gc_sp"]):
+            depth = captures.get(int(ln.split()[1]), depth)
+            i += 2
+            continue
+        # A write-back THROUGH a captured address: `local.get A` /
+        # `local.get V` / `i32.store`, where A is a captured slot address.
+        if (ln.startswith("local.get ") and ln.split()[1].isdigit()
+                and int(ln.split()[1]) in captures
+                and lines[i + 1:i + 2] and lines[i + 1].startswith("local.get ")
+                and lines[i + 1].split()[1].isdigit()
+                and lines[i + 2:i + 3] == ["i32.store"]):
+            stores.append((captures[int(ln.split()[1])],
+                           int(lines[i + 1].split()[1]), "captured"))
+            i += 3
+            continue
+        # A write-back through INFERRED arithmetic: `global.get $gc_sp` /
+        # `i32.const K` / `i32.sub` / `local.get V` / `i32.store`.
+        if (ln == "global.get $gc_sp" and lines[i + 1:i + 3]
+                and lines[i + 1].startswith("i32.const ")
+                and lines[i + 2] == "i32.sub"
+                and lines[i + 3:i + 4] and lines[i + 3].startswith("local.get ")
+                and lines[i + 3].split()[1].isdigit()
+                and lines[i + 4:i + 5] == ["i32.store"]):
+            stores.append((depth - int(lines[i + 1].split()[1]) // 4,
+                           int(lines[i + 3].split()[1]), "inferred"))
+            i += 5
+            continue
+        i += 1
+    return pushes, stores
+
+
+class TestFoldAccumulatorRootAddressIsCaptured1384:
+    """`array_fold`'s per-iteration write-back must address the ACCUMULATOR.
+
+    The write-back existed and was correct in its intent: keep exactly one
+    root for the accumulator and overwrite it in place, so the loop's shadow
+    footprint stays flat.  What it got wrong is how it found the slot — it
+    recovered the address as ``$gc_sp - 8``, reading the layout off a count
+    of the pushes this lowering makes (``arr_ptr``, ``acc``, ``fn_tmp``).
+    The callback expression sits between the second and the third of those
+    and is free to push roots of its own: an ANONYMOUS FUNCTION lowers to a
+    closure allocation whose handle is re-rooted where it lands (#1379), so
+    the real layout is four slots deep and ``- 8`` names the closure's slot.
+
+    It is sound at that address today, which is why nothing observed it: the
+    closure handle is also held by ``fn_tmp``'s own root, so overwriting its
+    slot loses nothing and the new accumulator is rooted after all — in a
+    slot belonging to something else.  A pad sweep across all eight residues
+    finds no failing layout.  That is an accident of one lowering's push
+    count, not a property, and the address does not have to be recovered at
+    all: it is known exactly at the moment of the push.
+    """
+
+    def test_the_write_back_addresses_the_accumulators_own_slot(self) -> None:
+        pushes, stores = _shadow_slot_trace(
+            wat_fn_body(_compile_ok(_FOLD_ANON_CALLBACK).wat, "main"))
+        assert stores, (
+            "no shadow write-back in the fold body — the accumulator is a "
+            "pair type, so the in-place overwrite must be there; the trace "
+            "has stopped measuring what this cell is about"
+        )
+        assert self._misaddressed(pushes, stores) == [], (
+            f"the write-back does not land in the slot its own value was "
+            f"pushed to: pushes={pushes} stores={stores} — the address was "
+            f"recovered from a push count that the callback's own roots "
+            f"invalidate"
+        )
+
+    @staticmethod
+    def _misaddressed(
+        pushes: list[tuple[int, int]], stores: list[tuple[int, int, str]],
+    ) -> list[tuple[int, int, str]]:
+        """Write-backs whose depth is not where their value was pushed."""
+        pushed_at: dict[int, int] = {loc: d for d, loc in pushes}
+        return [(d, loc, how) for d, loc, how in stores
+                if pushed_at.get(loc) != d]
+
+    def test_the_trace_can_see_the_defect_it_rules_out(self) -> None:
+        """Mutation control: the reading is not vacuously green.
+
+        Re-runs the trace over the body with the captured address rewritten
+        back to the ``$gc_sp - 8`` arithmetic it replaced.  If that does not
+        move the answer, the cell above is measuring nothing and would have
+        passed over the original defect.
+        """
+        body = wat_fn_body(_compile_ok(_FOLD_ANON_CALLBACK).wat, "main")
+        pushes, stores = _shadow_slot_trace(body)
+        # The address local comes from the store the TRACE classified as
+        # "captured", not from "a local that is not a pushed VALUE" — those
+        # are different sets, and the looser reading would happily rewrite an
+        # unrelated `local.get A / local.get V / i32.store` triple, after
+        # which the mutated trace reports an "inferred" store at an arbitrary
+        # depth and the assertion below passes having tested nothing (PR
+        # review).  `captures` already maps each address local to its depth,
+        # so the site under test can be named exactly.
+        captured = [(d, v) for d, v, how in stores if how == "captured"]
+        assert len(captured) == 1, (
+            f"expected exactly one captured write-back to mutate, got "
+            f"{captured} — the trace no longer identifies the site"
+        )
+        acc_depth, acc_value_local = captured[0]
+        addr_candidates = [
+            m.group(1) for m in re.finditer(
+                rf"(?m)^\s*local\.get (\d+)\n\s*local\.get "
+                rf"{acc_value_local}\n\s*i32\.store$", body)
+        ]
+        assert len(addr_candidates) == 1, (
+            f"the captured write-back of local {acc_value_local} is not a "
+            f"single site: {addr_candidates}"
+        )
+        acc_addr = addr_candidates[0]
+        mutated = re.sub(
+            rf"(?m)^(\s*)local\.get {acc_addr}\n(\s*local\.get \d+\n\s*"
+            rf"i32\.store)$",
+            r"\1global.get $gc_sp\n\1i32.const 8\n\1i32.sub\n\2",
+            body,
+        )
+        assert mutated != body, "the mutation did not apply"
+        mut_pushes, mut_stores = _shadow_slot_trace(mutated)
+        assert self._misaddressed(mut_pushes, mut_stores), (
+            "the pre-fix arithmetic traces to the accumulator's own slot, so "
+            "this reading cannot tell the two apart"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PR #1384 review — a tail call's returned heap value stays rooted where it
+# lands, across the allocation that follows
+# ---------------------------------------------------------------------------
+
+_TAIL_RETURNED_HEAP_VALUE = """\
+private fn build(@Int, @String -> @String)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 <= 0 then { @String.0 }
+  else { build(@Int.0 - 1, string_concat(@String.0, "x")) }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  let @String = build(6, "s");
+  let @String = string_concat(@String.0, string_repeat("y", 12));
+  string_length(@String.0)
+}
+"""
+
+
+class TestTailCallResultSurvivesTheNextAllocation1384:
+    """A tail call's heap RESULT is rooted where it lands, not where it was
+    made.
+
+    #549's GC-aware TCO restores ``$gc_sp`` at each hop, so the roots a
+    tail-recursive chain accumulates are reclaimed as it runs — the property
+    that lets such a chain run in constant shadow space.  The value the chain
+    finally RETURNS is a heap pointer that survived every one of those
+    restores, and the caller then allocates on top of it: the concat and the
+    repeat below both run after the result has landed.  If the landing site
+    is not itself a root, the returned String is unreachable from the shadow
+    stack at exactly the moment the next allocation can collect it.
+
+    Swept across all eight heap-base residues, because #1382 showed a GC
+    claim measured at ONE layout can invert its own meaning — a dangling
+    pointer that happens to address a still-allocated object reads clean.
+    Run out of process: reclaiming a live String corrupts the heap, and an
+    in-process crash reads as a lost pytest worker rather than a failure.
+
+    A CHARACTERIZATION PIN, not evidence for any change: measured green with
+    every `vera/` file reverted to base, so it proves nothing about the fold
+    fix it ships beside and must not be counted as doing so (CLAUDE.md's
+    test-first rule).  It is here because #1384's own sweep did not cover a
+    tail chain's returned heap value, and the shape is one a future change to
+    the #549 GC-aware TCO could break silently.  The load-bearing cell for
+    the fold fix is `TestFoldAccumulatorRootAddressIsCaptured1384`, which is
+    red with only the `calls_arrays.py` hunk reverted.
+    """
+
+    @pytest.mark.parametrize("pad", _PADS)
+    def test_the_returned_value_survives(self, pad: int, tmp_path: Path) -> None:
+        rc, out = _run_in_subprocess(
+            _with_pad(_TAIL_RETURNED_HEAP_VALUE, pad), tmp_path)
+        assert rc == 0, (
+            f"pad={pad}: the program did not complete (rc={rc}) — the tail "
+            f"chain's returned String was collected under the allocation "
+            f"that follows it:\n{out}"
+        )
+        # "s" + 6 * "x" = 7, then + 12 * "y" = 19.  The LENGTH, not merely a
+        # clean exit: a reclaimed-then-reused buffer can still return.
+        assert out.endswith("19"), (
+            f"pad={pad}: expected 19, got {out!r} — the returned String's "
+            f"bytes did not survive the following allocation"
         )

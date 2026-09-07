@@ -12,21 +12,28 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-13,363 tests, 250 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+13,459 tests, 250 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+
+## The v0.2.0 burndown
+
+*One open bugs, driven to zero.*
+
+A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
+
+| Issue | What |
+|---|---|
+| [#1438](https://github.com/aallan/vera/issues/1438) | The `@Nat` -> `@Int` widening guard traps as the generic `kind="unreachable"` and shows a Fix naming none of the causes that can fire it. |
 
 ## Stage 19 — The verification completeness sprint
 
 *`vera verify` tells the whole truth.*
 
-Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small; the `@Nat`-narrowing rows ([#754](https://github.com/aallan/vera/issues/754), [#757](https://github.com/aallan/vera/issues/757), [#765](https://github.com/aallan/vera/issues/765)) reuse the per-component target-type metadata the [#820](https://github.com/aallan/vera/issues/820) enabler provides, while the two fact-propagation rows each carry their own root cause — a fact the run holds that never reaches the goal that needs it:
+Verification-completeness gaps — an obligation not emitted, a guard not planted — individually small:
 
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
 | [#1403](https://github.com/aallan/vera/issues/1403) | A `match` arm's `assert` is discharged without the arm's sub-pattern facts, so an assertion that follows from a bound payload's declared type can never prove and always falls to a runtime check (E535). |
-| [#754](https://github.com/aallan/vera/issues/754) | Effect-operation-argument runtime guard for `@Nat` narrowing, with a dedicated trap kind — first consumer of the per-component metadata enabler. |
-| [#757](https://github.com/aallan/vera/issues/757) | Generic-instantiated constructor-field runtime guard — second consumer of the same enabler. |
-| [#765](https://github.com/aallan/vera/issues/765) | Nested constructor sub-pattern binds (`Some(Some(@PosInt))`) runtime-guarded to match their static obligation. |
 
 ## Stage 20 — The single-source sprint
 

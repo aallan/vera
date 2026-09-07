@@ -31,6 +31,29 @@ from collections.abc import Callable
 
 from vera import ast
 
+#: The effects whose operations code generation can lower at all (#754).
+#:
+#: A guard is a claim about a RUN, so an operation of an effect codegen
+#: refuses cannot be "guarded" in any useful sense: the enclosing function is
+#: dropped with a loud E603 and there is no run to guard.  The verifier's
+#: op-argument classification therefore has to intersect its guard question
+#: with this set, or it repeats the #1268 mistake one boundary over —
+#: recording a Tier-3 runtime check for a program that never reaches a
+#: runtime.
+#:
+#: Here rather than in the backend because both sides read it: codegen's
+#: `_is_compilable` decides membership FROM this set, and the verifier's
+#: `_effect_op_formal_guarded` asks about it.  Two copies of the roster is
+#: exactly the drift this module exists to prevent.
+COMPILABLE_EFFECTS = frozenset({
+    "IO", "State", "Exn", "Http", "Async", "HttpServer",
+    "Inference", "DB", "Random",
+})
+
+#: The subset of :data:`COMPILABLE_EFFECTS` whose lowering touches linear
+#: memory, so a function carrying one needs the memory section emitted.
+MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
+
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]
 
@@ -96,6 +119,67 @@ def has_underflow_leaf(expr: ast.Expr, nat_origin: NatOriginOracle) -> bool:
     if isinstance(expr, ast.MatchExpr):
         return any(has_underflow_leaf(arm.body, nat_origin)
                    for arm in expr.arms)
+    return False
+
+
+def measure_component_needs_range_check(resolved_ty: object) -> bool:
+    """True iff a ``decreases`` measure component of resolved type
+    *resolved_ty* can read differently to the prover and to the runtime
+    guard (#1222).
+
+    Clause of THE RULE, for the termination measure.  The proof reasons over
+    unbounded integers and the guard compares with ``i64.lt_s`` /
+    ``i64.ge_s``, so the two agree exactly while the component's value is an
+    i64.  A ``@Nat`` is a u64 in that i64 and is the only component that can
+    leave it; an ``@Int`` IS that i64, and an ADT component is ranked by a
+    heap-bounded structural size.
+
+    Takes the CHECKER's resolved type — duck-typed, so this module keeps its
+    single ``vera.ast`` import — because the two consumers previously asked
+    two different oracles and the wrong one had a fallback that coincided
+    with a real answer: the verifier read the checker's types (a user
+    function's declared ``@Nat`` return resolves), while codegen re-derived
+    from its own walker, which answers ``'Int'`` for a call — and ``'Int'``
+    is also the value meaning "no check needed", so a call-result measure was
+    obligated and never guarded, silently.  A component this cannot classify
+    is ``None`` at the table, which is distinct from ``Int`` and therefore
+    cannot be mistaken for a decision.
+    """
+    base = getattr(resolved_ty, "base", resolved_ty)
+    return getattr(base, "name", None) == "Nat"
+
+
+def measure_component_is_effect_free(expr: ast.Expr) -> bool:
+    """True iff evaluating *expr* an EXTRA time can be observed (#1222,
+    CodeRabbit review).
+
+    Clause of THE RULE, for the one place a ``decreases`` measure is
+    evaluated that the chain guard does not already evaluate it: the range
+    check emitted beside a DECLINED chain guard.  On the chain path the
+    measure is evaluated once and the range check reads the locals, so
+    nothing new runs; on the decline path the check evaluates the component
+    itself, and for an effectful component that is a new observable action
+    at function entry.
+
+    Measured: `decreases(risky(@Nat.0))` on a function declaring
+    `Exn<Int>`, where `risky` throws — the chain guard is declined for
+    exactly that reason, and evaluating the measure at entry turned a
+    program that returned 0 into one that throws before its body runs.
+
+    Syntactic and deliberately narrow: a slot reference, an integer
+    literal, and arithmetic over those.  Every measure in the corpus is a
+    slot reference.  A CALL is excluded whatever its declared row, because
+    the row is not what this asks — an extra evaluation of a pure call is
+    still extra work at every activation, and the honest answer where the
+    check cannot be emitted is to disclose it rather than to pay for it.
+    """
+    if isinstance(expr, (ast.SlotRef, ast.IntLit)):
+        return True
+    if isinstance(expr, ast.BinaryExpr):
+        return (measure_component_is_effect_free(expr.left)
+                and measure_component_is_effect_free(expr.right))
+    if isinstance(expr, ast.UnaryExpr):
+        return measure_component_is_effect_free(expr.operand)
     return False
 
 

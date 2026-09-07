@@ -11,6 +11,10 @@ from dataclasses import dataclass
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name
+from vera.narrowing import (
+    measure_component_is_effect_free,
+    measure_component_needs_range_check,
+)
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import state_type_arg
@@ -976,6 +980,172 @@ class ContractsMixin:
             comp_values.append([*instrs, f"call {size_fn}"])
         return comp_values
 
+    def _dec_measure_bound_check(
+        self,
+        ctx: WasmContext,
+        contract: ast.Decreases,
+        measured: list[int],
+        name: str,
+        indent: str = "",
+    ) -> list[str]:
+        """Trap when a measure component leaves the range the guard compares
+        in (#1222) — the chain path's entry point, over components it has
+        already evaluated into *measured*.
+
+        The termination guard below compares with ``i64.lt_s`` / ``i64.ge_s``
+        and the prover reasons over unbounded integers, so the two agree
+        exactly while the measure's value is an i64.  A ``@Nat`` measure is a
+        u64 in that i64: above ``i64.MAX`` it reads NEGATIVE, the guard's
+        ``m >= 0`` clause fails, and a program whose termination the verifier
+        PROVED at Tier 1 aborts with "failed to decrease" — a true statement
+        about the machine value and a false one about the program.  Measured:
+        `halve(2^63)` over `decreases(@Nat.0)` traps where `halve(2^63 - 1)`
+        returns.
+
+        The remedy is disclosure, not a wider comparison: the whole compiler
+        treats a ``@Nat`` above ``i64.MAX`` as an edge it discloses (E530 /
+        E531 exist for exactly that), so widening this one comparison would
+        support a range the rest of the language does not.  The verifier
+        obligates ``component <= i64.MAX`` and this is its Tier-3 backstop —
+        so the failure names its own cause instead of borrowing the
+        termination rule's.
+
+        Emitted only for a ``@Nat``-typed component
+        (:meth:`_dec_nat_measure_indices`).  Returns ``[]`` when no component
+        needs it.
+
+        TYPE-driven, not tier-driven, which is this backend's standing rule
+        for a range guard (spec §11.2: the #798 overflow guard is emitted at
+        every classified site "regardless of the verifier's tier").  So a
+        measure a `requires` bounds — obligation `verified` — still pays two
+        dead compares per hop, at the entry check and the self-tail site.
+        That is deliberate: codegen does not read the obligation stream, and
+        making it do so would put the artifact's soundness behind whether
+        `vera verify` had been run, which is precisely the coupling
+        `vera compile` is free of.  The cost is two i64 compares against a
+        constant, on a branch that predicts perfectly.
+        """
+        # By INDEX, never by AST membership: two components can be
+        # structurally equal (`decreases(@Nat.0, @Nat.0)`) and an `in` test
+        # would then pair a check with whichever local matched first.
+        locals_ = [
+            measured[k] for k in self._dec_nat_measure_indices(ctx, contract)
+            if k < len(measured)
+        ]
+        return self._dec_bound_check_pairs(locals_, name, indent)
+
+    def _dec_bound_check_pairs(
+        self,
+        locals_: list[int],
+        name: str,
+        indent: str = "",
+    ) -> list[str]:
+        """The emission itself: one range check per component local.
+
+        Both entry points reduce to this — the chain path, which already has
+        the components in locals, and :meth:`_dec_bound_checks_only`, which
+        evaluates them itself when the chain guard is declined — so the check
+        and its message are one derivation rather than two.
+        """
+        checks: list[str] = []
+        for local in locals_:
+            msg = (
+                f"decreases() measure in '{name}' is outside the i64 range "
+                f"the termination check compares in: a @Nat above i64.MAX "
+                f"reads as negative, so the metric cannot be compared"
+            )
+            ptr, length = self.string_pool.intern(msg)
+            self._needs_contract_fail = True
+            self._needs_memory = True
+            checks.extend([
+                f"{indent}local.get {local}",
+                f"{indent}i64.const 0",
+                f"{indent}i64.lt_s",
+                f"{indent}if",
+                f"{indent}  i32.const {ptr}",
+                f"{indent}  i32.const {length}",
+                f"{indent}  call $vera.contract_fail",
+                f"{indent}  unreachable",
+                f"{indent}end",
+            ])
+        return checks
+
+    def _dec_nat_measure_indices(
+        self, ctx: WasmContext, contract: ast.Decreases,
+    ) -> list[int]:
+        """The measure components whose readings can differ (#1222).
+
+        The rule is :func:`vera.narrowing.measure_component_needs_range_check`
+        and the table is the CHECKER's, which is what the verifier's own
+        selector reads — so the obligation and the guard cover the same
+        components by construction.  They did not: codegen re-derived the
+        type from its own walker, which answers ``'Int'`` for a call, and
+        ``'Int'`` is also the value meaning "no check needed", so
+        ``decreases(size(@Nat.0))`` was obligated `tier3` and guarded by
+        nothing while `vera run` at 2^63 still reported a failure to
+        decrease.
+        """
+        return [
+            k for k, expr in enumerate(contract.exprs)
+            if measure_component_needs_range_check(
+                ctx._checker_resolved_type(expr))
+        ]
+
+    def _dec_bound_checks_only(
+        self,
+        ctx: WasmContext,
+        contract: ast.Decreases,
+        name: str,
+        env: WasmSlotEnv,
+    ) -> list[str]:
+        """The measure-range checks alone, for a function whose CHAIN guard
+        is declined (#1222).
+
+        The chain guard is declined in three cases — the function declares
+        `Exn` (a throw unwinds past the exit restores and would leave stale
+        chain state), a measure component is untranslatable, or an ADT
+        component has no structural-rank helper — and every one of them is a
+        statement about the CHAIN, not about the range.  A `@Nat` component's
+        range check reads one locally-evaluated value and compares it against
+        a constant: it carries nothing across activations, so nothing that
+        declines the chain applies to it.
+
+        Emitting it here is what keeps the obligation honest.  Recorded as a
+        guarded Tier 3 it claims a runtime check, and folded into the chain
+        guard that claim was false for exactly those shapes — measured on an
+        `Exn`-declaring function, and on a `decreases(@Nat.0, @List<Int>.0)`
+        whose parameterized-ADT SIBLING declines the whole guard while the
+        `@Nat` component translates perfectly well.
+
+        Each component is evaluated exactly once, so a component with a side
+        effect cannot be run twice by this path.  A component that turns out
+        not to translate yields NO checks at all rather than a partial set —
+        the verifier's mirror declines with it.
+        """
+        # Only components an EXTRA evaluation cannot make observable.  On
+        # this path the check evaluates the measure itself — the chain guard
+        # that would otherwise have done so is declined — so an effectful
+        # component would newly run at every entry.  Measured: a
+        # `decreases(risky(@Nat.0))` whose callee throws turned a program
+        # that returned 0 into one that throws before its body.
+        nat_indices = [
+            k for k in self._dec_nat_measure_indices(ctx, contract)
+            if measure_component_is_effect_free(contract.exprs[k])
+        ]
+        if not nat_indices:
+            return []
+        instrs: list[str] = []
+        locals_: list[int] = []
+        for k in nat_indices:
+            value = ctx.translate_expr(contract.exprs[k], env)
+            if value is None:
+                return []
+            local = ctx.alloc_local("i64")
+            instrs.extend(value)
+            instrs.append(f"local.set {local}")
+            locals_.append(local)
+        return instrs + self._dec_bound_check_pairs(locals_, name)
+
     def _compile_decreases_entry(
         self,
         ctx: WasmContext,
@@ -1044,12 +1214,24 @@ class ContractsMixin:
         # guard rather than a leaky one — the static tier keeps the
         # obligation disclosed (PR #1179 review).
         if self._dec_declares_exn(decl):
-            return [], [], None
+            # #1222: the CHAIN is declined, the range check is not.  The
+            # reason above is entirely about state carried across
+            # activations; a component's range check carries none.
+            return (
+                self._dec_bound_checks_only(ctx, contract, decl.name, env),
+                [], None,
+            )
 
         name = decl.name
         maybe_components = self._dec_translate_measure(ctx, contract, env)
         if maybe_components is None:
-            return [], [], None
+            # #1222: likewise here — a sibling component the backend cannot
+            # translate or rank declines the chain, and says nothing about a
+            # `@Nat` component that translates perfectly well.
+            return (
+                self._dec_bound_checks_only(ctx, contract, name, env),
+                [], None,
+            )
         comp_values = maybe_components
 
         n = len(comp_values)
@@ -1066,6 +1248,11 @@ class ContractsMixin:
         for k in range(n):
             entry.extend(comp_values[k])
             entry.append(f"local.set {measured[k]}")
+        # #1222: before the comparison, not after — a component outside the
+        # comparable range makes every verdict below meaningless, including
+        # the FIRST activation's, which records a baseline without comparing.
+        entry.extend(self._dec_measure_bound_check(
+            ctx, contract, measured, name))
 
         entry.append(f"local.get {saved_active}")
         entry.append("if")
@@ -1197,6 +1384,10 @@ class ContractsMixin:
         for k in range(n):
             prefix.extend(comp_values[k])
             prefix.append(f"local.set {measured[k]}")
+        # #1222, at the site too: a self-tail hop evaluates the measure here
+        # and compares it the same way, so it needs the same backstop.
+        prefix.extend(self._dec_measure_bound_check(
+            ctx, contract, measured, name))
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 

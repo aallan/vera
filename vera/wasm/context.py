@@ -315,6 +315,10 @@ class WasmContext(
         # emits the import) in functions.py after each function is compiled (and
         # in closures.py for lifted-closure bodies).
         self._needs_overflow_trap: bool = False
+        # #754: set when a @Int -> @Nat narrowing guard emits a
+        # `vera.nat_guard_trap` call, so assembly.py declares the host
+        # import and the trap reports its own kind.
+        self._needs_nat_guard_trap: bool = False
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A
@@ -413,6 +417,12 @@ class WasmContext(
         # #747: per-parameter concrete-@Nat flags per function, for the
         # runtime @Int -> @Nat narrowing guard at call sites.
         self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
+        # #754: `(effect_name, op_name)` -> per-formal base type name, so an
+        # effect-operation call site can guard its arguments the way a
+        # function call site guards its own.  Seeded empty; codegen calls
+        # `set_effect_op_params` before translation.
+        self._effect_op_params: dict[
+            tuple[str, str], tuple[str | None, ...]] = {}
         # #813: per-parameter concrete-@Int flags, the dual, for the runtime
         # @Nat -> @Int widening guard at call sites.
         self._fn_int_params: dict[str, tuple[bool, ...]] = {}
@@ -632,6 +642,13 @@ class WasmContext(
         """Set per-parameter concrete-@Nat flags for the call-site
         runtime narrowing guard (#747)."""
         self._fn_nat_params = nat_params
+
+    def set_effect_op_params(
+        self, op_params: dict[tuple[str, str], tuple[str | None, ...]],
+    ) -> None:
+        """Set the per-formal base type names of every effect operation, for
+        the op-call-site narrowing / widening guards (#754)."""
+        self._effect_op_params = op_params
 
     def set_fn_int_params(
         self, int_params: dict[str, tuple[bool, ...]],
@@ -1420,6 +1437,13 @@ class WasmContext(
                     # other binding's (#1371) — pushing here as well would
                     # root one address twice and hold the duplicate for the
                     # rest of the frame.
+                    # #765: refined pair-typed let binding, guarded over the
+                    # pointer half — the same representation the refined
+                    # String / Array parameter and return guards check.
+                    stmt_instrs.extend(self._emit_bind_refine_guard(
+                        stmt.type_expr, ptr_idx, "let binding", stmt,
+                        current_env,
+                    ))
                     current_env = current_env.push(type_name, ptr_idx)
                     instructions.extend(self._scope_statement_roots(
                         stmt_instrs, stmt_env, current_env, save_local))
@@ -1455,6 +1479,15 @@ class WasmContext(
                     # lowering — nothing to override here (#865 / #1212).
                     stmt_instrs.extend(val_instrs)
                 stmt_instrs.append(f"local.set {local_idx}")
+                # #765: the refined twin of the `@Nat` sign guard above.  A
+                # `let @Pos = <@Int>` narrows into a refined slot with no
+                # boundary between it and the rest of the block, exactly as
+                # the pattern binds in `data.py` do; every statement after it
+                # then reads a slot whose predicate nothing established.
+                stmt_instrs.extend(self._emit_bind_refine_guard(
+                    stmt.type_expr, local_idx, "let binding", stmt,
+                    current_env,
+                ))
                 # #705: a heap-pointer let binding must be rooted, or a
                 # later allocation in the same block (a ``set_to_array``
                 # host call after ``let @Set = build_set()``) reclaims it.

@@ -217,12 +217,26 @@ class CodeGenerator(
         # position.  Disjoint from the @Nat/@Int bitmaps (a formal resolves to
         # one primitive base or neither).
         self._fn_byte_params: dict[str, tuple[bool, ...]] = {}
+        # #754: per-formal base type NAME for every effect OPERATION, keyed
+        # `(effect_name, op_name)`.  The narrowing guards at a call site read
+        # the callee's formals from `_fn_nat_params` / `_fn_int_params`; an
+        # effect operation had no such table, so `IO.sleep(@Int.0)` — whose
+        # formal is `@Nat` — stored whatever it was given, and a negative
+        # reached the host.  Built from the SAME registry the checker typed
+        # the call against (`TypeEnv.effects` for the built-ins, the program's
+        # own `effect` / `ability` declarations for the rest), so a formal
+        # cannot be obligated by the verifier without being visible here.
+        self._effect_op_params: dict[tuple[str, str], tuple[str | None, ...]] = {}
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
         # #808: set when an overflow guard emits a `vera.overflow_trap` call,
         # so assembly.py declares the host import.
         self._needs_overflow_trap: bool = False
+        # #754: set when a @Int -> @Nat narrowing guard emits a
+        # `vera.nat_guard_trap` call, so `_assemble_module` declares the
+        # host import.
+        self._needs_nat_guard_trap: bool = False
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported

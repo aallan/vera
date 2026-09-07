@@ -89,13 +89,27 @@ def _run(source: str, fn: str, args: list[int]) -> int:
     return exec_result.value
 
 
-def _assert_traps(source: str, fn: str, args: list[int]) -> None:
+def _assert_traps(
+    source: str, fn: str, args: list[int], kind: str = "unreachable",
+) -> None:
+    """Assert the guard at THIS site fires, by its own trap kind.
+
+    Two guards live in this file's fixtures and they now report different
+    kinds: the `@Int` -> `@Nat` narrowing guard carries `nat_guard` (#754),
+    the `@Nat` -> `@Int` widen guard still trips the bare `unreachable` net.
+    A union of the two would accept either at every site, so a narrowing
+    guard regressing to the bare net — the exact condition #754 fixed —
+    would leave every cell here green (PR review).  The default is the widen
+    kind because most sites here are widening; a narrowing site passes its
+    own.
+    """
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
         execute(result, fn_name=fn, args=args)
-    # The widen guard is a bare `unreachable` net (no dedicated trap kind yet),
-    # so pin the kind to prove it is the guard firing, not an unrelated failure.
-    assert exc_info.value.kind == "unreachable", exc_info.value.kind
+    assert exc_info.value.kind == kind, (
+        f"expected the {kind!r} guard at this site, got "
+        f"{exc_info.value.kind!r}"
+    )
 
 
 def _assert_no_trap(source: str, fn: str, args: list[int], expect: int) -> None:
@@ -259,7 +273,7 @@ class TestFix4TargetBlindGate:
     def test_int_arm_narrow_guard_intact(self) -> None:
         # Regression companion: FIX 4 must NOT disable the @Int arm's #983
         # narrow guard — a negative @Int into the @Nat return still traps.
-        _assert_traps(_FIX4_NARROW, "pnarrow", [0, -5, 0])
+        _assert_traps(_FIX4_NARROW, "pnarrow", [0, -5, 0], "nat_guard")
 
     def test_let_int_target_still_guards_nat_arm(self) -> None:
         # Control: when the hetero join genuinely TARGETS @Int (a `let @Int`),

@@ -990,6 +990,8 @@ ERROR_CODES: dict[str, str] = {
     "E535": "Cannot statically verify assertion (runtime-checked)",
     "E534": "Contract holds only from a disclosed fact",
     "E533": "Instantiated handler state diverges from the State<T> cell type",
+    "E536": "Termination metric outside the i64 range the guard compares in",
+    "E537": "Termination metric range unverified and not runtime-guarded",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",

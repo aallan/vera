@@ -637,6 +637,17 @@ class CallsMixin:
                     instructions = self._emit_nat_bind_guard(instructions)
                 elif base == "Int" and self._result_is_nat(call.args[0]):
                     instructions = self._emit_int_widen_guard(instructions)
+            # #754's registry contributes NOTHING on this route, and the
+            # reason is a property of the route rather than an omission.
+            # Only `get`, `put` and `throw` have a bare one — every other
+            # operation is E217 at check, "must be called qualified" — and
+            # all three take their formal from the CELL, which a declaration
+            # cannot carry: `State` declares `put(T -> Unit)`, whose `T` is
+            # the handler's instantiation.  So the formals here are the ones
+            # `_effect_op_cells` supplies, above.  The claim that the
+            # bare-routable set is exactly those three is asserted, not
+            # remembered — see `test_guard_completeness`; a fourth op gaining
+            # a bare route turns it red rather than passing unguarded.
             # throw uses WASM throw instruction, not call
             if call.name == "throw":
                 instructions.append(f"throw {target_name}")
@@ -745,6 +756,36 @@ class CallsMixin:
             instructions.append(f"call ${call_target}")
         return instructions
 
+    def _guard_effect_op_arg(
+        self,
+        arg: ast.Expr,
+        arg_instrs: list[str],
+        op_formals: tuple[str | None, ...],
+        index: int,
+    ) -> list[str]:
+        """Wrap one effect-operation argument in the guard its FORMAL calls
+        for (#754) — the operation-site twin of the `_fn_nat_params` /
+        `_fn_int_params` bitmaps a function call site reads.
+
+        The two directions, and the same conditions the function call site
+        applies them under: an ``@Int`` value narrowing into a ``@Nat``
+        formal traps if it is negative, and a ``@Nat`` value widening into
+        an ``@Int`` formal traps above i64.MAX (where it would reinterpret
+        as negative).  Both are gated on the VALUE — a value already at the
+        formal's type needs no check — so a program whose arguments are
+        provably in range pays dead instructions and never a trap.
+
+        Returns *arg_instrs* unchanged for a formal the registry has nothing
+        to say about: a type parameter, an ADT, a pair type, or an operation
+        the registry does not know.
+        """
+        base = op_formals[index] if index < len(op_formals) else None
+        if base == "Nat" and self._narrows_into_nat(arg):
+            return self._emit_nat_bind_guard(arg_instrs)
+        if base == "Int" and self._result_is_nat(arg):
+            return self._emit_int_widen_guard(arg_instrs)
+        return arg_instrs
+
     def _translate_qualified_call(
         self, call: ast.QualifiedCall, env: WasmSlotEnv
     ) -> list[str] | None:
@@ -792,11 +833,23 @@ class CallsMixin:
                 env, denotes_op=True,
             )
         instructions: list[str] = []
-        for arg in call.args:
+        # #754: the op's DECLARED formals, from the registry built off the
+        # same table the checker typed this call against.  `_effect_ops`
+        # carries only a dispatch target, so before this an operation
+        # argument was the one narrowing site with no formal to guard
+        # against: `IO.sleep(@Int.0)` handed the host a negative on a
+        # program the verifier had obligated.  The bare route reaches the
+        # unqualified loop above, whose `get`/`put`/`throw` formals come
+        # from the CELL (a property of the handler, not of the declaration);
+        # every other op has no bare route at all (E217), so the two loops
+        # together cover every reachable operation argument.
+        op_formals = self._effect_op_params.get((call.qualifier, call.name), ())
+        for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            instructions.extend(arg_instrs)
+            instructions.extend(
+                self._guard_effect_op_arg(arg, arg_instrs, op_formals, i))
         # User-defined effect ops (e.g. Exn.throw, State.get/put) — delegate to
         # the effect_ops table, exactly as the unqualified _translate_call path does.
         # Guard: skip for host-import built-ins (Http, Inference, IO) whose op names

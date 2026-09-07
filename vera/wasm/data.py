@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vera import ast
+from vera import ast, naming
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
@@ -28,6 +28,126 @@ _LITERAL_PATTERN_BASE_TYPES: dict[type, frozenset[str]] = {
 
 class DataMixin:
     """Methods for translating constructors, match expressions, and arrays."""
+
+    # -----------------------------------------------------------------
+    # Per-field monomorphization metadata (#757)
+    # -----------------------------------------------------------------
+
+    def _ctor_field_tp_index(self, ctor_name: str, index: int) -> int | None:
+        """Which ADT type PARAMETER a constructor field is, or ``None`` when
+        the field's declared type is concrete.
+
+        ``_ctor_adt_tp_indices`` is sparse and position-sensitive —
+        ``Err(e)``'s single field is ``Result``'s SECOND parameter — so a
+        consumer asking "is this field generic, and which parameter is it?"
+        reads it through here rather than indexing the table itself.
+        """
+        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
+        if tp_idx is None or index >= len(tp_idx):
+            return None
+        return tp_idx[index]
+
+    def _ctor_field_mono_base(self, arg: ast.Expr) -> str | None:
+        """Base type NAME a constructor field is instantiated to at this
+        construction site, read from the argument's own recorded target
+        (#757), or ``None`` when the table has no answer.
+
+        A constructor layout is registered ONCE per ADT, so its ``nat_fields``
+        / ``int_fields`` bitmaps describe the DECLARED field types: for
+        ``data Box<T> { Wrap(T) }`` every flag is False whatever ``Box`` is
+        instantiated to, and the ``@Int -> @Nat`` narrowing guard that fires
+        for a concrete ``Wrap(Nat)`` field was skipped for ``Wrap(@Int.0)``
+        building a ``Box<Nat>``.  The negative was stored, and only a reader
+        that happened to bind it back at ``@Nat`` caught it — a reader binding
+        it at ``@Int`` returned it, breaking a postcondition the verifier
+        proved from the field's ``>= 0``.
+
+        Keyed on the ARGUMENT rather than on the constructed ADT's type args
+        (which :meth:`_ctor_field_tp_index` could also map) because that is
+        the question the verifier asks: ``_nat_binding_target`` resolves a
+        generic field through ``_target_type_of(arg)``, the checker-side twin
+        of this table.  Asking the same question of the same table is what
+        keeps the obligation's ``guarded`` flag equal to whether a guard is
+        actually emitted; deriving the answer a second way would be a second
+        rule, free to disagree.
+
+        ``None`` when the target-type table was not threaded (an unverified
+        ``transform -> compile``) or the span carries no target — the caller
+        then falls back to the layout bitmaps rather than guessing.  A
+        refinement OVER the target unwraps to its base, so ``Box<{ @Nat | P }>``
+        takes the sign guard here and its predicate at the boundary.
+        """
+        target = self._target_codegen_type_full(arg)
+        if target is None:
+            return None
+        return getattr(getattr(target, "base", target), "name", None)
+
+    # -----------------------------------------------------------------
+    # Narrowing-bind refinement guards (#765)
+    # -----------------------------------------------------------------
+
+    def _emit_bind_refine_guard(
+        self,
+        te: ast.TypeExpr,
+        value_local: int,
+        where: str,
+        node: ast.Node,
+        env: WasmSlotEnv,
+    ) -> list[str]:
+        """The §2.6.5 predicate guard for a value bound into a REFINED slot by
+        a pattern (#765) — the refined twin of ``_emit_nat_bind_guard``, which
+        already covers the ``@Nat`` case at these same three sites.
+
+        ``@Nat`` is a refinement whose predicate codegen happens to know how
+        to write by hand (``>= 0``), so the sign guard covered one member of
+        the family and the rest went unchecked: a `Pos = { @Int | @Int.0 > 0 }`
+        bound by ``match x { @Pos -> }``, by ``let Tuple<@Pos, …> = …``, or by
+        a constructor sub-pattern ``MkBox(@Pos)`` — at any nesting depth —
+        was obligated by the verifier (`refine_bind`) and guarded by nobody.
+        A negative flowed straight through the refined slot and the arm body
+        then reasoned from a predicate that does not hold.
+
+        Emitted UNGATED for every refined bind, the same choice #1268 made for
+        the refined ``throw`` payload rather than the sign guards' narrowing
+        test: a value already at the refinement satisfies its own predicate,
+        so a redundant guard costs a dead check, while a missing one is a
+        false ``guarded`` claim in the obligation stream.  Returns ``[]`` for
+        the shapes with no guard to emit — an unrefined type, an erased base,
+        a nested refinement (E618) — which is exactly the set the verifier's
+        ``_refined_boundary_codegen_guardable`` mirrors.
+
+        Fails CLOSED when no emitter is installed: a context that can bind a
+        refined slot but cannot guard it must not silently produce one, since
+        the verifier's mirror has no way to see that this particular context
+        was the one without the machinery.
+        """
+        # A refinement over a REFINEMENT is not guarded, and not refused
+        # either.  `_refinement_guard_parts` records a loud E618 for that
+        # base, and rightly so at a function BOUNDARY: there the verifier
+        # promises a runtime check, so a guard that would silently drop the
+        # inner membership predicate is a broken promise and the compile
+        # stops.  An internal bind promises nothing — the verifier records it
+        # `tier3_unguarded` with an E506 disclosure, because
+        # `_refined_boundary_codegen_guardable` bails on the same base — so
+        # routing it through the boundary emitter turned a program that
+        # compiled into one refused at compile while `vera verify` exited 0,
+        # for no soundness gain: the bind is unguarded either way.  Measured
+        # on `type Tiny = { @Pos | @Pos.0 < 10 }` bound by a `let`, which
+        # returns 5 at base and was E618 here.
+        parts = naming.refinement_binder_parts(te, self._alias_env)
+        if parts is None or parts.base_is_refinement:
+            return []
+        emitter = self._refinement_guard_emitter
+        if emitter is None:
+            raise CodegenSkip(
+                node,
+                "no refinement-guard emitter is installed on this "
+                f"translation context, so the refined bind in {where} cannot "
+                "be guarded",
+            )
+        head = (f"Refinement violation in {where}\n"
+                f"  {ast.format_type_expr(te)} binding")
+        return emitter(te, value_local, head, env) or []
 
     # -----------------------------------------------------------------
     # Constructors
@@ -230,10 +350,19 @@ class DataMixin:
                 field_val = arg_instrs_list[i]
                 # #747: runtime-guard an @Int -> @Nat narrowing into a
                 # concrete @Nat constructor field (`WrapN(@Int.0)` where
-                # `WrapN(Nat)`).  Generic fields instantiated to @Nat erase
-                # to i64 here (no `nat_fields` flag), so they stay
-                # statically-only — the verifier obligates them.
-                if (i < len(layout.nat_fields) and layout.nat_fields[i]
+                # `WrapN(Nat)`).  #757: and into a GENERIC field instantiated
+                # to @Nat here (`Wrap(@Int.0)` building a `Box<Nat>`), whose
+                # answer the per-ADT `nat_fields` bitmap cannot carry —
+                # `_ctor_field_mono_base` reads it from this site's
+                # instantiation instead.
+                mono_base = self._ctor_field_mono_base(expr.args[i])
+                # #1416: the built-in variadic `Tuple` carrier has no
+                # per-field metadata, so its narrowing component read its
+                # target from nowhere while the widening one at the same
+                # site read the checker's table (#820).  Same table now.
+                if (((i < len(layout.nat_fields) and layout.nat_fields[i])
+                        or mono_base == "Nat"
+                        or self._adt_arg_is_nat(tuple_target, i))
                         and self._narrows_into_nat(expr.args[i])):
                     field_val = self._emit_nat_bind_guard(field_val)
                 # #813: dual — runtime-guard a @Nat -> @Int widening into a
@@ -241,9 +370,12 @@ class DataMixin:
                 # `WrapI(Int)`); a @Nat above i64.MAX would otherwise be stored
                 # and later extracted as a reinterpreted negative @Int.  #820
                 # extends this to a `Tuple<..., Int, ...>` component, whose @Int
-                # target comes from `tuple_target` rather than `int_fields`.
+                # target comes from `tuple_target` rather than `int_fields`;
+                # #757 closes the same direction for a generic field
+                # instantiated to @Int, which the bitmap cannot carry either.
                 elif (((i < len(layout.int_fields) and layout.int_fields[i])
-                        or self._adt_arg_is_int(tuple_target, i))
+                        or self._adt_arg_is_int(tuple_target, i)
+                        or mono_base == "Int")
                         and self._result_is_nat(expr.args[i])):
                     field_val = self._emit_int_widen_guard(field_val)
                 instructions.extend(field_val)
@@ -366,6 +498,12 @@ class DataMixin:
                 # ``wt == "i32"`` non-inline branch).
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(ptr_local))
+                # #765: refined pair-typed destructure component, guarded
+                # over the pointer half (see the sub-pattern twin).
+                instrs.extend(self._emit_bind_refine_guard(
+                    te, ptr_local, f"let {stmt.constructor}(…) destructure",
+                    stmt, new_env,
+                ))
                 new_env = new_env.push(type_name, ptr_local)
                 offset += 8
                 continue
@@ -398,12 +536,29 @@ class DataMixin:
             # guard the field load when the target binding is @Int and the
             # literal source arg is provably @Nat, mirroring the verifier's
             # literal-source tuple-destructure obligation (was E531-disclosed).
+            # #1416: and for a NON-literal source too.  The literal arm
+            # above reads the argument expression; a destructure whose source
+            # is a call, a slot or an `if` has no argument to read, and the
+            # widening went unguarded — `let Tuple<@Int, @Int> = <Tuple<Nat,
+            # Nat>>` returned a reinterpreted -1 at u64.MAX.  The source
+            # component's type is in the checker's table against the VALUE
+            # expression, which is the same table the construction site's
+            # component guard reads.
             elif (self._resolve_base_type_name(type_name) == "Int"
-                    and idx < len(destr_lit_args)
-                    and self._result_is_nat(destr_lit_args[idx])):
+                    and ((idx < len(destr_lit_args)
+                          and self._result_is_nat(destr_lit_args[idx]))
+                         or self._adt_arg_is_nat(
+                             self._checker_resolved_type(stmt.value), idx))):
                 load = self._emit_int_widen_guard(load)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
+            # #765: the refined twin of the `@Nat` sign guard above — a
+            # `let Tuple<@Pos, @Int> = …` component narrows into a refined
+            # slot with nothing between it and the rest of the block.
+            instrs.extend(self._emit_bind_refine_guard(
+                te, local_idx, f"let {stmt.constructor}(…) destructure",
+                stmt, new_env,
+            ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)
             # and the ``BindingPattern`` branch (line ~408).
@@ -1037,6 +1192,11 @@ class DataMixin:
                 # in ``_translate_match`` is not: this local receives the
                 # scrutinee's address verbatim, and the shadow stack roots
                 # addresses.  See the note there.
+                # #765: refined pair scrutinee bind, guarded over the pointer.
+                instrs.extend(self._emit_bind_refine_guard(
+                    pattern.type_expr, ptr_local, "match binding pattern",
+                    pattern, env,
+                ))
                 return (instrs, env.push(type_name, ptr_local))
             local_idx = self.alloc_local(scr_wasm_type)
             bind_val = [f"local.get {scr_local}"]
@@ -1061,6 +1221,13 @@ class DataMixin:
                 *bind_val,
                 f"local.set {local_idx}",
             ]
+            # #765: the refined twin of the sign guards above — a top-level
+            # `match x { @Pos -> … }` narrows the scrutinee into a refined
+            # slot, and the arm body then reasons from the predicate.
+            instrs.extend(self._emit_bind_refine_guard(
+                pattern.type_expr, local_idx, "match binding pattern",
+                pattern, env,
+            ))
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (below) —
             # ``match @Json.0 { @Json -> set_add(set_new(), @Json.0) }``
@@ -1162,6 +1329,15 @@ class DataMixin:
                     # rooting needed.
                     self.needs_alloc = True
                     instrs.extend(gc_shadow_push(ptr_local))
+                    # #765: a pair-typed field (String, Array<T>) narrowed
+                    # into a refined slot — guarded over the POINTER half,
+                    # the same representation the refined String / Array
+                    # parameter and return guards check.
+                    instrs.extend(self._emit_bind_refine_guard(
+                        sub_pat.type_expr, ptr_local,
+                        f"constructor sub-pattern {pattern.name}(…)",
+                        sub_pat, new_env,
+                    ))
                     new_env = new_env.push(type_name, ptr_local)
                     offset += 8  # two i32s
                     continue
@@ -1195,12 +1371,32 @@ class DataMixin:
                 # only when the SOURCE field is @Nat (``layout.nat_fields[i]``),
                 # never on a genuine @Int field — unlike the narrowing guard it
                 # would otherwise wrongly trap a legitimately-negative @Int.
+                # #757: the source-field bitmap is per-ADT, so a GENERIC field
+                # instantiated to @Nat (`Box<Nat>` read as `Wrap(@Int)`) is
+                # False there and went unguarded — the extraction dual of the
+                # construction gap.  The instantiation comes from the
+                # scrutinee's own type args, resolved through the same #1060
+                # field-type recomputation the wildcard walk uses.
                 elif (self._resolve_base_type_name(type_name) == "Int"
-                        and i < len(layout.nat_fields)
-                        and layout.nat_fields[i]):
+                        and ((i < len(layout.nat_fields)
+                              and layout.nat_fields[i])
+                             or self._resolve_base_type_name(
+                                 self._resolve_nested_scrutinee_type(
+                                     pattern.name, i, scrutinee_type) or "",
+                             ) == "Nat")):
                     load = self._emit_int_widen_guard(load)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
+                # #765: the refined twin of the sign guards above — a
+                # `MkBox(@Pos)` sub-pattern, at ANY nesting depth (this method
+                # recurses), narrows the field into a refined slot with no
+                # boundary between it and the arm body.  The value is already
+                # in its local, which is what the predicate lowering needs.
+                instrs.extend(self._emit_bind_refine_guard(
+                    sub_pat.type_expr, local_idx,
+                    f"constructor sub-pattern {pattern.name}(…)",
+                    sub_pat, new_env,
+                ))
                 # #705: shadow-push heap-pointer match bindings so
                 # subsequent allocations (e.g. ``set_new()`` inside
                 # ``set_add(set_new(), @Json.0)``) can't reclaim
@@ -1409,12 +1605,7 @@ class DataMixin:
           generic placeholder rather than skip a compilable function
           (``match parse_bool(s) { Ok(_) -> …, Err(_) -> … }``).
         """
-        tp_idx = self._ctor_adt_tp_indices.get(ctor_name)
-        pos = (
-            tp_idx[field_index]
-            if tp_idx is not None and field_index < len(tp_idx)
-            else None
-        )
+        pos = self._ctor_field_tp_index(ctor_name, field_index)
         if pos is None:
             # Not a bare type parameter — the registered width is correct.
             return generic_wt

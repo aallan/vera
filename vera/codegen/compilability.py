@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 
 from vera import ast
+from vera.narrowing import COMPILABLE_EFFECTS, MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import await_needs_check, fused_async_target
@@ -162,9 +163,28 @@ class CompilabilityMixin:
         elif isinstance(effect, ast.EffectSet):
             for eff in effect.effects:
                 if isinstance(eff, ast.EffectRef):
-                    if eff.name == "IO":
-                        self._needs_memory = True
-                    elif eff.name == "State":
+                    # #754: membership is ONE test against the shared roster,
+                    # not the tail of a per-effect chain.  The verifier reads
+                    # the same roster to decide whether an operation argument
+                    # can be guarded at all — an operation of an effect this
+                    # rejects has no run to guard — and a chain whose accepted
+                    # names were listed only by its own branches gave that
+                    # question no table to consult.
+                    if eff.name not in COMPILABLE_EFFECTS:
+                        self._warning(
+                            decl,
+                            f"Function '{decl.name}' uses unsupported "
+                            f"effect '{eff.name}' — skipped.",
+                            rationale=(
+                                "Only pure and the built-in effects are "
+                                "compilable: "
+                                + ", ".join(sorted(COMPILABLE_EFFECTS))
+                                + "."
+                            ),
+                            error_code="E603",
+                        )
+                        return False
+                    if eff.name == "State":
                         # State<T> — T must be a compilable primitive
                         if not self._check_state_type(decl, eff):
                             return False
@@ -172,37 +192,14 @@ class CompilabilityMixin:
                         # Exn<E> — E must be a compilable type
                         if not self._check_exn_type(decl, eff):
                             return False
-                    elif eff.name == "Http":
+                    elif eff.name in MEMORY_EFFECTS:
+                        # IO / Http / HttpServer (#305, the marker effect
+                        # whose accept loop lives in the `vera serve` driver)
+                        # / Inference / DB (#229, whose ops read
+                        # Option<String> params and return row grids on the
+                        # heap) all touch linear memory.  `Async` (sequential
+                        # execution) and `Random` (#465) need no host memory.
                         self._needs_memory = True
-                    elif eff.name == "Async":
-                        pass  # Sequential execution, no host imports
-                    elif eff.name == "HttpServer":
-                        # #305 — marker effect; the accept loop lives in
-                        # the host `vera serve` driver.  The handler
-                        # touches Request/Response heap values.
-                        self._needs_memory = True
-                    elif eff.name == "Inference":
-                        self._needs_memory = True
-                    elif eff.name == "DB":
-                        # #229 — host-import SQL effect; the ops read
-                        # Option<String> params and return row grids on
-                        # the heap.
-                        self._needs_memory = True
-                    elif eff.name == "Random":
-                        # #465 — host-import effect, no memory need
-                        # (no allocations or heap returns).
-                        pass
-                    else:
-                        self._warning(
-                            decl,
-                            f"Function '{decl.name}' uses unsupported "
-                            f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure, IO, Http, Inference, DB, "
-                            "Random, State<T>, Exn<E>, and Async "
-                            "effects are compilable.",
-                            error_code="E603",
-                        )
-                        return False
                 else:
                     return False
         else:

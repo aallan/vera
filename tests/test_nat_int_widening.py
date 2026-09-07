@@ -228,12 +228,13 @@ public fn ctor_field(@Nat -> @Int)
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
         assert co[0].status == "verified", [(o.kind, o.status) for o in co]
 
-    def test_generic_int_field_unguarded_disclosed_E531(self) -> None:
-        # `Some(@Nat.0)` into `Option<Int>` — the generic field erases to i64
-        # with no per-field mono metadata, so codegen cannot guard it.  The
-        # widening is disclosed UNGUARDED (E531) rather than silently assumed
-        # exact or claiming a runtime check it never gets (the dual of the
-        # generic-@Nat-field E504 narrowing case).
+    def test_generic_int_field_guarded_tier3(self) -> None:
+        # `Some(@Nat.0)` into `Option<Int>` — a GENERIC field instantiated to
+        # @Int.  The per-ADT `int_fields` bitmap describes the DECLARED field
+        # type, so it is False for every instantiation of `Option<T>` and this
+        # was E531-disclosed until #757; the guard now reads the argument's own
+        # recorded target instead, which is the same table (and the same
+        # question) `_int_widening_target` consults on the verifier side.
         result = _verify("""
 public fn opt_field(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -241,11 +242,7 @@ public fn opt_field(@Nat -> @Int)
 """)
         co = [o for o in result.obligations if o.kind == _KIND]
         assert len(co) == 1, [(o.kind, o.status) for o in result.obligations]
-        assert co[0].status == "tier3_unguarded", [(o.kind, o.status) for o in co]
-        assert co[0].error_code == "E531", co[0].error_code
-        assert any(d.error_code == "E531" for d in result.diagnostics), [
-            d.error_code for d in result.diagnostics
-        ]
+        assert co[0].status == "tier3", [(o.kind, o.status) for o in co]
 
     def test_the_unguarded_disclosure_names_its_actual_cause(self) -> None:
         """The E531 rationale must not claim a cause it did not have (#1251).
@@ -253,19 +250,42 @@ public fn opt_field(@Nat -> @Int)
         It read "The value is outside Z3's decidable fragment (untranslatable
         or the solver timed out)" for every demotion — the exact conflation
         #1251 removed from E506, in a family that had no reason plumbing at
-        all.  Neither half is what happened here: `@Nat.0` translates fine and
-        the solver answered promptly, twice.  It is simply unconstrained, so
-        `<= i64.MAX` and `> i64.MAX` both have countermodels, which is a fact
-        about the PROGRAM (add a bound) rather than about the solver.
+        all.  Neither half is what happens at an unbounded `@Nat`: the value
+        translates fine and the solver answers promptly, twice.  It is simply
+        unconstrained, so `<= i64.MAX` and `> i64.MAX` both have
+        countermodels, which is a fact about the PROGRAM (add a bound) rather
+        than about the solver.
+
+        Driven at the RECORDER rather than through a program, because no
+        program reaches this leg any more: every obligated widening site is
+        runtime-guarded (#820, #757, #1416), so the unguarded disclosure has
+        no live driver.  Deleting the cell with its last fixture would take
+        the #1251 rationale contract with it, and the contract still binds —
+        a future unguarded site will emit exactly this text.  So the path is
+        exercised where it lives.
         """
-        result = _verify("""
-public fn opt_field(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{ let @Option<Int> = Some(@Nat.0); match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 } }
-""")
-        warns = [d for d in result.diagnostics if d.error_code == "E531"]
+        from vera import ast
+        from vera.verifier import ContractVerifier
+
+        v = ContractVerifier()
+        decl = ast.FnDecl(
+            name="td", params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(), effect=ast.PureEffect(), body=None,
+            forall_vars=(), forall_constraints=(), where_fns=(),
+        )
+        node = ast.IntLit(value=0)
+        v._record_int_widen_tier3(
+            decl, node, "tuple destructure", "tier3", guarded=False,
+            reason=(
+                "the value is not provably within i64's range, and not "
+                "provably outside it either — an unconstrained @Nat has "
+                "countermodels on both sides"
+            ),
+        )
+        warns = [d for d in v.errors if d.error_code == "E531"]
         assert len(warns) == 1, [
-            (d.error_code, d.description[:70]) for d in result.diagnostics
+            (d.error_code, d.description[:70]) for d in v.errors
         ]
         rationale = warns[0].rationale
         assert "countermodels on both sides" in rationale, rationale

@@ -459,8 +459,11 @@ private fn factorial(@Nat -> @Nat)
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
         # #798: @Nat.0 * factorial(...) multiply emits an int_overflow
         # obligation; operands are unbounded so it falls to Tier 3.
+        # #1222: so does `decreases_bound` — `@Nat.0 <= i64.MAX`, the fact
+        # the unbounded-integer termination proof and the i64 runtime
+        # comparison need in common, unprovable for an unconstrained @Nat.
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 1
+        assert result.summary.tier3_runtime == 2
 
 
 # =====================================================================
@@ -574,9 +577,11 @@ private fn f(@Nat -> @Nat)
         # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
         # #798: @Nat.0 + f(...) add emits an int_overflow obligation; operands
         # are unbounded so it falls to Tier 3.
-        assert result.summary.total == 5
+        # #1222: `decreases_bound` joins it — `@Nat.0 <= i64.MAX`, likewise
+        # unprovable for an unconstrained @Nat and likewise runtime-guarded.
+        assert result.summary.total == 6
         assert result.summary.tier1_verified == 4
-        assert result.summary.tier3_runtime == 1
+        assert result.summary.tier3_runtime == 2
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""

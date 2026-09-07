@@ -107,14 +107,29 @@ _OPAQUE_SCRUTINEE_REASON = (
 )
 
 #: The default closing sentence of an unguarded E506 (#746) — what codegen does
-#: and does not check at an INTERNAL narrowing site.  Every site that predates
-#: #1410 is one of those; the nested-refinement family passes its own note
-#: instead, because its site is a function boundary and the missing coverage is
-#: a different thing (see `_NESTED_SITE_GUARD_NOTE`).
-_INTERNAL_SITE_GUARD_NOTE = (
-    "Codegen runtime-guards refinements only at the function boundary "
-    "(parameter entry / return exit), not at this internal narrowing site, so "
-    "it is neither statically proven nor runtime-checked."
+#: and does not check here.
+#:
+#: It names TWO possibilities rather than asserting one, because since #765 the
+#: SITE is no longer the reliable cause.  The sentence this replaced said the
+#: guard lives only at a function boundary "not at this internal narrowing
+#: site", which was true when every pattern bind was unguarded and is false
+#: now: `let binding`, `match binding`, `tuple destructure` and `ADT
+#: sub-pattern bind` are all in `_REFINED_BIND_GUARDED_SITES`, so a
+#: `let @Tiny = mk(...)` that lands here was told to move a binding it has no
+#: reason to move.  What is actually missing at such a site is the BASE — a
+#: refinement over a refinement, which `_emit_bind_refine_guard` will not lower
+#: — and a reader sent to the wrong half of the question changes the wrong
+#: thing.  The nested-refinement family passes its own note instead, because
+#: its site is a boundary and the gap there is a third thing (see
+#: `_NESTED_SITE_GUARD_NOTE`).
+_UNGUARDED_TWO_CAUSE_NOTE = (
+    "No runtime guard covers it either, for one of two reasons: the SITE is "
+    "one codegen does not guard (a constructor field, a tuple component, an "
+    "array element or a `Map` value at construction, or a user effect "
+    "operation's argument), or the refinement's own BASE is one no guard can "
+    "be emitted for — a base that is itself a refinement, or one that erases "
+    "to nothing at run time.  So the predicate is neither statically proven "
+    "nor runtime-checked."
 )
 
 #: The closing sentence for a refinement written INSIDE a boundary type (#1410).
@@ -127,6 +142,60 @@ _NESTED_SITE_GUARD_NOTE = (
     "payload or an array element is checked at no boundary: this one is "
     "neither statically proven nor runtime-checked."
 )
+
+
+#: The SITE half of "does codegen plant a §2.6.5 refinement guard here?" —
+#: THE table, consulted by every `refine_bind` leg rather than restated as a
+#: literal at each of them (#765).
+#:
+#: Scattered literals is how the answer went stale: #765 planted the guard at
+#: the pattern-bind sites and every one of the eight legs that record a
+#: `refine_bind` there would have had to be found and flipped by hand, in a
+#: file where a leg can be reached by five routes (literal argument, projected
+#: accessor, opaque scrutinee, unprojectable nest, monomorphised clone).  A
+#: site whose guard is added tomorrow is added HERE, once.
+#:
+#: The TYPE half is :py:meth:`Verifier._refined_boundary_codegen_guardable` —
+#: whether the guard can be emitted for this particular refinement's base —
+#: and the two are intersected wherever a type is in hand.  A site absent from
+#: this set is unguarded whatever its type: a constructor field or tuple
+#: component AT CONSTRUCTION (the composing boundary guard is the callee's
+#: parameter check, a different site), and a user effect operation's argument,
+#: whose dispatch carries only a target (#754).
+#: Construction-position sites whose `@Nat` store codegen actually guards.
+#:
+#: Measured per site by a STORE-ONLY differential (build the container, never
+#: read it back), because a fixture that reads the component out is answered
+#: by the read-side bind guard (#765) and cannot tell the two apart.  A tuple
+#: component traps at construction (#1416); an array element and a `Map`
+#: value do not — `let @Array<Nat> = [@Int.0]` with `-4` stores and returns
+#: normally, and the trap only arrives if something later reads the element
+#: back as a `@Nat`.  Claiming `guarded` here would assert a runtime check at
+#: a site that has none, which is the false guarantee this PR exists to
+#: remove; the honest answer is E504 disclosure.
+_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({"tuple component"})
+
+
+#: The widening dual, on the same evidence (#820's enabler guards the store
+#: for both container shapes it threads a target type to).
+_INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
+    "array element",
+    "tuple component",
+})
+
+
+_REFINED_BIND_GUARDED_SITES = frozenset({
+    # Function boundaries: the parameter / return predicate guards (#746).
+    "return type",
+    "call argument",
+    "closure argument",
+    "closure return",
+    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
+    "let binding",
+    "match binding",
+    "tuple destructure",
+    "ADT sub-pattern bind",
+})
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -478,6 +547,17 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # Construction-position obligations already recorded, keyed by
+        # (function, expression span, site).  Two entry points reach the
+        # typed descent for the same node — an array literal that carries
+        # its own recorded target, and the enclosing `let`'s declared type
+        # (which is the only source for the shapes where the target table
+        # has erased the refinement) — and without this the overlap recorded
+        # one obligation twice, inflating `len(obligations)` on the flat
+        # `let @Array<Refined> = [...]` that already worked.
+        self._construction_obligated: set[
+            tuple[int, tuple[int, int, int, int] | None, str]
+        ] = set()
         # #1399: the same question for an IMPORTED callee, whose obligations
         # never enter this run's stream and so can never appear in the set
         # above.  Answered from each module's own verification through
@@ -2911,6 +2991,11 @@ class ContractVerifier:
             # pass's proofs were made against a context this one no longer
             # offers.
             self.errors, self.obligations = [], []
+            # The construction-position memo is a property of the buffer it
+            # was built against: keeping it here would let the discarded
+            # pass's entries suppress this pass's recordings, and the
+            # obligation would vanish from the stream that is kept.
+            self._construction_obligated = set()
             self.register_program(program)
             self._verify_all_declarations(program)
 
@@ -3046,7 +3131,10 @@ class ContractVerifier:
             # derived from the final obligation stream (#967), so it needs no
             # save/restore here.
             saved = (self.errors, self.obligations)
+            saved_construction = self._construction_obligated
             self.errors, self.obligations = [], []
+            # Saved and restored with the buffer, for the same reason.
+            self._construction_obligated = set()
             # PR #972 review (pre-existing): the #747 side-tables are span-keyed
             # and the clone keeps its source spans, so lookups inside the clone
             # answer the GENERIC types.  Publish this instance's TypeVar →
@@ -3072,6 +3160,7 @@ class ContractVerifier:
                 self._instance_subst = saved_subst
                 inst_obl, inst_err = self.obligations, self.errors
                 self.errors, self.obligations = saved
+                self._construction_obligated = saved_construction
             per_instance.append((concrete, inst_obl, inst_err))
         self._aggregate_generic_instances(decl, per_instance)
 
@@ -3951,6 +4040,12 @@ class ContractVerifier:
 
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
+                # #1222: before the termination proof, because it is a
+                # premise of it.  The proof reasons over unbounded integers;
+                # the runtime check compares in i64, and the two agree only
+                # while the measure's value is one.
+                self._check_decreases_bound(
+                    decl, contract, smt, slot_env, assumptions)
                 if self._verify_decreases(
                     decl, contract, smt, slot_env, group_decls,
                 ):
@@ -4000,6 +4095,422 @@ class ContractVerifier:
     # -----------------------------------------------------------------
     # Decreases verification (termination)
     # -----------------------------------------------------------------
+
+    def _decreases_bound_guarded(
+        self, decl: ast.FnDecl, contract: ast.Decreases, expr: ast.Expr,
+    ) -> str | None:
+        """Whether the measure-range check is actually emitted for *decl*
+        (#1222) — the semantic mirror of `_dec_measure_bound_check`'s
+        reachability; KEEP IN SYNC.
+
+        The check itself no longer rides on the decreases CHAIN guard, which
+        is declined for an `Exn`-declaring function, an untranslatable
+        component or an unrankable ADT component: those are all statements
+        about state carried across activations, and a component's range check
+        carries none, so it is emitted beside them.  What remains is a
+        function code generation does not emit AT ALL — the same
+        :data:`~vera.narrowing.COMPILABLE_EFFECTS` intersection
+        :py:meth:`_effect_op_formal_guarded` performs, for the same reason: a
+        user-declared effect drops its enclosing function with a loud E603,
+        and a Tier-3 status there would promise a runtime check for a module
+        with no code in it.
+
+        The effect row is what this mirrors, and not the whole of codegen's
+        compilability walk: a declaration can also be dropped for an
+        unsupported parameter or return type, or an E602 body, and those
+        decisions belong to a walk the verifier does not run.  That residual
+        is not introduced here — every obligation kind in this file records a
+        tier for a function that may yet be dropped — and it is the effect
+        row that the reachable shape uses.
+        """
+        effect = decl.effect
+        if isinstance(effect, ast.EffectSet) and not all(
+                isinstance(eff, ast.EffectRef)
+                and eff.name in narrowing.COMPILABLE_EFFECTS
+                for eff in effect.effects):
+            return "not_emitted"
+        # Second condition, asked PER COMPONENT because codegen filters per
+        # component: where the CHAIN guard may be declined the range check
+        # evaluates the measure itself, and it does that only for a component
+        # an extra evaluation cannot make observable.  A per-CONTRACT answer
+        # put an E537 on the pure component of a mixed measure whose WAT does
+        # check it — the mirror drift this release exists to remove.  Where
+        # the chain IS emitted the measure is already evaluated and the check
+        # reads its locals, so purity does not arise for any component.
+        if not self._decreases_chain_may_be_declined(decl, contract):
+            return None
+        if narrowing.measure_component_is_effect_free(expr):
+            return None
+        return "not_evaluated"
+
+    def _decreases_chain_may_be_declined(
+        self, decl: ast.FnDecl, contract: ast.Decreases,
+    ) -> bool:
+        """Whether codegen may decline the decreases CHAIN guard for *decl*.
+
+        Conservative on purpose — the two reachable reasons are an `Exn` in
+        the effect row and a component the backend cannot structurally rank,
+        and the second is asked as "is any component non-scalar", which
+        over-answers for a concrete ADT that ranks fine.  Over-answering here
+        costs only that the range check's guardedness is then decided by the
+        components' purity, which for every corpus measure is true anyway.
+        """
+        effect = decl.effect
+        if isinstance(effect, ast.EffectSet) and any(
+                isinstance(eff, ast.EffectRef) and eff.name == "Exn"
+                for eff in effect.effects):
+            return True
+        # A non-scalar component declines the chain only when the backend
+        # cannot structurally RANK it, which is the #1177 limitation: a
+        # PARAMETERIZED ADT measure (`List<Int>`) has no per-instantiation
+        # size helper, while a concrete one ranks fine.  Asking merely "is it
+        # non-scalar" over-answered, and put an E537 on a measure whose WAT
+        # does check it.
+        from vera.types import AdtType
+        for e in contract.exprs:
+            ty = self._resolved_type_of(e)
+            if ty is None:
+                continue
+            if self._is_int_type(ty) or self._is_nat_type(ty):
+                continue
+            base = ty.base if isinstance(ty, RefinedType) else ty
+            if not isinstance(base, AdtType) or base.type_args:
+                return True
+        return False
+
+    def _record_decreases_bound_tier3(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        status: ObligationStatus,
+        *,
+        guarded: bool,
+        reason: str,
+        because: str | None = None,
+    ) -> None:
+        """Record an undischarged ``decreases_bound`` (#1222), guarded or not.
+
+        *because* names WHY the unguarded leg is unguarded — ``"not_emitted"``
+        when code generation emits no function at all, ``"not_evaluated"``
+        when the chain guard is declined and this component is one the range
+        check will not evaluate.  The two ask the reader to change different
+        things, and a single sentence covering both told the author of a
+        `pure` function that it had been "dropped with an E603".
+
+        The guarded leg counts as a runtime check and says nothing further —
+        the range guard beside the measure's evaluation is the check, and it
+        fires with its own message.  The unguarded leg is excluded from the
+        totals and surfaces **E537**, because a status that claimed a check
+        for a function code generation never emits is the same over-claim
+        this release exists to remove, one obligation kind over.
+        """
+        if guarded:
+            self._record_obligation(
+                decl.name, "decreases_bound", node, status)
+            return
+        self._record_obligation(
+            decl.name, "decreases_bound", node, "tier3_unguarded",
+            error_code="E537",
+        )
+        self._warning(
+            node,
+            f"Termination metric range in '{decl.name}' is neither proved "
+            f"nor runtime-checked.",
+            rationale=(
+                "@Nat is u64 and the `decreases` runtime guard compares "
+                "signed i64, so a measure above i64.MAX reads as negative "
+                f"there.  The `<= i64.MAX` obligation was not discharged: "
+                f"{reason}.  " + (
+                    "Code generation does not emit this function at all — "
+                    "its effect row is one the backend cannot lower, so the "
+                    "function is dropped with an E603 — and a runtime check "
+                    "in a module with no code in it is no check.  Bound the "
+                    "measure below i64.MAX with a `requires`, or give the "
+                    "function an effect row the backend can lower."
+                    if because == "not_emitted" else
+                    "No runtime check covers it either: this function's "
+                    "termination CHAIN guard is declined — it declares "
+                    "`Exn`, or a measure component is a parameterized ADT "
+                    "the backend cannot rank — and the range check that "
+                    "stands in for it evaluates the measure itself, which it "
+                    "will not do for a component whose evaluation can be "
+                    "observed.  Bound the measure below i64.MAX with a "
+                    "`requires`, or measure a slot or arithmetic over slots "
+                    "rather than a call."
+                )
+            ),
+            spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
+            error_code="E537",
+            tier=3,
+        )
+
+    def _obligate_construction_component(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Obligate a value placed into a component slot at CONSTRUCTION,
+        descending through nested containers (#1426, third-pass P1).
+
+        The flat array element was fixed first, and the same silence survived
+        one nesting level deeper and one container over: a nested array
+        literal's inner element, an array of refined tuples, and a `Map`
+        value.  In each the checker records a target for the OUTER literal
+        and none for the inner one, so a walk that reads a target per
+        expression sees nothing to obligate — `verify` reported a clean
+        program while the value its element type forbids was stored.
+
+        The expected type is therefore threaded DOWN rather than looked up
+        per node: the outer target names the element type, and that names the
+        next one.  Refined-FIRST at each level (R9), because a refinement
+        over `@Int` answers `_is_int_type` and the widening arm would
+        otherwise swallow it.
+
+        Only the shapes whose components are syntactically present are
+        descended — an array literal's elements and a `Tuple` construction's
+        arguments.  A value that arrives through a call is the callee's to
+        establish, which is the same provenance rule the #1332 construction
+        obligation draws.
+        """
+        memo_key = (id(decl), ast.span_key(expr), site)
+        if memo_key in self._construction_obligated:
+            return
+        refined_target = self._refined_binding_target(expr, expected)
+        before = len(self.obligations)
+        if (refined_target is not None
+                and self._narrows_into_refined(expr, refined_target)):
+            self._check_refined_binding_obligation(
+                decl, expr, refined_target, smt, slot_env, assumptions,
+                site=site,
+            )
+            # And the RANGE obligation beside it, when the refinement is over
+            # `@Int` and the value is a `@Nat` (CR PR-review).  The two are
+            # different obligations about different things: the predicate is
+            # about the value, the widening check is about the
+            # representation a `@Nat` above `i64.MAX` takes when it is
+            # reinterpreted as a signed `i64`.  Codegen does not distinguish
+            # them — it resolves the refined element target to `@Int` and
+            # emits the same widening guard it emits for a plain one,
+            # measured by a differential over the two element types that
+            # counts an identical five `unreachable` in `f` — so recording
+            # only the predicate left a guard that fires with nothing
+            # counting it, the Tier-3 UNDERcount this PR exists to remove.
+            # No narrowing twin here: a refinement over `@Nat` discharges its
+            # full predicate on the arm above, which already implies `>= 0`.
+            if self._is_int_type(expected) and self._result_is_nat(expr):
+                self._check_int_widening_obligation(
+                    decl, expr, smt, slot_env, list(assumptions), site=site,
+                    guarded=(
+                        site in _INT_WIDENING_CONSTRUCTION_GUARDED_SITES
+                    ),
+                )
+        elif (self._nat_binding_target(expr, expected)
+                and self._narrows_into_nat(expr)):
+            self._check_nat_binding_obligation(
+                decl, expr, smt, slot_env, assumptions, site=site,
+                guarded=site in _NAT_CONSTRUCTION_GUARDED_SITES,
+            )
+        elif self._is_int_type(expected) and self._result_is_nat(expr):
+            self._check_int_widening_obligation(
+                decl, expr, smt, slot_env, list(assumptions), site=site,
+                guarded=(
+                    site in _INT_WIDENING_CONSTRUCTION_GUARDED_SITES
+                ),
+            )
+        else:
+            self._descend_construction_container(
+                decl, expr, expected, smt, slot_env, assumptions, site=site,
+            )
+            return
+        # Memoise what was RECORDED, not what was visited.  An arm can be
+        # entered and still decline inside — a value the SMT layer cannot
+        # translate at this point in the walk is one — and the other route to
+        # the same component may reach it with an environment where it does
+        # discharge.  Marking the key on entry suppressed that second route
+        # and turned one disclosed obligation into silence, which is the
+        # failure mode this whole descent exists to remove.
+        if len(self.obligations) > before:
+            self._construction_obligated.add(memo_key)
+
+    def _descend_construction_container(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Descend one container level, threading the component type down.
+
+        Split out of :py:meth:`_obligate_construction_component` so the memo
+        there covers only the SCALAR arms: a container node records nothing
+        itself, so memoising it would say "already obligated" about a node
+        whose components are obligated one level down.
+        """
+        base = expected.base if isinstance(expected, RefinedType) else expected
+        if not isinstance(base, AdtType) or not base.type_args:
+            return
+        if base.name == "Array" and isinstance(expr, ast.ArrayLit):
+            for elem in expr.elements:
+                # The element's site names the ELEMENT, never the route that
+                # reached it: the two entry points must agree, or the memo
+                # above sees two keys for one obligation and records it twice.
+                self._obligate_construction_component(
+                    decl, elem, base.type_args[0], smt, slot_env,
+                    assumptions, site="array element",
+                )
+            return
+        if (base.name == "Tuple" and isinstance(expr, ast.ConstructorCall)
+                and expr.name == "Tuple"
+                and len(expr.args) == len(base.type_args)):
+            for arg, comp_ty in zip(expr.args, base.type_args):
+                self._obligate_construction_component(
+                    decl, arg, comp_ty, smt, slot_env, assumptions,
+                    site="tuple component",
+                )
+            return
+        if (base.name == "Map" and len(base.type_args) == 2
+                and isinstance(expr, ast.FnCall)
+                and expr.name == "map_insert" and len(expr.args) == 3):
+            # `map_insert(m, k, v)` places `v` in the map's VALUE slot.  The
+            # target table cannot supply that type here: generic unification
+            # resolves `V` against the `map_new()` receiver and reports the
+            # erased base (`Int` for a `Map<String, Pos>`), so a walk reading
+            # a target per node sees `Int` and obligates nothing.  The
+            # declared type threaded down from the let carries the
+            # refinement, so it is the one consulted.
+            self._obligate_construction_component(
+                decl, expr.args[2], base.type_args[1], smt, slot_env,
+                assumptions, site="map value",
+            )
+            # A chained insert builds the same map, so the receiver carries
+            # the same component obligation.
+            self._obligate_construction_component(
+                decl, expr.args[0], expected, smt, slot_env, assumptions,
+                site=site,
+            )
+
+    def _check_decreases_bound(
+        self,
+        decl: ast.FnDecl,
+        contract: ast.Decreases,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge ``component <= i64.MAX`` for every ``@Nat`` measure
+        component (#1222).
+
+        The termination proof reasons over unbounded integers; the runtime
+        guard compares with ``i64.lt_s`` / ``i64.ge_s``.  Those agree exactly
+        while the measure's value is an i64 — and a ``@Nat`` is a u64 in that
+        i64, so above ``i64.MAX`` it reads NEGATIVE, the guard's ``m >= 0``
+        clause fails, and a program whose termination was PROVED at Tier 1
+        aborts with "failed to decrease".  Measured: `halve(2^63)` over
+        `decreases(@Nat.0)` traps where `halve(2^63 - 1)` returns.
+
+        So the fact the two sides need in common is obligated rather than
+        assumed: Tier 1 where the measure is provably bounded, and otherwise
+        a Tier-3 obligation whose runtime backstop is
+        ``_dec_measure_bound_check`` — which reports the range as the cause
+        instead of borrowing the termination rule's message.  Provably OUT of
+        range is a loud E536: the program's termination argument is correct
+        and its measure is one this compiler cannot compare.
+
+        Recorded ONLY for a ``@Nat``-typed component, because that is the
+        only one where the two readings can differ: an ``@Int`` component IS
+        the i64 the guard compares in, and an ADT component is ranked by a
+        structural size bounded by the heap.  Widening the comparison instead
+        was the alternative and is the wrong shape for this language: the
+        whole compiler treats a ``@Nat`` above ``i64.MAX`` as an edge it
+        DISCLOSES — E530 and E531 exist for exactly that — so supporting the
+        range here alone would make this one boundary an outlier.
+        """
+        hi = z3.IntVal(_I64_MAX)
+        for expr in contract.exprs:
+            # THE rule, shared with codegen's selector, over the SAME
+            # checker table — not `_is_nat_type`, which is a second
+            # spelling this side could drift on.
+            if not narrowing.measure_component_needs_range_check(
+                    self._resolved_type_of(expr)):
+                continue
+            unguarded_because = self._decreases_bound_guarded(
+                decl, contract, expr)
+            guarded = unguarded_because is None
+            term = smt.translate_expr(expr, slot_env)
+            if term is None:
+                self._record_decreases_bound_tier3(
+                    decl, expr, "tier3", guarded=guarded,
+                    because=unguarded_because,
+                    reason=(
+                        "the measure component is outside the SMT layer's "
+                        "decidable fragment, so there is no term to test "
+                        "`<= i64.MAX` against"
+                    ))
+                continue
+            safe = smt.check_valid(term <= hi, list(assumptions))
+            if safe.status == "verified":
+                self._record_obligation(
+                    decl.name, "decreases_bound", expr, "verified")
+                continue
+            bad = smt.check_valid(term > hi, list(assumptions))
+            if bad.status == "verified":
+                self._record_obligation(
+                    decl.name, "decreases_bound", expr, "violated",
+                    error_code="E536", counterexample=safe.counterexample,
+                )
+                self._error(
+                    expr,
+                    f"Termination metric in '{decl.name}' is outside the "
+                    f"i64 range the runtime check compares in.",
+                    rationale=(
+                        "@Nat is u64 and the `decreases` runtime guard "
+                        "compares signed i64, so a measure above i64.MAX "
+                        "reads as negative and the guard's non-negativity "
+                        "clause fails — on a program whose termination the "
+                        "verifier proved.  The measure is provably in that "
+                        "range here, so the two readings provably disagree."
+                    ),
+                    fix=(
+                        "Bound the measure below i64.MAX — add a "
+                        "`requires` constraining it, or measure a derived "
+                        "quantity that stays small (a length, a depth, a "
+                        "count) rather than the raw @Nat."
+                    ),
+                    spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
+                    error_code="E536",
+                )
+                continue
+            # Neither bound settled.  A solver that returned no verdict is
+            # `timeout`, not `tier3` (#1350): a reader raising `--timeout-ms`
+            # needs to tell a fit obligation that needed more time from one
+            # nothing will settle, and every other kind in this file draws
+            # that line.
+            undecided: ObligationStatus = (
+                "tier3" if safe.status == "violated" and bad.status == "violated"
+                else "timeout"
+            )
+            self._record_decreases_bound_tier3(
+                decl, expr, undecided, guarded=guarded,
+                because=unguarded_because,
+                reason=(
+                    "the measure is bounded on neither side — an "
+                    "unconstrained @Nat is neither provably `<= i64.MAX` nor "
+                    "provably above it"
+                    if undecided == "tier3"
+                    else self._undecided_reason(
+                        safe.status if safe.status != "verified"
+                        else bad.status)
+                ))
 
     def _verify_decreases(
         self,
@@ -5570,29 +6081,33 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="constructor field",
-                            guarded=False,
                         )
                     elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="constructor field",
-                            # codegen guards a concrete @Nat field; a generic
-                            # field instantiated to @Nat here erases to i64, so
-                            # an untranslatable arg is genuinely unguarded.
-                            guarded=self._is_nat_type(field_ty),
+                            # Codegen guards a concrete @Nat field from the
+                            # layout bitmap and — since #757 — a GENERIC field
+                            # instantiated to @Nat here from the argument's own
+                            # recorded target, which is the same table (and the
+                            # same question) `_nat_binding_target` above just
+                            # consulted.  Reaching this arm therefore means the
+                            # guard is emitted, by either route.
+                            guarded=True,
                         )
                     elif (self._int_widening_target(arg, field_ty)
                             and self._result_is_nat(arg)):
                         # #813: dual — a @Nat argument widening into an @Int
                         # field can reinterpret above i64.MAX.  A concrete @Int
                         # field is codegen-guarded (the layout `int_fields`
-                        # bitmap); a generic-instantiated one erases to i64 with
-                        # no per-field mono metadata, so it is unguarded (E531).
+                        # bitmap); #757 gives the generic-instantiated one the
+                        # same guard, keyed on the argument's recorded target,
+                        # so this arm is guarded by whichever route applies.
                         self._check_int_widening_obligation(
                             decl, arg, smt, slot_env, list(assumptions),
                             site="constructor field",
-                            guarded=self._is_int_type(field_ty),
+                            guarded=True,
                         )
                     # #1410 (PR review F3): a field whose TYPE writes a
                     # refinement on a component.  A field like
@@ -5618,7 +6133,7 @@ class ContractVerifier:
                         decl, arg,
                         self._nested_refinement_formal(arg, field_ty),
                         smt, slot_env, assumptions,
-                        site="constructor field", guarded=False,
+                        site="constructor field",
                     )
             else:
                 # `Tuple` (and any other built-in carrier) is NOT user-
@@ -5646,48 +6161,30 @@ class ContractVerifier:
                     and len(target.type_args) == len(expr.args)
                     else ()
                 )
+                # One descent, shared with the container walk and with the
+                # enclosing `let`'s declared type: each of the three routes
+                # can reach the same component, and a second recording of one
+                # obligation inflates `len(obligations)`.  The guardedness
+                # each arm claims is per SITE, from the two rosters above,
+                # rather than restated at each call.
                 for arg, comp_ty in zip(expr.args, comp_types):
-                    if (self._is_refined_type(comp_ty)
-                            and self._narrows_into_refined(arg, comp_ty)):
-                        self._check_refined_binding_obligation(
-                            decl, arg, comp_ty, smt, slot_env, assumptions,
-                            site="tuple component", guarded=False,
-                        )
-                    elif (self._is_nat_type(comp_ty)
-                            and self._narrows_into_nat(arg)):
-                        # guarded=False, like the refined path above: codegen
-                        # does not component-guard a tuple *at construction*, so
-                        # an untranslatable @Nat component must record an honest
-                        # E504 / tier3_unguarded, NOT a tier3_runtime that
-                        # claims a runtime check the construction site never
-                        # emits (CR PR-review — the boundary guard is a separate
-                        # site, not this one).
-                        self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
-                            site="tuple component", guarded=False,
-                        )
-                    elif (self._is_int_type(comp_ty)
-                            and self._result_is_nat(arg)):
-                        # #813/#820: dual — a @Nat component widening into an
-                        # @Int tuple slot.  Codegen recovers the tuple's target
-                        # component types (`Tuple<Int, Int>`) from the threaded
-                        # target-type table (the #820 enabler) and guards each
-                        # @Nat component AT CONSTRUCTION, so this is now
-                        # runtime-guarded (`guarded=True`) rather than E531 —
-                        # the #813-disclosed tuple-component widening residual
-                        # (the widening dual of #758's tuple-component
-                        # narrowing) the enabler unlocks.
-                        self._check_int_widening_obligation(
-                            decl, arg, smt, slot_env, list(assumptions),
-                            site="tuple component", guarded=True,
-                        )
+                    # One descent, shared with the container walk and
+                    # with the enclosing `let`'s declared type: each of
+                    # the three routes can reach the same component, and
+                    # a second recording of one obligation inflates
+                    # `len(obligations)`.  Guardedness is per SITE, from
+                    # the rosters, rather than restated at each call.
+                    self._obligate_construction_component(
+                        decl, arg, comp_ty, smt, slot_env, assumptions,
+                        site="tuple component",
+                    )
                     # #1410 (PR review F3), the built-in carrier's twin: a
-                    # tuple component whose own type writes a refinement on a
-                    # component of ITS structure.  Construction guards no
+                    # tuple component whose own type writes a refinement on
+                    # a component of ITS structure.  Construction guards no
                     # component, so unguarded.
                     self._check_nested_refinement_obligation(
                         decl, arg, comp_ty, smt, slot_env, assumptions,
-                        site="tuple component", guarded=False,
+                        site="tuple component",
                     )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -5719,7 +6216,6 @@ class ContractVerifier:
                 # #754 unguarded class (`IO.sleep`'s `@Nat` formal, a
                 # user-declared effect's op) and discloses honestly.
                 op_effect = getattr(op, "parent_effect", None)
-                op_guarded = op_effect in ("State", "Exn")
                 op_site = ("State-op argument" if op_effect == "State"
                            else "effect-operation argument")
                 # The SHARED triple, not a local copy of two of its three
@@ -5744,12 +6240,29 @@ class ContractVerifier:
                 # Routing through `_obligate_binding_triple` means the three
                 # arms cannot drift apart again by omission.
                 for arg, formal in zip(expr.args, param_types):
+                    # Guardedness is PER FORMAL since #754.  Two routes reach
+                    # a guard and they answer different questions: `State`
+                    # and `Exn` are guarded whatever their formal says,
+                    # because their formal IS a type variable and the cell
+                    # supplies the width; every other operation is guarded
+                    # exactly when its DECLARED formal resolves to a concrete
+                    # `@Nat` or `@Int`, which is the condition codegen's
+                    # `_guard_effect_op_arg` reads off the same registry.  A
+                    # generic formal instantiated to `@Nat` at this call site
+                    # is obligated (the side-table sees it) and NOT guarded
+                    # (the declaration codegen reads does not), so the two
+                    # must be asked separately rather than folded into one
+                    # per-operation flag.
+                    op_guarded = (
+                        op_effect in ("State", "Exn")
+                        or self._effect_op_formal_guarded(op_effect, formal)
+                    )
                     self._obligate_binding_triple(
                         decl, arg, formal, smt, slot_env, assumptions,
                         site=op_site,
                         nat_guarded=op_guarded, widen_guarded=op_guarded,
                         # Only the `throw` payload boundary lowers a
-                        # refinement predicate (#1268); the State write
+                        # refinement predicate (#1268); the other write
                         # boundaries emit sign guards alone, so their
                         # refined arm stays honestly unguarded.
                         refined_guarded=op_effect == "Exn",
@@ -5840,7 +6353,7 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, stmt.value, let_ty, smt, cur_env,
                             block_assumptions,
-                            site="let binding", guarded=False,
+                            site="let binding",
                         )
                     elif (self._is_nat_type(let_ty)
                             and self._narrows_into_nat(stmt.value)):
@@ -5855,6 +6368,19 @@ class ContractVerifier:
                         self._check_int_widening_obligation(
                             decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
+                        )
+                    elif isinstance(let_ty, AdtType) and let_ty.type_args:
+                        # A CONTAINER let: the scalar arms above see a
+                        # `Map`/`Array`/`Tuple` and decline, so before #1426's
+                        # third pass the component a container was declared to
+                        # hold was obligated only when the value's own node
+                        # carried a recorded target.  The declared type is
+                        # threaded down instead, which reaches the shapes
+                        # where the table is silent (a nested literal's inner
+                        # element, a `map_insert` value).
+                        self._obligate_construction_component(
+                            decl, stmt.value, let_ty, smt, cur_env,
+                            block_assumptions, site="let binding",
                         )
                     # #1410 (PR review F4b): a `let` whose declared type writes
                     # a refinement on a COMPONENT publishes that claim to every
@@ -5925,7 +6451,6 @@ class ContractVerifier:
                                     decl, sub, comp_ty, smt, cur_env,
                                     block_assumptions,
                                     site="tuple destructure",
-                                    guarded=False,
                                 )
                             elif (self._is_nat_type(comp_ty)
                                     and self._narrows_into_nat(sub)):
@@ -6120,7 +6645,6 @@ class ContractVerifier:
                             self._check_refined_binding_obligation(
                                 decl, expr.scrutinee, pat_ty, smt, slot_env,
                                 assumptions, site="match binding",
-                                guarded=False,
                             )
                         elif (self._is_nat_type(pat_ty)
                                 and self._narrows_into_nat(expr.scrutinee)):
@@ -6172,22 +6696,29 @@ class ContractVerifier:
         # still be visited.  (The #520 subtraction walker has the same
         # pre-existing container gap; aligning it is out of #552's scope.)
         if isinstance(expr, ast.ArrayLit):
-            # #813/#820: a @Nat element widening into an @Array<Int> literal.
-            # Codegen recovers the target element type (`Array<Int>`) from the
-            # threaded target-type table and guards the element store at the
-            # widening boundary (the #820 enabler), so this site is now
-            # runtime-guarded (`guarded=True`) rather than E531-disclosed.
+            # Every element obligation at this construction position —
+            # refined predicate, `@Nat` narrowing, and the #813/#820
+            # `@Nat` -> `@Int` widening — goes through the one typed
+            # descent, refined-FIRST (R9).  Recording any of them here
+            # instead would be a SECOND route to the same obligation: the
+            # enclosing `let` reaches these same nodes through its declared
+            # type, which is the only source that survives for a nested
+            # literal or a `map_insert` value, and two routes recording one
+            # obligation inflates `len(obligations)`.
             target = self._target_type_of(expr)
             base = target.base if isinstance(target, RefinedType) else target
-            if (isinstance(base, AdtType) and base.name == "Array"
-                    and base.type_args
-                    and self._is_int_type(base.type_args[0])):
+            elem_ty = (
+                base.type_args[0]
+                if isinstance(base, AdtType) and base.name == "Array"
+                and base.type_args
+                else None
+            )
+            if elem_ty is not None:
                 for elem in expr.elements:
-                    if self._result_is_nat(elem):
-                        self._check_int_widening_obligation(
-                            decl, elem, smt, slot_env, list(assumptions),
-                            site="array element", guarded=True,
-                        )
+                    self._obligate_construction_component(
+                        decl, elem, elem_ty, smt, slot_env, assumptions,
+                        site="array element",
+                    )
             for elem in expr.elements:
                 self._walk_for_nat_binding_obligations(
                     decl, elem, smt, slot_env, assumptions,
@@ -7331,7 +7862,7 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
-        guarded: bool,
+        guarded: bool | None = None,
     ) -> None:
         """Discharge a refinement-predicate obligation at one binding site.
 
@@ -7364,12 +7895,19 @@ class ContractVerifier:
           ``opaque`` countermodel, distinguished by
           :py:meth:`_undecided_reason`.
 
-        *guarded* says whether codegen runtime-guards this site (a call
-        argument, caught by the callee's entry guard, is ``True``; an internal
-        narrowing is ``False``) — see :py:meth:`_record_refined_bind_tier3`.
+        *guarded* says whether codegen runtime-guards this site.  ``None`` —
+        the default — reads it from :py:data:`_REFINED_BIND_GUARDED_SITES`,
+        which is where the answer belongs: the site string is already a
+        parameter here, so a caller restating the same fact as a literal is a
+        second copy that can disagree with the first.  A caller passes an
+        explicit flag only where the site alone does not settle it — an
+        effect-operation argument, whose guard depends on the parent EFFECT
+        rather than on the syntactic position.
         """
         # A `@Unit` refinement is codegen-UNguarded (erased binder), so its
         # Tier-3 fallback must not claim a runtime guard (CR db24433).
+        if guarded is None:
+            guarded = self._refined_bind_site_guarded(site)
         eff_guarded = (
             guarded
             and self._refined_boundary_codegen_guardable(refined_ty)
@@ -7859,13 +8397,22 @@ class ContractVerifier:
         # instead.  Asked of the value's producing LEAVES, because a body is
         # always a `Block` and the per-expression test answers False for one.
         disclosed = self._value_source_disclosed(value_node)
-        # `guarded` is derived from the target type at a FUNCTION boundary,
-        # where codegen's decomposition runs.  A site that is not one — a
-        # constructor field, a tuple component at construction, an
-        # effect-operation argument — says so, and no derivation can override
-        # it upward (an explicit False is final).
+        # Guardedness is the SITE half intersected with the TYPE half, the
+        # same shape every other `refine_bind` leg uses (#765): the roster
+        # says whether codegen guards AT this position, and
+        # `_nested_refinements_guarded` says whether its decomposition
+        # reaches the refinement's position INSIDE the type.  Naming the
+        # non-boundary sites again here — as a literal `guarded=False` at the
+        # constructor-field and tuple-component calls — made this leg a
+        # second authority on a question the roster already answers, and two
+        # authorities are how the answer went stale before.  A caller still
+        # passes an explicit flag where the site alone does not settle it,
+        # and an explicit False is final.
         if guarded is None:
-            guarded = self._nested_refinements_guarded(formal_ty)
+            guarded = (
+                self._refined_bind_site_guarded(site)
+                and self._nested_refinements_guarded(formal_ty)
+            )
         if val is None:
             self._record_refined_bind_tier3(
                 decl, value_node, site, guarded=guarded,
@@ -8225,9 +8772,10 @@ class ContractVerifier:
         value_node: ast.Expr,
         site: str,
         *,
-        guarded: bool,
+        guarded: bool | None = None,
         reason: str,
-        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
+        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
+        refined_ty: Type | None = None,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
         discharged statically — distinguishing codegen-guarded boundary sites
@@ -8246,34 +8794,46 @@ class ContractVerifier:
         :py:meth:`_undecided_reason` wherever the answer depends on
         state, and pass a literal only where the site itself is the cause.
 
-        Codegen emits a runtime guard at the function boundary: a refined
-        parameter at entry and a refined return at exit, so a *return* narrowing
-        and a *call argument* (caught by the callee's entry guard) are
-        ``guarded=True`` — counted ``tier3_runtime`` with an informational E506,
-        like any other Tier-3 contract Vera checks at run time.  An *internal*
-        narrowing — ``let`` / constructor-field / effect-op-arg / match-bind /
-        tuple-destructure / ADT-sub-pattern — has no codegen guard, so it is
-        ``guarded=False`` — surfaced as an E506 warning and excluded from the
-        totals rather than overstating a runtime check it never gets (R7).
+        Codegen emits a runtime guard at the function boundary — a refined
+        parameter at entry, a refined return at exit — and, since #765, at
+        every narrowing PATTERN BIND (``let`` / match-bind / tuple-destructure
+        / ADT-sub-pattern, at any nesting depth).  Those are
+        ``tier3_runtime`` with an informational E506, like any other Tier-3
+        contract Vera checks at run time.  What is left unguarded is a
+        constructor field or tuple component AT CONSTRUCTION and a user
+        effect operation's argument (#754): E506 warnings excluded from the
+        totals rather than overstating a runtime check they never get (R7).
 
         Required and non-EMPTY: an empty string is a caller that has not
         decided wearing the shape of one that has, and it renders the same
         broken sentence a missing reason would.
 
+        *guarded* defaults to ``None`` — read the site from
+        :py:data:`_REFINED_BIND_GUARDED_SITES` rather than restating it — and
+        is intersected with :py:meth:`_refined_boundary_codegen_guardable`
+        when *refined_ty* is supplied, since a guarded site still emits
+        nothing for a base codegen cannot check.
+
         *guard_note* is the UNGUARDED report's closing sentence — what codegen
-        does and does not check at this site.  The default names the #746
-        internal-narrowing story, which every site that predates #1410 is.
-        The nested-refinement family is not: its site IS a function boundary,
-        and what is missing there is that codegen's boundary decomposition
-        reaches a parameter's own refinement and its TUPLE components and
-        nothing else, so the default sentence would tell a reader looking at a
-        call argument that the site is internal — a false statement about
-        where the guard is, in the one field written to say exactly that."""
+        does and does not check at this site.  The default names the two
+        causes a reader has to choose between (an unguarded SITE, or a BASE no
+        guard can be emitted for), because since #765 the site alone no longer
+        settles it.  The nested-refinement family passes its own: its site IS
+        a function boundary, and what is missing there is a third thing —
+        codegen's boundary decomposition reaches a parameter's own refinement
+        and its TUPLE components and nothing else — so the default's two
+        causes would send a reader looking at a call argument to neither of
+        the halves that apply, in the one field written to say exactly
+        where the guard is."""
         if not reason:
             raise ValueError(
                 "a refinement Tier-3 demotion emits an E506 that must say "
                 f"why (site {site!r} in {decl.name!r}): `reason` is empty"
             )
+        if guarded is None:
+            guarded = self._refined_bind_site_guarded(site)
+        if guarded and refined_ty is not None:
+            guarded = self._refined_boundary_codegen_guardable(refined_ty)
         if guarded:
             self._record_obligation(
                 decl.name, "refine_bind", value_node, "tier3",
@@ -8440,14 +9000,16 @@ class ContractVerifier:
         that NAMES its cause (#1251): a base the verifier does not model or a
         predicate outside the fragment, via
         :py:meth:`_refined_untranslatable_reason`, and either non-verdict via
-        :py:meth:`_undecided_reason`.  These projection sites are
-        internal narrowings with no codegen guard, hence ``guarded=False``.
-        *node* gives the diagnostic location.
+        :py:meth:`_undecided_reason`.  Whether these projection sites are
+        codegen-guarded is read from :py:data:`_REFINED_BIND_GUARDED_SITES`
+        (they are, since #765) intersected with the refinement's own
+        guardability, never restated here.  *node* gives the diagnostic
+        location.
         """
         goal = self._translate_refined_predicate(smt, refined_ty, term)
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, node, site, guarded=False,
+                decl, node, site, refined_ty=refined_ty,
                 reason=self._refined_untranslatable_reason(refined_ty))
             return
         local_assumptions = list(assumptions)
@@ -8467,7 +9029,7 @@ class ContractVerifier:
                 decl, node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — no solver verdict (unknown / #1199 opaque)
             self._record_refined_bind_tier3(
-                decl, node, site, guarded=False,
+                decl, node, site, refined_ty=refined_ty,
                 reason=self._undecided_reason(result.status))
 
     def _term_source_fact(
@@ -9039,7 +9601,6 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, lit_args[i], target, smt, slot_env,
                             assumptions, site="ADT sub-pattern bind",
-                            guarded=False,
                         )
                 elif sort is not None and idx is not None:
                     field_term = sort.accessor(idx, i)(scrutinee_z3)
@@ -9053,8 +9614,8 @@ class ContractVerifier:
                     # no codegen guard, so this is an unguarded E506 Tier-3
                     # (excluded from totals), not a silent pass (R7).
                     self._record_refined_bind_tier3(
-                        decl, scrutinee, "ADT sub-pattern bind", guarded=False,
-                        reason=_OPAQUE_SCRUTINEE_REASON)
+                        decl, scrutinee, "ADT sub-pattern bind",
+                        refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
                 continue
             if (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
@@ -9141,8 +9702,8 @@ class ContractVerifier:
             if (self._is_refined_type(target)
                     and self._refined_field_narrows(target, field_ty)):
                 self._record_refined_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", guarded=False,
-                    reason=_OPAQUE_SCRUTINEE_REASON)
+                    decl, scrutinee, "ADT sub-pattern bind",
+                    refined_ty=target, reason=_OPAQUE_SCRUTINEE_REASON)
             elif (self._is_nat_type(target)
                     and not self._is_nat_type(field_ty)):
                 self._record_nat_bind_tier3(
@@ -9233,9 +9794,10 @@ class ContractVerifier:
                 self._record_nat_bind_tier3(
                     decl, stmt.value, "tuple destructure", "tier3",
                     guarded=True)
-            for _ in refined_narrowing:
+            for _, refined_target in refined_narrowing:
                 self._record_refined_bind_tier3(
-                    decl, stmt.value, "tuple destructure", guarded=False,
+                    decl, stmt.value, "tuple destructure",
+                    refined_ty=refined_target,
                     reason=(
                         "the destructured value cannot be projected into its "
                         "components (an effect-op result, or another term the "
@@ -9243,17 +9805,15 @@ class ContractVerifier:
                         "predicate is about was never formed"
                     ))
             for _ in int_widening:
-                # #813: codegen does not guard a tuple-destructure component
-                # widening (like tuple construction), so disclose E531.
+                # #1416: guarded here too.  Unprojectable is a statement about
+                # the SMT layer; codegen's destructure guard reads the
+                # CHECKER's type of the value expression, which an
+                # unprojectable source has like any other.  The two questions
+                # are independent, so this leg's disclosure was keyed on the
+                # wrong one.
                 self._record_int_widen_tier3(
                     decl, stmt.value, "tuple destructure", "tier3",
-                    guarded=False,
-                    reason=(
-                        "the destructured value cannot be projected into its "
-                        "components (an effect-op result, or another term the "
-                        "SMT layer models opaquely), so the component being "
-                        "widened was never formed"
-                    ))
+                    guarded=True)
             return
         # `i` is a valid field index (filtered against `source_args`, whose
         # length matches the tuple sort's fields), so each accessor is safe
@@ -9272,13 +9832,16 @@ class ContractVerifier:
                 source_ty=source_args[i],
             )
         for i in int_widening:
-            # #813: a @Nat component destructured into an @Int slot widens it;
-            # codegen does not guard the tuple-component coercion, so disclose
-            # the unguarded widening (E531) — the dual of the @Nat narrowing.
+            # #813 / #1416: a @Nat component destructured into an @Int slot
+            # widens it, and the READ is now guarded — the source tuple's
+            # component types come from the checker's table against the value
+            # expression, which is the table the construction site already
+            # read.  Before that only a LITERAL source was guarded, so a
+            # destructure of a call or an `if` returned a reinterpreted -1.
             comp_term = sort.accessor(idx, i)(rhs_z3)
             self._check_int_widening_obligation_term(
                 decl, comp_term, smt, assumptions,
-                site="tuple destructure", node=stmt.value, guarded=False,
+                site="tuple destructure", node=stmt.value, guarded=True,
             )
 
     def _record_nat_bind_tier3(
@@ -9874,7 +10437,7 @@ class ContractVerifier:
         node: ast.Expr,
         site: str,
         reason: str,
-        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
+        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
     ) -> None:
         """Emit an E506 warning for a refinement narrowing the SMT layer could
         not discharge and codegen does NOT runtime-guard (#746).
@@ -9884,20 +10447,24 @@ class ContractVerifier:
         not decide the cause and must not describe one, for the reason its
         guarded twin :py:meth:`_report_refined_runtime` records.
 
-        Codegen guards a refined value only at the function boundary (parameter
-        entry, return exit).  An *internal* narrowing — ``let`` / constructor
-        field / effect-op argument / match bind / tuple-destructure / ADT
-        sub-pattern — has no such guard, so an undischarged predicate here is
-        neither statically proven nor runtime-checked: surfaced (R7) rather
-        than silently passed, and excluded from the discharged totals."""
+        Two things reach this leg, and since #765 they are different in kind.
+        The SITE may be one codegen does not guard — a constructor field or a
+        tuple component AT CONSTRUCTION, or a user effect operation's
+        argument.  Or the site is guarded and the TYPE is not: a refinement
+        whose base is itself a refinement, or one whose base erases (`@Unit`,
+        a `Future<Unit>`), for which no guard can be emitted anywhere.  The
+        pattern binds this warning used to name — `let`, match bind,
+        tuple destructure, ADT sub-pattern — are guarded now, so naming them
+        as the cause would send a reader to change the site when the answer
+        is usually the base.  The rationale therefore names the two
+        possibilities rather than asserting the one that used to be true."""
         self._warning(
             node,
             (
                 f"Refinement predicate at a {site} in '{decl.name}' could not "
                 "be verified statically and is not runtime-guarded — add a "
-                "`requires(...)` implying the predicate, guard the binding with "
-                "an `if`, or pass the value through a refined parameter / "
-                "return (which is runtime-guarded)."
+                "`requires(...)` implying the predicate, or guard the binding "
+                "with an `if`."
             ),
             rationale=(
                 f"The refinement predicate was not discharged statically: "
@@ -10701,23 +11268,74 @@ class ContractVerifier:
         return isinstance(ty, RefinedType) and ty.base == UNIT
 
     @staticmethod
+    def _effect_op_formal_guarded(
+        effect_name: str | None, formal: Type | None,
+    ) -> bool:
+        """Whether codegen guards an argument bound into effect-operation
+        *formal* — the semantic mirror of ``_guard_effect_op_arg``'s
+        condition (``vera/wasm/calls.py``); KEEP IN SYNC (#754).
+
+        Two conditions, and both are about whether a guard can exist at all.
+
+        First, the OPERATION has to be one codegen lowers: a user-declared
+        effect makes its whole enclosing function an E603 skip, so there is
+        no run for a guard to protect and claiming one would repeat #1268's
+        promise about a runtime that is never reached.  The roster is
+        :data:`~vera.narrowing.COMPILABLE_EFFECTS`, read by codegen's own
+        `_is_compilable` to make the same decision.
+
+        Second, the FORMAL has to resolve to a concrete `@Nat` or `@Int`,
+        which is what codegen's registry records and what its narrowing /
+        widening guards key on.  A formal that is a type PARAMETER records
+        nothing there, so a generic operation instantiated to `@Nat` at this
+        call site is obligated and unguarded — which is why this asks about
+        the declared formal rather than about the instantiated target
+        `_nat_binding_target` resolves.
+        """
+        if effect_name not in narrowing.COMPILABLE_EFFECTS:
+            return False
+        base = getattr(formal, "base", formal)
+        return getattr(base, "name", None) in ("Nat", "Int")
+
+    @staticmethod
+    def _refined_bind_site_guarded(site: str) -> bool:
+        """The SITE half of the refinement-guard question (#765).
+
+        Reads :py:data:`_REFINED_BIND_GUARDED_SITES`, which is the one place
+        the answer is written down; intersect with
+        :py:meth:`_refined_boundary_codegen_guardable` wherever the
+        refinement's own type is in hand, since a guarded site still emits
+        nothing for a base codegen cannot check.
+        """
+        return site in _REFINED_BIND_GUARDED_SITES
+
+    @staticmethod
     def _refined_boundary_codegen_guardable(ty: Type) -> bool:
         """Whether codegen's boundary refinement guard actually fires for
         *ty* — the semantic mirror of ``_refinement_guard_parts``'s bail
         conditions (``vera/codegen/contracts.py``); KEEP IN SYNC (#1036).
 
-        Codegen bails (emits NO guard) when (a) the base is the erased
-        ``@Unit`` (no local to check — the ``_is_unit_refinement`` case),
-        (b) the base is itself a REFINEMENT, which codegen refuses outright
-        rather than emitting a partial guard, or (c) the base carries a
-        NON-PLAIN type argument — a nested refinement or fn type, e.g.
-        ``Array<{ @Int | ... }>`` — whose binder slot name cannot be spelt.
-        A ``guarded=True`` Tier-3 for any of them was an unfulfilled
-        runtime-guard promise: an empty array flowed through a
-        NonEmpty-refined closure boundary silently while the obligation
-        stream claimed a runtime check (PR #1034 adversarial review).  Plain
-        named args (``Array<Int>``, nested ``Array<Array<Int>>`` via the
-        truncated-name convention) stay guarded."""
+        Codegen bails (emits NO guard) in exactly two cases: (a) the base is
+        the erased ``@Unit`` (no local to check — the ``_is_unit_refinement``
+        case), and (b) the base is itself a REFINEMENT, which it refuses
+        outright rather than emitting a partial guard.  A ``guarded=True``
+        Tier-3 for either was an unfulfilled runtime-guard promise: an empty
+        array flowed through a NonEmpty-refined closure boundary silently
+        while the obligation stream claimed a runtime check (PR #1034
+        adversarial review).
+
+        A base carrying a NON-PLAIN type argument — ``Array<{ @Int | ... }>``,
+        ``Array<fn(…)>`` — was a third bail, on the premise that the binder
+        slot name could not be spelt (#1036).  It can: since #1208 the binder
+        is named by :func:`vera.naming.slot_name`, whose ARGUMENTS go through
+        the checker's own renderer, so a refinement or a function type in
+        argument position renders like any other type and the guard is
+        emitted.  Keeping the clause made the mirror wrong in the opposite
+        direction — disclosing ``tier3_unguarded`` for a boundary that DOES
+        trap, which under-counts the runtime checks and tells a reader to add
+        a bound they already have.  Measured on both the named and the
+        closure path before removal, and held by the guard-parity
+        differential afterwards."""
         if not isinstance(ty, RefinedType):
             return False
         if erases_to_unit(ty):
@@ -10737,11 +11355,6 @@ class ContractVerifier:
             # honest answer is unguarded (the obligation discloses E506) and
             # E618 still refuses at compile.
             return False
-        if isinstance(ty.base, AdtType):
-            return all(
-                isinstance(arg, (PrimitiveType, AdtType))
-                for arg in ty.base.type_args
-            )
         return True
 
     @staticmethod

@@ -6,6 +6,7 @@ to module-level WASM functions with explicit environment parameters.
 
 from __future__ import annotations
 
+import functools
 from collections import deque
 
 from vera import ast
@@ -389,18 +390,30 @@ class ClosureLiftingMixin:
         # #813: per-parameter concrete-@Int flags for the call-site
         # runtime @Nat -> @Int widening guard inside closure bodies too.
         ctx.set_fn_int_params(self._fn_int_params)
+        # #754: per-formal base type names for every effect
+        # operation, so an op call site guards its narrowing
+        # arguments the way a function call site does.
+        ctx.set_effect_op_params(self._effect_op_params)
         # #865: per-parameter concrete-@Byte flags for the call-site
         # int-literal → i32.const coercion inside closure bodies too.
         ctx.set_fn_byte_params(self._fn_byte_params)
         ctx.set_alias_env(self._alias_env)
-        # No `set_refinement_guard_emitter` here (#1268), deliberately: this
-        # context is built with no `effect_op_cells`, so a `throw` in a
-        # closure body reaches no cell and is not a write boundary the guard
-        # could key on — it does not compile at all today (`call target
-        # 'throw' not registered in this module`, a closure skip).  Threading
-        # the op registries in is what would make the boundary real, and the
-        # emitter's absence then fails CLOSED at a loud skip rather than
-        # emitting an unguarded payload the verifier records as guarded.
+        # #765: the §2.6.5 predicate lowering, bound to THIS context.  #1268
+        # deliberately left it out — the only boundary it served then was a
+        # `throw` payload, and this context carries no `effect_op_cells`, so
+        # no `throw` here is a write boundary the guard could key on.  A
+        # narrowing PATTERN BIND is a boundary that does occur in a closure
+        # body (`array_map(a, fn(@Int -> @Int) … { match @Int.0 { @Pos -> … } })`
+        # compiles today), and the emitter's absence there would fail CLOSED
+        # and refuse a program that used to compile.  Installing it is also
+        # what makes the closure body's guard identical to the top-level one,
+        # rather than a second lowering that could drift; the trap message
+        # interns into the shared string pool and the contract-fail import
+        # flag is raised on the generator that assembles the module, both of
+        # which are per-generator, not per-context.
+        ctx.set_refinement_guard_emitter(
+            functools.partial(self._emit_boundary_refinement_guard, ctx),
+        )
         # #814/#774: a qualified call inside a closure body must resolve the
         # same way it does in a top-level body — to the module's function
         # (`mod$…` for a shadowed fn) and, for a shadowed imported generic, to
@@ -904,6 +917,12 @@ class ClosureLiftingMixin:
         # propagation the per-function merge does in functions.py).
         self._needs_overflow_trap = (
             self._needs_overflow_trap or ctx._needs_overflow_trap
+        )
+        # #754: the narrowing guard's own trap signal, propagated at the
+        # SAME merge for the same reason — a guard emitted while lowering a
+        # postcondition or a lifted closure body sets it on that context.
+        self._needs_nat_guard_trap = (
+            self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
         )
         # #773: structural-Eq helpers generated inside a lifted closure body.
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)

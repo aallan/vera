@@ -102,6 +102,8 @@ class WasmTrapError(RuntimeError):
         * ``unreachable`` — ``unreachable`` instruction executed (the
           WASM panic primitive — typically a non-exhaustive match).
         * ``overflow`` — integer overflow trap.
+        * ``nat_guard`` — a negative ``@Int`` was bound into a ``@Nat``
+          slot and the narrowing guard caught it (#754).
         * ``host_error`` — a host import (an effect operation
           implemented outside WASM) raised rather than trapping; the
           message is the host binding's own (#1302).  Everything
@@ -413,6 +415,16 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
         "representable, or change the operation to a saturating / checked "
         "variant via a helper function."
     ),
+    "nat_guard": (
+        "A negative `@Int` was bound into a `@Nat` slot — a `let @Nat = "
+        "<@Int>`, a match or tuple-destructure binding, a constructor field, "
+        "or a call / effect-operation argument whose formal is `@Nat`.  The "
+        "verifier could not prove the value non-negative, so it left a "
+        "runtime check here (Tier 3).  Add a `requires(... >= 0)` "
+        "precondition, or narrow through an explicit branch "
+        "(`if x >= 0 then { ... }`), so Z3 discharges it at compile time and "
+        "the check becomes dead."
+    ),
     "contract_violation": "",
     "host_error": "",
     "unknown": "",
@@ -457,6 +469,7 @@ def _classify_trap(
     exc: BaseException,
     last_violation: list[str],
     last_overflow: list[object] | None = None,
+    last_nat_guard: list[object] | None = None,
 ) -> tuple[str, str, str]:
     """Classify a wasmtime trap into ``(kind, description, fix)``.
 
@@ -510,6 +523,18 @@ def _classify_trap(
             "overflow",
             "Integer overflow",
             _TRAP_FIX_PARAGRAPHS["overflow"],
+        )
+
+    # #754: the @Int -> @Nat narrowing guard signals the same way, for the
+    # same reason — its trap is also a bare `unreachable`, and the generic
+    # paragraph that instruction earns lists three causes, none of which is
+    # a narrowing.  Checked after the overflow channel and before the
+    # substring scan, on the same ordering argument.
+    if last_nat_guard:
+        return (
+            "nat_guard",
+            "Negative value bound into a @Nat slot",
+            _TRAP_FIX_PARAGRAPHS["nat_guard"],
         )
 
     msg = str(exc).lower()

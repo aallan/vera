@@ -20,8 +20,9 @@ Contract parity with the core-path ``execute()``:
 * traps re-raise as :class:`WasmTrapError` with the same ``kind``
   taxonomy.  The component path loses structured trap frames (WASI.md
   spike check 5), so ``frames`` is always empty; the ``contract_fail``
-  / ``overflow_trap`` shim names surviving in the wasmtime backtrace
-  text stand in for the core path's host-import side channels.
+  / ``overflow_trap`` / ``nat_guard_trap`` shim names surviving in the
+  wasmtime backtrace text stand in for the core path's host-import side
+  channels.
 
 Known divergence (inherent to WASI 0.2, documented in spec chapter
 13): ``wasi:cli/exit@0.2.0`` carries only ok/err, so ``IO.exit(n)``
@@ -182,9 +183,10 @@ def _component_trap_error(
     """Wrap a component trap in the core path's ``WasmTrapError`` shape.
 
     The core path's host-import side channels (``last_violation``,
-    ``last_overflow``) don't exist inside a component; the shim names
-    in the wasmtime backtrace text (``Main!vera.contract_fail``,
-    ``Main!vera.overflow_trap``) identify the same conditions, and the
+    ``last_overflow``, ``last_nat_guard``) don't exist inside a
+    component; the shim names in the wasmtime backtrace text
+    (``Main!vera.contract_fail``, ``Main!vera.overflow_trap``,
+    ``Main!vera.nat_guard_trap``) identify the same conditions, and the
     violation message itself is the last thing the adapter wrote to
     WASI stderr before trapping.
     """
@@ -201,6 +203,10 @@ def _component_trap_error(
         kind, description, fix = _classify_trap(trap, [violation])
     elif "overflow_trap" in msg:
         kind, description, fix = _classify_trap(trap, [], [True])
+    elif "nat_guard_trap" in msg:
+        # #754: the narrowing guard's shim name, read the same way — a
+        # component has no host-side channel, so the backtrace IS the channel.
+        kind, description, fix = _classify_trap(trap, [], None, [True])
     else:
         kind, description, fix = _classify_trap(trap, [])
     return WasmTrapError(
