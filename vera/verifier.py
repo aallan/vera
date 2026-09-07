@@ -63,6 +63,7 @@ from vera.smt import (
     CalleeScope,
     SlotEnv,
     SmtContext,
+    SmtResult,
     resolve_timeout_ms,
 )
 from vera.types import (
@@ -3763,13 +3764,8 @@ class ContractVerifier:
                         decl.name, "ensures", contract, "tier3",
                         error_code="E534",
                     )
-                    self._warning(
-                        contract,
-                        self._disclosed_demotion_text(decl),
-                        rationale=self._disclosed_demotion_rationale(),
-                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
-                        error_code="E534",
-                        tier=3,
+                    self._report_disclosed_demotion(
+                        contract, f"Postcondition in '{decl.name}'",
                     )
                 else:  # pragma: no cover
                     # unknown / timeout
@@ -4680,17 +4676,28 @@ class ContractVerifier:
                     )
                 # #1403: the arm's sub-pattern bindings carry facts from
                 # their fields' DECLARED types, and this walk is the third
-                # consumer of them — the narrowing walk and `_walk_for_calls`
-                # already seed them, so a downstream `@Nat` narrowing and a
-                # call precondition in the arm body both discharge from a
-                # bound payload's type while a body `assert` over the same
-                # payload could not, and fell to a runtime check whatever the
-                # callee did.  The SAME pure helper, so the three consumers
-                # cannot come to disagree about what an arm establishes — and
-                # so the disclosure rule reaches the assert for free: when the
-                # callee's own obligation was disclosed the helper routes its
-                # facts to `smt._tainted_facts` and returns none, which is
-                # what keeps the honest E535 where the fact is not established.
+                # consumer of them.  The narrowing walk
+                # (`_obligate_subpattern_narrowings`) seeds them, so a
+                # downstream `@Nat` narrowing of a bound payload discharges;
+                # `SmtContext._arm_source_facts`, called from
+                # `_translate_match` through the `_subpattern_fact_hook`,
+                # seeds them, so a call precondition in the arm body
+                # discharges.  This walk did not, so every §6.4.3 safety
+                # obligation AND every body `assert` in the arm was proved
+                # without the facts the arm establishes.
+                #
+                # The reach is EVERY obligation this walk discharges, not the
+                # assert alone, and deliberately so: one arm establishes one
+                # set of facts, and a `/`, an `arr[i]` and an `assert` in it
+                # are all discharged from the same context (#1415 review, F1).
+                # The SAME pure helper as the other two consumers, so the
+                # three cannot come to disagree about what an arm establishes
+                # — and the disclosure rule then reaches all of them for free:
+                # when the producer's own obligation was disclosed the helper
+                # routes its facts to `smt._tainted_facts` and returns none,
+                # so `check_valid` withholds them and the site falls to its
+                # runtime guard.  `_record_undecided_safety` is what makes
+                # that fall SAY so, rather than recording a silent `tier3`.
                 arm_assumptions = assumptions
                 if scrutinee_z3 is not None and isinstance(
                     arm.pattern, ast.ConstructorPattern,
@@ -6281,10 +6288,10 @@ class ContractVerifier:
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
-            self._record_obligation(
-                decl.name, "nat_sub", expr,
-                "tier3" if result.status in ("opaque", "disclosed")
-                else "timeout",
+            self._record_undecided_safety(
+                decl, "nat_sub", expr, result,
+                subject=f"Subtraction in '{decl.name}'",
+                otherwise="tier3" if result.status == "opaque" else "timeout",
             )
 
     def _check_div_zero_obligation(
@@ -6364,10 +6371,10 @@ class ContractVerifier:
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
-            self._record_obligation(
-                decl.name, "div_zero", expr,
-                "tier3" if result.status in ("opaque", "disclosed")
-                else "timeout",
+            self._record_undecided_safety(
+                decl, "div_zero", expr, result,
+                subject=f"Division in '{decl.name}'",
+                otherwise="tier3" if result.status == "opaque" else "timeout",
             )
 
     def _check_assert_obligation(
@@ -6508,7 +6515,11 @@ class ContractVerifier:
             self._report_index_oob(decl, expr, result.counterexample)
         else:
             # Opaque / dynamic length — beyond Tier 1 (#427); runtime-guarded.
-            self._record_obligation(decl.name, "index_bounds", expr, "tier3")
+            self._record_undecided_safety(
+                decl, "index_bounds", expr, result,
+                subject=f"Index bound in '{decl.name}'",
+                otherwise="tier3",
+            )
 
     def _overflow_int_type(self, expr: ast.Expr) -> str | None:
         """Return ``"Int"`` / ``"Nat"`` if *expr* resolves to a wrapping machine
@@ -6608,7 +6619,11 @@ class ContractVerifier:
             self._report_overflow(decl, expr, safe.counterexample)
         else:
             # Dynamic operands — beyond Tier 1; the codegen overflow trap guards.
-            self._record_obligation(decl.name, "int_overflow", expr, "tier3")
+            self._record_undecided_safety(
+                decl, "int_overflow", expr, safe,
+                subject=f"Arithmetic in '{decl.name}'",
+                otherwise="tier3",
+            )
 
     def _check_float_to_int_domain_obligation(
         self,
@@ -7981,8 +7996,89 @@ class ContractVerifier:
         self._tainted_sites.append(site)
         return True
 
-    def _disclosed_demotion_text(self, decl: ast.FnDecl) -> str:
+    def _report_disclosed_demotion(
+        self,
+        node: ast.Node,
+        subject: str,
+        *,
+        closing: str = "Contract will be checked at runtime.",
+    ) -> None:
+        """The ONE emitter of E534 (#1399, #1403 review F1).
+
+        Both callers say the same thing about the same phenomenon — an
+        obligation that holds only from a fact some run disclosed — and they
+        differ only in what they name and which trap backs them.  Kept as one
+        function rather than two `self._warning` calls sharing a code so the
+        wording, the rationale and the citation cannot drift apart, and so the
+        code stays a single site for `check_diagnostic_fields`.
+
+        ONE citation, literal at the call below, for both callers: E534 names
+        one concept — an obligation that fell to Tier 3 because a fact it
+        needed was disclosed — and §6.8 is where that tier is accounted for.
+        A per-caller citation would have to be passed in, and a non-literal
+        `spec_ref` is one the gate cannot validate against the spec at all.
+        """
+        self._warning(
+            node,
+            self._disclosed_demotion_text(subject, closing=closing),
+            rationale=self._disclosed_demotion_rationale(),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E534",
+            tier=3,
+        )
+
+    def _record_undecided_safety(
+        self,
+        decl: ast.FnDecl,
+        kind: ObligationKind,
+        node: ast.Expr,
+        result: SmtResult,
+        *,
+        subject: str,
+        otherwise: ObligationStatus,
+    ) -> None:
+        """Record a §6.4.3 safety obligation that no verdict settled (#1403).
+
+        ``disclosed`` is not the same non-verdict as ``opaque`` or a timeout.
+        It means the goal WOULD have proved, from a fact the producing
+        module's own run could neither prove nor guard — so the site falls to
+        its codegen trap for a REASON the reader can act on, and one recorded
+        with no code and no warning tells them nothing.  That was the shape of
+        the regression this closes: `100 / @PosInt.0` in an arm whose producer
+        was disclosed went from a refused ``E526`` to ``ok: true`` carrying a
+        silent ``div_zero``/``tier3`` (review of PR #1415, F1).  It also broke
+        the ``verify --json`` partition table's own contract, which says a
+        ``tier3`` is surfaced as an informational warning.
+
+        *otherwise* is the status this site recorded before — passed in rather
+        than re-derived, because the sites disagree (a `div_zero` maps a
+        solver ``unknown`` to ``timeout``, an `index_bounds` to ``tier3``) and
+        this helper must not quietly harmonise them.
+        """
+        if result.status == "disclosed":
+            self._record_obligation(
+                decl.name, kind, node, "tier3", error_code="E534",
+            )
+            self._report_disclosed_demotion(
+                node, subject,
+                closing="The operation's own runtime trap (§6.4.3) is what "
+                        "guards it.",
+            )
+            return
+        self._record_obligation(decl.name, kind, node, otherwise)
+
+    def _disclosed_demotion_text(
+        self, subject: str, closing: str = "Contract will be checked at "
+        "runtime.",
+    ) -> str:
         """The E534 description, naming the culprit when it is an import.
+
+        *subject* names the obligation this demoted — "Postcondition in
+        'f'", "Division in 'f'" — because the rule is about the ARM's
+        obligations, not only its contracts (#1403 review, F1): every
+        obligation discharged inside a match arm reads the arm's facts,
+        so every one of them can be demoted by a disclosure and every one
+        must say so.
 
         In one file the reader already has the culprit: the ``E504`` that
         disclosed the fact is in the same output, a few lines away.  Across an
@@ -7993,9 +8089,8 @@ class ContractVerifier:
         """
         if not self._tainted_sites:
             return (
-                f"Postcondition in '{decl.name}' holds only from a fact this "
-                f"run could neither prove nor guard. Contract will be checked "
-                f"at runtime."
+                f"{subject} holds only from a fact this run could neither "
+                f"prove nor guard. {closing}"
             )
         cited = list(dict.fromkeys(
             site.cite() for site in self._tainted_sites
@@ -8009,9 +8104,9 @@ class ContractVerifier:
             "that module's" if len(modules) == 1 else "those modules'"
         )
         return (
-            f"Postcondition in '{decl.name}' holds only from {fact} of "
-            f"{', '.join(cited)}, which {owner} own verification could "
-            f"neither prove nor guard. Contract will be checked at runtime."
+            f"{subject} holds only from {fact} of {', '.join(cited)}, "
+            f"which {owner} own verification could neither prove nor "
+            f"guard. {closing}"
         )
 
     def _disclosed_demotion_rationale(self) -> str:

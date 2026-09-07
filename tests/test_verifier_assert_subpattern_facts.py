@@ -1,13 +1,25 @@
-"""A match arm's `assert` reads the facts the arm establishes (#1403).
+"""Every obligation in a match arm reads the facts that arm establishes (#1403).
 
 Three walks descend a `match` arm and each one wants the same thing: the
 declared-type facts a constructor sub-pattern's bindings carry.  The narrowing
-walk seeds them, so a downstream `@Nat` narrowing of a bound payload
-discharges.  `_walk_for_calls` seeds them, so a call precondition in the arm
-body discharges.  The primitive-op walk — which is where a body `assert(P)` is
-proved — never did, so an assertion that follows directly from a bound
-payload's declared type could not be proved and always fell to a runtime check
-(`tier3` + E535), whatever the callee did.
+walk (`_obligate_subpattern_narrowings`) seeds them, so a downstream `@Nat`
+narrowing of a bound payload discharges.  `SmtContext._arm_source_facts` —
+reached from `_translate_match` through the sub-pattern fact hook, and NOT
+`_walk_for_calls`, whose own match descent seeds only path conditions and
+whose sole caller serves `decreases` — seeds them, so a call precondition in
+the arm body discharges.  The primitive-operation walk, which discharges every
+§6.4.3 safety obligation AND every body `assert(P)`, never did.
+
+So an assertion that follows directly from a bound payload's declared type
+could not be proved and always fell to a runtime check (`tier3` + E535), and
+`Some(@PosInt) -> 100 / @PosInt.0` was refused E526 although the payload's own
+type says the divisor is positive.  The reach of the fix is every obligation
+the walk discharges, deliberately: one arm establishes one set of facts, and a
+`/`, an `arr[i]` and an `assert` in it are all discharged from the same
+context.  A safety obligation demoted because the producer was disclosed
+carries E534 and its warning — a `tier3` that no diagnostic surfaces would
+break the accounting `verify --json` documents, and that was the shape of the
+regression the review of PR #1415 found.
 
 Completeness, not soundness: E535 is the honest conservative answer, and the
 §11.14.1 `unreachable` trap really does back it.  The cost was an unnecessary
@@ -484,3 +496,160 @@ def test_1403_json_accounting_identity(
     assert len(obls) == v["total"] + uncounted, (
         f"{len(obls)} != total={v['total']} + {uncounted}: {_triples(result)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The rule is about the arm's OBLIGATIONS, not only its assertions
+# ---------------------------------------------------------------------------
+
+#: A refined payload whose predicate is exactly what a `/` needs.
+_DIV_PROGRAM = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+
+private fn mk(@Int -> @Option<PosInt>)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn use_op(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(@PosInt) -> 100 / @PosInt.0,
+    None -> 0
+  }}
+}}
+"""
+
+#: ... and one whose predicate is exactly what an index needs.
+_IDX_PROGRAM = """\
+type Small = {{ @Nat | @Nat.0 < 3 }};
+
+private fn mk(@Nat -> @Option<Small>)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn use_op(@Nat -> @Int)
+  requires(@Nat.0 < 3)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Nat.0) {{
+    Some(@Small) -> [10, 20, 30][@Small.0],
+    None -> 0
+  }}
+}}
+"""
+
+_CLEAN_PRODUCER = "Some(@{slot}.0)"
+_DISCLOSED_PRODUCER = (
+    "Some(handle[Exn<{base}>] {{ throw(@{ty}) -> {{ @{ty}.0 }} }} "
+    "in {{ throw(@{base}.0) }})"
+)
+
+
+def _op_program(template: str, *, ty: str, base: str, disclosed: bool) -> str:
+    if disclosed:
+        return template.format(
+            req="true",
+            body=_DISCLOSED_PRODUCER.format(ty=ty, base=base),
+        )
+    guard = "@Int.0 > 0" if base == "Int" else "@Nat.0 < 3"
+    return template.format(
+        req=guard, body=_CLEAN_PRODUCER.format(slot=base),
+    )
+
+
+@pytest.mark.parametrize(
+    "template,ty,base,kind",
+    [
+        pytest.param(_DIV_PROGRAM, "PosInt", "Int", "div_zero", id="div-zero"),
+        pytest.param(_IDX_PROGRAM, "Small", "Nat", "index_bounds", id="index"),
+    ],
+)
+def test_1403_a_clean_arm_discharges_a_primitive_op_obligation(
+    tmp_path: Path, template: str, ty: str, base: str, kind: str,
+) -> None:
+    """The reach is deliberate: EVERY obligation in the arm reads its facts.
+
+    `assert` is not a special case — a `/` or an `arr[i]` in the same arm is
+    discharged from the same context, and the arm's declared-type facts are
+    part of it.  `100 / @PosInt.0` where the payload's type says `> 0` is a
+    *false positive* until the divisor's own type is in scope: `release/v0.2.0`
+    refuses this program with `E526`.
+    """
+    source = _op_program(template, ty=ty, base=base, disclosed=False)
+    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    assert result["ok"] is True, result["diagnostics"]
+    ops = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == kind
+    ]
+    assert ops == [("verified", None)], _triples(result)
+
+
+@pytest.mark.parametrize(
+    "template,ty,base,kind",
+    [
+        pytest.param(_DIV_PROGRAM, "PosInt", "Int", "div_zero", id="div-zero"),
+        pytest.param(_IDX_PROGRAM, "Small", "Nat", "index_bounds", id="index"),
+    ],
+)
+def test_1403_a_disclosed_arm_demotes_it_and_says_so(
+    tmp_path: Path, template: str, ty: str, base: str, kind: str,
+) -> None:
+    """... and a demoted safety obligation must carry its code and a warning.
+
+    This is the regression the review found (F1).  With a disclosed producer
+    the divisor really can be zero — the payload's `refine_bind` is
+    `tier3_unguarded`/E506, so nothing guards it — and the program went from
+    a refused `E526` to `ok: true` carrying a `div_zero`/`tier3` with **no
+    error code and no warning of its own**.  A `tier3` nothing surfaces also
+    breaks the `verify --json` partition table's own contract.
+
+    Both halves are asserted: the obligation carries E534, and the warning
+    stream carries it too — a code recorded on the obligation but never
+    emitted would still leave the reader with a silent runtime check.
+    """
+    source = _op_program(template, ty=ty, base=base, disclosed=True)
+    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    ops = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == kind
+    ]
+    assert ops == [("tier3", "E534")], _triples(result)
+    codes = [w.get("error_code") for w in result["warnings"]]
+    assert "E534" in codes, codes
+    # The producer's own disclosure is in the same stream: this is the
+    # unguarded case, which is why the demotion is the honest answer.
+    assert ("refine_bind", "tier3_unguarded", "E506") in _triples(result), (
+        _triples(result)
+    )
+
+
+def test_1403_the_demotion_names_the_operation_not_a_contract(
+    tmp_path: Path,
+) -> None:
+    """The E534 text says which obligation moved.
+
+    One emitter serves the contract and safety paths, so the subject has to
+    come from the caller; a shared message reading "Postcondition in …" over
+    a division would send the reader to the wrong line.
+    """
+    source = _op_program(_DIV_PROGRAM, ty="PosInt", base="Int", disclosed=True)
+    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    e534 = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(e534) == 1, [w.get("error_code") for w in result["warnings"]]
+    text = e534[0]["description"]
+    assert text.startswith("Division in 'use_op'"), text
+    assert "runtime trap" in text, text
+    assert "Postcondition" not in text, text
