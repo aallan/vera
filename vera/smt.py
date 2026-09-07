@@ -20,7 +20,7 @@ import z3
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
-from vera.regularity import is_regular
+from vera.regularity import RegularityIndex
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -551,6 +551,8 @@ class SmtContext:
         self._recorded_type_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
+        self._adt_registry_version = 0
+        self._regularity: tuple[int, RegularityIndex] | None = None
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
         self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
@@ -741,8 +743,32 @@ class SmtContext:
     def register_adt(self, adt_info: AdtInfo) -> None:
         """Register an ADT definition for Z3 sort creation."""
         self._adt_registry[adt_info.name] = adt_info
+        # #1429: the regularity index is a snapshot of the registry, so a new
+        # declaration invalidates it.  A version counter rather than a size
+        # comparison: this is the one site that writes the registry, so the
+        # counter detects a same-name REPLACEMENT too, which a length check
+        # could not.
+        self._adt_registry_version += 1
         for ctor_name in adt_info.constructors:
             self._ctor_to_adt[ctor_name] = adt_info.name
+
+    def _regularity_index(self) -> RegularityIndex:
+        """This context's regularity index, rebuilt only when the ADT
+        registry has changed (#1429).
+
+        Every sort request asks whether its root is regular.  Deriving that
+        from scratch each time re-walked the whole declaration graph per
+        request, which is where `vera check` went super-quadratic — 73 s on a
+        thousand-declaration chain against 0.5 s before the rule existed
+        (PR #1432 re-verification).
+        """
+        version = self._adt_registry_version
+        cached = self._regularity
+        if cached is None or cached[0] != version:
+            index = RegularityIndex(self._adt_registry)
+            self._regularity = (version, index)
+            return index
+        return cached[1]
 
     def declare_adt(
         self, name: str, ty: Type,
@@ -860,7 +886,7 @@ class SmtContext:
         root_info = self._adt_registry.get(root_name)
         if root_info is None:
             return None
-        if not is_regular(root_name, self._adt_registry):
+        if not self._regularity_index().is_regular(root_name):
             # DECLINE TO MODEL a non-regular recursion (#1429).  The checker
             # refuses such a declaration (`E129`), so a program that reached
             # here through `vera verify` cannot carry one — but `verify()` is

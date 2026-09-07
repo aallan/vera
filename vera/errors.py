@@ -7,6 +7,7 @@ See spec/00-introduction.md, Section 0.5 "Diagnostics as Instructions".
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Optional
 
 from vera.lexical import CommentProblemKind
@@ -171,6 +172,49 @@ class VerifyError(VeraError):
 # Maps (expected_tokens, context) to error generators.
 # Each generator receives the raw Lark exception info and returns
 # a Diagnostic with a tailored message and fix suggestion.
+
+
+_PARTIAL_DIAGNOSTICS_ATTR = "__vera_partial_diagnostics__"
+
+
+def attach_partial_diagnostics(
+    exc: BaseException, diagnostics: Sequence[Diagnostic],
+) -> None:
+    """Carry diagnostics already RECORDED when *exc* escaped a pass.
+
+    A compiler pass builds its diagnostic list incrementally and returns it at
+    the end, so an exception raised part-way through discards everything the
+    pass had already established about the program.  That is the wrong thing
+    to lose: those diagnostics are frequently the CAUSE.  A non-regular `data`
+    declaration is refused with E129 and then, in a build that still let the
+    walk run, sent the ability derivation into a ``RecursionError``; the
+    command boundary reported only "internal compiler error", and the one
+    diagnostic that told the user what to fix never reached them (#1429,
+    PR #1432 re-verification).
+
+    Attached to the EXCEPTION rather than kept in a module global so it is
+    scoped to the failing call and safe under concurrent checks.  Storing a
+    copy: the pass's own list may keep being mutated by an outer handler.
+    """
+    try:
+        setattr(exc, _PARTIAL_DIAGNOSTICS_ATTR, list(diagnostics))
+    except AttributeError:  # pragma: no cover — exotic exception types
+        # Some built-in exceptions forbid attribute assignment.  Losing the
+        # partial list is strictly better than replacing the original
+        # exception with an error about carrying it.
+        pass
+
+
+def partial_diagnostics(exc: BaseException) -> list[Diagnostic]:
+    """The diagnostics :func:`attach_partial_diagnostics` carried, if any.
+
+    Returns ``[]`` for an exception that never passed through a recording
+    pass, so the caller needs no attribute test of its own.
+    """
+    found = getattr(exc, _PARTIAL_DIAGNOSTICS_ATTR, None)
+    if not isinstance(found, list):
+        return []
+    return [d for d in found if isinstance(d, Diagnostic)]
 
 
 def _get_source_line(source: str, line: int) -> str:

@@ -50,7 +50,12 @@ from typing import cast
 
 from lark import Tree
 from vera.codegen.api import WasmTrapError
-from vera.errors import Diagnostic, SourceLocation, VeraError
+from vera.errors import (
+    Diagnostic,
+    SourceLocation,
+    VeraError,
+    partial_diagnostics,
+)
 from vera.introspect import builtins_payload, effects_payload, errors_payload
 from vera.parser import parse
 from vera.transform import transform
@@ -518,15 +523,25 @@ def _internal_error_envelope(
         severity="error",
         error_code="E699",
     )
+    # #1429: diagnostics the failing pass had already RECORDED come first, on
+    # both paths.  They are what the user can act on — the E699 says only that
+    # the compiler stopped — and a crash that follows a real refusal used to
+    # hide it completely.  `partial_diagnostics` returns [] for an exception
+    # that carried none, so the ordinary internal error is unchanged.
     try:
+        recorded = partial_diagnostics(exc)
         if as_json:
             payload: dict[str, object] = {
                 "ok": False, "file": path,
-                "diagnostics": [diag.to_dict()], "warnings": [],
+                "diagnostics": [d.to_dict() for d in recorded] + [
+                    diag.to_dict()],
+                "warnings": [],
             }
             payload.update(extra or {})
             print(json.dumps(payload, indent=2))
             return 1
+        for recorded_diag in recorded:
+            print(recorded_diag.format(), file=sys.stderr)
         print(diag.format(), file=sys.stderr)
         return 1
     except Exception:  # noqa: BLE001 — last resort (#1361 review)

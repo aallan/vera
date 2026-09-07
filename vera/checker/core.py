@@ -28,7 +28,11 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import (
+    Diagnostic,
+    SourceLocation,
+    attach_partial_diagnostics,
+)
 from vera.naming import AliasEnv
 from vera.registration import where_helper_parents
 from vera.environment import (
@@ -36,7 +40,7 @@ from vera.environment import (
     FunctionInfo,
     TypeEnv,
 )
-from vera.regularity import irregular_occurrence
+from vera.regularity import suggested_occurrence
 from vera.types import (
     EffectInstance,
     BOOL,
@@ -101,7 +105,16 @@ def typecheck(
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
     )
-    checker.check_program(program)
+    try:
+        checker.check_program(program)
+    except BaseException as exc:
+        # #1429: hand the diagnostics recorded SO FAR to the command
+        # boundary, which prints them ahead of its E699.  A pass that dies
+        # part-way has usually already said what is wrong with the program —
+        # discarding that leaves the user with "internal compiler error" and
+        # nothing to act on.
+        attach_partial_diagnostics(exc, checker.errors)
+        raise
     return checker.errors
 
 
@@ -218,7 +231,14 @@ def typecheck_with_artifacts(
     checker.expr_semantic_types = {}
     checker.expr_target_types = {}
     checker.hole_sites = []
-    checker.check_program(program)
+    try:
+        checker.check_program(program)
+    except BaseException as exc:
+        # #1429, as in `typecheck` above — and this is the entry every `vera`
+        # command actually calls, so wiring only the other one would have left
+        # the CLI discarding diagnostics exactly as before.
+        attach_partial_diagnostics(exc, checker.errors)
+        raise
 
     module_arts: ModuleArtifacts = {}
     diagnostics = list(checker.errors)
@@ -771,13 +791,15 @@ class TypeChecker(
     def _check_data_regularity(self, decl: ast.DataDecl) -> None:
         """Refuse NON-REGULAR recursion in a `data` declaration (#1429).
 
-        A recursive occurrence of a type in its own recursive group must
-        instantiate that group at the declaration's OWN type parameters, in
-        order.  `data List<T> { Cons(T, List<T>), Nil }` does; `data Nest<T> {
-        N(Nest<Option<T>>), Z }` does not — its argument grows at every level,
-        so the instantiation chain `Nest<Int>` -> `Nest<Option<Int>>` ->
-        `Nest<Option<Option<Int>>>` never repeats and no finite set of
-        instantiations describes the type.
+        Read PER TYPE ARGUMENT of a recursive occurrence: each must be a
+        bare parameter of the enclosing declaration, passed along unchanged,
+        or closed with respect to those parameters.  `data List<T> { Cons(T,
+        List<T>), Nil }` passes one along and `data Expr<T> { Lit(T),
+        Add(Expr<Int>, Expr<Int>) }` closes one; `data Nest<T> {
+        N(Nest<Option<T>>), Z }` does neither — `Option<T>` wraps the
+        parameter, so the argument grows at every level and the chain
+        `Nest<Int>` -> `Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>`
+        never repeats.
 
         Nothing downstream survives that.  Verification's datatype-group
         closure has no fixed point to reach, so `vera verify` produced no
@@ -786,7 +808,9 @@ class TypeChecker(
         bound on the NUMBER of instantiations is never even approached; and
         `==` on such a type recurses the CHECKER itself into a
         `RecursionError`, which is an `E699` before verification is reached at
-        all.  Refusing the declaration closes all three at the one place the
+        all — and one that DISCARDED this very diagnostic, until the command
+        boundary learned to print what a dying pass had already recorded.
+        Refusing the declaration closes all three at the one place the
         program says what it means, which is what DESIGN §0.2 asks for:
         explicit and decidable in preference to a silent cliff further down.
 
@@ -802,39 +826,52 @@ class TypeChecker(
         does not return.  Two copies would be free to drift into one consumer
         refusing what the other models.
         """
-        found = irregular_occurrence(decl.name, self.env.data_types)
+        found = self.env.regularity_index().irregular(decl.name)
         if found is None:
             return
         ctor_name, index, bad = found
+        # Recorded BEFORE the diagnostic so every later consumer in this
+        # module sees the refusal — the ability derivations suppress their
+        # own cascade off this set (#1429).
+        self.env.refused_non_regular.add(decl.name)
         expected = tuple(
             self.env.data_types[decl.name].type_params or ()
         ) if decl.name in self.env.data_types else ()
         params = ", ".join(expected)
-        # The offending occurrence may be the OTHER member of a mutual pair,
-        # so the remedy names ITS head rather than this declaration's
-        # (PR #1432 review): `A<T> { CA(B<Option<T>>) }` must suggest `B<T>`.
-        remedy = f"{bad.name}<{params}>" if params else bad.name
+        # Built from the OCCURRENCE, with each growing argument unwrapped to
+        # the parameter it wraps.  Taking the enclosing declaration's
+        # parameters instead produced remedies that are not types — a
+        # mixed-arity pair was told to write `Body` — and would misstate the
+        # arity whenever the two members' parameter counts differ
+        # (PR #1432 re-verification).
+        remedy = suggested_occurrence(bad, expected, decl.name)
         self._error(
             self._data_field_node(decl, ctor_name, index),
             f"Non-regular recursion in data declaration "
-            f"'{decl.name}': the occurrence '{pretty_type(bad)}' "
-            f"instantiates a type in its own recursive group at "
-            f"arguments other than "
-            f"'{params if params else '(none)'}'.",
+            f"'{decl.name}': the occurrence '{pretty_type(bad)}' does not "
+            f"reuse this declaration's type parameters "
+            f"({params if params else 'none'}) unchanged and in order.",
             rationale=(
-                "A recursive occurrence of a type inside its own "
-                "declaration must instantiate it with exactly that "
-                "declaration's type parameters, in order.  When the "
-                "arguments grow instead, the chain of instantiations "
-                "never repeats — `Nest<Int>`, `Nest<Option<Int>>`, "
-                "`Nest<Option<Option<Int>>>` and so on — so the type "
-                "has no finite set of instantiations, and neither "
-                "equality nor verification can be decided over it."
+                "A recursive occurrence may pass the enclosing "
+                "declaration's type parameters along unchanged, or use "
+                "arguments that do not mention them at all — `Expr<Int>`, "
+                "`Body<Int>`, a zero-argument `Decl` — and either keeps the "
+                "set of instantiations the type reaches finite.  An argument "
+                "that wraps a parameter inside another type constructor "
+                "grows at every level instead: `Nest<Int>`, "
+                "`Nest<Option<Int>>`, `Nest<Option<Option<Int>>>`, so the "
+                "chain never repeats and neither equality nor verification "
+                "terminates over it.  An occurrence of the declaration's own "
+                "name must also keep its parameters in their original "
+                "positions; a permutation stays finite but multiplies — five "
+                "parameters reach 610 instantiations — and the rule "
+                "Chapter 2 states is reuse unchanged and in order."
             ),
             fix=(
-                f"Instantiate the recursive occurrence as '{remedy}' and move "
-                "the varying part into a field of its own, or into a "
-                "separate non-recursive type."
+                f"Instantiate the recursive occurrence as '{remedy}', or use "
+                "an argument that does not mention this declaration's type "
+                "parameters at all; move the varying part into a field of "
+                "its own, or into a separate non-recursive type."
             ),
             spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types"',
             error_code="E129",
