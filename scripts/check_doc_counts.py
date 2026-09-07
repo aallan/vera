@@ -1516,6 +1516,26 @@ def _parse_count(token: str) -> int | None:
     return _english_number_word_to_int(token)
 
 
+def _count_backstop(matched: bool, counted: int, subject: str) -> list[str]:
+    """Every enumerated set must still state its size somewhere.
+
+    `_check_enumeration` returns no error when the count SLOT holds only
+    a determiner, which is right for a list that never stated a size —
+    and wrong as the only rule, because rewording "Forty-three of them"
+    to "The rest of them" then leaves the names gated and the
+    manifest-backed count silently ungated.  Each family of sentences
+    carries its own backstop, so losing the count in one does not hide
+    behind another still having it (PR #1411 review).
+    """
+    if matched and not counted:
+        return [
+            f"TESTING.md: {subject} no longer state a count — the number"
+            f" in front of the names was reworded away, so nothing checks"
+            f" it against the manifest"
+        ]
+    return []
+
+
 def _check_enumeration(
     where: str, match: re.Match[str], wanted: set[str], subject: str
 ) -> tuple[int, list[str]]:
@@ -1710,15 +1730,20 @@ def check_conformance_level_prose(
             " level' sentence found — it moved or was reworded, so the"
             " per-level program lists are no longer gated"
         )
+    counted = 0
     for match in levels:
         level = match.group("level")
-        _, found = _check_enumeration(
+        carried, found = _check_enumeration(
             f"TESTING.md: the `{level}`-level program list",
             match,
             _programs_at_level(manifest, level),
             f"`{level}`-level programs",
         )
+        counted += carried
         errors += found
+    errors += _count_backstop(
+        bool(levels), counted, "the per-level program list(s)"
+    )
 
     by_name = _expected_error_codes(manifest)
     for pattern, codes_pattern, stage, label, cue in (
@@ -1744,14 +1769,16 @@ def check_conformance_level_prose(
                 f" reworded, so the {stage}-stage negatives are no longer"
                 f" gated"
             )
+        counted = 0
         for match in matches:
             where = f"TESTING.md: {label}"
-            _, found = _check_enumeration(
+            carried, found = _check_enumeration(
                 where,
                 match,
                 _negatives_at_stage(manifest, stage),
                 f"{stage}-stage negative tests",
             )
+            counted += carried
             errors += found
             errors += _check_respective_codes(
                 where,
@@ -1759,6 +1786,7 @@ def check_conformance_level_prose(
                 _codes_after(testing_text, match, codes_pattern),
                 by_name,
             )
+        errors += _count_backstop(bool(matches), counted, label)
     return errors
 
 

@@ -2187,6 +2187,50 @@ class TestConformanceLevelProse:
         assert codes is not None
         assert len(names) == len(codes) > 20
 
+    @pytest.mark.parametrize(
+        ("old", "new", "cue"),
+        [
+            pytest.param("Three programs (", "The programs (",
+                         "per-level program list", id="level"),
+            # No determiner fits this slot in English ("the of them"),
+            # so the reachable shape here is the count simply gone.
+            pytest.param("Two of them — ", "of them — ",
+                         "check-stage negative-test subset", id="check-stage"),
+            pytest.param("One more — ", "And more — ",
+                         "compile-stage negative", id="compile-stage"),
+        ],
+    )
+    def test_a_count_reworded_to_a_determiner_is_reported(
+        self, old: str, new: str, cue: str
+    ) -> None:
+        """Each family of sentences carries its own count backstop.
+
+        `_check_enumeration` reports nothing when the count slot holds
+        only a determiner — correct for a list that never stated a size,
+        and wrong as the only rule: rewording the number away would
+        leave the names gated and the count silently ungated. Losing it
+        in one family must not hide behind another still having one
+        (PR #1411 review).
+        """
+        manifest = _manifest(
+            "ch01_a_rejected", "ch01_b_rejected",
+            compile_stage=("ch08_late_rejected",),
+        )
+        text = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected", "ch08_late_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Three",
+            negative_word="Two",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        assert old in text, old
+        errors = _MOD.check_conformance_level_prose(
+            text.replace(old, new, 1), manifest
+        )
+        assert len(errors) == 1, errors
+        assert "no longer state a count" in errors[0] and cue in errors[0]
+
     def test_the_shipped_file_is_actually_read(self) -> None:
         """Both shapes must match the live TESTING.md, or the gate is
         silently checking nothing on the only file it reads."""
