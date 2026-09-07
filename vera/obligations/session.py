@@ -364,7 +364,17 @@ class VerificationSession:
         # the obligation stream says which functions failed to establish their
         # own declared type, `result_disclosed` says which hand such a value
         # on, and the fixpoint below needs both or it settles one hop early.
-        disclosed = disclosed_fn_names(out_obls) | frozenset(result_disclosed)
+        disclosed = (
+            disclosed_fn_names(out_obls)
+            | frozenset(result_disclosed)
+            # The imported-generic-clone pass runs AFTER the slice loop
+            # and verifies bodies of its own, so a forwarder it finds is
+            # in the verifier's set and in no slice's contribution
+            # (CodeRabbit, PR #1418).  Reading the verifier directly is a
+            # superset of the replayed contributions, which are seeded
+            # back onto it, so this cannot lose one either.
+            | frozenset(verifier._result_disclosed_fns)
+        )
         if not disclosed <= self._disclosed:
             # Re-run knowing what this pass disclosed, exactly as the cold
             # `verify_program` fixpoint does.  The set only grows, so this

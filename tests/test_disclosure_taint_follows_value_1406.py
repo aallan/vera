@@ -346,7 +346,11 @@ def test_1406_the_clean_twin_runs_clean(tmp_path: Path, spelling: str) -> None:
     """
     out = _run(tmp_path, _source(spelling, disclosed=False))
     assert "violation" not in out, out[-700:]
-    assert out.strip().endswith("7"), out[-300:]
+    # The LAST TOKEN, exactly.  `endswith("7")` is satisfied by `-7`, which is
+    # precisely the disclosed route's answer — so the control could not have
+    # caught a clean route that returned the disclosed payload (CodeRabbit,
+    # PR #1418).
+    assert out.strip().split()[-1] == "7", out[-300:]
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +766,8 @@ def test_1413_a_renarrowing_off_a_clean_value_still_proves(
         f"got {binds}"
     )
     out = _run(tmp_path, source)
-    assert "violation" not in out and out.strip().endswith("7"), out[-400:]
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]   # exact, not a suffix
 
 
 def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
@@ -1021,7 +1026,8 @@ def test_1418_f1_a_lost_clean_value_still_proves(
     assert result["ok"] is True, result.get("diagnostics")
     assert _f_ensures(result) == ("verified", None), _f_ensures(result)
     out = _run(tmp_path, source)
-    assert "violation" not in out and out.strip().endswith("7"), out[-400:]
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]   # exact, not a suffix
 
 
 # ---------------------------------------------------------------------------

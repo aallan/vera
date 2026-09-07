@@ -3426,6 +3426,18 @@ class ContractVerifier:
         bare helper call resolves to the nearest same-named helper (#991) rather
         than through the flat, last-wins registry.
         """
+        # PER-FUNCTION SCOPE STATE, SET WHERE THE FUNCTION IS ENTERED.  Every
+        # exit from this method below is a function whose body may still be
+        # translated — the generic branch's `_check_generic_refined_return`
+        # translates one and installs the disclosure hook — and the hook asks
+        # `_local_fn_names_in_scope()`, which reads these.  Assigned partway
+        # down the non-generic path, they were the PREVIOUS function's on that
+        # route: a generic could have a local call suppressed, or an import
+        # applied to a local call of the same name, by another function's
+        # helpers (CodeRabbit, PR #1418).  `_tainted_sites` goes with them for
+        # the reason its own comment gives — a citation belongs to the
+        # function whose facts were withheld.
+        self._set_fn_scope(decl, enclosing)
         if decl.forall_vars:
             # #1014: a nested generic helper's instances are keyed by its
             # parent-qualified name (``a$where$g`` — the discovery copy is
@@ -3511,13 +3523,6 @@ class ContractVerifier:
         # consult (`_local_fn_names_in_scope`).  Set here so the two answers
         # are built from one `(decl, enclosing)` and cannot disagree about
         # which helpers are visible.
-        self._scope_fn_names = frozenset(
-            wfn.name
-            for group in (decl, *enclosing)
-            for wfn in group.where_fns or ()
-        )
-        # F3: the same `(decl, enclosing)`, as the owning top-level name.
-        self._scope_owner = enclosing[-1].name if enclosing else decl.name
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
@@ -9272,6 +9277,26 @@ class ContractVerifier:
         # :py:meth:`_established_facts` — the one gate every reader shares.
         return self._established_facts(
             facts, source=scrutinee, term=scrutinee_z3, smt=smt)
+
+    def _set_fn_scope(
+        self, decl: ast.FnDecl, enclosing: tuple[ast.FnDecl, ...],
+    ) -> None:
+        """Bind the per-function lexical scope, from one ``(decl, enclosing)``.
+
+        The visible ``where``-helper names (#1399's `_local_fn_names_in_scope`),
+        the owning top-level name those helpers' disclosures are keyed under
+        (#1418 review F3), and the citation list that belongs to this function
+        and no other — all three derived here so they cannot disagree about
+        which function is under verification, and called at the ONE place that
+        knows: the entry to :py:meth:`_verify_fn`.
+        """
+        self._scope_fn_names = frozenset(
+            wfn.name
+            for group in (decl, *enclosing)
+            for wfn in group.where_fns or ()
+        )
+        self._scope_owner = enclosing[-1].name if enclosing else decl.name
+        self._tainted_sites = []
 
     def _result_disclosed_key(self, name: str, *, is_helper: bool) -> str:
         """The key a forwarding function's disclosure is recorded under (F3).
