@@ -943,9 +943,10 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     them.  Adding a reader that assumes a fact without asking reddens this.
 
     The producer roster is asserted to still name real methods, so a rename
-    cannot make the check vacuous by matching nothing, and the gate is
-    asserted to have at least the three readers it has now, so deleting a
-    call site is a failure rather than a silent narrowing.
+    cannot make the check vacuous by matching nothing, and the reader set is
+    asserted EXACTLY rather than as a floor — a floor left enough slack that
+    dropping a producer from the roster, which is how the fourth reader got
+    in, still satisfied it.
     """
     import ast as pyast
     import inspect
@@ -1011,9 +1012,20 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
         f"{mod}:{name}" for (mod, name), named in calls.items()
         if named & producers and name not in producers
     )
-    assert len(readers) >= 3, (
-        f"expected at least the three known readers, found {readers} — a "
-        f"call site was deleted or the walk stopped seeing them"
+    # EXACT membership, not a floor (#1418 review J2).  `>= 3` left a
+    # reader of slack, so dropping `_nested_refinement_facts` from the
+    # producer roster — the very omission that let the fourth reader in —
+    # still satisfied it.  A new reader is a deliberate edit here, and so is
+    # a deleted one.
+    assert readers == [
+        "verifier:_check_nested_refinement_obligation",
+        "verifier:_check_refined_binding_obligation_term",
+        "verifier:_subpattern_source_facts",
+        "verifier:_walk_for_nat_binding_obligations",
+    ], (
+        f"the set of functions reading a declared-type source fact changed: "
+        f"{readers}.  A new one must call `_established_facts` (the check "
+        f"below); a removed one must be removed from this list, deliberately"
     )
     ungated = [
         r for r in readers

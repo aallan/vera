@@ -442,16 +442,28 @@ def _verify_for_disclosure(
     # used to make no claim and so record nothing, which made it invisible
     # here while the same declarations in one file demoted correctly — so
     # this emitted the union of the obligation-derived set with the
-    # result-derived one.  #1412 obligates a refined return at every position
-    # that publishes it, which closes that gap at its source: a forwarder
-    # that hands on a refined value now carries its own unguarded obligation,
-    # and one that does NOT publish the refinement hands on no fact for a
-    # consumer to lean on.  Measured over both halves of that dichotomy —
-    # a forwarder dropping the refinement, one through a `where` helper, one
-    # returning a tuple carrying the payload, one two import hops away, and
-    # one in an `Exn`-declared function — the union changed no verdict, and
-    # removing it changed no cell in the suite.  So the manifest consumes the
-    # obligation-derived set alone.
+    # result-derived one.  #1412 then obligated a refined return at every
+    # position that publishes it, which closes that gap where it opens: a
+    # forwarder handing on a refined value carries its own unguarded
+    # obligation, and one that does NOT publish the refinement hands on no
+    # fact for a consumer to lean on.
+    #
+    # THE CLAIM IS BOUNDED BY WHAT WAS MEASURED, not by that argument.  With
+    # the union reverted, no verdict moved across a forwarder dropping the
+    # refinement, one through a `where` helper, one returning a tuple
+    # carrying the payload, one two import hops away, and one in an
+    # `Exn`-declared function; and removing it changed no cell in the suite.
+    #
+    # #1412 does NOT guard every narrowing.  `_NAT_CONSTRUCTION_GUARDED_SITES`
+    # is `{"tuple component"}`, so an ARRAY ELEMENT and a `Map` VALUE still
+    # disclose, by design (#1418 review J1).  Neither reaches a consumer as a
+    # declared-type fact in any shape measured: an array's elements are
+    # modelled opaquely, so a consumer indexing one, passing it to a nested
+    # refinement, or re-narrowing it with a `let` is REFUTED (E500) rather
+    # than falsely proved, and a `Map` insert emits no narrowing obligation
+    # at all.  If a shape is found where such a producer's disclosure DOES
+    # reach an importer through a forwarder, this is where the union goes
+    # back — for that case, with the reason on the DisclosureSite.
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
