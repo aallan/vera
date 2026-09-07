@@ -2204,7 +2204,8 @@ class InferenceMixin:
             # so sparse constructors like Err(e) bind to the correct ADT type param.
             adt_name = self._ctor_to_adt_name(expr.name)
             if adt_name:
-                # ctor-owner-exempt: no owner available at this site
+                # ctor-owner-exempt: resolved in the compiling namespace's
+                # scoped projection (#1436)
                 field_tp_idx = self._ctor_adt_tp_indices.get(expr.name)
                 adt_tp_count = self._adt_tp_counts.get(adt_name, 0)
                 if field_tp_idx is not None and adt_tp_count > 0:

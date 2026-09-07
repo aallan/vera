@@ -10,7 +10,7 @@ import functools
 from collections import deque
 
 from vera import ast
-from vera.codegen.memory import ConstructorLayout, _align_up
+from vera.codegen.memory import _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import gc_shadow_push, is_gc_pointer_base
@@ -313,13 +313,10 @@ class ClosureLiftingMixin:
         more closures on that inner ctx; without this hook they would be
         dropped on the floor when the inner ctx goes out of scope.
         """
-        # Flatten ADT layouts for context
-        ctor_layouts: dict[str, ConstructorLayout] = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
+        # #1436: namespace-scoped, as in `functions.py` — a lifted closure
+        # body belongs to the declaration that contains it and resolves
+        # constructor names in that declaration's namespace.
+        ctor_layouts, ctor_to_adt = self._namespace_ctor_projection()
 
         ctx = WasmContext(
             self.string_pool,
