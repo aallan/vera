@@ -106,6 +106,28 @@ _OPAQUE_SCRUTINEE_REASON = (
     "projected and the predicate was never given a value to reason about"
 )
 
+#: The default closing sentence of an unguarded E506 (#746) — what codegen does
+#: and does not check at an INTERNAL narrowing site.  Every site that predates
+#: #1410 is one of those; the nested-refinement family passes its own note
+#: instead, because its site is a function boundary and the missing coverage is
+#: a different thing (see `_NESTED_SITE_GUARD_NOTE`).
+_INTERNAL_SITE_GUARD_NOTE = (
+    "Codegen runtime-guards refinements only at the function boundary "
+    "(parameter entry / return exit), not at this internal narrowing site, so "
+    "it is neither statically proven nor runtime-checked."
+)
+
+#: The closing sentence for a refinement written INSIDE a boundary type (#1410).
+#: The site IS a boundary; what it lacks is that codegen's decomposition
+#: (`_tuple_component_guard_sites`) reaches a parameter's own refinement and its
+#: TUPLE components and stops there.
+_NESTED_SITE_GUARD_NOTE = (
+    "Codegen's boundary guard decomposes a parameter's own refinement and its "
+    "TUPLE components and no further, so a refinement written on an ADT "
+    "payload or an array element is checked at no boundary: this one is "
+    "neither statically proven nor runtime-checked."
+)
+
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
 #: question (#1362, narrowed in #757's completion).
@@ -3885,6 +3907,31 @@ class ContractVerifier:
                 site="return type",
             )
 
+        # 7e. #1410 at the RETURN slot — the position that makes the argument
+        #     rule transitive.  A refinement written INSIDE the declared return
+        #     type is what every consumer of this function's result then leans
+        #     on, and forwarding a value into it establishes nothing: measured
+        #     on this PR's own head before this step existed, a `wrap` whose
+        #     body is a bare `mk(@Float64.0)` — `mk` disclosed — published
+        #     `Option<PosInt>` with no obligation of its own, so `wrap` never
+        #     joined the disclosed set and `consume(wrap(...))` proved its
+        #     argument at Tier 1 from `wrap`'s declared type while the run
+        #     refuted `consume`'s postcondition.  One wrapper laundered the
+        #     whole chain.
+        #
+        #     Obligating the return closes it TRANSITIVELY rather than
+        #     per-caller: `wrap`'s own obligation discloses, the disclosed-set
+        #     fixpoint picks that up, and the argument obligation at every
+        #     caller of `wrap` then withholds its premise for the same reason
+        #     it does for `mk`.  A CONSTRUCTED return is excluded on the value
+        #     exactly as an argument is, so `mk` itself keeps its single
+        #     construction-site record and gains nothing here.
+        if decl.body is not None:
+            self._check_nested_refinement_obligation(
+                decl, decl.body, ret_type, smt, slot_env, list(assumptions),
+                site="return type",
+            )
+
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
         # into the decreases checking below.
@@ -4918,6 +4965,22 @@ class ContractVerifier:
                 decl, value, smt, slot_env, list(assumptions),
                 site=site, guarded=widen_guarded,
             )
+        # #1410 (PR review F6): a refinement written INSIDE the formal, at
+        # every site this triple serves — an effect operation's argument
+        # (spec §2.6.4 names it, and the call-argument loop never reaches it:
+        # a bare op has no `param_types`), a `State` write, a `throw` payload,
+        # a handler's state init, a `resume` value.  Measured before this arm:
+        # `throw(mkint(x))` under `Exn<Option<PosInt>>`, with the handler
+        # clause forwarding its binder on, was `tier1_verified: 9`, exit 0,
+        # every contract `verified` — and the run refuted the consumer's
+        # postcondition.  Alongside the chain, not in it: the arms above claim
+        # the formal's HEAD.  None of these is a function boundary, so
+        # codegen's component decomposition does not run and the nested
+        # positions are unguarded whatever the head's guard does.
+        self._check_nested_refinement_obligation(
+            decl, value, self._nested_refinement_formal(value, formal),
+            smt, slot_env, assumptions, site=site, guarded=False,
+        )
 
     def _check_state_decl_divergence(
         self, decl: ast.FnDecl, expr: ast.HandleExpr,
@@ -5140,6 +5203,18 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, list(assumptions),
                             site="call argument",
                         )
+                    # #1410, at the pipe spelling too: the desugared call is
+                    # the same call, so a formal whose type writes a
+                    # refinement on a COMPONENT obligates its piped argument
+                    # exactly as the direct spelling does.  Not an `elif`: a
+                    # refinement over a tuple carries both its own predicate
+                    # (claimed above) and its components' (claimed here), and
+                    # they are different facts about one value.
+                    self._check_nested_refinement_obligation(
+                        decl, arg,
+                        self._nested_refinement_formal(arg, None),
+                        smt, slot_env, assumptions, site="call argument",
+                    )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.left, smt, slot_env, assumptions,
                 )
@@ -5214,6 +5289,23 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, list(assumptions),
                             site="closure argument",
                         )
+                    # #1410, the closure-boundary twin of the call argument.
+                    # `apply_fn` is a checker special form with no
+                    # `param_types`, so the generic loop never reaches it —
+                    # the same structural gap the review found for a bare
+                    # effect operation (F6).  Measured before this arm:
+                    # `apply_fn(clo, mkint(x))` into an `Option<PosInt>`
+                    # closure formal raised nothing for the argument, the
+                    # lifted body's `consume` proved its postcondition, and
+                    # the run refuted it.  The formal is the RESOLVED closure
+                    # parameter, and the guard question is the boundary one —
+                    # codegen decomposes a closure's refined formal at the
+                    # lifted prologue exactly as it does a function's — so
+                    # the derivation is shared rather than forced.
+                    self._check_nested_refinement_obligation(
+                        decl, arg, resolved_formal, smt, slot_env,
+                        assumptions, site="closure argument",
+                    )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -5441,6 +5533,19 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, list(assumptions),
                             site="call argument",
                         )
+                    # #1410: a refinement written INSIDE the formal — an ADT
+                    # payload, a tuple component — is assumed by the callee's
+                    # single modular proof, so the caller establishes it here.
+                    # The arms above claim the formal's HEAD only; this one
+                    # claims what its structure contains, so it rides
+                    # ALONGSIDE them rather than joining the elif chain (a
+                    # `{ @Tuple<PosInt, Int> | P }` formal carries both, and
+                    # they are different facts about one value).
+                    self._check_nested_refinement_obligation(
+                        decl, arg,
+                        self._nested_refinement_formal(arg, formal),
+                        smt, slot_env, assumptions, site="call argument",
+                    )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -5489,6 +5594,20 @@ class ContractVerifier:
                             site="constructor field",
                             guarded=self._is_int_type(field_ty),
                         )
+                    # #1410 (PR review F3): a field whose TYPE writes a
+                    # refinement on a component — `data Box { MkBox(Option<
+                    # PosInt>) }` — is claimed by none of the arms above, which
+                    # read the field's HEAD.  Without it the exclusion the
+                    # argument rule makes for a construction was false of this
+                    # shape: `consume(MkBox(mkint(x)))` was skipped as a
+                    # construction while its own site claimed nothing, so the
+                    # payload was obligated nowhere and the run refuted the
+                    # consumer's postcondition.  A constructor field is not a
+                    # function boundary, so nothing guards it.
+                    self._check_nested_refinement_obligation(
+                        decl, arg, field_ty, smt, slot_env, assumptions,
+                        site="constructor field", guarded=False,
+                    )
             else:
                 # `Tuple` (and any other built-in carrier) is NOT user-
                 # registered, so `_lookup_constructor_info` is None and the
@@ -5550,6 +5669,14 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, list(assumptions),
                             site="tuple component", guarded=True,
                         )
+                    # #1410 (PR review F3), the built-in carrier's twin: a
+                    # tuple component whose own type writes a refinement on a
+                    # component of ITS structure.  Construction guards no
+                    # component, so unguarded.
+                    self._check_nested_refinement_obligation(
+                        decl, arg, comp_ty, smt, slot_env, assumptions,
+                        site="tuple component", guarded=False,
+                    )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -5717,6 +5844,18 @@ class ContractVerifier:
                             decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
                         )
+                    # #1410 (PR review F4b): a `let` whose declared type writes
+                    # a refinement on a COMPONENT publishes that claim to every
+                    # later reader of the slot, and nothing established it —
+                    # `let @Option<PosInt> = mkint(x)` was Tier-1 clean, exit 0,
+                    # and refuted at run time.  Obligated here so the slot's
+                    # declared type is a fact by the time anything reads it.
+                    # Alongside the arms above, not in the chain: they claim the
+                    # let type's HEAD, this one what its structure contains.
+                    self._check_nested_refinement_obligation(
+                        decl, stmt.value, let_ty, smt, cur_env,
+                        block_assumptions, site="let binding",
+                    )
                     # Rebind the let slot in cur_env so a later obligation
                     # translates against this value, not a stale outer binding
                     # of the same slot name.  When the RHS translates, `val` is
@@ -7273,6 +7412,568 @@ class ContractVerifier:
                 reason=self._undecided_reason(result.status),
             )
 
+    # -----------------------------------------------------------------
+    # #1410 — refinements written INSIDE a formal's type
+    # -----------------------------------------------------------------
+
+    def _adt_constructor_names(self, ty: AdtType) -> tuple[str, ...]:
+        """*ty*'s constructor names, or ``()`` when the ADT is unknown here.
+
+        Registry first, exactly as :py:meth:`_instantiated_field_types` orders
+        it — locally declared ADTs, then an imported one's constructors, which
+        live in neither registry and are recovered from the harvested module
+        table.  The variadic built-in ``Tuple`` carrier is registered nowhere,
+        so it is named last and only when the registries had nothing: #1397
+        reserves the name in the DATA namespace and #1408 extends that to the
+        constructor namespace (E158), so the lookup can now fail for the
+        carrier alone — but the ordering does not lean on that, since a
+        narrowed reservation would find a user declaration here rather than
+        be shadowed by the carrier.
+        """
+        info = self.env.data_types.get(ty.name)
+        if info is not None:
+            return tuple(info.constructors)
+        imported = tuple(
+            name for name, ci in self._module_constructors.items()
+            if ci.parent_type == ty.name
+        )
+        if imported:
+            return imported
+        return ("Tuple",) if ty.name == "Tuple" else ()
+
+    def _payload_field_types(
+        self, ctor: str, ty: Type | None,
+    ) -> tuple[Type, ...] | None:
+        """*ctor*'s instantiated field types, with a NULLARY constructor
+        answering the empty tuple rather than ``None`` (#1410).
+
+        :py:meth:`_instantiated_field_types` folds "this constructor has no
+        fields" and "I cannot read this constructor's fields" into one
+        ``None``.  That is right for its own callers — both leave a
+        sub-pattern unchecked — and wrong for the walks below, which have to
+        FAIL CLOSED on the second: a nullary constructor carries no payload to
+        refine and must not close a walk, while an unreadable instantiation
+        exposes positions the walk cannot see and must.  ``Option``'s ``None``
+        is the everyday case, so the two cannot be conflated in either
+        direction.
+        """
+        ci = self._lookup_constructor_info(ctor)
+        if ci is not None and ci.field_types is None:
+            return ()
+        return self._instantiated_field_types(ctor, ty)
+
+    def _all_leaves_construct(
+        self, expr: ast.Expr, smt: SmtContext, slot_env: SlotEnv,
+    ) -> bool:
+        """Whether EVERY value-producing leaf of *expr* builds its value HERE
+        (#1410) — the one exclusion the nested-refinement obligation makes.
+
+        ``all``, not ``any``.  An earlier draft took ``any`` from
+        :py:func:`_is_locally_constructed`, where it is right for the opposite
+        reason: that test decides whether to WITHHOLD a fact, so one
+        outstanding arm has to withhold.  This one decides whether to SKIP an
+        obligation, so one outstanding arm has to keep it — measured, PR #1420
+        review F2: `consume(if c then { Some(7) } else { mkint(x) })` recorded
+        the constructed arm's own field obligation and nothing for the join,
+        `consume`'s postcondition proved, and the run took the other arm and
+        refuted it.
+
+        A leaf is a construction syntactically (`ConstructorCall`,
+        `NullaryConstructor`, `ArrayLit` — the last invisible to the term test,
+        since an array term is not a datatype constructor application) or by
+        its TERM, which is the only half that sees a ``let``-bound constructor
+        arriving as a slot reference.  Asking the term per LEAF rather than
+        over the whole expression is what lets the two halves compose: a leaf
+        is never a branch, so :py:func:`_is_locally_constructed`'s ``ite``
+        recursion cannot re-introduce the ``any`` this method exists to avoid.
+        """
+        if isinstance(expr, ast.Block):
+            return (expr.expr is not None
+                    and self._all_leaves_construct(expr.expr, smt, slot_env))
+        if isinstance(expr, ast.IfExpr):
+            return (expr.else_branch is not None
+                    and self._all_leaves_construct(
+                        expr.then_branch, smt, slot_env)
+                    and self._all_leaves_construct(
+                        expr.else_branch, smt, slot_env))
+        if isinstance(expr, ast.MatchExpr):
+            return bool(expr.arms) and all(
+                self._all_leaves_construct(arm.body, smt, slot_env)
+                for arm in expr.arms)
+        if isinstance(expr, (ast.ConstructorCall, ast.NullaryConstructor,
+                             ast.ArrayLit)):
+            return True
+        val = smt.translate_expr(expr, slot_env)
+        if val is None:
+            return False
+        try:
+            sort = val.sort()
+        except (AttributeError, z3.Z3Exception):  # pragma: no cover
+            return False
+        return _is_locally_constructed(val, sort)
+
+    def _value_source_disclosed(self, expr: ast.Expr) -> bool:
+        """Whether the value *expr* PRODUCES came from a call this run
+        disclosed (#1410).
+
+        :py:meth:`_scrutinee_is_disclosed_call` answers of one expression, and
+        that is the wrong grain here: `decl.body` is ALWAYS a ``Block``, so at
+        the return position the bare test answered False for every function
+        there is — measured, and it is what let a `wrap` forwarding a disclosed
+        `mk` publish `Option<PosInt>` at Tier 1.  An argument can be a
+        ``Block`` or a branch just as easily.
+
+        Descend to the value-producing leaves and take ``any``, the same
+        conservatism :py:func:`_is_locally_constructed` takes over an ``ite``
+        and :py:meth:`_all_leaves_construct` over its arms: one leaf standing on a
+        disclosed producer is one path on which the declared type was never
+        established, and the fact must not be granted on the strength of the
+        other.
+        """
+        if isinstance(expr, ast.Block):
+            return (expr.expr is not None
+                    and self._value_source_disclosed(expr.expr))
+        if isinstance(expr, ast.IfExpr):
+            return (self._value_source_disclosed(expr.then_branch)
+                    or (expr.else_branch is not None
+                        and self._value_source_disclosed(expr.else_branch)))
+        if isinstance(expr, ast.MatchExpr):
+            return any(self._value_source_disclosed(arm.body)
+                       for arm in expr.arms)
+        return self._scrutinee_is_disclosed_call(expr)
+
+    def _nested_refinement_formal(
+        self, arg: ast.Expr, formal: Type | None,
+    ) -> Type | None:
+        """The instantiated target type to read *arg*'s nested refinements off
+        (#1410) — the structural analogue of
+        :py:meth:`_refined_binding_target`'s generic-formal resolution.
+
+        A concretely-typed formal answers directly.  A ``TypeVar`` formal —
+        or none at all, which is the desugared-pipe case — is recovered from
+        the checker's recorded instantiated target for *arg*, the same
+        side-table (#747) every other binding-obligation target reads.
+        """
+        if formal is not None and not contains_typevar(formal):
+            return formal
+        return self._target_type_of(arg)
+
+    @staticmethod
+    def _strip_refinements(ty: Type | None) -> Type | None:
+        """*ty* with every leading refinement removed (#1410).
+
+        A refinement OVER a refinement (`type Tiny = { @Pos | @Pos.0 < 10 }`
+        where `Pos = { @Int | @Int.0 > 0 }`) is a HEAD refinement twice over,
+        not a component one — the refined-first arms own both predicates, and
+        codegen refuses the shape outright with E618.  Unwrapping a single
+        level left `Pos` showing as something "inside" `Tiny`, so the nested
+        rule raised a second obligation for a position that is not a
+        component: measured as a duplicate E506 on
+        `tests/test_exn_throw_payload_1268.py`'s nested-payload cell, whose
+        whole point is that the shape promises exactly one thing and gets
+        exactly one record.
+        """
+        while isinstance(ty, RefinedType):
+            ty = ty.base
+        return ty
+
+    def _has_nested_refinement(
+        self, ty: Type | None, _seen: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Whether *ty* carries a ``RefinedType`` strictly INSIDE its structure
+        — an ADT payload, a tuple component, an array element (#1410).
+
+        A refinement at the HEAD (``@PosInt``, or ``{ @Option<Int> | P }``) is
+        the refined-first arms' business and is deliberately not counted: the
+        head is unwrapped first, and only what the base contains answers here.
+        Descends type arguments AND constructor field types, because a
+        refinement can be written in either — ``Option<PosInt>`` puts it in the
+        argument, ``data Rec = MkRec(@PosInt)`` in the field.  ``_seen`` stops
+        a recursive ADT (``data List = Cons(@PosInt, List) | Nil``) rather than
+        descending forever; the effect is that a refinement reachable ONLY
+        through a cycle is not counted, which is a missing obligation, never a
+        false claim.
+        """
+        return self._contains_refinement(self._strip_refinements(ty), _seen)
+
+    @staticmethod
+    def _type_key(ty: Type) -> str:
+        """A structural identity for *ty*, for the cycle guards below (#1410).
+
+        The guards key on this rather than on the ADT's NAME.  A name-keyed
+        set cannot tell recursion from nesting: `Option<Option<PosInt>>` adds
+        ``Option`` on the way down and then prunes its own type argument as
+        though it were a cycle, so the payload refinement is invisible and the
+        obligation is never emitted — measured, PR #1420 review F1, with the
+        program Tier-1 clean and the run refuting it, and again as F7 for
+        `Tuple<Tuple<PosInt, Int>, Int>`, a position codegen DOES guard.
+        A structural key distinguishes the two: nesting produces a different
+        key at each level and descends, while a genuine cycle
+        (`data List<T> { Cons(T, List<T>), Nil }`) reproduces its key exactly
+        and stops.  ``repr`` is used because a `RefinedType` carries a
+        predicate AST, which is not hashable, and because the rendered form
+        (`pretty_type`) elides predicates to `...` — two different refinements
+        over one base would collide there, and a collision prunes, which is
+        the unsound direction.
+        """
+        return repr(ty)
+
+    def _contains_refinement(
+        self, ty: Type | None, seen: frozenset[str],
+    ) -> bool:
+        """The head-inclusive walk :py:meth:`_has_nested_refinement` drives."""
+        if isinstance(ty, RefinedType):
+            return True
+        if not isinstance(ty, AdtType):
+            return False
+        key = self._type_key(ty)
+        if key in seen:
+            return False
+        deeper = seen | {key}
+        if any(self._contains_refinement(a, deeper) for a in ty.type_args):
+            return True
+        for ctor in self._adt_constructor_names(ty):
+            fields = self._payload_field_types(ctor, ty)
+            if fields and any(
+                    self._contains_refinement(ft, deeper) for ft in fields):
+                return True
+        return False
+
+    def _nested_refinements_guarded(
+        self,
+        ty: Type | None,
+        *,
+        tuple_path: bool = True,
+        _seen: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Whether codegen boundary-guards EVERY refinement nested in *ty*
+        (#1410) — the nested-position sibling of
+        :py:meth:`_refined_boundary_codegen_guardable`; KEEP IN SYNC with
+        ``_tuple_component_guard_sites`` (``vera/codegen/contracts.py``).
+
+        Codegen decomposes TUPLES at a parameter / return boundary
+        (``_emit_component_refinement_guards``) and nothing else, so a position
+        is guarded exactly when every step from the root to it went through a
+        tuple.  Measured, not assumed: a ``Tuple<PosInt, Int>`` parameter fed a
+        violating component traps on the callee's entry guard ("Refinement
+        violation … parameter (tuple component)"), an ``Option<PosInt>`` one
+        runs on to refute the callee's postcondition instead.
+
+        Type-only, so the no-term path and the discharged path read ONE
+        derivation — a second copy inside the fact walk would be free to drift,
+        and a guardedness claim that drifts is exactly #1362.
+        """
+        base = self._strip_refinements(ty)
+        if not self._contains_refinement(base, frozenset()):
+            return True
+        if not isinstance(base, AdtType):
+            return False
+        key = self._type_key(base)
+        if key in _seen:
+            return False
+        deeper = _seen | {key}
+        pos_guarded = tuple_path and base.name == "Tuple"
+        constructors = self._adt_constructor_names(base)
+        if not constructors:
+            # FAIL CLOSED.  A carrier this walk cannot decompose — `Array`,
+            # `Map`, `Set`, or an ADT the env does not know — reaches its
+            # refined positions only through the type ARGUMENTS, and codegen's
+            # boundary decomposition does not reach them at all.  Falling out
+            # of an empty loop into `True` claimed a guard for exactly those:
+            # `Array<PosInt>` recorded `tier3` ("checked at run time") for a
+            # position nothing checks, which is the #1362 misclassification
+            # one family over.
+            return False
+        for ctor in constructors:
+            fields = self._payload_field_types(ctor, base)
+            if fields is None:
+                # The instantiation is unreadable here, so the positions it
+                # would expose are unknown — the same fail-closed answer.  A
+                # NULLARY constructor is `()`, not None: `Option`'s `None`
+                # carries no payload and must not close this walk.
+                return False
+            for field_ty in fields:
+                if not self._contains_refinement(field_ty, frozenset()):
+                    continue
+                if isinstance(field_ty, RefinedType) and not pos_guarded:
+                    return False
+                if not self._nested_refinements_guarded(
+                        field_ty, tuple_path=pos_guarded, _seen=deeper):
+                    return False
+        return True
+
+    def _nested_refinement_facts(
+        self,
+        smt: SmtContext,
+        ty: Type | None,
+        term: z3.ExprRef,
+        _seen: frozenset[str] = frozenset(),
+    ) -> tuple[list[z3.ExprRef], bool]:
+        """``(facts, complete)`` — what *ty*'s nested refinements say about
+        *term* (#1410).
+
+        Each fact is the field's predicate under the constructor's recognizer:
+        ``is_Some(t) => Some_0(t) > 0``.  A single-constructor carrier (a
+        tuple) needs no recognizer, so its component facts are unconditional.
+
+        *complete* is False when a position could not be expressed — a
+        recursive ADT the walk had to stop at, an ``Array`` element (stating
+        "every element satisfies P" needs a quantifier over indices, beyond
+        what the array encoding models), a predicate outside the fragment, or
+        a term with no datatype sort.  A ``verified`` over an incomplete goal
+        is not a full discharge, and the caller does not report it as one.
+        """
+        base = self._strip_refinements(ty)
+        if not self._contains_refinement(base, frozenset()):
+            return [], True
+        if not isinstance(base, AdtType) or self._type_key(base) in _seen:
+            # A recursive ADT, or a carrier with no constructor decomposition
+            # (`Array` / `Map` / `Set`): the refinement is real and this walk
+            # cannot state it.
+            return [], False
+        try:
+            sort = term.sort()
+            nctors = sort.num_constructors()
+        except (AttributeError, z3.Z3Exception):
+            return [], False
+        if nctors == 0:  # pragma: no cover — a datatype always has one
+            return [], False
+        deeper = _seen | {self._type_key(base)}
+        facts: list[z3.ExprRef] = []
+        complete = True
+        for i in range(nctors):
+            ctor = sort.constructor(i)
+            if ctor.arity() == 0:
+                continue  # nullary: no payload to refine
+            field_types = self._payload_field_types(ctor.name(), base)
+            if field_types is None or len(field_types) != ctor.arity():
+                complete = False
+                continue
+            recognizer = sort.recognizer(i)(term) if nctors > 1 else None
+            for j, field_ty in enumerate(field_types):
+                if not self._contains_refinement(field_ty, frozenset()):
+                    continue
+                field_term = sort.accessor(i, j)(term)
+                if isinstance(field_ty, RefinedType):
+                    pred = self._translate_refined_predicate(
+                        smt, field_ty, field_term)
+                    if pred is None:
+                        complete = False
+                    else:
+                        facts.append(pred if recognizer is None
+                                     else z3.Implies(recognizer, pred))
+                sub_facts, sub_complete = self._nested_refinement_facts(
+                    smt, field_ty, field_term, deeper)
+                facts.extend(
+                    sub_facts if recognizer is None
+                    else [z3.Implies(recognizer, sf) for sf in sub_facts]
+                )
+                complete = complete and sub_complete
+        return facts, complete
+
+    def _check_nested_refinement_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        formal_ty: Type | None,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+        guarded: bool | None = None,
+    ) -> None:
+        """Obligate a value against the refinements written INSIDE its target
+        type — the argument-position twin of the construction-site rule (#1410).
+
+        A callee is verified ONCE, and it assumes its parameter's payload
+        refinements: ``consume(@Option<PosInt>)`` proves ``@Int.result > 0``
+        from the payload's ``> 0``.  That is sound exactly while some producer
+        discharged the payload — a construction site's ``refine_bind``, a
+        refined return, R1's param-assume.  A construction in argument position
+        IS obligated (the ``ConstructorCall`` field loop); a value that arrives
+        any other way was asked nothing, so a payload no producer established
+        satisfied the parameter silently and the callee's Tier-1 proof rested
+        on nothing.  Weakening the callee per-caller is not available —
+        modular verification makes that proof once — so the ARGUMENT is
+        obligated instead.
+
+        One rule, whatever the argument's shape.  A CONSTRUCTION is the single
+        exclusion — its own site already carries the obligation, so a second
+        record here would double-count one fact — and it holds only when
+        EVERY value-producing leaf constructs
+        (:py:meth:`_all_leaves_construct`), because a join with one
+        constructed arm establishes nothing about the other.
+
+        Discharge is ALWAYS a solver query.  There is no type-comparison
+        shortcut: an earlier draft answered ``verified`` whenever the source
+        type already carried the same refinements — R3 lifted to nested
+        positions — and PR #1420's review (F4) showed that certifies a
+        DECLARED type nothing obligates.  A `launder(@Option<Int> ->
+        @Option<PosInt>) { @Option<Int>.0 }` and a `let @Option<PosInt> =
+        mkint(x)` both publish the refined type without establishing it, and
+        the shortcut turned each from a silent absence into an affirmative
+        Tier-1 record counted in ``tier1_verified``.  A ``verified`` here now
+        only ever comes from a discharged obligation.
+
+        The query is the predicate over the value, with the source's own
+        nested facts as premises — WITHHELD into ``_tainted_facts`` when the
+        producer disclosed them (#1363), so a goal that holds only from them
+        comes back ``disclosed`` and lands at Tier 3 rather than Tier 1.
+        Those premises are legitimate because every position that gives a
+        value a nested-refined declared type is itself obligated: a
+        construction at its constructor-field site, a function result at the
+        return slot, a `let` at its binder, an argument here, a parameter by
+        R1 whose call sites discharge it.  That closure is what the review's
+        F3/F4 findings were missing, and it is why the premise is a fact
+        rather than the claim it certifies.
+        """
+        if not self._has_nested_refinement(formal_ty):
+            return
+        if self._all_leaves_construct(value_node, smt, slot_env):
+            return
+        val = smt.translate_expr(value_node, slot_env)
+        source_ty = self._resolved_type_of(value_node)
+        # A call to a function this run DISCLOSED did not establish its own
+        # declared type, so that type is not a premise here — the same third
+        # case #1363 named at the match scrutinee, at these boundaries
+        # instead.  Asked of the value's producing LEAVES, because a body is
+        # always a `Block` and the per-expression test answers False for one.
+        disclosed = self._value_source_disclosed(value_node)
+        # `guarded` is derived from the target type at a FUNCTION boundary,
+        # where codegen's decomposition runs.  A site that is not one — a
+        # constructor field, a tuple component at construction, an
+        # effect-operation argument — says so, and no derivation can override
+        # it upward (an explicit False is final).
+        if guarded is None:
+            guarded = self._nested_refinements_guarded(formal_ty)
+        if val is None:
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=(
+                    "the value being narrowed is outside the SMT layer's "
+                    "decidable fragment, so there is no term to test the "
+                    "target type's nested refinements against"
+                ),
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+            return
+        goal_facts, complete = self._nested_refinement_facts(
+            smt, formal_ty, val)
+        if not goal_facts:
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=self._nested_unstatable_reason(formal_ty),
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+            return
+        source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
+        premises = list(assumptions)
+        if source_facts:
+            if disclosed:
+                smt._tainted_facts.extend(source_facts)
+            else:
+                premises.extend(source_facts)
+        goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
+        result = smt.check_valid(goal, premises)
+        if result.status == "verified" and complete:
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "verified")
+        elif result.status == "verified":
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=self._nested_unstatable_reason(formal_ty),
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+        elif result.status == "violated":
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "violated",
+                error_code="E505", counterexample=result.counterexample,
+            )
+            self._report_nested_refinement(
+                decl, value_node, formal_ty, site, result.counterexample)
+        else:
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=guarded,
+                reason=self._undecided_reason(result.status),
+                guard_note=_NESTED_SITE_GUARD_NOTE,
+            )
+
+    @staticmethod
+    def _nested_unstatable_reason(formal_ty: Type | None) -> str:
+        """Why a nested-refinement obligation could not be fully stated (#1410).
+
+        Naming the type is what makes the disclosure actionable: the reader has
+        to know WHICH position was left unproved, and the shapes that reach
+        here — a recursive ADT, an ``Array`` element, an unmodelled predicate —
+        are all read off the target type.
+        """
+        return (
+            "the target type "
+            f"`{pretty_type(formal_ty) if formal_ty is not None else '?'}` "
+            "writes a refinement at a position this run cannot state as a "
+            "predicate over the value — a recursive constructor field, an "
+            "array element (which would need a quantifier over indices), or "
+            "a predicate outside the decidable fragment — so the payload's "
+            "invariant is neither proved here nor established by the producer"
+        )
+
+    def _report_nested_refinement(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        formal_ty: Type | None,
+        site: str,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit the E505 for an undischarged NESTED refinement (#1410).
+
+        Separate wording from :py:meth:`_report_refined_binding` because the
+        claim is different: there the value itself narrows into a refined slot,
+        here a value's PAYLOAD has to satisfy a refinement its target type
+        writes on a component.  Pointing the reader at "the value" would send
+        them to check the wrong thing.
+        """
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+        target = pretty_type(formal_ty) if formal_ty is not None else "the target type"
+        description = (
+            f"Value passed as a {site} in '{decl.name}' may not satisfy the "
+            f"refinement `{target}` writes on a component of its type."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+        self._error(
+            node,
+            description,
+            rationale=(
+                "A refinement written inside a type — an ADT payload, a tuple "
+                "component — is an invariant of every value of that type, and "
+                "the receiving function is verified ONCE assuming it holds. "
+                "The obligation to establish it therefore belongs to whoever "
+                "supplies the value: a construction site discharges it at "
+                "construction, and a value produced any other way discharges "
+                "it here.  This one is neither established by the argument's "
+                "own declared type nor provable from what is known about it."
+            ),
+            fix=(
+                "Give the producer a contract that establishes the component "
+                "invariant (an ensures() implying the predicate, or a declared "
+                "return type carrying the same refinement), or narrow the "
+                "value explicitly at a site where the predicate can be proved."
+            ),
+            spec_ref=(
+                'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '
+                'Section 6.8 "Summary of Verification Tiers"'
+            ),
+            error_code="E505",
+        )
+
     def _reject_or_excuse_concrete_violation(
         self,
         decl: ast.FnDecl,
@@ -7507,6 +8208,7 @@ class ContractVerifier:
         *,
         guarded: bool,
         reason: str,
+        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
         discharged statically — distinguishing codegen-guarded boundary sites
@@ -7537,7 +8239,17 @@ class ContractVerifier:
 
         Required and non-EMPTY: an empty string is a caller that has not
         decided wearing the shape of one that has, and it renders the same
-        broken sentence a missing reason would."""
+        broken sentence a missing reason would.
+
+        *guard_note* is the UNGUARDED report's closing sentence — what codegen
+        does and does not check at this site.  The default names the #746
+        internal-narrowing story, which every site that predates #1410 is.
+        The nested-refinement family is not: its site IS a function boundary,
+        and what is missing there is that codegen's boundary decomposition
+        reaches a parameter's own refinement and its TUPLE components and
+        nothing else, so the default sentence would tell a reader looking at a
+        call argument that the site is internal — a false statement about
+        where the guard is, in the one field written to say exactly that."""
         if not reason:
             raise ValueError(
                 "a refinement Tier-3 demotion emits an E506 that must say "
@@ -7554,7 +8266,8 @@ class ContractVerifier:
                 decl.name, "refine_bind", value_node, "tier3_unguarded",
                 error_code="E506",
             )
-            self._report_refined_unguarded(decl, value_node, site, reason)
+            self._report_refined_unguarded(
+                decl, value_node, site, reason, guard_note)
 
     def _check_generic_refined_return(
         self, decl: ast.FnDecl, ret_type: Type,
@@ -7902,9 +8615,12 @@ class ContractVerifier:
            of reading the stream can find them.
 
         Route 3 is the only one that can trigger a module's verification, and
-        it is reached only for a call this walk has already found carries
-        declared-type facts — so a program that imports without matching on
-        an imported call pays nothing for the manifest.
+        each consumer reaches it only where a declared-type fact is actually
+        in play — the narrowing walk asks for a scrutinee it has already found
+        carries sub-pattern facts, and the #1410 argument obligation asks only
+        for an argument whose parameter type writes a refinement on a
+        component — so a program that imports without either shape pays
+        nothing for the manifest.
         """
         if not isinstance(scrutinee, (ast.FnCall, ast.ModuleCall)):
             return False
@@ -9139,6 +9855,7 @@ class ContractVerifier:
         node: ast.Expr,
         site: str,
         reason: str,
+        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
     ) -> None:
         """Emit an E506 warning for a refinement narrowing the SMT layer could
         not discharge and codegen does NOT runtime-guard (#746).
@@ -9165,10 +9882,7 @@ class ContractVerifier:
             ),
             rationale=(
                 f"The refinement predicate was not discharged statically: "
-                f"{reason}.  Codegen runtime-guards refinements only at the "
-                "function boundary (parameter entry / return exit), not at "
-                "this internal narrowing site, so it is neither statically "
-                "proven nor runtime-checked."
+                f"{reason}.  {guard_note}"
             ),
             spec_ref=(
                 'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '

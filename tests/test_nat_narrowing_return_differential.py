@@ -1245,10 +1245,23 @@ class TestRefinedNonPlainBaseDisclosure1036:
     )
     def test_nonplain_base_records_unguarded(self, src: str, site: str) -> None:
         statuses = _refine_bind_statuses(src)
-        assert statuses and all(s == "tier3_unguarded" for s in statuses), (
-            f"a non-plain-arg refined {site} has no codegen guard — expected "
-            f"only tier3_unguarded disclosures, got {statuses} (a 'tier3' here "
-            f"is an unfulfilled runtime-guard promise, #1036)"
+        # The property is the ABSENCE of a guarded promise, asserted directly
+        # rather than through "every status is the unguarded one".  Since #1410
+        # a call whose formal writes a refinement INSIDE its type raises an
+        # obligation of its own, and two of these fixtures make such a call —
+        # `array_length(@Array<{ @Int | ... }>.0)`, whose argument's declared
+        # type IS the formal, so it proves modularly.  That `verified` is a
+        # different obligation about a different site; folding it into this
+        # assertion would make the fixture's incidental calls part of a
+        # statement about the boundary's guard.
+        assert "tier3_unguarded" in statuses, (
+            f"a non-plain-arg refined {site} must DISCLOSE — expected a "
+            f"tier3_unguarded record, got {statuses} (#1036)"
+        )
+        assert "tier3" not in statuses, (
+            f"a non-plain-arg refined {site} has no codegen guard, so a "
+            f"'tier3' is an unfulfilled runtime-guard promise: {statuses} "
+            "(#1036)"
         )
 
     def test_plain_base_still_promises_guard(self) -> None:

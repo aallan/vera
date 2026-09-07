@@ -945,6 +945,15 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
          "RegistrationMixin._check_reserved_type_params"),
         ("vera/checker/resolution.py", "ResolutionMixin._resolve_named_type"),
     }),
+    # Refinement predicate not discharged at a binding site: the value
+    # narrowing into a refined slot, and (#1410) a value whose target type
+    # writes the refinement on a COMPONENT — one rule, two shapes of the same
+    # "this value may not satisfy the predicate its slot declares", worded
+    # apart only because they point the reader at different things to check.
+    "E505": frozenset({
+        ("vera/verifier.py", "ContractVerifier._report_nested_refinement"),
+        ("vera/verifier.py", "ContractVerifier._report_refined_binding"),
+    }),
     # Tier-3 refinement demotion: a single dispatcher picks between the
     # runtime-checked and the unguarded phrasing of one classification.
     "E506": frozenset({
