@@ -1721,6 +1721,14 @@ class TestTheBoundFlagIsPerComponent1222:
                     str(_write(tmp_path, _1222_RANKABLE_ADT_SIBLING,
                                "rank1222c.vera")))
         assert proc.returncode == 0, proc.stderr[-400:]
+        # BOTH halves: "i64 range" is the standalone measure-range
+        # check, which a declined chain would also emit, so on its own
+        # it cannot tell this cell's not-declined path from the declined
+        # one.  `dec_prev` is the chain guard itself (CR PR-review).
+        assert "dec_prev" in proc.stdout, (
+            "the chain guard is NOT emitted for a concrete ADT sibling, "
+            "so this cell no longer measures the not-declined path"
+        )
         assert "i64 range" in proc.stdout
 
     def test_the_disclosure_names_the_cause_it_actually_had(
@@ -2167,5 +2175,94 @@ class TestCallResultClosureOperandIsPinnedNotClaimed:
         assert '(export "taker"' in proc.stdout, (
             "the module lost more than `f`, so its absence is not evidence "
             "about this shape"
+        )
+
+
+_CR_REFINED_INT_ELEMENT = """\
+type NonNeg = { @Int | @Int.0 >= 0 };
+
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<NonNeg> = [@Nat.0];
+  @Array<NonNeg>.0[0]
+}
+"""
+
+_CR_PLAIN_INT_ELEMENT = """\
+public fn f(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [@Nat.0];
+  @Array<Int>.0[0]
+}
+"""
+
+
+class TestARefinedIntElementCountsItsWideningGuardToo:
+    """A refined `@Int` element records the RANGE obligation beside the
+    predicate one (CR PR-review).
+
+    Routing refined-FIRST fixed the swallowed predicate and introduced the
+    opposite error at the same site: the refined arm returned, so an
+    `@Array<{ @Int | ... }>` element fed a `@Nat` recorded only
+    `refine_bind`.  Code generation does not distinguish the two — it
+    resolves the refined element target to `@Int` and emits the same
+    widening guard it emits for a plain one — so the site had a guard that
+    fires with nothing counting it.  That is a Tier-3 UNDERcount, the same
+    defect as the overcount in the other direction and just as much a
+    verifier/codegen desync.
+
+    The two obligations are about different things and neither implies the
+    other: the predicate is about the VALUE, the widening check about the
+    REPRESENTATION a `@Nat` above `i64.MAX` takes when it is reinterpreted
+    as a signed `i64`.  A `@Nat` narrowing twin is deliberately absent — a
+    refinement over `@Nat` discharges its full predicate on the refined arm,
+    which already implies `>= 0`.
+    """
+
+    def test_the_refined_element_records_both_obligations(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _CR_REFINED_INT_ELEMENT, name="cr4a.vera")
+        kinds = [(o["kind"], o["status"]) for o in obs
+                 if o["kind"] in ("refine_bind", "nat_to_int_coerce")]
+        assert ("nat_to_int_coerce", "tier3") in kinds, (
+            f"the widening guard the module emits here is counted by no "
+            f"obligation: {kinds}"
+        )
+        assert ("refine_bind", "verified") in kinds, kinds
+        _assert_partition(envelope)
+
+    def test_and_the_module_really_does_guard_it(
+        self, tmp_path: Path,
+    ) -> None:
+        """The differential that makes the missing record a defect.
+
+        The plain `@Array<Int>` element is the control: #820 guards its
+        store and `nat_to_int_coerce` counts that guard.  The refined
+        element compiles to the SAME number of traps in `f`, which is what
+        says the guard is there — so an obligation stream that mentioned it
+        only in the plain case was describing two different programs.
+        """
+        def traps(source: str, name: str) -> int:
+            proc = _cli("compile", "--wat",
+                        str(_write(tmp_path, source, name)))
+            assert proc.returncode == 0, proc.stderr[-400:]
+            body, _, rest = proc.stdout.partition("(func $f ")
+            assert rest, "no `f` in the emitted module"
+            return rest.split("\n  )")[0].count("unreachable")
+
+        plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
+        refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
+        assert plain > 0, "the control emits no guard, so it controls nothing"
+        assert refined == plain, (
+            f"the refined element emits {refined} traps and the plain one "
+            f"{plain}; this cell's premise is that codegen treats them alike"
         )
 

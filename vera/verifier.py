@@ -4274,6 +4274,27 @@ class ContractVerifier:
                 decl, expr, refined_target, smt, slot_env, assumptions,
                 site=site,
             )
+            # And the RANGE obligation beside it, when the refinement is over
+            # `@Int` and the value is a `@Nat` (CR PR-review).  The two are
+            # different obligations about different things: the predicate is
+            # about the value, the widening check is about the
+            # representation a `@Nat` above `i64.MAX` takes when it is
+            # reinterpreted as a signed `i64`.  Codegen does not distinguish
+            # them — it resolves the refined element target to `@Int` and
+            # emits the same widening guard it emits for a plain one,
+            # measured by a differential over the two element types that
+            # counts an identical five `unreachable` in `f` — so recording
+            # only the predicate left a guard that fires with nothing
+            # counting it, the Tier-3 UNDERcount this PR exists to remove.
+            # No narrowing twin here: a refinement over `@Nat` discharges its
+            # full predicate on the arm above, which already implies `>= 0`.
+            if self._is_int_type(expected) and self._result_is_nat(expr):
+                self._check_int_widening_obligation(
+                    decl, expr, smt, slot_env, list(assumptions), site=site,
+                    guarded=(
+                        site in _INT_WIDENING_CONSTRUCTION_GUARDED_SITES
+                    ),
+                )
         elif (self._nat_binding_target(expr, expected)
                 and self._narrows_into_nat(expr)):
             self._check_nat_binding_obligation(
