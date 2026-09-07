@@ -258,16 +258,38 @@ _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 # =====================================================================
 
 def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
-    """Build a canonical key for an ADT sort, e.g. ``List<Int>``."""
+    """Build a canonical key for an ADT sort, e.g. ``List<Int>``.
+
+    ONE derivation of the sort a type argument contributes, wherever a term
+    carrying it is built or rebuilt (#1421).  A key that two routes spell
+    differently is two Z3 sorts for one Vera type, and Z3 raises rather than
+    returning an error when they meet — the crash surfaced as an ``E699``
+    internal compiler error on `match mk(x) { Some(@PosInt) -> Some(@PosInt.0),
+    None -> None }`, where the arms' sorts have to join under a `z3.If`.
+
+    A REFINEMENT contributes its BASE.  `{ @Int | @Int.0 > 0 }` is an `Int` at
+    the representation level — its own type docstring says it behaves as its
+    base, and the predicate is discharged as an obligation at every narrowing
+    site rather than carried in the sort — so `Option<{ @Int | … }>` and
+    `Option<Int>` are one sort.  Spelling the refinement `?` instead made it a
+    DIFFERENT sort from the `Option<Int>` other routes derive for the same
+    value, which is exactly the disagreement that crashed.  Unwrapped in a
+    loop, so a refinement over a refinement lands on the same base.
+    """
     if not type_args:
         return adt_name
     arg_strs = []
     for a in type_args:
+        while isinstance(a, RefinedType):
+            a = a.base
         if isinstance(a, PrimitiveType):
             arg_strs.append(a.name)
         elif isinstance(a, AdtType):
             arg_strs.append(_adt_sort_key(a.name, a.type_args))
         else:
+            # A type variable or a shape the sort layer does not model: the
+            # key stays un-nameable on purpose, and `_parse_adt_sort_key`
+            # refuses it rather than inventing an instantiation.
             arg_strs.append("?")
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
