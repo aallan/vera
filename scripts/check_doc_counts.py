@@ -1495,22 +1495,29 @@ _FIXTURE_NAME = re.compile(r"`([A-Za-z0-9_]+)`")
 # three" silently unchecked, with the global "no count anywhere" backstop
 # as the only net (PR #1411 review).
 _COUNT_DETERMINERS = frozenset(
-    {"the", "its", "their", "those", "these", "and", "a", "an", "same"}
+    {"the", "its", "their", "those", "these", "and", "a", "an", "same",
+     "all", "every", "both", "of"}
 )
 
 
 def _count_token(lead: str) -> str | None:
-    """The token in a list's count slot, or None when it holds only a
-    determiner.  `lead` is the (at most two) words before the phrase."""
-    words = lead.split()
-    if not words:
-        return None
-    last = words[-1]
-    return None if last.lower() in _COUNT_DETERMINERS else last
+    """What sits in a list's count slot, or None when only determiners do.
+
+    The WHOLE slot, not its last word: reading the last one alone made
+    "the forty three" report as "says 'three' (3)" — a misleading
+    message, and a silent PASS wherever the manifest happened to hold
+    three (PR #1411 review).  A slot that still has two words after the
+    determiners come out is not a count this can read, and says so with
+    the words the author actually wrote.
+    """
+    words = [w for w in lead.split() if w.lower() not in _COUNT_DETERMINERS]
+    return " ".join(words) if words else None
 
 
 def _parse_count(token: str) -> int | None:
-    """A count written as digits or as an English number word."""
+    """A count written as digits or as one English number word."""
+    if " " in token:
+        return None
     if token.isdigit():
         return int(token)
     return _english_number_word_to_int(token)
@@ -1523,15 +1530,19 @@ def _count_backstop(matched: bool, counted: int, subject: str) -> list[str]:
     a determiner, which is right for a list that never stated a size —
     and wrong as the only rule, because rewording "Forty-three of them"
     to "The rest of them" then leaves the names gated and the
-    manifest-backed count silently ungated.  Each family of sentences
-    carries its own backstop, so losing the count in one does not hide
-    behind another still having it (PR #1411 review).
+    manifest-backed count silently ungated.
+
+    Called once per SENTENCE.  A family-wide tally was the same fault
+    one level up: the level family has one sentence per level, so the
+    `verify` sentence's count stood in for the `check` sentence's and
+    dropping the latter was clean (PR #1411 review).  `subject` names
+    the sentence and already carries its own file prefix.
     """
     if matched and not counted:
         return [
-            f"TESTING.md: {subject} no longer state a count — the number"
-            f" in front of the names was reworded away, so nothing checks"
-            f" it against the manifest"
+            f"{subject} no longer states a count — the number in front of"
+            f" the names was reworded away, so nothing checks it against"
+            f" the manifest"
         ]
     return []
 
@@ -1699,6 +1710,11 @@ def _negatives_at_stage(
     }
 
 
+# The prose states the `run` level as "almost all programs" and does not
+# spell it out; every other level the manifest holds must be enumerated.
+_UNENUMERATED_LEVEL = "run"
+
+
 def _programs_at_level(
     manifest: list[dict[str, object]], level: str
 ) -> set[str]:
@@ -1720,7 +1736,10 @@ def check_conformance_level_prose(
     **negative tests**"), and the compile-stage negatives, which the
     prose introduces separately because the property they pin is
     different — the checker ACCEPTS the program and codegen refuses it.
-    A shape that matches nothing is an error, not a skip.
+    A shape that matches nothing is an error, not a skip — and so is a
+    single LEVEL whose sentence is gone, which the family-wide check
+    cannot see while its siblings still match.  Each sentence is
+    required to state its own count for the same reason.
     """
     errors: list[str] = []
     levels = list(_LEVEL_PROSE.finditer(testing_text))
@@ -1730,20 +1749,39 @@ def check_conformance_level_prose(
             " level' sentence found — it moved or was reworded, so the"
             " per-level program lists are no longer gated"
         )
-    counted = 0
     for match in levels:
         level = match.group("level")
+        where = f"TESTING.md: the `{level}`-level program list"
         carried, found = _check_enumeration(
-            f"TESTING.md: the `{level}`-level program list",
+            where,
             match,
             _programs_at_level(manifest, level),
             f"`{level}`-level programs",
         )
-        counted += carried
         errors += found
-    errors += _count_backstop(
-        bool(levels), counted, "the per-level program list(s)"
-    )
+        # PER SENTENCE, not per family.  The level family has one
+        # sentence per level, so a family-wide tally let the `verify`
+        # sentence's count stand in for the `check` sentence's: dropping
+        # the number in front of the 56 check-level programs was CLEAN
+        # while `Twenty` still sat in front of the verify list (PR #1411
+        # review).
+        errors += _count_backstop(True, carried, where)
+    # A level whose sentence is gone is not gated at all, and the family
+    # is not empty, so the blanket check above cannot see it.  Which
+    # levels must be enumerated is read from the manifest rather than
+    # listed here: `run` is the one the prose states as "almost all"
+    # without spelling it out.
+    named = {match.group("level") for match in levels}
+    for level in sorted(
+        {str(entry["level"]) for entry in manifest} - {_UNENUMERATED_LEVEL}
+    ):
+        if level not in named:
+            errors.append(
+                f"TESTING.md: the manifest holds `{level}`-level programs"
+                f" but no '<Count> programs (...) are at the `{level}`"
+                f" level' sentence names them — that list is no longer"
+                f" gated at all"
+            )
 
     by_name = _expected_error_codes(manifest)
     for pattern, codes_pattern, stage, label, cue in (
@@ -1769,7 +1807,6 @@ def check_conformance_level_prose(
                 f" reworded, so the {stage}-stage negatives are no longer"
                 f" gated"
             )
-        counted = 0
         for match in matches:
             where = f"TESTING.md: {label}"
             carried, found = _check_enumeration(
@@ -1778,15 +1815,14 @@ def check_conformance_level_prose(
                 _negatives_at_stage(manifest, stage),
                 f"{stage}-stage negative tests",
             )
-            counted += carried
             errors += found
+            errors += _count_backstop(True, carried, where)
             errors += _check_respective_codes(
                 where,
                 _FIXTURE_NAME.findall(match.group("names")),
                 _codes_after(testing_text, match, codes_pattern),
                 by_name,
             )
-        errors += _count_backstop(bool(matches), counted, label)
     return errors
 
 

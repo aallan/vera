@@ -1578,10 +1578,17 @@ def _manifest(
     *negatives: str,
     positives: int = 2,
     compile_stage: tuple[str, ...] = (),
+    verify: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
+    # The bulk sits at `run`, the level the prose states as "almost all"
+    # without enumerating it — so a fixture that wants a SECOND level
+    # sentence asks for `verify` entries explicitly.
     entries: list[dict[str, object]] = [
-        {"file": f"ch01_positive_{i}.vera", "level": "verify"}
+        {"file": f"ch01_positive_{i}.vera", "level": "run"}
         for i in range(positives)
+    ]
+    entries += [
+        {"file": f"{name}.vera", "level": "verify"} for name in verify
     ]
     entries += [
         {"file": f"{name}.vera", "level": "check", "expected_error": "E123"}
@@ -1720,7 +1727,9 @@ class TestNegativeFixtureLists:
         [
             pytest.param("the 3 ", "'3'", id="digits"),
             pytest.param("all four ", "'four'", id="different-determiner"),
-            pytest.param("the forty three ", "'three'", id="unhyphenated"),
+            # The WHOLE slot is named, not its last word: reporting
+            # "'three'" was misleading and would PASS a manifest of 3.
+            pytest.param("the forty three ", "'forty three'", id="unhyphenated"),
         ],
     )
     def test_a_count_the_pattern_did_not_expect_flags(
@@ -1883,6 +1892,8 @@ def _level_prose(
     compile_names: tuple[str, ...] = (),
     compile_word: str = "Zero",
     negative_codes: dict[str, str] | None = None,
+    verify_names: tuple[str, ...] = (),
+    verify_word: str = "Zero",
 ) -> str:
     def listed(names: tuple[str, ...]) -> str:
         return ", ".join(f"`{name}`" for name in names)
@@ -1908,11 +1919,20 @@ def _level_prose(
         + codes(negative_names, negative_codes or {})
         + " respectively)"
     )
+    # A SECOND level sentence, so a cell can see one level hiding behind
+    # another — the shipped file has two and a one-sentence fixture
+    # cannot show the fault (PR #1411 review).
+    verify_part = (
+        ""
+        if not verify_names
+        else f" {verify_word} programs ({listed(verify_names)}) are at the"
+        " `verify` level."
+    )
     return (
         "Almost all programs are at the `run` level. "
         f"{check_word} programs ({listed(check_names)}) are at the `check`"
-        f" level. {negative_word} of them — {listed(negative_names)} — are"
-        f" **negative tests**{respective}."
+        f" level.{verify_part} {negative_word} of them —"
+        f" {listed(negative_names)} — are **negative tests**{respective}."
         f"{compile_part}\n"
     )
 
@@ -2191,7 +2211,7 @@ class TestConformanceLevelProse:
         ("old", "new", "cue"),
         [
             pytest.param("Three programs (", "The programs (",
-                         "per-level program list", id="level"),
+                         '`check`-level program list', id="level"),
             # No determiner fits this slot in English ("the of them"),
             # so the reachable shape here is the count simply gone.
             pytest.param("Two of them — ", "of them — ",
@@ -2229,7 +2249,83 @@ class TestConformanceLevelProse:
             text.replace(old, new, 1), manifest
         )
         assert len(errors) == 1, errors
-        assert "no longer state a count" in errors[0] and cue in errors[0]
+        assert "no longer states a count" in errors[0] and cue in errors[0]
+
+    def _two_levels(self, **overrides: object) -> tuple[str, list[dict[str, object]]]:
+        """A fixture with TWO level sentences, as the shipped file has.
+
+        A one-sentence fixture cannot show a level hiding behind its
+        sibling, which is why the family-wide tally survived its first
+        battery (PR #1411 review).
+        """
+        manifest = _manifest(
+            "ch02_a_rejected",
+            "ch08_b_rejected",
+            positives=1,
+            verify=("ch03_proved",),
+        )
+        kwargs: dict[str, object] = {
+            "check_word": "Two",
+            "negative_word": "Two",
+            "verify_names": ("ch03_proved",),
+            "verify_word": "One",
+        }
+        kwargs.update(overrides)
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return text, manifest
+
+    def test_two_level_sentences_are_clean_when_both_agree(self) -> None:
+        text, manifest = self._two_levels()
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_one_level_cannot_hide_its_count_behind_another(self) -> None:
+        """#1411 review finding 7, on the shape the live file has: the
+        `check` sentence loses its number while the `verify` sentence's
+        still stands.  A family-wide tally read 1 and passed."""
+        text, manifest = self._two_levels()
+        text = text.replace("Two programs (", "The rest of the programs (", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "`check`-level program list" in errors[0]
+        assert "no longer states a count" in errors[0]
+        # The sibling still carries its own, and is not reported.
+        assert "`verify`" not in errors[0]
+
+    def test_one_level_sentence_reworded_away_is_reported(self) -> None:
+        """#1411 review finding 8: with the `verify` sentence still
+        matching, the family is not empty, so the blanket presence check
+        cannot see that the `check` list stopped being gated — and a
+        name dropped from it went unnoticed."""
+        text, manifest = self._two_levels()
+        text = text.replace("are at the `check` level", "sit at the `check` tier", 1)
+        text = text.replace("`ch02_a_rejected`, ", "", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "the manifest holds `check`-level programs" in errors[0]
+        assert "no longer gated at all" in errors[0]
+
+    def test_an_unenumerated_run_level_is_not_demanded(self) -> None:
+        """`run` is the level the prose states as "almost all" without
+        spelling it out, so requiring a sentence for every manifest
+        level must not demand one for it."""
+        text, manifest = self._two_levels()
+        assert any(entry["level"] == "run" for entry in manifest)
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_the_whole_count_slot_is_read_not_its_last_word(self) -> None:
+        """#1411 review finding 9: "the forty three" reported as "says
+        'three' (3)" — misleading, and a silent PASS wherever the
+        manifest held three."""
+        text, manifest = self._two_levels()
+        text = text.replace("Two programs (", "the forty three programs (", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "'forty three'" in errors[0]
+        assert "'three'" not in errors[0]
 
     def test_the_shipped_file_is_actually_read(self) -> None:
         """Both shapes must match the live TESTING.md, or the gate is
