@@ -958,10 +958,10 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     #: `_nested_refinement_facts` was NOT here, and that is how a fourth
     #: reader got in (#1418 review).  #1420 added
     #: `_check_nested_refinement_obligation`, which builds a source fact with
-    #: it and then decided for itself whether to assume it — asking
-    #: `_value_source_disclosed`, a syntactic test over the value's leaves, so
-    #: a `let`-bound disclosed producer answered False and its declared type
-    #: was granted as a premise.  Measured: the same value gave that
+    #: it and then decided for itself whether to assume it, with a local
+    #: syntactic test over the value's producing leaves — since deleted with
+    #: its only call site — so a `let`-bound disclosed producer answered False
+    #: and its declared type was granted as a premise.  Measured: the same value gave that
     #: obligation `tier3_unguarded` spelled `consume(mk(x))` and `verified`
     #: spelled `let @T = mk(x); consume(@T.0)`.  This cell's whole claim is
     #: that convention does not survive a fourth reader; it did not, because

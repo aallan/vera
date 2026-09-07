@@ -8535,10 +8535,11 @@ class ContractVerifier:
         source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
         premises = list(assumptions)
         # THE GATE, not a fourth hand-rolled copy of it (#1418 review).  This
-        # site asked `_value_source_disclosed` instead, which descends to the
-        # value's producing leaves and puts a SYNTACTIC question to each — so
-        # a `let`-bound disclosed producer arrives as a slot reference,
-        # answers False, and its declared type was granted as a premise.  That
+        # site had a local test of its own instead — since deleted with its
+        # only call site — which descended to the value's producing leaves and
+        # put a SYNTACTIC question to each, so a `let`-bound disclosed
+        # producer arrived as a slot reference, answered False, and its
+        # declared type was granted as a premise.  That
         # is #1406 exactly, in a reader added after it: measured, the same
         # value gave this obligation `tier3_unguarded` spelled
         # `consume(mk(x))` and `verified` spelled
