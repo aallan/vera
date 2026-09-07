@@ -52,7 +52,11 @@ from vera.parser import parse_file
 from vera.resolver import ModuleResolver
 from vera.transform import transform
 
-from tests.module_fixture_helpers import build_multi_module, module_value
+from tests.module_fixture_helpers import (
+    build_multi_module,
+    build_multi_module_past_check,
+    module_value,
+)
 
 # =====================================================================
 # Fixtures
@@ -1371,6 +1375,52 @@ class TestTheSymbolIsInternal:
         assert module_value(result, fn="main") == ("ok", "Sq(3)")
         assert module_value(result, fn="other") == ("ok", "Cr(true)")
 
+    def test_every_arm_of_a_renamed_adt_renders_its_own_name(
+        self, tmp_path: Path,
+    ) -> None:
+        """EVERY constructor arm, applied and nullary, in one string.
+
+        The show cells above each render ONE applied constructor, so a
+        strip applied unevenly across the arms is invisible to them: making
+        it conditional on the constructor having fields
+        (``display_adt_name(cname) if fields else cname``) leaves all of
+        them green and renders the nullary arm as ``mod$liba$Bz``.  This
+        concatenates all three arms of one renamed type and pins the whole
+        string, so a leak anywhere in the dispatch is a wrong value rather
+        than a wrong-looking substring nothing reads.
+        """
+        liba = """\
+module liba;
+
+public data Shape { B(Int), Bx(Bool), Bz }
+
+public fn gen3(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat(string_concat(show(B(@Int.0)), show(Bx(true))), show(Bz))
+}
+"""
+        entry = """\
+import liba(gen3);
+import libb(bone);
+
+public fn main(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  gen3(3)
+}
+"""
+        _verify, result, cg_errors = build_multi_module(
+            tmp_path / "arms",
+            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": entry},
+        )
+        assert cg_errors == [], cg_errors
+        assert module_value(result) == ("ok", "B(3)Bx(true)Bz")
+
     def test_the_control_renders_identically_without_a_rename(
         self, tmp_path: Path,
     ) -> None:
@@ -1895,3 +1945,50 @@ public fn broken(@Int -> @Int)
             for attr in ("description", "rationale", "fix"):
                 text = getattr(diag, attr, None) or ""
                 assert "mod$" not in text, (diag.error_code, attr, text)
+
+    def test_a_diagnostic_that_names_a_renamed_type_reads_the_users_name(
+        self, tmp_path: Path,
+    ) -> None:
+        """The cell that makes the strip LOAD-BEARING (PR review, N1).
+
+        Deleting the ``_unmangle_adt_names`` call from ``compile_program``
+        was inert against every other cell here: the sweeps run over
+        programs whose diagnostics never mention an ADT, so nothing read
+        the one thing the strip exists to change.  This drives a diagnostic
+        that DOES name the type — ``liba``'s ``Shape`` has an ``Array``
+        field, so codegen's structural-``Eq`` rail reports E613 about it —
+        on a program where ``Shape`` is contended and therefore renamed.
+        Measured with the call deleted: ``Type 'mod$liba$Shape' does not
+        satisfy ability 'Eq'``.
+
+        Driven through ``build_multi_module_past_check`` because the
+        CHECKER refuses the comparison first (E243).  That is the point:
+        the codegen rail behind it still runs, still names the type, and
+        the reader must be shown their own spelling either way.
+        """
+        liba = """\
+module liba;
+
+public data Shape { Sq(Array<Int>) }
+
+public fn aone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if Sq([1]) == Sq([1]) then { @Int.0 } else { 0 }
+}
+"""
+        check_errors, result, _cg = build_multi_module_past_check(
+            tmp_path / "e613",
+            {"liba.vera": liba, "libb.vera": _LIBB, "main.vera": _ENTRY},
+        )
+        assert check_errors, check_errors
+        e613 = [d for d in result.diagnostics if d.error_code == "E613"]
+        assert e613, [d.error_code for d in result.diagnostics]
+        described = " ".join(
+            (getattr(d, a, None) or "")
+            for d in e613 for a in ("description", "rationale", "fix")
+        )
+        assert "Shape" in described, described[:200]
+        assert "mod$" not in described, described[:200]

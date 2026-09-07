@@ -650,5 +650,6 @@ The current module system has the following limitations, each tracked as a GitHu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
+| An entry-file `data` declaration is not a party to per-owner identity | [#1423](https://github.com/aallan/vera/issues/1423) | Two modules contending on a name the entry also declares are compiled under their own owner-qualified symbols (§11.16), which leaves the entry's declaration alone in the shared slot and silences the E623 pair the same entry and a SINGLE module would be refused for |
 | No re-exports | [#127](https://github.com/aallan/vera/issues/127) | A module cannot re-export declarations imported from other modules |
 | No package system | [#130](https://github.com/aallan/vera/issues/130) | Module resolution is file-system-only; no package manager or registry |
