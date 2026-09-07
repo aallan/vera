@@ -404,11 +404,18 @@ public fn boxer(@Int -> @Box<Int>)
 """
         entry = _ENTRY_ARITY_ZERO.replace(
             "import blib(probe);", "import blib(probe, boxer);")
-        _verr, _result, cg_errors = build_multi_module(
+        _verr, result, cg_errors = build_multi_module(
             tmp_path / "arity",
             {"blib.vera": module, "main.vera": entry},
         )
         assert _codes(cg_errors) == ["E623"], cg_errors
+        # The refusal REACHES the result, which the code alone does not say:
+        # E623 is emitted at the entry declaration and the Pass-1.9 severity
+        # gate is what turns it into a refused compile.  Carried over from
+        # the cell this one was restated from (PR review) — without it a
+        # regression that downgraded the diagnostic to a warning would leave
+        # the program compiling and this cell green.
+        assert not result.ok
 
     def test_a_differing_arity_the_entry_cannot_reach_is_admitted(
         self, tmp_path: Path,

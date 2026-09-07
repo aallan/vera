@@ -1014,6 +1014,14 @@ class CrossModuleMixin:
         constructor order compiled clean and answered ``100`` where ``7``
         is correct.  The closure is iterative and bounded by the alias set,
         so a cyclic alias chain terminates rather than recursing.
+
+        What this does NOT reach is the constructor namespace's own crossing
+        between an entry file and a module on DIFFERENTLY named types —
+        `#1436`, being fixed separately.  The surface answers which TYPE
+        names a declaration carries, and two types that share only a
+        constructor spelling carry neither of each other's names; the
+        constructor axis reads this table through `ctor_reach`, which is
+        where that gap is closed rather than here.
         """
         surface: list[object]
         if isinstance(decl, ast.FnDecl):
@@ -1021,6 +1029,16 @@ class CrossModuleMixin:
         elif isinstance(decl, ast.DataDecl):
             surface = [decl.constructors]
         elif isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
+            # UNREACHABLE today, and deliberately kept.  §8.4.1 makes an
+            # effect declaration module-local and not importable, so no
+            # caller reaches this arm: the loop that builds the surface
+            # tables only asks about a module's PUBLIC declarations, and an
+            # effect cannot be one.  It is written for the day effect export
+            # lands — the operations are where a value of an ADT would cross
+            # a namespace boundary through an effect, so the flow condition
+            # needs them the moment that becomes possible, and an arm added
+            # then would be an arm nobody thought to add.  Revisit it with
+            # whatever makes an effect importable.
             surface = [decl.operations]
         elif isinstance(decl, ast.TypeAliasDecl):
             surface = [decl.type_expr]
