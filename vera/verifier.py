@@ -8539,12 +8539,6 @@ class ContractVerifier:
             return
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)
-        # A call to a function this run DISCLOSED did not establish its own
-        # declared type, so that type is not a premise here — the same third
-        # case #1363 named at the match scrutinee, at these boundaries
-        # instead.  Asked of the value's producing LEAVES, because a body is
-        # always a `Block` and the per-expression test answers False for one.
-        disclosed = self._value_source_disclosed(value_node)
         # Guardedness is the SITE half intersected with the TYPE half, the
         # same shape every other `refine_bind` leg uses (#765): the roster
         # says whether codegen guards AT this position, and
@@ -8583,11 +8577,18 @@ class ContractVerifier:
             return
         source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
         premises = list(assumptions)
-        if source_facts:
-            if disclosed:
-                smt._tainted_facts.extend(source_facts)
-            else:
-                premises.extend(source_facts)
+        # THE GATE, not a fourth hand-rolled copy of it (#1418 review).  This
+        # site asked `_value_source_disclosed` instead, which descends to the
+        # value's producing leaves and puts a SYNTACTIC question to each — so
+        # a `let`-bound disclosed producer arrives as a slot reference,
+        # answers False, and its declared type was granted as a premise.  That
+        # is #1406 exactly, in a reader added after it: measured, the same
+        # value gave this obligation `tier3_unguarded` spelled
+        # `consume(mk(x))` and `verified` spelled
+        # `let @T = mk(x); consume(@T.0)`.  The gate asks of the VALUE, so
+        # both spellings agree.
+        premises.extend(self._established_facts(
+            source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
         if result.status == "verified" and complete:

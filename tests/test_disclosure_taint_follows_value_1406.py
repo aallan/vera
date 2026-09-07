@@ -819,6 +819,86 @@ def test_1413_a_renarrowing_off_a_clean_value_still_proves(
     assert out.strip().split()[-1] == "7", out[-400:]   # exact, not a suffix
 
 
+#: The fourth reader, as a program rather than as an AST walk.  `consume`
+#: declares a parameter with a refinement nested inside it, so #1420 obligates
+#: the ARGUMENT for that refinement; the argument's own declared type is the
+#: premise, and it rests on a disclosure.  Spelled two ways, same value.
+_ARG_NESTED = """type PosInt = { @Int | @Int.0 > 0 };
+
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(%s)
+}
+
+private fn consume(@Option<PosInt> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<PosInt>.0 {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 41
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+%s
+}
+"""
+
+_ARG_DIRECT = "  consume(mk(@Float64.0))"
+_ARG_LET = ("  let @Option<PosInt> = mk(@Float64.0);\n"
+            "  consume(@Option<PosInt>.0)")
+
+
+@pytest.mark.parametrize("body,ids", [(_ARG_DIRECT, "direct"), (_ARG_LET, "let")],
+                         ids=["direct", "let_bound"])
+def test_1418_a_nested_refinement_premise_follows_the_value(
+    tmp_path: Path, body: str, ids: str,
+) -> None:
+    """Both spellings of the same value give the same verdict.
+
+    The nested-refinement site decided disclosure for itself, with a
+    syntactic test over the value's producing leaves, so the two spellings
+    disagreed: `tier3_unguarded` written `consume(mk(x))` and **`verified`**
+    written `let @T = mk(x); consume(@T.0)` — a Tier-1 claim resting on a fact
+    the same run reported as neither proved nor guarded.  #1406's bug, in a
+    reader added after #1406 was fixed, which is why the structural cell
+    below now names this producer too.
+    """
+    src = _ARG_NESTED % ("float_to_int(@Float64.0)", body)
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    binds = [(o["status"], o.get("error_code")) for o in result["obligations"]
+             if o["kind"] == "refine_bind"]
+    assert ("tier3_unguarded", "E506") in binds, binds
+    assert ("verified", None) not in binds, (
+        f"a nested-refinement premise was granted at Tier 1 over a disclosed "
+        f"value — {binds}"
+    )
+
+
+@pytest.mark.parametrize("body", [_ARG_DIRECT, _ARG_LET],
+                         ids=["direct", "let_bound"])
+def test_1418_a_nested_refinement_premise_over_a_clean_value_still_proves(
+    tmp_path: Path, body: str,
+) -> None:
+    """The control: routing through the gate did not demote every argument."""
+    src = _ARG_NESTED % ("7", body)
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    binds = [(o["status"], o.get("error_code")) for o in result["obligations"]
+             if o["kind"] == "refine_bind"]
+    assert binds and all(b == ("verified", None) for b in binds), binds
+
+
 def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     """No reader may decide for itself whether a fact was established.
 
@@ -845,7 +925,19 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
 
     #: The functions that BUILD a declared-type fact about a value.  A reader
     #: is any function that calls one of these and then assumes the result.
-    producers = {"_term_source_fact", "_subpattern_source_facts_term"}
+    #: `_nested_refinement_facts` was NOT here, and that is how a fourth
+    #: reader got in (#1418 review).  #1420 added
+    #: `_check_nested_refinement_obligation`, which builds a source fact with
+    #: it and then decided for itself whether to assume it — asking
+    #: `_value_source_disclosed`, a syntactic test over the value's leaves, so
+    #: a `let`-bound disclosed producer answered False and its declared type
+    #: was granted as a premise.  Measured: the same value gave that
+    #: obligation `tier3_unguarded` spelled `consume(mk(x))` and `verified`
+    #: spelled `let @T = mk(x); consume(@T.0)`.  This cell's whole claim is
+    #: that convention does not survive a fourth reader; it did not, because
+    #: the roster named the producers of the day rather than the kind.
+    producers = {"_term_source_fact", "_subpattern_source_facts_term",
+                 "_nested_refinement_facts"}
 
     # Both modules (#1418 review F5).  Every producer lives in the verifier
     # today, so the SMT half of this walk currently finds none and is
@@ -1741,6 +1833,70 @@ def test_1418_g3_the_scope_key_residual_errs_toward_demotion(
     out = _run(tmp_path, _G3_RESIDUAL)
     assert "violation" not in out, out[-400:]
     assert out.strip().split()[-1] == "7", out[-400:]
+
+
+#: Reading a disclosed value is not by itself a demotion.  The gate withholds
+#: the facts; `check_valid` offers them back only after a proof WITHOUT them
+#: fails.  So a goal over a disclosed value that never needed the withheld
+#: fact keeps its Tier 1 — `x - x == 0` holds for every `x`, disclosed or not.
+_INDEPENDENT_GOAL = """type PosInt = { @Int | @Int.0 > 0 };
+
+type Zero = { @Int | @Int.0 == 0 };
+
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Float64.0) {
+    Some(@PosInt) -> {
+      let @Zero = @PosInt.0 - @PosInt.0;
+      @Zero.0
+    },
+    None -> 0
+  }
+}
+"""
+
+
+def test_1418_a_goal_not_needing_the_withheld_fact_stays_tier_1(
+    tmp_path: Path,
+) -> None:
+    """Withholding is not demotion: only a goal that NEEDS the fact moves.
+
+    The completeness bound on the whole mechanism, and the one a taint keyed
+    on "did this value come from a disclosed call" rather than on "did the
+    proof use a withheld fact" would fail.  `@PosInt.0 - @PosInt.0` narrows
+    into `Zero` over a value the run disclosed, and proves at Tier 1 because
+    `x - x == 0` needs nothing the gate took away.
+
+    Raised against the spec wording in review of this PR — which said such a
+    reader is Tier 3 "when the value they read from was disclosed", stating
+    more than the implementation does — and checked here rather than argued.
+    """
+    result = _verify(tmp_path, _INDEPENDENT_GOAL)
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    # The premise: the producer really did disclose.
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses, statuses
+    # The claim: the reader over that disclosed value still proves.
+    binds = [o for o in result["obligations"]
+             if o["kind"] == "refine_bind"
+             and o["description"] == "@PosInt.0 - @PosInt.0"]
+    assert len(binds) == 1, statuses
+    assert (binds[0]["status"], binds[0].get("error_code")) == ("verified", None), (
+        f"a goal that never needed the withheld fact must keep Tier 1 — "
+        f"{statuses}"
+    )
 
 
 def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
