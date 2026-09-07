@@ -2079,3 +2079,93 @@ class TestClosureArgumentNestedGuardednessIsTypeDerived:
             f"the guard rejects a satisfying component, so the trap above "
             f"witnesses nothing about the predicate:\n{ok}"
         )
+
+
+_A2_CALL_RESULT_OPERAND = """\
+type PosInt = { @Int | @Int.0 > 0 };
+type Taker = fn(Option<PosInt> -> Int) effects(pure);
+
+public fn mkint(@Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn taker(@Unit -> @Taker)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Option<PosInt> -> @Int) effects(pure) { 1 }
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(taker(()), mkint(@Int.0))
+}
+"""
+
+
+class TestCallResultClosureOperandIsPinnedNotClaimed:
+    """A closure OPERAND that is a call result does not reach the
+    closure-argument arm — pinned with the reason it is harmless (A2).
+
+    `apply_fn(taker(()), mkint(x))` names its closure through a CALL rather
+    than a slot, and the arm that raises the closure-argument obligation
+    reads the operand's declared function type from the slot.  So no
+    `refine_bind` is recorded, and `verify` reports `ok: true` for a program
+    whose payload the formal's `Option<PosInt>` forbids.
+
+    That is a real gap in the obligation, and it is unreachable at run time
+    today for a reason that has nothing to do with the guard: code
+    generation cannot compile this shape and drops the enclosing function
+    with `E602`, so the module contains no `f` to run.  The pin is the
+    CONJUNCTION — the obligation is absent AND the function is dropped.  If
+    codegen later learns this shape, the second half fails and the gap stops
+    being harmless, which is exactly when someone needs to be told.  A cell
+    asserting only the absence would go on passing.
+    """
+
+    def test_the_arm_is_not_reached_for_a_call_result_operand(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _A2_CALL_RESULT_OPERAND, name="a2a.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [], (
+            f"the closure-argument arm now reaches a call-result operand — "
+            f"good, but this cell pinned its ABSENCE, so re-derive the pin "
+            f"from what it does now: {binds}"
+        )
+        assert envelope["ok"] is True, envelope
+        _assert_partition(envelope)
+
+    def test_and_the_enclosing_function_is_dropped_so_nothing_runs(
+        self, tmp_path: Path,
+    ) -> None:
+        """The half that makes the gap above harmless, asserted separately.
+
+        Read from the ARTIFACT: `f` must be absent from the emitted module.
+        A message-text check would pass on a build that printed the E602
+        note and emitted the function anyway.
+        """
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _A2_CALL_RESULT_OPERAND,
+                               "a2b.vera")))
+        assert proc.returncode == 0, proc.stderr
+        assert '(export "f"' not in proc.stdout, (
+            "codegen now emits `f` for a call-result closure operand, so the "
+            "missing closure-argument obligation is no longer unreachable: "
+            "the arm has to reach this operand shape"
+        )
+        assert '(export "taker"' in proc.stdout, (
+            "the module lost more than `f`, so its absence is not evidence "
+            "about this shape"
+        )
+
