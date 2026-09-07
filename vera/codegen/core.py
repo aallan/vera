@@ -302,6 +302,8 @@ class CodeGenerator(
         # indices (or None for concrete fields).  Used by the monomorphizer and WASM
         # type inference to correctly bind forall vars from sparse constructors like
         # Err(e) whose single field maps to Result's *second* type param (E), not T.
+        # ctor-owner-exempt: declares the flat projection; the per-owner map is
+        # built from it
         self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = {}
         # Maps ADT name → number of type parameters (needed to produce full-length
         # type-arg tuples with None placeholders for unknown positions).
@@ -3556,7 +3558,8 @@ class CodeGenerator(
                         then_branch=ast.Block(
                             statements=(), span=expr.span,
                             expr=ast.NullaryConstructor(
-                                name="Less", span=expr.span),
+                                name="Less", span=expr.span,
+                                owner="Ordering"),
                         ),
                         else_branch=ast.Block(
                             statements=(), span=expr.span,
@@ -3568,12 +3571,14 @@ class CodeGenerator(
                                 then_branch=ast.Block(
                                     statements=(), span=expr.span,
                                     expr=ast.NullaryConstructor(
-                                        name="Equal", span=expr.span),
+                                        name="Equal", span=expr.span,
+                                        owner="Ordering"),
                                 ),
                                 else_branch=ast.Block(
                                     statements=(), span=expr.span,
                                     expr=ast.NullaryConstructor(
-                                        name="Greater", span=expr.span),
+                                        name="Greater", span=expr.span,
+                                        owner="Ordering"),
                                 ),
                                 span=expr.span,
                             ),

@@ -201,8 +201,12 @@ class InferenceMixin:
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_wasm_type(expr)
         if isinstance(expr, ast.ConstructorCall):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.MatchExpr):
             # #1276 (F4): the FIRST arm that yields a type, not arm 0.  An arm
@@ -641,8 +645,12 @@ class InferenceMixin:
         if isinstance(expr, ast.Block):
             return self._infer_block_result_type(expr)
         if isinstance(expr, ast.ConstructorCall):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
+            # ctor-owner-exempt: membership test on a parsed name, not a layout
+            # read
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.MatchExpr):
             # #1276 (F4): the first arm that yields a type — see the twin arm
@@ -1064,7 +1072,12 @@ class InferenceMixin:
         if isinstance(expr, ast.ConstructorCall):
             return self._ctor_to_adt_name(expr.name)
         if isinstance(expr, ast.NullaryConstructor):
-            return self._ctor_to_adt_name(expr.name)
+            # #1414: a compiler-generated reference already knows its ADT.
+            # The by-name lookup below reads a table flattened across every
+            # ADT, so a user declaration sharing the name would answer for
+            # it — which is how `compare`'s desugared `Less` came back as
+            # the user's `ZzBox`.
+            return expr.owner or self._ctor_to_adt_name(expr.name)
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
@@ -1497,6 +1510,7 @@ class InferenceMixin:
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
         """Find the ADT type name for a constructor name."""
+        # ctor-owner-exempt: the flat ownership projection itself
         return self._ctor_to_adt.get(ctor_name)
 
     def _strip_future_scoped(self, name: str) -> str:
@@ -2190,6 +2204,7 @@ class InferenceMixin:
             # so sparse constructors like Err(e) bind to the correct ADT type param.
             adt_name = self._ctor_to_adt_name(expr.name)
             if adt_name:
+                # ctor-owner-exempt: no owner available at this site
                 field_tp_idx = self._ctor_adt_tp_indices.get(expr.name)
                 adt_tp_count = self._adt_tp_counts.get(adt_name, 0)
                 if field_tp_idx is not None and adt_tp_count > 0:

@@ -98,6 +98,9 @@ class WasmContext(
         effect_op_cells: dict[str, CellNames] | None = None,
         state_getters: dict[str, str] | None = None,
         ctor_layouts: dict[str, ConstructorLayout] | None = None,
+        adt_ctor_layouts: (
+            dict[str, dict[str, ConstructorLayout]] | None
+        ) = None,
         adt_type_names: set[str] | None = None,
         generic_fn_info: (
             dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
@@ -212,6 +215,19 @@ class WasmContext(
         self._clause_inline_depth: int = 0
         # Constructor layout mapping: ctor_name -> ConstructorLayout
         self._ctor_layouts: dict[str, ConstructorLayout] = ctor_layouts or {}
+        # #1414: the same layouts keyed per OWNING ADT, because the flat map
+        # above cannot represent two data types sharing a constructor name —
+        # it is built by `update()` across every ADT, so the last declaration
+        # registered wins the slot outright.  §8.4.1 makes the prelude's data
+        # types shadowable, so that collision is a legal program: a user
+        # `data ZzBox { Less(Bool) }` was measured making EVERY `Ordering` in
+        # the program render as `Less(false)`, check-clean and verify-clean.
+        # A site that knows which ADT it means reads this map; one that has
+        # only a bare constructor name (an ordinary `Some(x)` call, which the
+        # checker has already resolved) keeps the flat one.
+        self._adt_ctor_layouts: dict[str, dict[str, ConstructorLayout]] = (
+            adt_ctor_layouts or {}
+        )
         # ADT type names for slot/param type resolution
         self._adt_type_names: set[str] = adt_type_names or set()
         # Generic function info for call rewriting:
@@ -549,6 +565,53 @@ class WasmContext(
         self._expr_target_types: (
             dict[tuple[int, int, int, int], object] | None
         ) = None
+
+    def _owned_ctor_layout(
+        self, owner: str | None, ctor_name: str,
+    ) -> "ConstructorLayout | None":
+        """The layout of *ctor_name* as owned by *owner* (#1414).
+
+        The single door every constructor lookup that KNOWS its owner goes
+        through, so the reader and the writer cannot disagree about which
+        ADT a name belongs to.  Falls back to the flat by-name table only
+        when there is no owner to qualify by — a parsed reference the
+        checker has already resolved — or when the owner's table was not
+        threaded into this context.
+        """
+        if owner is None:
+            # A PARSED reference, which the checker has already resolved;
+            # there is no owner to qualify by and the flat map is the only
+            # answer.  This is the common path.
+            # ctor-owner-exempt: the documented no-owner path
+            return self._ctor_layouts.get(ctor_name)
+        # An owner-stamped reference whose owner does not declare the name
+        # returns NO layout.  It is not a compiler bug and must not raise:
+        # a program may legally redeclare a prelude type with FEWER
+        # constructors (`private data Ordering { Less, Equal }` is
+        # check-clean and verify-clean, §8.4.1), and the `compare`
+        # desugaring still emits an owner-stamped `Greater` that the
+        # program's own `Ordering` has no arm for.  An earlier form of this
+        # method raised `CodegenInvariantError` there and turned that
+        # program into an internal compiler error, where the caller's
+        # `CodegenSkip` degrades it cleanly — the behaviour it had before
+        # #1414 (PR #1419 review, finding B).
+        #
+        # Nor does it fall back to the flat by-name map: re-resolving an
+        # owner-stamped reference by bare name is the defect this method
+        # exists to prevent, and doing it here would reintroduce it at the
+        # one site that knows better.  Returning None keeps that policy the
+        # same as `_recover_ptype_via_nested_fields`'s (finding D).
+        # NOTE: resolving an owner-stamped reference against the BUILT-IN
+        # snapshot first was tried and reverted.  It repairs the
+        # constructor's layout but not the RENDER side, which enumerates
+        # `Ordering` out of the same ADT-name-keyed map and gets the user's
+        # constructors — the two then disagree and the module fails to
+        # load, which is worse than the clean skip below.  Both sides have
+        # to become owner-aware together; see #1419's finding A/B note.
+        own = self._adt_ctor_layouts.get(owner)
+        if own is not None and ctor_name in own:
+            return own[ctor_name]
+        return None
 
     def set_expr_semantic_types(
         self,

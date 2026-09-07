@@ -444,6 +444,19 @@ class ConstructorCall(Expr):
 class NullaryConstructor(Expr):
     """Nullary constructor expression: None."""
     name: str
+    #: The ADT this reference resolves to, when the COMPILER generated the
+    #: node and already knows (#1414).  A parsed reference leaves it `None`
+    #: and is resolved by name, as before.
+    #:
+    #: Code generation keys constructor ownership on a flat by-name table
+    #: built across every ADT, so a user `data ZzBox { Less(Bool) }` takes
+    #: the `Less` entry away from `Ordering` — and the desugaring of
+    #: `compare(a, b)`, which emits bare `Less` / `Equal` / `Greater`, then
+    #: rendered every `Ordering` in the program as the user's constructor.
+    #: Those three references are the compiler's own and mean `Ordering`
+    #: whatever the program declares, so they say so structurally rather
+    #: than relying on a name lookup that a declaration can move.
+    owner: str | None = None
 
 
 @dataclass(frozen=True)

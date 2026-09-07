@@ -1663,6 +1663,9 @@ class MonomorphizationMixin:
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, args))
         for ctor_name, layout in layouts.items():
+            # ctor-owner-exempt: no owner in hand at this read; unreached by
+            # all 289 corpus programs and the ambiguous shapes are E213/E121 at
+            # check — the owner-qualified table is #1436's
             tp_indices = self._ctor_adt_tp_indices.get(ctor_name)
             for i, (_offset, wasm_type) in enumerate(layout.field_offsets):
                 tp_i = (

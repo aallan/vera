@@ -553,6 +553,8 @@ class SmtContext:
         self._adt_registry: dict[str, AdtInfo] = {}
         self._adt_registry_version = 0
         self._regularity: tuple[int, RegularityIndex] | None = None
+        # ctor-owner-exempt: declares the SMT ADT registry, which is
+        # namespace-flat by design
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
         self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
@@ -750,6 +752,9 @@ class SmtContext:
         # could not.
         self._adt_registry_version += 1
         for ctor_name in adt_info.constructors:
+            # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
+            # `ConstructorCall` carries no owner to qualify by — only the
+            # NULLARY path is owner-first (#1436)
             self._ctor_to_adt[ctor_name] = adt_info.name
 
     def _regularity_index(self) -> RegularityIndex:
@@ -1748,6 +1753,13 @@ class SmtContext:
         Mirrors codegen's Pass 1.6 exactly (#874):
             if a < b then Less else if a == b then Equal else Greater
         so the verifier reasons over the SAME term the runtime produces.
+
+        "Exactly" includes the constructors' OWNER (#1414): codegen stamps
+        these three references with ``Ordering`` so a user declaration
+        sharing one of the names cannot capture them by bare name, and a
+        desugaring that left them ownerless would reason about a different
+        type than the one that runs — which is precisely the divergence
+        this docstring promises does not exist.
         """
         left, right = call.args[0], call.args[1]
         return ast.IfExpr(
@@ -1756,7 +1768,8 @@ class SmtContext:
             ),
             then_branch=ast.Block(
                 statements=(), span=call.span,
-                expr=ast.NullaryConstructor(name="Less", span=call.span),
+                expr=ast.NullaryConstructor(
+                    name="Less", span=call.span, owner="Ordering"),
             ),
             else_branch=ast.Block(
                 statements=(), span=call.span,
@@ -1768,12 +1781,14 @@ class SmtContext:
                     then_branch=ast.Block(
                         statements=(), span=call.span,
                         expr=ast.NullaryConstructor(
-                            name="Equal", span=call.span),
+                            name="Equal", span=call.span,
+                            owner="Ordering"),
                     ),
                     else_branch=ast.Block(
                         statements=(), span=call.span,
                         expr=ast.NullaryConstructor(
-                            name="Greater", span=call.span),
+                            name="Greater", span=call.span,
+                            owner="Ordering"),
                     ),
                     span=call.span,
                 ),
@@ -2952,6 +2967,9 @@ class SmtContext:
         ``Option<Int>`` is cached) is still materialised — that path is the
         #918 fix and must keep working.
         """
+        # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
+        # `ConstructorCall` carries no owner to qualify by — only the NULLARY
+        # path is owner-first (#1436)
         adt_name = self._ctor_to_adt.get(ctor_name)
         if adt_name is None:
             return None
@@ -3121,6 +3139,9 @@ class SmtContext:
         can't bind every parameter — in which case the caller keeps the
         base-name scan.
         """
+        # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
+        # `ConstructorCall` carries no owner to qualify by — only the NULLARY
+        # path is owner-first (#1436)
         adt_name = self._ctor_to_adt.get(ctor_name)
         if adt_name is None:
             return None
@@ -3204,7 +3225,20 @@ class SmtContext:
         no hint is available (nullary tags in a non-verifier / pure-SMT context,
         or a hint that does not resolve to a datatype sort owning this ctor).
         """
-        sort = self._nullary_ctor_sort_from_hint(expr)
+        # #1414: an OWNER-stamped reference is the compiler's own, and says
+        # which ADT it means.  It is consulted before the recorded-type hint
+        # and the base-name scan, because a desugared node has no recorded
+        # type of its own (its span is the `compare(...)` call's) and the
+        # scan resolves by bare constructor name — so a user
+        # `data ZzBox { Pad(Bool), Less }` captured the `Less` that
+        # `_desugar_compare` emits, the term came back wrongly sorted or
+        # untranslatable, and a statically REFUTED postcondition over
+        # `compare` demoted to Tier 3 with exit 0 instead of reporting E500.
+        sort = None
+        if expr.owner is not None:
+            sort = self._get_or_create_adt_sort(expr.owner, ())
+        if sort is None:
+            sort = self._nullary_ctor_sort_from_hint(expr)
         if sort is None:
             sort = self._find_sort_for_ctor(expr.name)
         if sort is None:
@@ -3337,6 +3371,9 @@ class SmtContext:
             # up rather than crash: an untranslatable ctor is a Tier-3
             # demotion the callers already handle, which is what every other
             # `return None` on this path means.
+            # ctor-owner-exempt: the SMT ADT registry is namespace-flat, and a
+            # `ConstructorCall` carries no owner to qualify by — only the
+            # NULLARY path is owner-first (#1436)
             adt_name = self._ctor_to_adt.get(expr.name)
             exact = (
                 self._get_or_create_adt_sort(adt_name, type_args)

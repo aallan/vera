@@ -3519,6 +3519,32 @@
     ]
   },
   {
+    "id": "ch09_user_ctor_shadows_prelude_ctor",
+    "file": "ch09_user_ctor_shadows_prelude_ctor.vera",
+    "chapter": 9,
+    "title": "A user constructor does not displace a prelude constructor of the same name",
+    "level": "run",
+    "spec_ref": "Section 9.8",
+    "features": [
+      "constructor_shadowing",
+      "show",
+      "ord"
+    ]
+  },
+  {
+    "id": "ch08_sibling_ctor_collision_rejected",
+    "file": "ch08_sibling_ctor_collision_rejected.vera",
+    "chapter": 8,
+    "title": "Two data declarations in one namespace may not share a constructor name",
+    "level": "check",
+    "spec_ref": "Section 8.4",
+    "expected_error": "E159",
+    "features": [
+      "constructor_collision",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch08_builtin_ctor_redefinition_rejected",
     "file": "ch08_builtin_ctor_redefinition_rejected.vera",
     "chapter": 8,
