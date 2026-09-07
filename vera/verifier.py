@@ -43,6 +43,11 @@ from vera.monomorphize import (
 )
 
 if TYPE_CHECKING:
+    from vera.disclosure import (
+        DisclosureSite,
+        ModuleDisclosureIndex,
+        ModuleManifest,
+    )
     from vera.resolver import ResolvedModule
 from vera.errors import Diagnostic, SourceLocation
 from vera.lexical import blank_comments
@@ -265,9 +270,22 @@ def disclosed_fn_names(
     disclosed and the taint stopped one hop short.
     """
     return frozenset(
-        o.fn_name for o in obligations
-        if o.status == "tier3_unguarded"
-        or (o.status == "tier3" and o.error_code == "E534")
+        o.fn_name for o in obligations if is_disclosing(o)
+    )
+
+
+def is_disclosing(obligation: "ProofObligation") -> bool:
+    """Whether one obligation puts its function in the disclosed set.
+
+    Factored out of :func:`disclosed_fn_names` so a consumer that needs the
+    obligation ITSELF — the per-module manifest, which cites the culprit's
+    location in the importer's diagnostic (#1399) — selects it by the same
+    predicate rather than by a restatement of it.  Two derivations of "which
+    obligation disclosed this" would be one more pair that can drift.
+    """
+    return (
+        obligation.status == "tier3_unguarded"
+        or (obligation.status == "tier3" and obligation.error_code == "E534")
     )
 
 
@@ -438,6 +456,26 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # #1399: the same question for an IMPORTED callee, whose obligations
+        # never enter this run's stream and so can never appear in the set
+        # above.  Answered from each module's own verification through
+        # `ModuleDisclosureIndex`, built lazily (below) because a program that
+        # imports a module but never matches on one of its calls must not pay
+        # for verifying it.
+        self._disclosure_index: ModuleDisclosureIndex | None = None
+        # #1399: which module supplies each bare name this program imported,
+        # recorded in `_register_modules` under the same first-wins rule as
+        # the namespace injection — the route from an unqualified call to the
+        # manifest that answers for it.
+        self._imported_fn_modules: dict[str, tuple[str, ...]] = {}
+        # #1399: `where`-helper names visible from the body under
+        # verification, refreshed per function beside the scoped lookup.
+        self._scope_fn_names: frozenset[str] = frozenset()
+        # #1399: the imported disclosures whose facts were withheld from the
+        # function under verification, so a demotion can name what caused it.
+        # Same lifetime as `SmtContext._tainted_facts`, which is what they
+        # describe: per function, cleared with the scope set below.
+        self._tainted_sites: list[DisclosureSite] = []
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -1097,6 +1135,12 @@ class ContractVerifier:
         3. Inject into ``self.env.functions`` for bare-call lookup.
         4. Store per-module dicts for ModuleCall qualified lookup.
         """
+        # #1399: rebuilt from scratch every registration, like the registries
+        # below it.  `register_program` runs again on each pass of the
+        # disclosure fixpoint and on each warm re-verify, and a first-wins map
+        # that survived a program with different imports would answer for a
+        # module this one does not import.
+        self._imported_fn_modules = {}
         if not self._resolved_modules:
             return
 
@@ -1237,6 +1281,16 @@ class ContractVerifier:
             for fn_name, fn_info in mod_fns.items():
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
+                    # #1399: and remember WHICH module supplied the bare
+                    # name, under the same first-wins rule the injection
+                    # above uses, so a bare call to a selectively imported
+                    # callee can be traced back to the module whose manifest
+                    # answers for it.  Recorded even when the injection lost
+                    # the `setdefault` race to a builtin — the name filter,
+                    # not the registry, is what decides which module a bare
+                    # call reaches, and the consult below re-checks locality
+                    # anyway.
+                    self._imported_fn_modules.setdefault(fn_name, mod.path)
 
             # 5. Harvest the module's PUBLIC data constructors so an
             #    imported ctor's @Nat field resolves its field types (#747
@@ -3307,6 +3361,18 @@ class ContractVerifier:
         # where-helper lookup, so a same-named helper in a sibling subtree can't
         # be assumed at this call site (the diamond false-E500).
         fn_lookup = self._scoped_fn_lookup(decl, enclosing)
+        # #1399: the same lexical chain as a set of names, for the manifest
+        # consult (`_local_fn_names_in_scope`).  Set here so the two answers
+        # are built from one `(decl, enclosing)` and cannot disagree about
+        # which helpers are visible.
+        self._scope_fn_names = frozenset(
+            wfn.name
+            for group in (decl, *enclosing)
+            for wfn in group.where_fns or ()
+        )
+        # Cleared with it: a citation belongs to the function whose facts were
+        # withheld, and one left standing would name another function's callee.
+        self._tainted_sites = []
         # #1208: THIS function's naming scope — its declaring module's env
         # narrowed by the `forall` variables in scope over it.  Both the slot
         # names declared below and the SMT context that resolves references to
@@ -3699,17 +3765,8 @@ class ContractVerifier:
                     )
                     self._warning(
                         contract,
-                        f"Postcondition in '{decl.name}' holds only from a "
-                        f"fact this run could neither prove nor guard. "
-                        f"Contract will be checked at runtime.",
-                        rationale=(
-                            "A declared-type fact is sound to assume once the "
-                            "obligation establishing it is discharged. This "
-                            "one was disclosed instead — the run reported it "
-                            "as neither proved nor guarded — so a proof "
-                            "resting on it is a Tier-3 truth, not a Tier-1 "
-                            "proof."
-                        ),
+                        self._disclosed_demotion_text(decl),
+                        rationale=self._disclosed_demotion_rationale(),
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E534",
                         tier=3,
@@ -7825,12 +7882,190 @@ class ContractVerifier:
         return facts
 
     def _scrutinee_is_disclosed_call(self, scrutinee: ast.Expr) -> bool:
-        """Whether *scrutinee* is a call to a function this run disclosed."""
-        if not self._disclosed_fns:
+        """Whether *scrutinee* is a call to a function that was disclosed.
+
+        THREE places a disclosure can live, and a call has to be checked
+        against all of them or the taint stops at whichever spelling the
+        lookup does not know (#1399):
+
+        1. This run's own set — a local callee, and also an UNSHADOWED
+           imported generic, whose clone this run verifies under its bare
+           name (`_verify_shadowed_module_generics`).
+        2. The ``mod$<path>$<name>`` key a SHADOWED or private imported
+           generic's clone is verified under here.  ``ModuleCall.name`` stays
+           bare, so a disclosure that did reach this run's stream still
+           missed on the lookup (CR 3519156263) — the same key mismatch, one
+           layer in.
+        3. The defining module's own manifest, for an imported callee this
+           run never verifies at all.  That is the #1399 case: the library's
+           obligations are not in this stream and never will be, so no amount
+           of reading the stream can find them.
+
+        Route 3 is the only one that can trigger a module's verification, and
+        it is reached only for a call this walk has already found carries
+        declared-type facts — so a program that imports without matching on
+        an imported call pays nothing for the manifest.
+        """
+        if not isinstance(scrutinee, (ast.FnCall, ast.ModuleCall)):
             return False
-        name = getattr(scrutinee, "name", None)
-        return (isinstance(scrutinee, (ast.FnCall, ast.ModuleCall))
-                and name in self._disclosed_fns)
+        name = scrutinee.name
+        if name in self._disclosed_fns:
+            return True
+        if isinstance(scrutinee, ast.ModuleCall):
+            if self._module_qualified_base(
+                scrutinee.path, name,
+            ) in self._disclosed_fns:
+                return True
+            return self._consult_manifest(scrutinee.path, name)
+        # A bare call: consult the module's manifest only if the call
+        # actually REACHES the import.  `_scoped_fn_lookup` is how every other
+        # part of the verifier answers that — the declaration's own
+        # `where`-helpers, then each enclosing parent's, then the top-level
+        # function, then the flat registry — and it is installed on the SMT
+        # context for the function under verification, so asking it here means
+        # the demotion follows the same resolution the proof does.
+        #
+        # Reading the flat `_top_level_fn_infos` instead was over-rejecting in
+        # a way that reached users: a `where` helper sharing a name with any
+        # public name a direct import supplies demoted its parent's
+        # postcondition, although the call reaches the helper and the helper
+        # verifies clean, with no route to the answer but renaming a private
+        # helper.  "The conservative side is the safe one" holds for a
+        # disclosure nobody can see; it does not hold for a false E534 on a
+        # correct program.
+        if name in self._local_fn_names_in_scope():
+            return False
+        if self._decl_fn_scope is not None:
+            # An imported generic's clone is under verification, and its bare
+            # calls resolve in the DECLARING module's namespace (#1241), not
+            # in this program's import map.  This run's map cannot answer for
+            # them, and guessing from it would attribute another module's
+            # import to this one.
+            return False
+        owner = self._imported_fn_modules.get(name)
+        return owner is not None and self._consult_manifest(owner, name)
+
+    def _consult_manifest(self, path: tuple[str, ...], name: str) -> bool:
+        """Whether *path*'s module disclosed *name*, recording the site.
+
+        The site is what the demotion's diagnostic cites (#1399, finding 4).
+        Recorded HERE, at the one place an imported disclosure is consulted,
+        so a caller cannot answer True and forget to say where the answer
+        came from.
+        """
+        site = self._imported_disclosed(path).get(name)
+        if site is None:
+            return False
+        self._tainted_sites.append(site)
+        return True
+
+    def _disclosed_demotion_text(self, decl: ast.FnDecl) -> str:
+        """The E534 description, naming the culprit when it is an import.
+
+        In one file the reader already has the culprit: the ``E504`` that
+        disclosed the fact is in the same output, a few lines away.  Across an
+        import it is not, and cannot be — the library's diagnostics belong to
+        the library's run, which this one discards on purpose — so the
+        importing message has to carry the reference itself or the reader is
+        told only that something, somewhere, was not established.
+        """
+        if not self._tainted_sites:
+            return (
+                f"Postcondition in '{decl.name}' holds only from a fact this "
+                f"run could neither prove nor guard. Contract will be checked "
+                f"at runtime."
+            )
+        cited = list(dict.fromkeys(
+            site.cite() for site in self._tainted_sites
+        ))
+        modules = {site.module for site in self._tainted_sites}
+        fact = "a fact" if len(cited) == 1 else "facts"
+        # Counted per NOUN, not once for the whole sentence: two functions of
+        # ONE module are two facts and one module, and pluralising both from a
+        # single `len(sites) > 1` would name one module in the plural.
+        owner = (
+            "that module's" if len(modules) == 1 else "those modules'"
+        )
+        return (
+            f"Postcondition in '{decl.name}' holds only from {fact} of "
+            f"{', '.join(cited)}, which {owner} own verification could "
+            f"neither prove nor guard. Contract will be checked at runtime."
+        )
+
+    def _disclosed_demotion_rationale(self) -> str:
+        """... and the rationale, which must be true of the run that emits it.
+
+        The unqualified "the run reported it as neither proved nor guarded" is
+        false across a module boundary: THIS run reported no such thing.
+        """
+        opening = (
+            "A declared-type fact is sound to assume once the obligation "
+            "establishing it is discharged. "
+        )
+        if not self._tainted_sites:
+            return (
+                opening
+                + "This one was disclosed instead — the run reported it as "
+                "neither proved nor guarded — so a proof resting on it is a "
+                "Tier-3 truth, not a Tier-1 proof."
+            )
+        # Agrees with the description's count, per noun (see
+        # `_disclosed_demotion_text`).
+        n_sites = len(dict.fromkeys(
+            site.cite() for site in self._tainted_sites
+        ))
+        n_modules = len({site.module for site in self._tainted_sites})
+        subject = "This one was" if n_sites == 1 else "These were"
+        it = "it" if n_sites == 1 else "them"
+        defining = (
+            "the defining module's" if n_modules == 1
+            else "the defining modules'"
+        )
+        their = "that module's" if n_modules == 1 else "those modules'"
+        sets = "set" if n_modules == 1 else "sets"
+        resting = "it" if n_sites == 1 else "them"
+        return (
+            f"{opening}{subject} disclosed instead — {defining} own "
+            f"verification reported {it} as neither proved nor guarded, and "
+            f"this run consumes {their} disclosed {sets} rather than {'its' if n_modules == 1 else 'their'} "
+            f"obligations — so a proof resting on {resting} is a Tier-3 "
+            f"truth, not a Tier-1 proof."
+        )
+
+    def _local_fn_names_in_scope(self) -> frozenset[str]:
+        """Function names a bare call in the body under verification reaches
+        LOCALLY — before the flat imported registry (#1399).
+
+        The same chain :meth:`_scoped_fn_lookup` walks, as a set of names: the
+        declaration's own ``where`` helpers, each enclosing parent's, and this
+        program's top-level functions.  A name in it is not the import's, so
+        the manifest has nothing to say about the call.
+
+        A SET of names rather than the resolved ``FunctionInfo``, because
+        identity is not stable here: the disclosure fixpoint re-registers the
+        program, which rebuilds ``_module_functions`` with fresh info objects
+        while ``env.functions`` keeps the first pass's (the injection is a
+        ``setdefault``).  Comparing objects therefore answered True on pass
+        one and False on pass two — the demotion silently switching itself off
+        exactly when the fixpoint re-ran.
+        """
+        return self._scope_fn_names | frozenset(self._top_level_fn_infos)
+
+    def _imported_disclosed(self, path: tuple[str, ...]) -> ModuleManifest:
+        """The disclosed-function manifest of the module at *path* (#1399).
+
+        The index is built on first use rather than in ``__init__`` so the
+        cost — one verification per module actually consulted — lands only on
+        the runs that ask.  It lives on the verifier, not per pass, so the
+        disclosure fixpoint (`_rerun_until_disclosure_settles`) re-reads the
+        same answers instead of re-verifying the imports once per pass.
+        """
+        if self._disclosure_index is None:
+            from vera.disclosure import ModuleDisclosureIndex
+            self._disclosure_index = ModuleDisclosureIndex(
+                self._resolved_modules, self.timeout_ms,
+            )
+        return self._disclosure_index.disclosed_in(path)
 
     def _subpattern_source_facts_term(
         self,
