@@ -11,7 +11,10 @@ from dataclasses import dataclass
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name
-from vera.narrowing import measure_component_needs_range_check
+from vera.narrowing import (
+    measure_component_is_effect_free,
+    measure_component_needs_range_check,
+)
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import state_type_arg
@@ -1119,7 +1122,16 @@ class ContractsMixin:
         not to translate yields NO checks at all rather than a partial set —
         the verifier's mirror declines with it.
         """
-        nat_indices = self._dec_nat_measure_indices(ctx, contract)
+        # Only components an EXTRA evaluation cannot make observable.  On
+        # this path the check evaluates the measure itself — the chain guard
+        # that would otherwise have done so is declined — so an effectful
+        # component would newly run at every entry.  Measured: a
+        # `decreases(risky(@Nat.0))` whose callee throws turned a program
+        # that returned 0 into one that throws before its body.
+        nat_indices = [
+            k for k in self._dec_nat_measure_indices(ctx, contract)
+            if measure_component_is_effect_free(contract.exprs[k])
+        ]
         if not nat_indices:
             return []
         instrs: list[str] = []

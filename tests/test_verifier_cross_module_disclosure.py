@@ -441,9 +441,19 @@ def test_1399_three_hop_middle_module_is_tainted(tmp_path: Path) -> None:
     fact alone decides.  With `cb`'s disclosure invisible it proved at Tier 1;
     with the manifest in place it demotes.
 
-    It demoted to `tier3_unguarded` + E504 until #1412 closed #757: a
-    generic-instantiated constructor field is runtime-guarded now, so the
-    same demotion lands on the guarded leg.  The property this cell measures
+    The KIND this cell reads changed, and the reason is the release's
+    headline rather than drift (#1422).  It read `nat_bind` /
+    `tier3_unguarded` / E504 until #1412: the relay's disclosed obligation
+    was its `Some(nat_to_int(@Nat.0))` narrowing, a generic-instantiated
+    constructor field, which #757 runtime-guarded.  After that PR **no
+    unguarded `@Nat` narrowing is reachable by a compilable program** — a
+    user-declared effect operation's argument is the only one left and its
+    enclosing function is dropped with E603 — so the kind could not be
+    preserved.  The relay's disclosed obligation is now the witness's
+    REFINED constructor field, `refine_bind` / `tier3_unguarded` / E506, a
+    site #1412 leaves unguarded on purpose (#1426).  The narrowing is still
+    there and still demotes; it is simply guarded, which is the
+    improvement.  The property this cell measures
     is the demotion — that the middle module does not PROVE from a fact the
     bottom module could not establish — and that is read directly rather
     than through the spelling, which the guard moved.  The consequence for

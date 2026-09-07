@@ -4039,7 +4039,9 @@ class ContractVerifier:
     # Decreases verification (termination)
     # -----------------------------------------------------------------
 
-    def _decreases_bound_guarded(self, decl: ast.FnDecl) -> bool:
+    def _decreases_bound_guarded(
+        self, decl: ast.FnDecl, contract: ast.Decreases,
+    ) -> bool:
         """Whether the measure-range check is actually emitted for *decl*
         (#1222) — the semantic mirror of `_dec_measure_bound_check`'s
         reachability; KEEP IN SYNC.
@@ -4065,12 +4067,49 @@ class ContractVerifier:
         row that the reachable shape uses.
         """
         effect = decl.effect
-        if not isinstance(effect, ast.EffectSet):
-            return True  # `pure` — nothing to disqualify it
+        if isinstance(effect, ast.EffectSet) and not all(
+                isinstance(eff, ast.EffectRef)
+                and eff.name in narrowing.COMPILABLE_EFFECTS
+                for eff in effect.effects):
+            return False
+        # Second condition: where the CHAIN guard may be declined, the range
+        # check evaluates the measure itself and does so only for a component
+        # an extra evaluation cannot make observable.  The chain is declined
+        # for an `Exn`-declaring function and for a component the backend
+        # cannot rank — the latter being a component that is not scalar — so
+        # those are the two shapes to ask about.  Where the chain IS emitted
+        # the measure is already evaluated and the check reads its locals, so
+        # purity does not arise.
+        if not self._decreases_chain_may_be_declined(decl, contract):
+            return True
         return all(
-            isinstance(eff, ast.EffectRef)
-            and eff.name in narrowing.COMPILABLE_EFFECTS
-            for eff in effect.effects
+            narrowing.measure_component_is_effect_free(expr)
+            for expr in contract.exprs
+            if narrowing.measure_component_needs_range_check(
+                self._resolved_type_of(expr))
+        )
+
+    def _decreases_chain_may_be_declined(
+        self, decl: ast.FnDecl, contract: ast.Decreases,
+    ) -> bool:
+        """Whether codegen may decline the decreases CHAIN guard for *decl*.
+
+        Conservative on purpose — the two reachable reasons are an `Exn` in
+        the effect row and a component the backend cannot structurally rank,
+        and the second is asked as "is any component non-scalar", which
+        over-answers for a concrete ADT that ranks fine.  Over-answering here
+        costs only that the range check's guardedness is then decided by the
+        components' purity, which for every corpus measure is true anyway.
+        """
+        effect = decl.effect
+        if isinstance(effect, ast.EffectSet) and any(
+                isinstance(eff, ast.EffectRef) and eff.name == "Exn"
+                for eff in effect.effects):
+            return True
+        return any(
+            not self._is_int_type(ty) and not self._is_nat_type(ty)
+            for ty in (self._resolved_type_of(e) for e in contract.exprs)
+            if ty is not None
         )
 
     def _record_decreases_bound_tier3(
@@ -4157,7 +4196,7 @@ class ContractVerifier:
         range here alone would make this one boundary an outlier.
         """
         hi = z3.IntVal(_I64_MAX)
-        guarded = self._decreases_bound_guarded(decl)
+        guarded = self._decreases_bound_guarded(decl, contract)
         for expr in contract.exprs:
             # THE rule, shared with codegen's selector, over the SAME
             # checker table — not `_is_nat_type`, which is a second

@@ -23,11 +23,19 @@ class ConstructorLayout:
     # ``field_offsets`` for user constructors (built in the same loop); ``()``
     # for built-in layouts, where consumers bounds-check (`i < len(...)`)
     # rather than assume a flag exists for every field.
+    #
+    # These describe the DECLARED field types, so they are False at every
+    # instantiation of a generic field, and they are no longer the only
+    # source the construction guard reads: #757 added the argument's own
+    # recorded target type, which is what a `Wrap(@Int.0)` building a
+    # `Box<Nat>` is guarded from.  A consumer wanting "is this field @Nat
+    # HERE" must ask both.
     nat_fields: tuple[bool, ...] = ()
     # #813: per-field "is a concrete @Int field" flags, the dual of
     # ``nat_fields``, for the runtime @Nat -> @Int *widening* guard when a
     # @Nat-typed argument is stored into an @Int field.  Same length / empty
-    # conventions as ``nat_fields``.
+    # conventions as ``nat_fields``, and the same #757 caveat: the generic
+    # instantiation comes from the argument's recorded target, not from here.
     int_fields: tuple[bool, ...] = ()
     # #773: per-field RESOLVED Vera type name (e.g. "Int", "String", "T",
     # "Inner", "Map<String, Int>"), used by structural ``Eq`` auto-derivation to

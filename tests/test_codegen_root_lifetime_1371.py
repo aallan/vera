@@ -1220,16 +1220,30 @@ class TestFoldAccumulatorRootAddressIsCaptured1384:
         """
         body = wat_fn_body(_compile_ok(_FOLD_ANON_CALLBACK).wat, "main")
         pushes, stores = _shadow_slot_trace(body)
-        addrs = {loc for d, loc in pushes}
-        acc_addr = next(
-            (m.group(1) for m in re.finditer(
-                r"(?m)^\s*local\.get (\d+)\n\s*local\.get \d+\n\s*"
-                r"i32\.store$", body)
-             if int(m.group(1)) not in addrs), None)
-        assert acc_addr is not None, (
-            "no write-back through a captured address — the fix this cell "
-            "validates is not in the emitted module"
+        # The address local comes from the store the TRACE classified as
+        # "captured", not from "a local that is not a pushed VALUE" — those
+        # are different sets, and the looser reading would happily rewrite an
+        # unrelated `local.get A / local.get V / i32.store` triple, after
+        # which the mutated trace reports an "inferred" store at an arbitrary
+        # depth and the assertion below passes having tested nothing (PR
+        # review).  `captures` already maps each address local to its depth,
+        # so the site under test can be named exactly.
+        captured = [(d, v) for d, v, how in stores if how == "captured"]
+        assert len(captured) == 1, (
+            f"expected exactly one captured write-back to mutate, got "
+            f"{captured} — the trace no longer identifies the site"
         )
+        acc_depth, acc_value_local = captured[0]
+        addr_candidates = [
+            m.group(1) for m in re.finditer(
+                rf"(?m)^\s*local\.get (\d+)\n\s*local\.get "
+                rf"{acc_value_local}\n\s*i32\.store$", body)
+        ]
+        assert len(addr_candidates) == 1, (
+            f"the captured write-back of local {acc_value_local} is not a "
+            f"single site: {addr_candidates}"
+        )
+        acc_addr = addr_candidates[0]
         mutated = re.sub(
             rf"(?m)^(\s*)local\.get {acc_addr}\n(\s*local\.get \d+\n\s*"
             rf"i32\.store)$",

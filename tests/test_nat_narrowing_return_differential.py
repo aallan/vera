@@ -1288,6 +1288,14 @@ class TestRefinedNonPlainBaseParity1036:
             "(#1036)"
 =======
         assert statuses, f"{site}: no refine_bind obligation to classify"
+        # ONE obligation per shape today, pinned so the `all(...)` below keeps
+        # meaning what it says: with several, a mixed verdict would be read as
+        # "guarded" by the any-not-unguarded reading and the comparison would
+        # silently weaken.  Future hardening, not a current failure.
+        assert len(statuses) == 1, (
+            f"{site}: expected one refine_bind, got {statuses} — the parity "
+            f"comparison below assumes a single site"
+        )
         verifier_says_guarded = all(s != "tier3_unguarded" for s in statuses)
         kind = _trap_kind(src, "go", None)
         codegen_guards = kind == "contract_violation"

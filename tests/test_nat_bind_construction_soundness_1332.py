@@ -179,10 +179,31 @@ _NAT_GUARD_TRAP = "Negative value bound into a @Nat slot"
 
 
 def _traps(proc: subprocess.CompletedProcess[str]) -> bool:
+    """ANY trap — for the cells asserting that none occurs.
+
+    Deliberately broad on that side: a cell claiming a proved narrowing does
+    not trap must fail on an unexpected trap of any kind, so widening this
+    predicate makes those assertions stronger, not weaker.
+    """
     out = proc.stdout + proc.stderr
     return proc.returncode != 0 and (
         _NAT_GUARD_TRAP in out or "unreachable" in out
     )
+
+
+def _traps_on_the_narrowing_guard(
+    proc: subprocess.CompletedProcess[str],
+) -> bool:
+    """The NARROWING guard specifically — for the cells expecting it.
+
+    `_traps` accepts a bare `unreachable`, which is also what a
+    non-exhaustive match, a compiler assertion and a shadow-stack overflow
+    produce.  Used on the expecting side it would let a regression that
+    removes the `vera.nat_guard_trap` signal — the exact thing #754 added —
+    pass as a guard that fired (PR review).
+    """
+    out = proc.stdout + proc.stderr
+    return proc.returncode != 0 and _NAT_GUARD_TRAP in out
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +378,7 @@ def test_the_negative_input_really_reaches_the_guard(tmp_path: Path) -> None:
     `verified` a lie rather than a harmless imprecision.
     """
     proc = _run(tmp_path, _construction("true"), _NEGATIVE)
-    assert _traps(proc), (
+    assert _traps_on_the_narrowing_guard(proc), (
         f"expected a trap at {_NEGATIVE}\n"
         f"exit={proc.returncode} stdout={proc.stdout}\nstderr={proc.stderr}"
     )
@@ -719,7 +740,7 @@ def test_the_mixed_branch_traps_when_it_is_believed(tmp_path: Path) -> None:
         }
         """)
     proc = _run(tmp_path, source, _NEGATIVE, name="box.vera")
-    assert _traps(proc), (
+    assert _traps_on_the_narrowing_guard(proc), (
         f"expected the destructure guard to fire at {_NEGATIVE}\n"
         f"exit={proc.returncode} stdout={proc.stdout}\nstderr={proc.stderr}"
     )

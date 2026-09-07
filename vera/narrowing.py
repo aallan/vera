@@ -149,6 +149,40 @@ def measure_component_needs_range_check(resolved_ty: object) -> bool:
     return getattr(base, "name", None) == "Nat"
 
 
+def measure_component_is_effect_free(expr: ast.Expr) -> bool:
+    """True iff evaluating *expr* an EXTRA time can be observed (#1222,
+    CodeRabbit review).
+
+    Clause of THE RULE, for the one place a ``decreases`` measure is
+    evaluated that the chain guard does not already evaluate it: the range
+    check emitted beside a DECLINED chain guard.  On the chain path the
+    measure is evaluated once and the range check reads the locals, so
+    nothing new runs; on the decline path the check evaluates the component
+    itself, and for an effectful component that is a new observable action
+    at function entry.
+
+    Measured: `decreases(risky(@Nat.0))` on a function declaring
+    `Exn<Int>`, where `risky` throws — the chain guard is declined for
+    exactly that reason, and evaluating the measure at entry turned a
+    program that returned 0 into one that throws before its body runs.
+
+    Syntactic and deliberately narrow: a slot reference, an integer
+    literal, and arithmetic over those.  Every measure in the corpus is a
+    slot reference.  A CALL is excluded whatever its declared row, because
+    the row is not what this asks — an extra evaluation of a pure call is
+    still extra work at every activation, and the honest answer where the
+    check cannot be emitted is to disclose it rather than to pay for it.
+    """
+    if isinstance(expr, (ast.SlotRef, ast.IntLit)):
+        return True
+    if isinstance(expr, ast.BinaryExpr):
+        return (measure_component_is_effect_free(expr.left)
+                and measure_component_is_effect_free(expr.right))
+    if isinstance(expr, ast.UnaryExpr):
+        return measure_component_is_effect_free(expr.operand)
+    return False
+
+
 def narrows_into_nat(
     expr: ast.Expr, fncall_ret: FnCallTypeOracle, nat_origin: NatOriginOracle,
 ) -> bool:

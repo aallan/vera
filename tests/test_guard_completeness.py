@@ -707,7 +707,11 @@ class TestEffectOperationArgumentsAreGuarded754:
         from vera.environment import TypeEnv
 
         env = TypeEnv()
-        bare_ok: set[str] = set()
+        # Keyed by (effect, op), never by op name alone: `State.get` is
+        # routable and `Http.get` is not, so a name-keyed set lets the
+        # routable one whitelist `get` and hides the other losing its E217
+        # (PR review).
+        bare_ok: set[tuple[str, str]] = set()
         for eff_name, info in sorted(env.effects.items()):
             for op_name in sorted(info.operations):
                 src = (
@@ -719,12 +723,22 @@ class TestEffectOperationArgumentsAreGuarded754:
                 proc = _cli(
                     "check",
                     str(_write(tmp_path, src, f"bare_{eff_name}_{op_name}.vera")))
-                if "E217" not in (proc.stdout + proc.stderr):
-                    bare_ok.add(op_name)
-        assert bare_ok <= {"get", "put", "throw"}, (
+                out = proc.stdout + proc.stderr
+                # E217 is emitted BEFORE the op-call check, so a non-routable
+                # op that loses it typically fails on ARITY (E204) instead —
+                # which "no E217" would read as acceptance.  Only a check that
+                # raises neither counts as routable.
+                if "E217" not in out and "E204" not in out:
+                    bare_ok.add((eff_name, op_name))
+        unexpected = {
+            pair for pair in bare_ok
+            if pair not in {("State", "get"), ("State", "put"),
+                            ("Exn", "throw")}
+        }
+        assert not unexpected, (
             f"these ops accept a BARE call and are not cell-carrying, so "
             f"their arguments reach the unqualified dispatch loop with no "
-            f"formal to guard against: {sorted(bare_ok - {'get', 'put', 'throw'})}"
+            f"formal to guard against: {sorted(unexpected)}"
         )
 
 
@@ -1216,6 +1230,12 @@ public fn tc(@Int -> @Int)
 # The widening at a DESTRUCTURE whose source is not a literal.  An inline
 # `if` over tuple literals keeps the value off any function boundary, whose
 # own component check would otherwise trap for an unrelated reason.
+# ASYMMETRIC on purpose: the widened `@Nat` sits in component 0 and a
+# constant `@Int` in component 1, and component 0 is the one read back.  With
+# the same expression in both slots a guard or obligation keyed to the wrong
+# component produces an identical verdict and an identical value, so the cell
+# could not separate "component 0 is guarded" from "component 1 is" (PR
+# review; the repo's own slot-order rule for non-commutative shapes).
 _1416_DESTRUCTURE = """\
 public fn td(@Nat -> @Int)
   requires(true)
@@ -1223,8 +1243,8 @@ public fn td(@Nat -> @Int)
   effects(pure)
 {
   let Tuple<@Int, @Int> =
-    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
-    else { Tuple(@Nat.0, @Nat.0) };
+    if @Nat.0 > 0 then { Tuple(@Nat.0, 1) }
+    else { Tuple(@Nat.0, 2) };
   @Int.1
 }
 """
@@ -1300,3 +1320,79 @@ class TestTupleComponentSitesAreGuarded1416:
             f"{[(o['kind'], o['status']) for o in rows]}"
         )
         _assert_partition(envelope)
+
+
+_1222_EFFECTFUL_MEASURE = """\
+private fn risky(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{
+  if @Nat.0 == 0 then { throw(1) } else { @Nat.0 }
+}
+
+public fn walk(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(risky(@Nat.0))
+  effects(<Exn<Int>>)
+{
+  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
+}
+"""
+
+
+class TestTheRangeCheckDoesNotRunTheMeasureAgain1222:
+    """The decline path may not make an extra evaluation observable.
+
+    Found by CodeRabbit on this PR.  Where the CHAIN guard is emitted the
+    measure is evaluated once and the range check reads its locals, so
+    nothing new runs.  Where the chain is declined the check evaluates the
+    component itself — and for an effectful component that is a new action
+    at function entry, before the body.
+
+    Measured: `decreases(risky(@Nat.0))` on a function declaring `Exn<Int>`,
+    where `risky` throws on zero.  The chain guard is declined for the `Exn`
+    row, and evaluating the measure there turned a program that returned 0
+    into one that threw.  The check is now emitted only for a component an
+    extra evaluation cannot make observable, and the obligation discloses
+    E537 where it is not.
+    """
+
+    def test_the_program_still_returns_rather_than_throwing(
+        self, tmp_path: Path,
+    ) -> None:
+        out = _run(tmp_path, _1222_EFFECTFUL_MEASURE, "--fn", "walk", "--",
+                   "4", name="eff1222.vera")
+        assert out.strip() == "0", (
+            f"the range check evaluated an effectful measure at entry, so a "
+            f"program that returned 0 now throws:\n{out}"
+        )
+
+    def test_and_says_so_instead_of_claiming_a_check(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _1222_EFFECTFUL_MEASURE, name="eff1222v.vera")
+        bounds = [o for o in obs if o["kind"] == "decreases_bound"]
+        assert [(o["status"], o.get("error_code")) for o in bounds] == [
+            ("tier3_unguarded", "E537")], obs
+        _assert_partition(envelope)
+
+    def test_a_pure_measure_on_the_same_decline_path_is_still_checked(
+        self, tmp_path: Path,
+    ) -> None:
+        """The over-restriction control.
+
+        Without it, "do not evaluate" is equally satisfied by never emitting
+        the check on the decline path at all — which would undo the fix this
+        cell's neighbours cover, since an `Exn`-declaring function is one of
+        the shapes that has no chain guard to fall back on.
+        """
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _1222_EXN, "eff1222c.vera")))
+        assert proc.returncode == 0, proc.stderr[-400:]
+        assert "i64 range" in proc.stdout, (
+            "a PURE measure on the same declined-chain path lost its range "
+            "check too"
+        )
