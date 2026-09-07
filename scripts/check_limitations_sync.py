@@ -24,6 +24,7 @@ Fast enough for a pre-commit hook in default mode.
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -50,6 +51,77 @@ def _row_issue_links(line: str, issue_column_only: bool) -> set[int]:
     return {int(n) for n in _ISSUE_LINK_RE.findall(source)}
 
 
+_FENCE_RE = re.compile(r"^ {0,3}(?P<delim>`{3,}|~{3,})(?P<info>.*)$")
+
+
+def _section_body_lines(
+    text: str, is_heading: Callable[[str], bool]
+) -> list[str] | None:
+    """The body lines of the first section whose heading satisfies
+    `is_heading`, bounded at the next second-level heading.
+
+    One walk for all three extractors below, so the bound is decided in
+    one place.  Two things it gets right that a per-extractor scan kept
+    getting wrong:
+
+    The bound does not wait for a table.  A section with none — a
+    `## Bugs` section driven to zero (#1401), or `spec/11-compilation.md`'s
+    `## 11.17 Limitations`, which has never had one — used to run the scan
+    on into the NEXT section's table and report it as this section's
+    contents (#1405).
+
+    Fenced code is EXCLUDED, from the boundary decision and from the
+    body alike.  A `## ` line inside a fence is code, not structure:
+    treating one as a boundary ends the section early and the real table
+    is never read, and under-collecting a spec-chapter table is the FALSE
+    PASS direction, since its rows then stop being required in
+    KNOWN_ISSUES.md and a closed issue cited there stops being flagged
+    (PR #1411 review).  The same is true one line down — an example table
+    inside a fence is not inventory, and returning it would have the
+    caller either count its rows as claims or, worse, take it for the
+    section's table and stop at the closing fence before the real one.
+    The fence state is tracked from the top of the file, so a fenced
+    heading cannot open a section either, and a block is closed only by
+    a run of the SAME character at least as long as the one that opened
+    it — a four-backtick block quoting a three-backtick one would
+    otherwise toggle closed on its own content and put the rest of the
+    example back into the document (PR #1411 review).
+
+    ``None`` when no heading matches, which callers distinguish from an
+    empty body.
+    """
+    body: list[str] = []
+    started = False
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines():
+        marker = _FENCE_RE.match(line)
+        if marker is not None:
+            delim = marker.group("delim")
+            if fence is None:
+                fence = (delim[0], len(delim))
+                continue
+            # A closing fence carries no info string, and must be the
+            # same character run at least as long as the opener.
+            char, length = fence
+            if (
+                delim[0] == char
+                and len(delim) >= length
+                and not marker.group("info").strip()
+            ):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        if not started:
+            if is_heading(line):
+                started = True
+            continue
+        if line.startswith("## "):
+            break
+        body.append(line)
+    return body if started else None
+
+
 def extract_limitation_table_issues(
     text: str, table_header: str, issue_column_only: bool = False
 ) -> set[int]:
@@ -57,20 +129,15 @@ def extract_limitation_table_issues(
 
     Finds the table that follows `table_header` and extracts all issue
     references from it.  Stops at the next heading or blank line after
-    the table.
+    the table; the section bound itself is `_section_body_lines`.
     """
+    body = _section_body_lines(text, lambda line: table_header in line)
+    if body is None:
+        return set()
+
     issues: set[int] = set()
     in_table = False
-    header_found = False
-
-    for line in text.splitlines():
-        # Look for the section heading
-        if table_header in line:
-            header_found = True
-            continue
-        if not header_found:
-            continue
-
+    for line in body:
         # Skip blank lines between heading and table
         if not in_table and line.strip() == "":
             continue
@@ -101,15 +168,12 @@ def extract_section_issues(
     when the heading is absent so the caller can treat a renamed or
     deleted section as an error rather than an empty result.
     """
-    m = re.search(
-        rf"^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)",
-        text,
-        re.DOTALL | re.MULTILINE,
-    )
-    if not m:
+    wanted = f"## {heading}"
+    body = _section_body_lines(text, lambda line: line.rstrip() == wanted)
+    if body is None:
         return None
     issues: set[int] = set()
-    for line in m.group(1).splitlines():
+    for line in body:
         if not line.strip().startswith("|"):
             continue
         issues.update(_row_issue_links(line, issue_column_only))
@@ -123,20 +187,16 @@ def extract_done_and_open(
 
     Scans all table rows in the Current Limitations section.  Rows
     containing "Done" go into the done set; others go into the open set.
+    The section bound is `_section_body_lines`, shared with the two
+    extractors above so all three stop in the same place.
     """
     open_issues: set[int] = set()
     done_issues: set[int] = set()
-    in_section = False
+    body = _section_body_lines(
+        text, lambda line: "## Current Limitations" in line
+    )
 
-    for line in text.splitlines():
-        if "## Current Limitations" in line:
-            in_section = True
-            continue
-        if not in_section:
-            continue
-        # Stop at next section
-        if line.startswith("## ") and "Current Limitations" not in line:
-            break
+    for line in body or []:
         if not line.strip().startswith("|") or "---" in line:
             continue
         row_issues = _row_issue_links(line, issue_column_only)

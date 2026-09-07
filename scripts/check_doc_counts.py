@@ -1054,42 +1054,115 @@ def check_dual_target_row(
 _BUGS_SECTION = re.compile(r"^## Bugs[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S)
 _ISSUE_LINK = re.compile(r"\[#(\d+)\]\(https://github\.com/[\w.-]+/[\w.-]+/issues/(\d+)\)")
 _NO_BUGS = "No known bugs."
+_NO_OPEN_BUGS = "No open bugs."
+
+
+def _read_bug_table(
+    body: str, *, issue_cell: int, marker: str, where: str
+) -> list[int] | str:
+    """Issue numbers from one bug-count table, or why it could not be read.
+
+    Two tables have this shape and are read here once, so the counts they
+    produce are like for like at every value including zero:
+    KNOWN_ISSUES.md's `## Bugs` (whose Issue column is the LAST cell, so
+    prose carrying a `|` cannot shift it) and ROADMAP.md's burndown
+    (whose Issue column is the FIRST).  `issue_cell` selects which.
+
+    Only the Issue column is read.  It is a row's canonical tracker, and
+    rows cross-link other issues in their prose — counting those would
+    make one bug's context read as another bug's row.
+
+    The zero state is a MARKER, not an absence (#1401): the section keeps
+    its heading and its standing description of what the table is, the
+    table is GONE, and the body's last line is `marker`.  Recognising the
+    marker BESIDE the description rather than instead of it is what makes
+    a burndown driven to zero writable at all, while a table emptied
+    WITHOUT one stays unreadable — which is what keeps "the last row was
+    deleted by accident" an error rather than a clean bill of health.
+
+    The marker and a table cannot coexist, in either order.  A section
+    carrying both claims some open bugs and none at once, and which half
+    a reader believes must not depend on which one happens to come last:
+    the guard was written as "the marker is the last line, and there are
+    rows", which read the marker ABOVE a table as no marker at all and
+    returned the rows clean — a false PASS on the ordinary shape, since
+    at zero the section ends with the marker and the next bug's table is
+    appended below it (PR #1411 review).  Any line starting with `|`
+    counts, a leftover header and separator included, so the written form
+    is the one the prose describes rather than the one the row scanner
+    happens to tolerate.
+
+    Returns the issue numbers in row order (``[]`` at the zero state), or
+    the sentence naming why the body is not a readable count.
+    """
+    table_lines = [line for line in body.splitlines() if line.startswith("|")]
+    # The marker is compared as a whole stripped line, anywhere in the
+    # body.  A substring test would accept it inside a sentence, and the
+    # standing description is exactly the place that would one day quote
+    # it; a last-line-only test would miss it above a table.
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    marker_at = [index for index, line in enumerate(lines) if line == marker]
+    if marker_at and table_lines:
+        return (
+            f"{where} carries the `{marker}` marker AND {len(table_lines)} "
+            f"table line(s), which claims both some open bugs and none. The "
+            f"zero form has no table at all — not even a leftover header row"
+        )
+
+    numbers: list[int] = []
+    for line in table_lines:
+        if set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells[issue_cell] == "Issue":
+            continue
+        links = [
+            int(number)
+            for number, url_number in _ISSUE_LINK.findall(cells[issue_cell])
+            if number == url_number
+        ]
+        if len(links) != 1:
+            return (
+                f"{where} has a row whose Issue column does not hold exactly one "
+                f"`[#N](…/issues/N)` link whose number matches its URL"
+            )
+        numbers.append(links[0])
+    if numbers:
+        return numbers
+    if marker_at and marker_at[-1] == len(lines) - 1:
+        return []
+    if marker_at:
+        return (
+            f"{where} carries the `{marker}` marker but does not END with "
+            f"it. Text after the marker qualifies the claim, and the gate "
+            f"cannot know how"
+        )
+    return (
+        f"{where} has no issue rows and does not end with the `{marker}` "
+        f"marker. A table driven to zero is written by keeping the section's "
+        f"description, deleting the table, and ending the section with that "
+        f"line on its own"
+    )
 
 
 def bug_rows(known_issues_text: str) -> list[int] | None:
     """Issue numbers from the Bugs table's Issue column, in order.
 
-    The Issue column is a row's canonical tracker, and it is the only place
-    read: rows cross-link other issues in their prose, and counting those
-    would make one bug's context read as another bug's row.
-
-    ``[]`` is the documented empty state — the section body is exactly "No
-    known bugs." — and ``None`` means the section could not be read at all.
-    The two are different problems and a caller must not conflate them.
+    ``[]`` is the documented empty state — the section keeps its heading
+    and its description and ends with "No known bugs." — and ``None``
+    means the section could not be read at all.  The two are different
+    problems and a caller must not conflate them.
     """
     section = _BUGS_SECTION.search(known_issues_text)
     if section is None:
         return None
-    body = section.group(1).strip()
-    if body == _NO_BUGS:
-        return []
-    numbers: list[int] = []
-    for line in body.splitlines():
-        if not line.startswith("|") or set(line) <= set("|- "):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if cells[-1] == "Issue":
-            continue
-        # The last cell, so prose carrying a `|` cannot shift the column.
-        links = [
-            int(number)
-            for number, url_number in _ISSUE_LINK.findall(cells[-1])
-            if number == url_number
-        ]
-        if len(links) != 1:
-            return None
-        numbers.append(links[0])
-    return numbers or None
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=-1,
+        marker=_NO_BUGS,
+        where="KNOWN_ISSUES.md: the `## Bugs` section",
+    )
+    return None if isinstance(read, str) else read
 
 
 def check_faq_example_count(faq_text: str, live_examples: int) -> list[str]:
@@ -1133,14 +1206,24 @@ def check_faq_example_count(faq_text: str, live_examples: int) -> list[str]:
 
 
 def check_bug_rows(known_issues_text: str) -> list[str]:
-    """Check the Bugs table's shape: one well-formed, unique issue per row."""
-    numbers = bug_rows(known_issues_text)
-    if numbers is None:
-        return [
-            "KNOWN_ISSUES.md: the `## Bugs` table was not found, or a row's "
-            "Issue column does not hold exactly one `[#N](…/issues/N)` link. "
-            "An empty section is written `No known bugs.`"
-        ]
+    """Check the Bugs table's shape: one well-formed, unique issue per row.
+
+    Each way of being unreadable gets its own sentence.  The one message
+    that covered them all prescribed the empty form it had just rejected
+    (#1401), which is the worst thing a gate's error text can do.
+    """
+    section = _BUGS_SECTION.search(known_issues_text)
+    if section is None:
+        return ["KNOWN_ISSUES.md: the `## Bugs` section was not found"]
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=-1,
+        marker=_NO_BUGS,
+        where="KNOWN_ISSUES.md: the `## Bugs` section",
+    )
+    if isinstance(read, str):
+        return [read]
+    numbers = read
     duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
     return [
         f"KNOWN_ISSUES.md: issue #{number} has a Bugs row twice"
@@ -1203,26 +1286,24 @@ def _english_number_word_to_int(word: str) -> int | None:
 def roadmap_burndown_rows(roadmap_text: str) -> list[int] | None:
     """Issue numbers from the CURRENT '## The vX.Y.Z burndown' table's
     Issue column, in the same shape `bug_rows` reads KNOWN_ISSUES.md's
-    Bugs table — reused so the two are compared like for like."""
+    Bugs table — the same reader, so the two are compared like for like
+    at every value including zero, where a present-but-emptied table is
+    written `No open bugs.` beside its description.
+
+    ``None`` means the section is absent OR its body is not a readable
+    count; `check_burndown_header_matches_rows` separates those, because
+    only the first is a zero state.
+    """
     section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
     if section is None:
         return None
-    numbers: list[int] = []
-    for line in section.group(1).splitlines():
-        if not line.startswith("|") or set(line) <= set("|- "):
-            continue
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if cells[0] == "Issue":
-            continue
-        links = [
-            int(number)
-            for number, url_number in _ISSUE_LINK.findall(cells[0])
-            if number == url_number
-        ]
-        if len(links) != 1:
-            return None
-        numbers.append(links[0])
-    return numbers or None
+    read = _read_bug_table(
+        section.group(1),
+        issue_cell=0,
+        marker=_NO_OPEN_BUGS,
+        where="ROADMAP.md: the burndown section",
+    )
+    return None if isinstance(read, str) else read
 
 
 def check_burndown_header_matches_rows(
@@ -1232,10 +1313,36 @@ def check_burndown_header_matches_rows(
     KNOWN_ISSUES.md's Bugs table row count must all agree — three
     numbers, one fact.  A mismatch on any pair is reported together
     (not as separate errors per pair) so the message reads as the one
-    underlying disagreement it is."""
+    underlying disagreement it is.
+
+    A burndown driven to zero has two written forms, and both read as
+    zero (#1401).  A burndown whose rows are all closed is PAST, so by
+    the project's future-vs-past rule its section is RETIRED — deleted
+    from ROADMAP.md, its record living in HISTORY.md and CHANGELOG.md —
+    and the ABSENCE of the section is therefore the primary zero form.
+    The section may also be kept with its table replaced by the
+    `No open bugs.` marker, for the window between the last fix and the
+    release that retires it.  Neither is a way past the gate: both are
+    still cross-checked against KNOWN_ISSUES.md's Bugs table, so a
+    retired section beside a non-empty Bugs table is an error.
+    """
+    bugs = bug_rows(known_issues_text)
+    if bugs is None:
+        return [
+            "KNOWN_ISSUES.md: the `## Bugs` table could not be read — cannot "
+            "cross-check against ROADMAP.md's burndown header"
+        ]
+
     section = _ROADMAP_BURNDOWN_SECTION.search(roadmap_text)
     if section is None:
-        return ["ROADMAP.md: could not find '## The vX.Y.Z burndown' section"]
+        if bugs:
+            return [
+                "ROADMAP.md: there is no '## The vX.Y.Z burndown' section, "
+                f"which reads as zero open bugs, but KNOWN_ISSUES.md's Bugs "
+                f"table has {len(bugs)} row(s): "
+                f"{', '.join(f'#{n}' for n in bugs)}"
+            ]
+        return []
 
     header_match = _BURNDOWN_HEADER.search(section.group(1))
     if header_match is None:
@@ -1251,16 +1358,15 @@ def check_burndown_header_matches_rows(
             "recognised English number word (0-99)"
         ]
 
-    burndown_rows = roadmap_burndown_rows(roadmap_text)
-    if burndown_rows is None:
-        return ["ROADMAP.md: burndown table has no issue rows"]
-
-    bugs = bug_rows(known_issues_text)
-    if bugs is None:
-        return [
-            "KNOWN_ISSUES.md: the `## Bugs` table was not found — cannot "
-            "cross-check against ROADMAP.md's burndown header"
-        ]
+    table_read = _read_bug_table(
+        section.group(1),
+        issue_cell=0,
+        marker=_NO_OPEN_BUGS,
+        where="ROADMAP.md: the burndown section",
+    )
+    if isinstance(table_read, str):
+        return [table_read]
+    burndown_rows = table_read
 
     values = {
         "burndown header word": header_number,
@@ -1277,12 +1383,25 @@ def check_burndown_header_matches_rows(
 
 
 def check_bug_issue_parity(rows: list[int], open_bugs: list[int]) -> list[str]:
-    """Check the Bugs table against the open `bug`-labelled issues."""
-    if not open_bugs:
+    """Check the Bugs table against the open `bug`-labelled issues.
+
+    Zero on BOTH sides is the burndown's success state and passes: the
+    file claims no open bugs and the tracker has none, which is the two
+    agreeing (#1401).  What cannot pass is zero on the tracker side
+    ALONE, because a query that came back empty is indistinguishable
+    from one that failed — except that `open_bug_issues` raises
+    `BugQueryError` rather than returning `[]` on a transport or payload
+    failure, so the distinction is drawn where the query is made and an
+    empty list reaching here is a real answer.  Rows without it are
+    still reported, since a row for an issue the tracker does not carry
+    as an open bug is wrong either way.
+    """
+    if not open_bugs and rows:
         return [
             "KNOWN_ISSUES.md: an open `bug`-labelled issue was not found at "
-            "all, so the Bugs table has nothing to be checked against. An "
-            "empty query is a failed one, not a clean bill of health."
+            f"all, so the Bugs table's {len(rows)} row(s) have nothing to be "
+            "checked against. An empty query is a failed one, not a clean "
+            "bill of health."
         ]
     bug_set, row_set = set(open_bugs), set(rows)
     matched = bug_set & row_set
@@ -1354,6 +1473,236 @@ def open_bug_issues(repo: str = "aallan/vera") -> list[int]:
             item["number"] for item in payload if "pull_request" not in item
         ]
     return numbers
+
+
+# ---------------------------------------------------------------------------
+# The enumerated negative-conformance-fixture lists in the two agent
+# orientation files, against the manifest that decides which fixtures are
+# negative.  Both files spell the list out in full — the only place in the
+# documentation that enumerates a set the manifest already holds — and
+# AGENTS.md also spells its size as an English word.  Nothing gated any of
+# it, so a fixture added to the manifest simply did not appear in either
+# list, and the word went stale with it.
+# ---------------------------------------------------------------------------
+
+_NEGATIVE_FIXTURES = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})negative fixtures \((?P<names>[^)]*)\)"
+)
+_FIXTURE_NAME = re.compile(r"`([A-Za-z0-9_]+)`")
+# Words that introduce the phrase without counting it.  Anything ELSE in
+# the slot is read as a count and must parse — a positional pattern that
+# only recognised `the <word> ` left "the 42", "all four" and "forty
+# three" silently unchecked, with the global "no count anywhere" backstop
+# as the only net (PR #1411 review).
+_COUNT_DETERMINERS = frozenset(
+    {"the", "its", "their", "those", "these", "and", "a", "an", "same"}
+)
+
+
+def _count_token(lead: str) -> str | None:
+    """The token in a list's count slot, or None when it holds only a
+    determiner.  `lead` is the (at most two) words before the phrase."""
+    words = lead.split()
+    if not words:
+        return None
+    last = words[-1]
+    return None if last.lower() in _COUNT_DETERMINERS else last
+
+
+def _parse_count(token: str) -> int | None:
+    """A count written as digits or as an English number word."""
+    if token.isdigit():
+        return int(token)
+    return _english_number_word_to_int(token)
+
+
+def _check_enumeration(
+    where: str, match: re.Match[str], wanted: set[str], subject: str
+) -> tuple[int, list[str]]:
+    """One enumerated set of conformance programs, against the manifest.
+
+    Three documents spell such a set out by hand, and every one of them
+    had drifted: the names, whether any are duplicated, and — where the
+    prose states one — the count in front of them.  Returns how many
+    counts this occurrence carried (0 or 1, for the caller's "the count
+    is no longer spelled out anywhere" backstop) and the errors found.
+    """
+    errors: list[str] = []
+    names = _FIXTURE_NAME.findall(match.group("names"))
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        errors.append(
+            f"{where}: names the same program twice: {', '.join(duplicates)}"
+        )
+    missing = sorted(wanted - set(names))
+    extra = sorted(set(names) - wanted)
+    if missing:
+        errors.append(
+            f"{where}: {len(missing)} manifest {subject} are not listed:"
+            f" {', '.join(missing)}"
+        )
+    if extra:
+        errors.append(
+            f"{where}: lists {len(extra)} program(s) the manifest does not"
+            f" hold as {subject}: {', '.join(extra)}"
+        )
+    word = _count_token(match.group("lead"))
+    if word is None:
+        return 0, errors
+    value = _parse_count(word)
+    if value is None:
+        errors.append(
+            f"{where}: {word!r} sits where the count goes but is neither"
+            f" digits nor a recognised English number word (0-99), so the"
+            f" count is unchecked"
+        )
+    elif value != len(wanted):
+        errors.append(
+            f"{where}: says {word!r} {subject} ({value}), the manifest has"
+            f" {len(wanted)}"
+        )
+    return 1, errors
+
+
+# TESTING.md is the THIRD document that spells one of these sets out, and
+# it drifted by the same mechanism and on the same fixture as the two the
+# gate above reads.  Gating two of the three would be this PR's own
+# argument left one step short (PR #1411 review).
+_LEVEL_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})programs \((?P<names>[^)]*)\) are at"
+    r" the `(?P<level>[a-z]+)` level"
+)
+_NEGATIVE_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})of them — (?P<names>[^—]*) — are"
+    r" \*\*negative tests\*\*"
+)
+
+
+def _programs_at_level(
+    manifest: list[dict[str, object]], level: str
+) -> set[str]:
+    return {
+        str(entry["file"]).removesuffix(".vera")
+        for entry in manifest
+        if entry.get("level") == level
+    }
+
+
+def check_conformance_level_prose(
+    testing_text: str, manifest: list[dict[str, object]]
+) -> list[str]:
+    """TESTING.md's per-level program enumerations, against the manifest.
+
+    Two shapes, both spelled out by hand and both carrying their own
+    count word: "<Count> programs (…) are at the `<level>` level", and
+    the negative subset, "<Count> of them — … — are **negative tests**".
+    A shape that matches nothing is an error, not a skip.
+    """
+    errors: list[str] = []
+    levels = list(_LEVEL_PROSE.finditer(testing_text))
+    if not levels:
+        errors.append(
+            "TESTING.md: no '<Count> programs (...) are at the `<level>`"
+            " level' sentence found — it moved or was reworded, so the"
+            " per-level program lists are no longer gated"
+        )
+    for match in levels:
+        level = match.group("level")
+        _, found = _check_enumeration(
+            f"TESTING.md: the `{level}`-level program list",
+            match,
+            _programs_at_level(manifest, level),
+            f"`{level}`-level programs",
+        )
+        errors += found
+
+    negatives = list(_NEGATIVE_PROSE.finditer(testing_text))
+    if not negatives:
+        errors.append(
+            "TESTING.md: no '<Count> of them — ... — are **negative tests**'"
+            " sentence found — it moved or was reworded, so the negative"
+            " subset is no longer gated"
+        )
+    for match in negatives:
+        _, found = _check_enumeration(
+            "TESTING.md: the negative-test subset",
+            match,
+            set(negative_fixture_names(manifest)),
+            "negative tests",
+        )
+        errors += found
+    return errors
+
+
+def negative_fixture_names(manifest: list[dict[str, object]]) -> list[str]:
+    """The conformance fixtures the manifest marks as negative, sorted.
+
+    A negative fixture is one carrying `expected_error`: the manifest is
+    what decides, which is exactly why the prose lists must be read
+    against it rather than maintained beside it.
+
+    Selected on the key being PRESENT — `is not None`, not truthiness —
+    because that is how `scripts/check_conformance.py` and
+    `tests/test_conformance.py` partition the same manifest.  A gate that
+    split the set differently from the runner it documents would be
+    describing a set nothing else believes in, and would excuse an
+    empty-coded fixture from the prose lists while the runner still
+    demanded it fail.
+    """
+    return sorted(
+        str(entry["file"]).removesuffix(".vera")
+        for entry in manifest
+        if entry.get("expected_error") is not None
+    )
+
+
+def check_negative_fixture_lists(
+    docs: dict[str, str], expected: list[str]
+) -> list[str]:
+    """Gate the enumerated lists (and the spelled count) against the manifest.
+
+    Every occurrence is checked, not the first: AGENTS.md carries the
+    list twice, and a gate reading one of them would let the other drift
+    — the failure this replaces, one level down.  A file with no list at
+    all is an error rather than a skip, for the reason every pattern in
+    this script is: rewording the sentence would otherwise switch the
+    check off silently.
+
+    The count word is checked wherever it appears, and its ABSENCE from
+    every checked file is an error too.  It is parsed with the same
+    English-word table the burndown header uses, so the two spellings of
+    "how many" in the documentation cannot disagree about what a word
+    means.
+    """
+    errors: list[str] = []
+    wanted = set(expected)
+    seen_lists = 0
+    seen_words = 0
+    for doc, text in sorted(docs.items()):
+        matches = list(_NEGATIVE_FIXTURES.finditer(text))
+        if not matches:
+            errors.append(
+                f"{doc}: no 'negative fixtures (...)' list found — it moved"
+                f" or was reworded, so the list is no longer gated"
+            )
+            continue
+        for index, match in enumerate(matches, start=1):
+            seen_lists += 1
+            counted, found = _check_enumeration(
+                f"{doc} (list {index} of {len(matches)})",
+                match,
+                wanted,
+                "negative fixtures",
+            )
+            seen_words += counted
+            errors += found
+    if seen_lists and not seen_words:
+        errors.append(
+            "the negative-fixture count is no longer spelled out in any of "
+            + ", ".join(sorted(docs))
+            + " — the sentence was reworded, so the count is no longer gated"
+        )
+    return errors
 
 
 _ERROR_CODES_CITATION = re.compile(
@@ -2058,6 +2407,24 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 21. Check KNOWN_ISSUES.md's Bugs table
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 21a. Check the enumerated negative-fixture lists against the manifest
+    # ------------------------------------------------------------------
+
+    manifest = json.loads(
+        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
+    )
+    errors.extend(
+        check_negative_fixture_lists(
+            {
+                name: (root / name).read_text(encoding="utf-8")
+                for name in ("AGENTS.md", "CLAUDE.md")
+            },
+            negative_fixture_names(manifest),
+        )
+    )
+    errors.extend(check_conformance_level_prose(testing_md, manifest))
 
     known_issues = (root / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
     errors.extend(check_bug_rows(known_issues))
