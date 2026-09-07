@@ -440,7 +440,8 @@ class OperatorsMixin:
         base = self._ctor_to_adt_name(operand.name)
         if base is None:
             return None
-        # ctor-owner-exempt: no owner available at this site
+        # ctor-owner-exempt: resolved in the compiling namespace's scoped
+        # projection (#1436)
         tp_indices = self._ctor_adt_tp_indices.get(operand.name)
         tp_count = self._adt_tp_counts.get(base, 0)
         if not tp_indices or tp_count == 0:

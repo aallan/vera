@@ -302,8 +302,8 @@ class CodeGenerator(
         # indices (or None for concrete fields).  Used by the monomorphizer and WASM
         # type inference to correctly bind forall vars from sparse constructors like
         # Err(e) whose single field maps to Result's *second* type param (E), not T.
-        # ctor-owner-exempt: declares the flat projection; the per-owner map is
-        # built from it
+        # ctor-owner-exempt: declares the map the namespace-scoped projection
+        # is built from (#1436)
         self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = {}
         # Maps ADT name → number of type parameters (needed to produce full-length
         # type-arg tuples with None placeholders for unknown positions).
@@ -1518,6 +1518,85 @@ class CodeGenerator(
             members | infrastructure
             | self._builtin_adt_names | prelude_adt_names()
         )
+
+
+    #: Cache for :meth:`_builtin_adt_name_set`, filled on first use.
+    _BUILTIN_ADT_NAMES: frozenset[str] | None = None
+
+    @classmethod
+    def _builtin_adt_name_set(cls) -> frozenset[str]:
+        """The ADT names `_register_builtin_adts` installs, derived from a
+        fresh registrar rather than snapshotted mid-compilation (#1436).
+
+        Snapshotting `_adt_layouts` after the call was wrong in the only
+        case that matters: a module compile registers the built-ins again
+        on a generator that already holds the program's own ADTs, so the
+        snapshot swallowed `Shape` and classified an imported type as
+        infrastructure.  Asking a throwaway registrar cannot drift from
+        what the method actually writes, and the answer is the same for
+        every generator, so it is cached on the class.
+        """
+        cached = cls.__dict__.get("_BUILTIN_ADT_NAMES")
+        if cached is None:
+            probe = CodeGenerator()
+            probe._register_builtin_adts()
+            cached = frozenset(probe._adt_layouts)
+            cls._BUILTIN_ADT_NAMES = cached
+        return cached
+
+    def _namespace_ctor_projection(
+        self,
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        """The by-name constructor projections, scoped to the namespace whose
+        body is compiling (#1436).
+
+        `_adt_layouts` is one map across every namespace a compilation
+        absorbs, so flattening it by bare CONSTRUCTOR name let a declaration
+        in one namespace answer for another's.  Measured: an entry-file
+        `private data Mine { Pad(Bool), Sq(Bool) }` took the `Sq` slot from
+        an imported `data Shape { Sq(Int), Circ(Int) }`, and the MODULE's own
+        `mk_sq` then emitted `Mine.Sq`'s tag while its own `match` dispatched
+        on `Shape`'s — `show(mk_sq(7))` rendered `Circ(7)` and
+        `tag(mk_circ(7))` returned the `Sq` arm.
+
+        Three classes, applied in this order so the later ones shadow:
+
+        * **infrastructure** — the built-in and prelude ADTs, visible
+          everywhere;
+        * **foreign** — declared by a module other than the one compiling.
+          A namespace that imports the type must still resolve its
+          constructors, so these are included rather than dropped;
+        * **own** — declared by the namespace compiling.  Applied last, so a
+          local declaration shadows an imported constructor of the same
+          name, which is what §8.5.2 says it does.
+
+        An ADT declared by the ENTRY file is `own` only while the entry is
+        compiling: a module's body must not see it at all, which is the half
+        that was miscompiling.
+        """
+        active = self._active_module_path
+        builtins = self._builtin_adt_name_set()
+        infra: list[str] = []
+        foreign: list[str] = []
+        own: list[str] = []
+        for adt_name in self._adt_layouts:
+            if adt_name in builtins:
+                infra.append(adt_name)
+                continue
+            owner = self._adt_layout_owners.get(adt_name)
+            if owner is None:
+                # No module owns it: an ENTRY-file declaration.  Visible only
+                # while the entry itself is compiling.
+                (own if active is None else foreign).append(adt_name)
+                continue
+            (own if owner == active else foreign).append(adt_name)
+        ctor_layouts: dict[str, object] = {}
+        ctor_to_adt: dict[str, str] = {}
+        for adt_name in infra + foreign + own:
+            for ctor_name, layout in self._adt_layouts[adt_name].items():
+                ctor_layouts[ctor_name] = layout
+                ctor_to_adt[ctor_name] = adt_name
+        return ctor_layouts, ctor_to_adt
 
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:
         """Where *name* sits in the declaration-index space *order* keys (#1227).

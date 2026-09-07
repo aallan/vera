@@ -430,13 +430,10 @@ class FunctionCompilationMixin:
                         )
                         effect_op_cells["throw"] = exn_cell
 
-        # Flatten ADT layouts into ctor_name -> layout for WasmContext
-        ctor_layouts = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
+        # #1436: the by-name projections, scoped to the namespace whose
+        # body is compiling.  Flattening `_adt_layouts` across every
+        # namespace let one namespace's declaration answer for another's.
+        ctor_layouts, ctor_to_adt = self._namespace_ctor_projection()
         # #1253/#1316: the NAMESPACE's data types, not every layout this
         # compilation registered.  `_adt_layouts` is one map across every
         # absorbed namespace; `_alias_env.data_types` is the set
