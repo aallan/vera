@@ -28,7 +28,11 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 from vera import ast, naming
-from vera.errors import Diagnostic, SourceLocation
+from vera.errors import (
+    Diagnostic,
+    SourceLocation,
+    attach_partial_diagnostics,
+)
 from vera.naming import AliasEnv
 from vera.registration import where_helper_parents
 from vera.environment import (
@@ -36,6 +40,7 @@ from vera.environment import (
     FunctionInfo,
     TypeEnv,
 )
+from vera.regularity import occurrence_grows, suggested_occurrence
 from vera.types import (
     EffectInstance,
     BOOL,
@@ -100,7 +105,16 @@ def typecheck(
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
     )
-    checker.check_program(program)
+    try:
+        checker.check_program(program)
+    except BaseException as exc:
+        # #1429: hand the diagnostics recorded SO FAR to the command
+        # boundary, which prints them ahead of its E699.  A pass that dies
+        # part-way has usually already said what is wrong with the program —
+        # discarding that leaves the user with "internal compiler error" and
+        # nothing to act on.
+        attach_partial_diagnostics(exc, checker.errors)
+        raise
     return checker.errors
 
 
@@ -217,7 +231,14 @@ def typecheck_with_artifacts(
     checker.expr_semantic_types = {}
     checker.expr_target_types = {}
     checker.hole_sites = []
-    checker.check_program(program)
+    try:
+        checker.check_program(program)
+    except BaseException as exc:
+        # #1429, as in `typecheck` above — and this is the entry every `vera`
+        # command actually calls, so wiring only the other one would have left
+        # the CLI discarding diagnostics exactly as before.
+        attach_partial_diagnostics(exc, checker.errors)
+        raise
 
     module_arts: ModuleArtifacts = {}
     diagnostics = list(checker.errors)
@@ -669,6 +690,27 @@ class TypeChecker(
                     else f"'{parent}' in module '{label}'"
                     for parent in parents
                 )
+        # #1429: which `data` declarations this module refuses as NON-REGULAR,
+        # settled BEFORE any body is checked.  Filling the set as declarations
+        # were reached made the report depend on source ORDER: a `data` written
+        # BELOW the function comparing its values was not yet in the set when
+        # the `Eq` derivation ran, so E243 was recorded and the declaration
+        # earned its E129 only afterwards — `['E243', 'E129']` for a program
+        # that reads identically to the reader (PR #1432 re-verification).
+        # Source order is not part of what a Vera program means, so it may not
+        # be part of what the checker reports.  Derived from THIS program's own
+        # declarations, one for one with the E129s `_check_data_regularity`
+        # goes on to emit: pre-populating from the whole registry would also
+        # silence the cascade for an imported irregular type, whose own
+        # module's check is what should report it.
+        regularity = self.env.regularity_index()
+        for tld in program.declarations:
+            decl = tld.decl
+            if (isinstance(decl, ast.DataDecl)
+                    and id(decl) not in self._rejected_builtin_redefs
+                    and decl.name in self.env.data_types
+                    and not regularity.is_regular(decl.name)):
+                self.env.refused_non_regular.add(decl.name)
         for tld in program.declarations:
             # #815: a built-in redefinition (E151) is already reported and not
             # registered; skip checking its body so it isn't re-checked against
@@ -726,6 +768,7 @@ class TypeChecker(
 
     def _check_data(self, decl: ast.DataDecl) -> None:
         """Check an ADT declaration (invariant well-formedness)."""
+        self._check_data_regularity(decl)
         # #861: a constructor field type may carry a refinement
         # (`data Wrap = Wrap({ @Int | @Int.0 > 0 })`); check its predicate
         # with the ADT's type params in scope.
@@ -765,6 +808,120 @@ class TypeChecker(
 
             self.env.type_params = saved_params
             self.env.pop_scope()
+
+    def _check_data_regularity(self, decl: ast.DataDecl) -> None:
+        """Refuse NON-REGULAR recursion in a `data` declaration (#1429).
+
+        Read PER TYPE ARGUMENT of a recursive occurrence: each must be a
+        bare parameter of the enclosing declaration, passed along unchanged,
+        or closed with respect to those parameters.  `data List<T> { Cons(T,
+        List<T>), Nil }` passes one along and `data Expr<T> { Lit(T),
+        Add(Expr<Int>, Expr<Int>) }` closes one; `data Nest<T> {
+        N(Nest<Option<T>>), Z }` does neither — `Option<T>` wraps the
+        parameter, so the argument grows at every level and the chain
+        `Nest<Int>` -> `Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>`
+        never repeats.
+
+        Nothing downstream survives that.  Verification's datatype-group
+        closure has no fixed point to reach, so `vera verify` produced no
+        verdict for 67-76 s and then an `E699` internal compiler error; the
+        SMT sort key doubles in SIZE per level for `Ne<Tuple<T, T>>`, so a
+        bound on the NUMBER of instantiations is never even approached; and
+        `==` on such a type recurses the CHECKER itself into a
+        `RecursionError`, which is an `E699` before verification is reached at
+        all — and one that DISCARDED this very diagnostic, until the command
+        boundary learned to print what a dying pass had already recorded.
+        Refusing the declaration closes all three at the one place the
+        program says what it means, which is what DESIGN §0.2 asks for:
+        explicit and decidable in preference to a silent cliff further down.
+
+        MUTUAL recursion takes the same rule through the group rather than a
+        second one: `data A<T> { CA(B<Option<T>>) }` with `data B<T> {
+        CB(A<T>) }` is non-regular at the `B<Option<T>>` occurrence, and a
+        per-declaration test that only looked for the declaration's own name
+        would see nothing wrong with either half.
+
+        The rule itself lives in :mod:`vera.regularity`, because the SMT layer
+        asks it too — `verify()` is a public entry point whose check-clean
+        precondition a library caller can violate, and when it is the walk
+        does not return.  Two copies would be free to drift into one consumer
+        refusing what the other models.
+        """
+        found = self.env.regularity_index().irregular(decl.name)
+        if found is None:
+            return
+        ctor_name, index, bad = found
+        # The refusal is already in `env.refused_non_regular`: `check_program`
+        # settles the whole set before any body is checked, which is what
+        # makes the report independent of source order.  Recording it again
+        # here would be dead — the one entry point that reaches this method
+        # runs that pre-pass first, and a mutation removing this line left the
+        # suite green while removing the pre-pass took it red.
+        expected = tuple(
+            self.env.data_types[decl.name].type_params or ()
+        ) if decl.name in self.env.data_types else ()
+        params = ", ".join(expected)
+        # Built from the OCCURRENCE, with each growing argument unwrapped to
+        # the parameter it wraps.  Taking the enclosing declaration's
+        # parameters instead produced remedies that are not types — a
+        # mixed-arity pair was told to write `Body` — and would misstate the
+        # arity whenever the two members' parameter counts differ
+        # (PR #1432 re-verification).
+        remedy = suggested_occurrence(bad, expected, decl.name)
+        # A permutation has no varying part to lift out — every argument is
+        # already a bare parameter, just in the wrong position — so the
+        # remedy is worded per shape (PR #1432 re-verification).
+        grows = occurrence_grows(bad, expected)
+        self._error(
+            self._data_field_node(decl, ctor_name, index),
+            f"Non-regular recursion in data declaration "
+            f"'{decl.name}': the occurrence '{pretty_type(bad)}' does not "
+            f"reuse this declaration's type parameters "
+            f"({params if params else 'none'}) unchanged and in order.",
+            rationale=(
+                "A recursive occurrence may pass the enclosing "
+                "declaration's type parameters along unchanged, or use "
+                "arguments that do not mention them at all — `Expr<Int>`, "
+                "`Body<Int>`, a zero-argument `Decl` — and either keeps the "
+                "set of instantiations the type reaches finite.  An argument "
+                "that wraps a parameter inside another type constructor "
+                "grows at every level instead: `Nest<Int>`, "
+                "`Nest<Option<Int>>`, `Nest<Option<Option<Int>>>`, so the "
+                "chain never repeats and neither equality nor verification "
+                "terminates over it.  An occurrence of the declaration's own "
+                "name must also keep its parameters in their original "
+                "positions; a permutation stays finite but multiplies — five "
+                "parameters reach 610 instantiations — and the rule "
+                "Chapter 2 states is reuse unchanged and in order."
+            ),
+            fix=(
+                f"Instantiate the recursive occurrence as '{remedy}', or use "
+                "an argument that does not mention this declaration's type "
+                "parameters at all"
+                + (
+                    "; move the varying part into a field of its own, or "
+                    "into a separate non-recursive type."
+                    if grows else
+                    ".  The arguments here are already this declaration's "
+                    "own parameters — they are only out of order, and "
+                    "nothing needs to move."
+                )
+            ),
+            spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types"',
+            error_code="E129",
+        )
+
+    @staticmethod
+    def _data_field_node(
+        decl: ast.DataDecl, ctor_name: str, index: int,
+    ) -> ast.Node:
+        """The field's own TypeExpr, so the diagnostic points at the
+        occurrence rather than at the whole declaration."""
+        for ctor in decl.constructors:
+            if ctor.name == ctor_name and ctor.fields is not None:
+                if index < len(ctor.fields):
+                    return ctor.fields[index]
+        return decl  # pragma: no cover — the registry mirrors the AST
 
     def _check_fn(self, decl: ast.FnDecl) -> None:
         """Check a function declaration."""

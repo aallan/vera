@@ -1,0 +1,20 @@
+-- Chapter 2, Section 2.4 "Algebraic Data Types"
+-- Tests: E129 — each type argument of a recursive occurrence must be a bare
+-- parameter of the enclosing declaration, passed along unchanged, or closed
+-- with respect to those parameters.  `Nest<Option<T>>` is neither: it wraps
+-- the parameter, so the argument grows at every level and the chain
+-- `Nest<Int>` -> `Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>` never
+-- repeats.
+
+private data Nest<T> {
+  N(Nest<Option<T>>),
+  Z
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}

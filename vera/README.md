@@ -82,18 +82,19 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `slots.py` | 427 | Type check | Presentation over `naming.py`: slot resolution tables and their text/JSON rendering, plus the two scope walks the tables need (`forall` narrowing, `where`-helper nesting).  The walks here that are NOT naming say so in their docstrings — the alias-opaque syntactic spelling for WASM representation questions, the last-resort name for a State/Exn cell family that resolves to none, and the bare-call ownership predicate the checker, codegen, and mono discovery all resolve a `get`/`put` call site through | `slot_table()`, `format_slot_table()`, `fn_slot_scope()`, `fn_scopes()`, `type_expr_slot_name()`, `family_fallback_name()`, `bare_call_denotes_user_fn()` |
 | `environment.py` | 2,327 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
 | `checker/` | 8,110 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
-| `  core.py` | 1,165 | | TypeChecker class, orchestration, contracts, constraint validation | |
+| `  core.py` | 1,407 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 534 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
 | `  registration.py` | 1,032 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
-| `  eq_ability.py` | 199 | | Eq ability derivation checks | |
+| `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
 | `  calls.py` | 1,631 | | Function/constructor/module/ability calls | |
 | `  control.py` | 929 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 332 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `disclosure.py` | 446 | Verify | Per-module disclosed-function manifests: each module's own verification emits the set `disclosed_fn_names` derives, keyed by owner path and carrying the `DisclosureSite` the importer's E534 cites, so the #1363 demotion crosses an import (#1399); computed BOTTOM-UP over the import DAG so each module is verified once and nothing nests, and content-addressed on the module's own source + its closure's + the budget, which is what makes an edit to an imported module invalidate it | `ModuleDisclosureIndex`, `DisclosureSite` |
 | `monomorphize.py` | 3,891 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
+| `regularity.py` | 413 | Type check / Verify | The ONE regular-recursion derivation (#1429), read PER TYPE ARGUMENT of a recursive occurrence: each must be a bare parameter of the enclosing declaration, passed along unchanged, or closed with respect to those parameters — an argument that wraps one inside another type constructor grows at every level and is refused; an occurrence of the declaration's own name must also keep its parameters in their original positions.  Asked by TWO consumers that must not disagree — the checker refuses the declaration (`E129`), and the SMT layer declines to MODEL it, because `verify()` is a public entry point whose check-clean precondition a library caller can violate and the datatype-group closure has no fixed point when it is.  A second copy would be free to drift into one consumer refusing what the other models.  Groups are the strongly connected components of one field-reference graph, so `RegularityIndex` answers for a whole module from a single pass; `recursive_group()` is the straightforward reachability walk it is differentially tested against | `RegularityIndex`, `is_regular()`, `irregular_occurrence()`, `recursive_group()` |
 | `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | 11,648 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
 | `narrowing.py` | 192 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
@@ -154,7 +155,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  server.py` | 150 | | `vera serve` HTTP driver for `handle(Request -> Response)` (#305) | |
 | `tester.py` | 1,285 | Test | Z3-guided input generation (parameter types resolved through `naming.py`; a TIER-3 target whose input constraints do not all translate is skipped naming the blocker rather than trialled, while a Tier-1-proved function is reported verified and never trialled at all), WASM execution, tier classification | `test()` |
 | `formatter.py` | 2,036 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 929 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 1068 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `skip.py` | 242 | All | Codegen-internal control-flow exceptions behind structured skip diagnostics (#626) | `CodegenSkip`, `CodegenInvariantError` |
 | `introspect.py` | 127 | All | Payloads for `vera builtins` / `effects` / `errors --json` | `builtins_payload()`, `effects_payload()`, `errors_payload()` |
 | `envflags.py` | 35 | All | One truthiness rule for the `VERA_*` diagnostic flags catalogued in ENVIRONMENT.md; a leaf module (imports `os` only) so any layer can read a flag without a cycle | `flag_enabled()` |
@@ -766,11 +767,11 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (172 entries — 169 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (173 entries — 170 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 13,467 tests across 202 files: compiler-internals unit tests plus a **conformance suite** (250 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 13,517 tests across 203 files: compiler-internals unit tests plus a **conformance suite** (251 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

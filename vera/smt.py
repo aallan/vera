@@ -20,6 +20,7 @@ import z3
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
+from vera.regularity import RegularityIndex
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -550,6 +551,8 @@ class SmtContext:
         self._recorded_type_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
+        self._adt_registry_version = 0
+        self._regularity: tuple[int, RegularityIndex] | None = None
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
         self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
@@ -740,8 +743,32 @@ class SmtContext:
     def register_adt(self, adt_info: AdtInfo) -> None:
         """Register an ADT definition for Z3 sort creation."""
         self._adt_registry[adt_info.name] = adt_info
+        # #1429: the regularity index is a snapshot of the registry, so a new
+        # declaration invalidates it.  A version counter rather than a size
+        # comparison: this is the one site that writes the registry, so the
+        # counter detects a same-name REPLACEMENT too, which a length check
+        # could not.
+        self._adt_registry_version += 1
         for ctor_name in adt_info.constructors:
             self._ctor_to_adt[ctor_name] = adt_info.name
+
+    def _regularity_index(self) -> RegularityIndex:
+        """This context's regularity index, rebuilt only when the ADT
+        registry has changed (#1429).
+
+        Every sort request asks whether its root is regular.  Deriving that
+        from scratch each time re-walked the whole declaration graph per
+        request, which is where `vera check` went super-quadratic — 73 s on a
+        thousand-declaration chain against 0.5 s before the rule existed
+        (PR #1432 re-verification).
+        """
+        version = self._adt_registry_version
+        cached = self._regularity
+        if cached is None or cached[0] != version:
+            index = RegularityIndex(self._adt_registry)
+            self._regularity = (version, index)
+            return index
+        return cached[1]
 
     def declare_adt(
         self, name: str, ty: Type,
@@ -838,9 +865,43 @@ class SmtContext:
         re-entered sort creation for the still-uncached member and recursed
         unboundedly into the same raw ``RecursionError`` #881 exists to
         eliminate.
+
+        The worklist is deduplicated on the INSTANTIATED key, and that is what
+        terminates it: `List<Int>`'s field is `List<Int>` again, so the second
+        level's key repeats and the walk stops.  It terminates for EVERY
+        declaration this layer can be handed, because a NON-REGULAR one —
+        `data Nest<T> { N(Nest<Option<T>>), Z }`, whose argument grows at every
+        level so no two keys are ever equal — is refused at check time with
+        `E129` (#1429), and verification runs only on check-clean programs.
+
+        The regularity rule is what makes that true, not a bound here, and
+        this function asks it directly rather than trusting the caller to have
+        run the checker.  A member-count bound was tried and is the wrong
+        instrument: it is a cliff rather than a rule, it demotes a legitimate
+        large-but-finite closure (a five-parameter declaration whose
+        constructor PERMUTES its parameters reaches 610 members and would lose
+        a Tier-1 proof), and it never even fires for `Ne<Tuple<T, T>>`, where
+        the key doubles in SIZE per level rather than in count.
         """
         root_info = self._adt_registry.get(root_name)
         if root_info is None:
+            return None
+        if not self._regularity_index().is_regular(root_name):
+            # DECLINE TO MODEL a non-regular recursion (#1429).  The checker
+            # refuses such a declaration (`E129`), so a program that reached
+            # here through `vera verify` cannot carry one — but `verify()` is
+            # a public entry point, and its "must already have passed type
+            # checking" precondition is a library caller's to keep.  Measured
+            # when it is not: `verify()` called directly on a check-refused
+            # program did not come back within 60 s, because the closure below
+            # has no fixed point to reach (PR #1432 review).
+            #
+            # Declining returns the sort-unavailable answer every caller
+            # already handles, so the walk terminates by the RULE rather than
+            # by any bound on how far it may go.  `is_regular` is the
+            # checker's own derivation, imported rather than restated: two
+            # copies could drift into one consumer refusing what the other
+            # models.
             return None
         group: dict[str, list[tuple[str, tuple[Type, ...] | None]]] = {}
         worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]
