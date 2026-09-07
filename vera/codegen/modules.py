@@ -1014,6 +1014,14 @@ class CrossModuleMixin:
         constructor order compiled clean and answered ``100`` where ``7``
         is correct.  The closure is iterative and bounded by the alias set,
         so a cyclic alias chain terminates rather than recursing.
+
+        What this does NOT reach is the constructor namespace's own crossing
+        between an entry file and a module on DIFFERENTLY named types —
+        `#1436`, being fixed separately.  The surface answers which TYPE
+        names a declaration carries, and two types that share only a
+        constructor spelling carry neither of each other's names; the
+        constructor axis reads this table through `ctor_reach`, which is
+        where that gap is closed rather than here.
         """
         surface: list[object]
         if isinstance(decl, ast.FnDecl):
@@ -1021,6 +1029,16 @@ class CrossModuleMixin:
         elif isinstance(decl, ast.DataDecl):
             surface = [decl.constructors]
         elif isinstance(decl, (ast.EffectDecl, ast.AbilityDecl)):
+            # UNREACHABLE today, and deliberately kept.  §8.4.1 makes an
+            # effect declaration module-local and not importable, so no
+            # caller reaches this arm: the loop that builds the surface
+            # tables only asks about a module's PUBLIC declarations, and an
+            # effect cannot be one.  It is written for the day effect export
+            # lands — the operations are where a value of an ADT would cross
+            # a namespace boundary through an effect, so the flow condition
+            # needs them the moment that becomes possible, and an arm added
+            # then would be an arm nobody thought to add.  Revisit it with
+            # whatever makes an effect importable.
             surface = [decl.operations]
         elif isinstance(decl, ast.TypeAliasDecl):
             surface = [decl.type_expr]
@@ -1190,25 +1208,54 @@ class CrossModuleMixin:
             }
             surface[mod.path] = surf
             imports[mod.path] = _merged_import_filters(mod.program.imports)
-        entry_declares = {
-            tld.decl.name for tld in program.declarations
-            if isinstance(tld.decl, ast.DataDecl)
+        # The ENTRY is an owner like any other (#1423).  Its declarations
+        # and its own alias namespace are read off `program` for the same
+        # reason the modules' are read off theirs: Pass 1 has not registered
+        # either yet when this runs.
+        entry_decls: dict[str, ast.DataDecl] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.DataDecl):
+                entry_decls.setdefault(tld.decl.name, tld.decl)
+        entry_declares = set(entry_decls)
+        decls[_ENTRY_OWNER] = entry_decls
+        aliases[_ENTRY_OWNER] = {
+            tld.decl.name: tld.decl.type_expr
+            for tld in program.declarations
+            if isinstance(tld.decl, ast.TypeAliasDecl)
+        }
+        alias_params[_ENTRY_OWNER] = {
+            tld.decl.name: tld.decl.type_params or ()
+            for tld in program.declarations
+            if isinstance(tld.decl, ast.TypeAliasDecl)
         }
 
-        namespaces: list[tuple[str, ...] | None] = [None, *decls]
+        # The entry appears once, as `None`; `decls` now also holds it under
+        # `_ENTRY_OWNER` so `shape()` can be asked about it, and every walk
+        # over MODULE namespaces excludes that key.
+        module_paths = [path for path in decls if path != _ENTRY_OWNER]
+        namespaces: list[tuple[str, ...] | None] = [None, *module_paths]
 
         def resolve(
             ns: tuple[str, ...] | None, name: str,
         ) -> tuple[str, ...] | None | _Ambiguous:
-            """Which module declaration does *ns*'s bare *name* denote?
+            """Which OWNER's declaration does *ns*'s bare *name* denote?
 
-            ``None`` when it denotes no module declaration — the namespace's
-            OWN (which shadows every import, §8.5.4), the prelude's, or
-            nothing at all.  :data:`_AMBIGUOUS` when two imports supply it,
-            the shape §8.5.2.2 refuses rather than resolves.
+            An owner is a module path, or :data:`_ENTRY_OWNER` for the entry
+            file — which is an owner like any other (#1423).  ``None`` when
+            the name denotes no user declaration at all (the prelude's, or
+            nothing).  :data:`_AMBIGUOUS` when two imports supply it, the
+            shape §8.5.2.2 refuses rather than resolves.
+
+            Answering ``_ENTRY_OWNER`` rather than ``None`` for the entry's
+            own declaration is what keeps this function's answers and the
+            ``decls`` keys in ONE vocabulary.  While they differed, an entry
+            declaration added to the rename set was silently dropped when
+            the per-namespace maps were built — ``resolve(None, name)`` said
+            ``None`` and the owner key said ``()`` — so the guards that stop
+            the entry being renamed were inert and could not be tested.
             """
             if name in (entry_declares if ns is None else decls[ns]):
-                return ns
+                return _ENTRY_OWNER if ns is None else ns
             suppliers = [
                 dep for dep, filt in imports[ns].items()
                 if name in public.get(dep, ()) and (
@@ -1367,11 +1414,23 @@ class CrossModuleMixin:
             shapes = {path: shape(path, name) for path in owners}
             if len(set(shapes.values())) < 2:
                 continue  # every declaration describes the one layout
+            # Which shape KEEPS the bare slot.  The entry's whenever it
+            # declares the name: its program is the one codegen was handed
+            # and is never rewritten, so the spelling it writes has to go on
+            # meaning its own declaration.  Otherwise the declaration the
+            # entry's bare name denotes, and otherwise nothing.
             keeper = resolve(None, name)
             keeps = (
-                shapes[keeper] if isinstance(keeper, tuple) and keeper in decls
+                shapes[keeper]
+                if isinstance(keeper, tuple) and keeper in shapes
                 else _NOTHING
             )
+            # The ENTRY is never a rename target, and needs no guard here to
+            # say so: it is in `owners` exactly when it declares the name,
+            # which is exactly when `resolve` names it the keeper, so its
+            # shape IS `keeps` and the comparison below skips it.  Pinned by
+            # `test_the_entry_keeps_the_bare_slot` rather than by a branch
+            # that cannot fire.
             for path in owners:
                 if shapes[path] != keeps:
                     renamed.add((path, name))
