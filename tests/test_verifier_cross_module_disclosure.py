@@ -493,6 +493,14 @@ def test_1399_three_hop_control_clean_bottom(tmp_path: Path) -> None:
     })
     mid = _verify(paths["ca"])
     assert ("nat_bind", "verified", None) in _triples(mid), _triples(mid)
+    # The leg the TAINT cell actually reads.  Its discriminator is the
+    # witness's refined field, not the narrowing, so a `refine_bind` that
+    # were `tier3_unguarded` for every bottom module — which is the posture
+    # a refined constructor field has in general — would make the taint cell
+    # pass with no taint present, and a control asserting only `nat_bind`
+    # would not notice.  With a clean bottom the witness's `>= 0` predicate
+    # is discharged by the bound `@Nat`'s declared fact, so it must PROVE.
+    assert ("refine_bind", "verified", None) in _triples(mid), _triples(mid)
     entry = _verify(paths["centry"])
     ens = _obl(entry, "ensures")
     assert (ens["status"], ens.get("error_code")) == ("verified", None), (
