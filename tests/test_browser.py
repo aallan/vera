@@ -2026,6 +2026,52 @@ class TestBrowserContracts:
         assert safe["error"] is None, safe
         assert safe["value"] == 15, safe
 
+    def test_nat_guard_trap_parity(self, tmp_path: Path) -> None:
+        """#754: the `@Int` -> `@Nat` narrowing guard's own trap kind reaches
+        the browser bundle, and the bundle still instantiates.
+
+        The guard declares a new `vera.nat_guard_trap` host import, so
+        `runtime.mjs`'s dynamic import builder must bind it — without the
+        binding `WebAssembly.instantiate` raises a `LinkError` on any program
+        containing a narrowing bind, which is most of them.  The wasmtime
+        side is covered by `test_guard_completeness`; this is the leg that
+        would otherwise fail only incidentally (PR review, L3).
+        """
+        source = (
+            "public fn narrow(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @Nat = @Int.0; nat_to_int(@Nat.0) }\n"
+        )
+        vera_file = tmp_path / "natguard.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        py_error: str | None = None
+        py_kind: str | None = None
+        try:
+            _run_python(result, fn_name="narrow", args=[-5])
+        except WasmTrapError as exc:
+            py_error = str(exc)
+            py_kind = exc.kind
+
+        node_result = _run_node(wasm_path, fn="narrow", fn_args=["-5"])
+
+        assert py_error is not None, "Python should trap on the narrowing"
+        assert py_kind == "nat_guard", py_kind
+        assert "@Nat slot" in py_error, py_error
+        assert node_result["error"] is not None, (
+            "Node should report the narrowing trap"
+        )
+        assert "@Nat slot" in node_result["error"], node_result["error"]
+
+        # Companion no-trap: a non-negative value returns cleanly in Node, so
+        # the trap above is the guard firing rather than the bundle failing
+        # to instantiate — the LinkError this cell exists to catch would take
+        # BOTH runs down and would otherwise read as a guard that works.
+        safe = _run_node(wasm_path, fn="narrow", fn_args=["7"])
+        assert safe["error"] is None, safe
+        assert safe["value"] == 7, safe
+
 
 # =====================================================================
 # TestBrowserMarkdown — md_* host bindings

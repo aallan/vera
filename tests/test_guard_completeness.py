@@ -1186,3 +1186,117 @@ class TestTheRangeCheckSurvivesADeclinedChainGuard1222:
             bounds = [o for o in obs if o["kind"] == "decreases_bound"]
             assert [o["status"] for o in bounds] == ["tier3"], (label, obs)
             _assert_partition(envelope)
+
+
+# ===========================================================================
+# #1416 — the two Tuple-component sites, from this PR's own review round
+# ===========================================================================
+
+# The narrowing at CONSTRUCTION.  Its widening twin at the same site has read
+# the checker's target-type table since #820; this arm never did, so one
+# field could be guarded and its neighbour not, at one construction.
+_1416_CONSTRUCT = """\
+private fn snd(@Tuple<Nat, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn tc(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  snd(Tuple(@Int.0, 2))
+}
+"""
+
+# The widening at a DESTRUCTURE whose source is not a literal.  An inline
+# `if` over tuple literals keeps the value off any function boundary, whose
+# own component check would otherwise trap for an unrelated reason.
+_1416_DESTRUCTURE = """\
+public fn td(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> =
+    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
+    else { Tuple(@Nat.0, @Nat.0) };
+  @Int.1
+}
+"""
+
+
+class TestTupleComponentSitesAreGuarded1416:
+    """The last two members of the coercion-guard family.
+
+    Filed while working this PR's review round and closed in it, because both
+    have the root #757 already fixed one site over: read the component's type
+    from the CHECKER's table rather than from a per-ADT bitmap that describes
+    only declared types.  The construction arm gains the narrowing twin of
+    the reader its widening arm has used since #820; the destructure arm
+    gains the same reader for a non-literal source, where only a literal one
+    was covered.
+
+    The destructure half was observable — it returned a reinterpreted `-1`.
+    The construction half was not: every consumer path is itself guarded (a
+    callee's parameter component check, a return component check, the
+    destructure), so the negative could not escape. What it was, was an
+    obligation claiming `tier3_unguarded` at a site the composition covered
+    — a disclosure pointing at the wrong place. Guarding the store makes the
+    site's own claim true rather than borrowing its neighbours'.
+    """
+
+    def test_the_destructure_widening_traps_at_u64_max(
+        self, tmp_path: Path,
+    ) -> None:
+        out = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", _U64_MAX,
+                   name="d1416.vera")
+        assert "unreachable" in out, (
+            f"u64.MAX read out of a `@Nat` tuple component into an `@Int` "
+            f"binding returned a reinterpreted value:\n{out}"
+        )
+        ok = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", "42",
+                  name="d1416ok.vera")
+        assert ok.strip() == "42", ok
+
+    def test_the_construction_narrowing_is_guarded_at_the_store(
+        self, tmp_path: Path,
+    ) -> None:
+        """Read from the module, because the value cannot escape to be run.
+
+        Every consumer of the tuple guards it again, so a run cannot separate
+        "the store is guarded" from "the read is". The store's own guard is
+        what the obligation claims, so the store is what is measured.
+        """
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _1416_CONSTRUCT, "c1416.vera")))
+        assert proc.returncode == 0, proc.stderr[-500:]
+        assert "call $vera.nat_guard_trap" in proc.stdout, (
+            "the `@Int` component stored into a `Tuple<Nat, Int>` carries no "
+            "narrowing guard, while its `@Int` neighbour's widening twin at "
+            "the same site does"
+        )
+
+    @pytest.mark.parametrize(
+        ("label", "source", "kind"),
+        [
+            ("construct", _1416_CONSTRUCT, "nat_bind"),
+            ("destructure", _1416_DESTRUCTURE, "nat_to_int_coerce"),
+        ],
+        ids=["construct", "destructure"],
+    )
+    def test_the_obligation_no_longer_discloses_unguarded(
+        self, label: str, source: str, kind: str, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(tmp_path, source, name=f"{label}_ob.vera")
+        rows = [o for o in obs if o["kind"] == kind]
+        assert rows, obs
+        assert all(o["status"] != "tier3_unguarded" for o in rows), (
+            f"{label}: still disclosed unguarded while the site now guards: "
+            f"{[(o['kind'], o['status']) for o in rows]}"
+        )
+        _assert_partition(envelope)

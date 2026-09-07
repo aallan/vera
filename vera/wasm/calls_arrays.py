@@ -1283,7 +1283,10 @@ class CallsArraysMixin:
         # the moment the callback lowering pushes a different number of roots.
         # The address does not have to be inferred — it is known exactly at
         # the moment of the push — so capture it there and store through it.
-        acc_root_addr = self.alloc_local("i32")
+        # Only where a root exists to address: a scalar accumulator is not
+        # rooted, so allocating this unconditionally emitted a local nothing
+        # touches and made two corpus programs pure WAT churn (PR review).
+        acc_root_addr = self.alloc_local("i32") if u_needs_root else -1
         if u_is_pair:
             acc_ptr = self.alloc_local("i32")
             acc_len = self.alloc_local("i32")

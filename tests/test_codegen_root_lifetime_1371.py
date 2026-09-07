@@ -1077,6 +1077,17 @@ def _shadow_slot_trace(
     while i < len(lines):
         ln = lines[i]
         if ln.startswith("call_indirect") or ln.startswith("call $"):
+            # A call whose callee re-roots a heap return leaves the shadow
+            # stack one deeper; this flag is consumed by the explicit pop
+            # that follows, and the two cancel.  It does NOT raise `depth`
+            # on its own, so a call whose root is NOT popped — a callback
+            # produced by a call rather than written inline — is under-
+            # counted by one and a misaddressed store there would read as
+            # correct.  The committed cell's callback is a literal `fn`, so
+            # its verdict is unaffected; a reuse of this helper on a
+            # call-produced pointer needs the push modelled, which means
+            # knowing which callees re-root — the reason it is not modelled
+            # here.
             pending_call_root = True
             i += 1
             continue
@@ -1279,6 +1290,15 @@ class TestTailCallResultSurvivesTheNextAllocation1384:
     pointer that happens to address a still-allocated object reads clean.
     Run out of process: reclaiming a live String corrupts the heap, and an
     in-process crash reads as a lost pytest worker rather than a failure.
+
+    A CHARACTERIZATION PIN, not evidence for any change: measured green with
+    every `vera/` file reverted to base, so it proves nothing about the fold
+    fix it ships beside and must not be counted as doing so (CLAUDE.md's
+    test-first rule).  It is here because #1384's own sweep did not cover a
+    tail chain's returned heap value, and the shape is one a future change to
+    the #549 GC-aware TCO could break silently.  The load-bearing cell for
+    the fold fix is `TestFoldAccumulatorRootAddressIsCaptured1384`, which is
+    red with only the `calls_arrays.py` hunk reverted.
     """
 
     @pytest.mark.parametrize("pad", _PADS)

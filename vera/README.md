@@ -96,7 +96,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `monomorphize.py` | 3,891 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | 9,446 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
-| `narrowing.py` | 131 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
+| `narrowing.py` | 158 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
 | `wasm/` | 27,524 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 1,685 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 561 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping | |
@@ -766,7 +766,7 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (171 entries — 168 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (172 entries — 169 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
@@ -780,7 +780,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Verification gaps that downgrade silently** | a **tuple component at construction** and a **tuple-destructure component widening** have no codegen runtime guard, so an unverified compile can store a negative `@Nat` or a reinterpreted `@Int` at one of those two sites; the obligation stream discloses each (E504 / E506 / E531) rather than claiming a check.  Every other narrowing **binding site** — `let`, match bind, destructure, constructor sub-pattern at any nesting depth, concrete and generic-instantiated constructor fields, call and effect-operation arguments, closure boundaries — and the top-level / where-helper / closure **return** positions are statically obligated (#552, #747, #758, #984, #985) and codegen-guarded, for the sign direction and the refinement predicate alike | [#820](https://github.com/aallan/vera/issues/820) |
+| **Verification gaps that downgrade silently** | a **tuple component at construction** and a **tuple-destructure component widening** have no codegen runtime guard, so an unverified compile can store a negative `@Nat` or a reinterpreted `@Int` at one of those two sites; the obligation stream discloses each (E504 / E506 / E531) rather than claiming a check.  Every other narrowing **binding site** — `let`, match bind, destructure, constructor sub-pattern at any nesting depth, concrete and generic-instantiated constructor fields, call and effect-operation arguments, closure boundaries — and the top-level / where-helper / closure **return** positions are statically obligated (#552, #747, #758, #984, #985) and codegen-guarded, for the sign direction and the refinement predicate alike | [#1416](https://github.com/aallan/vera/issues/1416) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |

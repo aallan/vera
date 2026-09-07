@@ -4039,6 +4039,87 @@ class ContractVerifier:
     # Decreases verification (termination)
     # -----------------------------------------------------------------
 
+    def _decreases_bound_guarded(self, decl: ast.FnDecl) -> bool:
+        """Whether the measure-range check is actually emitted for *decl*
+        (#1222) — the semantic mirror of `_dec_measure_bound_check`'s
+        reachability; KEEP IN SYNC.
+
+        The check itself no longer rides on the decreases CHAIN guard, which
+        is declined for an `Exn`-declaring function, an untranslatable
+        component or an unrankable ADT component: those are all statements
+        about state carried across activations, and a component's range check
+        carries none, so it is emitted beside them.  What remains is a
+        function code generation does not emit AT ALL — the same
+        :data:`~vera.narrowing.COMPILABLE_EFFECTS` intersection
+        :py:meth:`_effect_op_formal_guarded` performs, for the same reason: a
+        user-declared effect drops its enclosing function with a loud E603,
+        and a Tier-3 status there would promise a runtime check for a module
+        with no code in it.
+
+        The effect row is what this mirrors, and not the whole of codegen's
+        compilability walk: a declaration can also be dropped for an
+        unsupported parameter or return type, or an E602 body, and those
+        decisions belong to a walk the verifier does not run.  That residual
+        is not introduced here — every obligation kind in this file records a
+        tier for a function that may yet be dropped — and it is the effect
+        row that the reachable shape uses.
+        """
+        effect = decl.effect
+        if not isinstance(effect, ast.EffectSet):
+            return True  # `pure` — nothing to disqualify it
+        return all(
+            isinstance(eff, ast.EffectRef)
+            and eff.name in narrowing.COMPILABLE_EFFECTS
+            for eff in effect.effects
+        )
+
+    def _record_decreases_bound_tier3(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        status: ObligationStatus,
+        *,
+        guarded: bool,
+        reason: str,
+    ) -> None:
+        """Record an undischarged ``decreases_bound`` (#1222), guarded or not.
+
+        The guarded leg counts as a runtime check and says nothing further —
+        the range guard beside the measure's evaluation is the check, and it
+        fires with its own message.  The unguarded leg is excluded from the
+        totals and surfaces **E537**, because a status that claimed a check
+        for a function code generation never emits is the same over-claim
+        this release exists to remove, one obligation kind over.
+        """
+        if guarded:
+            self._record_obligation(
+                decl.name, "decreases_bound", node, status)
+            return
+        self._record_obligation(
+            decl.name, "decreases_bound", node, "tier3_unguarded",
+            error_code="E537",
+        )
+        self._warning(
+            node,
+            f"Termination metric range in '{decl.name}' is neither proved "
+            f"nor runtime-checked.",
+            rationale=(
+                "@Nat is u64 and the `decreases` runtime guard compares "
+                "signed i64, so a measure above i64.MAX reads as negative "
+                f"there.  The `<= i64.MAX` obligation was not discharged: "
+                f"{reason}.  Code generation does not emit this function at "
+                "all — its effect row is one the backend cannot lower, so "
+                "the function is dropped with an E603 — and a runtime check "
+                "in a module with no code in it is no check.  Bound the "
+                "measure below i64.MAX with a `requires`, or give the "
+                "function an effect row the backend can lower so the range "
+                "check is emitted."
+            ),
+            spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
+            error_code="E537",
+            tier=3,
+        )
+
     def _check_decreases_bound(
         self,
         decl: ast.FnDecl,
@@ -4076,17 +4157,23 @@ class ContractVerifier:
         range here alone would make this one boundary an outlier.
         """
         hi = z3.IntVal(_I64_MAX)
+        guarded = self._decreases_bound_guarded(decl)
         for expr in contract.exprs:
-            comp_ty = self._resolved_type_of(expr)
-            if comp_ty is None or not self._is_nat_type(comp_ty):
+            # THE rule, shared with codegen's selector, over the SAME
+            # checker table — not `_is_nat_type`, which is a second
+            # spelling this side could drift on.
+            if not narrowing.measure_component_needs_range_check(
+                    self._resolved_type_of(expr)):
                 continue
             term = smt.translate_expr(expr, slot_env)
             if term is None:
-                # No term to test.  The measure still gets the runtime
-                # backstop (codegen keys it on the component's TYPE, which
-                # needs no SMT translation), so this is a guarded Tier-3.
-                self._record_obligation(
-                    decl.name, "decreases_bound", expr, "tier3")
+                self._record_decreases_bound_tier3(
+                    decl, expr, "tier3", guarded=guarded,
+                    reason=(
+                        "the measure component is outside the SMT layer's "
+                        "decidable fragment, so there is no term to test "
+                        "`<= i64.MAX` against"
+                    ))
                 continue
             safe = smt.check_valid(term <= hi, list(assumptions))
             if safe.status == "verified":
@@ -4121,9 +4208,26 @@ class ContractVerifier:
                     error_code="E536",
                 )
                 continue
-            # Neither bound settled: the runtime backstop covers it.
-            self._record_obligation(
-                decl.name, "decreases_bound", expr, "tier3")
+            # Neither bound settled.  A solver that returned no verdict is
+            # `timeout`, not `tier3` (#1350): a reader raising `--timeout-ms`
+            # needs to tell a fit obligation that needed more time from one
+            # nothing will settle, and every other kind in this file draws
+            # that line.
+            undecided: ObligationStatus = (
+                "tier3" if safe.status == "violated" and bad.status == "violated"
+                else "timeout"
+            )
+            self._record_decreases_bound_tier3(
+                decl, expr, undecided, guarded=guarded,
+                reason=(
+                    "the measure is bounded on neither side — an "
+                    "unconstrained @Nat is neither provably `<= i64.MAX` nor "
+                    "provably above it"
+                    if undecided == "tier3"
+                    else self._undecided_reason(
+                        safe.status if safe.status != "verified"
+                        else bad.status)
+                ))
 
     def _verify_decreases(
         self,
@@ -5785,14 +5889,13 @@ class ContractVerifier:
                             and self._narrows_into_nat(arg)):
                         # guarded=False, like the refined path above: codegen
                         # does not component-guard a tuple *at construction*, so
-                        # an untranslatable @Nat component must record an honest
-                        # E504 / tier3_unguarded, NOT a tier3_runtime that
-                        # claims a runtime check the construction site never
-                        # emits (CR PR-review — the boundary guard is a separate
-                        # site, not this one).
+                        # #1416: guarded, from the same threaded target-type
+                        # table its widening twin below has read since #820.
+                        # The narrowing arm never did, so one field could be
+                        # guarded and its neighbour not, at one construction.
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
-                            site="tuple component", guarded=False,
+                            site="tuple component", guarded=True,
                         )
                     elif (self._is_int_type(comp_ty)
                             and self._result_is_nat(arg)):
@@ -9405,17 +9508,15 @@ class ContractVerifier:
                         "predicate is about was never formed"
                     ))
             for _ in int_widening:
-                # #813: codegen does not guard a tuple-destructure component
-                # widening (like tuple construction), so disclose E531.
+                # #1416: guarded here too.  Unprojectable is a statement about
+                # the SMT layer; codegen's destructure guard reads the
+                # CHECKER's type of the value expression, which an
+                # unprojectable source has like any other.  The two questions
+                # are independent, so this leg's disclosure was keyed on the
+                # wrong one.
                 self._record_int_widen_tier3(
                     decl, stmt.value, "tuple destructure", "tier3",
-                    guarded=False,
-                    reason=(
-                        "the destructured value cannot be projected into its "
-                        "components (an effect-op result, or another term the "
-                        "SMT layer models opaquely), so the component being "
-                        "widened was never formed"
-                    ))
+                    guarded=True)
             return
         # `i` is a valid field index (filtered against `source_args`, whose
         # length matches the tuple sort's fields), so each accessor is safe
@@ -9434,13 +9535,16 @@ class ContractVerifier:
                 source_ty=source_args[i],
             )
         for i in int_widening:
-            # #813: a @Nat component destructured into an @Int slot widens it;
-            # codegen does not guard the tuple-component coercion, so disclose
-            # the unguarded widening (E531) — the dual of the @Nat narrowing.
+            # #813 / #1416: a @Nat component destructured into an @Int slot
+            # widens it, and the READ is now guarded — the source tuple's
+            # component types come from the checker's table against the value
+            # expression, which is the table the construction site already
+            # read.  Before that only a LITERAL source was guarded, so a
+            # destructure of a call or an `if` returned a reinterpreted -1.
             comp_term = sort.accessor(idx, i)(rhs_z3)
             self._check_int_widening_obligation_term(
                 decl, comp_term, smt, assumptions,
-                site="tuple destructure", node=stmt.value, guarded=False,
+                site="tuple destructure", node=stmt.value, guarded=True,
             )
 
     def _record_nat_bind_tier3(
@@ -10046,20 +10150,24 @@ class ContractVerifier:
         not decide the cause and must not describe one, for the reason its
         guarded twin :py:meth:`_report_refined_runtime` records.
 
-        Codegen guards a refined value only at the function boundary (parameter
-        entry, return exit).  An *internal* narrowing — ``let`` / constructor
-        field / effect-op argument / match bind / tuple-destructure / ADT
-        sub-pattern — has no such guard, so an undischarged predicate here is
-        neither statically proven nor runtime-checked: surfaced (R7) rather
-        than silently passed, and excluded from the discharged totals."""
+        Two things reach this leg, and since #765 they are different in kind.
+        The SITE may be one codegen does not guard — a constructor field or a
+        tuple component AT CONSTRUCTION, or a user effect operation's
+        argument.  Or the site is guarded and the TYPE is not: a refinement
+        whose base is itself a refinement, or one whose base erases (`@Unit`,
+        a `Future<Unit>`), for which no guard can be emitted anywhere.  The
+        pattern binds this warning used to name — `let`, match bind,
+        tuple destructure, ADT sub-pattern — are guarded now, so naming them
+        as the cause would send a reader to change the site when the answer
+        is usually the base.  The rationale therefore names the two
+        possibilities rather than asserting the one that used to be true."""
         self._warning(
             node,
             (
                 f"Refinement predicate at a {site} in '{decl.name}' could not "
                 "be verified statically and is not runtime-guarded — add a "
-                "`requires(...)` implying the predicate, guard the binding with "
-                "an `if`, or pass the value through a refined parameter / "
-                "return (which is runtime-guarded)."
+                "`requires(...)` implying the predicate, or guard the binding "
+                "with an `if`."
             ),
             rationale=(
                 f"The refinement predicate was not discharged statically: "

@@ -2471,6 +2471,24 @@ class OperatorsMixin:
             return None
         return "Int" if "Int" in (lt, rt) else "Nat"
 
+    def _checker_resolved_type(self, expr: ast.Expr) -> object | None:
+        """*expr*'s checker-resolved type from the threaded side-table, raw.
+
+        The same lookup :py:meth:`_resolved_codegen_type` performs, without
+        the Int/Nat narrowing of the answer — for a consumer whose rule lives
+        in :mod:`vera.narrowing` and is shared with the verifier, which reads
+        the identical table through ``_resolved_type_of``.  ``None`` when the
+        table was not threaded or carries no entry for this span, which is a
+        distinct answer from any type and must not be collapsed into one.
+        """
+        table = self._expr_semantic_types
+        if table is None:
+            return None
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        return table.get(key)
+
     def _resolved_codegen_type(self, expr: ast.Expr) -> str | None:
         """Look up *expr*'s checker-resolved type as ``"Int"`` / ``"Nat"``,
         else ``None`` (no table, no entry, or a non-Int/Nat type).
@@ -2535,6 +2553,27 @@ class OperatorsMixin:
         arg = args[index]
         base = getattr(arg, "base", arg)
         return getattr(base, "name", None) == "Int"
+
+    @staticmethod
+    def _adt_arg_is_nat(target: object | None, index: int) -> bool:
+        """The narrowing twin of :py:meth:`_adt_arg_is_int` (#1416).
+
+        The widening direction at a tuple component has read the component's
+        target type from the checker's threaded table since #820; the
+        narrowing direction never did, so `Tuple(@Int.0, 2)` into a
+        `Tuple<Nat, Int>` stored the `@Int` unchecked while its `@Nat` twin
+        one field over was guarded.  Same table, same index, opposite base —
+        written as its own method rather than a parameter on one, because
+        each is read at a different arm of the construction site's
+        narrowing/widening chain and a shared one would need the arm to pass
+        the answer it is asking for.
+        """
+        args = getattr(target, "type_args", None)
+        if not args or index >= len(args):
+            return False
+        arg = args[index]
+        base = getattr(arg, "base", arg)
+        return getattr(base, "name", None) == "Nat"
 
     def _is_static_int_typed(self, expr: ast.Expr) -> bool:
         """Return True iff *expr* has static type @Int by AST shape alone.

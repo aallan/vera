@@ -280,25 +280,16 @@ public fn f(@Nat -> @Int) requires(true) ensures(true) effects(pure)
 """, "f"),
 ]
 
-_DISCLOSED = [
-    # A tuple-DESTRUCTURE component: the widening happens at the read, and
-    # nothing guards a destructure component (the construction-side guard is a
-    # different site and this tuple is not built at one).  The source is an
-    # inline `if` over tuple literals so the value never crosses a function
-    # boundary — a `@Nat` at u64.MAX trips the boundary component check on the
-    # way out of any callee, which would trap for a reason that has nothing to
-    # do with the site under test and read as "the destructure is guarded".
-    ("tuple_destructure", """
-public fn td(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let Tuple<@Int, @Int> =
-    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
-    else { Tuple(@Nat.0, @Nat.0) };
-  @Int.1
-}
-""", "td"),
-]
+#: EMPTY, and that is the finding rather than an omission.  Every `@Nat` ->
+#: `@Int` coercion site the verifier obligates is now runtime-guarded: #820
+#: gave the array element, tuple construction and heterogeneous arm their
+#: target-table guards, #757 the generic-instantiated field, and #1416 the
+#: tuple-destructure component — the last member this list held.  An empty
+#: parametrisation would make the disclosed-leg test vacuously green, so it
+#: is asserted empty ON PURPOSE below, and the disclosure PATH is exercised
+#: directly instead.  A future unguarded site joins this list and the leg
+#: starts running again.
+_DISCLOSED: list = []
 
 
 class TestWideningDifferential813:
@@ -317,6 +308,19 @@ class TestWideningDifferential813:
             f"did NOT trap — an unsound silent reinterpretation"
         )
         assert _run(source, fn, 42) == 42, f"{label}: in-range widen not exact"
+
+    def test_no_widening_site_is_disclosed_unguarded(self) -> None:
+        """The disclosed leg has no members left, and that is a claim.
+
+        `_DISCLOSED` being empty makes the parametrised leg below run zero
+        cases, which is indistinguishable from a leg that was deleted.  So
+        the emptiness is asserted: every obligated `@Nat` -> `@Int` coercion
+        site is guarded, and a site that stops being guarded has to be added
+        back to the list rather than quietly vanish from the differential.
+        """
+        assert _DISCLOSED == [], (
+            f"the disclosed leg has members again — run them: {_DISCLOSED}"
+        )
 
     @pytest.mark.parametrize("label,source,fn", _DISCLOSED,
                              ids=[c[0] for c in _DISCLOSED])

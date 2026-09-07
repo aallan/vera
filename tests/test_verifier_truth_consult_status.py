@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -977,3 +978,277 @@ public fn f(@Int, @String -> @String)
         assert "E151" in [d.get("error_code") for d in result["diagnostics"]], (
             f"{label}: rejected, but not by E151 — check what changed"
         )
+
+
+# ---------------------------------------------------------------------------
+# The parity differential, extended to the guard shapes #1412 added
+# ---------------------------------------------------------------------------
+#
+# `_SHAPES` above enumerates built-ins with a `@Nat` parameter, which is the
+# only family the differential covered.  Five guard sites landed outside it —
+# a refinement narrowed by a pattern bind (#765), a generically-instantiated
+# constructor field (#757), a refined base with a non-plain type argument
+# (#1036), an effect operation's argument (#754), and a `decreases` measure's
+# fit in the range its guard compares in (#1222) — and none of them was in
+# the instrument: the review's eight-guard mutation sweep left
+# `test_nat_arg_guard_parity` green every time.
+#
+# Each entry pairs a program the verifier CLASSIFIES with one the runtime
+# EXECUTES, because the two questions need different fixtures: a refutable
+# value settles statically and never consults the `guarded` flag, while an
+# opaque one cannot be run to a verdict.  Both halves name the same site.
+
+@dataclass(frozen=True)
+class _GuardShape:
+    """One guard site, with the two fixtures the two sides need."""
+
+    kind: str            # the obligation kind whose status is read
+    classify_src: str    # a program whose obligation lands UNDECIDED
+    run_src: str         # a program the guard should refuse
+    fn: str
+    arg: str | None      # None = call with no arguments
+    trap_marker: str     # what the guard says when it fires
+
+
+_OPAQUE = ("handle[Exn<Int>] { throw(@Int) -> { @Int.0 } } "
+           "in { throw(@Int.0) }")
+
+_REFINED_BIND = _GuardShape(
+    kind="refine_bind",
+    classify_src="""\
+type Pos = { @Int | @Int.0 > 0 };
+
+private data Box {
+  MkBox(Int)
+}
+
+private data Wrap {
+  MkWrap(Box)
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match MkWrap(MkBox(@Int.0)) { MkWrap(MkBox(@Pos)) -> @Pos.0 }
+}
+""",
+    run_src="""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Pos = @Int.0;
+  @Pos.0
+}
+""",
+    fn="f", arg="-5", trap_marker="Refinement violation",
+)
+
+_GENERIC_FIELD = _GuardShape(
+    kind="nat_to_int_coerce",
+    classify_src="""\
+public fn gf(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(@Nat.0);
+  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
+}
+""",
+    run_src="""\
+public fn gf(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(@Nat.0);
+  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
+}
+""",
+    fn="gf", arg="18446744073709551615", trap_marker="unreachable",
+)
+
+_NONPLAIN_BASE = _GuardShape(
+    kind="refine_bind",
+    classify_src="""\
+type NEPosArr = { @Array<{ @Int | @Int.0 > 0 }> | \
+array_length(@Array<{ @Int | @Int.0 > 0 }>.0) > 0 };
+
+private fn take(@NEPosArr -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(@NEPosArr.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  take([])
+}
+""",
+    run_src="""\
+type NEPosArr = { @Array<{ @Int | @Int.0 > 0 }> | \
+array_length(@Array<{ @Int | @Int.0 > 0 }>.0) > 0 };
+
+private fn take(@NEPosArr -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(@NEPosArr.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  take([])
+}
+""",
+    fn="main", arg=None, trap_marker="Refinement violation",
+)
+
+_OP_ARGUMENT = _GuardShape(
+    kind="nat_bind",
+    classify_src=f"""\
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  IO.sleep({_OPAQUE});
+  0
+}}
+""",
+    run_src="""\
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.sleep(@Int.0);
+  0
+}
+""",
+    fn="f", arg="-5", trap_marker="Negative value bound into a @Nat slot",
+)
+
+_MEASURE_RANGE = _GuardShape(
+    kind="decreases_bound",
+    classify_src="""\
+private fn size(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  @Nat.0
+}
+
+public fn walk(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(size(@Nat.0)) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
+}
+""",
+    run_src="""\
+private fn size(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  @Nat.0
+}
+
+public fn walk(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(size(@Nat.0)) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
+}
+""",
+    fn="walk", arg="9223372036854775808", trap_marker="i64 range",
+)
+
+_TUPLE_DESTRUCTURE = _GuardShape(
+    kind="nat_to_int_coerce",
+    classify_src="""\
+public fn td(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> =
+    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
+    else { Tuple(@Nat.0, @Nat.0) };
+  @Int.1
+}
+""",
+    run_src="""\
+public fn td(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> =
+    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
+    else { Tuple(@Nat.0, @Nat.0) };
+  @Int.1
+}
+""",
+    fn="td", arg="18446744073709551615", trap_marker="unreachable",
+)
+
+
+_GUARD_SHAPES: dict[str, _GuardShape] = {
+    "1416_tuple_destructure": _TUPLE_DESTRUCTURE,
+    "765_refined_bind": _REFINED_BIND,
+    "757_generic_field": _GENERIC_FIELD,
+    "1036_nonplain_base": _NONPLAIN_BASE,
+    "754_op_argument": _OP_ARGUMENT,
+    "1222_measure_range": _MEASURE_RANGE,
+}
+
+
+def _shape_runs_guarded(tmp_path: Path, shape: _GuardShape, name: str) -> bool:
+    """Whether the compiled program refuses the value the guard exists to
+    catch — read from the ARTIFACT, and only after it is shown to RUN.
+
+    A non-zero exit WITHOUT the guard's own marker is not "did not guard": a
+    compile failure, a CLI usage error or a missing entry point all look
+    identical to it, and each would compare clean against a verifier that
+    also says unguarded.  The same confound `_traps_on_negative` above was
+    built to avoid.
+    """
+    p = tmp_path / f"{name}_run.vera"
+    p.write_text(shape.run_src, encoding="utf-8")
+    args = ["run", str(p), "--fn", shape.fn]
+    if shape.arg is not None:
+        args += ["--", shape.arg]
+    proc = _cli(*args)
+    out = proc.stdout + proc.stderr
+    if shape.trap_marker in out:
+        return True
+    assert proc.returncode == 0, (
+        f"{name}: the fixture did not run, so it reports no verdict about "
+        f"guarding — exit {proc.returncode}:\n{out[-700:]}"
+    )
+    return False
+
+
+@pytest.mark.parametrize("name", sorted(_GUARD_SHAPES))
+def test_guard_parity_for_the_1412_shapes(tmp_path: Path, name: str) -> None:
+    """PARITY at each guard site #1412 added: classification == behaviour.
+
+    The instrument, not a restatement of the per-issue cells: those assert a
+    status in one place and a trap in another, so a mutation that neuters the
+    guard while leaving the status alone reds only half of them and the
+    desync itself — a status claiming a check the module does not contain —
+    is never compared.  Here both readings come from one cell.
+    """
+    shape = _GUARD_SHAPES[name]
+    codegen_guards = _shape_runs_guarded(tmp_path, shape, name)
+
+    result = _verify(tmp_path, shape.classify_src, name=f"{name}_v.vera")
+    obs = [o for o in result["obligations"] if o["kind"] == shape.kind]
+    assert obs, (
+        f"{name}: no {shape.kind} obligation to classify — the fixture no "
+        f"longer reaches the site this differential is about"
+    )
+    undecided = [o for o in obs
+                 if o["status"] in ("tier3", "tier3_unguarded", "timeout")]
+    assert undecided, (
+        f"{name}: every {shape.kind} settled statically "
+        f"({[o['status'] for o in obs]}), so the guarded flag was never "
+        f"consulted and this differential compared nothing"
+    )
+    verifier_says_guarded = any(
+        o["status"] != "tier3_unguarded" for o in undecided)
+    assert codegen_guards == verifier_says_guarded, (
+        f"{name}: the compiled program "
+        f"{'refuses' if codegen_guards else 'ACCEPTS'} the value the guard "
+        f"exists to catch, verifier says "
+        f"{'guarded' if verifier_says_guarded else 'unguarded'} "
+        f"({[o['status'] for o in undecided]}) — the two sides have drifted"
+    )

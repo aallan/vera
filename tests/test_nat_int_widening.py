@@ -250,31 +250,42 @@ public fn opt_field(@Nat -> @Int)
         It read "The value is outside Z3's decidable fragment (untranslatable
         or the solver timed out)" for every demotion — the exact conflation
         #1251 removed from E506, in a family that had no reason plumbing at
-        all.  Neither half is what happened here: the value translates fine
-        and the solver answered promptly, twice.  It is simply unconstrained,
-        so `<= i64.MAX` and `> i64.MAX` both have countermodels, which is a
-        fact about the PROGRAM (add a bound) rather than about the solver.
+        all.  Neither half is what happens at an unbounded `@Nat`: the value
+        translates fine and the solver answers promptly, twice.  It is simply
+        unconstrained, so `<= i64.MAX` and `> i64.MAX` both have
+        countermodels, which is a fact about the PROGRAM (add a bound) rather
+        than about the solver.
 
-        Driven at a tuple-DESTRUCTURE component, which is where the E531
-        disclosure still lands: the generic constructor field this used to use
-        is guarded since #757, and a rationale cell on a shape that no longer
-        discloses would assert nothing.  The source is an inline `if` over
-        tuple literals, so the tuple is not built at a guarded construction
-        site.
+        Driven at the RECORDER rather than through a program, because no
+        program reaches this leg any more: every obligated widening site is
+        runtime-guarded (#820, #757, #1416), so the unguarded disclosure has
+        no live driver.  Deleting the cell with its last fixture would take
+        the #1251 rationale contract with it, and the contract still binds —
+        a future unguarded site will emit exactly this text.  So the path is
+        exercised where it lives.
         """
-        result = _verify("""
-public fn td(@Nat -> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let Tuple<@Int, @Int> =
-    if @Nat.0 > 0 then { Tuple(@Nat.0, @Nat.0) }
-    else { Tuple(@Nat.0, @Nat.0) };
-  @Int.1
-}
-""")
-        warns = [d for d in result.diagnostics if d.error_code == "E531"]
-        assert warns, [
-            (d.error_code, d.description[:70]) for d in result.diagnostics
+        from vera import ast
+        from vera.verifier import ContractVerifier
+
+        v = ContractVerifier()
+        decl = ast.FnDecl(
+            name="td", params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(), effect=ast.PureEffect(), body=None,
+            forall_vars=(), forall_constraints=(), where_fns=(),
+        )
+        node = ast.IntLit(value=0)
+        v._record_int_widen_tier3(
+            decl, node, "tuple destructure", "tier3", guarded=False,
+            reason=(
+                "the value is not provably within i64's range, and not "
+                "provably outside it either — an unconstrained @Nat has "
+                "countermodels on both sides"
+            ),
+        )
+        warns = [d for d in v.errors if d.error_code == "E531"]
+        assert len(warns) == 1, [
+            (d.error_code, d.description[:70]) for d in v.errors
         ]
         rationale = warns[0].rationale
         assert "countermodels on both sides" in rationale, rationale

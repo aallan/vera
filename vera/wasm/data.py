@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vera import ast
+from vera import ast, naming
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
@@ -121,6 +121,22 @@ class DataMixin:
         the verifier's mirror has no way to see that this particular context
         was the one without the machinery.
         """
+        # A refinement over a REFINEMENT is not guarded, and not refused
+        # either.  `_refinement_guard_parts` records a loud E618 for that
+        # base, and rightly so at a function BOUNDARY: there the verifier
+        # promises a runtime check, so a guard that would silently drop the
+        # inner membership predicate is a broken promise and the compile
+        # stops.  An internal bind promises nothing — the verifier records it
+        # `tier3_unguarded` with an E506 disclosure, because
+        # `_refined_boundary_codegen_guardable` bails on the same base — so
+        # routing it through the boundary emitter turned a program that
+        # compiled into one refused at compile while `vera verify` exited 0,
+        # for no soundness gain: the bind is unguarded either way.  Measured
+        # on `type Tiny = { @Pos | @Pos.0 < 10 }` bound by a `let`, which
+        # returns 5 at base and was E618 here.
+        parts = naming.refinement_binder_parts(te, self._alias_env)
+        if parts is None or parts.base_is_refinement:
+            return []
         emitter = self._refinement_guard_emitter
         if emitter is None:
             raise CodegenSkip(
@@ -340,8 +356,13 @@ class DataMixin:
                 # `_ctor_field_mono_base` reads it from this site's
                 # instantiation instead.
                 mono_base = self._ctor_field_mono_base(expr.args[i])
+                # #1416: the built-in variadic `Tuple` carrier has no
+                # per-field metadata, so its narrowing component read its
+                # target from nowhere while the widening one at the same
+                # site read the checker's table (#820).  Same table now.
                 if (((i < len(layout.nat_fields) and layout.nat_fields[i])
-                        or mono_base == "Nat")
+                        or mono_base == "Nat"
+                        or self._adt_arg_is_nat(tuple_target, i))
                         and self._narrows_into_nat(expr.args[i])):
                     field_val = self._emit_nat_bind_guard(field_val)
                 # #813: dual — runtime-guard a @Nat -> @Int widening into a
@@ -515,9 +536,19 @@ class DataMixin:
             # guard the field load when the target binding is @Int and the
             # literal source arg is provably @Nat, mirroring the verifier's
             # literal-source tuple-destructure obligation (was E531-disclosed).
+            # #1416: and for a NON-literal source too.  The literal arm
+            # above reads the argument expression; a destructure whose source
+            # is a call, a slot or an `if` has no argument to read, and the
+            # widening went unguarded — `let Tuple<@Int, @Int> = <Tuple<Nat,
+            # Nat>>` returned a reinterpreted -1 at u64.MAX.  The source
+            # component's type is in the checker's table against the VALUE
+            # expression, which is the same table the construction site's
+            # component guard reads.
             elif (self._resolve_base_type_name(type_name) == "Int"
-                    and idx < len(destr_lit_args)
-                    and self._result_is_nat(destr_lit_args[idx])):
+                    and ((idx < len(destr_lit_args)
+                          and self._result_is_nat(destr_lit_args[idx]))
+                         or self._adt_arg_is_nat(
+                             self._checker_resolved_type(stmt.value), idx))):
                 load = self._emit_int_widen_guard(load)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")

@@ -122,6 +122,33 @@ def has_underflow_leaf(expr: ast.Expr, nat_origin: NatOriginOracle) -> bool:
     return False
 
 
+def measure_component_needs_range_check(resolved_ty: object) -> bool:
+    """True iff a ``decreases`` measure component of resolved type
+    *resolved_ty* can read differently to the prover and to the runtime
+    guard (#1222).
+
+    Clause of THE RULE, for the termination measure.  The proof reasons over
+    unbounded integers and the guard compares with ``i64.lt_s`` /
+    ``i64.ge_s``, so the two agree exactly while the component's value is an
+    i64.  A ``@Nat`` is a u64 in that i64 and is the only component that can
+    leave it; an ``@Int`` IS that i64, and an ADT component is ranked by a
+    heap-bounded structural size.
+
+    Takes the CHECKER's resolved type — duck-typed, so this module keeps its
+    single ``vera.ast`` import — because the two consumers previously asked
+    two different oracles and the wrong one had a fallback that coincided
+    with a real answer: the verifier read the checker's types (a user
+    function's declared ``@Nat`` return resolves), while codegen re-derived
+    from its own walker, which answers ``'Int'`` for a call — and ``'Int'``
+    is also the value meaning "no check needed", so a call-result measure was
+    obligated and never guarded, silently.  A component this cannot classify
+    is ``None`` at the table, which is distinct from ``Int`` and therefore
+    cannot be mistaken for a decision.
+    """
+    base = getattr(resolved_ty, "base", resolved_ty)
+    return getattr(base, "name", None) == "Nat"
+
+
 def narrows_into_nat(
     expr: ast.Expr, fncall_ret: FnCallTypeOracle, nat_origin: NatOriginOracle,
 ) -> bool:

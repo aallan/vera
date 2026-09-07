@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name
+from vera.narrowing import measure_component_needs_range_check
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import state_type_arg
@@ -1007,8 +1008,19 @@ class ContractsMixin:
         termination rule's.
 
         Emitted only for a ``@Nat``-typed component
-        (:meth:`_dec_nat_measure_exprs`).  Returns ``[]`` when no component
+        (:meth:`_dec_nat_measure_indices`).  Returns ``[]`` when no component
         needs it.
+
+        TYPE-driven, not tier-driven, which is this backend's standing rule
+        for a range guard (spec §11.2: the #798 overflow guard is emitted at
+        every classified site "regardless of the verifier's tier").  So a
+        measure a `requires` bounds — obligation `verified` — still pays two
+        dead compares per hop, at the entry check and the self-tail site.
+        That is deliberate: codegen does not read the obligation stream, and
+        making it do so would put the artifact's soundness behind whether
+        `vera verify` had been run, which is precisely the coupling
+        `vera compile` is free of.  The cost is two i64 compares against a
+        constant, on a branch that predicts perfectly.
         """
         # By INDEX, never by AST membership: two components can be
         # structurally equal (`decreases(@Nat.0, @Nat.0)`) and an `in` test
@@ -1060,21 +1072,21 @@ class ContractsMixin:
     ) -> list[int]:
         """The measure components whose readings can differ (#1222).
 
-        A ``@Nat`` component is a u64 in the i64 the termination guard
-        compares in; an ``@Int`` one IS that i64, and an ADT one is ranked by
-        a heap-bounded structural size.  So this is the set the range
-        obligation is recorded for and the set the range guard is emitted
-        for — asked in ONE place, so the two cannot cover different
-        components.
+        The rule is :func:`vera.narrowing.measure_component_needs_range_check`
+        and the table is the CHECKER's, which is what the verifier's own
+        selector reads — so the obligation and the guard cover the same
+        components by construction.  They did not: codegen re-derived the
+        type from its own walker, which answers ``'Int'`` for a call, and
+        ``'Int'`` is also the value meaning "no check needed", so
+        ``decreases(size(@Nat.0))`` was obligated `tier3` and guarded by
+        nothing while `vera run` at 2^63 still reported a failure to
+        decrease.
         """
-        out: list[int] = []
-        for k, expr in enumerate(contract.exprs):
-            vera_ty = ctx._infer_vera_type(expr)
-            if vera_ty is None:
-                continue
-            if ctx._resolve_base_type_name(vera_ty) == "Nat":
-                out.append(k)
-        return out
+        return [
+            k for k, expr in enumerate(contract.exprs)
+            if measure_component_needs_range_check(
+                ctx._checker_resolved_type(expr))
+        ]
 
     def _dec_bound_checks_only(
         self,
