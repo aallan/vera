@@ -2981,6 +2981,20 @@
     ]
   },
   {
+    "id": "ch02_nonregular_data_rejected",
+    "file": "ch02_nonregular_data_rejected.vera",
+    "chapter": 2,
+    "title": "A data declaration may not recurse non-regularly",
+    "level": "check",
+    "spec_ref": "Section 2.4",
+    "expected_error": "E129",
+    "features": [
+      "nonregular_recursion",
+      "data_type",
+      "check_error"
+    ]
+  },
+  {
     "id": "ch03_slot_alias_type_argument",
     "file": "ch03_slot_alias_type_argument.vera",
     "chapter": 3,

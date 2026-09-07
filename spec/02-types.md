@@ -159,7 +159,11 @@ Rules:
 1. The type name MUST begin with an uppercase letter.
 2. Constructor names MUST begin with an uppercase letter.
 3. Constructor names MUST be unique within the data declaration.
-4. ADTs may be recursive (a constructor may reference the type being defined).
+4. ADTs may be recursive (a constructor may reference the type being defined), but the recursion MUST be **regular**: a recursive occurrence — of the type itself, or of any type mutually recursive with it — MUST instantiate that type at the declaration's own type parameters, in order. `data List<T> { Cons(T, List<T>), Nil }` does; `data Nest<T> { N(Nest<Option<T>>), Z }` does not, and is rejected with **E129**.
+
+    Non-regular (polymorphic) recursion grows the type argument at every level, so the chain of instantiations — `Nest<Int>`, `Nest<Option<Int>>`, `Nest<Option<Option<Int>>>`, … — never repeats and the type has no finite set of instantiations. Nothing that reasons over the type structurally can terminate on one: equality, code generation and verification each need that finite set. The rule is stated on the declaration, where the program says what it means, rather than left to whichever consumer diverges first.
+
+    It is the *arguments* that must match, not merely the name, so a permutation is non-regular too (`data R<A, B> { CR(R<B, A>), ZR }`), as is a recursive occurrence reached through a carrier's type argument (`data Av<T> { CV(Array<Av<Option<T>>>), ZV }`). Reaching the type through a carrier at its own parameters is regular (`Array<Av<T>>`), and so is mutual recursion whose members each instantiate the group at their own parameters.
 5. ADTs may be parameterised by type variables.
 6. Type parameters are introduced by `<A, B, ...>` after the type name.
 7. Each constructor is a distinct variant. Constructors with fields carry positional data.

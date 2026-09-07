@@ -36,6 +36,7 @@ from vera.environment import (
     FunctionInfo,
     TypeEnv,
 )
+from vera.regularity import irregular_occurrence
 from vera.types import (
     EffectInstance,
     BOOL,
@@ -726,6 +727,7 @@ class TypeChecker(
 
     def _check_data(self, decl: ast.DataDecl) -> None:
         """Check an ADT declaration (invariant well-formedness)."""
+        self._check_data_regularity(decl)
         # #861: a constructor field type may carry a refinement
         # (`data Wrap = Wrap({ @Int | @Int.0 > 0 })`); check its predicate
         # with the ADT's type params in scope.
@@ -765,6 +767,90 @@ class TypeChecker(
 
             self.env.type_params = saved_params
             self.env.pop_scope()
+
+    def _check_data_regularity(self, decl: ast.DataDecl) -> None:
+        """Refuse NON-REGULAR recursion in a `data` declaration (#1429).
+
+        A recursive occurrence of a type in its own recursive group must
+        instantiate that group at the declaration's OWN type parameters, in
+        order.  `data List<T> { Cons(T, List<T>), Nil }` does; `data Nest<T> {
+        N(Nest<Option<T>>), Z }` does not — its argument grows at every level,
+        so the instantiation chain `Nest<Int>` -> `Nest<Option<Int>>` ->
+        `Nest<Option<Option<Int>>>` never repeats and no finite set of
+        instantiations describes the type.
+
+        Nothing downstream survives that.  Verification's datatype-group
+        closure has no fixed point to reach, so `vera verify` produced no
+        verdict for 67-76 s and then an `E699` internal compiler error; the
+        SMT sort key doubles in SIZE per level for `Ne<Tuple<T, T>>`, so a
+        bound on the NUMBER of instantiations is never even approached; and
+        `==` on such a type recurses the CHECKER itself into a
+        `RecursionError`, which is an `E699` before verification is reached at
+        all.  Refusing the declaration closes all three at the one place the
+        program says what it means, which is what DESIGN §0.2 asks for:
+        explicit and decidable in preference to a silent cliff further down.
+
+        MUTUAL recursion takes the same rule through the group rather than a
+        second one: `data A<T> { CA(B<Option<T>>) }` with `data B<T> {
+        CB(A<T>) }` is non-regular at the `B<Option<T>>` occurrence, and a
+        per-declaration test that only looked for the declaration's own name
+        would see nothing wrong with either half.
+
+        The rule itself lives in :mod:`vera.regularity`, because the SMT layer
+        asks it too — `verify()` is a public entry point whose check-clean
+        precondition a library caller can violate, and when it is the walk
+        does not return.  Two copies would be free to drift into one consumer
+        refusing what the other models.
+        """
+        found = irregular_occurrence(decl.name, self.env.data_types)
+        if found is None:
+            return
+        ctor_name, index, bad = found
+        expected = tuple(
+            self.env.data_types[decl.name].type_params or ()
+        ) if decl.name in self.env.data_types else ()
+        params = ", ".join(expected)
+        # The offending occurrence may be the OTHER member of a mutual pair,
+        # so the remedy names ITS head rather than this declaration's
+        # (PR #1432 review): `A<T> { CA(B<Option<T>>) }` must suggest `B<T>`.
+        remedy = f"{bad.name}<{params}>" if params else bad.name
+        self._error(
+            self._data_field_node(decl, ctor_name, index),
+            f"Non-regular recursion in data declaration "
+            f"'{decl.name}': the occurrence '{pretty_type(bad)}' "
+            f"instantiates a type in its own recursive group at "
+            f"arguments other than "
+            f"'{params if params else '(none)'}'.",
+            rationale=(
+                "A recursive occurrence of a type inside its own "
+                "declaration must instantiate it with exactly that "
+                "declaration's type parameters, in order.  When the "
+                "arguments grow instead, the chain of instantiations "
+                "never repeats — `Nest<Int>`, `Nest<Option<Int>>`, "
+                "`Nest<Option<Option<Int>>>` and so on — so the type "
+                "has no finite set of instantiations, and neither "
+                "equality nor verification can be decided over it."
+            ),
+            fix=(
+                f"Instantiate the recursive occurrence as '{remedy}' and move "
+                "the varying part into a field of its own, or into a "
+                "separate non-recursive type."
+            ),
+            spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types"',
+            error_code="E129",
+        )
+
+    @staticmethod
+    def _data_field_node(
+        decl: ast.DataDecl, ctor_name: str, index: int,
+    ) -> ast.Node:
+        """The field's own TypeExpr, so the diagnostic points at the
+        occurrence rather than at the whole declaration."""
+        for ctor in decl.constructors:
+            if ctor.name == ctor_name and ctor.fields is not None:
+                if index < len(ctor.fields):
+                    return ctor.fields[index]
+        return decl  # pragma: no cover — the registry mirrors the AST
 
     def _check_fn(self, decl: ast.FnDecl) -> None:
         """Check a function declaration."""

@@ -20,6 +20,7 @@ import z3
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
+from vera.regularity import is_regular
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -838,9 +839,43 @@ class SmtContext:
         re-entered sort creation for the still-uncached member and recursed
         unboundedly into the same raw ``RecursionError`` #881 exists to
         eliminate.
+
+        The worklist is deduplicated on the INSTANTIATED key, and that is what
+        terminates it: `List<Int>`'s field is `List<Int>` again, so the second
+        level's key repeats and the walk stops.  It terminates for EVERY
+        declaration this layer can be handed, because a NON-REGULAR one —
+        `data Nest<T> { N(Nest<Option<T>>), Z }`, whose argument grows at every
+        level so no two keys are ever equal — is refused at check time with
+        `E129` (#1429), and verification runs only on check-clean programs.
+
+        The regularity rule is what makes that true, not a bound here, and
+        this function asks it directly rather than trusting the caller to have
+        run the checker.  A member-count bound was tried and is the wrong
+        instrument: it is a cliff rather than a rule, it demotes a legitimate
+        large-but-finite closure (a five-parameter declaration whose
+        constructor PERMUTES its parameters reaches 610 members and would lose
+        a Tier-1 proof), and it never even fires for `Ne<Tuple<T, T>>`, where
+        the key doubles in SIZE per level rather than in count.
         """
         root_info = self._adt_registry.get(root_name)
         if root_info is None:
+            return None
+        if not is_regular(root_name, self._adt_registry):
+            # DECLINE TO MODEL a non-regular recursion (#1429).  The checker
+            # refuses such a declaration (`E129`), so a program that reached
+            # here through `vera verify` cannot carry one — but `verify()` is
+            # a public entry point, and its "must already have passed type
+            # checking" precondition is a library caller's to keep.  Measured
+            # when it is not: `verify()` called directly on a check-refused
+            # program did not come back within 60 s, because the closure below
+            # has no fixed point to reach (PR #1432 review).
+            #
+            # Declining returns the sort-unavailable answer every caller
+            # already handles, so the walk terminates by the RULE rather than
+            # by any bound on how far it may go.  `is_regular` is the
+            # checker's own derivation, imported rather than restated: two
+            # copies could drift into one consumer refusing what the other
+            # models.
             return None
         group: dict[str, list[tuple[str, tuple[Type, ...] | None]]] = {}
         worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]

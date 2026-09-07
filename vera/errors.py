@@ -876,6 +876,7 @@ ERROR_CODES: dict[str, str] = {
     "E126": "Refinement predicate not Bool",
     "E127": "Decreases measure not well-founded",
     "E128": "Quantifier bound not an integer",
+    "E129": "Non-regular recursion in a data declaration",
     "E130": "Unresolved slot reference",
     "E131": "Result ref outside ensures",
     "E132": "Cyclic type alias",
