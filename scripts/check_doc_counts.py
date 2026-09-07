@@ -1732,18 +1732,61 @@ def check_manifest_entries(manifest: list[dict[str, object]]) -> list[str]:
     of this ran (PR #1411 review).  A gate that crashes says less than
     one that reports.  Named by index when there is no `file` to name it
     by.
+
+    Field VALUES, not only their presence: `{"level": []}` satisfied a
+    presence test and then went into `level_counts` as a key, raising
+    TypeError before the validation errors could be printed, and a
+    `null` `file` was skipped by the readers without ever being reported
+    (PR #1411 review, fourth pass).  Both fields must be non-empty
+    strings.
     """
     errors: list[str] = []
+    where = "tests/conformance/manifest.json"
     for index, entry in enumerate(manifest):
-        missing = [field for field in ("file", "level") if field not in entry]
-        if not missing:
+        if not isinstance(entry, dict):
+            errors.append(
+                f"{where}: entry {index} is not an object"
+                f" ({type(entry).__name__})"
+            )
             continue
-        name = entry.get("file") or entry.get("id") or f"entry {index}"
-        fields = " and ".join(f"`{field}`" for field in missing)
-        errors.append(
-            f"tests/conformance/manifest.json: {name} is missing {fields}"
+        raw = entry.get("file")
+        name = (
+            raw
+            if isinstance(raw, str) and raw.strip()
+            else str(entry.get("id") or f"entry {index}")
         )
+        missing = [field for field in ("file", "level") if field not in entry]
+        if missing:
+            fields = " and ".join(f"`{field}`" for field in missing)
+            errors.append(f"{where}: {name} is missing {fields}")
+        for field in ("file", "level"):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    f"{where}: {name}'s `{field}` is {value!r}, not a"
+                    f" non-empty string"
+                )
     return errors
+
+
+def level_counts_of(manifest: list[dict[str, object]]) -> dict[str, int]:
+    """The manifest's level breakdown, skipping entries whose `level` is
+    not a usable string.
+
+    A function rather than a loop inside `main` so the path that used to
+    crash on a malformed entry is reachable from a test.
+    """
+    counts: dict[str, int] = {}
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            continue
+        level = entry.get("level")
+        if not isinstance(level, str) or not level.strip():
+            continue
+        counts[level] = counts.get(level, 0) + 1
+    return counts
 
 
 def _stem(entry: dict[str, object]) -> str | None:
@@ -1751,7 +1794,9 @@ def _stem(entry: dict[str, object]) -> str | None:
     `check_manifest_entries` has already reported, so the readers below
     skip it rather than reporting the same fault a second time."""
     name = entry.get("file")
-    return None if name is None else str(name).removesuffix(".vera")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.removesuffix(".vera")
 
 
 def _programs_at_level(
@@ -1812,8 +1857,7 @@ def check_conformance_level_prose(
     # without spelling it out.
     named = {match.group("level") for match in levels}
     for level in sorted(
-        {str(entry["level"]) for entry in manifest if "level" in entry}
-        - {_UNENUMERATED_LEVEL}
+        set(level_counts_of(manifest)) - {_UNENUMERATED_LEVEL}
     ):
         if level not in named:
             errors.append(
@@ -2042,14 +2086,9 @@ def main() -> int:
     errors.extend(check_manifest_entries(manifest))
     live_conformance = len(manifest)
 
-    # Conformance level breakdown.  An entry with no `level` is reported
-    # above rather than raised here.
-    level_counts: dict[str, int] = {}
-    for entry in manifest:
-        lvl = entry.get("level")
-        if lvl is None:
-            continue
-        level_counts[lvl] = level_counts.get(lvl, 0) + 1
+    # Conformance level breakdown.  A malformed entry is reported above
+    # rather than raised here.
+    level_counts = level_counts_of(manifest)
 
     # Examples: count .vera files
     live_examples = len(list((root / "examples").glob("*.vera")))

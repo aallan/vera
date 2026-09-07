@@ -2433,6 +2433,82 @@ class TestManifestEntryFields:
         assert all("ch01_x" not in e for e in errors), errors
         assert _MOD.negative_fixture_names(manifest) == ["ch02_a_rejected"]
 
+    @pytest.mark.parametrize(
+        ("entry", "cue"),
+        [
+            pytest.param({"file": "x.vera", "level": []}, "`level` is []",
+                         id="level-is-a-list"),
+            pytest.param({"file": None, "level": "check"}, "`file` is None",
+                         id="file-is-null"),
+            pytest.param({"file": "x.vera", "level": "   "},
+                         "`level` is '   '", id="level-is-blank"),
+            pytest.param({"file": 7, "level": "check"}, "`file` is 7",
+                         id="file-is-a-number"),
+        ],
+    )
+    def test_a_field_present_but_unusable_is_reported(
+        self, entry: dict[str, object], cue: str
+    ) -> None:
+        """Presence is not enough.
+
+        `{"level": []}` satisfied a presence test and then went into
+        `level_counts` as a key, raising TypeError before the validation
+        errors could be printed; a `null` `file` was skipped by the
+        readers without ever being reported (PR #1411 review).
+        """
+        errors = _MOD.check_manifest_entries([entry])
+        assert len(errors) == 1, errors
+        assert cue in errors[0] and "non-empty string" in errors[0]
+
+    def test_an_entry_that_is_not_an_object_is_reported(self) -> None:
+        errors = _MOD.check_manifest_entries(["ch01_x.vera", 3])
+        assert len(errors) == 2
+        assert "entry 0 is not an object (str)" in errors[0]
+        assert "entry 1 is not an object (int)" in errors[1]
+
+    @pytest.mark.parametrize(
+        "bad_file",
+        [pytest.param(7, id="number"), pytest.param("   ", id="blank")],
+    )
+    def test_a_readers_name_is_never_invented_from_a_bad_file(
+        self, bad_file: object
+    ) -> None:
+        """An unusable `file` yields NO name, rather than a coerced one.
+
+        `str(7)` would put the fixture "7" into the expected sets, and
+        the prose would then be told it is missing a program that does
+        not exist — the validator's report turned into a second, wrong
+        one downstream.
+        """
+        entry = {"file": bad_file, "level": "check", "expected_error": "E1"}
+        manifest = [*_manifest("ch02_a_rejected"), entry]
+        assert _MOD.negative_fixture_names(manifest) == ["ch02_a_rejected"]
+        assert _MOD._programs_at_level(manifest, "check") == {
+            "ch02_a_rejected"
+        }
+        # Reported once, by the validator, and named by index since the
+        # `file` it would otherwise be named by is the broken field.
+        errors = _MOD.check_manifest_entries([entry])
+        assert len(errors) == 1 and "entry 0" in errors[0]
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param({"file": "x.vera", "level": []}, id="unhashable"),
+            pytest.param({"file": "x.vera", "level": None}, id="null"),
+            pytest.param("not-an-object", id="not-an-object"),
+        ],
+    )
+    def test_the_level_breakdown_does_not_raise(
+        self, entry: object
+    ) -> None:
+        """The breakdown is the FIRST reader a malformed entry reaches,
+        so it has to survive one for the validation errors above to be
+        printed at all.  It lives in its own function precisely so this
+        path is reachable from a test rather than only from the CLI."""
+        counts = _MOD.level_counts_of([*_manifest("ch02_a_rejected"), entry])
+        assert counts == {"run": 2, "check": 1}
+
     def test_the_shipped_manifest_is_well_formed(self) -> None:
         """The live file, so the validator cannot be checking nothing."""
         manifest = json.loads(
