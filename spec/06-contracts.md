@@ -420,13 +420,25 @@ Every obligation this chapter describes ends in exactly one of the first four st
 |------|-----------------|---------|
 | **proved** | `verified` | Tier 1. Z3 discharged the obligation; it holds for every input. Counted in `tier1_verified`. |
 | **runtime-guarded** | `tier3`, `timeout` | Tier 3. Not proved, but the compiler emitted a guard that traps on violation. Counted in `tier3_runtime`. |
-| **unguarded** | `tier3_unguarded` | Neither proved nor guarded. Reported as a warning (`E504`, `E506`, `E531`) and counted in no tier. |
+| **unguarded** | `tier3_unguarded` | Neither proved nor guarded. Reported as a warning (`E504`, `E506`, `E531`, `E538`, `E539`) and counted in no tier. |
 | **refuted or unprovable** | `violated` | The obligation did not discharge and the compiler refuses the program. Two ways in: Z3 returned a concrete counterexample, or — for a call precondition over an opaque value (Section 6.4.2) — it could not establish the goal at all. Both report `violated`, which is why the diagnostic says a call *may* violate the precondition rather than that it does. A compile error (`E500`, `E501`, `E502`, `E505`, …), counted in no tier. |
 | **assumed** | — | An `assume` statement (Section 6.2.6), not an obligation: the fact is taken on trust rather than discharged, so it reaches no tier and is counted nowhere. It is an unsound escape hatch. |
 | **tested** | — | `vera test` generates inputs from the contracts and runs them through WASM. A distinct activity rather than a tier: it samples inputs, it does not quantify over them. |
 | **specified, not implemented** | — | Carried by the `Status:` callouts in this specification and collected in the [implementation-status appendix](../docs/implementation-status.md). |
 
 The counts partition accordingly: `total == tier1_verified + tier3_runtime`. A `violated` or `tier3_unguarded` obligation is discharged to no tier, so it appears in the `obligations` array and in the diagnostics, but in neither count.
+
+### 6.8.2 Premise Consistency
+
+A proof is worth no more than the premises it rests on, and a contradictory premise set entails every goal.  Before any obligation of a function is trusted, its premise set MUST be checked for satisfiability; where it has no model, every obligation in that function is reported `tier3_unguarded` rather than `verified`, because none of them was discharged against a reachable state ([#1451](https://github.com/aallan/vera/issues/1451)).
+
+The check is stated in two layers, because the two causes ask the reader for different things.
+
+**The contract layer** is what the author wrote: the parameters' declared types, their refinement predicates, and the `requires` clauses.  Unsatisfiable here means no call can satisfy the contract, so the body is unreachable and nothing in it was verified against anything — **E538**, a warning, and the demotion above.  `requires(@Int.0 > 5 && @Int.0 < 3)` proves `ensures(@Int.result == 42)` over a body returning `0` unless this check refuses it.
+
+**The full premise set** adds every fact the verifier itself derives — an assumed callee postcondition, a refined return's predicate, a declared-type fact read off a constructor sub-pattern.  Satisfiable at the contract layer and unsatisfiable here means the contradiction is the compiler's, not the program's: **E539**, reported as internal, with the same demotion.  A `violated` obligation already on record is left alone, since a contradiction cannot manufacture a refutation.
+
+An UNSAT precondition is a warning rather than an error: the tiers this chapter defines describe how much was established, and "nothing was established" is a tier, not a malformed program.  The call sites answer for it separately — a call to a function whose precondition has no model reports the ordinary `E501`, because no argument can satisfy it.
 
 ## 6.9 Limitations
 

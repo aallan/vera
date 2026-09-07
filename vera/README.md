@@ -767,11 +767,11 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (174 entries — 171 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (176 entries — 173 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 13,575 tests across 203 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 13,593 tests across 204 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
