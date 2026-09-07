@@ -89,14 +89,15 @@ def _verify(tmp_path: Path, source: str, name: str = "p.vera") -> dict:
     return result
 
 
-def _run(tmp_path: Path, source: str, arg: str = "-7.0") -> str:
+def _run(tmp_path: Path, source: str, arg: str = "-7.0",
+         name: str = "r.vera") -> str:
     """Compile and call `f` with *arg*; return stdout+stderr.
 
     The default `-7.0` is chosen so no fallback can coincide with it: it is
     neither `0` nor the `None` arm's `41`, so a wrong answer cannot be read as
     a right one (the payload the disclosed `mk` builds is `-7`).
     """
-    p = tmp_path / "r.vera"
+    p = tmp_path / name
     p.write_text(source, encoding="utf-8")
     proc = _cli("run", str(p), "--fn", "f", "--", arg)
     return proc.stdout + proc.stderr
@@ -1166,3 +1167,330 @@ def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
         f"a disclosed value forwarded through two levels of `where` helper "
         f"must still demote its caller — got {_f_ensures(result)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #1418 review G1 — a forwarder INSIDE an imported module is disclosed too
+# ---------------------------------------------------------------------------
+
+# #1402's manifest is what an importer asks about a module it does not verify,
+# and it was built from `disclosed_fn_names(obligations)` alone.  A forwarder
+# makes no claim and so records no obligation, so a forwarder inside the
+# LIBRARY was invisible while the same three declarations in one file demoted
+# correctly — the rule cannot depend on which side of an import the forwarder
+# sits.  The manifest now emits the union of the obligation-derived set and
+# the result-derived one, which is the same union `_disclosed_fn_names` takes
+# on this side.
+_G1_LIB_ONE_HOP = _POSINT + """
+public fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+
+public fn wrap(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(@Float64.0)
+}
+"""
+
+# Two hops INSIDE the library: `outer` forwards `wrap` forwards `mk`.  The
+# library's own fixpoint has to carry the taint across both before the
+# manifest is read, so this fails differently from the one-hop shape if the
+# manifest were computed from a single pass.
+_G1_LIB_TWO_HOP = _G1_LIB_ONE_HOP + """
+public fn outer(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  wrap(@Float64.0)
+}
+"""
+
+_G1_LIB_CLEAN = _POSINT + """
+public fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(7)
+}
+
+public fn wrap(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(@Float64.0)
+}
+
+public fn outer(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  wrap(@Float64.0)
+}
+"""
+
+
+def _g1_caller(callee: str) -> str:
+    return "import oplib;\n" + _POSINT + _F + (
+        "{\n  match oplib::" + callee + "(@Float64.0) {\n" + _ARMS + "\n  }\n}\n")
+
+
+@pytest.mark.parametrize(
+    "callee,lib", [("wrap", _G1_LIB_ONE_HOP), ("outer", _G1_LIB_TWO_HOP)],
+    ids=["one_hop", "two_hop"],
+)
+def test_1418_g1_an_imported_forwarder_is_disclosed(
+    tmp_path: Path, callee: str, lib: str,
+) -> None:
+    """The library's forwarder demotes its importer, and the run says why.
+
+    `verified` at Tier 1 on the pre-#1402 base, on #1402 alone, and on this
+    branch before the manifest took the union — with `vera run --fn f -- -7.0`
+    refuting the postcondition in every case.  The library alone reports
+    `mk`'s `refine_bind` as `tier3_unguarded`/E506 throughout, so the fact was
+    always disclosed; only the importer could not see who was handing it on.
+    """
+    (tmp_path / "oplib.vera").write_text(lib, encoding="utf-8")
+    source = _g1_caller(callee)
+    result = _verify(tmp_path, source, name="main.vera")
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("tier3", "E534"), _f_ensures(result)
+    out = _run(tmp_path, source, name="main.vera")
+    assert "Postcondition violation in f" in out, out[-700:]
+
+
+@pytest.mark.parametrize("callee", ["wrap", "outer"])
+def test_1418_g1_a_clean_imported_forwarder_still_proves(
+    tmp_path: Path, callee: str,
+) -> None:
+    """The over-rejection control: forwarding is not itself a disclosure.
+
+    A manifest that listed every forwarder — rather than every forwarder of a
+    DISCLOSED value — would satisfy the cells above and take Tier 1 away from
+    every library that wraps its own helpers.
+    """
+    (tmp_path / "oplib.vera").write_text(_G1_LIB_CLEAN, encoding="utf-8")
+    source = _g1_caller(callee)
+    result = _verify(tmp_path, source, name="main.vera")
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("verified", None), _f_ensures(result)
+    out = _run(tmp_path, source, name="main.vera")
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]
+
+
+# ---------------------------------------------------------------------------
+# #1418 review G2 — the `_set_fn_scope` hoist, pinned
+# ---------------------------------------------------------------------------
+
+# `_verify_fn`'s generic branch returns BEFORE the old assignment site, and it
+# translates a body on the way out (`_check_generic_refined_return`) with the
+# disclosure hook installed.  So a generic read the PREVIOUS function's
+# `where` helpers, and `_local_fn_names_in_scope()` is what decides whether a
+# bare call reaches an IMPORT or a local name — which makes the stale read
+# reachable only across an import, and unsound in one direction: a leftover
+# helper name makes an imported disclosing callee look local, the manifest is
+# never consulted, and the disclosure is suppressed.
+#
+# Ordering is the fixture.  `holder` is verified FIRST and declares a helper
+# named `mk`, so `mk` is left in `_scope_fn_names`; the generic `g` that
+# follows has no helper of its own and its bare `mk` is `oplib::mk`, the
+# disclosing import.  With the binding hoisted to the entry of `_verify_fn`,
+# `g` starts from its own (empty) scope and the manifest is consulted.
+_G2_LIB = _POSINT + """
+public fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+"""
+
+_G2_STALE_SCOPE = "import oplib;\n" + _POSINT + """
+public fn holder(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Float64.0) {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 41
+  }
+}
+where {
+  fn mk(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    Some(9)
+  }
+}
+
+public forall<T> fn g(@T, @Float64 -> @PosInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Float64.0) {
+    Some(@PosInt) -> @PosInt.0,
+    None -> 41
+  }
+}
+"""
+
+
+def test_1418_g2_a_generic_refined_return_reads_its_own_scope(
+    tmp_path: Path,
+) -> None:
+    """The generic path sees ITS OWN helpers, not the previous function's.
+
+    A generic's concrete refined return is checked on a path that returns
+    before the rest of `_verify_fn` runs, so the per-function scope state has
+    to be bound at the ENTRY or that path reads whatever the last function
+    left behind.  Reverting the hoist leaves the whole suite green, which is
+    why this cell exists; it reds on that revert.
+
+    Asserted on the outcome, not the mechanism: `g`'s bare `mk` is the
+    disclosing IMPORT, so its refined return must not come back `verified`.
+    A stale scope carrying `holder`'s helper of the same name makes the call
+    look local, skips the manifest, and suppresses the disclosure.
+    """
+    (tmp_path / "oplib.vera").write_text(_G2_LIB, encoding="utf-8")
+    result = _verify(tmp_path, _G2_STALE_SCOPE, name="main.vera")
+    assert result["ok"] is True, result.get("diagnostics")
+    generic = [(o["status"], o.get("error_code")) for o in result["obligations"]
+               if o["kind"] == "refine_bind"
+               and o.get("description") == "<expr>"]
+    assert generic == [("tier3", "E506")], (
+        f"the generic's refined return proved from an imported disclosure "
+        f"the previous function's scope hid — got {generic}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #1418 review G3 — the F3 residual, pinned as measured
+# ---------------------------------------------------------------------------
+
+_G3_RESIDUAL = _POSINT + _MK_DISCLOSED + """
+private fn mk_ok(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(7)
+}
+""" + _F + "{\n  match h(@Float64.0) {\n" + _ARMS + "\n  }\n}\n" + (
+    """where {
+  fn h(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    mk_ok(@Float64.0)
+  }
+
+  fn inner(@Float64 -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    match h(@Float64.0) {
+""" + _ARMS + """
+    }
+  }
+  where {
+    fn h(@Float64 -> @Option<PosInt>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      mk(@Float64.0)
+    }
+  }
+}
+""")
+
+
+def test_1418_g3_the_scope_key_residual_errs_toward_demotion(
+    tmp_path: Path,
+) -> None:
+    """Two helpers under ONE owner still share a key — pinned, not claimed fixed.
+
+    `_result_disclosed_key` qualifies a `where` helper by its top-level owner,
+    which separates helpers in DIFFERENT owners.  Two helpers under the same
+    owner — here `h` (clean) beside a nested `h2` (disclosed) — still share
+    that owner, so the outer caller reading the CLEAN helper is demoted along
+    with the tainted one.
+
+    That is the safe direction: a Tier-3 report where a Tier-1 proof was
+    available, never the reverse.  Narrowing it further means carrying the
+    whole lexical chain as the key rather than its root, which is a bigger
+    change than the soundness fix needed.  Pinned so the cost is a
+    measurement rather than a claim, and so narrowing it later is visible.
+    """
+    result = _verify(tmp_path, _G3_RESIDUAL)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("tier3", "E534"), (
+        f"the residual moved — if that was intended, this cell records the "
+        f"state it moved from: {_f_ensures(result)}"
+    )
+    # The safe direction, demonstrated: the value `f` actually returns is the
+    # CLEAN helper's, so the demotion costs a proof and never soundness.
+    out = _run(tmp_path, _G3_RESIDUAL)
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]
+
+
+def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
+    """CONSTRUCTED-from is covered by the same walk as PROJECTED-from.
+
+    The rule says a value is disclosed when it is, or is projected from, a
+    disclosed call's result.  Rebuilding — `Some(@PosInt.0)` in a match arm
+    over a disclosed producer — is that situation one step on: the new
+    payload's fact rests on the disclosed one.  It needs no separate rule
+    because the walk asks by OCCURRENCE, so a constructor application
+    containing the projection contains the disclosed term.
+
+    Pinned as a unit because the whole-program shape needs
+    [#1421](https://github.com/aallan/vera/issues/1421)'s sort fix to verify
+    at all — before it the program dies with an E699 sort mismatch — so the
+    end-to-end cell belongs to that PR.  Measured on the two trees composed:
+    with the sort fix alone the consumer's postcondition is `verified` while
+    the run refutes it; with this branch on top it is `tier3`/E534 and the
+    clean twin still proves.
+    """
+    import z3
+
+    from vera.smt import SmtContext
+
+    smt = SmtContext()
+    disclosed = z3.Int("_call_mk_1")
+    smt._disclosed_terms.append(disclosed)
+
+    project = z3.Function("Option_Some_0", z3.IntSort(), z3.IntSort())
+    rebuild = z3.Function("Some", z3.IntSort(), z3.IntSort())
+
+    payload = project(disclosed)          # @PosInt.0
+    rebuilt = rebuild(payload)            # Some(@PosInt.0)
+    reread = project(rebuilt)             # the consumer's own projection
+
+    assert smt.term_is_disclosed(disclosed) is True
+    assert smt.term_is_disclosed(payload) is True, "projected-from"
+    assert smt.term_is_disclosed(rebuilt) is True, "constructed-from"
+    assert smt.term_is_disclosed(reread) is True, "and back out again"
+    # The control that keeps this from being vacuous: a term with no
+    # disclosed component answers False however deeply it is nested.
+    clean = rebuild(project(z3.Int("_call_mk_ok_1")))
+    assert smt.term_is_disclosed(clean) is False

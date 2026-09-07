@@ -446,6 +446,18 @@ class VerifyResult:
     # discharge order.  Empty-list default keeps existing constructors
     # (tests, tooling) source-compatible.
     obligations: list[ProofObligation] = field(default_factory=list)
+    #: #1407/G1: the functions this run found to be handing on a disclosed
+    #: value, mapped to the import sites behind each.  NOT derivable from
+    #: `obligations` — a forwarder makes no claim and so records none — and a
+    #: consumer that reads only the obligation stream therefore misses it.
+    #: `vera/disclosure.py`'s manifest is such a consumer: it emitted only
+    #: `disclosed_fn_names(obligations)`, so a forwarder INSIDE an imported
+    #: module was invisible to its importer while the same three declarations
+    #: in one file demoted correctly.  Surfaced here so the two sides of an
+    #: import answer the one question — is this function's result a disclosed
+    #: value — from the one derivation.
+    result_disclosed: dict[str, list[DisclosureSite]] = field(
+        default_factory=dict)
 
 
 def verify(
@@ -494,6 +506,7 @@ def verify(
         diagnostics=verifier.errors,
         summary=verifier.summary,
         obligations=verifier.obligations,
+        result_disclosed=dict(verifier._result_disclosed_fns),
     )
 
 

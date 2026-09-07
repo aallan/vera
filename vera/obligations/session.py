@@ -31,7 +31,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from vera import ast
 from vera.errors import Diagnostic
@@ -278,11 +277,6 @@ class VerificationSession:
         stats = SessionRunStats()
         out_diags: list[Diagnostic] = list(verifier.errors)
         out_obls: list[ProofObligation] = list(verifier.obligations)
-        # #1407: functions that hand on a disclosed value, assembled the same
-        # way the obligation stream is — a fresh slice reads it off the
-        # verifier, a replayed one off the cache entry — so a replay cannot
-        # quietly drop a wrapper out of the disclosed set.
-        result_disclosed: dict[str, list[Any]] = {}
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -316,7 +310,6 @@ class VerificationSession:
                 # session's set, because a LATER fresh slice consults
                 # `_result_disclosed_fns` for the citation behind a forwarder
                 # and would otherwise see a hole where a replayed slice sat.
-                result_disclosed.update(cached.result_disclosed)
                 verifier._result_disclosed_fns.update(cached.result_disclosed)
                 stats.replayed_fns += 1
                 continue
@@ -336,7 +329,6 @@ class VerificationSession:
                 obligations=list(verifier.obligations[o0:]),
                 result_disclosed=contributed,
             )
-            result_disclosed.update(contributed)
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
             out_obls.extend(entry.obligations)
@@ -364,17 +356,16 @@ class VerificationSession:
         # the obligation stream says which functions failed to establish their
         # own declared type, `result_disclosed` says which hand such a value
         # on, and the fixpoint below needs both or it settles one hop early.
-        disclosed = (
-            disclosed_fn_names(out_obls)
-            | frozenset(result_disclosed)
-            # The imported-generic-clone pass runs AFTER the slice loop
-            # and verifies bodies of its own, so a forwarder it finds is
-            # in the verifier's set and in no slice's contribution
-            # (CodeRabbit, PR #1418).  Reading the verifier directly is a
-            # superset of the replayed contributions, which are seeded
-            # back onto it, so this cannot lose one either.
-            | frozenset(verifier._result_disclosed_fns)
-        )
+        # ONE term, not two.  The verifier's own map is the superset: a fresh
+        # slice's contribution is already in it, a replayed slice's is seeded
+        # back onto it above, and the imported-generic-clone pass — which runs
+        # AFTER this loop and verifies bodies of its own — reaches only it
+        # (CodeRabbit, PR #1418).  Unioning the per-slice tally beside it was
+        # measured dead: mutating either term away killed nothing, because
+        # each covered the other.  Keeping the superset alone leaves one term
+        # whose removal the warm cells do catch.
+        disclosed = (disclosed_fn_names(out_obls)
+                     | frozenset(verifier._result_disclosed_fns))
         if not disclosed <= self._disclosed:
             # Re-run knowing what this pass disclosed, exactly as the cold
             # `verify_program` fixpoint does.  The set only grows, so this

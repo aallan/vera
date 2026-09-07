@@ -434,6 +434,17 @@ def _verify_for_disclosure(
     # WHICH functions is the shared derivation's answer; the walk below only
     # decorates it with the obligation that earned each one, selected by the
     # same predicate so the two cannot disagree about what disclosed what.
+    #
+    # This loop decorates the OBLIGATION-derived half; the loop after it adds
+    # the RESULT-derived half (G1).  A function is disclosed when its result
+    # is a disclosed value, and that has two kinds of evidence: an obligation
+    # of its own that was neither proved nor guarded, and — for a FORWARDER,
+    # which makes no claim and so records nothing — the value leaving its
+    # body.  Emitting only the first made a forwarder inside an imported
+    # module invisible to its importer, while the same three declarations in
+    # ONE file demoted correctly: the importer's postcondition was `verified`
+    # at Tier 1 and the program refuted it.  The rule cannot depend on which
+    # side of an import the forwarder sits.
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
@@ -443,4 +454,40 @@ def _verify_for_disclosure(
                 file=o.file or file, line=o.line, column=o.column,
                 error_code=o.error_code or "",
             )
+    # A forwarder has no obligation to decorate it, so the loop above skipped
+    # it.  Cite the import behind it when there is one, and otherwise the
+    # forwarder's own declaration — the position a reader of the importing
+    # diagnostic should open, from which the local disclosure it hands on is
+    # one call away and carries its own E504/E506 in that module's run.
+    for name, sites in result.result_disclosed.items():
+        if name in manifest:
+            continue
+        if sites:
+            manifest[name] = sites[0]
+            continue
+        manifest[name] = DisclosureSite(
+            module=mod.path, fn_name=name, file=file,
+            line=_decl_line(mod, name), column=0, error_code="",
+        )
     return manifest
+
+
+def _decl_line(mod: ResolvedModule, name: str) -> int:
+    """The line *name* is declared on in *mod*, or 0 when it cannot be found.
+
+    Walks the declarations rather than trusting a registry, because a
+    forwarder may be a ``where`` helper, which the flat last-wins registries
+    cannot name (#1418 review G1).
+    """
+    from vera import ast
+
+    stack = [
+        tld.decl for tld in mod.program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+    ]
+    while stack:
+        decl = stack.pop()
+        if decl.name == name and decl.span is not None:
+            return int(decl.span.line)
+        stack.extend(decl.where_fns or ())
+    return 0
