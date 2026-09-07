@@ -1326,6 +1326,8 @@ private fn factorial(@Nat -> @Nat)
 
 For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
 
+**A precondition no argument can satisfy is not a proof.** `requires(@Int.0 > 5 && @Int.0 < 3)` has no model, so every obligation in the function would discharge from a contradiction — the body is never checked against a reachable state. `vera verify` reports **E538** and demotes every obligation in that function to `tier3_unguarded` (counted in no tier), and each call site reports the ordinary `E501`, since no argument can satisfy the contract. The same demotion under **E539** means the *verifier's* derived premises contradict, which is a compiler bug worth reporting rather than a contract to weaken. Both are warnings: nothing is claimed, so nothing false is claimed.
+
 The measure must have a well-founded ordering — `Nat`, `Int`, a data type (ordered by structural size), or a lexicographic tuple of these; a `Float64`/`String`/`Bool` measure is rejected at check time (`E127`). A measure Z3 cannot prove is checked at run time: a recursive re-entry whose measure fails to strictly decrease (or goes negative) traps with a message naming the function, instead of looping forever. Self-recursive tail calls keep tail-call optimization (the hop is checked at the call site, so guarded iteration still runs at constant stack depth); only *mutually*-recursive tail calls between guarded functions fall back to plain calls. An ADT measure of a *parameterized* type (`List<Int>`) is not yet runtime-ranked, and a function declaring `Exn` gets no runtime guard (a throw would unwind past the state restores) — in both cases the obligation stays disclosed at the static tier.
 
 ### Workflow: writing contracts incrementally

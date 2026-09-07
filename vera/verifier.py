@@ -93,6 +93,20 @@ from vera.types import (
 # i64 / u64 range bounds for the #798 integer-overflow obligation.  @Int is a
 # signed 64-bit machine integer, @Nat an unsigned one; `+`/`-`/`*` wrap at these
 # boundaries at runtime (and, per #798, now trap).
+#: Budget for #1451's premise-consistency screening query, in milliseconds,
+#: capped by the run's own query budget so `--timeout-ms 100` is not silently
+#: widened.  Far below the per-obligation budget, and deliberately so: the
+#: query asks for a MODEL, and the two directions are wildly asymmetric.  A
+#: contradiction worth catching is linear-arithmetic and refuted in single-
+#: digit milliseconds; confirming satisfiability under the quantified rank
+#: axioms a `decreases` measure installs sends Z3 to MBQI, which exhausts any
+#: budget and answers `unknown` regardless.  Measured over the corpus: at the
+#: full 10 s budget the check cost +90 s, ALL of it in the seven programs with
+#: recursive-ADT measures and all of it timeouts, so the whole of it bought
+#: nothing; at 250 ms it costs +5.9 s (+6.0%) end to end over 296 programs and
+#: reaches every verdict the wider budget reached.
+_PREMISE_CHECK_TIMEOUT_MS = 250
+
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 _U64_MAX = 2**64 - 1
@@ -908,10 +922,18 @@ class ContractVerifier:
         *,
         rationale: str = "",
         spec_ref: str = "",
+        fix: str = "",
         error_code: str = "",
         tier: int | None = None,
     ) -> None:
-        """Record a verification warning (Tier 3 fallback)."""
+        """Record a verification warning (Tier 3 fallback).
+
+        *fix* is optional here where it is mandatory on an error: a Tier-3
+        fallback usually has no corrected form to show, because the program is
+        not wrong.  Where there IS one — an unsatisfiable precondition has
+        exactly one, weaken it (#1451) — carrying it costs nothing and
+        `check_diagnostic_fields` accepts it on a warning.
+        """
         loc = SourceLocation(file=self._current_file)
         if node.span:
             loc.line = node.span.line
@@ -921,6 +943,7 @@ class ContractVerifier:
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=rationale,
+            fix=fix,
             spec_ref=spec_ref,
             severity="warning",
             error_code=error_code,
@@ -3588,6 +3611,13 @@ class ContractVerifier:
             result_var = smt.declare_int("@result")
         smt.set_result_var(result_var)
 
+        # #1451: the index this function's own obligations start at, so the
+        # premise-consistency check below can demote exactly them.  A slice
+        # rather than a `fn_name` filter: a `where` helper shares no name with
+        # its parent but IS verified by a nested call at step 9, which happens
+        # after the slice is closed, and a generic's clones reuse one name.
+        obl_start = len(self.obligations)
+
         # 3. Collect precondition assumptions
         # Seed with the refined-param predicates (#746) so they are both
         # asserted into the solver (step 4) and available to every binding-site
@@ -3648,6 +3678,16 @@ class ContractVerifier:
         #    can see them during body translation.
         for a in assumptions:
             smt.solver.add(a)
+
+        # 4b. #1451 LAYER 1 — the user's contract alone.  The solver now holds
+        #     exactly what the author wrote: the parameters' type constraints
+        #     (`declare_nat`'s implicit `>= 0`, an ADT's datatype sort), each
+        #     refined parameter's predicate, and every translatable `requires`.
+        #     Nothing the verifier derived is in yet — the body is translated
+        #     at step 5 — so an UNSAT here is the author's contradiction and
+        #     can be reported as one.  Measured HERE rather than at step 8c
+        #     because after the body runs the two are indistinguishable.
+        contract_unsat = self._premises_satisfiable(smt) is False
 
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
@@ -4084,6 +4124,15 @@ class ContractVerifier:
         #     step-7 translation is reported once, never double-counted.
         self._report_call_demotions(decl, smt)
 
+        # 8c. #1451: the premise set is complete now — layer 1 plus every fact
+        #     the body translation, the refined-return assumption and the
+        #     call-fact injection added to the base context.  One
+        #     `solver.check()`, and if it is UNSAT nothing this function
+        #     reported means anything, so the whole slice is demoted.  Runs
+        #     before step 9 so a `where` helper's own obligations are outside
+        #     the slice and get their own verdict.
+        self._enforce_premise_consistency(decl, smt, obl_start, contract_unsat)
+
         # 9. Verify where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:
@@ -4091,6 +4140,160 @@ class ContractVerifier:
                     wfn, parent_where_group=decl,
                     enclosing=(*enclosing, decl),
                 )
+
+    # -----------------------------------------------------------------
+    # Premise consistency (#1451)
+    # -----------------------------------------------------------------
+
+    def _premises_satisfiable(self, smt: SmtContext) -> bool | None:
+        """Whether the solver's BASE context has a model — one query.
+
+        ``True`` / ``False`` / ``None`` for sat / unsat / undecided.  The base
+        context is exactly the premise set: ``check_valid`` asserts a goal's
+        negation inside a ``push`` / ``pop`` pair, so nothing a discharge added
+        survives to be seen here.
+
+        ``unknown`` is NOT a contradiction.  A budget that ran out has decided
+        nothing, and demoting a whole function on it would turn a slow solver
+        into a wrong verdict — the same distinction the disclosure reasons draw
+        between "could not decide" and "decided against".
+
+        Runs under the screening budget rather than the query budget — see
+        :data:`_PREMISE_CHECK_TIMEOUT_MS` for the measurement behind that — and
+        restores the run's own budget afterwards, since the solver is shared
+        with every obligation still to be discharged.
+        """
+        smt.solver.set(
+            "timeout", min(_PREMISE_CHECK_TIMEOUT_MS, smt._timeout_ms),
+        )
+        try:
+            result = smt.solver.check()
+        finally:
+            smt.solver.set("timeout", smt._timeout_ms)
+        if result == z3.unsat:
+            return False
+        if result == z3.sat:
+            return True
+        return None
+
+    def _premise_site(self, decl: ast.FnDecl) -> ast.Node:
+        """Where to point the demotion.
+
+        The first non-trivial ``requires`` is what the author reads as the
+        precondition, and it is the half of layer 1 they can edit; a
+        contradiction that comes entirely from a refined parameter's own
+        predicate has no such clause, so the declaration itself is the site.
+        """
+        for contract in decl.contracts:
+            if isinstance(contract, ast.Requires) and not self._is_trivial(
+                contract,
+            ):
+                return contract
+        return decl.contracts[0] if decl.contracts else decl
+
+    def _demote_function_obligations(
+        self, obl_start: int, error_code: str,
+    ) -> None:
+        """Move this function's obligations out of every counted tier.
+
+        A ``verified`` recorded against contradictory premises is not a proof
+        — ``Not(goal)`` is unsatisfiable alongside them whatever the goal is —
+        so it becomes ``tier3_unguarded``, which the summary counts in no tier
+        and the documented partition surfaces as a warning.
+
+        A ``violated`` is left alone.  It is the one verdict a contradiction
+        cannot manufacture: an UNSAT context discharges everything, so a
+        refutation on record was reached against a consistent PREFIX of the
+        premises (a `requires`-clause walk runs before step 4 asserts them) and
+        is a real one.  Erasing it would trade a false proof for a lost error.
+        """
+        for obligation in self.obligations[obl_start:]:
+            if obligation.status == "violated":
+                continue
+            obligation.status = "tier3_unguarded"
+            obligation.error_code = error_code
+
+    def _enforce_premise_consistency(
+        self,
+        decl: ast.FnDecl,
+        smt: SmtContext,
+        obl_start: int,
+        contract_unsat: bool,
+    ) -> None:
+        """Refuse to certify a function whose premises contradict (#1451).
+
+        An UNSAT premise set discharges every obligation VACUOUSLY and the run
+        reports Tier 1 with no diagnostic: `requires(@Int.0 > 5 && @Int.0 < 3)`
+        proved `ensures(@Int.result == 42)` over a body returning `0`.  Nothing
+        downstream ever contradicts it, because at run time the precondition
+        guard traps before the body executes — which is exactly why the false
+        claim was invisible.
+
+        Two layers, because the two causes ask the reader for different things:
+
+        * layer 1 is the author's contract, and the answer is to weaken it;
+        * layer 2 is the verifier's own derived facts, and the answer is a bug
+          report.  ``vera/smt.py`` documents two producers it defends against
+          by hand — the unmodelled-base refined return, and #953's
+          path-guarded call facts — and the point of a general check is that
+          the next premise source does not have to be foreseen.
+
+        One query per function in the common case, two only when layer 1 is
+        satisfiable and the full set is not.
+        """
+        if contract_unsat:
+            self._warning(
+                self._premise_site(decl),
+                f"Precondition in '{decl.name}' is unsatisfiable, so no call "
+                f"can reach the body and nothing in it was verified against a "
+                f"reachable state. Every obligation in this function is "
+                f"reported as unverified.",
+                rationale=(
+                    "A contradictory premise set entails every goal, so each "
+                    "obligation would discharge without the body having been "
+                    "checked at all. The declared parameter types, their "
+                    "refinement predicates and the precondition have no "
+                    "common model."
+                ),
+                fix=(
+                    "Weaken the precondition (or the parameter's refinement) "
+                    "until some argument satisfies it, or delete the function "
+                    "if no call can be intended."
+                ),
+                spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+                error_code="E538",
+                tier=3,
+            )
+            self._demote_function_obligations(obl_start, "E538")
+            return
+
+        if self._premises_satisfiable(smt) is not False:
+            return
+
+        self._warning(
+            self._premise_site(decl),
+            f"Internal: the verifier's own premises for '{decl.name}' are "
+            f"contradictory although its contract is satisfiable, so every "
+            f"obligation in it would discharge vacuously. Every obligation in "
+            f"this function is reported as unverified. Please report this "
+            f"program.",
+            rationale=(
+                "The contract alone has a model, so the contradiction was "
+                "introduced by a fact the verifier derived — an assumed "
+                "callee postcondition, a refined return, or another "
+                "declared-type fact. A proof resting on it would be vacuous, "
+                "and the failure is the compiler's rather than the program's."
+            ),
+            fix=(
+                "No source change is expected. Report the program on the "
+                "issue tracker; the derived premise, not the contract, is "
+                "what has to change."
+            ),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E539",
+            tier=3,
+        )
+        self._demote_function_obligations(obl_start, "E539")
 
     # -----------------------------------------------------------------
     # Decreases verification (termination)
