@@ -518,6 +518,11 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # #1430: monotone counter for generated quantifier binder names, so an
+        # element goal stated twice in one query — or at two depths of a
+        # nested carrier — prints a distinguishable binder in a
+        # counterexample.
+        self._quantifier_seq = 0
         # Construction-position obligations already recorded, keyed by
         # (function, expression span, site).  Two entry points reach the
         # typed descent for the same node — an array literal that carries
@@ -3537,6 +3542,17 @@ class ContractVerifier:
                 pred = self._translate_refined_predicate(smt, param_ty, var)
                 if pred is not None:
                     refined_param_assumptions.append(pred)
+            # #1430: and the refinements written INSIDE the parameter's type
+            # — an `Array<PosInt>` element, an ADT payload — under the same
+            # R1 licence.  Every caller is obligated to discharge them at the
+            # argument position (#1410's `refine_bind`), so assuming them here
+            # closes the same modular loop the parameter's own refinement
+            # uses.  Facts are assumed even when the walk reports itself
+            # INCOMPLETE: each fact returned is true of the value, and a
+            # partial set is a weaker assumption, never an over-assumption.
+            nested_facts, _ = self._nested_refinement_facts(
+                smt, param_ty, var)
+            refined_param_assumptions.extend(nested_facts)
 
         # 2. Declare result variable
         ret_type = self._resolve_type(decl.return_type)
@@ -8271,6 +8287,10 @@ class ContractVerifier:
         base = self._strip_refinements(ty)
         if not self._contains_refinement(base, frozenset()):
             return [], True
+        if (isinstance(base, AdtType) and base.name == "Array"
+                and len(base.type_args) == 1):
+            return self._array_element_facts(
+                smt, base.type_args[0], term, _seen)
         if not isinstance(base, AdtType) or self._type_key(base) in _seen:
             # A recursive ADT, or a carrier with no constructor decomposition
             # (`Array` / `Map` / `Set`): the refinement is real and this walk
@@ -8315,6 +8335,78 @@ class ContractVerifier:
                 )
                 complete = complete and sub_complete
         return facts, complete
+
+    def _array_element_facts(
+        self,
+        smt: SmtContext,
+        element_ty: Type,
+        term: z3.ExprRef,
+        _seen: frozenset[str],
+    ) -> tuple[list[z3.ExprRef], bool]:
+        """``(facts, complete)`` for an ``Array<T>`` whose element type carries
+        a refinement (#1430, stage 1).
+
+        The element goal is the bounded quantifier
+
+            forall i. 0 <= i < length(a)  =>  P(index(a, i))
+
+        stated over the SAME uninterpreted ``index_`` and ``length_`` observers
+        that array literals and ``arr[i]`` already use, so it is dischargeable
+        rather than decorative.  Measured against that encoding, it proves from
+        a parameter's assumed element fact and from a literal's per-index
+        axioms (where ``length == N`` makes the range finite), refutes a
+        literal with an offending element, and refutes when nothing is known —
+        which is the behaviour a decline could never produce.
+
+        The bound is load-bearing in both directions.  Without ``i <
+        length(a)`` the goal quantifies over indices past the end, where
+        ``index`` is unconstrained, and nothing is ever provable; without ``0
+        <= i`` the same holds below it.  With it, the empty array satisfies the
+        goal vacuously, which is correct.
+
+        *complete* is False only when the element position itself cannot be
+        stated — an unmodelled predicate, a term with no array sort (the Int
+        fallback paths reach here), or a deeper carrier the walk cannot state.
+        """
+        observers = smt.array_observers(term)
+        if observers is None:
+            return [], False
+        index_fn, length_fn, _element_sort = observers
+        idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
+        element_term = index_fn(term, idx)
+        in_range = z3.And(idx >= 0, idx < length_fn(term))
+
+        body: list[z3.ExprRef] = []
+        complete = True
+        if isinstance(element_ty, RefinedType):
+            pred = self._translate_refined_predicate(
+                smt, element_ty, element_term)
+            if pred is None:
+                complete = False
+            else:
+                body.append(pred)
+        # A refinement DEEPER than the element itself — `Array<Option<PosInt>>`
+        # — is stated about the element term under the same binder, so one
+        # quantifier covers every depth rather than one per level.
+        sub_facts, sub_complete = self._nested_refinement_facts(
+            smt, element_ty, element_term, _seen)
+        body.extend(sub_facts)
+        complete = complete and sub_complete
+        if not body:
+            return [], complete
+        inner = z3.And(*body) if len(body) > 1 else body[0]
+        return [z3.ForAll([idx], z3.Implies(in_range, inner))], complete
+
+    def _fresh_quantifier_name(self, stem: str) -> str:
+        """A binder name unique within this run.
+
+        Two element goals in one query must not share a bound variable name:
+        Z3 would still treat them as distinct binders, but a shared name makes
+        a counterexample unreadable, and nested quantifiers over
+        `Array<Array<T>>` would print the same symbol at both depths.
+        """
+        self._quantifier_seq += 1
+        return f"{stem}${self._quantifier_seq}"
 
     def _check_nested_refinement_obligation(
         self,
@@ -8917,6 +9009,17 @@ class ContractVerifier:
                 pred = self._translate_refined_predicate(smt, param_ty, var)
                 if pred is not None:
                     assumptions.append(pred)
+            # #1430: and the refinements written INSIDE the parameter's type
+            # — an `Array<PosInt>` element, an ADT payload — under the same
+            # R1 licence.  Every caller is obligated to discharge them at the
+            # argument position (#1410's `refine_bind`), so assuming them here
+            # closes the same modular loop the parameter's own refinement
+            # uses.  Facts are assumed even when the walk reports itself
+            # INCOMPLETE: each fact returned is true of the value, and a
+            # partial set is a weaker assumption, never an over-assumption.
+            nested_facts, _ = self._nested_refinement_facts(
+                smt, param_ty, var)
+            assumptions.extend(nested_facts)
         # Assume translatable preconditions too — a `requires(...)` may imply
         # the return predicate.
         for contract in decl.contracts:

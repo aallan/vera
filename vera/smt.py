@@ -550,6 +550,10 @@ class SmtContext:
         self._recorded_type_hook: Any = None
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
+        # #1430: length symbols whose `>= 0` axiom is asserted in the CURRENT
+        # base context.  Not derivable from `_length_fns` membership, which
+        # `reset()` re-seeds rather than clears.
+        self._length_axioms_asserted: set[str] = set()
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
         self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
@@ -634,6 +638,37 @@ class SmtContext:
                 key, array_sort, z3.IntSort(), element_sort,
             )
         return self._index_fns[key]
+
+    def array_observers(
+        self, term: z3.ExprRef,
+    ) -> tuple[z3.FuncDeclRef, z3.FuncDeclRef, z3.SortRef] | None:
+        """``(index_fn, length_fn, element_sort)`` for an Array-sorted *term*.
+
+        The observers this module already uses for array literals and for
+        ``arr[i]``, handed out so the verifier can state a UNIVERSAL fact about
+        a carrier's elements (#1430).  Returning the same ``index_`` symbol
+        that :py:meth:`_translate_index_expr` produces is the whole point: a
+        fact stated over it is one an ordinary indexing read can discharge,
+        not a symbol that only literals ever touch.
+
+        None when *term* is not in an ``Array_<elt>`` sort — the fallback
+        paths that model an array as a plain Int reach here too, and there is
+        nothing to quantify over in one.
+        """
+        try:
+            sort = term.sort()
+        except (AttributeError, z3.Z3Exception):  # pragma: no cover
+            return None
+        if not str(sort).startswith("Array_"):
+            return None
+        element_sort = self._get_element_sort_for_array(sort)
+        if element_sort is None:
+            return None
+        return (
+            self._get_index_fn(sort, element_sort),
+            self._get_length_fn(sort),
+            element_sort,
+        )
 
     def declare_array_var(
         self, name: str, element_sort: z3.SortRef,
@@ -991,14 +1026,39 @@ class SmtContext:
         return sort
 
     def _get_length_fn(self, sort: z3.SortRef) -> z3.FuncDeclRef:
-        """Get or create a length function for the given domain sort."""
+        """Get or create a length function for the given domain sort.
+
+        The symbol carries its own invariant: ``forall a. length(a) >= 0`` is
+        asserted here rather than at the ``array_length()`` builtin, which is
+        the only place it used to be added (#1430).  A function that never
+        calls ``array_length`` therefore left the symbol unconstrained, and a
+        model was free to give it a negative value — which makes a bounded
+        element quantifier ``0 <= i < length(a)`` VACUOUS in that model.  As a
+        goal that produces no false proof (validity also quantifies over the
+        models with a positive length), but as an assumed source fact it
+        silently supplies nothing, and a green cell cannot be told apart from
+        a real one.  A length is never negative; the symbol should say so
+        wherever it is minted.
+
+        Asserted through ``_length_axioms_asserted`` rather than keyed on the
+        cache's own membership, because ``reset()`` RE-SEEDS ``_length_fns``
+        with its ``"Int"`` entry instead of clearing it: a mint-time-only
+        assertion would be skipped for that entry after every reset, and warm
+        and cold runs would disagree.  The tracking set is cleared on reset, so
+        the first request after one re-asserts.
+        """
         key = str(sort)
         if key not in self._length_fns:  # pragma: no cover
             fn_name = f"length_{key}"
             self._length_fns[key] = z3.Function(
                 fn_name, sort, z3.IntSort(),
             )
-        return self._length_fns[key]
+        fn = self._length_fns[key]
+        if key not in self._length_axioms_asserted:
+            self._length_axioms_asserted.add(key)
+            some = z3.Const(f"_len_arg_{len(self._length_axioms_asserted)}", sort)
+            self.solver.add(z3.ForAll([some], fn(some) >= 0))
+        return fn
 
     def get_rank_fn(self, sort: z3.SortRef) -> z3.FuncDeclRef | None:
         """Get or create a rank function for structural ordering on an ADT.
@@ -3542,6 +3602,9 @@ class SmtContext:
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }
         self._index_fns.clear()
+        # #1430: cleared, so the first `_get_length_fn` after a reset
+        # re-asserts the non-negativity axiom the base context just lost.
+        self._length_axioms_asserted.clear()
         self._array_element_sorts.clear()
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)

@@ -677,26 +677,36 @@ _ARRAY_UNESTABLISHED = _ARRAY_ESTABLISHED.replace(
 
 
 @pytest.mark.parametrize(
-    "source", [_ARRAY_ESTABLISHED, _ARRAY_UNESTABLISHED],
+    "source,expected",
+    [(_ARRAY_ESTABLISHED, [("verified", "")]),
+     (_ARRAY_UNESTABLISHED, [("violated", "E505")])],
     ids=["source-carries-it", "source-does-not"])
-def test_array_element_refinement_always_discloses_unguarded(
-    source: str,
+def test_array_element_refinement_is_discharged_not_disclosed(
+    source: str, expected: list[tuple[str, str]],
 ) -> None:
-    """An array ELEMENT predicate needs a quantifier over indices, so this run
-    can neither state nor discharge it — and both spellings say so.
+    """An array ELEMENT predicate is now STATED and answered (#1430 stage 1).
 
-    The two differ only in whether the producer's declared type carries the
-    same refinement, and that is deliberately NOT a difference here.  An
-    earlier draft answered `verified` for the matching one on a type
-    comparison alone; PR #1420's review (F4) showed that certifies a declared
-    type nothing obligates, so the comparison is gone and a `verified` only
-    ever comes from a discharged obligation.  Where nothing can be discharged,
-    both disclose — and unguarded, because codegen decomposes tuples at a
-    boundary and nothing else, so `tier3` would promise a check that does not
-    exist.
+    Both spellings disclosed `tier3_unguarded`/E506 when this cell was
+    written, because the goal — "every element satisfies P" — needs a
+    quantifier over indices and nothing stated one.  #1430 states it as
+    `forall i. 0 <= i < length(a) => P(index(a, i))` over the same
+    uninterpreted `index_` / `length_` observers array literals and `arr[i]`
+    already use, so the two spellings now legitimately DIFFER:
+
+    * the producer whose declared return carries the refinement discharges it
+      from the element fact its own return position was obligated to
+      establish, and reports `verified`;
+    * the producer typed `Array<Int>` establishes nothing, so the goal is
+      REFUTED — `violated`/E505 with a counterexample, not a shrug.
+
+    PR #1420's F4 ruling is preserved rather than weakened, and that is the
+    point of keeping this cell: the `verified` comes from a discharged
+    obligation — a solver query over a stated goal — and never from comparing
+    one declared type against another.  The difference between the two
+    spellings is now EARNED, where the draft F4 rejected asserted it.
     """
     binds = _refine_binds(source, "f")
-    assert _statuses(binds) == [("tier3_unguarded", "E506")], _statuses(binds)
+    assert _statuses(binds) == expected, _statuses(binds)
 
 
 def test_unguarded_disclosure_names_the_right_boundary(tmp_path: Path) -> None:
