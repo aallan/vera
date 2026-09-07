@@ -178,8 +178,17 @@ def test_the_guard_is_in_the_module_not_only_in_the_run(
     """
     wat = _wat(tmp_path, _CONSTRUCTION_SHAPES[site],
                name=f"{site.replace(' ', '_')}_wat.vera")
-    assert "call $vera.contract_fail" in wat, (
-        f"no §2.6.5 guard is emitted for a refined {site}"
+    # Sliced to `f`'s own body, not searched module-wide: every shape also
+    # emits the `let`'s declared-type boundary records, and the `Map` one
+    # carries #1410's nested-refinement obligation, so a `contract_fail`
+    # planted anywhere would satisfy a whole-module search — which is the
+    # same attribution failure the docstring says this cell exists to avoid
+    # (CR PR-review).
+    _head, _sep, rest = wat.partition("(func $f ")
+    assert rest, f"no `f` in the emitted module:\n{wat[:400]}"
+    body = rest.split("\n  )")[0]
+    assert "call $vera.contract_fail" in body, (
+        f"no §2.6.5 guard is emitted in `f` for a refined {site}:\n{body}"
     )
 
 
@@ -372,3 +381,193 @@ class TestTheStateWriteBoundaryChecksItsPredicate:
             f"the module guards it: {binds}"
         )
         _assert_partition(envelope)
+
+
+_R1412_STATE_INIT = _PRELUDE + """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Pos>](@Pos = array_length(string_lines("a")) - 5) {
+    get(@Unit) -> { resume(1) },
+    put(@Pos) -> { resume(()) }
+  } in {
+    2
+  }
+}
+"""
+
+_R1412_GENERIC_FIELD = _PRELUDE + """\
+private data Box<T> {
+  MkBox(T)
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Box<Pos> = MkBox(@Int.0);
+  1
+}
+"""
+
+_R1412_NESTED_TUPLE = _PRELUDE + """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Tuple<Tuple<Pos, Int>, Int> = Tuple(Tuple(@Int.0, 1), 2);
+  1
+}
+"""
+
+
+class TestTheReviewFoundThreeMoreDesyncs:
+    """Three sites where the two components disagreed (R-1412 F1-F3).
+
+    Each is the same defect in a different direction, and each was measured
+    through the real pipeline rather than reasoned about:
+
+    * **F1** — the `handle` init and a clause's `with @T = …` override are
+      guarded by codegen, which keys all three `State` writes on one site
+      string, while the verifier recorded the first and third under names of
+      their own that are not in the table.  Both derived `False` and
+      disclosed `tier3_unguarded` while the guard was emitted and trapping.
+      The three writes now share ONE key, so a drop-mutation moves all three
+      statuses with all three guards.
+    * **F2** — a generic constructor field instantiated at a refinement:
+      `field_type_exprs` keeps the type VARIABLE for `data Box<T>`, and the
+      emitter preferred that declared expression over the instantiation, so
+      it found no refinement to guard while the verifier obligated the
+      instantiated one.  Precedence is by GUARDABILITY now, not by source.
+    * **F3** — a nested literal carries no recorded target of its own, so
+      `Tuple(Tuple(@Int.0, 1), 2)` guarded the outer components and left the
+      inner ones unchecked.  The enclosing store hands its component type
+      down, which is the codegen twin of the threading the verifier does.
+    """
+
+    def test_f1_the_state_init_counts_the_guard_it_has(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _R1412_STATE_INIT, name="f1.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert ("tier3", "E506") in binds, binds
+        assert ("tier3_unguarded", "E506") not in binds, (
+            f"the init discloses an unguarded write while the module guards "
+            f"it and traps: {binds}"
+        )
+        _assert_partition(envelope)
+
+    def test_f1_and_the_init_really_traps(self, tmp_path: Path) -> None:
+        out = _run(tmp_path, _R1412_STATE_INIT, "--fn", "f", "--", "1",
+                   name="f1run.vera")
+        assert "Refinement violation in State cell init" in out, out
+
+    @pytest.mark.parametrize(
+        "shape,source,where",
+        [
+            ("f2-generic-field", _R1412_GENERIC_FIELD, "MkBox(…)"),
+            ("f3-nested-tuple", _R1412_NESTED_TUPLE, "Tuple(…)"),
+        ],
+    )
+    def test_the_value_that_escaped_is_refused(
+        self, tmp_path: Path, shape: str, source: str, where: str,
+    ) -> None:
+        """Store-only, and `-4` used to come back out of both."""
+        out = _run(tmp_path, source, "--fn", "f", "--", "-4",
+                   name=f"{shape}.vera")
+        assert "Refinement violation" in out and where in out, out
+        assert out.strip() != "1", out
+
+
+_F4_MAP_VIA_CALLEE = _PRELUDE + """\
+private fn ins(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{ map_insert(map_new(), "a", @Int.0) }
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = ins(@Int.0);
+  7
+}
+"""
+
+_F4_ARRAY_VIA_CALLEE = _PRELUDE + """\
+private fn mk(@Int -> @Array<Pos>)
+  requires(true) ensures(true) effects(pure)
+{ [@Int.0] }
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Pos> = mk(@Int.0);
+  7
+}
+"""
+
+
+class TestAContainerBuiltInReturnPositionIsObligated:
+    """A container CONSTRUCTED in return position (R-1412 F4).
+
+    The store's component type comes from the DECLARED RETURN type, which is
+    the only place it survives in this shape: the value being stored is a
+    PARAMETER rather than a literal, and `map_insert`'s own argument target
+    carries the erased base, because generic unification resolves the value
+    parameter against the `map_new()` receiver.
+
+    The array dual reached the record by accident.  An `ArrayLit` is visited
+    by the walk wherever it stands, so `mk(@Int -> @Array<Pos>) { [@Int.0] }`
+    was obligated and refuted; `ins(@Int -> @Map<String, Pos>)` entered no
+    construction descent at all — the descent is reached from a `let` or an
+    array literal, and this is neither — so it recorded nothing at its store
+    while codegen guarded it.  A guard counted by no obligation is the same
+    desync as an obligation counted by no guard, in the direction that reads
+    as a clean program: `verify` said `ok: true`.
+
+    The two legs are asserted together, because the array one is what says
+    where the component type had to come from.
+    """
+
+    def test_the_map_store_is_refuted_like_its_array_dual(
+        self, tmp_path: Path,
+    ) -> None:
+        map_obs, map_env = _obligations(
+            tmp_path, _F4_MAP_VIA_CALLEE, name="f4map.vera")
+        arr_obs, _ = _obligations(
+            tmp_path, _F4_ARRAY_VIA_CALLEE, name="f4arr.vera")
+
+        def value_records(obs: list[dict]) -> list[tuple]:
+            return [(o["status"], o.get("error_code")) for o in obs
+                    if o["kind"] == "refine_bind"
+                    and o["description"] == "@Int.0"]
+
+        assert ("violated", "E505") in value_records(arr_obs), arr_obs
+        assert ("violated", "E505") in value_records(map_obs), (
+            f"the `Map` value store built in return position carries no "
+            f"record, while its array dual is refuted: {map_obs}"
+        )
+        assert map_env["ok"] is False, (
+            "verify reports a clean program for a store it does not check"
+        )
+        _assert_partition(map_env)
+
+    def test_and_both_stores_refuse_the_value_at_run_time(
+        self, tmp_path: Path,
+    ) -> None:
+        """The guard was always there for the `Map` leg — that is the point.
+
+        The defect was the missing RECORD, so this cell pins that the guard
+        the record now counts is real, on both legs.
+        """
+        for source, name, where in (
+            (_F4_MAP_VIA_CALLEE, "f4maprun.vera", "map value"),
+            (_F4_ARRAY_VIA_CALLEE, "f4arrrun.vera", "array element"),
+        ):
+            out = _run(tmp_path, source, "--fn", "f", "--", "-4", name=name)
+            assert "Refinement violation" in out and where in out, out

@@ -42,9 +42,17 @@ public fn f(@Int -> @Int)
 """
 
 
-def _wat(*, semantic_types: dict | None = None) -> str:
+def _compiled(*, semantic_types: dict | None = None):
+    """Compile `_ADD` through the checker artefacts, as the CLI does.
+
+    `module_artifacts` is threaded too (CR PR-review): this helper exists to
+    exercise the real pipeline, and a compile that silently drops one of the
+    artefact channels is a different pipeline from the one the cells are
+    about.
+    """
     program = parse_to_ast(_ADD)
-    diags, arts = typecheck_with_artifacts(program, _ADD)
+    diags, arts = typecheck_with_artifacts(program, _ADD,
+                                           collect_module_artifacts=True)
     assert not [d for d in diags if d.severity == "error"], diags
     return compile(
         program,
@@ -52,7 +60,12 @@ def _wat(*, semantic_types: dict | None = None) -> str:
         expr_semantic_types=(arts.expr_semantic_types
                              if semantic_types is None else semantic_types),
         expr_target_types=arts.expr_target_types,
-    ).wat
+        module_artifacts=arts.module_artifacts,
+    )
+
+
+def _wat(*, semantic_types: dict | None = None) -> str:
+    return _compiled(semantic_types=semantic_types).wat
 
 
 def test_an_unnameable_width_is_guarded_as_int(
@@ -100,6 +113,33 @@ def test_the_classifier_itself_still_answers_none(
     _wat()
     assert answers, "the classifier was never consulted"
 
+    # And it still ANSWERS `None` when it cannot name a width, rather than
+    # guessing one.  Asserted on the classifier's own contract, because the
+    # answers captured above are the real ones — `Int` for a classifiable
+    # pair — and no program produces the unclassifiable case (CR PR-review).
+    monkeypatch.setattr(
+        OperatorsMixin, "_overflow_codegen_type", lambda self, expr: None)
+    from vera import ast
+
+    add = ast.BinaryExpr(
+        op=ast.BinOp.ADD,
+        left=ast.IntLit(value=1),
+        right=ast.IntLit(value=2),
+    )
+    assert original(_Probe(), add) is None, (
+        "the classifier named a width with no operand type to name it from, "
+        "which would put the guess where the verifier's mirror reads it"
+    )
+
+
+class _Probe(OperatorsMixin):
+    """The classifier's own `self`, with nothing else installed.
+
+    The two operand lookups it makes are patched out above, so the only
+    behaviour under test is what it does with two `None` answers.
+    """
+
+
 
 def test_the_table_less_fallback_still_names_a_width() -> None:
     """The control that explains why no program reaches the `None` path.
@@ -126,4 +166,49 @@ def test_the_module_still_loads_and_exports_its_entry(
         OperatorsMixin, "_overflow_arith_codegen_type",
         lambda self, expr: None,
     )
-    assert '(export "f"' in _wat()
+    # Instantiated, not merely read: WAT text saying `(export "f")` is not
+    # evidence that the binary loads or that the export resolves, and a
+    # malformed guard would show up here rather than in the text
+    # (CR PR-review).
+    from vera.codegen.api import execute
+
+    out = execute(_compiled(), fn_name="f", args=[3])
+    assert out.value == 4, out
+
+
+def test_the_verifier_fails_closed_on_the_same_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both legs, not just the emitter (R-1412 F5).
+
+    The emitter reading an unknown width as `Int` is half the fix: the
+    verifier gated its OBLIGATION on the same `is not None`, so a site the
+    emitter now guards would carry no record to count it — the desync one
+    component over from the one #1417 describes.
+
+    Patched at the classifier's seam for the reason the emitter cell gives:
+    no program reaches the `None` answer, so the only way to exercise the
+    branch is to hand it that answer.
+    """
+    from vera.verifier import ContractVerifier
+
+    monkeypatch.setattr(
+        ContractVerifier, "_overflow_arith_type",
+        lambda self, expr: None,
+    )
+    program = parse_to_ast(_ADD)
+    diags, arts = typecheck_with_artifacts(program, _ADD)
+    assert not [d for d in diags if d.severity == "error"], diags
+    from vera.verifier import verify
+
+    result = verify(
+        program, _ADD,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
+    kinds = [o.kind for o in result.obligations]
+    assert "int_overflow" in kinds, (
+        f"the verifier dropped the overflow obligation for operands it "
+        f"could not classify, so the guard the emitter now plants at that "
+        f"site is counted by nothing: {kinds}"
+    )

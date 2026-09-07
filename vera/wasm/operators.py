@@ -2231,10 +2231,11 @@ class OperatorsMixin:
         when the i64 reads as negative — so the guard traps on ``value < 0``
         (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
         @Nat -> @Int coercion sites the verifier obligates (return, call
-        argument, let).  The bare ``unreachable`` reuses the existing trap
-        taxonomy (a dedicated *widening* trap kind — modelled on the
-        ``kind="overflow"`` #808 added for arithmetic overflow — is a
-        follow-up); the guard never fires on a value the verifier proved
+        argument, let).  It calls ``$vera.widen_trap`` immediately before
+        the ``unreachable``, so the runtime classifies the trap as
+        ``kind="widen_guard"`` and names the ``requires(... <= i64.MAX)``
+        that discharges it (#1438, on the mechanism ``kind="overflow"``
+        got in #808); the guard never fires on a value the verifier proved
         ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
         """
         self._needs_widen_trap = True

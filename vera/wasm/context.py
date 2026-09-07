@@ -341,6 +341,11 @@ class WasmContext(
         # `$vera.widen_trap`, which fails to instantiate only on the
         # shape that reaches that scope — the #808 / #823 failure mode.
         self._needs_widen_trap: bool = False
+        # R-1412 F3: the component type an enclosing construction hands to
+        # the argument it is translating, for a NESTED literal whose own
+        # span carries no recorded target.  Saved and restored around each
+        # argument, so a sibling never sees another's.
+        self._pending_component_type: object | None = None
         # #773: structural-Eq helper functions this context generated, keyed by
         # the mangled `$eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A

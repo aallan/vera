@@ -2180,8 +2180,8 @@ class CallsHandlersMixin:
     def _emit_state_write_refine_guard(
         self,
         value: list[str],
-        te: object | None,
-        arg: object,
+        te: ast.TypeExpr | None,
+        arg: ast.Node,
         where: str,
         env: "WasmSlotEnv",
     ) -> list[str]:
@@ -2202,7 +2202,7 @@ class CallsHandlersMixin:
         *value* untouched for an unrefined cell, or one whose base the
         lowering cannot emit for.
         """
-        if not isinstance(te, ast.TypeExpr):
+        if te is None:
             return value
         if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value

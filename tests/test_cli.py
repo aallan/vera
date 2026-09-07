@@ -4594,7 +4594,10 @@ class TestNatIntWideningCliThreading820:
         assert result.returncode == 0, result.stderr
         body = self._wat_function(result.stdout, "ae")
         assert "i64.lt_s" in body, body
-        assert "call $vera.widen_trap" in body, body
+        # The exact target: a substring also matches a hypothetical
+        # `$vera.widen_trap_extra` (CR PR-review).
+        assert any(line.strip() == "call $vera.widen_trap"
+                   for line in body.splitlines()), body
 
     def test_compile_wat_no_widening_control_lacks_guard(self, tmp_path) -> None:
         # Control: an @Int-source array carries no `i64.lt_s` sign-bit guard in

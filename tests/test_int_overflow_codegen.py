@@ -606,8 +606,10 @@ class TestOverflowTrapKind808:
     ``kind="overflow"`` (via the ``vera.overflow_trap`` host import) rather than
     the generic ``"unreachable"``, so the runtime diagnostic carries the
     overflow Fix paragraph.  The neighbouring guards keep their own
-    classification: the ``@Nat``-underflow (#520) and the negative-i64 nat-bind
-    (#552) still classify ``"unreachable"``, while the ``@Nat``->``@Int`` widen
+    classification: the ``@Nat``-underflow (#520) still classifies
+    ``"unreachable"``, the negative-i64 nat-bind (#552) classifies
+    ``"nat_guard"`` — #754 gave it its own ``vera.nat_guard_trap`` signal —
+    while the ``@Nat``->``@Int`` widen
     guard (#813) classifies ``"widen_guard"`` — #1438 gave it its own
     ``vera.widen_trap`` signal.  None of the three is ``"overflow"``."""
 

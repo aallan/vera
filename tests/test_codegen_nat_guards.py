@@ -1055,6 +1055,27 @@ public fn f(@Unit -> @Option<Nat>)
             execute(result, fn_name="f", args=[])
         assert caught.value.kind == "nat_guard", caught.value.kind
 
+        # The control the file pairs with every trap case: a guard that lost
+        # its `_narrows_into_nat` gate and fired unconditionally would
+        # satisfy the assertions above just as well (CR PR-review).
+        ok_src = """
+public fn f(@Unit -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ Some(5) }
+"""
+        ok_program = parse_to_ast(ok_src)
+        ok_diags, ok_arts = typecheck_with_artifacts(ok_program, ok_src)
+        assert not [d for d in ok_diags if d.severity == "error"], ok_diags
+        execute(
+            compile(
+                ok_program,
+                source=ok_src,
+                expr_semantic_types=ok_arts.expr_semantic_types,
+                expr_target_types=ok_arts.expr_target_types,
+            ),
+            fn_name="f", args=[],
+        )
+
 
 class TestNatReturnRuntimeGuard758:
     """Codegen emits the `@Int -> @Nat` narrowing guard at the RETURN

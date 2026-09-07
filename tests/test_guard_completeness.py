@@ -450,8 +450,9 @@ class TestGenericInstantiatedFieldsAreGuarded757:
         """
         out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
                    name="w757.vera")
-        # The WIDEN guard, whose dedicated kind is still a follow-up, so its
-        # trap is the bare instruction rather than `_NAT_GUARD_TRAP`.
+        # The WIDEN guard, which names itself since #1438: its trap
+        # classifies as `widen_guard` and its message cites the
+        # `i64.MAX` bound, not the sign guard's `_NAT_GUARD_TRAP`.
         assert "i64.MAX" in out, (
             f"u64.MAX widened into a generic `@Int` field silently — the "
             f"reinterpreted -1 flowed on:\n{out}"
@@ -1410,13 +1411,16 @@ class TestConstructionPositionReachesNestedContainers:
                    name="p1d.vera")
         assert "Refinement violation in map value insert" in out, out
 
-    def test_a_nat_map_value_is_obligated_and_disclosed_unguarded(
+    def test_a_nat_map_value_is_obligated_and_guarded(
         self, tmp_path: Path,
     ) -> None:
-        """`Map<String, Nat>`: nothing guards the insert, so E503/E504.
+        """`Map<String, Nat>`: the insert is obligated AND checked.
 
-        The run differential is the store-only one — `-4` is inserted and
-        `f` returns `1` — so this obligation must NOT claim `guarded`.
+        When this cell was written nothing guarded the insert, so the
+        record disclosed E504 and the store-only differential — `-4`
+        inserted, `f` returning `1` — was what proved the disclosure
+        honest.  #1440 gave the insert its guard, so the same differential
+        now shows the trap.
         """
         obs, envelope = _obligations(
             tmp_path, _P1_MAP_NAT_VALUE, name="p1e.vera")
@@ -1901,16 +1905,18 @@ class TestArrayElementNarrowingIsObligated:
             f"guarded flag is wrong:\n{out}"
         )
 
-    def test_the_element_store_itself_plants_no_guard(
+    def test_the_element_store_itself_guards(
         self, tmp_path: Path,
     ) -> None:
         """Store-only: the differential that separates store from read.
 
         A fixture that reads the element back cannot answer where the guard
         lives, because the read-side bind guard (#765) answers first.  This
-        one never reads: `-4` goes into an `@Array<Nat>` and `f` returns
-        `1`.  That is why the construction obligation is recorded UNguarded
-        — claiming otherwise would assert a check that is not in the WAT.
+        one never reads, which is what makes it the proof that #1440
+        landed: when it was written `-4` went into an `@Array<Nat>` and `f`
+        returned `1`, and the obligation was recorded UNguarded because
+        that is what the module did.  The store has its own guard now, so
+        the same differential shows the trap.
         """
         out = _run(tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, "--fn", "f", "--",
                    "-4", name="p1g.vera")
@@ -2273,15 +2279,20 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
             assert proc.returncode == 0, proc.stderr[-400:]
             body, _, rest = proc.stdout.partition("(func $f ")
             assert rest, "no `f` in the emitted module"
-            return rest.split("\n  )")[0].count("unreachable")
+            # The WIDENING signal specifically (#1438), not every trap: the
+            # predicate guard #1426 adds shares the `unreachable`, so a
+            # shared-token count cannot see a missing widening guard
+            # (CR PR-review).
+            return rest.split("\n  )")[0].count("$vera.widen_trap")
 
         plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
         refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
         assert plain > 0, "the control emits no guard, so it controls nothing"
-        assert refined >= plain, (
-            f"the refined element emits {refined} traps and the plain one "
-            f"{plain}; a refined element must keep the widening guard a "
-            f"plain one gets, which is what its record counts"
+        assert refined == plain, (
+            f"the refined element emits {refined} widening signals and the "
+            f"plain one {plain}; a refined element must keep exactly the "
+            f"widening guard a plain one gets, which is what its record "
+            f"counts — an extra predicate guard cannot stand in for it"
         )
 
 

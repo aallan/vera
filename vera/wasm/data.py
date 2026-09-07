@@ -195,9 +195,22 @@ class DataMixin:
         """
         if site not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value
-        if declared_te is not None:
-            te: ast.TypeExpr | None = declared_te
-        else:
+        # Precedence by GUARDABILITY, not by source.  The declared field
+        # expression is preferred where it names a refinement this lowering
+        # can emit for, because it is the syntax the guard is written
+        # against — but for `data Box<T> { MkBox(T) }` it is the type
+        # VARIABLE, which names no refinement at all.  Taking it anyway left
+        # a `Box<Pos>` construction obligated by the verifier (which sees the
+        # instantiation) and unguarded by codegen (which saw only `T`) — a
+        # desync in the direction this PR exists to remove, and measured:
+        # `let @Box<Pos> = MkBox(@Int.0)` with `-4` returned normally while
+        # its `refine_bind` was refuted (CR PR-review).
+        te: ast.TypeExpr | None = None
+        if (declared_te is not None
+                and self._refined_component_wasm_type(
+                    declared_te, self._alias_env) is not None):
+            te = declared_te
+        if te is None:
             resolved = (component_ty if component_ty is not None
                         else self._target_codegen_type_refined(arg))
             te = self.refined_type_expr(resolved)
@@ -344,7 +357,17 @@ class DataMixin:
             # alone cannot decide this.
             if self._ctor_field_targets_byte(expr, i):
                 self._mark_byte_write_value(arg, "Byte")
-            arg_instrs = self.translate_expr(arg, env)
+            # R-1412 F3: hand this argument's own component type down, so a
+            # nested literal — which the checker records no target for — can
+            # guard its components from the enclosing store's knowledge.
+            saved_pending = self._pending_component_type
+            self._pending_component_type = self._adt_arg_type(
+                self._target_codegen_type_full(expr)
+                if expr.name == "Tuple" else None, i)
+            try:
+                arg_instrs = self.translate_expr(arg, env)
+            finally:
+                self._pending_component_type = saved_pending
             if arg_instrs is None:
                 return None
             arg_wt = self._infer_expr_wasm_type(arg)
@@ -451,6 +474,15 @@ class DataMixin:
             if expr.name == "Tuple"
             else None
         )
+        # R-1412 F3: a NESTED literal carries no recorded target of its own —
+        # the checker records one for the outer construction and nothing for
+        # the inner — so `Tuple(Tuple(@Int.0, 1), 2)` guarded the outer
+        # components and left the inner ones unchecked, while the verifier's
+        # descent obligated them.  The enclosing store hands its component
+        # type down through this channel, which is the codegen twin of the
+        # threading the verifier does.
+        if tuple_target is None and expr.name == "Tuple":
+            tuple_target = self._pending_component_type
 
         # Store each field at its computed offset
         for i, (fo, wt) in enumerate(field_offsets):

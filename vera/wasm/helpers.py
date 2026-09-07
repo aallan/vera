@@ -212,7 +212,7 @@ class StateClauseEntry:
     decl_effect_op_cells: dict[str, CellNames]
     decl_state_clause_ops: dict[str, "StateClauseEntry"]
     decl_addressable_from: int
-    family_type_expr: object | None = None
+    family_type_expr: ast.TypeExpr | None = None
 
 
 # =====================================================================

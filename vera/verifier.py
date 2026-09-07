@@ -149,13 +149,23 @@ _NESTED_SITE_GUARD_NOTE = (
 #: Measured per site by a STORE-ONLY differential (build the container, never
 #: read it back), because a fixture that reads the component out is answered
 #: by the read-side bind guard (#765) and cannot tell the two apart.  A tuple
-#: component traps at construction (#1416); an array element and a `Map`
-#: value do not — `let @Array<Nat> = [@Int.0]` with `-4` stores and returns
-#: normally, and the trap only arrives if something later reads the element
-#: back as a `@Nat`.  Claiming `guarded` here would assert a runtime check at
-#: a site that has none, which is the false guarantee this PR exists to
-#: remove; the honest answer is E504 disclosure.
-_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({"tuple component"})
+#: component traps at construction (#1416), the constructor field since
+#: #747/#757, and the array element and `Map` value since #1440 — the
+#: store-only differential traps for each.  A site left out of this set
+#: while its store guards under-counts the runtime checks and tells a
+#: reader to add a bound they already have; a site put IN it while its
+#: store does not guard asserts a check that is not there.  Both are the
+#: same desync, so the set is re-measured whenever a store gains a guard.
+_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({
+    "constructor field",
+    "tuple component",
+    # #1440 gave these two their sign guard, so the roster has to say
+    # so: leaving them out recorded `tier3_unguarded` for a store the
+    # module checks, which under-counts the runtime checks and tells a
+    # reader to add a bound they already have (CR PR-review).
+    "array element",
+    "map value",
+})
 
 
 #: The widening dual, on the same evidence (#820's enabler guards the store
@@ -188,6 +198,21 @@ _INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
 #: MEASURED, not remembered: `test_nat_arg_guard_parity` derives each builtin's
 #: guard from the emitted module AND from running a negative through it, and
 #: fails if this set disagrees.
+#: The ONE key the three `State` writes ask the guard table with — the
+#: `handle` init, `put`'s argument, and a clause's `with @T = …` override
+#: (#1439, R-1412 F1).  Codegen keys all three on this string; the verifier
+#: recorded the first and third under names of their own, which are not in
+#: the table, so both derived False and disclosed `tier3_unguarded` while
+#: the guard was emitted and trapping.
+#:
+#: Only the GUARDEDNESS question is unified.  Each write keeps its own site
+#: name in the diagnostic, because that names the position a reader has to
+#: go and look at — "handler state init" tells them which of the three to
+#: fix, and "State write boundary" would not.  What must not differ between
+#: them is the answer about codegen, so a drop-mutation on the table entry
+#: moves all three statuses with all three guards.
+_STATE_WRITE_SITE = "State write boundary"
+
 _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 
 
@@ -4110,6 +4135,29 @@ class ContractVerifier:
                 decl, decl.body, ret_type, smt, slot_env, list(assumptions),
                 site="return type",
             )
+            # R-1412 F4: a container CONSTRUCTED in return position takes its
+            # component types from the DECLARED RETURN type, which is the
+            # only place they survive here — the value argument is a
+            # parameter, not a literal, and `map_insert`'s own argument
+            # target carries the erased base.  The array dual reached this
+            # by accident: an `ArrayLit` is visited by the walk wherever it
+            # stands, so `mk(@Int -> @Array<Pos>) { [@Int.0] }` was
+            # obligated while `ins(@Int -> @Map<String, Pos>)` recorded
+            # nothing at its store, and the store was guarded anyway — a
+            # guard counted by no obligation.  Entered with the return type
+            # for the same reason the `let` arm is entered with its declared
+            # type.
+            # CONTAINER descent only.  The return position's own scalar
+            # obligations — the refined predicate, the `@Nat` narrowing, the
+            # `@Nat` -> `@Int` widening — are already raised by the return
+            # legs above, so entering the full component descent here
+            # recorded each of them a second time (a duplicate
+            # `nat_to_int_coerce` at one span, measured).  What is missing at
+            # this position is only the descent INTO a container built here.
+            self._descend_construction_container(
+                decl, decl.body, ret_type, smt, slot_env, list(assumptions),
+                site="return type",
+            )
 
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
@@ -4446,6 +4494,23 @@ class ContractVerifier:
         itself, so memoising it would say "already obligated" about a node
         whose components are obligated one level down.
         """
+        # A BLOCK stands where its tail expression does: a function body is
+        # always one, so a container constructed in return position reaches
+        # the descent wrapped (R-1412 F4).  Descending here rather than at
+        # the call sites keeps the unwrap in the one place that knows what a
+        # container position means.
+        if isinstance(expr, ast.Block) and expr.expr is not None:
+            # Container descent only, like this method's own contract: the
+            # tail's SCALAR obligations belong to whatever position the
+            # block stands in — a return leg, a `let` arm — and running them
+            # again here recorded each twice at one span (measured: a
+            # duplicate `nat_to_int_coerce`, one keyed on the block and one
+            # on its tail).
+            self._descend_construction_container(
+                decl, expr.expr, expected, smt, slot_env, assumptions,
+                site=site,
+            )
+            return
         base = expected.base if isinstance(expected, RefinedType) else expected
         if not isinstance(base, AdtType) or not base.type_args:
             return
@@ -5284,7 +5349,14 @@ class ContractVerifier:
                 # classifies on the operands' COMMON (coerced) type — the width
                 # the i64/u64 op runs at — so a literal-left @Int add and an
                 # @Int add narrowed into a @Nat slot are both i64 (#798).
-                ovf_type = self._overflow_arith_type(expr)
+                # #1417: the verifier fails CLOSED with the emitter.  An
+                # unclassified operand pair skipped the OBLIGATION here just
+                # as it skipped the guard in codegen, so a site the emitter
+                # now guards would carry no record to count it — the same
+                # desync one component over.  An unknown width reads as
+                # `Int`, which is the wider signed interpretation and the
+                # safe reading of the pair (R-1412 F5).
+                ovf_type = self._overflow_arith_fail_closed(expr)
                 if ovf_type is not None and not (
                     expr.op == ast.BinOp.SUB and ovf_type == "Nat"
                 ):
@@ -6080,10 +6152,6 @@ class ContractVerifier:
                             decl, arg, None, smt, slot_env, assumptions,
                             site=op_site,
                             nat_guarded=op_guarded, widen_guarded=op_guarded,
-                            # #1268: only the `throw` payload boundary lowers
-                            # a refinement predicate.  The State write
-                            # boundaries emit sign guards alone, so their
-                            # refined arm stays honestly unguarded.
                             # #1268 for the `throw` payload, #1439 for the
                             # `State` writes — both read from the shared
                             # site table, so this leg and the qualified one
@@ -6932,6 +7000,8 @@ class ContractVerifier:
                     decl, expr.state.init_expr, state_ty, smt, slot_env,
                     assumptions, site="handler state init",
                     nat_guarded=True, widen_guarded=True,
+                    refined_guarded=self._refined_bind_site_guarded(
+                        _STATE_WRITE_SITE),
                 )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.state.init_expr, smt, slot_env, assumptions,
@@ -6997,6 +7067,8 @@ class ContractVerifier:
                         decl, clause.state_update[1], upd_ty, smt,
                         SlotEnv(), [], site="handler state update",
                         nat_guarded=True, widen_guarded=True,
+                        refined_guarded=self._refined_bind_site_guarded(
+                            _STATE_WRITE_SITE),
                     )
                     self._walk_for_nat_binding_obligations(
                         decl, clause.state_update[1], smt, SlotEnv(), [],
@@ -7328,6 +7400,37 @@ class ContractVerifier:
             return "Int"
         return None
 
+    def _overflow_arith_fail_closed(
+        self, expr: ast.BinaryExpr,
+    ) -> str | None:
+        """:py:meth:`_overflow_arith_type`, defaulting an UNKNOWN width to
+        ``Int`` but leaving a non-integer operation alone (#1417, R-1412 F5).
+
+        The plain classifier answers ``None`` for two different situations
+        and the fail-closed default is right for only one of them.  An
+        operand whose type the table cannot supply is the case #1417 is
+        about: the width is unknown, the emitter guards it as ``Int``, and
+        an obligation has to exist to count that guard.  An operand that is
+        a `@Float64` — or a `String`, or anything else that does not wrap —
+        is not integer arithmetic at all, and defaulting it obligates a
+        site no guard is emitted for.  Measured: without this split,
+        `@Float64.0 + 1.5` acquired an `int_overflow` record and the
+        corpus's Tier-3 count went from 130 to 232.
+
+        So the default applies only when neither operand is POSITIVELY a
+        non-wrapping type — an unresolved operand keeps the fail-closed
+        reading, a resolved non-integer one is skipped.
+        """
+        known = self._overflow_arith_type(expr)
+        if known is not None:
+            return known
+        for side in (expr.left, expr.right):
+            ty = self._resolved_type_of(side)
+            if ty is not None and not (
+                    self._is_int_type(ty) or self._is_nat_type(ty)):
+                return None
+        return "Int"
+
     def _overflow_arith_type(self, expr: ast.BinaryExpr) -> str | None:
         """The signed/unsigned width of the ``+``/``-``/``*`` in *expr* — the
         type the i64 / u64 machine op is performed at, i.e. the operands' common
@@ -7375,9 +7478,12 @@ class ContractVerifier:
         ``let`` that rebound a stale outer slot), also falls to Tier 3 — its
         value is unknown, so neither a Tier-1 discharge nor a false E528.
         """
-        ovf_type = self._overflow_arith_type(expr)
-        if ovf_type is None:  # pragma: no cover — guarded by the caller
-            return
+        # #1417 / R-1412 F5: fails CLOSED, like its caller and like the
+        # emitter.  Returning here on an unclassified pair dropped the
+        # obligation for exactly the site codegen now guards, which is the
+        # desync the fail-closed default exists to remove.  An unknown width
+        # reads as `Int`, the wider signed interpretation of the pair.
+        ovf_type = self._overflow_arith_fail_closed(expr) or "Int"
         result = smt.translate_expr(expr, slot_env)
         if (result is None
                 or result.sort() != z3.IntSort()
