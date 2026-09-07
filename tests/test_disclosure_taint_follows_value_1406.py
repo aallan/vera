@@ -164,6 +164,39 @@ private fn wrap(@Float64 -> @Option<PosInt>)
 }
 """
 
+
+def _rebuilder(name: str, inner: str) -> str:
+    """A forwarder that takes the value APART and puts it back together.
+
+    `Some(@PosInt.0)` in the arm is a CONSTRUCTION whose component is the
+    disclosed payload — the projected-from case one step on, and the shape
+    the [#1431](https://github.com/aallan/vera/pull/1431) reviewer raised
+    against this branch.
+
+    THE `None` ARM REBUILDS AS `Some(1)`, and that is not cosmetic.  Mixing a
+    literal `None` arm with a `Some(<expr>)` arm hits the sort mismatch
+    [#1421](https://github.com/aallan/vera/issues/1421) fixes: on this
+    revision the program dies with an E699 before a single obligation is
+    emitted, so the literal spelling would measure nothing here.  With both
+    arms constructing, the same shape translates on both revisions and the
+    differential is real.  The literal `None`-arm spelling is measured on the
+    composed tree instead — see
+    `test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed`.
+    """
+    return f"""
+private fn {name}(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match {inner}(@Float64.0) {{
+    Some(@PosInt) -> Some(@PosInt.0),
+    None -> Some(1)
+  }}
+}}
+"""
+
+
 #: caller spelling → the declarations after `mk`.  Every one of them reaches
 #: the same `match` over the same value; only the route differs.
 _SPELLINGS: dict[str, str] = {
@@ -229,6 +262,19 @@ private fn wrap(@Float64 -> @Option<PosInt>)
   }
 }
 """,
+    # CONSTRUCTED-from, not merely projected-from: the value is taken apart
+    # and put back together before the consumer ever sees it.  Nothing in the
+    # rule names constructions — the walk asks by OCCURRENCE, so the disclosed
+    # term inside the constructor's argument is still there to be found.
+    "rebuild_ctor": _rebuilder("rebuild", "mk")
+                    + _F + "{\n  match rebuild(@Float64.0) {\n"
+                    + _ARMS + "\n  }\n}\n",
+    # Rebuilt twice: taking a value apart and reassembling it must not launder
+    # the disclosure at any depth.
+    "rebuild_ctor2": _rebuilder("rebuild", "mk")
+                     + _rebuilder("rebuild_outer", "rebuild")
+                     + _F + "{\n  match rebuild_outer(@Float64.0) {\n"
+                     + _ARMS + "\n  }\n}\n",
 }
 
 #: The spellings that were `verified` on `origin/release/v0.2.0` and are
@@ -314,7 +360,7 @@ def test_1406_a_clean_producer_stays_verified_through_every_spelling(
 # The runtime differential — why the demotion is not merely tidier
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("spelling", ["let_bound", "wrap1"])
+@pytest.mark.parametrize("spelling", ["let_bound", "wrap1", "rebuild_ctor"])
 def test_1406_the_demoted_contract_is_one_the_program_refutes(
     tmp_path: Path, spelling: str,
 ) -> None:
@@ -337,7 +383,7 @@ def test_1406_the_demoted_contract_is_one_the_program_refutes(
     )
 
 
-@pytest.mark.parametrize("spelling", ["let_bound", "wrap1"])
+@pytest.mark.parametrize("spelling", ["let_bound", "wrap1", "rebuild_ctor"])
 def test_1406_the_clean_twin_runs_clean(tmp_path: Path, spelling: str) -> None:
     """The other half of the differential.
 
@@ -1463,13 +1509,31 @@ def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
     because the walk asks by OCCURRENCE, so a constructor application
     containing the projection contains the disclosed term.
 
-    Pinned as a unit because the whole-program shape needs
-    [#1421](https://github.com/aallan/vera/issues/1421)'s sort fix to verify
-    at all — before it the program dies with an E699 sort mismatch — so the
-    end-to-end cell belongs to that PR.  Measured on the two trees composed:
-    with the sort fix alone the consumer's postcondition is `verified` while
-    the run refutes it; with this branch on top it is `tier3`/E534 and the
-    clean twin still proves.
+    A unit cell BESIDE the end-to-end ones, not instead of them: the
+    `rebuild_ctor` / `rebuild_ctor2` spellings and
+    `test_1418_a_single_arm_rebuild_is_disclosed` carry the whole-program
+    shape.  What only a unit can pin is the walk's own answer, independent of
+    which carrier the program happened to use.
+
+    Only the LITERAL `None`-arm spelling the #1431 reviewer wrote —
+    `match mk(x) { Some(@PosInt) -> Some(@PosInt.0), None -> None }` — cannot
+    be an end-to-end cell here, because on this revision it dies with an E699
+    sort mismatch before any obligation is emitted.  That is
+    [#1421](https://github.com/aallan/vera/issues/1421)'s bug, not this one,
+    and it was measured on four trees rather than argued:
+
+    | tree                    | that spelling      |
+    | ----------------------- | ------------------ |
+    | `release/v0.2.0` base   | E699               |
+    | #1421's sort fix only   | `verified`, run refutes |
+    | this branch only        | E699               |
+    | both                    | `tier3`/E534       |
+
+    So the two fixes are orthogonal and compose: #1421 decides whether the
+    term can be BUILT, this branch decides which facts may DISCHARGE a goal
+    over it.  Note the second row — the sort fix alone makes a spelling that
+    used to crash into one that falsely proves, so it wants this branch under
+    it.
     """
     import z3
 
@@ -1494,3 +1558,85 @@ def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
     # disclosed component answers False however deeply it is nested.
     clean = rebuild(project(z3.Int("_call_mk_ok_1")))
     assert smt.term_is_disclosed(clean) is False
+
+
+# A carrier with ONE constructor, so `rebuild`'s match has a single arm and
+# there is no join of any kind.  The `rebuild_ctor` spellings above both join
+# two arms, and a join is exactly the thing `ite_join` already exercises — if
+# the demotion there came from the join rather than from the construction,
+# these two cells are where that shows, because here there is no join to
+# blame.  `mk` builds the payload with `float_to_int` as everywhere else, and
+# an ADT payload is guarded by codegen nowhere, so the contract is genuinely
+# refutable.
+_BOX = """type PosInt = { @Int | @Int.0 > 0 };
+
+private data Box {
+  Wrap(PosInt)
+}
+
+private fn mk(@Float64 -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Wrap(%s)
+}
+
+private fn rebuild(@Float64 -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Float64.0) {
+    Wrap(@PosInt) -> Wrap(@PosInt.0)
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match rebuild(@Float64.0) {
+    Wrap(@PosInt) -> @PosInt.0
+  }
+}
+"""
+
+
+def test_1418_a_single_arm_rebuild_is_disclosed(tmp_path: Path) -> None:
+    """Construction alone demotes — with no arm join anywhere in the program.
+
+    On `release/v0.2.0` this is `verified` at Tier 1 and the compiled program
+    refutes it: the full soundness signature, on a shape with no `let`, no
+    wrapper, and no join — only a value pulled apart and put back together.
+    """
+    src = _BOX % "float_to_int(@Float64.0)"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses, statuses
+    assert _f_ensures(result) == ("tier3", "E534"), statuses
+    # The claim the status is ABOUT: the program really does break it.
+    out = _run(tmp_path, src)
+    assert "Postcondition violation" in out, out[-400:]
+
+
+def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(
+    tmp_path: Path,
+) -> None:
+    """The control: same construction, nothing disclosed, still Tier 1.
+
+    Without this a fix that demoted every rebuild would pass the cell above.
+    """
+    src = _BOX % "7"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("verified", None), [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+    ]
+    out = _run(tmp_path, src)
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]
