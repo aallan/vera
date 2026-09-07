@@ -1038,6 +1038,8 @@ ERROR_CODES: dict[str, str] = {
     "E533": "Instantiated handler state diverges from the State<T> cell type",
     "E536": "Termination metric outside the i64 range the guard compares in",
     "E537": "Termination metric range unverified and not runtime-guarded",
+    "E538": "Precondition unsatisfiable (no call can reach the body)",
+    "E539": "Internal: verifier-derived premises are contradictory",
     # E6xx — Codegen
     "E600": "Unsupported parameter type",
     "E601": "Unsupported return type",

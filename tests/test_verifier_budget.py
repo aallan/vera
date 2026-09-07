@@ -37,6 +37,7 @@ from vera.smt import (
     resolve_timeout_ms,
 )
 from vera.verifier import ContractVerifier, verify
+from vera.verifier import _PREMISE_CHECK_TIMEOUT_MS
 
 ROOT = Path(__file__).parent.parent
 EXAMPLES = ROOT / "examples"
@@ -214,6 +215,28 @@ class TestBudgetReachesTheSolver:
             z3.Solver.set = original  # type: ignore[method-assign]
         return seen
 
+    def _assert_budget(self, seen: list[int], budget: int) -> None:
+        """*budget* reached the solver, and only the screening budget beside it.
+
+        Stronger than the `set(seen) == {budget}` this asserted before #1451
+        added a second, documented number to the plumbing.  Three properties
+        rather than one: the caller's budget is applied, the ONLY other value
+        the solver ever sees is the premise-consistency screening budget
+        (`min(_PREMISE_CHECK_TIMEOUT_MS, budget)` — a third number appearing
+        here is a leak, which is what the old equality was really guarding),
+        and the LAST value set is the caller's, so every obligation still to
+        be discharged runs under the budget the caller chose rather than under
+        a screening budget left standing.
+        """
+        assert seen, "the solver was never given a timeout"
+        screening = min(_PREMISE_CHECK_TIMEOUT_MS, budget)
+        assert budget in seen, (budget, seen)
+        assert set(seen) <= {budget, screening}, (budget, screening, seen)
+        assert seen[-1] == budget, (
+            f"the run's budget was not restored after the #1451 screening "
+            f"query: {seen}"
+        )
+
     # A tiny program: this asks where the budget went, not what was proved.
     SOURCE = (
         "public fn f(@Int -> @Int)\n"
@@ -232,22 +255,21 @@ class TestBudgetReachesTheSolver:
 
     def test_explicit_argument_reaches_the_solver_cold(self) -> None:
         seen = self._timeouts_set(lambda: self._cold(timeout_ms=33_000))
-        assert seen, "the solver was never given a timeout"
-        assert set(seen) == {33_000}, seen
+        self._assert_budget(seen, 33_000)
 
     def test_environment_reaches_the_solver_cold(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(Z3_TIMEOUT_ENV, "27000")
         seen = self._timeouts_set(lambda: self._cold())
-        assert set(seen) == {27_000}, seen
+        self._assert_budget(seen, 27_000)
 
     def test_default_reaches_the_solver_cold(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv(Z3_TIMEOUT_ENV, raising=False)
         seen = self._timeouts_set(lambda: self._cold())
-        assert set(seen) == {DEFAULT_Z3_TIMEOUT_MS}, seen
+        self._assert_budget(seen, DEFAULT_Z3_TIMEOUT_MS)
 
     def test_explicit_argument_reaches_the_solver_warm(self) -> None:
         """The warm session builds its own context — same budget, same place."""
@@ -255,7 +277,7 @@ class TestBudgetReachesTheSolver:
             session = VerificationSession(timeout_ms=41_000)
             session.verify_source(self.SOURCE, file="budget_warm.vera")
         seen = self._timeouts_set(run)
-        assert set(seen) == {41_000}, seen
+        self._assert_budget(seen, 41_000)
 
     def test_environment_reaches_the_solver_warm(
         self, monkeypatch: pytest.MonkeyPatch
@@ -266,7 +288,7 @@ class TestBudgetReachesTheSolver:
             session = VerificationSession()
             session.verify_source(self.SOURCE, file="budget_warm.vera")
         seen = self._timeouts_set(run)
-        assert set(seen) == {23_000}, seen
+        self._assert_budget(seen, 23_000)
 
     def test_warm_and_cold_agree_on_the_budget_they_apply(self) -> None:
         """The oracle's property, at the plumbing level.
@@ -282,4 +304,6 @@ class TestBudgetReachesTheSolver:
                 self.SOURCE, file="budget_warm.vera"
             )
         warm_seen = self._timeouts_set(run_warm)
-        assert set(cold_seen) == set(warm_seen) == {17_000}, (cold_seen, warm_seen)
+        self._assert_budget(cold_seen, 17_000)
+        self._assert_budget(warm_seen, 17_000)
+        assert set(cold_seen) == set(warm_seen), (cold_seen, warm_seen)
