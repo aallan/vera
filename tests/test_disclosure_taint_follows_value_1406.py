@@ -444,8 +444,7 @@ def test_1410_the_argument_position_is_unchanged_by_this_fix(
 # Warm == cold
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "spelling", ["let_bound", "wrap1", "where_helper"])
+@pytest.mark.parametrize("spelling", sorted(_SPELLINGS))
 def test_1407_a_warm_session_agrees_with_the_cold_run(
     tmp_path: Path, spelling: str,
 ) -> None:
@@ -458,8 +457,11 @@ def test_1407_a_warm_session_agrees_with_the_cold_run(
     slice was verified, never a `decl.name` itself — was dropped, the warm
     fixpoint settled one hop early, and warm proved at Tier 1 exactly what
     cold demoted.  Parametrising over only the two spellings that worked is
-    what let it through, so the parametrisation is now the full set of
-    forwarding shapes rather than a sample.
+    what let it through, so this runs over EVERY spelling rather than a
+    sample — a sample is the defect, not the coverage (CodeRabbit, PR #1418:
+    `wrap2` needs the warm fixpoint to carry the taint two hops, and
+    `wrap_let`/`wrap_pipe` need it to survive a forwarder that reaches its
+    result through a binding).
 
     The warm path assembles its stream from cached per-function slices, and a
     replayed slice re-runs no body — so the wrapper's "hands on a disclosed
@@ -810,20 +812,24 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
         assert src_file is not None
         trees.append(pyast.parse(Path(src_file).read_text(encoding="utf-8")))
 
+    # Keyed by (module, name): merging the two namespaces would let a
+    # same-named function in one module overwrite the other's entry, so a
+    # reader could be judged by a namesake's call set (CodeRabbit, PR #1418).
     defined: set[str] = set()
-    calls: dict[str, set[str]] = {}
-    for node in [n for tree in trees for n in pyast.walk(tree)]:
-        if not isinstance(node, (pyast.FunctionDef, pyast.AsyncFunctionDef)):
-            continue
-        defined.add(node.name)
-        named: set[str] = set()
-        for inner in pyast.walk(node):
-            if (isinstance(inner, pyast.Call)
-                    and isinstance(inner.func, pyast.Attribute)
-                    and isinstance(inner.func.value, pyast.Name)
-                    and inner.func.value.id == "self"):
-                named.add(inner.func.attr)
-        calls[node.name] = named
+    calls: dict[tuple[str, str], set[str]] = {}
+    for mod_name, tree in zip(("verifier", "smt"), trees):
+        for node in pyast.walk(tree):
+            if not isinstance(node, (pyast.FunctionDef, pyast.AsyncFunctionDef)):
+                continue
+            defined.add(node.name)
+            named: set[str] = set()
+            for inner in pyast.walk(node):
+                if (isinstance(inner, pyast.Call)
+                        and isinstance(inner.func, pyast.Attribute)
+                        and isinstance(inner.func.value, pyast.Name)
+                        and inner.func.value.id == "self"):
+                    named.add(inner.func.attr)
+            calls[(mod_name, node.name)] = named
 
     missing = sorted(producers - defined)
     assert not missing, (
@@ -833,14 +839,18 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     assert "_established_facts" in defined
 
     readers = sorted(
-        name for name, named in calls.items()
+        f"{mod}:{name}" for (mod, name), named in calls.items()
         if named & producers and name not in producers
     )
     assert len(readers) >= 3, (
         f"expected at least the three known readers, found {readers} — a "
         f"call site was deleted or the walk stopped seeing them"
     )
-    ungated = [r for r in readers if "_established_facts" not in calls[r]]
+    ungated = [
+        r for r in readers
+        if "_established_facts" not in calls[(r.split(":", 1)[0],
+                                              r.split(":", 1)[1])]
+    ]
     assert not ungated, (
         f"{ungated} read a declared-type source fact and assume it without "
         f"asking `_established_facts` whether this run established it — that "
@@ -1101,4 +1111,58 @@ def test_1418_f3_a_shared_helper_name_does_not_demote_a_clean_caller(
     assert ensures == [("tier3", "E534"), ("verified", None)], (
         f"helper named {second_helper!r}: the tainted caller must demote and "
         f"the clean one must not — got {ensures}"
+    )
+
+
+_NESTED_HELPER = _POSINT + _MK_DISCLOSED + _F + """{
+  match h1(@Float64.0) {
+""" + _ARMS + """
+  }
+}
+where {
+  fn h1(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    h2(@Float64.0)
+  }
+  where {
+    fn h2(@Float64 -> @Option<PosInt>)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      mk(@Float64.0)
+    }
+  }
+}
+"""
+
+
+def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
+    tmp_path: Path,
+) -> None:
+    """Two levels of `where`, and the scope key has to agree at both.
+
+    `enclosing` is built by APPENDING each parent, so `f -> h1 -> h2` gives
+    `h2` the chain `(f, h1)` — the OUTERMOST is index 0.  Keying on the last
+    element recorded `h2` under `h1$where$h2` while `h1`, whose own chain is
+    `(f,)`, looked it up as `f$where$h2`.  The miss was in the unsound
+    direction: `h1` discharged from `h2`'s disclosed result, `f` from
+    `h1`'s, and the whole chain kept Tier 1 (CodeRabbit, PR #1418).
+
+    One owner per top-level function is the point of the key, so this fixture
+    is the minimum that can tell the two readings apart — a single level of
+    nesting cannot, because there `enclosing[0] is enclosing[-1]`.
+    """
+    result = _verify(tmp_path, _NESTED_HELPER)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert ("refine_bind", "tier3_unguarded", "E506") in [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+    ], "the producer did not disclose, so this cell measures nothing"
+    assert _f_ensures(result) == ("tier3", "E534"), (
+        f"a disclosed value forwarded through two levels of `where` helper "
+        f"must still demote its caller — got {_f_ensures(result)}"
     )

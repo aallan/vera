@@ -9295,7 +9295,14 @@ class ContractVerifier:
             for group in (decl, *enclosing)
             for wfn in group.where_fns or ()
         )
-        self._scope_owner = enclosing[-1].name if enclosing else decl.name
+        # `enclosing` is built by APPENDING each parent — `top -> H1 -> H2`
+        # gives H2 `(top, H1)` — so the OUTERMOST is index 0.  Taking the
+        # last recorded H2 under `H1$where$H2` while H1 looked it up as
+        # `top$where$H2`, and the miss was in the unsound direction: H1
+        # discharged a Tier-1 obligation from H2's disclosed result
+        # (CodeRabbit, PR #1418).  One owner per top-level function is
+        # the whole point of the key.
+        self._scope_owner = enclosing[0].name if enclosing else decl.name
         self._tainted_sites = []
 
     def _result_disclosed_key(self, name: str, *, is_helper: bool) -> str:
