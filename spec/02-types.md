@@ -283,6 +283,7 @@ The type checker treats a refined type as its base for assignability (it permits
 
 - `let @PosInt = ...` — let bindings
 - `f(...)` where a formal is refined — call arguments
+- `f(...)` where a formal's type writes a refinement on a **component** — an ADT payload, a tuple component: the argument position again, this time for what the parameter's type *contains* rather than what it *is*
 - `Ctor(...)` where a field is refined — constructor fields
 - effect-operation arguments
 - `match v { @PosInt -> ... }` — match bindings
@@ -290,6 +291,10 @@ The type checker treats a refined type as its base for assignability (it permits
 - the function's **return position** when the declared return type is refined
 
 A refined **parameter** is, conversely, *assumed* to satisfy its predicate inside the body — sound precisely because every call site discharges the obligation. If the solver finds inputs violating the predicate, verification fails with error `E505` and a counterexample. A discharge proved from the surrounding `requires` clauses, path conditions, or an already-refined source carries no runtime cost.
+
+That assumption extends to refinements written *inside* the parameter's type: a `consume(@Option<PosInt>)` reasons about its payload as `> 0` without re-deriving it, and it is verified once for every caller, so it is the ARGUMENT that must establish the payload. A value the caller **constructs** is obligated at its construction site, and a value that arrives any other way — a call result, a `let`-bound value, a parameter forwarded from the caller's own signature, a projection, a piped value — is obligated at the argument position itself, against each refinement the parameter's type writes on a component. One rule, whatever the argument's shape: the construction case is excluded only because its own site already carries the obligation, and that exclusion is decided on the value, not on how it was spelt.
+
+The discharge takes the argument's **own declared type** as a premise, because a value declared `Option<PosInt>` had that payload established by its producer — at a construction site, a refined return, or the producer's own param-assume. Two cases have nothing to grant. A source type that does not carry the refinement at all — `Option<Int>`, which the checker accepts for an `Option<PosInt>` parameter, since a refinement is erased for compatibility (§2.6.2) — leaves the obligation to be proved or refuted on its merits. A source whose producer this run DISCLOSED (its own obligation for that type resolved neither proved nor guarded) had nothing established either, so the premise is withheld and a goal that holds only from it is reported Tier 3 rather than proved.
 
 An obligation drops to Tier 3 — reported as an `E506` warning rather than silently accepted — whenever the verifier reaches no verdict. The warning names which of the following applies, because they call for different responses:
 
@@ -301,6 +306,8 @@ An obligation drops to Tier 3 — reported as an `E506` warning rather than sile
 ### 2.6.5 Runtime Guards
 
 A refinement predicate is also guarded at **runtime**: the compiler emits a predicate check at every function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. This holds at a `public`/FFI entry point too, where an untrusted caller cannot bypass the callee's entry guard. A call argument is covered by that guard, so the boundary checks compose to cover every narrowing whose result is consumed across a boundary; a purely internal narrowing (a `let`, match bind, destructure, constructor field, ADT sub-pattern bind, or a *user-declared* effect operation's argument that never crosses a boundary) is Tier-3-static-only — surfaced as an `E506` warning, not silently accepted.
+
+The boundary guard decomposes the parameter's own refinement and its **tuple** components, and stops there. So a refinement written on a tuple component — `@Tuple<PosInt, Int>` — is checked at entry like any other boundary predicate, while one written on an **ADT payload** (`@Option<PosInt>`) or an **array element** (`@Array<PosInt>`) is checked at no boundary at all. An undischarged §2.6.4 component obligation is therefore reported against what the guard actually covers: a guarded Tier 3 for a tuple component, and an unguarded `E506` — counted in no tier — for the payload and element positions.
 
 The built-in `Exn` effect's `throw` payload is guarded, not internal. `throw(v)` narrows `v` into the `Exn<E>` payload and the value leaves the throwing function, but it crosses no *function* boundary on the way, so none of the composing checks above reaches it: the compiler emits the predicate check at the `throw` itself, and a violating payload traps there rather than arriving in a handler clause that has already assumed the predicate.
 

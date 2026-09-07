@@ -691,9 +691,17 @@ private fn sum(@List<Int> -> @Int)
         # honest disclosure, then a guard that does.  Only the last is both
         # true and quiet, which is why the corpus carries NO unguarded
         # narrowing: 411/119/530/3 -> 411/122/533/0.
-        assert t1 == 411, f"Expected 411 T1, got {t1}"
+        #
+        # #1410: a call argument whose parameter type writes a refinement on a
+        # COMPONENT now carries the obligation the construction position
+        # already had.  `ephemeris.vera` is the corpus's only such caller —
+        # `main` passes an `Elements` (six refined fields) to `helio`, twice —
+        # and both PROVE, from the producing function's declared return type
+        # and its own Tier-1 construction: +2 T1, +0 T3, +2 total:
+        # 411/122/533 -> 413/122/535.
+        assert t1 == 413, f"Expected 413 T1, got {t1}"
         assert t3 == 122, f"Expected 122 T3, got {t3}"
-        assert total == 533, f"Expected 533 total, got {total}"
+        assert total == 535, f"Expected 535 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
         # is a REGRESSION in guard coverage rather than a new example.  The

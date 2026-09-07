@@ -239,14 +239,51 @@ class TestEphemerisVerification:
         # unrelated refined bind appears elsewhere -- same arity, same
         # statuses, different program.  Naming the two functions is what makes
         # the pin about the construction story rather than about arithmetic.
-        assert {o.fn_name for o in binds} == {
+        #
+        # The CONSTRUCTION story is these two functions'.  `main` also carries
+        # refined binds since #1410 -- it passes an `Elements` (whose fields
+        # are refined) to `helio`, and a call argument now has to establish the
+        # refinements written inside its parameter's type -- but those are
+        # about the argument boundary, so they are pinned separately below and
+        # excluded here rather than allowed to slacken this set into "whatever
+        # the program happens to raise".
+        story = [
+            o for o in binds
+            if o.fn_name in ("earth_elements", "mars_elements")
+        ]
+        assert {o.fn_name for o in story} == {
             "earth_elements", "mars_elements"
         }, [(o.fn_name, o.kind, o.status) for o in binds]
-        assert len(binds) == 2, [
+        assert len(story) == 2, [
             (o.fn_name, o.kind, o.status) for o in binds
         ]
-        assert all(o.status == "verified" for o in binds), [
-            (o.fn_name, o.status) for o in binds
+        assert all(o.status == "verified" for o in story), [
+            (o.fn_name, o.status) for o in story
+        ]
+
+    def test_element_arguments_prove_at_the_call_boundary(
+        self, obligations: list,
+    ) -> None:
+        """`helio(earth_elements(...))` establishes `Elements`' refined fields.
+
+        Since #1410 an argument whose parameter type writes refinements on its
+        components carries the obligation the construction position already
+        had; `main` makes two such calls.  Both PROVE, because the producing
+        function's declared return type carries exactly those refinements and
+        its own construction discharged them at Tier 1 -- the modular rule the
+        callee's single proof leans on, now recorded rather than assumed.
+        A demotion here would mean the element functions stopped establishing
+        their own fields.
+        """
+        arg_binds = [
+            o for o in obligations
+            if o.kind == "refine_bind" and o.fn_name == "main"
+        ]
+        assert len(arg_binds) == 2, [
+            (o.fn_name, o.status, o.line) for o in arg_binds
+        ]
+        assert all(o.status == "verified" for o in arg_binds), [
+            (o.fn_name, o.status) for o in arg_binds
         ]
 
     def test_wrap_deg_proves_at_tier_1(self, obligations: list) -> None:
