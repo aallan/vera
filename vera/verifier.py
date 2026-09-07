@@ -5595,22 +5595,24 @@ class ContractVerifier:
                             guarded=self._is_int_type(field_ty),
                         )
                     # #1410 (PR review F3): a field whose TYPE writes a
-                    # refinement on a component.  Through
-                    # `_nested_refinement_formal`, because a GENERIC
-                    # constructor's declared field is a `TypeVar` and only the
-                    # checker's recorded instantiation says what it became —
-                    # `data Box<T> { MkBox(T) }` built at `Box<Option<PosInt>>`
-                    # raised nothing at all without it, while the concrete
-                    # `MkBox(Option<PosInt>)` spelling of the same program was
-                    # refuted (PR #1420 review).  The same recovery every other
-                    # binding-obligation target makes (#747) — `data Box { MkBox(Option<
-                    # PosInt>) }` — is claimed by none of the arms above, which
-                    # read the field's HEAD.  Without it the exclusion the
-                    # argument rule makes for a construction was false of this
-                    # shape: `consume(MkBox(mkint(x)))` was skipped as a
-                    # construction while its own site claimed nothing, so the
-                    # payload was obligated nowhere and the run refuted the
-                    # consumer's postcondition.  A constructor field is not a
+                    # refinement on a component.  A field like
+                    # `data Box { MkBox(Option<PosInt>) }` is claimed by none
+                    # of the arms above, which read the field's HEAD, so the
+                    # exclusion the argument rule makes for a construction was
+                    # false of this shape: `consume(MkBox(mkint(x)))` was
+                    # skipped as a construction while its own site claimed
+                    # nothing, the payload was obligated nowhere, and the run
+                    # refuted the consumer's postcondition.
+                    #
+                    # The target goes through `_nested_refinement_formal`,
+                    # which is the recovery every other binding-obligation
+                    # target makes (#747): a GENERIC constructor's declared
+                    # field is a `TypeVar`, and only the checker's recorded
+                    # instantiation says what it became.  Without that,
+                    # `data Box<T> { MkBox(T) }` built at
+                    # `Box<Option<PosInt>>` raised nothing at all, while the
+                    # concrete spelling of the same program was refuted
+                    # (PR #1420 review).  A constructor field is not a
                     # function boundary, so nothing guards it.
                     self._check_nested_refinement_obligation(
                         decl, arg,
