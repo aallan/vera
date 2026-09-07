@@ -40,7 +40,7 @@ from vera.environment import (
     FunctionInfo,
     TypeEnv,
 )
-from vera.regularity import suggested_occurrence
+from vera.regularity import occurrence_grows, suggested_occurrence
 from vera.types import (
     EffectInstance,
     BOOL,
@@ -690,6 +690,27 @@ class TypeChecker(
                     else f"'{parent}' in module '{label}'"
                     for parent in parents
                 )
+        # #1429: which `data` declarations this module refuses as NON-REGULAR,
+        # settled BEFORE any body is checked.  Filling the set as declarations
+        # were reached made the report depend on source ORDER: a `data` written
+        # BELOW the function comparing its values was not yet in the set when
+        # the `Eq` derivation ran, so E243 was recorded and the declaration
+        # earned its E129 only afterwards — `['E243', 'E129']` for a program
+        # that reads identically to the reader (PR #1432 re-verification).
+        # Source order is not part of what a Vera program means, so it may not
+        # be part of what the checker reports.  Derived from THIS program's own
+        # declarations, one for one with the E129s `_check_data_regularity`
+        # goes on to emit: pre-populating from the whole registry would also
+        # silence the cascade for an imported irregular type, whose own
+        # module's check is what should report it.
+        regularity = self.env.regularity_index()
+        for tld in program.declarations:
+            decl = tld.decl
+            if (isinstance(decl, ast.DataDecl)
+                    and id(decl) not in self._rejected_builtin_redefs
+                    and decl.name in self.env.data_types
+                    and not regularity.is_regular(decl.name)):
+                self.env.refused_non_regular.add(decl.name)
         for tld in program.declarations:
             # #815: a built-in redefinition (E151) is already reported and not
             # registered; skip checking its body so it isn't re-checked against
@@ -830,10 +851,12 @@ class TypeChecker(
         if found is None:
             return
         ctor_name, index, bad = found
-        # Recorded BEFORE the diagnostic so every later consumer in this
-        # module sees the refusal — the ability derivations suppress their
-        # own cascade off this set (#1429).
-        self.env.refused_non_regular.add(decl.name)
+        # The refusal is already in `env.refused_non_regular`: `check_program`
+        # settles the whole set before any body is checked, which is what
+        # makes the report independent of source order.  Recording it again
+        # here would be dead — the one entry point that reaches this method
+        # runs that pre-pass first, and a mutation removing this line left the
+        # suite green while removing the pre-pass took it red.
         expected = tuple(
             self.env.data_types[decl.name].type_params or ()
         ) if decl.name in self.env.data_types else ()
@@ -845,6 +868,10 @@ class TypeChecker(
         # arity whenever the two members' parameter counts differ
         # (PR #1432 re-verification).
         remedy = suggested_occurrence(bad, expected, decl.name)
+        # A permutation has no varying part to lift out — every argument is
+        # already a bare parameter, just in the wrong position — so the
+        # remedy is worded per shape (PR #1432 re-verification).
+        grows = occurrence_grows(bad, expected)
         self._error(
             self._data_field_node(decl, ctor_name, index),
             f"Non-regular recursion in data declaration "
@@ -870,8 +897,15 @@ class TypeChecker(
             fix=(
                 f"Instantiate the recursive occurrence as '{remedy}', or use "
                 "an argument that does not mention this declaration's type "
-                "parameters at all; move the varying part into a field of "
-                "its own, or into a separate non-recursive type."
+                "parameters at all"
+                + (
+                    "; move the varying part into a field of its own, or "
+                    "into a separate non-recursive type."
+                    if grows else
+                    ".  The arguments here are already this declaration's "
+                    "own parameters — they are only out of order, and "
+                    "nothing needs to move."
+                )
             ),
             spec_ref='Chapter 2, Section 2.4 "Algebraic Data Types"',
             error_code="E129",

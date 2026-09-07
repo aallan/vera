@@ -1,10 +1,16 @@
 """#1429 — a non-regularly recursive `data` declaration is refused at CHECK.
 
-`data Nest<T> { N(Nest<Option<T>>), Z }` grows its type argument at every
-level, so the chain `Nest<Int>` -> `Nest<Option<Int>>` ->
-`Nest<Option<Option<Int>>>` never repeats and the type has no finite set of
-instantiations.  Nothing downstream survives that, and the three ways it broke
-are what settle where the rule belongs:
+The rule is read PER TYPE ARGUMENT of a recursive occurrence: each must be a
+bare parameter of the enclosing declaration, passed along unchanged, or closed
+with respect to those parameters — mentioning none of them anywhere inside it.
+An argument that wraps a parameter in another type constructor is the growth
+case and is refused, and an occurrence of the declaration's own name must also
+keep its parameters in their original positions.
+
+`data Nest<T> { N(Nest<Option<T>>), Z }` does neither: `Option<T>` wraps the
+parameter, so the chain `Nest<Int>` -> `Nest<Option<Int>>` ->
+`Nest<Option<Option<Int>>>` never repeats.  Nothing downstream survives that,
+and the three ways it broke are what settle where the rule belongs:
 
 * `vera verify` had no verdict for 67-76 s and then an ``E699`` internal
   compiler error, because the datatype-group closure has no fixed point;
@@ -22,6 +28,14 @@ five-parameter declaration whose constructor PERMUTES its parameters reaches
 Refusing the declaration closes all three at the one place the program says
 what it means (DESIGN §0.2: explicit and decidable over a silent cliff), and
 needs no bound at all.
+
+Reading the rule per argument is what keeps it from over-refusing.  Comparing
+the occurrence's whole argument LIST against the declaration's parameter list
+cannot be stated at all for a mutually recursive pair whose members differ in
+arity, and it rejected `data Decl { D(Body<Int>) }` with `data Body<T> { B(T,
+Decl) }` and `data Expr<T> { Lit(T), Add(Expr<Int>, Expr<Int>) }`, whose
+closures are two members each and which verify at Tier 1.  Both are regular
+controls here.
 """
 
 from __future__ import annotations
@@ -497,7 +511,10 @@ def test_the_group_index_agrees_with_the_reference_walk() -> None:
     they disagreed.  The battery covers the shapes the walk's own definition
     turns on — a self-loop, a non-recursive singleton, a mutual pair, a
     three-cycle, a one-way reference into a cycle (NOT a group member), and a
-    chain with no cycle at all.
+    chain with no cycle at all — which is 116 name/registry pairs over six
+    programs, the built-in ADTs included in every one.  Chosen for coverage of
+    the definition rather than for volume: a corpus-wide sweep exercises the
+    same handful of shapes many times over.
     """
     from vera.checker.core import TypeChecker
     from vera.parser import parse_to_ast
@@ -705,3 +722,68 @@ def test_the_remedy_is_never_the_offending_occurrence(shape: str) -> None:
     assert remedy != occurrence, (
         f"{shape}: the fix repeats the occurrence ({occurrence})"
     )
+
+
+@pytest.mark.parametrize("order", ["declaration-first", "use-first"])
+def test_the_refusal_is_declaration_order_independent(
+    order: str, tmp_path: Path,
+) -> None:
+    """The same program reports the same codes whichever way round it is
+    written.
+
+    The suppression set is filled as declarations are CHECKED, so a `data`
+    written BELOW the function that compares its values was not yet in the set
+    when the `Eq` derivation ran: the structural leg answered "not derivable",
+    E243 was recorded, and only afterwards did the declaration earn its E129 —
+    `['E243', 'E129']` for a program that reads identically to the reader
+    (PR #1432 re-verification).  Source order is not part of what a Vera
+    program means, so it may not be part of what the checker reports.
+    """
+    data = "private data Nest<T> { N(Nest<Option<T>>), Z }"
+    use = (
+        "public fn f(@Nest<Int>, @Nest<Int> -> @Bool)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ @Nest<Int>.1 == @Nest<Int>.0 }"
+    )
+    parts = [data, use] if order == "declaration-first" else [use, data]
+    proc = _check(tmp_path, "\n".join(parts), name=f"{order}.vera")
+    combined = proc.stdout + proc.stderr
+    codes = sorted(set(re.findall(r"\[(E\d{3})\]", combined)))
+    assert codes == ["E129"], combined[:900]
+
+
+def test_the_fix_line_is_worded_for_the_shape_at_fault() -> None:
+    """A permutation is not told to move a varying part.
+
+    "Move the varying part into a field of its own" is sound advice for the
+    GROWTH case, where some argument really does wrap a parameter — and a
+    misdescription of `data R<A, B> { CR(R<B, A>), ZR }`, whose arguments are
+    already this declaration's own parameters and are merely out of order.
+    Nothing varies and nothing needs moving; the reader following that
+    sentence would go looking for a sub-expression that is not there
+    (PR #1432 re-verification).  An occurrence that does BOTH keeps the
+    moving-part advice, because the wrapped argument is present.
+    """
+    from vera.checker import typecheck
+    from vera.parser import parse_to_ast
+
+    def fix_for(decl: str) -> str:
+        source = decl + _MAIN
+        refusals = [
+            d for d in typecheck(parse_to_ast(source), source)
+            if d.error_code == "E129"
+        ]
+        assert refusals, decl
+        return refusals[0].fix
+
+    moving = "move the varying part"
+    permuting = fix_for("private data R<A, B> { CR(R<B, A>), ZR }")
+    assert moving not in permuting, permuting
+    assert "out of order" in permuting, permuting
+
+    growing = fix_for("private data Nest<T> { N(Nest<Option<T>>), Z }")
+    assert moving in growing, growing
+
+    # Out of position AND wrapped: the advice applies to the wrapped argument.
+    both = fix_for("private data R2<A, B> { CR2(R2<B, Option<A>>), ZR2 }")
+    assert moving in both, both

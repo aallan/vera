@@ -1,9 +1,10 @@
 -- Chapter 2, Section 2.4 "Algebraic Data Types"
--- Tests: E129 — a recursive occurrence of a type inside its own declaration
--- must instantiate it at that declaration's own type parameters, in order.
--- `Nest<Option<T>>` grows the argument at every level, so the chain
+-- Tests: E129 — each type argument of a recursive occurrence must be a bare
+-- parameter of the enclosing declaration, passed along unchanged, or closed
+-- with respect to those parameters.  `Nest<Option<T>>` is neither: it wraps
+-- the parameter, so the argument grows at every level and the chain
 -- `Nest<Int>` -> `Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>` never
--- repeats and the type has no finite set of instantiations.
+-- repeats.
 
 private data Nest<T> {
   N(Nest<Option<T>>),

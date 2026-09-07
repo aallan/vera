@@ -1,12 +1,30 @@
 """Regular recursion in `data` declarations — ONE derivation (#1429).
 
-A recursive occurrence of a type inside its own declaration must instantiate
-that type at the declaration's own type parameters, in order.
-`data List<T> { Cons(T, List<T>), Nil }` does; `data Nest<T> {
-N(Nest<Option<T>>), Z }` does not — its argument grows at every level, so the
-instantiation chain `Nest<Int>` -> `Nest<Option<Int>>` ->
-`Nest<Option<Option<Int>>>` never repeats and the type has no finite set of
-instantiations.
+The rule is read PER TYPE ARGUMENT of a recursive occurrence — of the
+declaration itself, or of any type mutually recursive with it.  Inside a
+declaration `N<P...>`, each argument of such an occurrence must be either
+
+* a BARE PARAMETER of `N`, passed along unchanged, or
+* CLOSED with respect to `N`'s parameters — mentioning none of them anywhere
+  inside it, as in `Expr<Int>`, `Body<Int>`, or a zero-argument `Decl`;
+
+and an argument that wraps a parameter inside another type constructor
+(`Option<T>`, `Tuple<T, T>`) is the growth case, which is refused.  An
+occurrence of the declaration's OWN name must additionally keep its parameters
+in their original positions.
+
+`data List<T> { Cons(T, List<T>), Nil }` passes one along and `data Expr<T> {
+Lit(T), Add(Expr<Int>, Expr<Int>) }` closes one; `data Nest<T> {
+N(Nest<Option<T>>), Z }` does neither — `Option<T>` wraps the parameter, so
+each level's argument is larger than the last and the chain `Nest<Int>` ->
+`Nest<Option<Int>>` -> `Nest<Option<Option<Int>>>` never repeats.
+
+Comparing the occurrence's whole argument LIST against the declaration's
+parameter list is the rule this replaces, and it over-refused: the comparison
+cannot even be stated for a mutually recursive pair whose members differ in
+arity, and it rejected `data Decl { D(Body<Int>) }` with `data Body<T> { B(T,
+Decl) }` and `data Expr<T> { Lit(T), Add(Expr<Int>, Expr<Int>) }`, whose
+closures are two members each (PR #1432 re-verification).
 
 Two consumers ask, and they must not answer differently:
 
@@ -283,11 +301,15 @@ class RegularityIndex:
     SCC pass answers for every declaration at once, and each verdict is then
     derived once and kept.
 
-    Not invalidated: the index is a SNAPSHOT of the registry it was built
-    from, and both consumers build theirs after their registration pass and
-    discard it with the module.  A caller that registers more declarations
-    builds a new index rather than mutating this one — an invalidation hook
-    on a plain `dict` would be a promise this class cannot keep.
+    A SNAPSHOT of the registry it was built from: this class holds no
+    invalidation hook, because it is handed a plain `dict` and cannot observe
+    a write to it.  Invalidation is therefore the CALLER's, and each consumer
+    keys its cached index on something it does control —
+    :meth:`vera.environment.TypeEnv.regularity_index` on the declaration
+    counter every `data` registration bumps (and the registry's size, so a
+    write that somehow skipped the counter still invalidates), and the SMT
+    context on a version it increments at its one `register_adt` site.  Either
+    way a stale index is replaced rather than mutated.
     """
 
     def __init__(self, registry: dict[str, AdtInfo]) -> None:
@@ -351,6 +373,26 @@ class RegularityIndex:
     def is_regular(self, name: str) -> bool:
         """Whether *name*'s recursion (if any) is regular."""
         return self.irregular(name) is None
+
+
+def occurrence_grows(bad: AdtType, expected: tuple[str, ...]) -> bool:
+    """Whether *bad* fails by GROWTH rather than by position (#1429).
+
+    True when some argument wraps a parameter inside another type constructor
+    — `Nest<Option<T>>`, `Ne<Tuple<T, T>>` — which is the case where the
+    varying part is a real sub-expression the author can lift out.  False for
+    a pure PERMUTATION (`R<B, A>` inside `R<A, B>`), where every argument is
+    already a bare parameter and nothing varies: there is no part to move, and
+    advice to move one misdescribes the program (PR #1432 re-verification).
+
+    An occurrence that does both — `R<B, Option<A>>` — answers True, because
+    the wrapped argument is present and the advice applies to it.
+    """
+    params = frozenset(expected)
+    return any(
+        not isinstance(arg, TypeVar) and _mentions_parameter(arg, params)
+        for arg in bad.type_args
+    )
 
 
 def irregular_occurrence(
