@@ -266,9 +266,11 @@ class TestEphemerisVerification:
     ) -> None:
         """`helio(earth_elements(...))` establishes `Elements`' refined fields.
 
-        Since #1410 an argument whose parameter type writes refinements on its
-        components carries the obligation the construction position already
-        had; `main` makes two such calls.  Both PROVE, because the producing
+        Since #1410 an argument whose parameter type writes a refinement on a
+        component carries the obligation the construction position already
+        had; `main` makes two such calls.  `Elements` has ONE refined field,
+        `Ecc` — the other five are plain `Float64` aliases — so these two
+        obligations carry that bound and nothing else.  Both PROVE, because the producing
         function's declared return type carries exactly those refinements and
         its own construction discharged them at Tier 1 -- the modular rule the
         callee's single proof leans on, now recorded rather than assumed.

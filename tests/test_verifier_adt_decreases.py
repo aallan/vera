@@ -695,7 +695,8 @@ private fn sum(@List<Int> -> @Int)
         # #1410: a call argument whose parameter type writes a refinement on a
         # COMPONENT now carries the obligation the construction position
         # already had.  `ephemeris.vera` is the corpus's only such caller —
-        # `main` passes an `Elements` (six refined fields) to `helio`, twice —
+        # `main` passes an `Elements` — whose `Ecc` field is refined, the
+        # other five being plain `Float64` aliases — to `helio`, twice, and
         # and both PROVE, from the producing function's declared return type
         # and its own Tier-1 construction: +2 T1, +0 T3, +2 total:
         # 411/122/533 -> 413/122/535.
