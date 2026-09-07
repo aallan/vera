@@ -6097,7 +6097,7 @@ class ContractVerifier:
                         decl, arg,
                         self._nested_refinement_formal(arg, field_ty),
                         smt, slot_env, assumptions,
-                        site="constructor field", guarded=False,
+                        site="constructor field",
                     )
             else:
                 # `Tuple` (and any other built-in carrier) is NOT user-
@@ -6148,7 +6148,7 @@ class ContractVerifier:
                     # component, so unguarded.
                     self._check_nested_refinement_obligation(
                         decl, arg, comp_ty, smt, slot_env, assumptions,
-                        site="tuple component", guarded=False,
+                        site="tuple component",
                     )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -8361,13 +8361,22 @@ class ContractVerifier:
         # instead.  Asked of the value's producing LEAVES, because a body is
         # always a `Block` and the per-expression test answers False for one.
         disclosed = self._value_source_disclosed(value_node)
-        # `guarded` is derived from the target type at a FUNCTION boundary,
-        # where codegen's decomposition runs.  A site that is not one — a
-        # constructor field, a tuple component at construction, an
-        # effect-operation argument — says so, and no derivation can override
-        # it upward (an explicit False is final).
+        # Guardedness is the SITE half intersected with the TYPE half, the
+        # same shape every other `refine_bind` leg uses (#765): the roster
+        # says whether codegen guards AT this position, and
+        # `_nested_refinements_guarded` says whether its decomposition
+        # reaches the refinement's position INSIDE the type.  Naming the
+        # non-boundary sites again here — as a literal `guarded=False` at the
+        # constructor-field and tuple-component calls — made this leg a
+        # second authority on a question the roster already answers, and two
+        # authorities are how the answer went stale before.  A caller still
+        # passes an explicit flag where the site alone does not settle it,
+        # and an explicit False is final.
         if guarded is None:
-            guarded = self._nested_refinements_guarded(formal_ty)
+            guarded = (
+                self._refined_bind_site_guarded(site)
+                and self._nested_refinements_guarded(formal_ty)
+            )
         if val is None:
             self._record_refined_bind_tier3(
                 decl, value_node, site, guarded=guarded,

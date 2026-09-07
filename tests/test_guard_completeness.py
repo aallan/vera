@@ -1379,11 +1379,18 @@ class TestConstructionPositionReachesNestedContainers:
         assert out.strip() == "-4", out
 
     def test_a_refined_map_value_is_obligated(self, tmp_path: Path) -> None:
+        """The insert's own record, which was absent entirely.
+
+        Read by membership, not by equality: the `let` whose declared type
+        writes a refinement on a component publishes that claim to later
+        readers of the slot and raises its own #1410 records beside this one.
+        Those are about the slot, this one is about the value going in.
+        """
         obs, envelope = _obligations(
             tmp_path, _P1_MAP_REFINED_VALUE, name="p1c.vera")
         binds = [(o["status"], o.get("error_code"))
                  for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [("violated", "E505")], obs
+        assert ("violated", "E505") in binds, obs
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
@@ -1914,3 +1921,161 @@ class TestArrayElementNarrowingIsObligated:
         coerce = [(o["status"], o.get("error_code"))
                   for o in obs if o["kind"] == "nat_to_int_coerce"]
         assert coerce == [("tier3", None)], obs
+
+
+# The two closure-argument fixtures differ in EXACTLY one token — the payload
+# carrier the `Taker` formal writes `PosInt` inside — so the pair isolates the
+# type half of the derivation from the site half.  Both make the argument
+# opaque the same way, by producing it from another closure: a lifted body is
+# outside the outer slot environment, so the payload predicate can be neither
+# discharged nor refuted and the obligation lands at Tier 3, which is the only
+# place the `guarded` flag is read at all.  A `violated` never consults it.
+_A1_CLOSURE_OPTION = """\
+type PosInt = { @Int | @Int.0 > 0 };
+type Maker = fn(Int -> Option<Int>) effects(pure);
+type Taker = fn(Option<PosInt> -> Int) effects(pure);
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Maker = fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0) };
+  let @Taker = fn(@Option<PosInt> -> @Int) effects(pure) { 1 };
+  apply_fn(@Taker.0, apply_fn(@Maker.0, @Int.0))
+}
+"""
+
+_A1_CLOSURE_TUPLE = """\
+type PosInt = { @Int | @Int.0 > 0 };
+type Maker = fn(Int -> Tuple<Int, Int>) effects(pure);
+type Taker = fn(Tuple<PosInt, Int> -> Int) effects(pure);
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Maker = fn(@Int -> @Tuple<Int, Int>) effects(pure) { Tuple(@Int.0, 5) };
+  let @Taker = fn(@Tuple<PosInt, Int> -> @Int) effects(pure) { 1 };
+  apply_fn(@Taker.0, apply_fn(@Maker.0, @Int.0))
+}
+"""
+
+#: The closure prologue's own component guard, measured from the trap.  It
+#: names the CLOSURE's rendered signature rather than a caller's, which is
+#: what pins the check to the boundary the obligation points at.
+_A1_TUPLE_TRAP_SITE = "Refinement violation in fn(@Tuple<@PosInt, @Int> -> @Int)"
+_A1_TUPLE_TRAP_WHAT = "parameter (tuple component): @Int.0 > 0 failed"
+
+
+class TestClosureArgumentNestedGuardednessIsTypeDerived:
+    """A closure argument's guardedness is the SITE half AND the TYPE half.
+
+    "closure argument" is in `_REFINED_BIND_GUARDED_SITES`, so the site half
+    answers True for both cells below.  That alone is not the answer: codegen
+    decomposes a refined formal at a boundary through TUPLES and nothing else
+    (`_emit_component_refinement_guards`), so where the refinement sits INSIDE
+    the formal's type decides whether any check is emitted for it.  The verifier
+    intersects the two — `_refined_bind_site_guarded(site) and
+    _nested_refinements_guarded(formal_ty)` — and these cells pin that second
+    conjunct at the one position where it is actually read.
+
+    The pair is a differential, not two independent claims.  The fixtures are
+    identical apart from the carrier the `Taker` formal writes `PosInt` inside,
+    `Option<PosInt>` against `Tuple<PosInt, Int>`, so a derivation that dropped
+    the type half and answered from the roster alone would call BOTH guarded —
+    and the `Option` cell's run is the evidence that would be a false promise:
+    `-4` crosses the boundary and `f` returns normally, with no check anywhere
+    to fulfil a `tier3`.  That is #1362's misclassification exactly, which is
+    why the status is measured against what the program does rather than on its
+    own.
+
+    Both obligations carry E506.  The code is not the discriminator here — a
+    `tier3` carries the informational "will be checked at run time" wording
+    under the same code the unguarded warning uses — so the STATUS is what
+    separates them, and both are asserted as a pair so neither can drift alone.
+    """
+
+    def test_an_option_payload_formal_records_the_unguarded_tier3(
+        self, tmp_path: Path,
+    ) -> None:
+        """`Option<PosInt>`: the type half says no, so the status must too.
+
+        Codegen's boundary decomposition never opens an `Option`, so the
+        refinement on its payload reaches no guard.  `tier3_unguarded` + E506
+        is the honest record; a plain `tier3` would claim a runtime check that
+        the companion run below shows does not exist.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _A1_CLOSURE_OPTION, name="a1a.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("tier3_unguarded", "E506")], obs
+        _assert_partition(envelope)
+
+    def test_and_the_option_payload_crosses_the_boundary_unchecked(
+        self, tmp_path: Path,
+    ) -> None:
+        """The run that makes the status above a measurement.
+
+        `-4` is chosen because no fallback can coincide with it: a clamp to
+        zero would still violate `> 0`, so a trap here could only come from a
+        real guard.  None fires — `f` returns the closure's `1` and exits 0 —
+        which is precisely what `tier3_unguarded` reports.
+        """
+        out = _run(tmp_path, _A1_CLOSURE_OPTION, "--fn", "f", "--", "-4",
+                   name="a1b.vera")
+        assert out.strip() == "1", (
+            f"expected the unguarded `Option` payload to cross the closure "
+            f"boundary and the program to run on:\n{out}"
+        )
+        assert "Refinement violation" not in out, (
+            f"a guard fired at a boundary the obligation records as "
+            f"unguarded, so the status is wrong in the other direction:\n{out}"
+        )
+
+    def test_a_tuple_component_formal_records_the_guarded_tier3(
+        self, tmp_path: Path,
+    ) -> None:
+        """`Tuple<PosInt, Int>`: the one carrier the decomposition reaches.
+
+        Same site, same opaque producer, same predicate — only the carrier
+        differs, and with it the type half.  `tier3` (counted in the totals)
+        rather than `tier3_unguarded`, because here the promised check is
+        real; the next cell runs it.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _A1_CLOSURE_TUPLE, name="a1c.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("tier3", "E506")], obs
+        assert envelope["verification"]["tier3_runtime"] == 1, envelope
+        _assert_partition(envelope)
+
+    def test_and_the_tuple_component_traps_at_the_closure_prologue(
+        self, tmp_path: Path,
+    ) -> None:
+        """The guard the `tier3` promises, run.
+
+        The trap text is asserted rather than the exit code, because an exit
+        code cannot say WHICH check fired.  It names the closure's own
+        signature and the tuple-component parameter position, so the check is
+        the one at the boundary the obligation points at — not a producer's
+        return guard standing in for it, which is the confound a refined-return
+        producer would have introduced here.
+        """
+        out = _run(tmp_path, _A1_CLOSURE_TUPLE, "--fn", "f", "--", "-4",
+                   name="a1d.vera")
+        assert _A1_TUPLE_TRAP_SITE in out, (
+            f"the `tier3` promises a runtime check at the closure boundary "
+            f"and none fired there:\n{out}"
+        )
+        assert _A1_TUPLE_TRAP_WHAT in out, out
+
+        ok = _run(tmp_path, _A1_CLOSURE_TUPLE, "--fn", "f", "--", "7",
+                  name="a1e.vera")
+        assert ok.strip() == "1", (
+            f"the guard rejects a satisfying component, so the trap above "
+            f"witnesses nothing about the predicate:\n{ok}"
+        )

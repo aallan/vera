@@ -386,12 +386,29 @@ def test_1410_disclosed_producer_argument_is_not_verified(tmp_path: Path) -> Non
     _assert_accounting(tmp_path, _1410_REPRO)
 
 
+def _assert_refuses_the_payload(proc: "subprocess.CompletedProcess[str]") -> None:
+    """The compiled program REFUSES the value the refinement forbids.
+
+    Which check catches it first is not the property under test.  Before
+    #765 the payload travelled unguarded to `consume`, whose postcondition
+    refuted it; since #765 the constructor sub-pattern bind guards the
+    payload where it is unwrapped and traps first.  Both are the contract
+    refusing at run time, which is what makes a Tier-1 claim about this
+    program a soundness bug.  A clean exit still reds this, which is the
+    force the original assertion had.
+    """
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, proc.stdout
+    assert ("Postcondition violation in consume" in out
+            or "Refinement violation in constructor sub-pattern" in out), out
+
+
 def test_1410_run_still_refutes_the_contract(tmp_path: Path) -> None:
     """The differential half: the compiled program disagrees with a Tier-1
     claim, which is what makes the obligation's absence a soundness bug."""
     proc = _run(tmp_path, _1410_REPRO, "-7.0")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 def test_1410_verify_still_exits_zero_with_a_warning(tmp_path: Path) -> None:
@@ -459,7 +476,7 @@ def test_wrapper_chain_discloses_at_every_link(tmp_path: Path) -> None:
 
     proc = _run(tmp_path, _WRAPPER, "-7.0", name="w1.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 # =====================================================================
@@ -479,7 +496,7 @@ def test_unrefined_payload_argument_is_refuted(tmp_path: Path) -> None:
 def test_unrefined_payload_run_refutes(tmp_path: Path) -> None:
     proc = _run(tmp_path, _UNREFINED_PAYLOAD, "-7.0")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 def test_tuple_component_argument_status_matches_its_guard(
@@ -917,7 +934,7 @@ def test_imported_callee_argument_carries_the_obligation(
 
     run = _cli("run", str(main), "--fn", "f", "--", "-7.0")
     assert run.returncode != 0
-    assert "Postcondition violation in consume" in (run.stdout + run.stderr)
+    _assert_refuses_the_payload(run)
 
 
 _XMOD_DISCLOSED_LIB = """\
@@ -988,7 +1005,7 @@ def test_imported_disclosed_producer_demotes_through_the_manifest(
 
     run = _cli("run", str(main), "--fn", "f", "--", "-7.0")
     assert run.returncode != 0
-    assert "Postcondition violation in consume" in (run.stdout + run.stderr)
+    _assert_refuses_the_payload(run)
 
 
 # =====================================================================
@@ -1031,11 +1048,16 @@ def test_array_literal_return_is_a_construction_not_a_disclosure() -> None:
     return (the element predicate is not statable) and, being disclosed,
     poisoned every caller: two E506 warnings about elements that are
     manifestly positive.  Whether an array literal's ELEMENTS are obligated is
-    a separate pre-existing question; reporting the gap at the boundary would
-    claim this rule had found it.
+    a separate question, closed by #1426's construction descent: each element
+    is now obligated where it is built, and `1`, `2`, `3` PROVE.  The property
+    here is unchanged by that — the boundary discloses nothing — so the cell
+    reads for the absence of a DISCLOSURE rather than the absence of every
+    record, which would have made it a restatement of what the other rule
+    does.
     """
     binds = _refine_binds(_ARRAY_LITERAL_RETURN, "mk")
-    assert binds == [], _statuses(binds)
+    statuses = _statuses(binds)
+    assert all(status == "verified" for status, _ in statuses), statuses
 
 
 def test_clean_forwarding_return_still_verifies() -> None:
@@ -1488,7 +1510,7 @@ def test_a_constructor_field_claims_its_nested_refinement(
 
     proc = _run(tmp_path, _NESTED_FIELD_CONSTRUCTION, "-7.0", name="b.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 # F6 — an effect operation's argument.
@@ -1613,7 +1635,7 @@ def test_every_spelling_of_a_disclosed_producer_is_disclosed_somewhere(
 
     proc = _run(tmp_path, src, "-7.0", name=f"{spelling}.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 # F4b — a `let` binder publishing a nested-refined type.
@@ -1646,7 +1668,7 @@ def test_a_let_binder_publishing_a_refined_component_is_obligated(
 
     proc = _run(tmp_path, _LET_PUBLISHES_REFINED, "-7.0", name="lp.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 _LAUNDERING_RETURN = _PRELUDE + _UNREFINED_OPT + _CONSUME_OPT + """
