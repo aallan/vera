@@ -1097,7 +1097,7 @@ One script is deliberately outside that set. `check_corpus_differential.py` comp
 
 Three readings answer "how many open bugs are there": `KNOWN_ISSUES.md`'s `## Bugs` rows, `ROADMAP.md`'s burndown rows, and the burndown header word.  `check_doc_counts.py` requires all three to agree, and they have to be able to agree at **zero** — the state a burndown exists to reach.  These are the forms it accepts, and nothing else:
 
-**`KNOWN_ISSUES.md`.** The `## Bugs` heading stays, its standing description of what the table is stays, the table goes, and the section's last non-empty line is exactly `No known bugs.`  `SKILL.md`'s "Known Bugs and Workarounds" mirrors it.  The marker is read *beside* the description rather than instead of it: deleting the description as well would lose the file's statement of the one-to-one convention.
+**`KNOWN_ISSUES.md`.** The `## Bugs` heading stays, its standing description of what the table is stays, the table goes, and the section's last non-empty line is exactly `No known bugs.`  `SKILL.md`'s "Known Bugs and Workarounds" carries the same marker text by the same convention, but nothing counts its rows, so only the heading surviving is gated there (by `check_limitations_sync.py`) and the marker's position is free.  The marker is read *beside* the description rather than instead of it: deleting the description as well would lose the file's statement of the one-to-one convention.
 
 **`ROADMAP.md`, retired.** A burndown whose rows are all closed is past, so the whole `## The vX.Y.Z burndown` section is deleted, heading included; the record lives in `HISTORY.md` and `CHANGELOG.md`.  This is the primary form, and its absence *reads as zero* rather than as a missing section.
 
