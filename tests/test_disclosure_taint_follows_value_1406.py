@@ -440,11 +440,22 @@ def test_1410_the_argument_position_is_unchanged_by_this_fix(
 # Warm == cold
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("spelling", ["let_bound", "wrap1"])
+@pytest.mark.parametrize(
+    "spelling", ["let_bound", "wrap1", "where_helper"])
 def test_1407_a_warm_session_agrees_with_the_cold_run(
     tmp_path: Path, spelling: str,
 ) -> None:
     """And keeps agreeing across a replay.
+
+    `where_helper` is here because it is the one that broke (#1418 review
+    F2).  The session's loop walks `program.declarations` and used to cache a
+    bool about the top-level name, so a `where` helper that forwards a
+    disclosed value — added to `_result_disclosed_fns` while its PARENT's
+    slice was verified, never a `decl.name` itself — was dropped, the warm
+    fixpoint settled one hop early, and warm proved at Tier 1 exactly what
+    cold demoted.  Parametrising over only the two spellings that worked is
+    what let it through, so the parametrisation is now the full set of
+    forwarding shapes rather than a sample.
 
     The warm path assembles its stream from cached per-function slices, and a
     replayed slice re-runs no body — so the wrapper's "hands on a disclosed
@@ -775,20 +786,28 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     import ast as pyast
     import inspect
 
+    import vera.smt as smt_mod
     import vera.verifier as verifier_mod
 
     #: The functions that BUILD a declared-type fact about a value.  A reader
     #: is any function that calls one of these and then assumes the result.
     producers = {"_term_source_fact", "_subpattern_source_facts_term"}
 
-    src_file = inspect.getsourcefile(verifier_mod)  # not cwd-dependent
-    assert src_file is not None
-    source = Path(src_file).read_text(encoding="utf-8")
-    tree = pyast.parse(source)
+    # Both modules (#1418 review F5).  Every producer lives in the verifier
+    # today, so the SMT half of this walk currently finds none and is
+    # VACUOUS there — it is included so that a premise seeded next to the
+    # recording hook, which now lives in that layer, is inside the check by
+    # existing code rather than by someone remembering to widen it.  The
+    # roster assertion below is what stops the whole cell going vacuous.
+    trees = []
+    for mod in (verifier_mod, smt_mod):
+        src_file = inspect.getsourcefile(mod)  # not cwd-dependent
+        assert src_file is not None
+        trees.append(pyast.parse(Path(src_file).read_text(encoding="utf-8")))
 
     defined: set[str] = set()
     calls: dict[str, set[str]] = {}
-    for node in pyast.walk(tree):
+    for node in [n for tree in trees for n in pyast.walk(tree)]:
         if not isinstance(node, (pyast.FunctionDef, pyast.AsyncFunctionDef)):
             continue
         defined.add(node.name)
@@ -912,3 +931,168 @@ def test_1399_the_demotion_still_names_the_import_it_came_from(
         f"only that something somewhere was not established — {text}"
     )
     assert "oplib.vera" in text and "E506" in text, text
+
+
+# ---------------------------------------------------------------------------
+# #1418 review F1 — the value the SMT layer LOST still carries its taint
+# ---------------------------------------------------------------------------
+
+# Where translation fails, a fresh stand-in constant replaces the value and
+# the recorded provenance is severed — while every reader still takes the
+# payload refinement off the binding's DECLARED type.  That is #1363's
+# asymmetry one layer down, and it is carrier-dependent, which is what made
+# it easy to miss: over an `Option<Nat>` payload the identical tuple spelling
+# translates and demotes correctly, so only a carrier whose binding falls to
+# `_fresh_opaque_slot` exhibits it.
+_TUPLE_LAUNDER = """{
+  let @Tuple<Option<PosInt>, Int> = Tuple(mk(@Float64.0), 1);
+  let Tuple<@Option<PosInt>, @Int> = @Tuple<Option<PosInt>, Int>.0;
+  match @Option<PosInt>.0 {
+""" + _ARMS + """
+  }
+}
+"""
+
+_F1_BODIES = {
+    # A `let` the SMT layer cannot translate: the stand-in is minted by
+    # `_fresh_opaque_slot`, and the destructure projects out of it.
+    "tuple_destructure": _F + _TUPLE_LAUNDER,
+    # An array literal: its constant is related to its elements only by
+    # axiom, so the occurrence walk cannot reach the element's term.
+    "array_index": _F + "{\n  let @Array<Option<PosInt>> = [mk(@Float64.0)];\n"
+                        "  match @Array<Option<PosInt>>.0[0] {\n"
+                        + _ARMS + "\n  }\n}\n",
+    # Both halves at once: the wrapper launders through the tuple, so the
+    # INTER-function taint has to survive the lost value too.
+    "wrapper_through_tuple": """
+private fn wtup(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Tuple<Option<PosInt>, Int> = Tuple(mk(@Float64.0), 1);
+  let Tuple<@Option<PosInt>, @Int> = @Tuple<Option<PosInt>, Int>.0;
+  @Option<PosInt>.0
+}
+""" + _F + "{\n  match wtup(@Float64.0) {\n" + _ARMS + "\n  }\n}\n",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_F1_BODIES))
+def test_1418_f1_a_lost_value_still_carries_its_disclosure(
+    tmp_path: Path, shape: str,
+) -> None:
+    """A stand-in inherits the disclosure of the expression it replaces.
+
+    Each of these was `verified` at Tier 1 while `vera run --fn f -- -7.0`
+    refuted the postcondition — on the pre-#1402 base, on this PR's first
+    head, and on the rebase — because the gate compared a term the disclosed
+    call never reached.  The repair is at the mint, not at the reader: the
+    stand-in is recorded as a disclosed value, so every reader's gate answers
+    True for it without any of them learning about opaque slots.
+    """
+    source = _POSINT + _MK_DISCLOSED + _F1_BODIES[shape]
+    result = _verify(tmp_path, source)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert ("refine_bind", "tier3_unguarded", "E506") in [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+    ], "the producer did not disclose, so this cell measures nothing"
+    assert _f_ensures(result) == ("tier3", "E534"), _f_ensures(result)
+    out = _run(tmp_path, source)
+    assert "Postcondition violation in f" in out, (
+        f"{shape}: the fixture did not reach the postcondition, so it reports "
+        f"no verdict about soundness:\n{out[-700:]}"
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(_F1_BODIES))
+def test_1418_f1_a_lost_clean_value_still_proves(
+    tmp_path: Path, shape: str,
+) -> None:
+    """The over-rejection control: losing the value is not itself a demotion.
+
+    A stand-in is minted for the clean producer's binding too, so a fix that
+    tainted every opaque slot would pass the cells above and destroy Tier-1
+    verification for every untranslatable `let` in the language.
+    """
+    source = _POSINT + _MK_CLEAN + _F1_BODIES[shape]
+    result = _verify(tmp_path, source)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("verified", None), _f_ensures(result)
+    out = _run(tmp_path, source)
+    assert "violation" not in out and out.strip().endswith("7"), out[-400:]
+
+
+# ---------------------------------------------------------------------------
+# #1418 review F3 — a shared bare name must not demote a clean caller
+# ---------------------------------------------------------------------------
+
+def _collide_source(second_helper: str) -> str:
+    """Two top-level functions, each with its own `where` helper: one
+    forwarding the disclosed producer, one forwarding the clean one."""
+    return _POSINT + _MK_DISCLOSED + """
+private fn mk_ok(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(7)
+}
+
+public fn tainted(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match h(@Float64.0) {
+""" + _ARMS + """
+  }
+}
+where {
+  fn h(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    mk(@Float64.0)
+  }
+}
+""" + _F + "{\n  match " + second_helper + "(@Float64.0) {\n" + _ARMS + """
+  }
+}
+where {
+  fn """ + second_helper + """(@Float64 -> @Option<PosInt>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    mk_ok(@Float64.0)
+  }
+}
+"""
+
+
+@pytest.mark.parametrize("second_helper", ["h", "h2"])
+def test_1418_f3_a_shared_helper_name_does_not_demote_a_clean_caller(
+    tmp_path: Path, second_helper: str,
+) -> None:
+    """Keyed by scope, so a bare name shared across owners is not shared.
+
+    `_result_disclosed_fns` was keyed by `decl.name`, and a `where` helper's
+    bare name means a different function in every top-level owner — so one
+    owner's tainted helper took the other owner's clean caller down with it
+    (#1418 review F3).  A completeness loss rather than a soundness one, but
+    a loss, and one this PR introduced by extending the set to forwarders.
+
+    Both parametrisations must give the same answer: the collision is now
+    settled by scope, so renaming the helper changes nothing.
+    """
+    result = _verify(tmp_path, _collide_source(second_helper))
+    assert result["ok"] is True, result.get("diagnostics")
+    ensures = [(o["status"], o.get("error_code")) for o in result["obligations"]
+               if o["kind"] == "ensures" and o["description"] == "@Int.result > 0"]
+    assert ensures == [("tier3", "E534"), ("verified", None)], (
+        f"helper named {second_helper!r}: the tainted caller must demote and "
+        f"the clean one must not — got {ensures}"
+    )

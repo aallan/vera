@@ -9,6 +9,8 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 
 from __future__ import annotations
 
+import dataclasses
+
 import contextlib
 import os
 import re
@@ -1698,6 +1700,12 @@ class SmtContext:
         index_fn = self._get_index_fn(array_sort, element_sort)
         for i, elt in enumerate(element_z3s):
             self.solver.add(index_fn(lit_const, z3.IntVal(i)) == elt)
+        # #1418 review F1: the literal's own constant is a STAND-IN — an
+        # element's term is related to it only by the axioms above, which the
+        # occurrence walk cannot see — so a disclosed element must be
+        # inherited explicitly or indexing the value back out severs the
+        # taint.
+        self._inherit_disclosure(expr, lit_const)
         return lit_const
 
     def _translate_unary(
@@ -2623,7 +2631,65 @@ class SmtContext:
         if span is None:  # pragma: no cover — parser always spans statements
             return None
         self._opaque_tainted = True
-        return z3.Const(f"_opaque_{tag}_{span.line}_{span.column}", sort)
+        stand_in = z3.Const(f"_opaque_{tag}_{span.line}_{span.column}", sort)
+        self._inherit_disclosure(node, stand_in)
+        return stand_in
+
+    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
+        """A stand-in term inherits the disclosure of the value it replaces.
+
+        #1363's asymmetry, one layer down (#1418 review F1).  Where the SMT
+        layer LOSES a value — a ``let`` whose RHS it cannot translate, an
+        array literal whose elements it can only relate by axiom — it mints a
+        fresh constant, and the recorded provenance of any disclosed call
+        inside that expression is severed.  Every reader still takes the
+        payload refinement off the binding's DECLARED type, so the fact
+        survives while the taint does not, and a `Tuple(mk(x), 1)`
+        destructured back out proved at Tier 1 over a value the program
+        refutes.  Carrier-dependent, which is what made it easy to miss: the
+        same spelling whose binding happens to translate demotes correctly.
+
+        Called at every mint rather than at the two known callers, so a
+        future stand-in is covered by existing code.  The walk is over ONE
+        expression's subtree and runs only when a verifier is driving.
+        """
+        if self._disclosed_call_hook is None:
+            return
+        found, sites = self._disclosed_calls_in(node)
+        if not found:
+            return
+        self._disclosed_terms.append(stand_in)
+        if sites:
+            self._disclosed_term_sites.setdefault(
+                stand_in.get_id(), []).extend(sites)
+
+    def _disclosed_calls_in(self, node: object) -> tuple[bool, list[Any]]:
+        """Whether *node*'s subtree contains a disclosed call, and its sites.
+
+        Answers over the AST rather than the Z3 term precisely because this
+        is the path where there is no usable term: the question is what the
+        expression MEANS, not what survived translation of it.
+        """
+        found = False
+        sites: list[Any] = []
+        stack: list[object] = [node]
+        seen: set[int] = set()
+        while stack:
+            cur = stack.pop()
+            if id(cur) in seen:
+                continue
+            seen.add(id(cur))
+            if isinstance(cur, (ast.FnCall, ast.ModuleCall)):
+                hit, hit_sites = self._disclosed_call_hook(cur)
+                if hit:
+                    found = True
+                    sites.extend(hit_sites)
+            if isinstance(cur, ast.Node):
+                stack.extend(
+                    getattr(cur, f.name) for f in dataclasses.fields(cur))
+            elif isinstance(cur, (list, tuple)):
+                stack.extend(cur)
+        return found, sites
 
     def _term_mentions_opaque(self, term: z3.ExprRef) -> bool:
         """#1199: True when *term* contains an ``_opaque_``-named constant

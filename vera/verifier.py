@@ -590,6 +590,15 @@ class ContractVerifier:
         # forwarder hands on a purely local disclosure, which needs no
         # citation: its own E504/E506 is in this run's output.
         self._result_disclosed_fns: dict[str, list[DisclosureSite]] = {}
+        # #1418 review F3: the TOP-LEVEL owner whose lexical scope the
+        # function under verification sits in — itself, or the outermost
+        # ancestor of a `where` helper.  A helper's forwarding is keyed under
+        # it (`_result_disclosed_key`), so two helpers of the same bare name
+        # in different top-level functions no longer share an entry: one
+        # forwarding a disclosed producer used to demote the other's clean
+        # caller.  Set beside `_scope_fn_names`, from the same `(decl,
+        # enclosing)`, so visibility and keying cannot disagree.
+        self._scope_owner: str = ""
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -3507,6 +3516,8 @@ class ContractVerifier:
             for group in (decl, *enclosing)
             for wfn in group.where_fns or ()
         )
+        # F3: the same `(decl, enclosing)`, as the owning top-level name.
+        self._scope_owner = enclosing[-1].name if enclosing else decl.name
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
@@ -3698,8 +3709,9 @@ class ContractVerifier:
         #       hop per pass, so a chain of wrappers of any depth terminates
         #       for the reason the fixpoint already terminates.
         if smt.term_is_disclosed(body_expr):
-            self._result_disclosed_fns[decl.name] = smt.disclosed_term_sites(
-                body_expr)
+            self._result_disclosed_fns[
+                self._result_disclosed_key(decl.name, is_helper=bool(enclosing))
+            ] = smt.disclosed_term_sites(body_expr)
 
         # 5.5. Check primitive-operation safety obligations (spec §6.4.3):
         #      @Nat - @Nat underflow (#520), and division/modulo by zero
@@ -6573,14 +6585,6 @@ class ContractVerifier:
                         stmt.value,
                         (ast.SlotRef, ast.FnCall, ast.ModuleCall),
                     )
-                    # #1413: the THIRD reader.  "A call — its callee discharged
-                    # the return type" is precisely the premise disclosure
-                    # withdraws, so a source this run disclosed is not
-                    # guaranteed however it is spelled.  A `SlotRef` source is
-                    # answered by its TERM (translating one is an env lookup,
-                    # recording no obligation); a call by its callee, which
-                    # covers a forwarding wrapper too, the fixpoint having put
-                    # it in the disclosed set by then.
                     # #1413: the THIRD reader.  "A call — its callee
                     # discharged the return type" is precisely the premise
                     # disclosure withdraws, so a guaranteed source is not
@@ -9269,6 +9273,40 @@ class ContractVerifier:
         return self._established_facts(
             facts, source=scrutinee, term=scrutinee_z3, smt=smt)
 
+    def _result_disclosed_key(self, name: str, *, is_helper: bool) -> str:
+        """The key a forwarding function's disclosure is recorded under (F3).
+
+        A top-level name is its own key: it is visible program-wide, and every
+        other disclosure set here is keyed that way.  A ``where`` helper's is
+        qualified by the top-level owner whose scope it lives in, because its
+        bare name means different functions in different owners — and keying
+        it bare made one owner's tainted helper demote another owner's clean
+        caller, which is a completeness loss rather than a soundness one but
+        is a loss all the same.
+
+        Two helpers of the same name under ONE top-level owner still share a
+        key.  That is the diamond #991 addresses for resolution and this does
+        not: the residual is a demotion, the safe direction, and narrowing it
+        further means carrying the whole lexical chain as the key rather than
+        its root.
+        """
+        return f"{self._scope_owner}\x1fwhere\x1f{name}" if is_helper else name
+
+    def _scoped_forwarder_hit(self, name: str) -> bool:
+        """Whether *name*, called from the scope under verification, resolves
+        to a ``where`` helper this run found to be forwarding a disclosed
+        value (F3).
+
+        Asked only for a name the lexical chain actually supplies
+        (`_scope_fn_names`), so a top-level call is never answered by another
+        function's helper — the mirror of the visibility test
+        `_local_fn_names_in_scope` already applies to the manifest consult.
+        """
+        if name not in self._scope_fn_names:
+            return False
+        return self._result_disclosed_key(
+            name, is_helper=True) in self._disclosed_fns
+
     def _disclosed_call_for_value(
         self, call_node: ast.Expr,
     ) -> tuple[bool, list[DisclosureSite]]:
@@ -9304,6 +9342,9 @@ class ContractVerifier:
             # which is the gap #1399 closed for the direct spelling.
             name = getattr(call_node, "name", "")
             sites = list(self._result_disclosed_fns.get(name, ()))
+            if not sites and name:
+                sites = list(self._result_disclosed_fns.get(
+                    self._result_disclosed_key(name, is_helper=True), ()))
         return hit, sites
 
     def _established_facts(
@@ -9418,6 +9459,11 @@ class ContractVerifier:
             return False
         name = scrutinee.name
         if name in self._disclosed_fns:
+            return True
+        # F3: a `where` helper's forwarding is keyed under its owner, so the
+        # bare-name test above cannot see it; this asks the scoped question,
+        # and only for a name the lexical chain supplies.
+        if self._scoped_forwarder_hit(name):
             return True
         if isinstance(scrutinee, ast.ModuleCall):
             if self._module_qualified_base(

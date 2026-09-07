@@ -311,21 +311,32 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
-                if cached.result_disclosed is not None:
-                    result_disclosed[decl.name] = cached.result_disclosed
+                # F2: the slice's whole contribution, `where` helpers with
+                # it.  Seeded back onto the verifier as well as into the
+                # session's set, because a LATER fresh slice consults
+                # `_result_disclosed_fns` for the citation behind a forwarder
+                # and would otherwise see a hole where a replayed slice sat.
+                result_disclosed.update(cached.result_disclosed)
+                verifier._result_disclosed_fns.update(cached.result_disclosed)
                 stats.replayed_fns += 1
                 continue
 
             d0 = len(verifier.errors)
             o0 = len(verifier.obligations)
+            before = dict(verifier._result_disclosed_fns)
             verifier._verify_fn(decl)
+            # F2: the DELTA this slice produced — the declaration itself and
+            # any `where` helper of it that forwards a disclosed value.
+            contributed = {
+                k: v for k, v in verifier._result_disclosed_fns.items()
+                if k not in before or before[k] != v
+            }
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
-                result_disclosed=verifier._result_disclosed_fns.get(decl.name),
+                result_disclosed=contributed,
             )
-            if entry.result_disclosed is not None:
-                result_disclosed[decl.name] = entry.result_disclosed
+            result_disclosed.update(contributed)
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
             out_obls.extend(entry.obligations)

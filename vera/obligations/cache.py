@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import hashlib
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Iterator
 
 from vera import ast
@@ -189,16 +189,25 @@ class FnCacheEntry:
     contributes no obligation saying so, and the cold path collects it while
     translating the body — which a replay does not do.  Left uncached, a
     replayed wrapper would drop out of the disclosed set and the warm run
-    would prove at Tier 1 what the cold run demotes.  ``None`` means the
-    function hands on nothing; a list — possibly empty, for a purely local
-    disclosure — means it does, and carries the import sites a CALLER's
-    demotion should cite, which a replay cannot re-derive either and without
-    which the warm citation would degrade to the cold one's generic text.
+    would prove at Tier 1 what the cold run demotes.
+
+    It is the slice's WHOLE contribution — every key `_verify_fn` added to
+    `ContractVerifier._result_disclosed_fns` while verifying this
+    declaration, mapped to the import sites a caller's demotion should cite
+    (#1418 review F2).  A bool about the top-level name was not enough:
+    verifying a declaration also verifies its `where` helpers, and a helper
+    that forwards a disclosed value is never itself a `decl.name` in the
+    session's loop, so the warm disclosed set omitted it and the fixpoint
+    settled one hop early — warm proving at Tier 1 exactly what cold demoted,
+    on one of the ten spellings.  Caching the contribution rather than a fact
+    about the name means a future kind of contributor is carried by existing
+    code instead of needing a new field.  An empty dict is a slice that
+    contributed nothing.
     """
 
     diagnostics: list[Diagnostic]
     obligations: list[ProofObligation]
-    result_disclosed: list[Any] | None = None
+    result_disclosed: dict[str, list[Any]] = field(default_factory=dict)
 
 
 class DischargeCache:
