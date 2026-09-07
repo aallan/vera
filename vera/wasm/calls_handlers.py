@@ -12,6 +12,7 @@ from typing import Callable, ClassVar
 from dataclasses import fields, is_dataclass
 
 from vera import ast, naming
+from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
 from vera.skip import STATE_CLAUSE_INLINE_DEPTH_CAP, CodegenSkip
@@ -949,12 +950,21 @@ class CallsHandlersMixin:
         # constructor's String into (result_ptr, result_len).
         def render_ctor(cname: str, fields: list[tuple[int, str, str]]) -> None:
             # Head: `Ctor(` (or `(` for a Tuple; bare `Ctor` for nullary).
+            # The name is baked into the DATA SECTION and reaches stdout, so
+            # it is the user's spelling and not the registry key: #1317 gives
+            # a contended module ADT's constructors an owner-qualified
+            # `mod$<path>$Sq` symbol, and `show(Sq(3))` printed exactly that
+            # (measured: `mod$liba$Sq(3)`, and `string_length` of it 14 where
+            # 5 is right).  `display_adt_name` is the ONE strip, shared with
+            # the diagnostic boundary; a name that was never qualified passes
+            # through unchanged, so nothing else about this rendering moves.
+            display = display_adt_name(cname)
             if is_tuple:
                 head = "("
             elif fields:
-                head = f"{cname}("
+                head = f"{display}("
             else:
-                head = cname
+                head = display
             piece = self._const_string(head)
             instrs.extend(f"  {i}" for i in piece)
             instrs.append(f"  local.set {acc_len}")

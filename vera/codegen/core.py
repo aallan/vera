@@ -410,6 +410,13 @@ class CodeGenerator(
         # declaration ordering: that one is first-wins because a slot has
         # one winner, while contention is a property of each declaration.
         self._module_adt_declarers: dict[str, tuple[tuple[str, ...], ...]] = {}
+        # #1317: `mod$<path>$<Name>` -> the bare name the user wrote, for
+        # every ADT type and constructor the per-owner rename qualified.  The
+        # mangled spelling is a WASM symbol, never a name the reader is asked
+        # to know (#187's own design note), so `_unmangle_adt_names` strips it
+        # back off every diagnostic on its way out.  Empty for every program
+        # with no contended `data` name, which is nearly all of them.
+        self._contended_adt_display_names: dict[str, str] = {}
         # The namespace `_module_alias_scope` currently has installed, so
         # `_sync_alias_env` knows whose membership to apply.
         self._active_module_path: tuple[str, ...] | None = None
@@ -1812,6 +1819,45 @@ class CodeGenerator(
         return None
 
     def compile_program(self, program: ast.Program) -> CompileResult:
+        """Compile a complete Vera program to WebAssembly.
+
+        A thin wrapper over :meth:`_compile_program`, and it exists for one
+        reason: #1317's per-owner ADT rename gives a contended `data` type
+        an internal ``mod$<path>$<Name>`` symbol, and that symbol must never
+        reach the reader (#187's own design note — the mangled name is a
+        WASM detail, not a spelling the user is asked to know).  The
+        compiler has four exits and a diagnostic can be appended from any
+        pass along the way, so the strip is done ONCE here, over the whole
+        stream, rather than at each of the dozens of appends.
+        """
+        result = self._compile_program(program)
+        self._unmangle_adt_names(result.diagnostics)
+        return result
+
+    def _unmangle_adt_names(self, diagnostics: list[Diagnostic]) -> None:
+        """Put the user's own spelling back into every diagnostic (#1317).
+
+        Rewrites in place, over the exact table the rename built
+        (``_contended_adt_display_names``) rather than by pattern-matching
+        ``mod$…`` — so a FUNCTION mangled by #814's rerouting, which is a
+        different rename with its own reporting, is left exactly as it was,
+        and no user identifier that merely resembles the scheme can be
+        rewritten by accident.  A no-op for every program with no contended
+        `data` name, which is nearly all of them.
+        """
+        if not self._contended_adt_display_names:
+            return
+        for diag in diagnostics:
+            for attr in ("description", "rationale", "fix"):
+                text = getattr(diag, attr, None)
+                if not text:
+                    continue
+                for mangled, bare in self._contended_adt_display_names.items():
+                    text = text.replace(mangled, bare)
+                if text != getattr(diag, attr):
+                    setattr(diag, attr, text)
+
+    def _compile_program(self, program: ast.Program) -> CompileResult:
         """Compile a complete Vera program to WebAssembly."""
         # Pass 0a: reject programs with typed holes
         holes = _find_holes(program)

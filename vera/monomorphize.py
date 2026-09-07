@@ -4066,3 +4066,122 @@ class Monomorphizer:
         result = self._substitute_in_ast(te, mapping)
         assert isinstance(result, ast.TypeExpr)  # noqa: S101
         return result
+
+
+def qualify_contended_data_decls(
+    program: ast.Program,
+    types: Mapping[str, str],
+    ctors: Mapping[str, str],
+) -> ast.Program:
+    """Rename CONTENDED data types and constructors inside ONE namespace
+    (#1317, the data half of #187).
+
+    The ADT analogue of :func:`qualify_nested_generic_decls`, and the same
+    device for the same reason.  Codegen keys every ADT registry by bare
+    name — layouts, constructor layouts, the constructor-to-ADT map,
+    type-parameter metadata, the structural-``Eq`` helper namer, the export
+    table — so two modules declaring ``data Shape`` contend for one slot
+    however the importer filters or shadows them, and E609/E610 refused the
+    pair outright rather than let the second silently take the first's
+    layout.
+
+    Qualifying the name makes ADT identity ``(owner, name)`` BY
+    CONSTRUCTION, exactly as #1029 does for nested generics: every
+    downstream consumer keys on a name that is now unique, so none of them
+    needs a per-owner lookup of its own and none of them can be the one
+    that was missed.  *types* and *ctors* map the bare names THIS namespace
+    can see to their qualified spellings; a name absent from either map is
+    left alone, which is what keeps the rewrite to the contended
+    declarations and leaves every other program's emitted WAT
+    byte-identical.
+
+    ``$`` cannot appear in a source identifier, so a qualified name
+    collides with nothing user-writable — the same guarantee the ``mod$``
+    function mangling relies on.  It is an internal WASM symbol and never
+    reaches the reader: ``CodeGenerator._unmangle_adt_names`` strips it
+    back off at the diagnostic boundary (#187's own design note — whether
+    the mangled name is visible to the user, answered "no").
+
+    Applied per NAMESPACE, with that namespace's own map: a module's own
+    renamed declaration and every renamed declaration it can NAME through
+    its imports are rewritten together, so a chain ``entry -> mid -> deep``
+    keeps agreeing about which symbol ``Shape`` denotes.  The ENTRY
+    program is never rewritten and never needs to be — the declaration the
+    entry's bare name denotes is precisely the one that keeps the bare
+    spelling (``CrossModuleMixin._contended_adt_renames``).
+    """
+    if not types and not ctors:
+        return program
+
+    def walk(node: object) -> object:
+        if isinstance(node, ast.NamedType):
+            new_name = types.get(node.name, node.name)
+            args = node.type_args
+            new_args = (
+                tuple(cast(ast.TypeExpr, walk(a)) for a in args)
+                if args is not None else None
+            )
+            if new_name == node.name and new_args is args:
+                return node
+            return replace(node, name=new_name, type_args=new_args)
+        if isinstance(node, (ast.SlotRef, ast.ResultRef)):
+            new_name = types.get(node.type_name, node.type_name)
+            args = node.type_args
+            new_args = (
+                tuple(cast(ast.TypeExpr, walk(a)) for a in args)
+                if args is not None else None
+            )
+            if new_name == node.type_name and new_args is args:
+                return node
+            return replace(node, type_name=new_name, type_args=new_args)
+        # The four CONSTRUCTOR spellings, and all four are load-bearing: an
+        # arity-0 constructor is its own node in both expression and pattern
+        # position (``ast.NullaryConstructor`` / ``ast.NullaryPattern``), so
+        # rewriting only the applied pair would leave ``data Colour { Red,
+        # Green(Int) }`` half-renamed — ``Green`` resolving to the module's
+        # layout and ``Red`` to whatever else holds the bare name.
+        if isinstance(node, (ast.ConstructorCall, ast.ConstructorPattern,
+                             ast.NullaryConstructor, ast.NullaryPattern,
+                             ast.Constructor)):
+            new_name = ctors.get(node.name, node.name)
+            changed: dict[str, Any] = {}
+            for f in fields(node):
+                if f.name == "name":
+                    continue
+                old = getattr(node, f.name)
+                new = walk(old)
+                if new is not old:
+                    changed[f.name] = new
+            if new_name != node.name:
+                changed["name"] = new_name
+            return replace(node, **changed) if changed else node
+        if isinstance(node, ast.DataDecl):
+            new_name = types.get(node.name, node.name)
+            changed = {}
+            for f in fields(node):
+                if f.name == "name":
+                    continue
+                old = getattr(node, f.name)
+                new = walk(old)
+                if new is not old:
+                    changed[f.name] = new
+            if new_name != node.name:
+                changed["name"] = new_name
+            return replace(node, **changed) if changed else node
+        if isinstance(node, ast.Node):
+            changed = {}
+            for f in fields(node):
+                old = getattr(node, f.name)
+                new = walk(old)
+                if new is not old:
+                    changed[f.name] = new
+            return replace(node, **changed) if changed else node
+        if isinstance(node, tuple):
+            walked = tuple(walk(x) for x in node)
+            return walked if any(
+                a is not b for a, b in zip(walked, node)) else node
+        if isinstance(node, list):  # pragma: no cover — AST tuples are frozen
+            return [walk(x) for x in node]
+        return node
+
+    return cast(ast.Program, walk(program))

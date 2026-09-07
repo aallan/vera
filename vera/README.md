@@ -84,7 +84,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `checker/` | 8,110 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
 | `  core.py` | 1,165 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
-| `  modules.py` | 476 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
+| `  modules.py` | 534 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
 | `  registration.py` | 1,032 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 199 | | Eq ability derivation checks | |
@@ -134,7 +134,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  api.py` | 1,402 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
 | `  memory.py` | 105 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
 | `  core.py` | 3,361 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
-| `  modules.py` | 1,425 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) | |
+| `  modules.py` | 2,096 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — and the #1317 per-owner ADT rename (`_contended_adt_renames`), which decides which contended `data` declarations are qualified to `mod$<path>$<Name>` and what each namespace calls them afterwards | |
 | `  registration.py` | 499 | | Pass 1 forward declarations, ADT layout | |
 | `  monomorphize.py` | 1,759 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
 | `  functions.py` | 1,455 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
@@ -770,7 +770,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 13,305 tests across 199 files: compiler-internals unit tests plus a **conformance suite** (250 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 13,361 tests across 200 files: compiler-internals unit tests plus a **conformance suite** (250 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

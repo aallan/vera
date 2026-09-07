@@ -946,9 +946,18 @@ class TestBugRows:
             for line in section.group(1).splitlines()
             if line.startswith("|") and not set(line) <= set("|- ")
         ][1:]  # drop the header row
-        assert table, "the Bugs table is no longer being read"
+        # A burned-down table is a legitimate project state — the one
+        # #1401's zero form exists to express — so the cell has to survive
+        # it, or the fix that closes the last row cannot merge past the
+        # gate that checks it.  What is asserted either way is that the
+        # PARSER agrees with the FILE: a short list is the failure worth
+        # naming, and it reads as one whether the file holds ten rows or
+        # none (PR #1409, the first change to reach zero).
         assert len(rows) == len(table)
         assert len(set(rows)) == len(rows)
+        if not table:
+            assert rows == []
+            assert _MOD.check_bug_rows(text) == []
 
     def test_a_row_with_no_issue_link_is_an_error(self) -> None:
         text = _bugs("| A bug with no tracker. | none |")
