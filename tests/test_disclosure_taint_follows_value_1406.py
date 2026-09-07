@@ -1024,20 +1024,101 @@ _F1_BODIES = {
     "array_index": _F + "{\n  let @Array<Option<PosInt>> = [mk(@Float64.0)];\n"
                         "  match @Array<Option<PosInt>>.0[0] {\n"
                         + _ARMS + "\n  }\n}\n",
-    # Both halves at once: the wrapper launders through the tuple, so the
-    # INTER-function taint has to survive the lost value too.
-    "wrapper_through_tuple": """
-private fn wtup(@Float64 -> @Option<PosInt>)
+}
+
+#: BOTH HALVES AT ONCE: a lost value behind a forwarder, so the inter-function
+#: taint has to survive the mint too.  It lives outside `_F1_BODIES` because
+#: it needs a different carrier, for the reason #1418 review H1 gives: after
+#: #1420/#1435 an `Option<PosInt>` forwarder carries its own
+#: `tier3_unguarded`, which reaches the importer through the
+#: obligation-derived set and leaves the mint doing nothing — measured, the
+#: previous `wrapper_through_tuple` shape passed with the mint reverted, so
+#: `M_mint` reddened two F1 cells rather than three.
+#:
+#: `Option<Nat>` makes the forwarder record nothing, but a TUPLE of it
+#: translates — `_fresh_opaque_slot` is reached zero times — so the tuple
+#: launder would quietly stop being a lost value at all.  An ARRAY is related
+#: to its elements by axiom whatever the payload, so it stays lost on either
+#: carrier.  Array + `Nat` is the intersection: the value is genuinely lost,
+#: AND the forwarder contributes nothing of its own.
+_F1_FORWARDER = """
+private fn mk(@Float64 -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  let @Tuple<Option<PosInt>, Int> = Tuple(mk(@Float64.0), 1);
-  let Tuple<@Option<PosInt>, @Int> = @Tuple<Option<PosInt>, Int>.0;
-  @Option<PosInt>.0
+  Some(%s)
 }
-""" + _F + "{\n  match wtup(@Float64.0) {\n" + _ARMS + "\n  }\n}\n",
+
+private fn warr(@Float64 -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Option<Nat>> = [mk(@Float64.0)];
+  @Array<Option<Nat>>.0[0]
 }
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match warr(@Float64.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 41
+  }
+}
+"""
+
+
+def test_1418_f1_a_lost_value_behind_a_clean_forwarder_still_carries_it(
+    tmp_path: Path,
+) -> None:
+    """The mint and the forwarder hop, composed — and the mint load-bearing.
+
+    `verified` at Tier 1 on `d88bf490` and `tier3`/E534 here; with the
+    stand-in's inheritance reverted it goes back to `verified`, which is what
+    makes this a third cell `M_mint` reds rather than a third cell that
+    happens to pass.
+    """
+    src = _F1_FORWARDER % "float_to_int(@Float64.0)"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    assert ("nat_bind", "tier3_unguarded", "E504") in statuses, statuses
+    # The premise: the forwarder contributes nothing, so the mint is the only
+    # route by which its result can be known to be disclosed.
+    disclosing = [o for o in result["obligations"]
+                  if o["status"] == "tier3_unguarded"
+                  or (o["status"] == "tier3"
+                      and o.get("error_code") == "E534")]
+    assert [o["kind"] for o in disclosing] == ["nat_bind", "ensures"], (
+        f"only `mk`'s narrowing and `f`'s demoted postcondition may disclose "
+        f"here; a forwarder carrying its own would make the mint redundant "
+        f"and this cell vacuous — {statuses}"
+    )
+    hits = [o for o in result["obligations"]
+            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
+    assert len(hits) == 1, statuses
+    assert (hits[0]["status"], hits[0].get("error_code")) == ("tier3", "E534")
+
+
+def test_1418_f1_a_lost_clean_value_behind_a_forwarder_still_proves(
+    tmp_path: Path,
+) -> None:
+    """The control: losing a value is not itself a disclosure."""
+    src = _F1_FORWARDER % "7"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    hits = [o for o in result["obligations"]
+            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
+    assert len(hits) == 1, result["obligations"]
+    assert (hits[0]["status"], hits[0].get("error_code")) == ("verified", None), [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+    ]
 
 
 @pytest.mark.parametrize("shape", sorted(_F1_BODIES))
@@ -1317,56 +1398,55 @@ def test_1418_a_nested_helper_is_keyed_under_the_top_level_owner(
 # sits.  The manifest now emits the union of the obligation-derived set and
 # the result-derived one, which is the same union `_disclosed_fn_names` takes
 # on this side.
-_G1_LIB_ONE_HOP = _POSINT + """
-public fn mk(@Float64 -> @Option<PosInt>)
+#: THE CARRIER IS THE MEASUREMENT HERE, and it is not the one the rest of
+#: this file uses.  After #1420/#1435 a refined RETURN is obligated at every
+#: position that publishes it, so an `Option<PosInt>` forwarder carries its
+#: OWN `tier3_unguarded`/E506 — which puts it in the obligation-derived set
+#: directly, and the cell then passes on `release/v0.2.0` without this PR at
+#: all.  That is what happened: measured on `d88bf490`, the library reported
+#: three unguarded obligations (`mk`, `wrap`, `outer`) and the importer
+#: demoted with the manifest union reverted.  The cell had stopped measuring
+#: G1 (#1418 review H1).
+#:
+#: `Option<Nat>` restores it.  The narrowing is obligated at the CONSTRUCTION
+#: site only, so the library's standalone run carries exactly ONE unguarded
+#: obligation — `mk`'s `nat_bind`/E504 — and the forwarders record nothing of
+#: their own.  The manifest union is then the only route by which the
+#: importer can learn they hand on a disclosed value, which is the claim.
+#: `float_to_int` supplies the opacity exactly as elsewhere: the `>= 0` can
+#: be neither proved nor refuted, which is what `tier3_unguarded` means.
+_G1_MK_DISCLOSED = """
+public fn mk(@Float64 -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {
   Some(float_to_int(@Float64.0))
 }
-
-public fn wrap(@Float64 -> @Option<PosInt>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  mk(@Float64.0)
-}
 """
 
-# Two hops INSIDE the library: `outer` forwards `wrap` forwards `mk`.  The
-# library's own fixpoint has to carry the taint across both before the
-# manifest is read, so this fails differently from the one-hop shape if the
-# manifest were computed from a single pass.
-_G1_LIB_TWO_HOP = _G1_LIB_ONE_HOP + """
-public fn outer(@Float64 -> @Option<PosInt>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  wrap(@Float64.0)
-}
-"""
-
-_G1_LIB_CLEAN = _POSINT + """
-public fn mk(@Float64 -> @Option<PosInt>)
+_G1_MK_CLEAN = """
+public fn mk(@Float64 -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {
   Some(7)
 }
+"""
 
-public fn wrap(@Float64 -> @Option<PosInt>)
+_G1_WRAP = """
+public fn wrap(@Float64 -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
 {
   mk(@Float64.0)
 }
+"""
 
-public fn outer(@Float64 -> @Option<PosInt>)
+_G1_OUTER = """
+public fn outer(@Float64 -> @Option<Nat>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1375,34 +1455,108 @@ public fn outer(@Float64 -> @Option<PosInt>)
 }
 """
 
+_G1_LIB_ONE_HOP = _G1_MK_DISCLOSED + _G1_WRAP
+_G1_LIB_TWO_HOP = _G1_LIB_ONE_HOP + _G1_OUTER
+_G1_LIB_CLEAN = _G1_MK_CLEAN + _G1_WRAP + _G1_OUTER
+
+#: `>= 0` rather than `> 0`: the fact the caller leans on is `@Nat`'s own, and
+#: a postcondition asking for more than the disclosed fact gives would be
+#: refuted rather than disclosed.
+_G1_CALLER_F = """
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+"""
+
+_G1_ARMS = """    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 41"""
+
 
 def _g1_caller(callee: str) -> str:
-    return "import oplib;\n" + _POSINT + _F + (
-        "{\n  match oplib::" + callee + "(@Float64.0) {\n" + _ARMS + "\n  }\n}\n")
+    return ("import oplib;\n" + _G1_CALLER_F + "{\n  match oplib::" + callee
+            + "(@Float64.0) {\n" + _G1_ARMS + "\n  }\n}\n")
+
+
+def _g1_ensures(result: dict) -> tuple[str, str | None]:
+    hits = [o for o in result["obligations"]
+            if o["kind"] == "ensures" and o["description"] == "@Int.result >= 0"]
+    assert len(hits) == 1, [
+        (o["kind"], o["description"], o["status"]) for o in result["obligations"]
+    ]
+    return hits[0]["status"], hits[0].get("error_code")
+
+
+def _assert_forwarders_record_nothing(tmp_path: Path, lib: str,
+                                      forwarders: tuple[str, ...]) -> None:
+    """The premise, checked in the same breath as the conclusion.
+
+    Everything below only measures the manifest UNION while the library's
+    forwarders contribute no disclosing obligation of their own.  A base move
+    that starts obligating them — #1420 did exactly that to the previous
+    carrier — must fail HERE, loudly, rather than leave the cells passing for
+    a reason that has nothing to do with what they claim.
+    """
+    (tmp_path / "oplib.vera").write_text(lib, encoding="utf-8")
+    result = _verify(tmp_path, lib, name="oplib.vera")
+    disclosing = [
+        o for o in result["obligations"]
+        if o["status"] == "tier3_unguarded"
+        or (o["status"] == "tier3" and o.get("error_code") == "E534")
+    ]
+    assert len(disclosing) == 1, (
+        f"the library must disclose EXACTLY once, at `mk` — got "
+        f"{[(o['kind'], o['status'], o.get('error_code')) for o in disclosing]}"
+    )
+    assert disclosing[0]["kind"] == "nat_bind", disclosing[0]
+    # And that one belongs to `mk`, not to a forwarder: the forwarders' own
+    # declaration lines carry nothing disclosing.
+    lines = {i for i, ln in enumerate(lib.splitlines(), 1)
+             if any(f"fn {name}(" in ln for name in forwarders)}
+    for o in disclosing:
+        nearest = max((n for n in lines if n <= o["location"]["line"]),
+                      default=None)
+        assert nearest is None or o["location"]["line"] - nearest > 20, (
+            f"a forwarder now carries its own disclosing obligation, so these "
+            f"cells no longer measure the manifest union: {o}"
+        )
 
 
 @pytest.mark.parametrize(
-    "callee,lib", [("wrap", _G1_LIB_ONE_HOP), ("outer", _G1_LIB_TWO_HOP)],
+    "callee,lib,forwarders",
+    [("wrap", _G1_LIB_ONE_HOP, ("wrap",)),
+     ("outer", _G1_LIB_TWO_HOP, ("wrap", "outer"))],
     ids=["one_hop", "two_hop"],
 )
 def test_1418_g1_an_imported_forwarder_is_disclosed(
-    tmp_path: Path, callee: str, lib: str,
+    tmp_path: Path, callee: str, lib: str, forwarders: tuple[str, ...],
 ) -> None:
-    """The library's forwarder demotes its importer, and the run says why.
+    """The library's forwarder demotes its importer.
 
-    `verified` at Tier 1 on the pre-#1402 base, on #1402 alone, and on this
-    branch before the manifest took the union — with `vera run --fn f -- -7.0`
-    refuting the postcondition in every case.  The library alone reports
-    `mk`'s `refine_bind` as `tier3_unguarded`/E506 throughout, so the fact was
-    always disclosed; only the importer could not see who was handing it on.
+    `verified` at Tier 1 on `d88bf490` — this PR's own base, re-measured
+    after the carrier swap — and `tier3`/E534 here.  The library alone
+    reports `mk`'s `nat_bind` as `tier3_unguarded`/E504 on both, so the fact
+    was always disclosed; only the importer could not see who was handing it
+    on.
+
+    No runtime differential on this carrier, and that is a property of `@Nat`
+    rather than an omission: codegen DOES emit the `>= 0` sign check (#1268),
+    so `vera run --fn f -- -7.0` traps at the guard instead of reaching a
+    refuted postcondition.  What that shows is still the point — the base
+    claimed Tier 1 for something only a runtime guard makes true — and it is
+    asserted below.  The refutation proper lives on the in-module
+    `Option<PosInt>` cells, where an ADT payload is guarded nowhere.
     """
-    (tmp_path / "oplib.vera").write_text(lib, encoding="utf-8")
+    _assert_forwarders_record_nothing(tmp_path, lib, forwarders)
     source = _g1_caller(callee)
     result = _verify(tmp_path, source, name="main.vera")
     assert result["ok"] is True, result.get("diagnostics")
-    assert _f_ensures(result) == ("tier3", "E534"), _f_ensures(result)
+    assert _g1_ensures(result) == ("tier3", "E534"), _g1_ensures(result)
+    # Tier 1 was claimed on the base for a value only the guard makes legal.
     out = _run(tmp_path, source, name="main.vera")
-    assert "Postcondition violation in f" in out, out[-700:]
+    assert "unreachable" in out or "violation" in out, out[-500:]
+    ok = _run(tmp_path, source, arg="7.0", name="main.vera")
+    assert ok.strip().split()[-1] == "7", ok[-400:]
 
 
 @pytest.mark.parametrize("callee", ["wrap", "outer"])
@@ -1419,9 +1573,9 @@ def test_1418_g1_a_clean_imported_forwarder_still_proves(
     source = _g1_caller(callee)
     result = _verify(tmp_path, source, name="main.vera")
     assert result["ok"] is True, result.get("diagnostics")
-    assert _f_ensures(result) == ("verified", None), _f_ensures(result)
+    assert _g1_ensures(result) == ("verified", None), _g1_ensures(result)
     out = _run(tmp_path, source, name="main.vera")
-    assert "violation" not in out, out[-400:]
+    assert "violation" not in out and "unreachable" not in out, out[-400:]
     assert out.strip().split()[-1] == "7", out[-400:]
 
 
