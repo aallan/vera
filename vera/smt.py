@@ -2472,9 +2472,16 @@ class SmtContext:
             return None
 
         # Create fresh return variable
-        from vera.types import RefinedType
         ret_type = callee_info.return_type
-        base_ret = ret_type.base if isinstance(ret_type, RefinedType) else ret_type
+        # The WHOLE chain, not one level: `{ @Small | Q }` over
+        # `{ @Nat | P }` has a `RefinedType` for its `.base`, so a one-level
+        # strip left `base_ret` refined, missed every branch below, and
+        # declared the result with `declare_int` — losing `@Nat`'s `>= 0`
+        # intrinsic that the refined-return block below relies on this
+        # declaration to carry, and giving a chain over `@Bool` / `@String` /
+        # `@Float64` a sort its own predicates cannot translate against.
+        refined_chain = naming.refined_type_chain(ret_type)
+        base_ret = refined_chain[0] if refined_chain is not None else ret_type
         fresh = self._fresh_name(callee_name)
         # Mirror the parameter-declaration dispatch in
         # `vera/verifier.py::_verify_decl`: each Vera type gets a
@@ -2558,12 +2565,17 @@ class SmtContext:
         # discharge the caller's own obligations).  The base-`@Nat` `>= 0` is
         # already carried by the `declare_nat` above, so the predicate alone
         # suffices here.
-        if isinstance(ret_type, RefinedType) and ret_type.base in (
-            INT,
-            NAT,
-            BOOL,
-            FLOAT64,
-            STRING,
+        # For a CHAIN this is the conjunction over every level (R-1431 review
+        # of PR #1453).  Gating on one level took the base to another
+        # `RefinedType`, which is not in this tuple, so the fact was dropped
+        # WHOLE: the caller saw an unconstrained result and refuted programs
+        # that hold — measured as an E505 on `needpos(mk(x))` and an E500 on a
+        # postcondition, both of which verify when spelled flat.
+        chain_base = refined_chain[0] if refined_chain is not None else None
+        if (
+            refined_chain is not None
+            and isinstance(chain_base, PrimitiveType)
+            and chain_base in (INT, NAT, BOOL, FLOAT64, STRING)
         ):
             # Push the value under the key the predicate's OWN binder reference
             # resolves through (alias-aware: `@Age.0` for `type Age = Nat;
@@ -2583,14 +2595,31 @@ class SmtContext:
             # SILENTLY.  The binder derivation is inside the scope too, and now
             # reads the env directly, so the push side and the reference side
             # cannot end up scoped differently.
+            chain_predicates = refined_chain[1]
             with self._callee_contract_scope(callee_info):
-                binder = (naming.predicate_binder_key(
-                              ret_type.predicate, self._alias_env)
-                          or ret_type.base.name)
-                inner_env = SlotEnv().push(binder, ret_var)
-                z3_pred = self.translate_expr(ret_type.predicate, inner_env)
-            if z3_pred is not None:
-                self.solver.add(self._guard_fact(z3_pred))
+                for predicate in chain_predicates:
+                    # Bound exactly as `_translate_refined_predicate` binds it
+                    # — under the resolved primitive AND, when it differs, the
+                    # syntactic binder — so the fact the caller ASSUMES is the
+                    # one the callee's return position was OBLIGATED to prove.
+                    # Each level binds its own name (`@Pos.0 < 10` over
+                    # `@Int.0 > 0`) over the same value, which is why the
+                    # levels get separate envs rather than one conjoined term.
+                    inner_env = SlotEnv().push(chain_base.name, ret_var)
+                    binder = naming.predicate_binder_key(
+                        predicate, self._alias_env)
+                    if binder is not None and binder != chain_base.name:
+                        inner_env = inner_env.push(binder, ret_var)
+                    z3_pred = self.translate_expr(predicate, inner_env)
+                    if z3_pred is not None:
+                        self.solver.add(self._guard_fact(z3_pred))
+                    # An untranslatable level is DROPPED here, where
+                    # `_translate_refined_predicate` returns None for the same
+                    # case.  The directions are opposite on purpose: there the
+                    # conjunction is the GOAL, so dropping a conjunct would
+                    # discharge a membership the run cannot establish; here it
+                    # is an ASSUMPTION, so dropping one only tells the caller
+                    # less and can cost a proof, never soundness.
 
         return ret_var
 

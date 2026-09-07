@@ -398,3 +398,287 @@ def test_1434_an_untranslatable_level_declines_the_whole_chain() -> None:
     assert got is None, (
         f"an untranslatable level was dropped and the rest conjoined: {got}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The chain has to reach every consumer of the refinement, not just the
+# binding-site translation (R-1431 review of PR #1453, F1-F3)
+# ---------------------------------------------------------------------------
+
+_F1_CALL_ARG = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Small = { @Pos | @Pos.0 < 10 };
+
+public fn mk(@Int -> @Small)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn needpos(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+public fn caller(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  needpos(mk(@Int.0))
+}
+"""
+
+_F1_POSTCONDITION = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Small = { @Pos | @Pos.0 < 10 };
+
+public fn mk(@Int -> @Small)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0 && @Int.result < 10)
+  effects(pure)
+{
+  mk(5)
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "source,discriminates",
+    [
+        pytest.param(
+            _F1_CALL_ARG,
+            "the INNER level (`> 0`), which an outermost-only reading misses",
+            id="call-argument",
+        ),
+        pytest.param(
+            _F1_POSTCONDITION,
+            "BOTH levels, so neither level alone carries the postcondition",
+            id="postcondition",
+        ),
+    ],
+)
+def test_1434_a_chain_return_type_is_assumed_by_its_caller(
+    tmp_path: Path, source: str, discriminates: str,
+) -> None:
+    """A refined return type is an implicit postcondition — for a CHAIN too.
+
+    `SmtContext` assumed the refinement of a call's result only when the type
+    was one level over a modelled primitive.  A chain's base is another
+    `RefinedType`, so the gate was false and the fact was dropped WHOLE: the
+    caller got a fresh unconstrained variable and a program that holds was
+    refuted (E505 on the argument, E500 on the postcondition), while the same
+    program written flat verified.  Dropped, not weakened — the counterexample
+    named the result as 0, which satisfies neither level.
+
+    Each shape needs {discriminates}, so a fix that reads one level cannot
+    pass both.
+    """
+    result = _verify(_write(tmp_path, source))
+    assert result["ok"] is True, (
+        "a valid program over a refinement CHAIN was refuted — the refined "
+        f"return fact did not reach the caller: {result['diagnostics']}"
+    )
+    assert all(
+        o["status"] in ("verified", "tier3") for o in result["obligations"]
+    ), result["obligations"]
+
+
+def test_1434_the_violation_message_names_every_level(tmp_path: Path) -> None:
+    """The refutation has to say WHICH predicate it refuted.
+
+    The renderer read one level, so `50` narrowed into `{ @NZ | @NZ.0 < 10 }`
+    over `{ @Nat | @Nat.0 > 0 }` was reported against `@NZ.0 < 10` alone, and
+    the `@Nat` base intrinsic was dropped as well because the `>= 0` prefix
+    tests the OUTERMOST base — which for a chain is a `RefinedType`, never
+    `NAT`.  A reader told only the outer predicate cannot see what membership
+    actually requires, and for `{ @NZ | true }` the message would name `true`.
+    """
+    source = (
+        "type NZ = { @Nat | @Nat.0 > 0 };\n"
+        "type NSmall = { @NZ | @NZ.0 < 10 };\n"
+        "\n"
+        "public fn f(@Unit -> @NSmall)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  50\n"
+        "}\n"
+    )
+    result = _verify(_write(tmp_path, source))
+    assert _obl(result, "refine_bind") == [("violated", "E505")], (
+        result["obligations"]
+    )
+    e505 = [d for d in result["diagnostics"] if d.get("error_code") == "E505"]
+    text = "\n".join(d.get("description", "") for d in e505)
+    for fragment in ("@Nat.0 >= 0", "@Nat.0 > 0", "@NZ.0 < 10"):
+        assert fragment in text, (
+            f"the E505 message does not name `{fragment}`, so it does not "
+            f"state the membership it refuted:\n{text}"
+        )
+    # The `fix` field renders the same conjunction into the `requires(...)` it
+    # suggests, so a partial render sends the reader to write a precondition
+    # that does not discharge the obligation.  Asserted separately because it
+    # is a separate string: the description could be right while the repair
+    # advice stayed one-level (CodeRabbit review of PR #1453).
+    fix_text = "\n".join(d.get("fix", "") for d in e505)
+    for fragment in ("@Nat.0 >= 0", "@Nat.0 > 0", "@NZ.0 < 10"):
+        assert fragment in fix_text, (
+            f"the E505 `fix` does not name `{fragment}`, so the suggested "
+            f"`requires(...)` would not discharge the obligation:\n{fix_text}"
+        )
+
+
+def test_1434_a_concrete_value_is_decided_over_a_chain(tmp_path: Path) -> None:
+    """Spec 2.6.4: a CONCRETE narrowing is decided whatever the base.
+
+    `_concrete_refined_verdict` exists because substituting a literal leaves a
+    closed formula that folds — no base modelling required, which is why an
+    unmodelled `@Byte` is still DECIDED there.  It read one level, so a chain
+    fell straight back to the undecided disclosure the modelling gate
+    produces, and the same literal decided flat went undecided nested.
+
+    `200` is the discrimination: it satisfies the inner `> 0` and violates the
+    outer `< 10`, so an innermost-only fold answers True and a correct one
+    answers False.  The flat spelling below is the oracle — same literal, same
+    predicate, and it is the verdict the chain must reproduce.
+    """
+    chain = (
+        "type B1 = { @Byte | @Byte.0 > 0 };\n"
+        "type BSmall = { @B1 | @B1.0 < 10 };\n"
+        "\n"
+        "public fn f(@Unit -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  let @BSmall = 200;\n"
+        "  0\n"
+        "}\n"
+    )
+    flat = (
+        "type BFlat = { @Byte | @Byte.0 < 10 };\n"
+        "\n"
+        "public fn f(@Unit -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  let @BFlat = 200;\n"
+        "  0\n"
+        "}\n"
+    )
+    flat_result = _verify(_write(tmp_path / "flat", flat))
+    assert _obl(flat_result, "refine_bind") == [("violated", "E505")], (
+        "the ORACLE moved: a concrete violation over a flat unmodelled base "
+        f"is no longer decided: {flat_result['obligations']}"
+    )
+    chain_result = _verify(_write(tmp_path / "chain", chain))
+    assert _obl(chain_result, "refine_bind") == _obl(flat_result, "refine_bind"), (
+        "a concrete value decided against a flat refinement went undecided "
+        f"against the chain: {chain_result['obligations']}"
+    )
+    text = "\n".join(
+        d.get("description", "") for d in chain_result["diagnostics"]
+        if d.get("error_code") == "E505"
+    )
+    assert "the value is 200" in text, text
+
+
+def test_1434_a_chain_result_is_declared_at_its_primitive_sort(
+    tmp_path: Path,
+) -> None:
+    """The fresh call result needs the sort of the chain's PRIMITIVE base.
+
+    Separate mechanism from the assumption above, and separately broken by the
+    same one-level reading: the declaration stripped one refinement, found
+    another `RefinedType` rather than `@Nat`, and fell through to
+    `declare_int` — so the result variable never carried `@Nat`'s `>= 0`.
+
+    The predicates here are `true`, which is the discrimination: no predicate
+    can supply the missing fact, so this cell answers about the DECLARATION
+    and nothing else.  Mutating the strip back to one level refutes it with
+    the result witnessed as `-1` — a negative inhabitant of a `@Nat`-based
+    type.
+    """
+    source = (
+        "type A = { @Nat | true };\n"
+        "type B = { @A | true };\n"
+        "\n"
+        "public fn mk(@Nat -> @B)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Nat.0\n"
+        "}\n"
+        "\n"
+        "public fn caller(@Unit -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(@Int.result >= 0)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  mk(7)\n"
+        "}\n"
+    )
+    result = _verify(_write(tmp_path, source))
+    assert result["ok"] is True, (
+        "the result of a call returning a chain over @Nat was declared "
+        f"without the base's `>= 0`: {result['diagnostics']}"
+    )
+
+
+def test_1434_the_tier3_reason_names_the_primitive_base(tmp_path: Path) -> None:
+    """A Tier-3 chain is diagnosed by what it BOTTOMS OUT in.
+
+    The E506 rationale distinguishes two causes that call for different
+    repairs: an unmodelled base (nothing was ever asked) versus a predicate
+    outside the fragment.  Reading one level named the intermediate alias as
+    the unmodelled base — which is false twice: that alias is not what the
+    modelling gate consults, and for a chain over a MODELLED base it would
+    blame the base for a Tier 3 the fragment caused.
+
+    The value here is symbolic, so the concrete fold declines and the
+    obligation really is Tier 3; `@Byte` is genuinely unmodelled, so the
+    sentence must name `Byte` and not the `B1` standing between them.
+    """
+    source = (
+        "type B1 = { @Byte | @Byte.0 > 0 };\n"
+        "type BSmall = { @B1 | @B1.0 < 10 };\n"
+        "\n"
+        "public fn f(@Byte -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  let @BSmall = @Byte.0;\n"
+        "  0\n"
+        "}\n"
+    )
+    result = _verify(_write(tmp_path, source))
+    rationales = "\n".join(
+        d.get("rationale", "")
+        for d in result["diagnostics"] + result.get("warnings", [])
+        if d.get("error_code") == "E506"
+    )
+    assert "does not model `Byte`" in rationales, (
+        f"the E506 rationale does not name the primitive base:\n{rationales}"
+    )
+    assert "`B1`" not in rationales, (
+        "the E506 rationale blames the intermediate refinement rather than "
+        f"the base the modelling gate consults:\n{rationales}"
+    )
