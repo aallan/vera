@@ -271,12 +271,13 @@ def disclosed_fn_names(
     disclosed and the taint stopped one hop short.
     """
     return frozenset(
-        o.fn_name for o in obligations if is_disclosing(o)
+        o.fn_name for o in obligations if fact_not_established(o)
     )
 
 
-def is_disclosing(obligation: "ProofObligation") -> bool:
-    """Whether one obligation puts its function in the disclosed set.
+def fact_not_established(obligation: "ProofObligation") -> bool:
+    """Whether one obligation leaves its function's declared-type fact
+    UNESTABLISHED, so a caller may not assume it.
 
     Factored out of :func:`disclosed_fn_names` so a consumer that needs the
     obligation ITSELF — the per-module manifest, which cites the culprit's
@@ -287,6 +288,28 @@ def is_disclosing(obligation: "ProofObligation") -> bool:
     return (
         obligation.status == "tier3_unguarded"
         or (obligation.status == "tier3" and obligation.error_code == "E534")
+        # ... and REFUTED, which the first version of this predicate missed
+        # (#1415 review, G2).  A fact whose establishing obligation the run
+        # proved FALSE is not merely unproved — a caller reading it proves
+        # from a premise the same run disproved, which is how a `div_zero`
+        # came to read `verified` beside its producer's `refine_bind`
+        # /`violated`/E505.  "Could not establish" and "established the
+        # opposite" are different messages but the same decision here.
+        or obligation.status == "violated"
+    )
+
+
+def refuted_fn_names(
+    obligations: "list[ProofObligation]",
+) -> frozenset[str]:
+    """Functions whose declared-type fact this run proved FALSE (#1415 G2).
+
+    A strict subset of :func:`disclosed_fn_names`, kept apart only so the
+    demotion can say which happened: "could neither prove nor guard" is untrue
+    of a refutation, where the run decided and decided against.
+    """
+    return frozenset(
+        o.fn_name for o in obligations if o.status == "violated"
     )
 
 
@@ -457,6 +480,9 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # #1415 G2: of those, the ones whose fact was REFUTED rather than
+        # merely not established — the demotion's wording turns on it.
+        self._refuted_fns: frozenset[str] = frozenset()
         # #1399: the same question for an IMPORTED callee, whose obligations
         # never enter this run's stream and so can never appear in the set
         # above.  Answered from each module's own verification through
@@ -477,6 +503,9 @@ class ContractVerifier:
         # Same lifetime as `SmtContext._tainted_facts`, which is what they
         # describe: per function, cleared with the scope set below.
         self._tainted_sites: list[DisclosureSite] = []
+        # ... and whether any fact withheld from THIS function came from
+        # an obligation the run refuted.  Same lifetime as the sites.
+        self._tainted_refuted: bool = False
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -2884,6 +2913,7 @@ class ContractVerifier:
             if disclosed <= seen:
                 return
             self._disclosed_fns = seen = disclosed
+            self._refuted_fns = refuted_fn_names(self.obligations)
             # Both buffers are rebuilt, matching the per-instance idiom in
             # `_verify_generic_instances`: a status and its diagnostic are
             # properties of the proof that produced them, and the previous
@@ -3374,6 +3404,7 @@ class ContractVerifier:
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
+        self._tainted_refuted = False
         # #1208: THIS function's naming scope — its declaring module's env
         # narrowed by the `forall` variables in scope over it.  Both the slot
         # names declared below and the SMT context that resolves references to
@@ -7947,6 +7978,8 @@ class ContractVerifier:
             return False
         name = scrutinee.name
         if name in self._disclosed_fns:
+            if name in self._refuted_fns:
+                self._tainted_refuted = True
             return True
         if isinstance(scrutinee, ast.ModuleCall):
             if self._module_qualified_base(
@@ -8088,6 +8121,11 @@ class ContractVerifier:
         told only that something, somewhere, was not established.
         """
         if not self._tainted_sites:
+            if self._tainted_refuted:
+                return (
+                    f"{subject} holds only from a fact this run proved "
+                    f"FALSE. {closing}"
+                )
             return (
                 f"{subject} holds only from a fact this run could neither "
                 f"prove nor guard. {closing}"

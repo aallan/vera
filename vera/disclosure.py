@@ -415,7 +415,11 @@ def _verify_for_disclosure(
     module nobody managed to verify.
     """
     from vera.checker import typecheck_with_artifacts
-    from vera.verifier import disclosed_fn_names, is_disclosing, verify
+    from vera.verifier import (
+        disclosed_fn_names,
+        fact_not_established,
+        verify,
+    )
 
     file = str(mod.file_path)
     check_diags, artifacts = typecheck_with_artifacts(
@@ -437,7 +441,7 @@ def _verify_for_disclosure(
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
-        if o.fn_name in names and o.fn_name not in manifest and is_disclosing(o):
+        if o.fn_name in names and o.fn_name not in manifest and fact_not_established(o):
             manifest[o.fn_name] = DisclosureSite(
                 module=mod.path, fn_name=o.fn_name,
                 file=o.file or file, line=o.line, column=o.column,

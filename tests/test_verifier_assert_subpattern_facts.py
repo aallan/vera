@@ -857,9 +857,195 @@ def test_1403_an_indirect_scrutinee_is_not_withheld_yet(
     be rewritten to assert the demotion.  Until then it exists so the change
     cannot happen silently in either direction.
     """
-    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    result = _verify(_tree(tmp_path / "pos", {"p": source})["p"])
     assert _asserts(result) == [("verified", None)], _triples(result)
     assert ("nat_bind", "tier3_unguarded", "E504") in _triples(result), (
         f"the producer stopped disclosing, so this pin is vacuous: "
         f"{_triples(result)}"
     )
+
+    # BOTH polarities, because only one of them changes the exit code and a
+    # one-sided pin would let the other flip in silence: with the predicate
+    # negated, the same handed-over fact turns a runtime-checked assertion
+    # into a refuted one — `ok: true` + `tier3`/E535 before this change,
+    # `ok: false` + E507 after.  When #1418 withholds the fact for these
+    # spellings this leg returns to `tier3`/E535, and that is the change the
+    # cell exists to make visible.
+    negated = source.replace("nat_to_int(@Nat.0) >= 0", "nat_to_int(@Nat.0) < 0")
+    assert negated != source, "the negated variant must actually differ"
+    neg = _verify(_tree(tmp_path / "neg", {"p": negated})["p"])
+    assert neg["ok"] is False, _triples(neg)
+    assert _asserts(neg) == [("violated", "E507")], _triples(neg)
+
+
+# ---------------------------------------------------------------------------
+# The remaining two sites the widened reach touches
+# ---------------------------------------------------------------------------
+
+_SUB = """\
+type Big = {{ @Nat | @Nat.0 >= 10 }};
+
+private fn mk(@Nat -> @Option<Big>)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn use_sub(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= 5 && @Nat.1 >= 10)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Nat.1) {{
+    Some(@Big) -> @Big.0 - @Nat.0,
+    None -> 0
+  }}
+}}
+"""
+
+_OVF = """\
+type Small = {{ @Int | @Int.0 > 0 && @Int.0 < 100 }};
+
+private fn mk(@Int -> @Option<Small>)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn use_mul(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 100)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(@Small) -> @Small.0 * @Small.0,
+    None -> 0
+  }}
+}}
+"""
+
+_SUB_CLEAN = ("@Nat.0 >= 10", "Some(@Nat.0)")
+_SUB_DISCLOSED = ("true", (
+    "Some(handle[Exn<Nat>] { throw(@Big) -> { @Big.0 } } in { throw(@Nat.0) })"
+))
+_OVF_CLEAN = ("@Int.0 > 0 && @Int.0 < 100", "Some(@Int.0)")
+_OVF_DISCLOSED = ("true", (
+    "Some(handle[Exn<Int>] { throw(@Small) -> { @Small.0 } } "
+    "in { throw(@Int.0) })"
+))
+
+
+@pytest.mark.parametrize(
+    "template,clean,disclosed,kind",
+    [
+        pytest.param(_SUB, _SUB_CLEAN, _SUB_DISCLOSED, "nat_sub", id="nat-sub"),
+        pytest.param(_OVF, _OVF_CLEAN, _OVF_DISCLOSED, "int_overflow",
+                     id="int-overflow"),
+    ],
+)
+def test_1403_the_other_two_safety_sites_move_together(
+    tmp_path: Path, template: str, clean: tuple[str, str],
+    disclosed: tuple[str, str], kind: str,
+) -> None:
+    """`nat_sub` and `int_overflow`, the two sites the first round left unpinned.
+
+    I claimed `nat_sub` was unreachable arm-scoped and was wrong: subtracting
+    a SLOT rather than a literal reaches it, and on `release/v0.2.0` the clean
+    shape is a false `('nat_sub','violated','E502')` — the arm's own
+    `>= 10` versus `<= 5` decides it. `int_overflow` is `tier3` on base for
+    both polarities and becomes Tier-1 for the clean one.
+
+    Pinned in both polarities like `div_zero` and `index_bounds`, so all four
+    sites `_record_undecided_safety` routes are covered by a cell rather than
+    by the argument that they share a helper.
+    """
+    req, body = clean
+    ok = _verify(_tree(tmp_path / "c", {
+        "p": template.format(req=req, body=body)})["p"])
+    assert ok["ok"] is True, ok["diagnostics"]
+    assert [
+        (o["status"], o.get("error_code")) for o in ok["obligations"]
+        if o["kind"] == kind
+    ] == [("verified", None)], _triples(ok)
+
+    req, body = disclosed
+    bad = _verify(_tree(tmp_path / "d", {
+        "p": template.format(req=req, body=body)})["p"])
+    assert [
+        (o["status"], o.get("error_code")) for o in bad["obligations"]
+        if o["kind"] == kind
+    ] == [("tier3", "E534")], _triples(bad)
+    assert "E534" in [w.get("error_code") for w in bad["warnings"]]
+
+
+# ---------------------------------------------------------------------------
+# A refuted premise is withheld too
+# ---------------------------------------------------------------------------
+
+_REFUTED = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+
+private fn mk(@Int -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  Some(@Int.0)
+}}
+
+public fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(@PosInt) -> {arm},
+    None -> 1
+  }}
+}}
+"""
+
+
+def test_1403_a_refuted_premise_is_withheld_like_a_disclosed_one(
+    tmp_path: Path,
+) -> None:
+    """The withholding keys on "not established", not on "disclosed".
+
+    `mk` cannot discharge its own construction obligation — `refine_bind` is
+    `violated`/E505, the run PROVED the payload need not be positive — and the
+    arm was still handed the fact, so `100 / @PosInt.0` read `verified` beside
+    a premise the same run disproved (review of PR #1415, G2).  "Could not
+    establish" and "established the opposite" are different messages and the
+    same decision: neither is a fact a caller may assume.
+
+    The program is `ok: false` either way, which is why this hid — the E505
+    dominates the exit code.  What must not happen is the obligation reading
+    `verified`, and the message must not claim the run could neither prove nor
+    guard something it refuted outright.
+    """
+    result = _verify(_tree(tmp_path, {
+        "p": _REFUTED.format(arm="100 / @PosInt.0")})["p"])
+    assert ("refine_bind", "violated", "E505") in _triples(result), (
+        _triples(result)
+    )
+    assert ("div_zero", "tier3", "E534") in _triples(result), _triples(result)
+    e534 = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(e534) == 1, [w.get("error_code") for w in result["warnings"]]
+    assert "proved FALSE" in e534[0]["description"], e534[0]["description"]
+
+
+def test_1403_a_refuted_premise_does_not_prove_an_assert_either(
+    tmp_path: Path,
+) -> None:
+    """... and the same for the assert, which is the other consumer."""
+    result = _verify(_tree(tmp_path, {
+        "p": _REFUTED.format(
+            arm="{ assert(@PosInt.0 > 0); 1 }")})["p"])
+    assert ("refine_bind", "violated", "E505") in _triples(result), (
+        _triples(result)
+    )
+    assert ("assert", "tier3", "E535") in _triples(result), _triples(result)
