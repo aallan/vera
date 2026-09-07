@@ -257,17 +257,72 @@ _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 # ADT type helpers
 # =====================================================================
 
+def strip_refinements(ty: Type) -> Type:
+    """The type a refinement is REPRESENTED as — ONE level (#1421).
+
+    The rule is stated in `_vera_type_to_z3_sort`: a refinement's Z3 sort is
+    its base's sort, because the predicate constrains values, not the carrier
+    set, and is enforced separately as an assumption or obligation.  What that
+    rule needs and did not have is ONE implementation.  Two routes stripped
+    refinements independently — the sort-key builder and the sort builder —
+    and disagreed on a refinement OVER a refinement, which is the #1421
+    disagreement one level further in (review of PR #1431, F1).
+
+    UNWRAPS ONE LEVEL, DELIBERATELY, and a chain is therefore left unmodelled.
+    The predicate half of the rule stops at a primitive base:
+    `_translate_refined_predicate` reads `{ @Base | P }` where `@Base` is a
+    primitive, so for `{ { @Int | P } | Q }` neither `P` nor `Q` is
+    translated.  Stripping the whole chain would make the SORT succeed while
+    the predicates stayed absent — the value becomes an unconstrained `Int`,
+    and a division by a payload the chain proves positive is reported
+    `violated`/E526 on valid code.  Measured: `Option<Tuple<Small, Int>>` with
+    `Small = { @Pos | @Pos.0 < 10 }` over `Pos = { @Int | @Int.0 > 0 }` reads
+    `div_zero`/`tier3` on `release/v0.2.0` and E526 with a whole-chain strip.
+    A type the verifier honestly refuses to model beats one it models without
+    the predicate that gives it meaning, so both routes agree by refusing:
+    the key keeps its `?` and the sort stays `None`, and the enclosing
+    obligation falls to an honest Tier 3.
+
+    Conjoining a chain's predicates — which would make the whole strip correct
+    — is tracked as #1434.
+    """
+    if isinstance(ty, RefinedType):
+        return ty.base
+    return ty
+
+
 def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
-    """Build a canonical key for an ADT sort, e.g. ``List<Int>``."""
+    """Build a canonical key for an ADT sort, e.g. ``List<Int>``.
+
+    ONE derivation of the sort a type argument contributes, wherever a term
+    carrying it is built or rebuilt (#1421).  A key that two routes spell
+    differently is two Z3 sorts for one Vera type, and Z3 raises rather than
+    returning an error when they meet — the crash surfaced as an ``E699``
+    internal compiler error on `match mk(x) { Some(@PosInt) -> Some(@PosInt.0),
+    None -> None }`, where the arms' sorts have to join under a `z3.If`.
+
+    A REFINEMENT contributes its BASE.  `{ @Int | @Int.0 > 0 }` is an `Int` at
+    the representation level — its own type docstring says it behaves as its
+    base, and the predicate is discharged as an obligation at every narrowing
+    site rather than carried in the sort — so `Option<{ @Int | … }>` and
+    `Option<Int>` are one sort.  Spelling the refinement `?` instead made it a
+    DIFFERENT sort from the `Option<Int>` other routes derive for the same
+    value, which is exactly the disagreement that crashed.  Unwrapped in a
+    loop, so a refinement over a refinement lands on the same base.
+    """
     if not type_args:
         return adt_name
     arg_strs = []
     for a in type_args:
+        a = strip_refinements(a)
         if isinstance(a, PrimitiveType):
             arg_strs.append(a.name)
         elif isinstance(a, AdtType):
             arg_strs.append(_adt_sort_key(a.name, a.type_args))
         else:
+            # A type variable or a shape the sort layer does not model: the
+            # key stays un-nameable on purpose, and `_parse_adt_sort_key`
+            # refuses it rather than inventing an instantiation.
             arg_strs.append("?")
     return f"{adt_name}<{', '.join(arg_strs)}>"
 
@@ -698,8 +753,7 @@ class SmtContext:
         rather than falling to ``declare_int`` (which would make a
         pattern-match / projection see an Int term — a false Tier-3 or a Z3
         sort failure; CR d338946).  Mirrors the array path's internal unwrap."""
-        if isinstance(ty, RefinedType):
-            ty = ty.base
+        ty = strip_refinements(ty)
         z3_sort = self._vera_type_to_z3_sort(ty)
         if z3_sort is None:
             return None
@@ -729,17 +783,18 @@ class SmtContext:
         unboundedly into fresh sort creation and raised a raw ``RecursionError``
         on a check-green program.
         """
-        if isinstance(ty, RefinedType):
-            # A refinement's Z3 SORT is its base's sort — the predicate
-            # constrains values, not the carrier set, and is enforced
-            # separately (as an assumption / obligation).  Unwrap HERE, not only
-            # at the `declare_adt` call site, so a refined type nested as a
-            # tuple component or constructor field (`Tuple<PosInt, Int>`,
-            # `Box(PosInt)`) resolves to its base sort instead of None — which
-            # would otherwise fail the enclosing tuple / datatype sort creation
-            # and silently degrade the whole structure to a weaker model (CR
-            # PR-review).
-            ty = ty.base
+        # A refinement's Z3 SORT is its base's sort — the predicate
+        # constrains values, not the carrier set, and is enforced separately
+        # (as an assumption / obligation).  Unwrapped HERE, not only at the
+        # `declare_adt` call site, so a refined type nested as a tuple
+        # component or constructor field (`Tuple<PosInt, Int>`, `Box(PosInt)`)
+        # resolves to its base sort instead of None — which would otherwise
+        # fail the enclosing tuple / datatype sort creation and silently
+        # degrade the whole structure to a weaker model (CR PR-review).
+        # Through the shared helper, and through it in a CHAIN: a single
+        # unwrap here disagreed with the sort key's loop on a refinement over
+        # a refinement (#1431 review, F1).
+        ty = strip_refinements(ty)
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
                 return z3.IntSort()
@@ -2441,8 +2496,7 @@ class SmtContext:
             ty = hook(node)
             if ty is None:
                 return None
-        if isinstance(ty, RefinedType):
-            ty = ty.base
+        ty = strip_refinements(ty)
         sort = self._vera_type_to_z3_sort(ty)
         if sort is None:
             return None
