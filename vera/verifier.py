@@ -8341,6 +8341,41 @@ class ContractVerifier:
                 complete = complete and sub_complete
         return facts, complete
 
+    #: Element bases codegen can emit a boundary element-guard for — the
+    #: verifier's mirror of `_array_element_guard_parts`'s stride table
+    #: (#1430).  Kept as data next to the predicate that reads it so the two
+    #: halves of the #1362 invariant — a `guarded` claim must match what
+    #: codegen actually emits — can be differentially compared rather than
+    #: trusted to agree.
+    _GUARDABLE_ELEMENT_BASES = frozenset({
+        "Int", "Nat", "Float64", "Bool", "Byte",
+    })
+
+    def _element_guard_emitted(self, ty: Type | None) -> bool:
+        """Whether codegen emits an element-wise boundary guard for *ty*.
+
+        True for an ``Array`` whose element is a refinement over a scalar base
+        codegen can load and check.  False for a pair-shaped element
+        (``Array<Array<T>>``, ``Array<String>``), which the emitter declines
+        because its ptr half alone does not carry the value the predicate
+        reads — a half-guard would be worse than an honest disclosure.
+
+        This is the verifier half of a cross-component invariant, so it is
+        held by a differential against the emitter rather than by inspection:
+        a `guarded` status that codegen does not back is exactly the defect
+        #1430 stage 1 introduced, one level down.
+        """
+        base = self._strip_refinements(ty)
+        if not (isinstance(base, AdtType) and base.name == "Array"
+                and len(base.type_args) == 1):
+            return False
+        element = base.type_args[0]
+        if not isinstance(element, RefinedType):
+            return False
+        inner = self._strip_refinements(element)
+        name = getattr(inner, "name", None)
+        return name in self._GUARDABLE_ELEMENT_BASES
+
     def _array_element_facts(
         self,
         smt: SmtContext,
@@ -8522,6 +8557,19 @@ class ContractVerifier:
             return
         if self._all_leaves_construct(value_node, smt, slot_env):
             return
+        # #1430 stage 1b: an `Array<Refined>` boundary now carries an
+        # element-wise runtime guard, so an undecided element obligation at
+        # such a site is GUARDED — `tier3`, counting in `tier3_runtime` —
+        # rather than disclosed.  Claimed only where codegen actually emits
+        # one (`_element_guard_emitted` mirrors the emitter's own table) and
+        # only at a site the shared roster says is guarded, so the #1362
+        # invariant holds: a `guarded` status and an emitted check move
+        # together.  Stage 1 assumed the element fact without this, which let
+        # a violating element laundered through an opaque producer reach a
+        # Tier-1-clean callee and refute its postcondition at run time.
+        if (self._element_guard_emitted(formal_ty)
+                and site in narrowing.REFINED_BIND_GUARDED_SITES):
+            guarded = True
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)
         # A call to a function this run DISCLOSED did not establish its own

@@ -570,6 +570,9 @@ class FunctionCompilationMixin:
         # `_emit_component_refinement_guards`).  Collected alongside the
         # directly-refined params and emitted in the same pre-body block.
         component_param_checks: list[tuple[int, ast.TypeExpr]] = []
+        #: `(ptr local, len local, declared type)` per `Array<Refined>` param
+        #: whose elements codegen guards at entry (#1430).
+        element_param_checks: list[tuple[int, int, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -602,7 +605,7 @@ class FunctionCompilationMixin:
             if wt == "i32_pair":
                 # String/Array types use two consecutive i32 params (ptr, len)
                 ptr_idx = ctx.alloc_param()
-                _len_idx = ctx.alloc_param()
+                len_idx = ctx.alloc_param()
                 param_parts.append(f"(param $p{i}_ptr i32)")
                 param_parts.append(f"(param $p{i}_len i32)")
                 type_name = self._type_expr_to_slot_name(param_te)
@@ -610,6 +613,13 @@ class FunctionCompilationMixin:
                     env = env.push(type_name, ptr_idx)
                 if self._refinement_guard_parts(param_te) is not None:
                     refined_param_checks.append((ptr_idx, param_te))
+                # #1430: an `Array<Refined>` parameter carries no top-level
+                # refinement and is not a tuple, so neither guard above
+                # reaches its ELEMENTS — and the verifier assumes them under
+                # R1.  The length half is what makes the guard possible, and
+                # it is already in hand here.
+                if self._array_element_guard_parts(param_te) is not None:
+                    element_param_checks.append((ptr_idx, len_idx, param_te))
                 gc_pointer_params.append(ptr_idx)
                 continue
             local_idx = ctx.alloc_param()
@@ -793,6 +803,16 @@ class FunctionCompilationMixin:
                     self._emit_component_refinement_guards(
                         ctx, ast.format_fn_signature(decl), param_te,
                         value_local, env, "parameter"))
+
+            # #1430: element-wise entry guards for `Array<Refined>` params.
+            # This is what backs the R1 element assumption at a CALL ARGUMENT
+            # boundary — the caller's obligation may be undecided, and the
+            # callee still may not read an element the refinement forbids.
+            for ptr_local, len_local, param_te in element_param_checks:
+                refine_guard_instrs.extend(
+                    self._emit_array_element_guards(
+                        ctx, ast.format_fn_signature(decl), param_te,
+                        ptr_local, len_local, env, "parameter"))
 
             for value_local, param_te in refined_param_checks:
                 parts = self._refinement_guard_parts(param_te)

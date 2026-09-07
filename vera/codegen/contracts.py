@@ -298,6 +298,143 @@ class ContractsMixin:
             return node
         return None
 
+    def _resolve_array_type(self, te: ast.TypeExpr) -> ast.NamedType | None:
+        """Resolve aliases AND unwrap a refinement to the underlying
+        ``Array<...>`` NamedType, else None.  The twin of
+        :meth:`_resolve_tuple_type`, for the same reason: a refinement OVER an
+        array (`type NonEmpty = { @Array<PosInt> | ... }`) carries no top-level
+        Array shape, so without unwrapping its refined ELEMENTS would cross a
+        boundary unguarded even though the top-level predicate is checked.
+        """
+        node = self._resolve_type_alias(te)
+        if isinstance(node, ast.RefinementType):
+            node = self._resolve_type_alias(node.base_type)
+        if (isinstance(node, ast.NamedType)
+                and node.name == "Array"
+                and node.type_args):
+            return node
+        return None
+
+    def _array_element_guard_parts(
+        self, te: ast.TypeExpr,
+    ) -> tuple[ast.Expr, str, str, int] | None:
+        """``(predicate, base_name, load_wt, elem_size)`` for an ``Array``
+        whose ELEMENT type carries a guardable refinement, else None (#1430).
+
+        The array counterpart of the tuple decomposition.  A
+        ``Array<PosInt>`` boundary carries no top-level refinement, so the
+        top-level guard does not fire, and the tuple decomposition does not
+        reach it either — which is exactly the hole #1430 stage 1 opened: the
+        verifier began ASSUMING the element refinement under R1 while no
+        boundary checked it, so a violating element laundered through an
+        opaque producer reached a Tier-1-clean callee and refuted its
+        postcondition at run time.
+
+        Returns None for a pair-shaped element (``Array<Array<T>>``,
+        ``Array<String>``): its ptr half alone does not carry the value the
+        predicate reads, and a half-guard is worse than an honest disclosure.
+        """
+        arr = self._resolve_array_type(te)
+        if arr is None or not arr.type_args:
+            return None
+        elem_te = arr.type_args[0]
+        parts = self._refinement_guard_parts(elem_te)
+        if parts is None:
+            return None
+        predicate, base_name = parts
+        load_wt = self._type_expr_to_wasm_type(elem_te)
+        if load_wt is None or load_wt == "i32_pair":
+            return None
+        node = self._resolve_type_alias(elem_te)
+        if isinstance(node, ast.RefinementType):
+            node = self._resolve_type_alias(node.base_type)
+        if not isinstance(node, ast.NamedType):
+            return None
+        # The element stride, keyed on the RESOLVED element name.  Inlined
+        # rather than calling `_element_mem_size`: that helper lives on the
+        # WASM inference mixin, which the contract layer does not compose.
+        # Kept to the same table, and deliberately fail-closed — an element
+        # whose size is not one of these yields no guard rather than a guard
+        # walking the wrong stride.
+        elem_size = {
+            "Int": 8, "Nat": 8, "Float64": 8, "Bool": 1, "Byte": 1,
+        }.get(node.name)
+        if elem_size is None:
+            return None
+        return predicate, base_name, load_wt, elem_size
+
+    def _emit_array_element_guards(
+        self,
+        ctx: WasmContext,
+        sig_text: str,
+        te: ast.TypeExpr,
+        ptr_local: int,
+        len_local: int,
+        env: WasmSlotEnv,
+        role: str,
+    ) -> list[str]:
+        """Element-wise refinement guard for an ``Array<Refined>`` boundary.
+
+        Walks ``0 .. len`` and runs the element predicate on each element,
+        trapping through the same ``$vera.contract_fail`` path the scalar and
+        tuple-component guards use, so a violating element traps AT THE
+        BOUNDARY rather than surfacing later as a postcondition refutation
+        inside a callee that assumed it.
+
+        A loop rather than the tuple guard's unrolled loads, because the
+        length is a runtime value.  Labels carry the index local's number so
+        two element guards in one function — a parameter's and a return's —
+        cannot collide.
+
+        Costs one pass over the array at each guarded boundary.  That is the
+        same bargain the scalar guard makes at a smaller size, and it is what
+        the R1 element assumption is paid for: without it the assumption is
+        licensed by nothing, which is the defect this repairs.
+        """
+        parts = self._array_element_guard_parts(te)
+        if parts is None:
+            return []
+        predicate, base_name, load_wt, elem_size = parts
+        idx = ctx.alloc_local("i32")
+        elem = ctx.alloc_local(load_wt)
+        msg = (
+            f"Refinement violation in {sig_text}\n"
+            f"  {role} (array element): {ast.format_expr(predicate)} failed"
+        )
+        check = self._emit_refinement_check(
+            ctx, predicate, base_name, elem, msg, env)
+        if check is None:
+            return []
+        brk, lp = f"$brk_elem{idx}", f"$lp_elem{idx}"
+        instrs = [
+            "i32.const 0",
+            f"local.set {idx}",
+            f"block {brk}",
+            f"  loop {lp}",
+            f"    local.get {idx}",
+            f"    local.get {len_local}",
+            "    i32.ge_s",
+            f"    br_if {brk}",
+            f"    local.get {ptr_local}",
+            f"    local.get {idx}",
+            f"    i32.const {elem_size}",
+            "    i32.mul",
+            "    i32.add",
+            f"    {load_wt}.load offset=0",
+            f"    local.set {elem}",
+        ]
+        instrs.extend(f"    {line}" for line in check)
+        instrs.extend([
+            f"    local.get {idx}",
+            "    i32.const 1",
+            "    i32.add",
+            f"    local.set {idx}",
+            f"    br {lp}",
+            "  end",
+            "end",
+        ])
+        return instrs
+
     def _tuple_component_guard_sites(
         self, te: ast.TypeExpr, _depth: int = 0,
     ) -> Iterator[_ComponentGuardSite]:
@@ -709,8 +846,14 @@ class ContractsMixin:
         # top-level refinement still needs per-component exit guards, so don't
         # short-circuit on `refined_ret is None` alone.
         ret_components = self._has_guardable_tuple_components(decl.return_type)
+        # #1430: an `Array<Refined>` return carries no top-level refinement and
+        # no tuple components, so both gates above miss it — which is how a
+        # violating element left a producer unchecked while the verifier
+        # assumed it downstream.
+        ret_elements = self._array_element_guard_parts(decl.return_type) is not None
 
-        if not ensures_clauses and refined_ret is None and not ret_components:
+        if (not ensures_clauses and refined_ret is None
+                and not ret_components and not ret_elements):
             return []
 
         # Pair returns (String/Array) don't support general ensures checks
@@ -723,22 +866,36 @@ class ContractsMixin:
         # here despite being Tier-3 *statically* (#746) — see
         # test_array_return_guard_traps_on_empty.
         if ret_wt == "i32_pair":
-            if refined_ret is None:
+            if refined_ret is None and not ret_elements:
                 return []
-            predicate, base_name = refined_ret
             ptr_l = ctx.alloc_local("i32")
             len_l = ctx.alloc_local("i32")
-            msg = self._format_refinement_message(
-                decl, decl.return_type, "return value")
-            guard = self._emit_refinement_check(
-                ctx, predicate, base_name, ptr_l, msg, env)
-            if guard is None:
+            pair_guard: list[str] = []
+            # #1430: elements FIRST.  A refinement over an array may read its
+            # elements (`{ @Array<PosInt> | array_length(...) > 0 }` does not,
+            # but one that indexes would), so establish them before the
+            # top-level predicate — the same ordering the tuple path uses for
+            # the same reason.
+            pair_guard.extend(self._emit_array_element_guards(
+                ctx, ast.format_fn_signature(decl), decl.return_type,
+                ptr_l, len_l, env, "return value"))
+            if refined_ret is not None:
+                predicate, base_name = refined_ret
+                msg = self._format_refinement_message(
+                    decl, decl.return_type, "return value")
+                top = self._emit_refinement_check(
+                    ctx, predicate, base_name, ptr_l, msg, env)
+                if top is None and not pair_guard:
+                    return []
+                if top is not None:
+                    pair_guard.extend(top)
+            if not pair_guard:
                 return []
             # Result is (ptr, len) with len on top of the stack.
             return [
                 f"local.set {len_l}",
                 f"local.set {ptr_l}",
-                *guard,
+                *pair_guard,
                 f"local.get {ptr_l}",
                 f"local.get {len_l}",
             ]
