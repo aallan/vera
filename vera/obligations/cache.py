@@ -46,7 +46,7 @@ from __future__ import annotations
 import hashlib
 
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Iterator
+from typing import Any, Iterator
 
 from vera import ast
 from vera.errors import Diagnostic
@@ -189,12 +189,16 @@ class FnCacheEntry:
     contributes no obligation saying so, and the cold path collects it while
     translating the body — which a replay does not do.  Left uncached, a
     replayed wrapper would drop out of the disclosed set and the warm run
-    would prove at Tier 1 what the cold run demotes.
+    would prove at Tier 1 what the cold run demotes.  ``None`` means the
+    function hands on nothing; a list — possibly empty, for a purely local
+    disclosure — means it does, and carries the import sites a CALLER's
+    demotion should cite, which a replay cannot re-derive either and without
+    which the warm citation would degrade to the cold one's generic text.
     """
 
     diagnostics: list[Diagnostic]
     obligations: list[ProofObligation]
-    result_disclosed: bool = False
+    result_disclosed: list[Any] | None = None
 
 
 class DischargeCache:

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from vera import ast
 from vera.errors import Diagnostic
@@ -281,7 +282,7 @@ class VerificationSession:
         # way the obligation stream is — a fresh slice reads it off the
         # verifier, a replayed one off the cache entry — so a replay cannot
         # quietly drop a wrapper out of the disclosed set.
-        result_disclosed: set[str] = set()
+        result_disclosed: dict[str, list[Any]] = {}
 
         for tld in program.declarations:
             if not isinstance(tld.decl, ast.FnDecl):
@@ -310,8 +311,8 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
-                if cached.result_disclosed:
-                    result_disclosed.add(decl.name)
+                if cached.result_disclosed is not None:
+                    result_disclosed[decl.name] = cached.result_disclosed
                 stats.replayed_fns += 1
                 continue
 
@@ -321,10 +322,10 @@ class VerificationSession:
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
-                result_disclosed=decl.name in verifier._result_disclosed_fns,
+                result_disclosed=verifier._result_disclosed_fns.get(decl.name),
             )
-            if entry.result_disclosed:
-                result_disclosed.add(decl.name)
+            if entry.result_disclosed is not None:
+                result_disclosed[decl.name] = entry.result_disclosed
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
             out_obls.extend(entry.obligations)
@@ -352,7 +353,7 @@ class VerificationSession:
         # the obligation stream says which functions failed to establish their
         # own declared type, `result_disclosed` says which hand such a value
         # on, and the fixpoint below needs both or it settles one hop early.
-        disclosed = disclosed_fn_names(out_obls) | result_disclosed
+        disclosed = disclosed_fn_names(out_obls) | frozenset(result_disclosed)
         if not disclosed <= self._disclosed:
             # Re-run knowing what this pass disclosed, exactly as the cold
             # `verify_program` fixpoint does.  The set only grows, so this

@@ -822,3 +822,93 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
         f"asking `_established_facts` whether this run established it — that "
         f"is the shape of #1406 / #1407 / #1413, one reader further out"
     )
+
+
+# ---------------------------------------------------------------------------
+# Composition with #1399/#1402: the taint AND the citation cross the import
+# ---------------------------------------------------------------------------
+
+_IMP_LIB = _POSINT + """
+public fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(float_to_int(@Float64.0))
+}
+"""
+
+_IMP_CALLERS = {
+    # #1399/#1402's own shape — the control for this group.
+    "direct": "import oplib;\n" + _POSINT + _F
+              + "{\n  match oplib::mk(@Float64.0) {\n" + _ARMS + "\n  }\n}\n",
+    # #1406 across the boundary: the scrutinee is a slot reference, so the
+    # importer's manifest consult never fires on it.
+    "let_bound": "import oplib;\n" + _POSINT + _F
+                 + "{\n  let @Option<PosInt> = oplib::mk(@Float64.0);\n"
+                   "  match @Option<PosInt>.0 {\n" + _ARMS + "\n  }\n}\n",
+    # #1407 across the boundary: the wrapper is local and carries no
+    # obligation, so neither this run's stream nor the manifest names it.
+    "wrapper": "import oplib;\n" + _POSINT + """
+private fn wrap(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  oplib::mk(@Float64.0)
+}
+""" + _F + "{\n  match wrap(@Float64.0) {\n" + _ARMS + "\n  }\n}\n",
+}
+
+
+def _verify_with_lib(tmp_path: Path, caller: str) -> dict:
+    (tmp_path / "oplib.vera").write_text(_IMP_LIB, encoding="utf-8")
+    return _verify(tmp_path, caller, name="main.vera")
+
+
+@pytest.mark.parametrize("spelling", sorted(_IMP_CALLERS))
+def test_1406_the_taint_crosses_an_import_in_every_spelling(
+    tmp_path: Path, spelling: str,
+) -> None:
+    """#1402 gives the importer a disclosed set; this makes it survive.
+
+    Measured through the rebase: on `release/v0.2.0` before #1402 all three
+    escaped, with #1402 alone only `direct` demoted, and the two spellings
+    this PR is about needed both changes. They compose rather than overlap
+    because the hook the SMT layer records terms through IS
+    `_scrutinee_is_disclosed_call` — whatever #1402 teaches that method about
+    resolving an imported callee, the value taint inherits.
+    """
+    result = _verify_with_lib(tmp_path, _IMP_CALLERS[spelling])
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("tier3", "E534"), (
+        f"{spelling}: an imported disclosure must demote its importer "
+        f"whatever spelling reaches it — got {_f_ensures(result)}"
+    )
+
+
+@pytest.mark.parametrize("spelling", sorted(_IMP_CALLERS))
+def test_1399_the_demotion_still_names_the_import_it_came_from(
+    tmp_path: Path, spelling: str,
+) -> None:
+    """A demotion this PR newly causes must not be one nobody can act on.
+
+    #1399's finding 4 was that an importer's E534 named nothing: the E504
+    identifying the culprit belongs to the library's run, which this one
+    discards. #1402 fixed that for the direct spelling by citing the site as
+    it consults the manifest — at the place the fact is withheld. This PR
+    withholds in two more places where that consult has long since happened
+    (a `let`-bound value is a slot reference; a forwarder is a local call),
+    so the citation is carried ON the value instead, and across the forwarder
+    hop with it. Without that, the two spellings would demote with the
+    generic text and re-open the finding.
+    """
+    result = _verify_with_lib(tmp_path, _IMP_CALLERS[spelling])
+    e534 = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(e534) == 1, [w.get("error_code") for w in result["warnings"]]
+    text = e534[0]["description"]
+    assert "oplib::mk" in text, (
+        f"{spelling}: the demotion names no culprit, so the reader is told "
+        f"only that something somewhere was not established — {text}"
+    )
+    assert "oplib.vera" in text and "E506" in text, text

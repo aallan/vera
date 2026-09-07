@@ -584,7 +584,12 @@ class ContractVerifier:
         # `disclosed_fn_names` cannot see them; they are recorded here as each
         # body is translated, and unioned in by `_disclosed_fn_names` so the
         # existing fixpoint carries the taint one hop further per pass.
-        self._result_disclosed_fns: set[str] = set()
+        # Mapped to the citation sites BEHIND each one, so a demotion reached
+        # through a forwarder can still name the import at the far end of it
+        # (#1399's citation, carried across #1407's hop).  Empty list = the
+        # forwarder hands on a purely local disclosure, which needs no
+        # citation: its own E504/E506 is in this run's output.
+        self._result_disclosed_fns: dict[str, list[DisclosureSite]] = {}
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -3008,7 +3013,7 @@ class ContractVerifier:
             # and this pass withholds more than the last did.  Recomputing
             # cannot shrink the set: the input `_disclosed_fns` only grows and
             # the analysis is monotone in it, so the fixpoint still terminates.
-            self._result_disclosed_fns = set()
+            self._result_disclosed_fns = {}
             self.register_program(program)
             self._verify_all_declarations(program)
 
@@ -3028,7 +3033,8 @@ class ContractVerifier:
         function that failed to establish its own declared type shows up.  A
         forwarder leaves no such trace, so it is collected during body
         translation instead; both feed the one set every consumer reads."""
-        return disclosed_fn_names(self.obligations) | self._result_disclosed_fns
+        return (disclosed_fn_names(self.obligations)
+                | frozenset(self._result_disclosed_fns))
 
     def _verify_shadowed_module_generics(self) -> None:
         """Verify each IMPORTED generic's clone at the type args the importer
@@ -3692,7 +3698,8 @@ class ContractVerifier:
         #       hop per pass, so a chain of wrappers of any depth terminates
         #       for the reason the fixpoint already terminates.
         if smt.term_is_disclosed(body_expr):
-            self._result_disclosed_fns.add(decl.name)
+            self._result_disclosed_fns[decl.name] = smt.disclosed_term_sites(
+                body_expr)
 
         # 5.5. Check primitive-operation safety obligations (spec §6.4.3):
         #      @Nat - @Nat underflow (#520), and division/modulo by zero
@@ -9288,6 +9295,15 @@ class ContractVerifier:
         hit = self._scrutinee_is_disclosed_call(call_node)
         sites = self._tainted_sites[before:]
         del self._tainted_sites[before:]
+        if hit and not sites:
+            # A FORWARDER answers True from `_result_disclosed_fns` rather
+            # than from the manifest, so it recorded nothing above — but the
+            # import it forwards is exactly what a demotion here should cite,
+            # and the sites were collected when its own body was translated.
+            # Without this the wrapper spelling demotes with no culprit named,
+            # which is the gap #1399 closed for the direct spelling.
+            name = getattr(call_node, "name", "")
+            sites = list(self._result_disclosed_fns.get(name, ()))
         return hit, sites
 
     def _established_facts(
