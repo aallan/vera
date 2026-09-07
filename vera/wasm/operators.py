@@ -2229,8 +2229,12 @@ class OperatorsMixin:
         ``unreachable``, so the runtime classifies the trap by which guard
         fired rather than by the instruction they share (#808's mechanism).
         The narrowing entry point passes ``$vera.nat_guard_trap`` (#754); the
-        widening one passes ``None`` and keeps the generic kind until its own
-        dedicated one lands.  The CALLER raises the corresponding
+        widening one passes ``None`` and keeps the generic ``kind`` — so a
+        tripped widen guard is reported as a bare ``unreachable`` beside a Fix
+        about non-exhaustive matches, none of whose three causes is the one
+        that fired.  Tracked as #1438, with the host-import fan-in that makes
+        it its own change rather than one more argument here.  The CALLER
+        raises the corresponding
         ``_needs_…`` flag — the import's declaration and its call must be
         decided together, and only the caller knows which import it wants.
 

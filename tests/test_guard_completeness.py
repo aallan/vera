@@ -2266,3 +2266,95 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
             f"{plain}; this cell's premise is that codegen treats them alike"
         )
 
+
+_Q1_REFINED_OVER_REFINED_LET = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Tiny = { @Pos | @Pos.0 < 10 };
+
+public fn mk(@Int -> @Pos)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Tiny = mk(@Int.0);
+  @Tiny.0
+}
+"""
+
+
+class TestTheUnguardedRationaleNamesTheCauseThatApplies:
+    """The E506 closing sentence must not blame a site #765 guards.
+
+    A `let @Tiny = mk(...)` whose base is itself a refinement lands here for
+    a TYPE reason: `_emit_bind_refine_guard` will not lower a guard for a
+    refinement-over-refinement base.  The site is fine — `"let binding"` is
+    in `_REFINED_BIND_GUARDED_SITES`.  The sentence that used to close this
+    warning said the guard lives only at a function boundary "not at this
+    internal narrowing site", which was true before #765 and false after,
+    and it sent a reader to move a binding that has no reason to move.
+
+    This cell exists because that text was fixed once and LOST to a rebase:
+    #1420 parameterised the closing sentence, the merge kept the new
+    parameter with its pre-#765 default, and the corrected wording went with
+    it.  A reviewed text fix that nothing asserts is one merge away from
+    being un-fixed, so the assertion is the pin — it fails on the regression
+    rather than waiting for the next reviewer to re-read the paragraph.
+    """
+
+    def test_the_rationale_offers_both_causes(self, tmp_path: Path) -> None:
+        proc = _cli("verify", "--json",
+                    str(_write(tmp_path, _Q1_REFINED_OVER_REFINED_LET,
+                               "q1a.vera")))
+        envelope = json.loads(proc.stdout)
+        e506 = [w for w in envelope["warnings"]
+                if w.get("error_code") == "E506"]
+        assert len(e506) == 1, envelope["warnings"]
+        rationale = e506[0]["rationale"]
+        assert "SITE is" in rationale and "BASE is" in rationale, (
+            f"the closing sentence names one cause where two apply, so a "
+            f"reader cannot tell which half to change:\n{rationale}"
+        )
+
+    def test_and_does_not_blame_a_site_that_is_guarded(
+        self, tmp_path: Path,
+    ) -> None:
+        """The half that actually regressed, asserted on its own.
+
+        Kept separate from the cell above so the failure names the defect:
+        a rationale could name both causes and still carry the stale
+        internal-site clause beside them.
+        """
+        proc = _cli("verify", "--json",
+                    str(_write(tmp_path, _Q1_REFINED_OVER_REFINED_LET,
+                               "q1b.vera")))
+        envelope = json.loads(proc.stdout)
+        rationale = next(w["rationale"] for w in envelope["warnings"]
+                         if w.get("error_code") == "E506")
+        assert "internal narrowing site" not in rationale, (
+            f"a `let` bind is runtime-guarded since #765, so calling it an "
+            f"unguarded internal site is false:\n{rationale}"
+        )
+
+    def test_the_bind_is_recorded_unguarded_for_the_type_not_the_site(
+        self, tmp_path: Path,
+    ) -> None:
+        """The status behind the sentence, so the pin is not text-only.
+
+        `tier3_unguarded` is correct here — no guard is emitted — and the
+        cause is the base, which is what the wording has to convey.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _Q1_REFINED_OVER_REFINED_LET, name="q1c.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert ("tier3_unguarded", "E506") in binds, obs
+        _assert_partition(envelope)
+

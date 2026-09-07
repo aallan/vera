@@ -107,14 +107,29 @@ _OPAQUE_SCRUTINEE_REASON = (
 )
 
 #: The default closing sentence of an unguarded E506 (#746) — what codegen does
-#: and does not check at an INTERNAL narrowing site.  Every site that predates
-#: #1410 is one of those; the nested-refinement family passes its own note
-#: instead, because its site is a function boundary and the missing coverage is
-#: a different thing (see `_NESTED_SITE_GUARD_NOTE`).
-_INTERNAL_SITE_GUARD_NOTE = (
-    "Codegen runtime-guards refinements only at the function boundary "
-    "(parameter entry / return exit), not at this internal narrowing site, so "
-    "it is neither statically proven nor runtime-checked."
+#: and does not check here.
+#:
+#: It names TWO possibilities rather than asserting one, because since #765 the
+#: SITE is no longer the reliable cause.  The sentence this replaced said the
+#: guard lives only at a function boundary "not at this internal narrowing
+#: site", which was true when every pattern bind was unguarded and is false
+#: now: `let binding`, `match binding`, `tuple destructure` and `ADT
+#: sub-pattern bind` are all in `_REFINED_BIND_GUARDED_SITES`, so a
+#: `let @Tiny = mk(...)` that lands here was told to move a binding it has no
+#: reason to move.  What is actually missing at such a site is the BASE — a
+#: refinement over a refinement, which `_emit_bind_refine_guard` will not lower
+#: — and a reader sent to the wrong half of the question changes the wrong
+#: thing.  The nested-refinement family passes its own note instead, because
+#: its site is a boundary and the gap there is a third thing (see
+#: `_NESTED_SITE_GUARD_NOTE`).
+_UNGUARDED_TWO_CAUSE_NOTE = (
+    "No runtime guard covers it either, for one of two reasons: the SITE is "
+    "one codegen does not guard (a constructor field, a tuple component, an "
+    "array element or a `Map` value at construction, or a user effect "
+    "operation's argument), or the refinement's own BASE is one no guard can "
+    "be emitted for — a base that is itself a refinement, or one that erases "
+    "to nothing at run time.  So the predicate is neither statically proven "
+    "nor runtime-checked."
 )
 
 #: The closing sentence for a refinement written INSIDE a boundary type (#1410).
@@ -8759,7 +8774,7 @@ class ContractVerifier:
         *,
         guarded: bool | None = None,
         reason: str,
-        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
+        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
         refined_ty: Type | None = None,
     ) -> None:
         """Record a Tier-3 ``refine_bind`` outcome — the predicate was not
@@ -8800,14 +8815,16 @@ class ContractVerifier:
         nothing for a base codegen cannot check.
 
         *guard_note* is the UNGUARDED report's closing sentence — what codegen
-        does and does not check at this site.  The default names the #746
-        internal-narrowing story, which every site that predates #1410 is.
-        The nested-refinement family is not: its site IS a function boundary,
-        and what is missing there is that codegen's boundary decomposition
-        reaches a parameter's own refinement and its TUPLE components and
-        nothing else, so the default sentence would tell a reader looking at a
-        call argument that the site is internal — a false statement about
-        where the guard is, in the one field written to say exactly that."""
+        does and does not check at this site.  The default names the two
+        causes a reader has to choose between (an unguarded SITE, or a BASE no
+        guard can be emitted for), because since #765 the site alone no longer
+        settles it.  The nested-refinement family passes its own: its site IS
+        a function boundary, and what is missing there is a third thing —
+        codegen's boundary decomposition reaches a parameter's own refinement
+        and its TUPLE components and nothing else — so the default's two
+        causes would send a reader looking at a call argument to neither of
+        the halves that apply, in the one field written to say exactly
+        where the guard is."""
         if not reason:
             raise ValueError(
                 "a refinement Tier-3 demotion emits an E506 that must say "
@@ -10420,7 +10437,7 @@ class ContractVerifier:
         node: ast.Expr,
         site: str,
         reason: str,
-        guard_note: str = _INTERNAL_SITE_GUARD_NOTE,
+        guard_note: str = _UNGUARDED_TWO_CAUSE_NOTE,
     ) -> None:
         """Emit an E506 warning for a refinement narrowing the SMT layer could
         not discharge and codegen does NOT runtime-guard (#746).

@@ -6,7 +6,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 Defects in shipped compiler, runtime, or tooling behaviour — this table matches the issue tracker's open [`bug`-labelled issues](https://github.com/aallan/vera/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug) one-to-one. Verification-soundness gaps carry the `limitation` label instead and are tracked under [Limitations](#limitations).
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| The `@Nat` -> `@Int` widening guard traps correctly but reports the generic `kind="unreachable"`, so a tripped guard shows a Fix paragraph about non-exhaustive `match` arms, compiler-generated assertions and GC shadow-stack overflow — none of which is the cause. The remedy the user needs, a `requires(... <= i64.MAX)`, is never named. Its narrowing twin was given a dedicated kind in [#754](https://github.com/aallan/vera/issues/754) and shares the same emitter, which already takes the signal as a parameter; what is left is the host-import fan-in. | [#1438](https://github.com/aallan/vera/issues/1438) |
 
 ## Limitations
 
