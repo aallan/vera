@@ -26,12 +26,15 @@ or rewording switches the gate off.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "check_doc_counts.py"
 
@@ -892,9 +895,31 @@ class TestDualTargetRow:
 # ---------------------------------------------------------------------------
 
 
+# The standing paragraph the `## Bugs` section has carried since the file
+# was written.  Every fixture keeps one, because it is exactly what made
+# the old whole-body-equals-the-marker reading of the empty form
+# unsatisfiable (#1401): a section written the documented way was rejected
+# by the message that prescribed it.
+_BUGS_DESCRIPTION = (
+    "Defects in shipped compiler, runtime, or tooling behaviour — this"
+    " table matches the issue tracker's open `bug`-labelled issues"
+    " one-to-one."
+)
+
+
+def _bugs_section(body: str) -> str:
+    """A KNOWN_ISSUES.md whose `## Bugs` section holds `body`."""
+    return (
+        f"# Known Issues\n\n## Bugs\n\n{_BUGS_DESCRIPTION}\n\n{body}\n\n"
+        "## Limitations\n\n| Limitation | Issue |\n|-----------|-------|\n"
+        "| Something missing. |"
+        " [#900](https://github.com/aallan/vera/issues/900) |\n"
+    )
+
+
 def _bugs(*rows: str) -> str:
     body = "\n".join(rows)
-    return f"# Known Issues\n\n## Bugs\n\n| Bug | Issue |\n|-----|-------|\n{body}\n\n## Limitations\n"
+    return _bugs_section(f"| Bug | Issue |\n|-----|-------|\n{body}")
 
 
 def _row(number: int, text: str = "Something is wrong.") -> str:
@@ -928,7 +953,7 @@ class TestBugRows:
     def test_a_row_with_no_issue_link_is_an_error(self) -> None:
         text = _bugs("| A bug with no tracker. | none |")
         errors = _MOD.check_bug_rows(text)
-        assert len(errors) == 1 and "not found" in errors[0]
+        assert len(errors) == 1 and "does not hold exactly one" in errors[0]
 
     def test_two_rows_for_one_issue_are_an_error(self) -> None:
         """One-to-one: two rows citing one issue is a duplicate, not two bugs."""
@@ -941,12 +966,12 @@ class TestBugRows:
             "| Mislinked. | [#101](https://github.com/aallan/vera/issues/202) |"
         )
         errors = _MOD.check_bug_rows(text)
-        assert len(errors) == 1 and "not found" in errors[0]
+        assert len(errors) == 1 and "does not hold exactly one" in errors[0]
 
     def test_a_pull_request_link_is_not_an_issue_link(self) -> None:
         text = _bugs("| Wrong kind. | [#101](https://github.com/aallan/vera/pull/101) |")
         errors = _MOD.check_bug_rows(text)
-        assert len(errors) == 1 and "not found" in errors[0]
+        assert len(errors) == 1 and "does not hold exactly one" in errors[0]
 
     def test_a_row_carrying_a_pipe_in_its_prose_still_parses(self) -> None:
         text = _bugs(_row(101, "The `|>` operator is wrong."))
@@ -960,12 +985,173 @@ class TestBugRows:
     def test_an_empty_bugs_section_is_an_error_not_a_skip(self) -> None:
         text = "# Known Issues\n\n## Bugs\n\n## Limitations\n"
         errors = _MOD.check_bug_rows(text)
-        assert len(errors) == 1 and "not found" in errors[0]
+        assert len(errors) == 1 and "does not end with" in errors[0]
 
     def test_a_renamed_heading_is_an_error_not_a_skip(self) -> None:
         text = _bugs(_row(101)).replace("## Bugs", "## Open bugs")
         errors = _MOD.check_bug_rows(text)
         assert len(errors) == 1 and "not found" in errors[0]
+
+
+class TestBugsTableDrivenToZero:
+    """#1401 — the burndown's success state has to be writable.
+
+    The marker is recognised BESIDE the section's standing description
+    rather than instead of it, which is what the old whole-body-equals
+    reading could not express: the documented empty form was rejected by
+    the very message that prescribed it, and the condition is reachable
+    exactly when the burndown succeeds — blocking the PR that makes it
+    succeed.  What must NOT become readable is a table emptied without a
+    marker, which is the accident the gate exists for.
+    """
+
+    def test_the_marker_is_read_beside_the_description(self) -> None:
+        text = _bugs_section("No known bugs.")
+        assert _MOD.bug_rows(text) == []
+        assert _MOD.check_bug_rows(text) == []
+        assert _BUGS_DESCRIPTION in text
+
+    def test_a_rowless_section_without_the_marker_is_an_error(self) -> None:
+        """The description alone is not a claim of zero — it is a
+        section whose table went missing."""
+        text = _bugs_section("Some prose but no table and no marker.")
+        errors = _MOD.check_bug_rows(text)
+        assert _MOD.bug_rows(text) is None
+        assert len(errors) == 1 and "No known bugs." in errors[0]
+
+    def test_an_emptied_table_left_behind_is_an_error(self) -> None:
+        """The accident the gate exists for: the last row is deleted and
+        the table's header and separator are left standing."""
+        text = _bugs_section("| Bug | Issue |\n|-----|-------|")
+        errors = _MOD.check_bug_rows(text)
+        assert _MOD.bug_rows(text) is None
+        assert len(errors) == 1 and "does not end with" in errors[0]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(
+                f"| Bug | Issue |\n|-----|-------|\n{_row(101)}\n\n"
+                "No known bugs.",
+                id="marker-after-the-table",
+            ),
+            pytest.param(
+                "No known bugs.\n\n"
+                f"| Bug | Issue |\n|-----|-------|\n{_row(101)}",
+                id="marker-before-the-table",
+            ),
+            pytest.param(
+                f"| Bug | Issue |\n|-----|-------|\n{_row(101)}\n\n"
+                "No known bugs.\n\n"
+                f"| Bug | Issue |\n|-----|-------|\n{_row(102)}",
+                id="marker-between-two-tables",
+            ),
+        ],
+    )
+    def test_the_marker_beside_a_stray_row_is_a_contradiction(
+        self, body: str
+    ) -> None:
+        """A section claiming both zero and one is not readable as
+        either, in ANY ordering.
+
+        Written as a permutation rather than one projection of it: the
+        guard was `lines[-1] == marker`, so the marker ABOVE a table was
+        no marker at all and the rows came back clean — and that is the
+        ordinary shape, since at zero the section ends with the marker
+        and the next bug's table is appended below it (PR #1411 review).
+        """
+        text = _bugs_section(body)
+        errors = _MOD.check_bug_rows(text)
+        assert _MOD.bug_rows(text) is None
+        assert len(errors) == 1 and "both some open bugs and none" in errors[0]
+
+    def test_a_leftover_table_header_beside_the_marker_is_an_error(
+        self,
+    ) -> None:
+        """The zero form has no table at all.  A header and separator
+        left standing beside the marker parsed to no rows and read as
+        zero, so the enforced form and the documented one differed."""
+        text = _bugs_section("| Bug | Issue |\n|-----|-------|\n\nNo known bugs.")
+        assert _MOD.bug_rows(text) is None
+        errors = _MOD.check_bug_rows(text)
+        assert len(errors) == 1 and "not even a leftover header row" in errors[0]
+
+    def test_the_marker_must_be_the_last_line(self) -> None:
+        """Trailing prose after the marker means the section says
+        something further, and the gate cannot know it is not a
+        qualification of the claim."""
+        text = _bugs_section("No known bugs.\n\nBut see the tracker.")
+        assert _MOD.bug_rows(text) is None
+
+    def test_a_prose_mention_of_the_marker_is_not_the_marker(self) -> None:
+        """The marker is a whole line, not a substring: the standing
+        description is precisely the place that would one day quote it,
+        and a quotation is not a claim."""
+        text = _bugs_section(
+            "An empty section is written `No known bugs.` rather than left"
+            " as a bare table."
+        )
+        assert _MOD.bug_rows(text) is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("No known bugs.", id="zero"),
+            pytest.param(f"| Bug | Issue |\n|--|--|\n{_row(101)}", id="one-row"),
+            pytest.param("No table and no marker.", id="unreadable"),
+            pytest.param("| Bug | Issue |\n|--|--|", id="emptied-table"),
+            pytest.param(
+                f"No known bugs.\n\n| Bug | Issue |\n|--|--|\n{_row(101)}",
+                id="contradiction",
+            ),
+            pytest.param("No known bugs.\n\nAnd more.", id="marker-not-last"),
+        ],
+    )
+    def test_the_two_readers_of_the_section_agree(self, body: str) -> None:
+        """`bug_rows` and `check_bug_rows` read the SAME section through
+        the same configuration, and must not disagree about whether it is
+        readable: an unreadable section that reports no error would leave
+        `main()` skipping the parity check in silence, and a readable one
+        that reports an error would block a correctly-written file.
+
+        Pinned as behaviour rather than by sharing a constant, which is
+        what the duplication between the two call sites would otherwise
+        risk (PR #1411 CodeRabbit review).
+        """
+        text = _bugs_section(body)
+        readable = _MOD.bug_rows(text) is not None
+        clean = _MOD.check_bug_rows(text) == []
+        assert readable == clean
+
+    def test_the_two_readers_of_the_burndown_agree(self) -> None:
+        """The burndown pair carries the same obligation."""
+        for body in (
+            f"*One open bugs, driven to zero.*\n\n{_BURNDOWN_DESCRIPTION}\n\n"
+            "| Issue | What |\n|---|---|\n"
+            "| [#101](https://github.com/aallan/vera/issues/101) | A bug. |",
+            f"*Zero open bugs, driven to zero.*\n\n{_BURNDOWN_DESCRIPTION}\n\n"
+            "No open bugs.",
+            f"*Zero open bugs, driven to zero.*\n\n{_BURNDOWN_DESCRIPTION}",
+        ):
+            roadmap = _roadmap(body)
+            readable = _MOD.roadmap_burndown_rows(roadmap) is not None
+            rows = _MOD.roadmap_burndown_rows(roadmap) or []
+            known = _bugs(*(_row(n) for n in rows)) if rows else _bugs_section(
+                "No known bugs."
+            )
+            clean = _MOD.check_burndown_header_matches_rows(roadmap, known) == []
+            assert readable == clean, body
+
+    def test_the_error_names_the_form_it_wants(self) -> None:
+        """The regression in prose: the old single message rejected the
+        documented form while prescribing it, so a maintainer following
+        the error could not satisfy it."""
+        errors = _MOD.check_bug_rows(_bugs_section("No table here."))
+        assert len(errors) == 1
+        prescribed = re.search(r"`([^`]*bugs\.)`", errors[0])
+        assert prescribed is not None
+        fixed = _bugs_section(prescribed.group(1))
+        assert _MOD.check_bug_rows(fixed) == []
 
 
 # ---------------------------------------------------------------------------
@@ -976,21 +1162,44 @@ class TestBugRows:
 # ---------------------------------------------------------------------------
 
 
-def _roadmap_burndown(header_word: str, *issue_numbers: int) -> str:
-    rows = "\n".join(
-        f"| [#{n}](https://github.com/aallan/vera/issues/{n}) | Something. |"
-        for n in issue_numbers
+_BURNDOWN_DESCRIPTION = (
+    "A bug class outranks stage work, so the next release takes the open"
+    " `bug`-labelled set as its queue."
+)
+
+
+def _roadmap(burndown_body: str | None) -> str:
+    """A ROADMAP.md whose burndown section holds `burndown_body`.
+
+    ``None`` builds the file with NO burndown section at all — the form
+    a burndown driven to zero takes once it is past, its record living
+    in HISTORY.md and CHANGELOG.md (#1401).
+    """
+    burndown = (
+        ""
+        if burndown_body is None
+        else f"## The v0.1.14 burndown\n\n{burndown_body}\n\n"
     )
     return (
         "# Roadmap\n\n"
         "## Where we are\n\n"
         "12,290 tests, 244 conformance programs, 43 examples, 14 spec chapters.\n\n"
-        "## The v0.1.14 burndown\n\n"
-        f"*{header_word} open bugs, driven to zero.*\n\n"
-        "| Issue | What |\n|---|---|\n"
-        f"{rows}\n\n"
+        f"{burndown}"
         "## Stage 19 — next stage\n\n"
         "Some stage content.\n"
+    )
+
+
+def _roadmap_burndown(header_word: str, *issue_numbers: int) -> str:
+    rows = "\n".join(
+        f"| [#{n}](https://github.com/aallan/vera/issues/{n}) | Something. |"
+        for n in issue_numbers
+    )
+    return _roadmap(
+        f"*{header_word} open bugs, driven to zero.*\n\n"
+        f"{_BURNDOWN_DESCRIPTION}\n\n"
+        "| Issue | What |\n|---|---|\n"
+        f"{rows}"
     )
 
 
@@ -1052,11 +1261,133 @@ class TestBurndownHeaderMatchesRows:
         errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
         assert len(errors) == 1 and "Several" in errors[0]
 
-    def test_a_missing_burndown_section_is_an_error_not_a_skip(self) -> None:
+    def test_a_missing_burndown_section_beside_open_bugs_is_an_error(self) -> None:
         roadmap = "# Roadmap\n\n## Where we are\n\nNo burndown here.\n"
         known_issues = _bugs(_row(101))
         errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
         assert len(errors) == 1 and "burndown" in errors[0]
+
+    def test_an_unreadable_bugs_table_is_reported_not_assumed_zero(self) -> None:
+        """The cross-check's other input failing must not be mistaken
+        for agreement: an unreadable Bugs table is its own error, and it
+        is reported before the burndown section is consulted at all."""
+        roadmap = _roadmap_burndown("One", 101)
+        known_issues = _bugs_section("A table that went missing.")
+        errors = _MOD.check_burndown_header_matches_rows(roadmap, known_issues)
+        assert len(errors) == 1 and "KNOWN_ISSUES.md" in errors[0]
+
+
+class TestBurndownDrivenToZero:
+    """#1401 — ROADMAP's half of the same wall.
+
+    An emptied burndown table returned ``None`` and reported "burndown
+    table has no issue rows", so `*Zero open bugs, driven to zero.*` was
+    unwritable.  Two forms read as zero: the section RETIRED (deleted —
+    a burndown all of whose rows are closed is past, and the project's
+    future-vs-past rule puts past in HISTORY/CHANGELOG), and the section
+    KEPT with its table replaced by the sibling marker `No open bugs.`.
+    Neither is a way past the gate — both are still cross-checked
+    against KNOWN_ISSUES.md's Bugs table.
+    """
+
+    _ZERO_BUGS = _bugs_section("No known bugs.")
+
+    def test_a_retired_section_reads_as_zero(self) -> None:
+        assert (
+            _MOD.check_burndown_header_matches_rows(
+                _roadmap(None), self._ZERO_BUGS
+            )
+            == []
+        )
+
+    def test_a_retired_section_is_still_cross_checked(self) -> None:
+        """Absence reads as zero, so it must disagree with a Bugs table
+        that still has rows — otherwise deleting the section becomes the
+        way past the gate rather than the way to express success."""
+        errors = _MOD.check_burndown_header_matches_rows(
+            _roadmap(None), _bugs(_row(101), _row(102))
+        )
+        assert len(errors) == 1
+        assert "#101" in errors[0] and "#102" in errors[0]
+
+    def test_a_kept_section_with_the_marker_reads_as_zero(self) -> None:
+        roadmap = _roadmap(
+            "*Zero open bugs, driven to zero.*\n\n"
+            f"{_BURNDOWN_DESCRIPTION}\n\nNo open bugs."
+        )
+        assert _MOD.roadmap_burndown_rows(roadmap) == []
+        assert (
+            _MOD.check_burndown_header_matches_rows(roadmap, self._ZERO_BUGS)
+            == []
+        )
+
+    def test_a_kept_section_with_a_bare_empty_table_is_an_error(self) -> None:
+        """The same accident as its KNOWN_ISSUES sibling: the last row
+        deleted, the header and separator left standing, no marker."""
+        roadmap = _roadmap(
+            "*Zero open bugs, driven to zero.*\n\n"
+            f"{_BURNDOWN_DESCRIPTION}\n\n| Issue | What |\n|---|---|"
+        )
+        errors = _MOD.check_burndown_header_matches_rows(
+            roadmap, self._ZERO_BUGS
+        )
+        assert _MOD.roadmap_burndown_rows(roadmap) is None
+        assert len(errors) == 1 and "No open bugs." in errors[0]
+
+    _BURNDOWN_ROW = "| [#101](https://github.com/aallan/vera/issues/101) | A bug. |"
+
+    @pytest.mark.parametrize(
+        "order",
+        ["marker-after-the-table", "marker-before-the-table"],
+    )
+    def test_the_marker_beside_a_stray_row_is_a_contradiction(
+        self, order: str
+    ) -> None:
+        """The burndown twin of the KNOWN_ISSUES permutation: the marker
+        above a table was ignored, so `No open bugs.` could sit over a
+        one-row burndown and read as one open bug with the header word
+        `One` agreeing (PR #1411 review)."""
+        table = f"| Issue | What |\n|---|---|\n{self._BURNDOWN_ROW}"
+        body = (
+            f"{table}\n\nNo open bugs."
+            if order == "marker-after-the-table"
+            else f"No open bugs.\n\n{table}"
+        )
+        roadmap = _roadmap(
+            "*One open bugs, driven to zero.*\n\n"
+            f"{_BURNDOWN_DESCRIPTION}\n\n{body}"
+        )
+        assert _MOD.roadmap_burndown_rows(roadmap) is None
+        errors = _MOD.check_burndown_header_matches_rows(
+            roadmap, _bugs(_row(101))
+        )
+        assert len(errors) == 1 and "both some open bugs and none" in errors[0]
+
+    def test_the_marker_does_not_bypass_the_header_word(self) -> None:
+        """The zero form is still three numbers agreeing: a marked table
+        beside a header word that has not been updated is the #1370
+        drift, unchanged by the new empty form."""
+        roadmap = _roadmap(
+            "*One open bugs, driven to zero.*\n\n"
+            f"{_BURNDOWN_DESCRIPTION}\n\nNo open bugs."
+        )
+        errors = _MOD.check_burndown_header_matches_rows(
+            roadmap, self._ZERO_BUGS
+        )
+        assert len(errors) == 1 and "'One'" in errors[0]
+
+    def test_a_kept_marked_section_is_still_cross_checked(self) -> None:
+        """The other zero form's cross-check: `No open bugs.` beside a
+        Bugs table that still has a row is a disagreement, not zero."""
+        roadmap = _roadmap(
+            "*Zero open bugs, driven to zero.*\n\n"
+            f"{_BURNDOWN_DESCRIPTION}\n\nNo open bugs."
+        )
+        errors = _MOD.check_burndown_header_matches_rows(
+            roadmap, _bugs(_row(101))
+        )
+        assert len(errors) == 1
+        assert "KNOWN_ISSUES.md Bugs table rows = 1" in errors[0]
 
 
 class TestBugIssueParity:
@@ -1072,9 +1403,36 @@ class TestBugIssueParity:
         assert len(errors) == 1 and "#103" in errors[0]
 
     def test_no_open_bug_issues_is_an_error_not_a_skip(self) -> None:
-        """An empty fetch is a failed query, not a clean bill of health."""
+        """An empty fetch beside rows is a failed query, not a clean
+        bill of health."""
         errors = _MOD.check_bug_issue_parity([101], [])
         assert [e for e in errors if "not found" in e]
+
+    def test_both_sides_at_zero_agree(self) -> None:
+        """#1401 — the burndown's success state, checked against the
+        tracker rather than exempted from it.  A query that FAILED
+        cannot reach here as `[]`: `open_bug_issues` raises
+        `BugQueryError` instead, which is what lets an empty list be
+        read as the real answer it is."""
+        assert _MOD.check_bug_issue_parity([], []) == []
+
+    def test_zero_rows_against_a_non_empty_tracker_is_an_error(self) -> None:
+        """The other half of the zero contract: agreeing at zero must
+        not become passing at zero.  A file claiming no open bugs while
+        the tracker carries some is exactly the state the release gate
+        is for."""
+        errors = _MOD.check_bug_issue_parity([], [1317])
+        assert len(errors) == 1 and "#1317" in errors[0]
+
+    def test_the_empty_query_guard_still_raises_at_the_query(self) -> None:
+        """The guard `check_bug_issue_parity` gave up at zero has to
+        live somewhere: `open_bug_issues` raises rather than returning
+        an empty list, so a transport or payload failure is never read
+        as a burned-down tracker."""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        body = source[source.index("def open_bug_issues(") :]
+        body = body[: body.index("\ndef ")]
+        assert "raise BugQueryError" in body
 
     def test_the_parity_check_is_not_wired_into_the_default_run(self) -> None:
         """A pre-commit hook must not depend on the GitHub API."""
@@ -1094,6 +1452,1072 @@ class TestBugIssueParity:
         for index in calls:
             guarded = source[max(0, index - 600) : index]
             assert "args.check_bug_issues" in guarded
+
+
+# ---------------------------------------------------------------------------
+# The shipped documents, driven to the zero forms they will take (#1401).
+# The fixtures above pin the RULE; these pin that the rule fits the real
+# files, which is the half a synthetic fixture cannot show.
+# ---------------------------------------------------------------------------
+
+_ROOT = Path(__file__).parent.parent
+_TIP_BUGS_SECTION = re.compile(r"^## Bugs[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S)
+_TIP_BURNDOWN_SECTION = re.compile(
+    r"^## The v[\d.]+ burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
+)
+
+
+def _tip_known_issues_at_zero() -> tuple[str, str]:
+    """The shipped KNOWN_ISSUES.md with its Bugs rows removed and the
+    marker written after the description the section keeps.
+
+    Returns the text and that description, so a cell can assert the
+    paragraph SURVIVED rather than trust the transformation: the
+    workaround available before this fix was to delete it, which lost
+    the file's statement of the one-to-one convention.
+    """
+    text = (_ROOT / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
+    section = _TIP_BUGS_SECTION.search(text)
+    assert section is not None
+    description = section.group(1).strip().split("\n\n")[0]
+    zeroed = f"\n\n{description}\n\nNo known bugs.\n\n"
+    return (
+        text[: section.start(1)] + zeroed + text[section.end(1) :],
+        description,
+    )
+
+
+def _tip_roadmap_retired() -> str:
+    """The shipped ROADMAP.md with its burndown section deleted."""
+    text = (_ROOT / "ROADMAP.md").read_text(encoding="utf-8")
+    section = _TIP_BURNDOWN_SECTION.search(text)
+    if section is None:
+        return text
+    return text[: section.start()] + text[section.end() :]
+
+
+def _tip_roadmap_marked() -> str:
+    """The shipped ROADMAP.md with its burndown section kept and its
+    table replaced by the marker.  Built by substitution when the tip
+    still has the section and by appending when it no longer does, so
+    this form is exercised either side of the retirement."""
+    text = (_ROOT / "ROADMAP.md").read_text(encoding="utf-8")
+    kept = (
+        "## The v0.2.0 burndown\n\n"
+        "*Zero open bugs, driven to zero.*\n\n"
+        f"{_BURNDOWN_DESCRIPTION}\n\n"
+        "No open bugs.\n\n"
+    )
+    section = _TIP_BURNDOWN_SECTION.search(text)
+    if section is None:
+        return text.rstrip("\n") + "\n\n" + kept
+    return text[: section.start()] + kept + text[section.end() :]
+
+
+class TestReleaseTipZeroState:
+    def test_the_shipped_bugs_section_at_zero_keeps_its_description(self) -> None:
+        text, description = _tip_known_issues_at_zero()
+        # Not the table's first line, and not the marker itself: either
+        # would make the fixture pass for a reason that is not the one
+        # being pinned.
+        assert description and not description.startswith("|")
+        assert description != "No known bugs."
+        assert description in text
+        assert _MOD.bug_rows(text) == []
+        assert _MOD.check_bug_rows(text) == []
+
+    def test_the_shipped_roadmap_retired_reads_as_zero(self) -> None:
+        known_issues, _ = _tip_known_issues_at_zero()
+        assert _TIP_BURNDOWN_SECTION.search(_tip_roadmap_retired()) is None
+        assert (
+            _MOD.check_burndown_header_matches_rows(
+                _tip_roadmap_retired(), known_issues
+            )
+            == []
+        )
+
+    def test_the_shipped_roadmap_marked_reads_as_zero(self) -> None:
+        known_issues, _ = _tip_known_issues_at_zero()
+        assert (
+            _MOD.check_burndown_header_matches_rows(
+                _tip_roadmap_marked(), known_issues
+            )
+            == []
+        )
+
+    def test_the_shipped_files_at_zero_disagree_with_a_live_bugs_table(
+        self,
+    ) -> None:
+        """The zero forms are not a bypass: the shipped ROADMAP driven to
+        zero beside a Bugs table that still holds rows is an error."""
+        live = (_ROOT / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
+        rows = _MOD.bug_rows(live)
+        assert rows is not None
+        if not rows:  # the burndown has already landed; nothing to disagree
+            rows_text = _bugs(_row(101))
+        else:
+            rows_text = live
+        assert (
+            _MOD.check_burndown_header_matches_rows(
+                _tip_roadmap_retired(), rows_text
+            )
+            != []
+        )
+
+
+# ---------------------------------------------------------------------------
+# The enumerated negative-conformance-fixture lists in CLAUDE.md and
+# AGENTS.md, against the manifest that decides which fixtures are negative.
+# Both files spell the set out in full and AGENTS.md also spells its size as
+# an English word; nothing gated any of it, so a fixture added to the
+# manifest simply never appeared in either list.
+# ---------------------------------------------------------------------------
+
+
+def _manifest(
+    *negatives: str,
+    positives: int = 2,
+    compile_stage: tuple[str, ...] = (),
+    verify: tuple[str, ...] = (),
+) -> list[dict[str, object]]:
+    # The bulk sits at `run`, the level the prose states as "almost all"
+    # without enumerating it — so a fixture that wants a SECOND level
+    # sentence asks for `verify` entries explicitly.
+    entries: list[dict[str, object]] = [
+        {"file": f"ch01_positive_{i}.vera", "level": "run"}
+        for i in range(positives)
+    ]
+    entries += [
+        {"file": f"{name}.vera", "level": "verify"} for name in verify
+    ]
+    entries += [
+        {"file": f"{name}.vera", "level": "check", "expected_error": "E123"}
+        for name in negatives
+    ]
+    # A compile-stage negative is still declared at level "check" — the
+    # stage is where its diagnostic fires, not where its level sits.
+    entries += [
+        {
+            "file": f"{name}.vera",
+            "level": "check",
+            "expected_error": "E621",
+            "expected_error_stage": "compile",
+        }
+        for name in compile_stage
+    ]
+    return entries
+
+
+def _fixture_doc(*names: str, word: str | None = None) -> str:
+    listed = ", ".join(f"`{name}`" for name in names)
+    count = f"the {word} " if word else "the "
+    return (
+        "Each positive program must pass its declared verification level;"
+        f" {count}negative fixtures ({listed}) instead must *fail* with the"
+        " E-code in their `expected_error` field.\n"
+    )
+
+
+class TestNegativeFixtureLists:
+    def test_a_list_matching_the_manifest_is_clean(self) -> None:
+        docs = {
+            "CLAUDE.md": _fixture_doc("ch02_a_rejected", "ch08_b_rejected"),
+            "AGENTS.md": _fixture_doc(
+                "ch02_a_rejected", "ch08_b_rejected", word="two"
+            ),
+        }
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch02_a_rejected", "ch08_b_rejected")
+        )
+        assert _MOD.check_negative_fixture_lists(docs, expected) == []
+
+    def test_a_manifest_fixture_missing_from_the_list_is_reported(self) -> None:
+        """The live drift: a negative fixture is added to the manifest and
+        the two prose lists are not touched."""
+        docs = {
+            "CLAUDE.md": _fixture_doc("ch02_a_rejected"),
+            "AGENTS.md": _fixture_doc("ch02_a_rejected", word="one"),
+        }
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch02_a_rejected", "ch08_new_rejected")
+        )
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 3
+        assert all("ch08_new_rejected" in e or "'one'" in e for e in errors)
+
+    def test_a_stale_count_word_is_reported(self) -> None:
+        """The names can be right while the word that counts them is not."""
+        docs = {
+            "AGENTS.md": _fixture_doc(
+                "ch02_a_rejected", "ch08_b_rejected", word="one"
+            )
+        }
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch02_a_rejected", "ch08_b_rejected")
+        )
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1
+        assert "'one'" in errors[0] and "manifest has 2" in errors[0]
+
+    def test_a_listed_fixture_the_manifest_does_not_mark_is_reported(
+        self,
+    ) -> None:
+        """Drift runs both ways: a fixture that stops being negative — or
+        is deleted — leaves a name behind."""
+        docs = {
+            "CLAUDE.md": _fixture_doc(
+                "ch02_a_rejected", "ch09_gone", word="one"
+            )
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "ch09_gone" in errors[0]
+
+    def test_every_occurrence_is_checked_not_the_first(self) -> None:
+        """AGENTS.md carries the list twice.  A gate reading only the
+        first would let the second drift — the same one-of-two blindness
+        one level down."""
+        doc = _fixture_doc(
+            "ch02_a_rejected", "ch08_b_rejected", word="two"
+        ) + _fixture_doc("ch02_a_rejected")
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch02_a_rejected", "ch08_b_rejected")
+        )
+        errors = _MOD.check_negative_fixture_lists({"AGENTS.md": doc}, expected)
+        assert len(errors) == 1
+        assert "list 2 of 2" in errors[0] and "ch08_b_rejected" in errors[0]
+
+    def test_a_duplicate_name_is_reported(self) -> None:
+        """A set written out by hand can name one fixture twice, which
+        makes the list look longer than the set it describes."""
+        docs = {
+            "CLAUDE.md": _fixture_doc(
+                "ch02_a_rejected", "ch02_a_rejected", word="one"
+            )
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "twice" in errors[0]
+
+    def test_a_reworded_sentence_is_an_error_not_a_skip(self) -> None:
+        docs = {"CLAUDE.md": "The rejected programs are listed in the manifest.\n"}
+        expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "no longer gated" in errors[0]
+
+    def test_dropping_the_count_word_everywhere_is_an_error(self) -> None:
+        """The word is half the gate; rewording it away must not switch
+        that half off silently."""
+        docs = {
+            "CLAUDE.md": _fixture_doc("ch02_a_rejected"),
+            "AGENTS.md": _fixture_doc("ch02_a_rejected"),
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "0 of the 2" in errors[0]
+
+    def test_an_unparseable_count_word_is_an_error(self) -> None:
+        docs = {"AGENTS.md": _fixture_doc("ch02_a_rejected", word="several")}
+        expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "several" in errors[0]
+
+    @pytest.mark.parametrize(
+        ("lead", "cue"),
+        [
+            pytest.param("the 3 ", "'3'", id="digits"),
+            pytest.param("all four ", "'four'", id="different-determiner"),
+            # The WHOLE slot is named, not its last word: reporting
+            # "'three'" was misleading and would PASS a manifest of 3.
+            pytest.param("the forty three ", "'forty three'", id="unhyphenated"),
+        ],
+    )
+    def test_a_count_the_pattern_did_not_expect_flags(
+        self, lead: str, cue: str
+    ) -> None:
+        """A count in an unanticipated spelling must FLAG, not vanish.
+
+        The slot was matched positionally as `the <word> `, so digits, a
+        different determiner and an unhyphenated compound each left the
+        count silently unchecked with only the global "no count anywhere"
+        backstop as a net — and that backstop stops covering the moment a
+        second word site exists (PR #1411 review).  Each of these three
+        is stale against a two-fixture manifest, so a gate that reads the
+        slot at all must say so.
+        """
+        listed = "`ch01_a_rejected`, `ch01_b_rejected`"
+        doc = (
+            f"Each positive program passes its level; {lead}negative"
+            f" fixtures ({listed}) instead must *fail*.\n"
+        )
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch01_a_rejected", "ch01_b_rejected")
+        )
+        errors = _MOD.check_negative_fixture_lists({"D.md": doc}, expected)
+        assert len(errors) == 1, errors
+        assert cue in errors[0]
+        assert "no longer spelled out" not in errors[0]
+
+    def test_a_second_list_cannot_hide_a_stale_count_behind_the_first(
+        self,
+    ) -> None:
+        """The global backstop only fires when EVERY site loses its word.
+        With two sites, one carrying a good count and the other a count
+        the pattern did not expect, the second went unchecked."""
+        good = _fixture_doc("ch01_a_rejected", "ch01_b_rejected", word="two")
+        stale = (
+            "Later, all four negative fixtures"
+            " (`ch01_a_rejected`, `ch01_b_rejected`) must *fail*.\n"
+        )
+        expected = _MOD.negative_fixture_names(
+            _manifest("ch01_a_rejected", "ch01_b_rejected")
+        )
+        errors = _MOD.check_negative_fixture_lists(
+            {"D.md": good + stale}, expected, counted_lists=2
+        )
+        assert len(errors) == 1 and "'four'" in errors[0]
+        assert "list 2 of 2" in errors[0]
+
+    def test_a_count_added_where_there_was_none_is_reported(self) -> None:
+        """The other direction of the family-wide backstop.
+
+        Two of the three shipped lists state no size, so the rule cannot
+        be per-sentence; what is pinned is HOW MANY do.  Adding a count
+        to a list that had none would otherwise let the one that already
+        had one go stale unnoticed — the same one-of-N blindness, at the
+        level of which sentences get checked at all.
+        """
+        docs = {
+            "AGENTS.md": _fixture_doc("ch01_a_rejected", word="one"),
+            "CLAUDE.md": _fixture_doc("ch01_a_rejected", word="one"),
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch01_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "2 of the 2" in errors[0]
+        assert "_COUNTED_FIXTURE_LISTS" in errors[0]
+
+    def test_the_shipped_docs_match_the_pinned_number_of_counts(self) -> None:
+        """The constant against the live files, so it cannot drift into
+        describing a shape the documents no longer have."""
+        counted = sum(
+            _MOD._count_token(match.group("lead")) is not None
+            for name in ("AGENTS.md", "CLAUDE.md")
+            for match in _MOD._NEGATIVE_FIXTURES.finditer(
+                (_ROOT / name).read_text(encoding="utf-8")
+            )
+        )
+        assert counted == _MOD._COUNTED_FIXTURE_LISTS
+
+    def test_a_bare_determiner_is_not_read_as_a_count(self) -> None:
+        """CLAUDE.md's list is introduced with no count at all, and the
+        determiner in front of it must not be mistaken for one."""
+        docs = {
+            "AGENTS.md": _fixture_doc("ch01_a_rejected", word="one"),
+            "CLAUDE.md": _fixture_doc("ch01_a_rejected"),
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch01_a_rejected"))
+        assert _MOD.check_negative_fixture_lists(docs, expected) == []
+
+    def test_the_word_parser_is_the_burndown_header_s(self) -> None:
+        """One table for "how many", so the two spellings in the
+        documentation cannot disagree about what a word means — a
+        hyphenated compound parses here exactly as it does there."""
+        docs = {
+            "AGENTS.md": _fixture_doc(
+                *(f"ch0{i % 9}_x{i}_rejected" for i in range(21)),
+                word="twenty-one",
+            )
+        }
+        expected = _MOD.negative_fixture_names(
+            _manifest(*(f"ch0{i % 9}_x{i}_rejected" for i in range(21)))
+        )
+        assert _MOD.check_negative_fixture_lists(docs, expected) == []
+
+    def test_the_manifest_reader_selects_on_expected_error(self) -> None:
+        """Positives must not leak into the expected set — that would
+        make the prose lists unsatisfiable rather than gated."""
+        names = _MOD.negative_fixture_names(
+            _manifest("ch02_a_rejected", positives=3)
+        )
+        assert names == ["ch02_a_rejected"]
+
+    def test_the_reader_partitions_the_manifest_as_the_runner_does(
+        self, tmp_path: Path
+    ) -> None:
+        """A DIFFERENTIAL against the runner, not a reading of its source.
+
+        `check_conformance.py` selects a negative fixture on
+        `entry.get("expected_error") is not None`.  A gate splitting the
+        same manifest by TRUTHINESS would disagree with it on an empty
+        code — describing a set of negative fixtures nothing else
+        believes in, and quietly excusing that fixture from the prose
+        lists while the runner still demanded it fail.
+
+        Both sides are RUN on one manifest whose single entry carries
+        `"expected_error": ""` over a program that checks CLEAN.  That
+        makes the runner's two branches observable: down the negative
+        branch it demands a failure and finds none, so it exits 1; down
+        the positive branch the clean program passes its level and it
+        exits 0.  Grepping the runner's source for the operator would
+        leave it free to classify the entry the other way with this
+        still green (PR #1411 review).
+        """
+        entry = {
+            "id": "ch01_blank_code",
+            "file": "ch01_blank_code.vera",
+            "level": "check",
+            "expected_error": "",
+        }
+        assert _MOD.negative_fixture_names([entry]) == ["ch01_blank_code"]
+
+        conformance = tmp_path / "conformance"
+        conformance.mkdir()
+        # Checks CLEAN — that is what makes the two branches tell apart.
+        (conformance / "ch01_blank_code.vera").write_text(
+            "public fn answer(-> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result == 42)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  42\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        manifest = conformance / "manifest.json"
+        manifest.write_text(json.dumps([entry]), encoding="utf-8")
+
+        spec = importlib.util.spec_from_file_location(
+            "check_conformance_probe", _ROOT / "scripts" / "check_conformance.py"
+        )
+        assert spec is not None and spec.loader is not None
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        runner.CONFORMANCE_DIR = conformance
+        runner.MANIFEST_PATH = manifest
+        # 1 == the runner took the NEGATIVE branch and found no failure to
+        # match; 0 would mean it ran the clean program's positive pipeline
+        # instead, which is the disagreement this pins.
+        assert runner.main() == 1
+
+    def test_the_shipped_manifest_has_negative_fixtures(self) -> None:
+        """The live manifest, so the gate cannot be checking an empty
+        set: an expected set of nothing would make any prose list pass
+        its membership half."""
+        manifest = json.loads(
+            (_ROOT / "tests/conformance/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        names = _MOD.negative_fixture_names(manifest)
+        assert len(names) > 20
+        assert len(set(names)) == len(names)
+
+
+def _level_prose(
+    check_names: tuple[str, ...],
+    negative_names: tuple[str, ...],
+    *,
+    check_word: str,
+    negative_word: str,
+    compile_names: tuple[str, ...] = (),
+    compile_word: str = "Zero",
+    negative_codes: dict[str, str] | None = None,
+    verify_names: tuple[str, ...] = (),
+    verify_word: str = "Zero",
+) -> str:
+    def listed(names: tuple[str, ...]) -> str:
+        return ", ".join(f"`{name}`" for name in names)
+
+    def codes(names: tuple[str, ...], overrides: dict[str, str]) -> str:
+        return ", ".join(overrides.get(n, "E123") for n in names)
+
+    compile_codes = (
+        ""
+        if not compile_names
+        else " beside `expected_error: "
+        + codes(compile_names, {n: "E621" for n in compile_names})
+        + "`"
+    )
+    compile_part = (
+        f" {compile_word} more — {listed(compile_names)} — is a negative"
+        f" at the `compile` stage rather than at `check`:{compile_codes}."
+    )
+    respective = (
+        ""
+        if not negative_names
+        else " that assert a specific diagnostic ("
+        + codes(negative_names, negative_codes or {})
+        + " respectively)"
+    )
+    # A SECOND level sentence, so a cell can see one level hiding behind
+    # another — the shipped file has two and a one-sentence fixture
+    # cannot show the fault (PR #1411 review).
+    verify_part = (
+        ""
+        if not verify_names
+        else f" {verify_word} programs ({listed(verify_names)}) are at the"
+        " `verify` level."
+    )
+    return (
+        "Almost all programs are at the `run` level. "
+        f"{check_word} programs ({listed(check_names)}) are at the `check`"
+        f" level.{verify_part} {negative_word} of them —"
+        f" {listed(negative_names)} — are **negative tests**{respective}."
+        f"{compile_part}\n"
+    )
+
+
+class TestConformanceLevelProse:
+    """TESTING.md is the THIRD document that enumerates one of these
+    sets by hand, and it had drifted on the same fixture and by the same
+    mechanism as the two CLAUDE.md/AGENTS.md lists.  Gating two of the
+    three would have been this PR's own argument left one step short
+    (PR #1411 review)."""
+
+    def test_a_matching_pair_of_enumerations_is_clean(self) -> None:
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected", positives=3)
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_a_program_missing_from_the_level_list_is_reported(self) -> None:
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected", positives=3)
+        text = _level_prose(
+            ("ch02_a_rejected",),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="One",
+            negative_word="Two",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 2
+        assert all("ch08_b_rejected" in e or "'One'" in e for e in errors)
+
+    def test_a_program_missing_from_the_negative_subset_is_reported(
+        self,
+    ) -> None:
+        """The two enumerations are checked independently: the level list
+        can be right while the subset drawn from it is not."""
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected", positives=3)
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 2
+        assert all("negative test" in e for e in errors)
+
+    def test_a_stale_level_count_word_is_reported(self) -> None:
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected", positives=3)
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Three",
+            negative_word="Two",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1 and "'Three'" in errors[0]
+
+    def test_a_positive_level_is_read_from_the_manifest_too(self) -> None:
+        """The level is taken from the sentence, so a `verify` list is
+        checked against the verify entries rather than the check ones."""
+        manifest: list[dict[str, object]] = [
+            {"file": "ch03_proved.vera", "level": "verify"},
+            {"file": "ch01_ran.vera", "level": "run"},
+        ]
+        text = (
+            "One programs (`ch03_proved`) are at the `verify` level."
+            " Zero of them — `` — are **negative tests** that assert a"
+            " diagnostic. Zero more — `` — is a negative at the `compile`"
+            " stage.\n"
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    _COMPILE_SENTENCE = (
+        " Zero more — `` — is a negative at the `compile` stage."
+    )
+    _NEGATIVE_SENTENCE = " Zero of them — `` — are **negative tests** that x."
+    _LEVEL_SENTENCE = " Zero programs (``) are at the `check` level."
+
+    @pytest.mark.parametrize(
+        ("dropped", "cue"),
+        [
+            pytest.param("_LEVEL_SENTENCE", "per-level program lists",
+                         id="level-sentence-reworded"),
+            pytest.param("_NEGATIVE_SENTENCE", "check-stage negatives",
+                         id="negative-sentence-reworded"),
+            pytest.param("_COMPILE_SENTENCE", "compile-stage negatives",
+                         id="compile-sentence-reworded"),
+        ],
+    )
+    def test_a_reworded_sentence_is_an_error_not_a_skip(
+        self, dropped: str, cue: str
+    ) -> None:
+        """Each of the three shapes is gated independently, so rewording
+        any one of them must be an error rather than a silent skip."""
+        text = "".join(
+            getattr(self, name)
+            for name in ("_LEVEL_SENTENCE", "_NEGATIVE_SENTENCE",
+                         "_COMPILE_SENTENCE")
+            if name != dropped
+        )
+        errors = _MOD.check_conformance_level_prose(text + "\n", [])
+        assert len(errors) == 1 and cue in errors[0]
+
+    def test_a_compile_stage_fixture_in_the_check_list_is_a_duplication(
+        self,
+    ) -> None:
+        """The exact error this PR made and CodeRabbit caught: the
+        compile-stage negative is introduced in its own sentence, so
+        adding it to the check-stage list names one fixture twice and
+        leaves the parallel E-code list one short."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        # Three symptoms of the one duplication: the fixture is not a
+        # check-stage negative, the count is one too high, and the
+        # respective code the prose gives it is not its manifest code.
+        assert len(errors) == 3
+        assert any("ch08_late_rejected" in e and "does not hold" in e
+                   for e in errors)
+        assert any("'Two'" in e and "check-stage" in e for e in errors)
+        assert any("position 2" in e and "E621" in e for e in errors)
+
+    def test_the_two_stages_are_gated_as_separate_sets(self) -> None:
+        """Split correctly, both sentences are clean — the compile-stage
+        fixture belongs to its own sentence and to the `check` LEVEL."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_a_missing_compile_stage_negative_is_reported(self) -> None:
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=(),
+            compile_word="Zero",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 2
+        assert any("ch08_late_rejected" in e for e in errors)
+
+    def test_a_stale_respective_code_is_reported(self) -> None:
+        """"Respectively" is a positional claim, so the check is
+        positional: a code that no longer matches its fixture's
+        `expected_error` is caught at its position."""
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            negative_codes={"ch08_b_rejected": "E999"},
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1
+        assert "position 2" in errors[0]
+        assert "ch08_b_rejected" in errors[0]
+        assert "E123" in errors[0] and "E999" in errors[0]
+
+    def test_a_missing_code_shifts_the_rest_and_is_reported(self) -> None:
+        """The silent shape: a fixture appended to the names without a
+        code slides every code after it onto the wrong fixture.  Counted
+        rather than matched pairwise, because the count is what tells a
+        reader the correspondence is broken at all."""
+        manifest = _manifest("ch02_a_rejected", "ch08_b_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+        ).replace("diagnostic (E123, E123 ", "diagnostic (E123 ", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1
+        assert "2 fixture(s)" in errors[0] and "1 diagnostic code" in errors[0]
+
+    def test_a_removed_code_list_is_an_error_not_a_skip(self) -> None:
+        manifest = _manifest("ch02_a_rejected")
+        text = _level_prose(
+            ("ch02_a_rejected",),
+            ("ch02_a_rejected",),
+            check_word="One",
+            negative_word="One",
+        ).replace(" that assert a specific diagnostic (E123 respectively)", "")
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1 and "no longer gated" in errors[0]
+
+    def test_a_stale_compile_stage_code_is_reported(self) -> None:
+        """The compile sentence carries its code inline rather than in a
+        parenthetical, and is gated the same way."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        ).replace("`expected_error: E621`", "`expected_error: E622`")
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1 and "E621" in errors[0] and "E622" in errors[0]
+
+    def test_an_empty_list_needs_no_codes(self) -> None:
+        """"Respectively" over no names is vacuous, so a stage with no
+        fixtures must not be asked for a code list."""
+        manifest = _manifest(positives=1, compile_stage=())
+        text = _level_prose(
+            (), (), check_word="Zero", negative_word="Zero"
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_each_list_reads_its_own_codes(self) -> None:
+        """The codes are read from a window after THIS list's names.
+
+        Searching the whole document instead would have a second
+        occurrence validated against the first one's parenthetical — its
+        own stale code never looked at — which is the same
+        one-of-two blindness the every-occurrence case pins one level up.
+        """
+        manifest = _manifest("ch01_a_rejected", "ch01_b_rejected")
+        good = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+        )
+        stale = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            negative_codes={"ch01_b_rejected": "E999"},
+        )
+        errors = _MOD.check_conformance_level_prose(good + stale, manifest)
+        assert len(errors) == 1
+        assert "position 2" in errors[0] and "E999" in errors[0]
+
+    def test_the_shipped_codes_match_the_manifest_in_order(self) -> None:
+        """The live parenthetical, read positionally against the
+        manifest — so the gate cannot be checking an empty list."""
+        text = (_ROOT / "TESTING.md").read_text(encoding="utf-8")
+        match = _MOD._NEGATIVE_PROSE.search(text)
+        assert match is not None
+        names = _MOD._FIXTURE_NAME.findall(match.group("names"))
+        codes = _MOD._codes_after(text, match, _MOD._RESPECTIVE_CODES)
+        assert codes is not None
+        assert len(names) == len(codes) > 20
+
+    @pytest.mark.parametrize(
+        ("old", "new", "cue"),
+        [
+            pytest.param("Three programs (", "The programs (",
+                         '`check`-level program list', id="level"),
+            # No determiner fits this slot in English ("the of them"),
+            # so the reachable shape here is the count simply gone.
+            pytest.param("Two of them — ", "of them — ",
+                         "check-stage negative-test subset", id="check-stage"),
+            pytest.param("One more — ", "And more — ",
+                         "compile-stage negative", id="compile-stage"),
+        ],
+    )
+    def test_a_count_reworded_to_a_determiner_is_reported(
+        self, old: str, new: str, cue: str
+    ) -> None:
+        """Each family of sentences carries its own count backstop.
+
+        `_check_enumeration` reports nothing when the count slot holds
+        only a determiner — correct for a list that never stated a size,
+        and wrong as the only rule: rewording the number away would
+        leave the names gated and the count silently ungated. Losing it
+        in one family must not hide behind another still having one
+        (PR #1411 review).
+        """
+        manifest = _manifest(
+            "ch01_a_rejected", "ch01_b_rejected",
+            compile_stage=("ch08_late_rejected",),
+        )
+        text = _level_prose(
+            ("ch01_a_rejected", "ch01_b_rejected", "ch08_late_rejected"),
+            ("ch01_a_rejected", "ch01_b_rejected"),
+            check_word="Three",
+            negative_word="Two",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        assert old in text, old
+        errors = _MOD.check_conformance_level_prose(
+            text.replace(old, new, 1), manifest
+        )
+        assert len(errors) == 1, errors
+        assert "no longer states a count" in errors[0] and cue in errors[0]
+
+    def _two_levels(self, **overrides: object) -> tuple[str, list[dict[str, object]]]:
+        """A fixture with TWO level sentences, as the shipped file has.
+
+        A one-sentence fixture cannot show a level hiding behind its
+        sibling, which is why the family-wide tally survived its first
+        battery (PR #1411 review).
+        """
+        manifest = _manifest(
+            "ch02_a_rejected",
+            "ch08_b_rejected",
+            positives=1,
+            verify=("ch03_proved",),
+        )
+        kwargs: dict[str, object] = {
+            "check_word": "Two",
+            "negative_word": "Two",
+            "verify_names": ("ch03_proved",),
+            "verify_word": "One",
+        }
+        kwargs.update(overrides)
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            ("ch02_a_rejected", "ch08_b_rejected"),
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return text, manifest
+
+    def test_two_level_sentences_are_clean_when_both_agree(self) -> None:
+        text, manifest = self._two_levels()
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_one_level_cannot_hide_its_count_behind_another(self) -> None:
+        """#1411 review finding 7, on the shape the live file has: the
+        `check` sentence loses its number while the `verify` sentence's
+        still stands.  A family-wide tally read 1 and passed."""
+        text, manifest = self._two_levels()
+        text = text.replace("Two programs (", "The rest of the programs (", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "`check`-level program list" in errors[0]
+        assert "no longer states a count" in errors[0]
+        # The sibling still carries its own, and is not reported.
+        assert "`verify`" not in errors[0]
+
+    def test_one_level_sentence_reworded_away_is_reported(self) -> None:
+        """#1411 review finding 8: with the `verify` sentence still
+        matching, the family is not empty, so the blanket presence check
+        cannot see that the `check` list stopped being gated — and a
+        name dropped from it went unnoticed."""
+        text, manifest = self._two_levels()
+        text = text.replace("are at the `check` level", "sit at the `check` tier", 1)
+        text = text.replace("`ch02_a_rejected`, ", "", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "the manifest holds `check`-level programs" in errors[0]
+        assert "no longer gated at all" in errors[0]
+
+    def test_an_unenumerated_run_level_is_not_demanded(self) -> None:
+        """`run` is the level the prose states as "almost all" without
+        spelling it out, so requiring a sentence for every manifest
+        level must not demand one for it."""
+        text, manifest = self._two_levels()
+        assert any(entry["level"] == "run" for entry in manifest)
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_the_whole_count_slot_is_read_not_its_last_word(self) -> None:
+        """#1411 review finding 9: "the forty three" reported as "says
+        'three' (3)" — misleading, and a silent PASS wherever the
+        manifest held three.
+
+        The fix that this pins is in `_count_token`, which now returns
+        the whole slot.  `_parse_count`'s `if " " in token` guard is NOT
+        pinned by this cell and cannot be: removing it is an EQUIVALENT
+        mutant, because `_english_number_word_to_int` already rejects a
+        two-word token (it is in neither table and has no hyphen).  The
+        guard is belt-and-braces for readability, so it must not be
+        recorded as mutation-validated (PR #1411 review, third pass).
+        """
+        text, manifest = self._two_levels()
+        text = text.replace("Two programs (", "the forty three programs (", 1)
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 1, errors
+        assert "'forty three'" in errors[0]
+        assert "'three'" not in errors[0]
+
+    def test_the_shipped_file_is_actually_read(self) -> None:
+        """Both shapes must match the live TESTING.md, or the gate is
+        silently checking nothing on the only file it reads."""
+        text = (_ROOT / "TESTING.md").read_text(encoding="utf-8")
+        assert _MOD._LEVEL_PROSE.search(text) is not None
+        assert _MOD._NEGATIVE_PROSE.search(text) is not None
+        levels = {m.group("level") for m in _MOD._LEVEL_PROSE.finditer(text)}
+        assert {"check", "verify"} <= levels
+
+
+class TestManifestEntryFields:
+    """#1411 review: an entry missing `file` or `level` reached the
+    readers as a KeyError traceback rather than a diagnostic, and the
+    first reader to hit one is `main`'s level breakdown, so the CLI
+    crashed before any of the prose gates ran.  A gate that crashes says
+    less than one that reports."""
+
+    def test_a_well_formed_manifest_is_clean(self) -> None:
+        assert _MOD.check_manifest_entries(_manifest("ch02_a_rejected")) == []
+
+    def test_a_missing_level_is_reported(self) -> None:
+        entries: list[dict[str, object]] = [{"file": "ch01_x.vera"}]
+        errors = _MOD.check_manifest_entries(entries)
+        assert len(errors) == 1
+        assert "ch01_x.vera" in errors[0] and "`level`" in errors[0]
+
+    def test_a_missing_file_is_named_by_something_else(self) -> None:
+        """An entry with no `file` has no natural name, so the message
+        falls back to its `id` and then to its index — a report that
+        cannot say WHICH entry is barely a report."""
+        errors = _MOD.check_manifest_entries(
+            [{"level": "check", "id": "ch09_named"}, {"level": "run"}]
+        )
+        assert len(errors) == 2
+        assert "ch09_named" in errors[0] and "`file`" in errors[0]
+        assert "entry 1" in errors[1]
+
+    def test_both_missing_fields_are_named_in_one_message(self) -> None:
+        errors = _MOD.check_manifest_entries([{"title": "orphan"}])
+        assert len(errors) == 1
+        assert "`file` and `level`" in errors[0]
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param({"level": "check"}, id="no-file"),
+            pytest.param({"file": "ch01_x.vera"}, id="no-level"),
+        ],
+    )
+    def test_the_readers_report_rather_than_raise(
+        self, entry: dict[str, object]
+    ) -> None:
+        """The malformed entry is reported once, by the validator — the
+        readers skip it rather than raising, and rather than reporting
+        the same fault a second time in their own words."""
+        manifest = [*_manifest("ch02_a_rejected"), entry]
+        text = _level_prose(
+            ("ch02_a_rejected",),
+            ("ch02_a_rejected",),
+            check_word="One",
+            negative_word="One",
+        )
+        # No exception, and no complaint about the malformed entry.
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert all("ch01_x" not in e for e in errors), errors
+        assert _MOD.negative_fixture_names(manifest) == ["ch02_a_rejected"]
+
+    @pytest.mark.parametrize(
+        ("entry", "cue"),
+        [
+            pytest.param({"file": "x.vera", "level": []}, "`level` is []",
+                         id="level-is-a-list"),
+            pytest.param({"file": None, "level": "check"}, "`file` is None",
+                         id="file-is-null"),
+            pytest.param({"file": "x.vera", "level": "   "},
+                         "`level` is '   '", id="level-is-blank"),
+            pytest.param({"file": 7, "level": "check"}, "`file` is 7",
+                         id="file-is-a-number"),
+        ],
+    )
+    def test_a_field_present_but_unusable_is_reported(
+        self, entry: dict[str, object], cue: str
+    ) -> None:
+        """Presence is not enough.
+
+        `{"level": []}` satisfied a presence test and then went into
+        `level_counts` as a key, raising TypeError before the validation
+        errors could be printed; a `null` `file` was skipped by the
+        readers without ever being reported (PR #1411 review).
+        """
+        errors = _MOD.check_manifest_entries([entry])
+        assert len(errors) == 1, errors
+        assert cue in errors[0] and "non-empty string" in errors[0]
+
+    def test_an_entry_that_is_not_an_object_is_reported(self) -> None:
+        errors = _MOD.check_manifest_entries(["ch01_x.vera", 3])
+        assert len(errors) == 2
+        assert "entry 0 is not an object (str)" in errors[0]
+        assert "entry 1 is not an object (int)" in errors[1]
+
+    @pytest.mark.parametrize(
+        "bad_file",
+        [pytest.param(7, id="number"), pytest.param("   ", id="blank")],
+    )
+    def test_a_readers_name_is_never_invented_from_a_bad_file(
+        self, bad_file: object
+    ) -> None:
+        """An unusable `file` yields NO name, rather than a coerced one.
+
+        `str(7)` would put the fixture "7" into the expected sets, and
+        the prose would then be told it is missing a program that does
+        not exist — the validator's report turned into a second, wrong
+        one downstream.
+        """
+        entry = {"file": bad_file, "level": "check", "expected_error": "E1"}
+        manifest = [*_manifest("ch02_a_rejected"), entry]
+        assert _MOD.negative_fixture_names(manifest) == ["ch02_a_rejected"]
+        assert _MOD._programs_at_level(manifest, "check") == {
+            "ch02_a_rejected"
+        }
+        # Reported once, by the validator, and named by index since the
+        # `file` it would otherwise be named by is the broken field.
+        errors = _MOD.check_manifest_entries([entry])
+        assert len(errors) == 1 and "entry 0" in errors[0]
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param({"file": "x.vera", "level": []}, id="unhashable"),
+            pytest.param({"file": "x.vera", "level": None}, id="null"),
+            pytest.param("not-an-object", id="not-an-object"),
+        ],
+    )
+    def test_the_level_breakdown_does_not_raise(
+        self, entry: object
+    ) -> None:
+        """The breakdown is the FIRST reader a malformed entry reaches,
+        so it has to survive one for the validation errors above to be
+        printed at all.  It lives in its own function precisely so this
+        path is reachable from a test rather than only from the CLI."""
+        counts = _MOD.level_counts_of([*_manifest("ch02_a_rejected"), entry])
+        assert counts == {"run": 2, "check": 1}
+
+    def test_the_shipped_manifest_is_well_formed(self) -> None:
+        """The live file, so the validator cannot be checking nothing."""
+        manifest = json.loads(
+            (_ROOT / "tests/conformance/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest
+        assert _MOD.check_manifest_entries(manifest) == []
 
 
 class TestErrorCodesCount:

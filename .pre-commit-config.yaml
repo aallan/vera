@@ -221,7 +221,7 @@ repos:
         entry: .venv/bin/python scripts/check_doc_counts.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
+        files: '(README\.md$|vera/README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|AGENTS\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
       - id: walker-coverage
         name: walker coverage
