@@ -5289,6 +5289,23 @@ class ContractVerifier:
                             decl, arg, smt, slot_env, list(assumptions),
                             site="closure argument",
                         )
+                    # #1410, the closure-boundary twin of the call argument.
+                    # `apply_fn` is a checker special form with no
+                    # `param_types`, so the generic loop never reaches it —
+                    # the same structural gap the review found for a bare
+                    # effect operation (F6).  Measured before this arm:
+                    # `apply_fn(clo, mkint(x))` into an `Option<PosInt>`
+                    # closure formal raised nothing for the argument, the
+                    # lifted body's `consume` proved its postcondition, and
+                    # the run refuted it.  The formal is the RESOLVED closure
+                    # parameter, and the guard question is the boundary one —
+                    # codegen decomposes a closure's refined formal at the
+                    # lifted prologue exactly as it does a function's — so
+                    # the derivation is shared rather than forced.
+                    self._check_nested_refinement_obligation(
+                        decl, arg, resolved_formal, smt, slot_env,
+                        assumptions, site="closure argument",
+                    )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,

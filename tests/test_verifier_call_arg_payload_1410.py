@@ -1726,3 +1726,66 @@ def test_a_refinement_over_a_refinement_is_not_a_component() -> None:
     """
     binds = _refine_binds(_REFINEMENT_OVER_REFINEMENT, "boom")
     assert _statuses(binds) == [("tier3_unguarded", "E506")], _statuses(binds)
+
+
+_CLOSURE_ARGUMENT = _PRELUDE + """
+type Taker = fn(Option<PosInt> -> Int) effects(pure);
+""" + _UNREFINED_OPT + _CONSUME_OPT + """
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Taker = fn(@Option<PosInt> -> @Int) effects(pure) { consume(@Option<PosInt>.0) };
+  apply_fn(@Taker.0, mkint(@Float64.0))
+}
+"""
+
+_CLOSURE_RETURN = _PRELUDE + """
+type Maker = fn(Float64 -> Option<PosInt>) effects(pure);
+""" + _UNREFINED_OPT + _CONSUME_OPT + """
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Maker = fn(@Float64 -> @Option<PosInt>) effects(pure) { mkint(@Float64.0) };
+  consume(apply_fn(@Maker.0, @Float64.0))
+}
+"""
+
+
+def test_a_closure_argument_is_obligated(tmp_path: Path) -> None:
+    """`apply_fn` is the other site the generic loop cannot reach.
+
+    It is a checker special form with no `param_types`, so it takes its own
+    inline chain — structurally the same gap the review found for a bare
+    effect operation (F6), and found by asking the same question of the
+    remaining sites.  Measured before this arm: `apply_fn(clo, mkint(x))` into
+    an `Option<PosInt>` closure formal raised nothing for the argument, the
+    lifted body's `consume` proved its postcondition at Tier 1, and the run
+    refuted it.  The guard question is the boundary one — codegen decomposes
+    a closure's refined formal at the lifted prologue exactly as it does a
+    function's — so the derivation is shared, not forced.
+    """
+    binds = _refine_binds(_CLOSURE_ARGUMENT, "f")
+    assert ("violated", "E505") in _statuses(binds), _statuses(binds)
+
+    proc = _run(tmp_path, _CLOSURE_ARGUMENT, "-7.0", name="ca.vera")
+    assert proc.returncode != 0, proc.stdout
+
+
+def test_a_closure_return_discloses_at_its_consumer() -> None:
+    """The closure RETURN needs no arm of its own.
+
+    A lifted body is opaque to the SMT layer — its parameters and captures are
+    not in the outer slot environment — so obligating the closure's own return
+    would either fail to translate or translate against the wrong scope.  It
+    does not have to: whatever consumes the `apply_fn` result is itself a
+    position that must establish the payload, and an opaque result cannot be
+    discharged there, so the chain discloses at the consumer instead of
+    claiming Tier 1 anywhere.
+    """
+    binds = _refine_binds(_CLOSURE_RETURN, "f")
+    assert binds, "the consumer of an opaque closure result raised nothing"
+    assert all(o.status != "verified" for o in binds), _statuses(binds)
