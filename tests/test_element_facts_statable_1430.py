@@ -396,3 +396,150 @@ def test_the_element_fact_is_used_not_merely_matched(tmp_path: Path) -> None:
         o["status"] for o in envelope["obligations"] if o["kind"] == "ensures"
     ]
     assert ensures == ["verified"], ensures
+
+
+# --------------------------------------------------------------------------
+# Stage 2 — recursive constructor fields
+# --------------------------------------------------------------------------
+
+_CHAIN = (
+    "private data Chain {\n  Link(PosInt, Chain),\n  End\n}\n\n"
+    "private fn consume(@Chain -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  match @Chain.0 {\n    Link(@PosInt, @Chain) -> @PosInt.0,\n"
+    "    End -> 1\n  }\n}\n\n"
+)
+
+
+def test_a_recursive_tail_forwards_per_value(tmp_path: Path) -> None:
+    """The shape a real recursive program has, where the argument is the TAIL.
+
+    `match c { Link(@PosInt, @Chain) -> consume(@Chain.0) }` passes a
+    DIFFERENT term from the matched value, so no identity discharge is
+    available: `refines_K(Link_1(c))` has to be derived.  Param-assume
+    supplies `refines_K(c)`, the match supplies `is_Link(c)`, and the single
+    unfolding axiom relates them.  That is the whole of stage 2 — one level of
+    structure per value, no induction.
+    """
+    source = (
+        _HDR + _CHAIN +
+        "public fn walk(@Chain -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  match @Chain.0 {\n"
+        "    Link(@PosInt, @Chain) -> consume(@Chain.0),\n"
+        "    End -> 0\n  }\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "recursive-tail")
+    assert envelope["ok"] is True, envelope["diagnostics"]
+    assert dict(_refine_bind_statuses(envelope)) == {"verified": 1}, (
+        _refine_bind_statuses(envelope)
+    )
+
+
+def test_a_violating_recursive_construction_is_refused(tmp_path: Path) -> None:
+    """Nothing concludes `refines_K`, so a construction still has to discharge.
+
+    The unfolding axiom only lets the predicate be taken apart; it never
+    establishes it.  A producer whose declared return carries the refinements
+    while its body builds `Link(0 - 5, End)` is therefore refused at the
+    construction — the same closure that makes assuming it sound.
+    """
+    source = (
+        _HDR + _CHAIN +
+        "private fn make(@Int -> @Chain)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  Link(0 - 5, End)\n}\n\n"
+        "public fn main(@Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(make(1))\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "recursive-launder")
+    assert envelope["ok"] is False, envelope
+    assert "E505" in {d.get("error_code") for d in envelope["diagnostics"]}
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["violated"] >= 1, statuses
+
+
+def test_the_recursive_fact_does_not_prove_a_false_postcondition(
+    tmp_path: Path,
+) -> None:
+    """The unfolding axiom must not make the premises inconsistent.
+
+    An axiom asserting `forall v. refines_K(v)` would prove the refinement of
+    every value of the type; one that over-constrained the premise set would
+    prove every postcondition in the function, which #1451 shows is reported
+    as Tier 1 with no warning.  The axiom here is an implication FROM the
+    predicate, so an interpretation making it false everywhere satisfies it
+    and nothing becomes inconsistent.  A deliberately FALSE postcondition is
+    what tests that, since it cannot be met by identity or by vacuity.
+    """
+    source = (
+        _HDR + _CHAIN +
+        "public fn walk(@Chain -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(@Int.result < 0)\n"
+        "  effects(pure)\n"
+        "{\n  match @Chain.0 {\n"
+        "    Link(@PosInt, @Chain) -> consume(@Chain.0),\n"
+        "    End -> 0\n  }\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "recursive-false-post")
+    # The FALSE one specifically.  A first version asserted over every
+    # `ensures` in the program and failed on `consume`'s trivially true one,
+    # which is correctly verified — the assertion has to name its target or it
+    # reports a soundness bug that is not there.
+    false_post = [
+        o["status"] for o in envelope["obligations"]
+        if o["kind"] == "ensures" and "< 0" in o["description"]
+    ]
+    assert false_post == ["violated"], (
+        f"the false postcondition was not refuted — the recursive fact may "
+        f"have made the premises inconsistent: {false_post}"
+    )
+
+
+def test_two_contradictory_refinements_do_not_share_a_predicate(
+    tmp_path: Path,
+) -> None:
+    """Concern 9: the predicate is keyed on the TYPE key, not the sort key.
+
+    `_adt_sort_key` maps a refinement to its carrier on purpose — the sort is
+    the carrier and the predicate is discharged elsewhere — so
+    `Chain<{ @Int | @Int.0 > 0 }>` and `Chain<{ @Int | @Int.0 < 0 }>` share
+    one Z3 sort AND one ADT name.  A predicate keyed on either would be the
+    same symbol for both, and assuming it of a positive chain would discharge
+    an obligation stated of a negative one, by identity, reporting Tier 1 for
+    a value satisfying the opposite refinement.
+
+    Two INSTANTIATIONS of one generic type is what would make this bite; two
+    separate `data` declarations would not, since those differ in sort anyway.
+
+    Reported honestly: this cell does NOT kill a mutation that keys the
+    predicate on the ADT name instead.  The refutation here comes from the
+    DEPTH-1 element obligation (`> 0` against `< 0`), which fires before the
+    depth-2 `refines_K` is consulted, and no shape was found where the two
+    refinements differ only below the first level — the refinement is on `T`,
+    and `T` occurs at depth 1.  The precise key is kept because it is free and
+    strictly safer, not because a program distinguishes it; if one is ever
+    constructed it belongs here.
+    """
+    source = (
+        "type PosInt = { @Int | @Int.0 > 0 };\n"
+        "type NegInt = { @Int | @Int.0 < 0 };\n\n"
+        "private data Chain<T> { Link(T, Chain<T>), End }\n\n"
+        "private fn wants_negative(@Chain<NegInt> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  match @Chain<NegInt>.0 {\n"
+        "    Link(@NegInt, @Chain<NegInt>) -> @NegInt.0,\n"
+        "    End -> 0 - 1\n  }\n}\n\n"
+        "public fn feed(@Chain<PosInt> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  wants_negative(@Chain<PosInt>.0)\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "same-generic-opposite")
+    assert envelope["ok"] is False, envelope
+    assert dict(_refine_bind_statuses(envelope)) == {"violated": 1}, (
+        "a positive chain discharged a negative refinement: "
+        f"{_refine_bind_statuses(envelope)}"
+    )
+    assert "E505" in {d.get("error_code") for d in envelope["diagnostics"]}
