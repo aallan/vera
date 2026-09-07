@@ -241,9 +241,11 @@ Two declarations in ONE namespace sharing a constructor name are the same clash
 asked of a single file, and are **E159**, located at the second declaration and
 naming the first; shadowing a *prelude* constructor is not that shape and stays
 legal (§8.4.1).  A local declaration taking a constructor name an *imported*
-type also declares is likewise outside this rule (§8.5.2), but see the
-compilation caveat in §11.16: the compiled namespace is flat, so that pair is
-not yet compiled correctly.
+type also declares is likewise outside this rule and is compiled correctly:
+each namespace resolves a constructor name against its own declarations first,
+then the types it imports, so the local declaration shadows the imported one
+(§8.5.2) without changing what that name means inside the module that exports
+it.
 
 Each is rejected at check time, in whichever namespace holds the clash: the
 entry program's, or any module's, since a module's bodies resolve in their own
