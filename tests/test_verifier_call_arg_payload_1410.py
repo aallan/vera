@@ -1708,7 +1708,7 @@ def test_a_return_that_relabels_an_unrefined_payload_is_refuted(
     assert proc.returncode != 0, proc.stdout
     # WHICH non-zero exit: a compile refusal is also non-zero, so the bare
     # code cannot tell a refuted contract from a program that never ran.
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 _REFINEMENT_OVER_REFINEMENT = """
@@ -1798,7 +1798,7 @@ def test_a_closure_argument_is_obligated(tmp_path: Path) -> None:
 
     proc = _run(tmp_path, _CLOSURE_ARGUMENT, "-7.0", name="ca.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 def test_a_closure_return_discloses_at_its_consumer() -> None:
@@ -1867,7 +1867,7 @@ def test_a_generic_constructor_field_recovers_its_instantiation(
 
     proc = _run(tmp_path, _GENERIC_CONSTRUCTOR_FIELD, "-7.0", name="gb.vera")
     assert proc.returncode != 0, proc.stdout
-    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+    _assert_refuses_the_payload(proc)
 
 
 _LET_TUPLE_FROM_DISCLOSED = _PRELUDE + """
