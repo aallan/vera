@@ -55,7 +55,7 @@ from vera.markdown import (
     MdText,
     MdThematicBreak,
 )
-from vera.runtime.heap import _slice_and_decode
+from vera.runtime.heap import _require_readable, _slice_and_decode
 
 # Type aliases for the helper functions passed from api.py
 AllocFn = Callable[["wasmtime.Caller", int], int]
@@ -462,18 +462,31 @@ def _write_table_data(
 
 
 def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
-    """Read a little-endian i32 from WASM memory."""
+    """Read a little-endian i32 from WASM memory.
+
+    Bounds-checked through ``heap._require_readable`` (#1442).  This
+    module's markdown-AST walkers follow pointers read out of the tree
+    they are decoding (``_read_i32(caller, arr_ptr + i * 4)`` and
+    friends), so an offset here is guest data, not an allocator's
+    answer, and a raw ctypes slice would read the guard page.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
     val: int = struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0]
     return val
 
 
 def _read_i64(caller: wasmtime.Caller, offset: int) -> int:
-    """Read a little-endian i64 from WASM memory."""
+    """Read a little-endian i64 from WASM memory.
+
+    Bounds-checked through ``heap._require_readable`` (#1442), as
+    :func:`_read_i32` above and for the same reason.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 8, "i64")
     buf = memory.data_ptr(caller)
     val: int = struct.unpack_from("<Q", bytes(buf[offset:offset + 8]))[0]
     return val

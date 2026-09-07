@@ -53,9 +53,13 @@ from tests.codegen_helpers import _compile_ok
 from vera.codegen.wasi import emit_wasi_component
 from vera.runtime.heap import (
     _read_bytes_at,
+    _read_f64,
+    _read_i32,
     _read_i32_at,
     _require_readable,
 )
+from vera.wasm.markdown import _read_i32 as _md_read_i32
+from vera.wasm.markdown import _read_i64 as _md_read_i64
 from vera.runtime.server import make_server, validate_handler
 
 
@@ -136,6 +140,22 @@ public fn handle(@Request, @Int -> @Response)
 { Response(200, map_new(), "ok") }
 """
 
+# A VALID handler whose types are written through `type` aliases.
+# `_declared_adt_name` resolves aliases via `naming.alias_body`, the
+# same spine `_return_type_is_string` uses, so this is the prelude
+# Request/Response and must be ACCEPTED.  Without that branch the guard
+# sees a name the namespace does not declare as an ADT, answers None,
+# and refuses a program that is entirely correct.
+ALIASED_HANDLER = """
+type Req = Request;
+
+type Resp = Response;
+
+public fn handle(@Req -> @Resp)
+  requires(true) ensures(true) effects(<HttpServer>)
+{ Response(200, map_new(), "ok") }
+"""
+
 # The entry file declares its own `data Request`, which SHADOWS the
 # prelude's injection (`vera/prelude.py`, `_source_mentions_http_server`
 # → "a user-defined data Request / data Response shadows the prelude").
@@ -174,6 +194,31 @@ class TestTheGuardReadsVeraTypes:
     def test_the_valid_handler_is_still_accepted(self) -> None:
         """The control.  A guard that refuses everything is not a fix."""
         validate_handler(_compile_ok(VALID))
+
+    def test_a_handler_written_through_type_aliases_is_accepted(self) -> None:
+        """`type Req = Request` is still the prelude Request.
+
+        The guard resolves aliases through `naming.alias_body`, so a
+        handler spelled with them is the same handler.  This is the cell
+        that fails if the alias branch of `_declared_adt_name` is
+        removed: every refusal cell stays green without it, because
+        refusing more is invisible to a suite that only checks refusals
+        — a legitimate program silently flips to refused instead.
+        """
+        validate_handler(_compile_ok(ALIASED_HANDLER))
+
+    def test_the_alias_resolves_to_the_prelude_type_not_the_alias_name(
+        self,
+    ) -> None:
+        """Pin WHAT the resolution produces, not just that it passes.
+
+        A guard that accepted `@Req` by some other route — treating an
+        unknown name as acceptable, say — would pass the cell above
+        while being far more permissive.  This asserts the recorded
+        signature is the resolved prelude pair.
+        """
+        result = _compile_ok(ALIASED_HANDLER)
+        assert result.fn_adt_signatures["handle"] == (("Request",), "Response")
 
     def test_the_layouts_really_are_present_in_the_refused_programs(
         self,
@@ -383,6 +428,42 @@ class TestTheDecodersAreBoundsChecked:
                                (-8, 16), (0, -1), (16, size)):
             with pytest.raises(wasmtime.WasmtimeError, match="out of bounds"):
                 _read_bytes_at(caller, offset, length)
+
+    def test_every_raw_reader_in_the_family_is_guarded(self) -> None:
+        """The whole family, not the two on the Response path.
+
+        The first fix guarded `_read_i32_at` / `_read_bytes_at` because
+        those are what `decode_response_adt` uses.  That was the wrong
+        boundary: `heap._read_i32` / `heap._read_f64` take the same raw
+        slice and are reached from `read_json` on the `json_stringify`
+        path, and `markdown._read_i32` / `_read_i64` are a third and
+        fourth copy walking a guest-built AST by pointers read out of
+        that AST.  In every one of them the offset is guest DATA rather
+        than an allocator's answer, which is the property that makes a
+        raw slice unsafe.
+
+        Enumerated from the code (`memory.data_ptr` followed by a raw
+        slice) rather than from memory, so the claim is checkable.  The
+        two remaining `data_ptr` sites in the tree are WRITES into
+        just-allocated regions at allocator-supplied offsets
+        (`_ShadowGuard.push`, the String-argument marshaller in
+        `codegen/api.py`) and are not part of this family.
+        """
+        size, caller = self._memory_and_caller()
+        for reader, width, name in [
+            (_read_i32, 4, "heap._read_i32"),
+            (_read_f64, 8, "heap._read_f64"),
+            (_md_read_i32, 4, "markdown._read_i32"),
+            (_md_read_i64, 8, "markdown._read_i64"),
+        ]:
+            for offset in (size + 4096, size - (width - 2), -8):
+                with pytest.raises(
+                    wasmtime.WasmtimeError, match="out of bounds",
+                ):
+                    reader(caller, offset)
+            # ...and each still reads what is genuinely in range.
+            reader(caller, 0)
+            reader(caller, size - width)
 
     def test_in_bounds_reads_still_work(self) -> None:
         """The control: a guard that refuses everything is not a fix."""
