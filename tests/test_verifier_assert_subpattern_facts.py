@@ -1049,3 +1049,160 @@ def test_1403_a_refuted_premise_does_not_prove_an_assert_either(
         _triples(result)
     )
     assert ("assert", "tier3", "E535") in _triples(result), _triples(result)
+
+
+# ---------------------------------------------------------------------------
+# The third way a fact can be unestablished, and the reason crossing an import
+# ---------------------------------------------------------------------------
+
+def test_1403_the_predicate_covers_every_unestablished_status() -> None:
+    """`verified` establishes a fact; the other four do not.
+
+    Stated over the whole `ObligationStatus` vocabulary rather than the
+    statuses that happened to come up, so a sixth member has to be classified
+    rather than silently defaulting to "established" — which is the generous
+    direction, and the one that hands a caller a fact nobody proved.
+    """
+    from vera.obligations.core import ProofObligation
+    from vera.verifier import fact_not_established, unestablished_reason
+
+    def obl(status: str, code: str = "") -> ProofObligation:
+        return ProofObligation(
+            fn_name="f", kind="refine_bind", status=status,  # type: ignore[arg-type]
+            expr_text="x", line=1, column=1, error_code=code,
+        )
+
+    assert not fact_not_established(obl("verified"))
+    assert unestablished_reason(obl("verified")) is None
+    # A guarded `tier3` IS established at run time — the guard makes it so.
+    assert not fact_not_established(obl("tier3"))
+
+    assert unestablished_reason(obl("tier3_unguarded", "E504")) == "disclosed"
+    assert unestablished_reason(obl("tier3", "E534")) == "disclosed"
+    assert unestablished_reason(obl("violated", "E505")) == "refuted"
+    assert unestablished_reason(obl("timeout", "E524")) == "undecided"
+    for st, code in (("tier3_unguarded", "E504"), ("tier3", "E534"),
+                     ("violated", "E505"), ("timeout", "E524")):
+        assert fact_not_established(obl(st, code)), (st, code)
+
+
+def test_1403_a_timed_out_premise_is_withheld_too(tmp_path: Path) -> None:
+    """A budget that ran out is not a fact either.
+
+    The predicate admitted `tier3_unguarded`, `tier3`+E534 and `violated`, but
+    not `timeout` — so a producer whose establishing obligation the solver
+    never settled still handed its fact to the arm (review of PR #1415, H2).
+
+    The timeout is INJECTED rather than raced.  Every nonlinear goal I tried
+    — `x*x+1 > 0`, a quartic, a product of two such, `x*x*x != 7` — Z3 settles
+    inside a 1 ms budget, and a query slow enough to time out reliably would
+    make the cell depend on machine load, which is exactly why
+    `DischargeCache` refuses to replay timeout outcomes at all.  So the
+    solver's verdict for the producer's own obligation is replaced at the
+    point it is recorded, and everything downstream — the predicate, the
+    reason, the taint, the wording — is the real pipeline.
+    """
+    from vera import verifier as vmod
+
+    source = _REFUTED.format(arm="100 / @PosInt.0").replace(
+        "Some(@Int.0)", "Some(@Int.0 * @Int.0 + 1)",
+    ).replace("fn main", "fn use_it")
+    path = _tree(tmp_path, {"p": source})["p"]
+
+    original = vmod.ContractVerifier._record_obligation
+
+    def injecting(self, fn_name, kind, node, status, **kw):  # type: ignore[no-untyped-def]
+        if fn_name == "mk" and kind == "refine_bind":
+            status, kw = "timeout", {**kw, "error_code": "E524"}
+        return original(self, fn_name, kind, node, status, **kw)
+
+    vmod.ContractVerifier._record_obligation = injecting
+    try:
+        from vera.checker import typecheck_with_artifacts
+        from vera.parser import parse
+        from vera.resolver import ModuleResolver
+        from vera.transform import transform
+
+        text = path.read_text(encoding="utf-8")
+        program = transform(parse(text, file=str(path)))
+        resolver = ModuleResolver(_root=path.parent)
+        resolved = resolver.resolve_imports(program, path)
+        _d, artifacts = typecheck_with_artifacts(
+            program, text, file=str(path), resolved_modules=resolved,
+        )
+        result = vmod.verify(
+            program, text, file=str(path), resolved_modules=resolved,
+            expr_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
+        )
+    finally:
+        vmod.ContractVerifier._record_obligation = original
+
+    seen = [
+        (o.kind, o.status, o.error_code) for o in result.obligations
+    ]
+    assert ("refine_bind", "timeout", "E524") in seen, seen
+    div = [(o.status, o.error_code) for o in result.obligations
+           if o.kind == "div_zero"]
+    assert div == [("tier3", "E534")], (
+        f"a timed-out premise still proved the consumer: {seen}"
+    )
+    texts = [
+        d.description for d in result.diagnostics
+        if d.error_code == "E534"
+    ]
+    assert len(texts) == 1, texts
+    assert "could not decide within the budget" in texts[0], texts[0]
+
+
+def test_1403_a_refuted_import_is_cited_as_refuted(tmp_path: Path) -> None:
+    """The reason has to cross the import, not just the name.
+
+    `_tainted_refuted` was set only on the local branch, so a library whose
+    obligation the run REFUTED was cited with "disclosed at …" and a sentence
+    claiming the run could neither prove nor guard it — untrue of both runs
+    (review of PR #1415, H1).  The reason now travels in the manifest's
+    `DisclosureSite`, so the citation says the true thing and points at the
+    library's own E505.
+    """
+    paths = _tree(tmp_path, {
+        "rlib": """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn mk(@Int -> @Option<Pos>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+""",
+        "rmain": """\
+import rlib;
+
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match rlib::mk(@Int.0) {
+    Some(@Pos) -> 100 / @Pos.0,
+    None -> 1
+  }
+}
+""",
+    })
+    lib = _verify(paths["rlib"])
+    assert ("refine_bind", "violated", "E505") in _triples(lib), _triples(lib)
+
+    result = _verify(paths["rmain"])
+    assert ("div_zero", "tier3", "E534") in _triples(result), _triples(result)
+    e534 = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(e534) == 1, [w.get("error_code") for w in result["warnings"]]
+    text = e534[0]["description"]
+    assert "rlib::mk" in text and "refuted at" in text, text
+    assert "E505" in text, text
+    assert "proved FALSE" in text, text
+    assert "could neither prove nor guard" not in text, text

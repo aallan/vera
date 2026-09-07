@@ -296,21 +296,65 @@ def fact_not_established(obligation: "ProofObligation") -> bool:
         # /`violated`/E505.  "Could not establish" and "established the
         # opposite" are different messages but the same decision here.
         or obligation.status == "violated"
+        # ... and TIMED OUT (#1415 review, H2).  A budget that ran out is not
+        # a fact either: the run reached no verdict, so a caller reading it
+        # proves from something nobody decided.  The three cases differ in
+        # what the reader should do — raise the budget, fix the producer, or
+        # plant a guard — which is why `unestablished_reason` keeps them
+        # apart while this predicate treats them alike.
+        or obligation.status == "timeout"
     )
 
 
-def refuted_fn_names(
-    obligations: "list[ProofObligation]",
-) -> frozenset[str]:
-    """Functions whose declared-type fact this run proved FALSE (#1415 G2).
+def unestablished_reason(obligation: "ProofObligation") -> str | None:
+    """WHY an obligation left its fact unestablished, or ``None`` if it did
+    not (#1415 review, H1/H2).
 
-    A strict subset of :func:`disclosed_fn_names`, kept apart only so the
-    demotion can say which happened: "could neither prove nor guard" is untrue
-    of a refutation, where the run decided and decided against.
+    The demotion's wording turns on this: "could neither prove nor guard" is
+    untrue of a refutation, where the run decided and decided against, and
+    equally untrue of a timeout, where the budget ran out before it decided
+    anything.  One classifier so the local and the imported paths cannot
+    describe the same status differently.
     """
-    return frozenset(
-        o.fn_name for o in obligations if o.status == "violated"
-    )
+    if obligation.status == "violated":
+        return "refuted"
+    if obligation.status == "timeout":
+        return "undecided"
+    if obligation.status == "tier3_unguarded" or (
+        obligation.status == "tier3" and obligation.error_code == "E534"
+    ):
+        return "disclosed"
+    return None
+
+
+#: Wording for each reason, shared by the local and imported paths.
+UNESTABLISHED_PHRASE: dict[str, str] = {
+    "disclosed": "a fact this run could neither prove nor guard",
+    "refuted": "a fact this run proved FALSE",
+    "undecided": "a fact this run could not decide within the budget",
+}
+
+
+def unestablished_reasons(
+    obligations: "list[ProofObligation]",
+) -> dict[str, str]:
+    """Each function's reason, for the message that cites it.
+
+    A function with several unestablished obligations takes the most decided
+    one — a refutation says more than a timeout, which says more than a
+    disclosure — so a caller is told the strongest thing the run knows rather
+    than whichever obligation happened to come first.
+    """
+    rank = {"refuted": 3, "undecided": 2, "disclosed": 1}
+    out: dict[str, str] = {}
+    for o in obligations:
+        reason = unestablished_reason(o)
+        if reason is None:
+            continue
+        prev = out.get(o.fn_name)
+        if prev is None or rank[reason] > rank[prev]:
+            out[o.fn_name] = reason
+    return out
 
 
 def summarize(
@@ -480,9 +524,11 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
-        # #1415 G2: of those, the ones whose fact was REFUTED rather than
-        # merely not established — the demotion's wording turns on it.
-        self._refuted_fns: frozenset[str] = frozenset()
+        # #1415 G2/H2: of those, WHY each one's fact is unestablished —
+        # disclosed, refuted, or undecided — because the demotion's wording
+        # turns on it and only one of the three is "could neither prove nor
+        # guard".
+        self._unestablished: dict[str, str] = {}
         # #1399: the same question for an IMPORTED callee, whose obligations
         # never enter this run's stream and so can never appear in the set
         # above.  Answered from each module's own verification through
@@ -503,9 +549,9 @@ class ContractVerifier:
         # Same lifetime as `SmtContext._tainted_facts`, which is what they
         # describe: per function, cleared with the scope set below.
         self._tainted_sites: list[DisclosureSite] = []
-        # ... and whether any fact withheld from THIS function came from
-        # an obligation the run refuted.  Same lifetime as the sites.
-        self._tainted_refuted: bool = False
+        # ... and the REASONS the facts withheld from THIS function were
+        # unestablished.  Same lifetime as the sites.
+        self._tainted_reasons: set[str] = set()
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -2913,7 +2959,7 @@ class ContractVerifier:
             if disclosed <= seen:
                 return
             self._disclosed_fns = seen = disclosed
-            self._refuted_fns = refuted_fn_names(self.obligations)
+            self._unestablished = unestablished_reasons(self.obligations)
             # Both buffers are rebuilt, matching the per-instance idiom in
             # `_verify_generic_instances`: a status and its diagnostic are
             # properties of the proof that produced them, and the previous
@@ -3404,7 +3450,7 @@ class ContractVerifier:
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
-        self._tainted_refuted = False
+        self._tainted_reasons = set()
         # #1208: THIS function's naming scope — its declaring module's env
         # narrowed by the `forall` variables in scope over it.  Both the slot
         # names declared below and the SMT context that resolves references to
@@ -7978,8 +8024,9 @@ class ContractVerifier:
             return False
         name = scrutinee.name
         if name in self._disclosed_fns:
-            if name in self._refuted_fns:
-                self._tainted_refuted = True
+            reason = self._unestablished.get(name)
+            if reason is not None:
+                self._tainted_reasons.add(reason)
             return True
         if isinstance(scrutinee, ast.ModuleCall):
             if self._module_qualified_base(
@@ -8027,6 +8074,9 @@ class ContractVerifier:
         if site is None:
             return False
         self._tainted_sites.append(site)
+        # H1: the importer discards the library's obligations, so the reason
+        # has to travel with the name or the citation can only guess.
+        self._tainted_reasons.add(site.reason)
         return True
 
     def _report_disclosed_demotion(
@@ -8121,15 +8171,7 @@ class ContractVerifier:
         told only that something, somewhere, was not established.
         """
         if not self._tainted_sites:
-            if self._tainted_refuted:
-                return (
-                    f"{subject} holds only from a fact this run proved "
-                    f"FALSE. {closing}"
-                )
-            return (
-                f"{subject} holds only from a fact this run could neither "
-                f"prove nor guard. {closing}"
-            )
+            return f"{subject} holds only from {self._withheld_phrase()}. {closing}"
         cited = list(dict.fromkeys(
             site.cite() for site in self._tainted_sites
         ))
@@ -8143,9 +8185,44 @@ class ContractVerifier:
         )
         return (
             f"{subject} holds only from {fact} of {', '.join(cited)}, "
-            f"which {owner} own verification could neither prove nor "
-            f"guard. {closing}"
+            f"which {owner} own verification {self._withheld_verb()}. "
+            f"{closing}"
         )
+
+    def _withheld_verb(self) -> str:
+        """What the DEFINING run did, for a citation that names the module.
+
+        The clause after "which that module's own verification …" has to agree
+        with the reason the same way the un-cited sentence does; hardcoding
+        "could neither prove nor guard" made the importer's message claim
+        something untrue of a library whose obligation was refuted (#1415
+        review, H1) — my own cell caught it after the reason was already
+        travelling correctly.
+        """
+        reasons = self._tainted_reasons
+        if len(reasons) == 1:
+            return {
+                "refuted": "proved FALSE",
+                "undecided": "could not decide within the budget",
+            }.get(next(iter(reasons)), "could neither prove nor guard")
+        if not reasons:
+            return "could neither prove nor guard"
+        return "did not establish"
+
+    def _withheld_phrase(self) -> str:
+        """How to describe the facts withheld from the function in hand.
+
+        One reason gets its own words; a mix gets the neutral statement that
+        covers all three, because "proved FALSE" and "could not decide" are
+        contradictory claims and a sentence asserting both would be wrong
+        whichever way the reader took it.
+        """
+        reasons = self._tainted_reasons
+        if len(reasons) == 1:
+            return UNESTABLISHED_PHRASE[next(iter(reasons))]
+        if not reasons:
+            return UNESTABLISHED_PHRASE["disclosed"]
+        return "facts this run did not establish"
 
     def _disclosed_demotion_rationale(self) -> str:
         """... and the rationale, which must be true of the run that emits it.
