@@ -1902,6 +1902,69 @@ def test_1418_a_goal_not_needing_the_withheld_fact_stays_tier_1(
     )
 
 
+#: THE #1431 REVIEWER'S LITERAL SPELLING, which could not be a cell until now.
+#: A `None` arm beside a `Some(<expr>)` one used to die with an E699 sort
+#: mismatch before a single obligation was emitted — that crash being #1424,
+#: which #1431 fixed.  With #1431 in the base the shape translates, so the
+#: construction rule is pinned on the exact program the review raised rather
+#: than only on the carriers chosen to dodge the crash.
+_REBUILT_LITERAL = _POSINT + """
+private fn mk(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(%s)
+}
+
+private fn rebuild(@Float64 -> @Option<PosInt>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Float64.0) {
+    Some(@PosInt) -> Some(@PosInt.0),
+    None -> None
+  }
+}
+""" + _F + "{\n  match rebuild(@Float64.0) {\n" + _ARMS + "\n  }\n}\n"
+
+
+def test_1418_j3_the_literal_rebuilt_spelling_is_disclosed(
+    tmp_path: Path,
+) -> None:
+    """`Some(@PosInt.0)` beside a `None` arm — the shape #1431 unblocked.
+
+    The occurrence walk needs no rule for it: a constructor application
+    containing a projection of a disclosed value contains that value.  What
+    changed is only that the program now reaches the verifier at all.
+    """
+    src = _REBUILT_LITERAL % "float_to_int(@Float64.0)"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    statuses = [(o["kind"], o["status"], o.get("error_code"))
+                for o in result["obligations"]]
+    assert ("refine_bind", "tier3_unguarded", "E506") in statuses, statuses
+    assert _f_ensures(result) == ("tier3", "E534"), statuses
+    _assert_refused(_run(tmp_path, src))
+
+
+def test_1418_j3_the_literal_rebuilt_spelling_of_a_clean_value_proves(
+    tmp_path: Path,
+) -> None:
+    """The control: rebuilding is not itself a disclosure."""
+    src = _REBUILT_LITERAL % "7"
+    result = _verify(tmp_path, src)
+    assert result["ok"] is True, result.get("diagnostics")
+    assert _f_ensures(result) == ("verified", None), [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+    ]
+    out = _run(tmp_path, src)
+    assert "violation" not in out, out[-400:]
+    assert out.strip().split()[-1] == "7", out[-400:]
+
+
 def test_1418_a_value_rebuilt_from_a_disclosed_component_is_disclosed() -> None:
     """CONSTRUCTED-from is covered by the same walk as PROJECTED-from.
 
