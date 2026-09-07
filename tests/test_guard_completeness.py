@@ -1250,6 +1250,217 @@ public fn td(@Nat -> @Int)
 """
 
 
+_P1_NAT_ELEMENT_STORE_ONLY = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Nat> = [@Int.0];
+  1
+}
+"""
+
+_P1_NESTED_ARRAY = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Pos>> = [[@Int.0]];
+  @Array<Array<Pos>>.0[0][0]
+}
+"""
+
+_P1_MAP_REFINED_VALUE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Map<String, Pos> = map_insert(map_new(), "k", @Int.0);
+  match map_get(@Map<String, Pos>.0, "k") {
+    Some(@Pos) -> @Pos.0,
+    None -> 0
+  }
+}
+"""
+
+_P1_MAP_NAT_VALUE = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Map<String, Nat> = map_insert(map_new(), "k", @Int.0);
+  1
+}
+"""
+
+_P1_ARRAY_OF_REFINED_TUPLES = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Tuple<Pos, Int>> = [Tuple(@Int.0, 1)];
+  let Tuple<@Pos, @Int> = @Array<Tuple<Pos, Int>>.0[0];
+  @Pos.0
+}
+"""
+
+_P1_FLAT_ARRAY_CONTROL = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Pos> = [@Int.0];
+  1
+}
+"""
+
+
+class TestConstructionPositionReachesNestedContainers:
+    """The silent-absence class, one nesting level deeper and one container
+    over (#1426, third-pass P1).
+
+    Fixing the FLAT array element left four shapes still unobligated: a
+    nested array literal's inner element, a `Map` value in each direction,
+    and an array of refined tuples.  All four verified clean — `ok: true`,
+    no `refine_bind`, no `nat_bind` — on base and on the flat fix.
+
+    The mechanism is the same in each: the checker records a target type for
+    the OUTER literal and none for the inner node, and for a `map_insert`
+    the value argument's recorded target is the ERASED base (`Int` for a
+    `Map<String, Pos>`), because generic unification resolves `V` against
+    the `map_new()` receiver.  A walk that reads a target per expression
+    therefore sees nothing to obligate.  The remedy is to thread the
+    expected type DOWN from the one place that still has it — the outer
+    literal's target, or the enclosing `let`'s DECLARED type, which is a
+    declaration rather than an inference and keeps its refinement.
+
+    What each shape does at runtime differs, and the cells say which: two
+    are caught by the read-side pattern-bind guard (#765) and two are not
+    guarded anywhere.  Neither had an obligation, which is the defect —
+    silence cannot be read in either direction.
+    """
+
+    def test_a_nested_inner_element_is_obligated(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _P1_NESTED_ARRAY, name="p1a.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], obs
+        assert envelope["ok"] is False
+        _assert_partition(envelope)
+
+    def test_and_the_nested_element_value_flows_out_unguarded(
+        self, tmp_path: Path,
+    ) -> None:
+        """The run differential: nothing catches this one at all.
+
+        Unlike the two tuple/`Option` shapes below, the inner element is
+        read back as a plain projection, so no pattern bind guards it and
+        `-4` is returned from a function whose element type forbids it.
+        """
+        out = _run(tmp_path, _P1_NESTED_ARRAY, "--fn", "f", "--", "-4",
+                   name="p1b.vera")
+        assert out.strip() == "-4", out
+
+    def test_a_refined_map_value_is_obligated(self, tmp_path: Path) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _P1_MAP_REFINED_VALUE, name="p1c.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], obs
+        assert envelope["ok"] is False
+        _assert_partition(envelope)
+
+    def test_the_refined_map_value_is_caught_only_on_the_way_out(
+        self, tmp_path: Path,
+    ) -> None:
+        """The differential that names WHERE the check lives.
+
+        The insert plants nothing; the trap arrives at the `Some(@Pos)`
+        sub-pattern when the value is read back (#765).  A program that
+        inserts and never reads keeps the forbidden value, which is why the
+        obligation has to exist at the insert.
+        """
+        out = _run(tmp_path, _P1_MAP_REFINED_VALUE, "--fn", "f", "--", "-4",
+                   name="p1d.vera")
+        assert "Refinement violation in constructor sub-pattern" in out, out
+
+    def test_a_nat_map_value_is_obligated_and_disclosed_unguarded(
+        self, tmp_path: Path,
+    ) -> None:
+        """`Map<String, Nat>`: nothing guards the insert, so E503/E504.
+
+        The run differential is the store-only one — `-4` is inserted and
+        `f` returns `1` — so this obligation must NOT claim `guarded`.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _P1_MAP_NAT_VALUE, name="p1e.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "nat_bind"]
+        assert binds == [("violated", "E503")], obs
+        _assert_partition(envelope)
+
+        out = _run(tmp_path, _P1_MAP_NAT_VALUE, "--fn", "f", "--", "-4",
+                   name="p1f.vera")
+        assert out.strip() == "1", (
+            f"expected the insert to plant no guard, which is what the "
+            f"unguarded flag on this obligation states:\n{out}"
+        )
+
+    def test_a_refined_tuple_inside_an_array_is_obligated(
+        self, tmp_path: Path,
+    ) -> None:
+        """One container over: the element type is neither refined nor
+        `@Nat`, so both scalar arms decline and the components were never
+        reached until the descent decomposed the `Tuple`."""
+        obs, envelope = _obligations(
+            tmp_path, _P1_ARRAY_OF_REFINED_TUPLES, name="p1i.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], obs
+        assert envelope["ok"] is False
+        _assert_partition(envelope)
+
+        out = _run(tmp_path, _P1_ARRAY_OF_REFINED_TUPLES, "--fn", "f", "--",
+                   "-4", name="p1j.vera")
+        assert "Refinement violation in let Tuple" in out, out
+
+    def test_one_obligation_per_component_not_one_per_route(
+        self, tmp_path: Path,
+    ) -> None:
+        """The over-recording control, and why the descent is memoised.
+
+        Three routes can reach the same component — the array literal's own
+        recorded target, the enclosing `let`'s declared type, and the
+        tuple-construction path — and each recording it would inflate
+        `len(obligations)` and the Tier-3 count derived from it.  The flat
+        `let @Array<Pos> = [...]` already worked before this change, so its
+        count is the fixed point the descent must not move.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _P1_FLAT_ARRAY_CONTROL, name="p1k.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], obs
+        _assert_partition(envelope)
+
+
 class TestTupleComponentSitesAreGuarded1416:
     """The last two members of the coercion-guard family.
 
@@ -1643,9 +1854,16 @@ class TestArrayElementNarrowingIsObligated:
     ) -> None:
         """The other direction, where a guard exists and had no obligation.
 
-        The store traps on a negative, so the obligation is `guarded` — an
-        absent record here undercounted Tier 3 rather than overstating it,
-        which is the rarer half of the same defect.
+        The trap below is real, but it belongs to the READ, not to the
+        store: the fixture ends in `nat_to_int(...[0])`, and the #765
+        pattern-bind guard fires there.  The construction site itself plants
+        nothing — see the store-only cell in
+        :py:class:`TestConstructionPositionReachesNestedContainers`, where
+        `-4` is stored into an `@Array<Nat>` and the program returns
+        normally — so this obligation is recorded UNguarded.  The earlier
+        reading of this cell took the trap as evidence about the store and
+        claimed `guarded`, which asserted a runtime check the site does not
+        emit.
         """
         obs, envelope = _obligations(
             tmp_path, _N4_NAT_ELEMENT, name="n4d.vera")
@@ -1660,6 +1878,30 @@ class TestArrayElementNarrowingIsObligated:
             f"the `@Nat` element store does not trap, so the obligation's "
             f"guarded flag is wrong:\n{out}"
         )
+
+    def test_the_element_store_itself_plants_no_guard(
+        self, tmp_path: Path,
+    ) -> None:
+        """Store-only: the differential that separates store from read.
+
+        A fixture that reads the element back cannot answer where the guard
+        lives, because the read-side bind guard (#765) answers first.  This
+        one never reads: `-4` goes into an `@Array<Nat>` and `f` returns
+        `1`.  That is why the construction obligation is recorded UNguarded
+        — claiming otherwise would assert a check that is not in the WAT.
+        """
+        out = _run(tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, "--fn", "f", "--",
+                   "-4", name="p1g.vera")
+        assert out.strip() == "1", (
+            f"expected the store-only program to complete, showing the "
+            f"element store plants no guard:\n{out}"
+        )
+        obs, envelope = _obligations(
+            tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, name="p1h.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "nat_bind"]
+        assert binds == [("violated", "E503")], obs
+        _assert_partition(envelope)
 
     def test_the_widening_arm_still_fires(self, tmp_path: Path) -> None:
         """The over-reach control.

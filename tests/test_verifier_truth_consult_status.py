@@ -1181,6 +1181,42 @@ public fn td(@Nat -> @Int)
 )
 
 
+_ARRAY_ELEMENT = _GuardShape(
+    kind="refine_bind",
+    # The construction-position element, added to the roster by the third
+    # pass (P2): a mutation that took the array-element obligation off the
+    # record reddened its own cells and left BOTH parity differentials
+    # green, because no shape here reached the site.  A roster that does not
+    # cover a site cannot report a desync at it.
+    classify_src="""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Pos> = [""" + _OPAQUE + """];
+  @Array<Pos>.0[0]
+}
+""",
+    # Store-only, deliberately: a fixture that reads the element back is
+    # answered by the #765 pattern-bind guard, and would report this site as
+    # guarded when what fired belongs to the read.
+    run_src="""\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Pos> = [@Int.0];
+  1
+}
+""",
+    fn="f",
+    arg="-4",
+    trap_marker="Refinement violation",
+)
+
+
 _GUARD_SHAPES: dict[str, _GuardShape] = {
     "1416_tuple_destructure": _TUPLE_DESTRUCTURE,
     "765_refined_bind": _REFINED_BIND,
@@ -1188,6 +1224,7 @@ _GUARD_SHAPES: dict[str, _GuardShape] = {
     "1036_nonplain_base": _NONPLAIN_BASE,
     "754_op_argument": _OP_ARGUMENT,
     "1222_measure_range": _MEASURE_RANGE,
+    "1426_array_element": _ARRAY_ELEMENT,
 }
 
 

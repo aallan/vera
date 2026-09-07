@@ -147,6 +147,28 @@ _NESTED_SITE_GUARD_NOTE = (
 #: component AT CONSTRUCTION (the composing boundary guard is the callee's
 #: parameter check, a different site), and a user effect operation's argument,
 #: whose dispatch carries only a target (#754).
+#: Construction-position sites whose `@Nat` store codegen actually guards.
+#:
+#: Measured per site by a STORE-ONLY differential (build the container, never
+#: read it back), because a fixture that reads the component out is answered
+#: by the read-side bind guard (#765) and cannot tell the two apart.  A tuple
+#: component traps at construction (#1416); an array element and a `Map`
+#: value do not — `let @Array<Nat> = [@Int.0]` with `-4` stores and returns
+#: normally, and the trap only arrives if something later reads the element
+#: back as a `@Nat`.  Claiming `guarded` here would assert a runtime check at
+#: a site that has none, which is the false guarantee this PR exists to
+#: remove; the honest answer is E504 disclosure.
+_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({"tuple component"})
+
+
+#: The widening dual, on the same evidence (#820's enabler guards the store
+#: for both container shapes it threads a target type to).
+_INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
+    "array element",
+    "tuple component",
+})
+
+
 _REFINED_BIND_GUARDED_SITES = frozenset({
     # Function boundaries: the parameter / return predicate guards (#746).
     "return type",
@@ -510,6 +532,17 @@ class ContractVerifier:
         # than discharged.  Empty on the first pass; populated for the
         # second when pass one found any (see `verify_program`).
         self._disclosed_fns: frozenset[str] = frozenset()
+        # Construction-position obligations already recorded, keyed by
+        # (function, expression span, site).  Two entry points reach the
+        # typed descent for the same node — an array literal that carries
+        # its own recorded target, and the enclosing `let`'s declared type
+        # (which is the only source for the shapes where the target table
+        # has erased the refinement) — and without this the overlap recorded
+        # one obligation twice, inflating `len(obligations)` on the flat
+        # `let @Array<Refined> = [...]` that already worked.
+        self._construction_obligated: set[
+            tuple[int, tuple[int, int, int, int] | None, str]
+        ] = set()
         # #1399: the same question for an IMPORTED callee, whose obligations
         # never enter this run's stream and so can never appear in the set
         # above.  Answered from each module's own verification through
@@ -2943,6 +2976,11 @@ class ContractVerifier:
             # pass's proofs were made against a context this one no longer
             # offers.
             self.errors, self.obligations = [], []
+            # The construction-position memo is a property of the buffer it
+            # was built against: keeping it here would let the discarded
+            # pass's entries suppress this pass's recordings, and the
+            # obligation would vanish from the stream that is kept.
+            self._construction_obligated = set()
             self.register_program(program)
             self._verify_all_declarations(program)
 
@@ -3078,7 +3116,10 @@ class ContractVerifier:
             # derived from the final obligation stream (#967), so it needs no
             # save/restore here.
             saved = (self.errors, self.obligations)
+            saved_construction = self._construction_obligated
             self.errors, self.obligations = [], []
+            # Saved and restored with the buffer, for the same reason.
+            self._construction_obligated = set()
             # PR #972 review (pre-existing): the #747 side-tables are span-keyed
             # and the clone keeps its source spans, so lookups inside the clone
             # answer the GENERIC types.  Publish this instance's TypeVar →
@@ -3104,6 +3145,7 @@ class ContractVerifier:
                 self._instance_subst = saved_subst
                 inst_obl, inst_err = self.obligations, self.errors
                 self.errors, self.obligations = saved
+                self._construction_obligated = saved_construction
             per_instance.append((concrete, inst_obl, inst_err))
         self._aggregate_generic_instances(decl, per_instance)
 
@@ -4186,6 +4228,140 @@ class ContractVerifier:
             error_code="E537",
             tier=3,
         )
+
+    def _obligate_construction_component(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Obligate a value placed into a component slot at CONSTRUCTION,
+        descending through nested containers (#1426, third-pass P1).
+
+        The flat array element was fixed first, and the same silence survived
+        one nesting level deeper and one container over: a nested array
+        literal's inner element, an array of refined tuples, and a `Map`
+        value.  In each the checker records a target for the OUTER literal
+        and none for the inner one, so a walk that reads a target per
+        expression sees nothing to obligate — `verify` reported a clean
+        program while the value its element type forbids was stored.
+
+        The expected type is therefore threaded DOWN rather than looked up
+        per node: the outer target names the element type, and that names the
+        next one.  Refined-FIRST at each level (R9), because a refinement
+        over `@Int` answers `_is_int_type` and the widening arm would
+        otherwise swallow it.
+
+        Only the shapes whose components are syntactically present are
+        descended — an array literal's elements and a `Tuple` construction's
+        arguments.  A value that arrives through a call is the callee's to
+        establish, which is the same provenance rule the #1332 construction
+        obligation draws.
+        """
+        memo_key = (id(decl), ast.span_key(expr), site)
+        if memo_key in self._construction_obligated:
+            return
+        refined_target = self._refined_binding_target(expr, expected)
+        before = len(self.obligations)
+        if (refined_target is not None
+                and self._narrows_into_refined(expr, refined_target)):
+            self._check_refined_binding_obligation(
+                decl, expr, refined_target, smt, slot_env, assumptions,
+                site=site,
+            )
+        elif (self._nat_binding_target(expr, expected)
+                and self._narrows_into_nat(expr)):
+            self._check_nat_binding_obligation(
+                decl, expr, smt, slot_env, assumptions, site=site,
+                guarded=site in _NAT_CONSTRUCTION_GUARDED_SITES,
+            )
+        elif self._is_int_type(expected) and self._result_is_nat(expr):
+            self._check_int_widening_obligation(
+                decl, expr, smt, slot_env, list(assumptions), site=site,
+                guarded=(
+                    site in _INT_WIDENING_CONSTRUCTION_GUARDED_SITES
+                ),
+            )
+        else:
+            self._descend_construction_container(
+                decl, expr, expected, smt, slot_env, assumptions, site=site,
+            )
+            return
+        # Memoise what was RECORDED, not what was visited.  An arm can be
+        # entered and still decline inside — a value the SMT layer cannot
+        # translate at this point in the walk is one — and the other route to
+        # the same component may reach it with an environment where it does
+        # discharge.  Marking the key on entry suppressed that second route
+        # and turned one disclosed obligation into silence, which is the
+        # failure mode this whole descent exists to remove.
+        if len(self.obligations) > before:
+            self._construction_obligated.add(memo_key)
+
+    def _descend_construction_container(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Descend one container level, threading the component type down.
+
+        Split out of :py:meth:`_obligate_construction_component` so the memo
+        there covers only the SCALAR arms: a container node records nothing
+        itself, so memoising it would say "already obligated" about a node
+        whose components are obligated one level down.
+        """
+        base = expected.base if isinstance(expected, RefinedType) else expected
+        if not isinstance(base, AdtType) or not base.type_args:
+            return
+        if base.name == "Array" and isinstance(expr, ast.ArrayLit):
+            for elem in expr.elements:
+                # The element's site names the ELEMENT, never the route that
+                # reached it: the two entry points must agree, or the memo
+                # above sees two keys for one obligation and records it twice.
+                self._obligate_construction_component(
+                    decl, elem, base.type_args[0], smt, slot_env,
+                    assumptions, site="array element",
+                )
+            return
+        if (base.name == "Tuple" and isinstance(expr, ast.ConstructorCall)
+                and expr.name == "Tuple"
+                and len(expr.args) == len(base.type_args)):
+            for arg, comp_ty in zip(expr.args, base.type_args):
+                self._obligate_construction_component(
+                    decl, arg, comp_ty, smt, slot_env, assumptions,
+                    site="tuple component",
+                )
+            return
+        if (base.name == "Map" and len(base.type_args) == 2
+                and isinstance(expr, ast.FnCall)
+                and expr.name == "map_insert" and len(expr.args) == 3):
+            # `map_insert(m, k, v)` places `v` in the map's VALUE slot.  The
+            # target table cannot supply that type here: generic unification
+            # resolves `V` against the `map_new()` receiver and reports the
+            # erased base (`Int` for a `Map<String, Pos>`), so a walk reading
+            # a target per node sees `Int` and obligates nothing.  The
+            # declared type threaded down from the let carries the
+            # refinement, so it is the one consulted.
+            self._obligate_construction_component(
+                decl, expr.args[2], base.type_args[1], smt, slot_env,
+                assumptions, site="map value",
+            )
+            # A chained insert builds the same map, so the receiver carries
+            # the same component obligation.
+            self._obligate_construction_component(
+                decl, expr.args[0], expected, smt, slot_env, assumptions,
+                site=site,
+            )
 
     def _check_decreases_bound(
         self,
@@ -5949,43 +6125,26 @@ class ContractVerifier:
                     and len(target.type_args) == len(expr.args)
                     else ()
                 )
+                # One descent, shared with the container walk and with the
+                # enclosing `let`'s declared type: each of the three routes
+                # can reach the same component, and a second recording of one
+                # obligation inflates `len(obligations)`.  The guardedness
+                # each arm claims is per SITE, from the two rosters above,
+                # rather than restated at each call.
                 for arg, comp_ty in zip(expr.args, comp_types):
-                    if (self._is_refined_type(comp_ty)
-                            and self._narrows_into_refined(arg, comp_ty)):
-                        self._check_refined_binding_obligation(
-                            decl, arg, comp_ty, smt, slot_env, assumptions,
-                            site="tuple component",
-                        )
-                    elif (self._is_nat_type(comp_ty)
-                            and self._narrows_into_nat(arg)):
-                        # guarded=False, like the refined path above: codegen
-                        # does not component-guard a tuple *at construction*, so
-                        # #1416: guarded, from the same threaded target-type
-                        # table its widening twin below has read since #820.
-                        # The narrowing arm never did, so one field could be
-                        # guarded and its neighbour not, at one construction.
-                        self._check_nat_binding_obligation(
-                            decl, arg, smt, slot_env, assumptions,
-                            site="tuple component", guarded=True,
-                        )
-                    elif (self._is_int_type(comp_ty)
-                            and self._result_is_nat(arg)):
-                        # #813/#820: dual — a @Nat component widening into an
-                        # @Int tuple slot.  Codegen recovers the tuple's target
-                        # component types (`Tuple<Int, Int>`) from the threaded
-                        # target-type table (the #820 enabler) and guards each
-                        # @Nat component AT CONSTRUCTION, so this is now
-                        # runtime-guarded (`guarded=True`) rather than E531 —
-                        # the #813-disclosed tuple-component widening residual
-                        # (the widening dual of #758's tuple-component
-                        # narrowing) the enabler unlocks.
-                        self._check_int_widening_obligation(
-                            decl, arg, smt, slot_env, list(assumptions),
-                            site="tuple component", guarded=True,
-                        )
+                    # One descent, shared with the container walk and
+                    # with the enclosing `let`'s declared type: each of
+                    # the three routes can reach the same component, and
+                    # a second recording of one obligation inflates
+                    # `len(obligations)`.  Guardedness is per SITE, from
+                    # the rosters, rather than restated at each call.
+                    self._obligate_construction_component(
+                        decl, arg, comp_ty, smt, slot_env, assumptions,
+                        site="tuple component",
+                    )
                     # #1410 (PR review F3), the built-in carrier's twin: a
-                    # tuple component whose own type writes a refinement on a
-                    # component of ITS structure.  Construction guards no
+                    # tuple component whose own type writes a refinement on
+                    # a component of ITS structure.  Construction guards no
                     # component, so unguarded.
                     self._check_nested_refinement_obligation(
                         decl, arg, comp_ty, smt, slot_env, assumptions,
@@ -6173,6 +6332,19 @@ class ContractVerifier:
                         self._check_int_widening_obligation(
                             decl, stmt.value, smt, cur_env, block_assumptions,
                             site="let binding",
+                        )
+                    elif isinstance(let_ty, AdtType) and let_ty.type_args:
+                        # A CONTAINER let: the scalar arms above see a
+                        # `Map`/`Array`/`Tuple` and decline, so before #1426's
+                        # third pass the component a container was declared to
+                        # hold was obligated only when the value's own node
+                        # carried a recorded target.  The declared type is
+                        # threaded down instead, which reaches the shapes
+                        # where the table is silent (a nested literal's inner
+                        # element, a `map_insert` value).
+                        self._obligate_construction_component(
+                            decl, stmt.value, let_ty, smt, cur_env,
+                            block_assumptions, site="let binding",
                         )
                     # #1410 (PR review F4b): a `let` whose declared type writes
                     # a refinement on a COMPONENT publishes that claim to every
@@ -6488,11 +6660,15 @@ class ContractVerifier:
         # still be visited.  (The #520 subtraction walker has the same
         # pre-existing container gap; aligning it is out of #552's scope.)
         if isinstance(expr, ast.ArrayLit):
-            # #813/#820: a @Nat element widening into an @Array<Int> literal.
-            # Codegen recovers the target element type (`Array<Int>`) from the
-            # threaded target-type table and guards the element store at the
-            # widening boundary (the #820 enabler), so this site is now
-            # runtime-guarded (`guarded=True`) rather than E531-disclosed.
+            # Every element obligation at this construction position —
+            # refined predicate, `@Nat` narrowing, and the #813/#820
+            # `@Nat` -> `@Int` widening — goes through the one typed
+            # descent, refined-FIRST (R9).  Recording any of them here
+            # instead would be a SECOND route to the same obligation: the
+            # enclosing `let` reaches these same nodes through its declared
+            # type, which is the only source that survives for a nested
+            # literal or a `map_insert` value, and two routes recording one
+            # obligation inflates `len(obligations)`.
             target = self._target_type_of(expr)
             base = target.base if isinstance(target, RefinedType) else target
             elem_ty = (
@@ -6501,45 +6677,12 @@ class ContractVerifier:
                 and base.type_args
                 else None
             )
-            if (elem_ty is not None and self._is_int_type(elem_ty)
-                    and not self._is_refined_type(elem_ty)):
+            if elem_ty is not None:
                 for elem in expr.elements:
-                    if self._result_is_nat(elem):
-                        self._check_int_widening_obligation(
-                            decl, elem, smt, slot_env, list(assumptions),
-                            site="array element", guarded=True,
-                        )
-            # #1426 / re-verification N4: the NARROWING directions at the same
-            # site were not obligated at all — an `[@Int.0]` into an
-            # `@Array<Nat>` or an `@Array<{refined}>` produced no record, so
-            # `verify` reported a clean program and the array carried a value
-            # its element type forbids.  Silent absence is worse than an
-            # unguarded disclosure: the stream did not mention the site, so
-            # nothing could be read off it in either direction.  The `@Nat`
-            # arm IS runtime-guarded (measured: `-4` traps at the element
-            # store); the refined arm is not, and joins the other
-            # construction-position component sites in disclosing E506.
-            elif elem_ty is not None:
-                # Refined-FIRST (R9): a refinement OVER `@Int` reads as an
-                # `@Int` element type to `_is_int_type`, so without this the
-                # widening arm above swallowed it and its predicate was never
-                # obligated at all.
-                for elem in expr.elements:
-                    refined_target = self._refined_binding_target(
-                        elem, elem_ty)
-                    if (refined_target is not None
-                            and self._narrows_into_refined(
-                                elem, refined_target)):
-                        self._check_refined_binding_obligation(
-                            decl, elem, refined_target, smt, slot_env,
-                            assumptions, site="array element",
-                        )
-                    elif (self._nat_binding_target(elem, elem_ty)
-                            and self._narrows_into_nat(elem)):
-                        self._check_nat_binding_obligation(
-                            decl, elem, smt, slot_env, assumptions,
-                            site="array element", guarded=True,
-                        )
+                    self._obligate_construction_component(
+                        decl, elem, elem_ty, smt, slot_env, assumptions,
+                        site="array element",
+                    )
             for elem in expr.elements:
                 self._walk_for_nat_binding_obligations(
                     decl, elem, smt, slot_env, assumptions,
