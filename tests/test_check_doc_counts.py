@@ -1714,7 +1714,7 @@ class TestNegativeFixtureLists:
         }
         expected = _MOD.negative_fixture_names(_manifest("ch02_a_rejected"))
         errors = _MOD.check_negative_fixture_lists(docs, expected)
-        assert len(errors) == 1 and "no longer spelled out" in errors[0]
+        assert len(errors) == 1 and "0 of the 2" in errors[0]
 
     def test_an_unparseable_count_word_is_an_error(self) -> None:
         docs = {"AGENTS.md": _fixture_doc("ch02_a_rejected", word="several")}
@@ -1773,10 +1773,40 @@ class TestNegativeFixtureLists:
             _manifest("ch01_a_rejected", "ch01_b_rejected")
         )
         errors = _MOD.check_negative_fixture_lists(
-            {"D.md": good + stale}, expected
+            {"D.md": good + stale}, expected, counted_lists=2
         )
         assert len(errors) == 1 and "'four'" in errors[0]
         assert "list 2 of 2" in errors[0]
+
+    def test_a_count_added_where_there_was_none_is_reported(self) -> None:
+        """The other direction of the family-wide backstop.
+
+        Two of the three shipped lists state no size, so the rule cannot
+        be per-sentence; what is pinned is HOW MANY do.  Adding a count
+        to a list that had none would otherwise let the one that already
+        had one go stale unnoticed — the same one-of-N blindness, at the
+        level of which sentences get checked at all.
+        """
+        docs = {
+            "AGENTS.md": _fixture_doc("ch01_a_rejected", word="one"),
+            "CLAUDE.md": _fixture_doc("ch01_a_rejected", word="one"),
+        }
+        expected = _MOD.negative_fixture_names(_manifest("ch01_a_rejected"))
+        errors = _MOD.check_negative_fixture_lists(docs, expected)
+        assert len(errors) == 1 and "2 of the 2" in errors[0]
+        assert "_COUNTED_FIXTURE_LISTS" in errors[0]
+
+    def test_the_shipped_docs_match_the_pinned_number_of_counts(self) -> None:
+        """The constant against the live files, so it cannot drift into
+        describing a shape the documents no longer have."""
+        counted = sum(
+            _MOD._count_token(match.group("lead")) is not None
+            for name in ("AGENTS.md", "CLAUDE.md")
+            for match in _MOD._NEGATIVE_FIXTURES.finditer(
+                (_ROOT / name).read_text(encoding="utf-8")
+            )
+        )
+        assert counted == _MOD._COUNTED_FIXTURE_LISTS
 
     def test_a_bare_determiner_is_not_read_as_a_count(self) -> None:
         """CLAUDE.md's list is introduced with no count at all, and the
@@ -2319,7 +2349,16 @@ class TestConformanceLevelProse:
     def test_the_whole_count_slot_is_read_not_its_last_word(self) -> None:
         """#1411 review finding 9: "the forty three" reported as "says
         'three' (3)" — misleading, and a silent PASS wherever the
-        manifest held three."""
+        manifest held three.
+
+        The fix that this pins is in `_count_token`, which now returns
+        the whole slot.  `_parse_count`'s `if " " in token` guard is NOT
+        pinned by this cell and cannot be: removing it is an EQUIVALENT
+        mutant, because `_english_number_word_to_int` already rejects a
+        two-word token (it is in neither table and has no hyphen).  The
+        guard is belt-and-braces for readability, so it must not be
+        recorded as mutation-validated (PR #1411 review, third pass).
+        """
         text, manifest = self._two_levels()
         text = text.replace("Two programs (", "the forty three programs (", 1)
         errors = _MOD.check_conformance_level_prose(text, manifest)
@@ -2335,6 +2374,74 @@ class TestConformanceLevelProse:
         assert _MOD._NEGATIVE_PROSE.search(text) is not None
         levels = {m.group("level") for m in _MOD._LEVEL_PROSE.finditer(text)}
         assert {"check", "verify"} <= levels
+
+
+class TestManifestEntryFields:
+    """#1411 review: an entry missing `file` or `level` reached the
+    readers as a KeyError traceback rather than a diagnostic, and the
+    first reader to hit one is `main`'s level breakdown, so the CLI
+    crashed before any of the prose gates ran.  A gate that crashes says
+    less than one that reports."""
+
+    def test_a_well_formed_manifest_is_clean(self) -> None:
+        assert _MOD.check_manifest_entries(_manifest("ch02_a_rejected")) == []
+
+    def test_a_missing_level_is_reported(self) -> None:
+        entries: list[dict[str, object]] = [{"file": "ch01_x.vera"}]
+        errors = _MOD.check_manifest_entries(entries)
+        assert len(errors) == 1
+        assert "ch01_x.vera" in errors[0] and "`level`" in errors[0]
+
+    def test_a_missing_file_is_named_by_something_else(self) -> None:
+        """An entry with no `file` has no natural name, so the message
+        falls back to its `id` and then to its index — a report that
+        cannot say WHICH entry is barely a report."""
+        errors = _MOD.check_manifest_entries(
+            [{"level": "check", "id": "ch09_named"}, {"level": "run"}]
+        )
+        assert len(errors) == 2
+        assert "ch09_named" in errors[0] and "`file`" in errors[0]
+        assert "entry 1" in errors[1]
+
+    def test_both_missing_fields_are_named_in_one_message(self) -> None:
+        errors = _MOD.check_manifest_entries([{"title": "orphan"}])
+        assert len(errors) == 1
+        assert "`file` and `level`" in errors[0]
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param({"level": "check"}, id="no-file"),
+            pytest.param({"file": "ch01_x.vera"}, id="no-level"),
+        ],
+    )
+    def test_the_readers_report_rather_than_raise(
+        self, entry: dict[str, object]
+    ) -> None:
+        """The malformed entry is reported once, by the validator — the
+        readers skip it rather than raising, and rather than reporting
+        the same fault a second time in their own words."""
+        manifest = [*_manifest("ch02_a_rejected"), entry]
+        text = _level_prose(
+            ("ch02_a_rejected",),
+            ("ch02_a_rejected",),
+            check_word="One",
+            negative_word="One",
+        )
+        # No exception, and no complaint about the malformed entry.
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert all("ch01_x" not in e for e in errors), errors
+        assert _MOD.negative_fixture_names(manifest) == ["ch02_a_rejected"]
+
+    def test_the_shipped_manifest_is_well_formed(self) -> None:
+        """The live file, so the validator cannot be checking nothing."""
+        manifest = json.loads(
+            (_ROOT / "tests/conformance/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest
+        assert _MOD.check_manifest_entries(manifest) == []
 
 
 class TestErrorCodesCount:

@@ -1489,6 +1489,12 @@ _NEGATIVE_FIXTURES = re.compile(
     r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})negative fixtures \((?P<names>[^)]*)\)"
 )
 _FIXTURE_NAME = re.compile(r"`([A-Za-z0-9_]+)`")
+# Exactly one of the three enumerated fixture lists states a size:
+# AGENTS.md's first.  CLAUDE.md's and AGENTS.md's second introduce the
+# set without a count, so this family cannot take the per-sentence rule
+# the TESTING.md families do — pinning HOW MANY sentences carry a count
+# is what keeps that asymmetry honest in both directions.
+_COUNTED_FIXTURE_LISTS = 1
 # Words that introduce the phrase without counting it.  Anything ELSE in
 # the slot is read as a count and must parse — a positional pattern that
 # only recognised `the <word> ` left "the 42", "all four" and "forty
@@ -1687,9 +1693,10 @@ def _expected_error_codes(
     manifest: list[dict[str, object]],
 ) -> dict[str, str]:
     return {
-        str(entry["file"]).removesuffix(".vera"): str(entry["expected_error"])
+        name: str(entry["expected_error"])
         for entry in manifest
         if entry.get("expected_error") is not None
+        and (name := _stem(entry)) is not None
     }
 
 
@@ -1703,10 +1710,11 @@ def _negatives_at_stage(
     run the fixture through.
     """
     return {
-        str(entry["file"]).removesuffix(".vera")
+        name
         for entry in manifest
         if entry.get("expected_error") is not None
         and entry.get("expected_error_stage", "check") == stage
+        and (name := _stem(entry)) is not None
     }
 
 
@@ -1715,13 +1723,44 @@ def _negatives_at_stage(
 _UNENUMERATED_LEVEL = "run"
 
 
+def check_manifest_entries(manifest: list[dict[str, object]]) -> list[str]:
+    """Every manifest entry must carry the fields these gates read.
+
+    An entry missing `file` or `level` used to reach the readers as a
+    KeyError traceback rather than a diagnostic, and the first reader to
+    hit one is the level breakdown in `main`, so it crashed before any
+    of this ran (PR #1411 review).  A gate that crashes says less than
+    one that reports.  Named by index when there is no `file` to name it
+    by.
+    """
+    errors: list[str] = []
+    for index, entry in enumerate(manifest):
+        missing = [field for field in ("file", "level") if field not in entry]
+        if not missing:
+            continue
+        name = entry.get("file") or entry.get("id") or f"entry {index}"
+        fields = " and ".join(f"`{field}`" for field in missing)
+        errors.append(
+            f"tests/conformance/manifest.json: {name} is missing {fields}"
+        )
+    return errors
+
+
+def _stem(entry: dict[str, object]) -> str | None:
+    """A fixture's name, or None for an entry with no `file` — which
+    `check_manifest_entries` has already reported, so the readers below
+    skip it rather than reporting the same fault a second time."""
+    name = entry.get("file")
+    return None if name is None else str(name).removesuffix(".vera")
+
+
 def _programs_at_level(
     manifest: list[dict[str, object]], level: str
 ) -> set[str]:
     return {
-        str(entry["file"]).removesuffix(".vera")
+        name
         for entry in manifest
-        if entry.get("level") == level
+        if entry.get("level") == level and (name := _stem(entry)) is not None
     }
 
 
@@ -1773,7 +1812,8 @@ def check_conformance_level_prose(
     # without spelling it out.
     named = {match.group("level") for match in levels}
     for level in sorted(
-        {str(entry["level"]) for entry in manifest} - {_UNENUMERATED_LEVEL}
+        {str(entry["level"]) for entry in manifest if "level" in entry}
+        - {_UNENUMERATED_LEVEL}
     ):
         if level not in named:
             errors.append(
@@ -1842,14 +1882,17 @@ def negative_fixture_names(manifest: list[dict[str, object]]) -> list[str]:
     demanded it fail.
     """
     return sorted(
-        str(entry["file"]).removesuffix(".vera")
+        name
         for entry in manifest
         if entry.get("expected_error") is not None
+        and (name := _stem(entry)) is not None
     )
 
 
 def check_negative_fixture_lists(
-    docs: dict[str, str], expected: list[str]
+    docs: dict[str, str],
+    expected: list[str],
+    counted_lists: int = _COUNTED_FIXTURE_LISTS,
 ) -> list[str]:
     """Gate the enumerated lists (and the spelled count) against the manifest.
 
@@ -1860,11 +1903,19 @@ def check_negative_fixture_lists(
     this script is: rewording the sentence would otherwise switch the
     check off silently.
 
-    The count word is checked wherever it appears, and its ABSENCE from
-    every checked file is an error too.  It is parsed with the same
-    English-word table the burndown header uses, so the two spellings of
-    "how many" in the documentation cannot disagree about what a word
-    means.
+    The count is checked wherever a sentence states one, and parsed with
+    the same English-word table the burndown header uses, so the two
+    spellings of "how many" in the documentation cannot disagree about
+    what a word means.
+
+    Its backstop is FAMILY-WIDE here, unlike the per-sentence rule the
+    TESTING.md families follow, because two of these three lists
+    legitimately state no size at all — CLAUDE.md's, and the second of
+    AGENTS.md's — so requiring one per sentence would fail the documents
+    as written.  What is pinned instead is how many sentences carry a
+    count (`_COUNTED_FIXTURE_LISTS`), which catches the loss of the one
+    that does AND an addition that would let it go stale unnoticed; a
+    deliberate change to the prose updates the constant with it.
     """
     errors: list[str] = []
     wanted = set(expected)
@@ -1888,11 +1939,14 @@ def check_negative_fixture_lists(
             )
             seen_words += counted
             errors += found
-    if seen_lists and not seen_words:
+    if seen_lists and seen_words != counted_lists:
         errors.append(
-            "the negative-fixture count is no longer spelled out in any of "
+            f"{seen_words} of the {seen_lists} negative-fixture list(s) in "
             + ", ".join(sorted(docs))
-            + " — the sentence was reworded, so the count is no longer gated"
+            + f" state a count; {counted_lists} did. Losing the one"
+            " that does leaves the count ungated, and adding another lets"
+            " that one go stale unnoticed — if the prose changed on purpose,"
+            " move `_COUNTED_FIXTURE_LISTS` with it"
         )
     return errors
 
@@ -1985,12 +2039,16 @@ def main() -> int:
     manifest = json.loads(
         (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
     )
+    errors.extend(check_manifest_entries(manifest))
     live_conformance = len(manifest)
 
-    # Conformance level breakdown
+    # Conformance level breakdown.  An entry with no `level` is reported
+    # above rather than raised here.
     level_counts: dict[str, int] = {}
     for entry in manifest:
-        lvl = entry["level"]
+        lvl = entry.get("level")
+        if lvl is None:
+            continue
         level_counts[lvl] = level_counts.get(lvl, 0) + 1
 
     # Examples: count .vera files
@@ -2604,9 +2662,7 @@ def main() -> int:
     # 21a. Check the enumerated negative-fixture lists against the manifest
     # ------------------------------------------------------------------
 
-    manifest = json.loads(
-        (root / "tests/conformance/manifest.json").read_text(encoding="utf-8")
-    )
+    # `manifest` is the one loaded and validated in section 1.
     errors.extend(
         check_negative_fixture_lists(
             {
