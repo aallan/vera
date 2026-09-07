@@ -543,3 +543,205 @@ def test_two_contradictory_refinements_do_not_share_a_predicate(
         f"{_refine_bind_statuses(envelope)}"
     )
     assert "E505" in {d.get("error_code") for d in envelope["diagnostics"]}
+
+
+# --------------------------------------------------------------------------
+# Stage 1b — the R1 element licence must be backed by a runtime guard
+# --------------------------------------------------------------------------
+#
+# Stage 1 let a callee ASSUME its parameter's element refinement, licensed by
+# "every caller is obligated to discharge it at the argument position".  Being
+# obligated is not discharging.  When the argument comes from an
+# array-returning builtin applied to a parameter, the walk cannot state the
+# result's elements, so the argument obligation resolves `tier3_unguarded` —
+# counted in no tier — and `vera verify` exits 0 while the callee's `ensures`
+# is reported `verified` on a program the compiled module refutes.
+#
+# The scalar analogue is sound because codegen emits a refinement guard at the
+# boundary, so an undecided proof is backed by a runtime check.  For array
+# elements no such guard existed, and stage 1 extended the licence without
+# extending the guard.  These cells are the whole evidence: 0 of 474 corpus
+# programs reach `_array_element_facts`, so no differential can see this.
+
+_BLOCKING_PRODUCERS = {
+    "array_append": "array_append(@Array<Int>.0, 7)",
+    "array_concat": "array_concat(@Array<Int>.0, [9])",
+    "array_reverse": "array_reverse(@Array<Int>.0)",
+    "array_slice": "array_slice(@Array<Int>.0, 0, 1)",
+}
+
+
+def _blocking_program(producer: str) -> str:
+    """R-1432's fixture, identical apart from the producer expression."""
+    return (
+        "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+        "private fn consume(@Array<PosInt> -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(@Int.result > 0)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  if array_length(@Array<PosInt>.0) > 0 then {\n"
+        "    @Array<PosInt>.0[0]\n"
+        "  } else {\n"
+        "    1\n"
+        "  }\n"
+        "}\n\n"
+        "private fn launder(@Array<Int> -> @Array<PosInt>)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        f"  {producer}\n"
+        "}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  consume(launder([0 - 5]))\n"
+        "}\n"
+    )
+
+
+@pytest.mark.parametrize("producer", sorted(_BLOCKING_PRODUCERS))
+def test_a_disclosed_element_argument_is_guarded_not_merely_disclosed(
+    producer: str, tmp_path: Path,
+) -> None:
+    """Criterion 1: the argument obligation is GUARDED, not disclosed.
+
+    `tier3_unguarded` says "neither proved nor runtime-checked" and counts in
+    no tier, so the callee's assumption rests on nothing.  With an element-wise
+    boundary guard the same obligation is `tier3` — undecided statically but
+    backed at run time — and counts in `tier3_runtime`.
+
+    Asserted on the count as well as the status, because the two must move
+    together: a head that relabelled the status without emitting the guard
+    would leave `tier3_runtime` at 0.
+    """
+    source = _blocking_program(_BLOCKING_PRODUCERS[producer])
+    envelope = _verify(tmp_path, source, f"blocking-{producer}")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3_unguarded"] == 0, (
+        f"the element argument is still disclosed: {statuses}"
+    )
+    assert statuses["tier3"] >= 1, statuses
+    assert envelope["verification"]["tier3_runtime"] >= 1, (
+        envelope["verification"]
+    )
+
+
+@pytest.mark.parametrize("producer", sorted(_BLOCKING_PRODUCERS))
+def test_the_guard_traps_at_the_argument_boundary(
+    producer: str, tmp_path: Path,
+) -> None:
+    """Criterion 2: the trap is at the ARGUMENT boundary, not inside the callee.
+
+    Where it traps is the whole difference between a backed assumption and a
+    false Tier 1.  A postcondition violation inside `consume` means the bad
+    array got in and the verifier's `verified` was wrong; a refinement
+    violation at the boundary means the check the verifier promised actually
+    ran.  The scalar control already behaves this way — it traps in `launder`,
+    naming the refinement — and this is that behaviour for elements.
+
+    Criterion 5 rides along: the program really is wrong, so the run must
+    still fail.  What changes is HOW.
+    """
+    source = _blocking_program(_BLOCKING_PRODUCERS[producer])
+    path = tmp_path / f"trap-{producer}.vera"
+    path.write_text(source, encoding="utf-8")
+    proc = _cli("run", str(path), "--fn", "main")
+    assert proc.returncode != 0, proc.stdout
+    combined = proc.stdout + proc.stderr
+    assert "Postcondition violation in consume" not in combined, (
+        "the bad array reached the callee and refuted the postcondition the "
+        f"verifier proved:\n{combined[:400]}"
+    )
+    assert "Refinement violation" in combined, combined[:400]
+
+
+@pytest.mark.parametrize("producer", sorted(_BLOCKING_PRODUCERS))
+def test_the_callee_postcondition_may_stay_verified(
+    producer: str, tmp_path: Path,
+) -> None:
+    """Criterion 3: `consume`'s `ensures` stays `verified` — that is the point
+    of stage 1 — but only because the guard makes it rest on a real check.
+
+    Kept as its own cell so a head that fixed the soundness by DEMOTING the
+    postcondition fails here rather than passing quietly: retreating to
+    `violated` would restore safety by giving up the Tier 1 stage 1 exists to
+    win back.
+    """
+    source = _blocking_program(_BLOCKING_PRODUCERS[producer])
+    envelope = _verify(tmp_path, source, f"post-{producer}")
+    ensures = [
+        o["status"] for o in envelope["obligations"]
+        if o["kind"] == "ensures" and "> 0" in o["description"]
+    ]
+    assert ensures == ["verified"], ensures
+
+
+def test_the_scalar_control_is_unchanged(tmp_path: Path) -> None:
+    """Criterion 6: the scalar analogue must not move.
+
+    The same laundering shape with a scalar `@PosInt` is caught twice — the
+    obligation is `violated`/E505, and the run traps on a refinement guard at
+    `launder`'s RETURN boundary.  It is the reference behaviour this change
+    brings arrays into line with, so it is also the thing that must not
+    regress while doing so.
+    """
+    source = (
+        _HDR +
+        "private fn consume(@PosInt -> @Int)\n"
+        "  requires(true)\n  ensures(@Int.result > 0)\n  effects(pure)\n"
+        "{\n  @PosInt.0\n}\n\n"
+        "private fn launder(@Int -> @PosInt)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Int.0\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(0 - 5))\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "scalar-control")
+    assert envelope["ok"] is False, envelope
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["violated"] >= 1, statuses
+
+    path = tmp_path / "scalar-control.vera"
+    proc = _cli("run", str(path), "--fn", "main")
+    assert proc.returncode != 0
+    assert "Refinement violation" in proc.stdout + proc.stderr
+
+
+def test_an_unguardable_element_still_discloses(tmp_path: Path) -> None:
+    """The #1362 invariant: a `guarded` claim must match what codegen emits.
+
+    The element guard loads each element and runs the predicate on it, which
+    it can only do for a scalar-shaped element.  A PAIR-shaped one — an
+    `Array<Array<Int>>` element, whose runtime value is a (ptr, len) pair —
+    would need the length half too, and the emitter declines it: a half-guard
+    reading only the ptr is worse than an honest disclosure.
+
+    So the verifier must decline the `tier3` claim there as well.  Claiming
+    guarded for every array element regardless is the cheapest way to make
+    the four blocking cells pass without earning it, and this cell is what
+    makes that fail — mutation testing found it surviving otherwise.
+    """
+    source = (
+        "type NonEmpty = { @Array<Int> | array_length(@Array<Int>.0) > 0 };\n\n"
+        "private fn consume(@Array<NonEmpty> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<NonEmpty>.0)\n}\n\n"
+        "private fn launder(@Array<Array<Int>> -> @Array<NonEmpty>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_reverse(@Array<Array<Int>>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder([[1]]))\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "pair-element")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3_unguarded"] >= 1, (
+        "a pair-shaped element claimed a guard codegen does not emit: "
+        f"{statuses}"
+    )
+    assert statuses["tier3"] == 0, statuses
