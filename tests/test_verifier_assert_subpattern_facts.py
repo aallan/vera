@@ -653,3 +653,213 @@ def test_1403_the_demotion_names_the_operation_not_a_contract(
     assert text.startswith("Division in 'use_op'"), text
     assert "runtime trap" in text, text
     assert "Postcondition" not in text, text
+
+
+# ---------------------------------------------------------------------------
+# What holds the new Tier-1 up, and where that support runs out
+# ---------------------------------------------------------------------------
+
+_NESTED = """\
+type PosInt = {{ @Int | @Int.0 > 0 }};
+
+private fn mk(@Int -> @Option<Option<PosInt>>)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  {body}
+}}
+
+public fn use_nested(@Int -> @Int)
+  requires({req})
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(Some(@PosInt)) -> {arm},
+    Some(None) -> 1,
+    None -> 1
+  }}
+}}
+"""
+
+_NESTED_CLEAN = ("@Int.0 > 0", "Some(Some(@Int.0))")
+_NESTED_DISCLOSED = ("true", (
+    "Some(Some(handle[Exn<Int>] { throw(@PosInt) -> { @PosInt.0 } } "
+    "in { throw(@Int.0) }))"
+))
+
+
+@pytest.mark.parametrize(
+    "arm,kind,clean_code,disclosed_code",
+    [
+        pytest.param("{ assert(@PosInt.0 > 0); 1 }", "assert", None, "E535",
+                     id="assert"),
+        pytest.param("100 / @PosInt.0", "div_zero", None, "E534", id="div"),
+    ],
+)
+def test_1403_a_nested_bind_carries_its_fact_in_both_polarities(
+    tmp_path: Path, arm: str, kind: str, clean_code: str | None,
+    disclosed_code: str,
+) -> None:
+    """`Some(Some(@PosInt))` — the shape with no codegen guard behind it.
+
+    For a DIRECT sub-pattern bind codegen emits its own payload guard, so the
+    arm's fact is true whenever the arm runs whatever the verifier recorded.
+    For a NESTED bind that guard is not emitted — `_extract_constructor_fields`
+    binds direct sub-patterns only, a #758-class deferral still open as #765 —
+    so this change makes the nested fact a Tier-1 assumption with nothing
+    behind it but the producer's own construction obligation (review of
+    PR #1415, F3).
+
+    Both polarities are pinned because the shape deserves to fail loudly if
+    either half moves; the companion cell below shows why the clean half is
+    sound rather than lucky.
+    """
+    req, body = _NESTED_CLEAN
+    clean = _verify(_tree(tmp_path / "c", {
+        "p": _NESTED.format(req=req, body=body, arm=arm)}
+    )["p"])
+    got = [
+        (o["status"], o.get("error_code")) for o in clean["obligations"]
+        if o["kind"] == kind
+    ]
+    assert got == [("verified", clean_code)], _triples(clean)
+
+    req, body = _NESTED_DISCLOSED
+    disclosed = _verify(_tree(tmp_path / "d", {
+        "p": _NESTED.format(req=req, body=body, arm=arm)}
+    )["p"])
+    got = [
+        (o["status"], o.get("error_code")) for o in disclosed["obligations"]
+        if o["kind"] == kind
+    ]
+    assert got == [("tier3", disclosed_code)], _triples(disclosed)
+
+
+def test_1403_a_nested_tier1_rests_on_the_producers_own_obligation(
+    tmp_path: Path,
+) -> None:
+    """... and that obligation is enforced, so no false Tier 1 is reachable.
+
+    The support for the nested Tier-1 is the producer's construction
+    obligation, not a codegen guard.  This walks the whole route rather than
+    asserting the claim: a producer that CANNOT discharge that obligation is
+    refused outright (E505), so there is no verify-green path to a violating
+    runtime value, and the one that can discharge it verifies and RUNS
+    correctly.
+
+    `vera run` rather than `vera verify` for the second leg deliberately —
+    a Tier-1 claim about a value is only worth as much as the value the
+    compiled program actually produces.
+    """
+    program = _NESTED.format(
+        req="@Int.0 > 0", body="Some(Some(@Int.0))", arm="100 / @PosInt.0",
+    ).replace("fn use_nested", "fn main")
+
+    # Leg 1: the producer cannot discharge its own construction obligation.
+    undischarged = program.replace(
+        "requires(@Int.0 > 0)\n  ensures(true)\n  effects(pure)\n{\n  "
+        "Some(Some(@Int.0))",
+        "requires(true)\n  ensures(true)\n  effects(pure)\n{\n  "
+        "Some(Some(@Int.0))", 1,
+    )
+    refused = _verify(_tree(tmp_path / "u", {"p": undischarged})["p"])
+    assert refused["ok"] is False, _triples(refused)
+    assert "E505" in [d.get("error_code") for d in refused["diagnostics"]], (
+        refused["diagnostics"]
+    )
+
+    # Leg 2: the one that can, verifies AND produces the right value.
+    path = _tree(tmp_path / "r", {"p": program})["p"]
+    ok = _verify(path)
+    assert ok["ok"] is True, ok["diagnostics"]
+    proc = _cli("run", str(path), "--fn", "main", "--", "4")
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert proc.stdout.strip().endswith("25"), proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# The boundary the four quadrants do NOT cover
+# ---------------------------------------------------------------------------
+
+_INDIRECT_MK = """\
+private fn mk(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  int_to_nat(handle[Exn<Int>] {
+    throw(@Nat) -> { nat_to_int(@Nat.0) }
+  } in {
+    throw(@Int.0)
+  })
+}
+"""
+
+_LET_BOUND = _INDIRECT_MK + """
+public fn use_assert(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Nat> = mk(@Int.0);
+  match @Option<Nat>.0 {
+    Some(@Nat) -> { assert(nat_to_int(@Nat.0) >= 0); 1 },
+    None -> 0
+  }
+}
+"""
+
+_WRAPPED = _INDIRECT_MK + """
+private fn fwd(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mk(@Int.0)
+}
+
+public fn use_assert(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match fwd(@Int.0) {
+    Some(@Nat) -> { assert(nat_to_int(@Nat.0) >= 0); 1 },
+    None -> 0
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "source", [pytest.param(_LET_BOUND, id="let-bound"),
+               pytest.param(_WRAPPED, id="wrapper")],
+)
+def test_1403_an_indirect_scrutinee_is_not_withheld_yet(
+    tmp_path: Path, source: str,
+) -> None:
+    """PINNED AT TODAY'S BEHAVIOUR, and today's behaviour is not the rule.
+
+    `_scrutinee_is_disclosed_call` recognises a literally spelled
+    `FnCall`/`ModuleCall`.  Bind the same call to a `let`, or route it through
+    a forwarding wrapper, and the disclosure does not reach the arm — so the
+    facts are handed over and the assertion proves, beside a
+    `nat_bind`/`tier3_unguarded`/E504 for the very fact it just assumed.
+
+    Before this change the assert read no facts at all and was accidentally
+    immune, so the four quadrants pin "the assert does not assume anything"
+    only for the direct spelling (review of PR #1415, F2).  That gap is
+    [#1406](https://github.com/aallan/vera/issues/1406) /
+    [#1407](https://github.com/aallan/vera/issues/1407), being closed by
+    #1418; when it lands these two flip to `tier3`/E535 and this cell should
+    be rewritten to assert the demotion.  Until then it exists so the change
+    cannot happen silently in either direction.
+    """
+    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    assert _asserts(result) == [("verified", None)], _triples(result)
+    assert ("nat_bind", "tier3_unguarded", "E504") in _triples(result), (
+        f"the producer stopped disclosing, so this pin is vacuous: "
+        f"{_triples(result)}"
+    )
