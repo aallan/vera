@@ -17,13 +17,22 @@ what its cache key must cover:
    that merely shifts down a line is a cache miss by design —
    conservative, and required for the differential oracle to hold
    exactly.
-2. **Direct callees' interfaces** (``callee_component``): verifying
-   ``f`` checks each callee's preconditions at the call site and
-   assumes its postconditions, so a callee *contract or signature*
-   change must invalidate ``f``.  A callee *body* change must not —
-   bodies are never read across the call boundary.  Only direct local
-   callees matter: transitive callees are read only by their own
-   callers.
+2. **The interface CLOSURE** (``callee_component``): verifying ``f``
+   checks each callee's preconditions at the call site and assumes its
+   postconditions, so a callee *contract or signature* change must
+   invalidate ``f``.  A callee *body* change must not — bodies are
+   never read across the call boundary.
+
+   The closure is not the direct callees alone.  A callee's CONTRACT
+   may name further functions, and interpreting that contract reads
+   THEIR interfaces too: with ``f`` declaring
+   ``ensures(@Int.result == g(()))``, a caller of ``f`` reads ``g``'s
+   contract without calling ``g`` at all.  Hashing direct callees only
+   left such a caller replaying a proof after the fact it rested on had
+   changed — warm reported `verified` where a fresh session reports
+   `violated`/E500 (#1441).  So the component walks contract references
+   transitively, and terminates on a visited set because contracts may
+   be mutually recursive.
 3. **Program context** (``program_context_hash``): ADT / type-alias /
    effect / ability declarations (pattern translation, sort creation,
    type resolution), imported-module contracts (C7d), the solver
@@ -108,20 +117,59 @@ def fn_structural_hash(decl: ast.FnDecl) -> str:
     return _sha(repr(decl) + "\x1f" + spans)
 
 
+def interface_closure_names(
+    decl: ast.FnDecl,
+    fn_map: dict[str, ast.FnDecl],
+) -> frozenset[str]:
+    """Every function whose INTERFACE is read while verifying *decl*.
+
+    The direct callees, plus everything reachable from there through
+    CONTRACTS — because a callee's contract is what the caller assumes,
+    and a contract that names another function makes that function's
+    contract part of what the caller reads.  Bodies are never followed:
+    a body is read only by its own function's verification, which is
+    the distinction that keeps a body-only edit from invalidating
+    callers.
+
+    Terminates on *seen* rather than on the call graph's shape:
+    contracts may refer to each other in a cycle, and a caller of a
+    cyclic pair reads both.
+    """
+    seen: set[str] = set()
+    work = list(direct_callee_names(decl))
+    while work:
+        name = work.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        callee = fn_map.get(name)
+        if callee is None:            # builtin, or module-qualified
+            continue
+        for contract in callee.contracts:
+            work.extend(
+                n.name for n in walk_nodes(contract)
+                if isinstance(n, ast.FnCall) and n.name not in seen
+            )
+    return frozenset(seen)
+
+
 def callee_component(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
 ) -> str:
-    """Hash the *interfaces* of every direct callee of *decl*.
+    """Hash the *interfaces* of everything *decl*'s verification reads.
 
     Interface = signature + contracts + type parameters — everything
     the caller's verification reads.  Callee bodies are excluded so a
     body-only edit in a callee does not invalidate its callers.
     Unresolvable names (builtins, module-qualified targets) contribute
     nothing here; the program context hash covers module contracts.
+
+    Over the CLOSURE rather than the direct callees: see this module's
+    header, and #1441 for the stale replay that distinguishes them.
     """
     parts: list[str] = []
-    for name in sorted(direct_callee_names(decl)):
+    for name in sorted(interface_closure_names(decl, fn_map)):
         callee = fn_map.get(name)
         if callee is not None and callee is not decl:
             parts.append(
