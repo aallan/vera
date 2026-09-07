@@ -1574,7 +1574,11 @@ class TestReleaseTipZeroState:
 # ---------------------------------------------------------------------------
 
 
-def _manifest(*negatives: str, positives: int = 2) -> list[dict[str, object]]:
+def _manifest(
+    *negatives: str,
+    positives: int = 2,
+    compile_stage: tuple[str, ...] = (),
+) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = [
         {"file": f"ch01_positive_{i}.vera", "level": "verify"}
         for i in range(positives)
@@ -1582,6 +1586,17 @@ def _manifest(*negatives: str, positives: int = 2) -> list[dict[str, object]]:
     entries += [
         {"file": f"{name}.vera", "level": "check", "expected_error": "E123"}
         for name in negatives
+    ]
+    # A compile-stage negative is still declared at level "check" — the
+    # stage is where its diagnostic fires, not where its level sits.
+    entries += [
+        {
+            "file": f"{name}.vera",
+            "level": "check",
+            "expected_error": "E621",
+            "expected_error_stage": "compile",
+        }
+        for name in compile_stage
     ]
     return entries
 
@@ -1865,15 +1880,22 @@ def _level_prose(
     *,
     check_word: str,
     negative_word: str,
+    compile_names: tuple[str, ...] = (),
+    compile_word: str = "Zero",
 ) -> str:
     def listed(names: tuple[str, ...]) -> str:
         return ", ".join(f"`{name}`" for name in names)
 
+    compile_part = (
+        f" {compile_word} more — {listed(compile_names)} — is a negative"
+        " at the `compile` stage rather than at `check`."
+    )
     return (
         "Almost all programs are at the `run` level. "
         f"{check_word} programs ({listed(check_names)}) are at the `check`"
         f" level. {negative_word} of them — {listed(negative_names)} — are"
-        " **negative tests** that assert a specific diagnostic.\n"
+        " **negative tests** that assert a specific diagnostic."
+        f"{compile_part}\n"
     )
 
 
@@ -1943,30 +1965,97 @@ class TestConformanceLevelProse:
         text = (
             "One programs (`ch03_proved`) are at the `verify` level."
             " Zero of them — `` — are **negative tests** that assert a"
-            " diagnostic.\n"
+            " diagnostic. Zero more — `` — is a negative at the `compile`"
+            " stage.\n"
         )
         assert _MOD.check_conformance_level_prose(text, manifest) == []
 
+    _COMPILE_SENTENCE = (
+        " Zero more — `` — is a negative at the `compile` stage."
+    )
+    _NEGATIVE_SENTENCE = " Zero of them — `` — are **negative tests** that x."
+    _LEVEL_SENTENCE = " Zero programs (``) are at the `check` level."
+
     @pytest.mark.parametrize(
-        ("text", "cue"),
+        ("dropped", "cue"),
         [
-            pytest.param(
-                "Zero of them — `` — are **negative tests** that assert.\n",
-                "per-level program lists",
-                id="level-sentence-reworded",
-            ),
-            pytest.param(
-                "Zero programs (``) are at the `check` level.\n",
-                "negative subset",
-                id="negative-sentence-reworded",
-            ),
+            pytest.param("_LEVEL_SENTENCE", "per-level program lists",
+                         id="level-sentence-reworded"),
+            pytest.param("_NEGATIVE_SENTENCE", "check-stage negatives",
+                         id="negative-sentence-reworded"),
+            pytest.param("_COMPILE_SENTENCE", "compile-stage negatives",
+                         id="compile-sentence-reworded"),
         ],
     )
     def test_a_reworded_sentence_is_an_error_not_a_skip(
-        self, text: str, cue: str
+        self, dropped: str, cue: str
     ) -> None:
-        errors = _MOD.check_conformance_level_prose(text, [])
+        """Each of the three shapes is gated independently, so rewording
+        any one of them must be an error rather than a silent skip."""
+        text = "".join(
+            getattr(self, name)
+            for name in ("_LEVEL_SENTENCE", "_NEGATIVE_SENTENCE",
+                         "_COMPILE_SENTENCE")
+            if name != dropped
+        )
+        errors = _MOD.check_conformance_level_prose(text + "\n", [])
         assert len(errors) == 1 and cue in errors[0]
+
+    def test_a_compile_stage_fixture_in_the_check_list_is_a_duplication(
+        self,
+    ) -> None:
+        """The exact error this PR made and CodeRabbit caught: the
+        compile-stage negative is introduced in its own sentence, so
+        adding it to the check-stage list names one fixture twice and
+        leaves the parallel E-code list one short."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            check_word="Two",
+            negative_word="Two",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 2
+        assert any("ch08_late_rejected" in e and "does not hold" in e
+                   for e in errors)
+        assert any("'Two'" in e and "check-stage" in e for e in errors)
+
+    def test_the_two_stages_are_gated_as_separate_sets(self) -> None:
+        """Split correctly, both sentences are clean — the compile-stage
+        fixture belongs to its own sentence and to the `check` LEVEL."""
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=("ch08_late_rejected",),
+            compile_word="One",
+        )
+        assert _MOD.check_conformance_level_prose(text, manifest) == []
+
+    def test_a_missing_compile_stage_negative_is_reported(self) -> None:
+        manifest = _manifest(
+            "ch02_a_rejected", compile_stage=("ch08_late_rejected",)
+        )
+        text = _level_prose(
+            ("ch02_a_rejected", "ch08_late_rejected"),
+            ("ch02_a_rejected",),
+            check_word="Two",
+            negative_word="One",
+            compile_names=(),
+            compile_word="Zero",
+        )
+        errors = _MOD.check_conformance_level_prose(text, manifest)
+        assert len(errors) == 2
+        assert any("ch08_late_rejected" in e for e in errors)
 
     def test_the_shipped_file_is_actually_read(self) -> None:
         """Both shapes must match the live TESTING.md, or the gate is

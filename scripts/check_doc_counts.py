@@ -1576,6 +1576,31 @@ _NEGATIVE_PROSE = re.compile(
     r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})of them — (?P<names>[^—]*) — are"
     r" \*\*negative tests\*\*"
 )
+# The compile-stage negatives are introduced separately, because the
+# property they pin is different: the checker ACCEPTS the program and
+# codegen refuses it.  Gating them as one set with the check-stage ones
+# would ask the prose to name each fixture twice (PR #1411 review).
+_COMPILE_NEGATIVE_PROSE = re.compile(
+    r"(?P<lead>(?:[A-Za-z0-9-]+ ){0,2})more — (?P<names>[^—]*) — (?:is a"
+    r" negative|are negatives) at the `compile` stage"
+)
+
+
+def _negatives_at_stage(
+    manifest: list[dict[str, object]], stage: str
+) -> set[str]:
+    """Negative fixtures whose diagnostic fires at `stage`.
+
+    `expected_error_stage` defaults to "check", the same default
+    `scripts/check_conformance.py` applies when it decides which stage to
+    run the fixture through.
+    """
+    return {
+        str(entry["file"]).removesuffix(".vera")
+        for entry in manifest
+        if entry.get("expected_error") is not None
+        and entry.get("expected_error_stage", "check") == stage
+    }
 
 
 def _programs_at_level(
@@ -1616,21 +1641,35 @@ def check_conformance_level_prose(
         )
         errors += found
 
-    negatives = list(_NEGATIVE_PROSE.finditer(testing_text))
-    if not negatives:
-        errors.append(
-            "TESTING.md: no '<Count> of them — ... — are **negative tests**'"
-            " sentence found — it moved or was reworded, so the negative"
-            " subset is no longer gated"
-        )
-    for match in negatives:
-        _, found = _check_enumeration(
-            "TESTING.md: the negative-test subset",
-            match,
-            set(negative_fixture_names(manifest)),
-            "negative tests",
-        )
-        errors += found
+    for pattern, stage, label, cue in (
+        (
+            _NEGATIVE_PROSE,
+            "check",
+            "the check-stage negative-test subset",
+            "'<Count> of them — ... — are **negative tests**'",
+        ),
+        (
+            _COMPILE_NEGATIVE_PROSE,
+            "compile",
+            "the compile-stage negative(s)",
+            "'<Count> more — ... — is a negative at the `compile` stage'",
+        ),
+    ):
+        matches = list(pattern.finditer(testing_text))
+        if not matches:
+            errors.append(
+                f"TESTING.md: no {cue} sentence found — it moved or was"
+                f" reworded, so the {stage}-stage negatives are no longer"
+                f" gated"
+            )
+        for match in matches:
+            _, found = _check_enumeration(
+                f"TESTING.md: {label}",
+                match,
+                _negatives_at_stage(manifest, stage),
+                f"{stage}-stage negative tests",
+            )
+            errors += found
     return errors
 
 
