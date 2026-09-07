@@ -436,10 +436,15 @@ public fn boxer(@Int -> @Box<Int>)
         ``Box`` lifted that refusal — the non-monotonicity the entry-owner
         rule ends.
         """
-        _verr, result, cg_errors = build_multi_module(
+        verify_errors, result, cg_errors = build_multi_module(
             tmp_path / "arity-apart",
             {"blib.vera": _MODULE_ARITY_ONE, "main.vera": _ENTRY_ARITY_ZERO},
         )
+        # BOTH streams, for an ADMITTED case: the two rails this change made
+        # one rule report through different phases, so a regression that
+        # moved the refusal into verification would leave a cg-only
+        # assertion green while the program stopped compiling (PR review).
+        assert verify_errors == [], verify_errors
         assert cg_errors == [], cg_errors
         assert module_value(result) == ("ok", 7)
 
