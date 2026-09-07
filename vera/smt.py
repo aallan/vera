@@ -9,6 +9,8 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 
 from __future__ import annotations
 
+import hashlib
+
 import contextlib
 import os
 import re
@@ -554,6 +556,9 @@ class SmtContext:
         # base context.  Not derivable from `_length_fns` membership, which
         # `reset()` re-seeds rather than clears.
         self._length_axioms_asserted: set[str] = set()
+        # #1430 stage 2: minted `refines_<key>` predicates.  Axiom-free, so
+        # no reset discipline: the cache is identity only.
+        self._refines_fns: dict[str, z3.FuncDeclRef] = {}
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
         self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
@@ -638,6 +643,35 @@ class SmtContext:
                 key, array_sort, z3.IntSort(), element_sort,
             )
         return self._index_fns[key]
+
+    def refines_predicate(
+        self, type_key: str, sort: z3.SortRef,
+    ) -> z3.FuncDeclRef:
+        """``(predicate, is_new)`` for "this value satisfies the nested
+        refinements of *type_key*" (#1430, stage 2).
+
+        Keyed on the caller's structural type key, which includes the
+        refinement PREDICATE, never on ``_adt_sort_key``: that key maps a
+        refinement to its carrier on purpose — the sort is the carrier and the
+        predicate is discharged elsewhere — so `Option<{ @Int | @Int.0 > 0 }>`
+        and `Option<{ @Int | @Int.0 < 0 }>` collapse onto one sort.  A
+        predicate sharing that key would let a value satisfying one refinement
+        discharge an obligation stated with the opposite one, by identity
+        (PR #1447 design review, concern 9).
+
+        The symbol carries no axioms, so nothing is lost when ``reset()``
+        drops the base context and the cache needs no reset discipline: it is
+        pure identity, and identity is exactly what must stay stable for a
+        goal and its source fact to meet.
+        """
+        digest = hashlib.sha256(type_key.encode("utf-8")).hexdigest()[:16]
+        name = f"refines_{digest}"
+        key = f"{name}@{sort}"
+        fn = self._refines_fns.get(key)
+        if fn is None:
+            fn = z3.Function(name, sort, z3.BoolSort())
+            self._refines_fns[key] = fn
+        return fn
 
     def array_observers(
         self, term: z3.ExprRef,

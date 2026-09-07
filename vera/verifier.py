@@ -8291,10 +8291,15 @@ class ContractVerifier:
                 and len(base.type_args) == 1):
             return self._array_element_facts(
                 smt, base.type_args[0], term, _seen)
-        if not isinstance(base, AdtType) or self._type_key(base) in _seen:
-            # A recursive ADT, or a carrier with no constructor decomposition
-            # (`Array` / `Map` / `Set`): the refinement is real and this walk
-            # cannot state it.
+        if isinstance(base, AdtType) and self._type_key(base) in _seen:
+            # #1430 stage 2: the walk has reached the type again.  Instead of
+            # giving up, state the goal as the type's OWN predicate and let a
+            # defining axiom relate it to one level of structure.
+            return self._recursive_refinement_fact(smt, base, term, _seen)
+        if not isinstance(base, AdtType):
+            # A carrier with no constructor decomposition (`Map` / `Set`, and
+            # any array whose term is not in an Array sort): the refinement is
+            # real and this walk cannot state it.
             return [], False
         try:
             sort = term.sort()
@@ -8396,6 +8401,54 @@ class ContractVerifier:
             return [], complete
         inner = z3.And(*body) if len(body) > 1 else body[0]
         return [z3.ForAll([idx], z3.Implies(in_range, inner))], complete
+
+    def _recursive_refinement_fact(
+        self,
+        smt: SmtContext,
+        base: AdtType,
+        term: z3.ExprRef,
+        _seen: frozenset[str],
+    ) -> tuple[list[z3.ExprRef], bool]:
+        """``(facts, complete)`` at a RECURSIVE position (#1430, stage 2).
+
+        The walk stops at a cycle because an unrolled conjunction has no end.
+        The goal is stated instead as an opaque predicate `refines_K(v)` —
+        "v satisfies the nested refinements of K" — carried identically on
+        both sides of the query, so the position is STATED rather than
+        skipped and `complete` is no longer forced False by the cycle alone.
+
+        There is deliberately no defining axiom.  One was implemented and
+        removed: `forall v. refines_K(v) => <one level of structure>` was
+        unreachable, because every term whose refinement matters already has a
+        declared type carrying it — a parameter (R1 param-assume), a pattern
+        binder (typed by the constructor field type), a call result (the
+        declared return), or a construction (obligated at its site) — so the
+        source facts are regenerated from that type and the axiom never had
+        work to do.  Disabling it changed nothing in the whole suite, which is
+        the evidence for removing it rather than shipping it on plausibility
+        (PR #1447 design review, concern 10).
+
+        Soundness is the producer closure, not the symbol.  `refines_K` is
+        assumed only where a declared type licenses it, and every producer of
+        such a value is obligated to discharge it: a `Chain<Int>` source
+        returning `Link(0 - 9, End)` into a `Chain<PosInt>` consumer is
+        REFUTED with E505, and so is a violating link nested inside a
+        construction.  Where the source carries no refinement, the walk
+        returns no facts and the goal is simply not provable.
+
+        A CONSTRUCTION of a recursive value still discharges through its own
+        constructor obligations rather than through this predicate, which is
+        why nothing here needs to conclude `refines_K`.
+        """
+        try:
+            term_sort = term.sort()
+            nctors = term_sort.num_constructors()
+        except (AttributeError, z3.Z3Exception):
+            return [], False
+        if nctors == 0:  # pragma: no cover — a datatype always has one
+            return [], False
+        pred = smt.refines_predicate(self._type_key(base), term_sort)
+        return [pred(term)], True
 
     def _fresh_quantifier_name(self, stem: str) -> str:
         """A binder name unique within this run.
