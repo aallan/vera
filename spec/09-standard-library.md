@@ -598,6 +598,24 @@ data Response { Response(Int, Map<String, String>, String) }
 
 `Request` fields are method, path, headers, body; `Response` fields are status, headers, body.
 
+**Handler validation.**  Both serving surfaces — `vera serve` and
+`--target wasi-p2 --world server` — refuse a program whose `handle` is
+not a handler, and they ask the same question of it, about the
+**declared Vera types**: exactly one parameter, that parameter the
+prelude's `Request`, and the return the prelude's `Response`.  The
+lowered ABI cannot answer it — `Bool`, every heap ADT and every boxed
+value share the `i32` shape — and neither can the presence of the
+`Request` / `Response` layouts, which the prelude injects whenever the
+*program* mentions those types, so any other function can supply them
+while `handle` has some unrelated signature.  The check is
+ownership-aware in the sense of §11.16: an entry file that declares its
+own `data Request` shadows the prelude's, and the handler is then typed
+by a different type that happens to share the name, so it is refused
+too.  This matters because the host marshals raw bytes through those
+layouts — it builds the `Request` in guest memory and decodes the
+returned pointer as a `Response` — and a wrong type there is not a
+type error but a read at an address that was never a `Response`.
+
 **Execution model.**  `vera serve prog.vera [--port N]` hosts the accept loop: each incoming request is marshalled into a `Request` value, the handler is called on a **fresh module instance** (per-request isolation — `State<T>` mutations cannot leak between requests), and the returned `Response` becomes the HTTP response.  Because the loop lives in the host, handlers are ordinary total functions — no `Diverge`, and every contract on the handler (or its helpers) is an ordinary Tier-1/Tier-3 obligation.  A runtime contract violation (or any trap) inside a handler answers **500** with the trap diagnostic in a JSON body; the connection is always answered.
 
 ![The vera serve request lifecycle: the host owns the accept loop, marshals each request into a Request value, calls the contract-checked handler on a fresh module instance, and turns the returned Response into the HTTP response — traps answer 500 with the diagnostic.](../assets/diagrams/httpserver-lifecycle.svg)

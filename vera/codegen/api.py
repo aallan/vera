@@ -110,6 +110,36 @@ class CompileResult:
     # are deliberately *not* in this set — the (ptr, len) representation
     # is the same shape but the bytes-at-ptr aren't UTF-8.
     fn_string_returns: set[str] = field(default_factory=set)
+    # #1442 — the VERA-level signature: per function, the declared-ADT
+    # name of each parameter and of the return, or None where that
+    # position is not a declared ADT (a primitive, a String, an Array,
+    # a bare type variable).  `fn_param_types` above is the LOWERED
+    # signature and cannot stand in for this one: Bool, every heap ADT
+    # and every boxed value share the `i32` shape, so the ABI says
+    # nothing about which type a pointer points at.
+    #
+    # Consumed by `validate_handler` (`vera/runtime/server.py`), the
+    # guard both serving surfaces share, which marshals a host
+    # `HttpRequestData` into a guest `Request` and decodes the returned
+    # pointer as a `Response` — raw linear-memory work that is only
+    # sound if `handle` really has those types.  Populated in
+    # `compile_program` via `_declared_adt_name`, whose docstring gives
+    # the resolution rules (aliases resolved, refinements transparent,
+    # `Future<T>` and type arguments deliberately not stripped).
+    fn_adt_signatures: dict[
+        str, tuple[tuple[str | None, ...], str | None]
+    ] = field(default_factory=dict)
+    # #1442 — the ADT names the prelude INJECTION supplied for this
+    # program.  Not the same question as `name in adt_layouts`: an
+    # injection is demand-driven and an entry-file declaration of the
+    # same name shadows it (spec 8.4.1), so the layout map holds one
+    # slot per NAME with no record of whose declaration filled it.
+    # Consumers that must distinguish the prelude's `Request` from a
+    # user type spelled `Request` ask this set — the ownership-aware
+    # half of the handler guard.  Note this covers `inject_prelude`'s
+    # blocks, not the `_register_builtin_adts` set (Option, Result,
+    # Tuple, Ordering, ...), which is registered before injection runs.
+    prelude_injected_adts: set[str] = field(default_factory=set)
     # #305: constructor layouts by ADT name, exported so the `vera
     # serve` driver can marshal the prelude Request/Response ADTs with
     # the exact offsets this compilation computed (never hardcoded).

@@ -131,6 +131,47 @@ def _call_alloc(caller: wasmtime.Caller, size: int) -> int:
     assert isinstance(ptr, int)  # noqa: S101
     return ptr
 
+def _require_readable(
+    memory: wasmtime.Memory,
+    caller: wasmtime.Caller,
+    offset: int,
+    nbytes: int,
+    what: str,
+) -> None:
+    """Refuse an ``(offset, nbytes)`` read that leaves linear memory.
+
+    The bounds check :func:`_read_i32_at` and :func:`_read_bytes_at`
+    share (#1442), and the same one :func:`_read_wasm_string` grew under
+    #1145 — for the same reason.  Both readers slice a raw ``ctypes``
+    pointer, which bounds-checks nothing: an offset past the end reads
+    into wasmtime's guard page and takes the HOST down with ``SIGBUS``,
+    not the guest with a trap.  A negative ``nbytes`` is just as wrong in
+    the other direction — the ctypes slice returns an empty ``bytes``,
+    which ``struct.unpack`` then rejects or, worse, a caller treats as a
+    legitimately empty field.
+
+    Raising ``wasmtime.WasmtimeError`` with the ``out of bounds memory
+    access`` reason puts the failure on the path ``execute()`` already
+    classifies as a clean ``out_of_bounds`` trap, with a backtrace and a
+    Fix, exactly like a native guest OOB.
+
+    This is CONTAINMENT, not the primary guard.  Every offset reaching
+    these helpers should already be a pointer the guest allocated, so a
+    violation means something upstream handed the host a value that is
+    not the pointer it was taken for — #1442's own case was a ``handle``
+    whose declared type was not ``Request``, admitted by a
+    ``validate_handler`` that checked the lowered ABI instead of the Vera
+    types.  That hole is closed at its source; this keeps the next one in
+    the family a diagnostic rather than a dead process.
+    """
+    mem_size = memory.data_len(caller)
+    if nbytes < 0 or offset < 0 or offset + nbytes > mem_size:
+        raise wasmtime.WasmtimeError(
+            f"out of bounds memory access: host {what} read of "
+            f"{nbytes} byte(s) at offset {offset} exceeds WASM memory "
+            f"size {mem_size}"
+        )
+
 def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     """Read a little-endian i32 from WASM memory at `offset`.
 
@@ -139,18 +180,27 @@ def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     this version is shared by all module-level helpers that need
     to inspect linear memory (e.g. the bucket-array
     helpers added below for #695/#705).
+
+    Bounds-checked via :func:`_require_readable` before the raw slice
+    (#1442) — see there for why the check cannot live in the ctypes read.
     """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
     return int(struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0])
 
 def _read_bytes_at(
     caller: wasmtime.Caller, offset: int, length: int,
 ) -> bytes:
-    """Read `length` raw bytes from WASM linear memory at `offset`."""
+    """Read `length` raw bytes from WASM linear memory at `offset`.
+
+    Bounds-checked via :func:`_require_readable` before the raw slice
+    (#1442) — see there for why the check cannot live in the ctypes read.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, length, "byte-range")
     buf = memory.data_ptr(caller)
     return bytes(buf[offset:offset + length])
 
