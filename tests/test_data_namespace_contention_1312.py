@@ -860,3 +860,121 @@ public fn main(@Unit -> @Int)
     )
     assert check_errors, "the checker accepted an ambiguous data import"
     assert "E609" in _codes(cg_errors), cg_errors
+
+
+# =====================================================================
+# #1446 — one diagnostic per contended NAME, not one per declarer
+# =====================================================================
+
+
+_THREE_WAY_LIBA = """\
+module liba;
+
+public data Shape { Sq(Int) }
+
+public fn aone(@Int -> @Shape)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Sq(@Int.0)
+}
+"""
+
+_THREE_WAY_LIBB = """\
+module libb;
+
+public data Shape { Blob(Bool) }
+
+public fn bone(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Blob(true) {
+    Blob(@Bool) -> if @Bool.0 then { @Int.0 } else { 0 }
+  }
+}
+"""
+
+_THREE_WAY_ENTRY = """\
+import liba(aone);
+import libb(bone);
+
+private data Shape { Own(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match aone(6) {
+    Own(@Int) -> @Int.0
+  } + bone(1)
+}
+"""
+
+
+class TestOneDiagnosticPerContendedName:
+    """E623 reports the NAME it refuses, not each declarer of it (#1446).
+
+    Refusal granularity is the name (§11.16): when any two declarations of
+    a name can meet, none is qualified away and all of them stay in the one
+    bare slot.  The rail walked the declarers and emitted one diagnostic per
+    module, so a name held by the entry and two modules arrived as a first
+    error plus a cascade — and the cascade resolves itself, because renaming
+    the declaration that meets makes the name renameable again and qualifies
+    the other away untouched.  Two errors, one thing to fix.
+
+    The semantics are unchanged: the same programs are refused, for the same
+    reason, and the two-declaration case keeps its wording.  What changes is
+    that one conflict produces one diagnostic, naming every declaration in
+    the slot.
+    """
+
+    def test_three_declarations_report_once(self, tmp_path: Path) -> None:
+        """The entry meets ``liba`` through ``aone``'s return type; ``libb``
+        reaches nothing but stays in the slot because the NAME is refused."""
+        _verr, result, cg_errors = build_multi_module(
+            tmp_path / "three-way",
+            {"liba.vera": _THREE_WAY_LIBA, "libb.vera": _THREE_WAY_LIBB,
+             "main.vera": _THREE_WAY_ENTRY},
+        )
+        e623 = [d for d in result.diagnostics if d.error_code == "E623"]
+        assert len(e623) == 1, [d.description for d in e623]
+        # E609 stands beside it, and correctly: `liba` and `libb` are a
+        # module-versus-module pair that can meet, which is that rail's
+        # business.  What this cell is about is that the entry-versus-module
+        # conflict arrives once rather than once per module.
+        assert _codes(cg_errors) == ["E609", "E623"], cg_errors
+
+    def test_the_one_report_names_every_declaration_in_the_slot(
+        self, tmp_path: Path,
+    ) -> None:
+        """All three owners, so the reader is not left to discover the third
+        by fixing the first two."""
+        _verr, result, _cg = build_multi_module(
+            tmp_path / "three-way-text",
+            {"liba.vera": _THREE_WAY_LIBA, "libb.vera": _THREE_WAY_LIBB,
+             "main.vera": _THREE_WAY_ENTRY},
+        )
+        diag = next(d for d in result.diagnostics if d.error_code == "E623")
+        text = " ".join(
+            (getattr(diag, a, None) or "")
+            for a in ("description", "rationale", "fix")
+        )
+        assert "liba" in text, text
+        assert "libb" in text, text
+        assert "Shape" in text, text
+
+    def test_the_two_way_case_is_unchanged(self, tmp_path: Path) -> None:
+        """One module beside the entry still reports once, naming it — the
+        shape #1312's own cells pin, and this change must not move it."""
+        _verr, result, cg_errors = build_multi_module(
+            tmp_path / "two-way",
+            {"blib.vera": _BLIB_OWN_JSON, "main.vera": _ENTRY_OWN_JSON},
+        )
+        e623 = [d for d in result.diagnostics if d.error_code == "E623"]
+        assert len(e623) == 1, [d.description for d in e623]
+        assert "blib" in (e623[0].description or ""), e623[0].description
+        assert _codes(cg_errors) == ["E623"], cg_errors

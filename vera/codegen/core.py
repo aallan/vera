@@ -1777,6 +1777,10 @@ class CodeGenerator(
             entry_shape = data_decl_shape(
                 decl, self._type_aliases, self._type_alias_params,
             )
+            # Collect every owner this declaration cannot share a layout
+            # with, then report ONCE (#1446).  The name is what is refused,
+            # so the diagnostic names the name and everything in its slot.
+            conflicting: list[tuple[str, ...]] = []
             for owner in declarers:
                 module_decl = self._find_module_data_decl(owner, decl.name)
                 if module_decl is not None and entry_shape == data_decl_shape(
@@ -1785,20 +1789,31 @@ class CodeGenerator(
                     self._module_type_alias_params.get(owner, {}),
                 ):
                     continue
-                self._emit_entry_adt_contention_error(decl, owner)
+                conflicting.append(owner)
+            if conflicting:
+                self._emit_entry_adt_contention_error(decl, conflicting)
 
     def _emit_entry_adt_contention_error(
-        self, decl: ast.DataDecl, owner: tuple[str, ...],
+        self, decl: ast.DataDecl, owners: list[tuple[str, ...]],
     ) -> None:
-        """Report an entry `data` that contends with a module's (#1312).
+        """Report an entry `data` that contends with modules' (#1312).
 
-        Located at the entry declaration, in the entry file, with the
+        Located at the entry declaration, in the entry file, with each
         module's own coordinates named in the description — see
-        :meth:`_check_entry_module_adt_contention` for why one diagnostic
-        rather than two.  Refused by the same Pass-1.9 severity gate
-        E608 / E609 / E610 / E621 take, so there is ONE refusal mechanism.
+        :meth:`_check_entry_module_adt_contention` for why the report is at
+        the entry rather than at the modules.  Refused by the same Pass-1.9
+        severity gate E608 / E609 / E610 / E621 take, so there is ONE
+        refusal mechanism.
+
+        ONE diagnostic per contended NAME, naming every owner in the slot
+        (#1446).  Refusal granularity is the name: once any two declarations
+        of it can meet, none is qualified away and all of them share the one
+        layout.  Reporting per OWNER turned that single conflict into a
+        first error plus a cascade — and the cascade resolves itself, since
+        renaming the declaration that meets makes the name renameable again
+        and qualifies the others away untouched, so the reader was given two
+        errors for one thing to fix.  The single-owner wording is unchanged.
         """
-        mod = ".".join(owner)
         loc = SourceLocation(file=self.file)
         source_line = ""
         if decl.span is not None:
@@ -1808,20 +1823,32 @@ class CodeGenerator(
                 lines = self.source.splitlines()
                 if 1 <= loc.line <= len(lines):
                     source_line = lines[loc.line - 1]
-        where = f"module '{mod}'"
-        module_decl = self._find_module_data_decl(owner, decl.name)
-        resolved = next(
-            (m for m in self._resolved_modules if m.path == owner), None)
-        if resolved is not None and module_decl is not None and module_decl.span:
-            where = (
-                f"module '{mod}' ({resolved.file_path}:"
-                f"{module_decl.span.line})"
-            )
+        wheres: list[str] = []
+        for owner in owners:
+            mod = ".".join(owner)
+            where = f"module '{mod}'"
+            module_decl = self._find_module_data_decl(owner, decl.name)
+            resolved = next(
+                (m for m in self._resolved_modules if m.path == owner), None)
+            if (resolved is not None and module_decl is not None
+                    and module_decl.span):
+                where = (
+                    f"module '{mod}' ({resolved.file_path}:"
+                    f"{module_decl.span.line})"
+                )
+            wheres.append(where)
+        joined = (
+            wheres[0] if len(wheres) == 1
+            else " and ".join([", ".join(wheres[:-1]), wheres[-1]])
+        )
+        # "both" for the one-module pair — the wording #1312's cells pin —
+        # and a count once the entry is sharing the slot with more than one.
+        how_many = "both" if len(wheres) == 1 else f"all {len(wheres) + 1}"
         self.diagnostics.append(Diagnostic(
             description=(
                 f"This file declares a data type '{decl.name}' whose shape "
-                f"differs from the '{decl.name}' declared by {where}, and "
-                f"both are compiled into this program."
+                f"differs from the '{decl.name}' declared by {joined}, and "
+                f"{how_many} are compiled into this program."
             ),
             location=loc,
             source_line=source_line,
@@ -1834,6 +1861,12 @@ class CodeGenerator(
                 "every function in that module which constructs or matches "
                 "its own version is dropped behind it — including any entry "
                 "function that calls one."
+                + ("" if len(wheres) == 1 else (
+                    f" None of them can be given its own owner-qualified "
+                    f"symbol instead: what is refused is the NAME, so once "
+                    f"any two declarations of '{decl.name}' can meet, every "
+                    f"declaration of it stays in the shared slot — including "
+                    f"one no other namespace can reach."))
             ),
             fix=(
                 f"Rename '{decl.name}' in this file and update its uses "
