@@ -386,12 +386,13 @@ class TestEntryVersusModule:
         constructor, same field type, different declared arity.
 
         Asked here where the two declarations MEET, because since #1423 a
-        different arity is only refused when they do.  ``probe`` is given
-        ``Box<T>`` in its signature, so the module's declaration reaches the
-        entry, which declares a zero-arity ``Box`` of its own; neither can
-        be qualified away and the pair is refused at the entry declaration.
-        The sibling below is the same two declarations with nothing
-        carrying one to the other.
+        different arity is only refused when they do.  ``probe`` carries no
+        ``Box`` — it is ``@Int -> @Int`` — so the fixture ADDS ``boxer``,
+        whose ``@Int -> @Box<Int>`` signature is what reaches the entry, and
+        imports it.  The entry declares a zero-arity ``Box`` of its own, so
+        neither declaration can be qualified away and the pair is refused at
+        the entry declaration.  The sibling below is the same two
+        declarations with no signature carrying one to the other.
         """
         module = _MODULE_ARITY_ONE + """
 public fn boxer(@Int -> @Box<Int>)
@@ -423,9 +424,9 @@ public fn boxer(@Int -> @Box<Int>)
         """Its sibling, and the shape #1423 changed.
 
         The same two declarations — ``Box<T>`` in the module, ``Box`` in the
-        entry — with ``probe`` narrowed to ``@Int -> @Int`` so nothing
-        carries one to the other and the entry's own declaration shadows the
-        name.  They cannot meet, so the module's is compiled under its own
+        entry — with the module taken UNCHANGED, so its only export is
+        ``probe`` (``@Int -> @Int``) and no signature carries a ``Box`` to
+        the entry, whose own declaration shadows the name.  They cannot meet, so the module's is compiled under its own
         owner-qualified symbol and the program runs.  Before #1423 this was
         E623, and adding an unrelated second module that also declared
         ``Box`` lifted that refusal — the non-monotonicity the entry-owner
