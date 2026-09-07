@@ -1684,6 +1684,9 @@ def test_a_return_that_relabels_an_unrefined_payload_is_refuted(
 
     proc = _run(tmp_path, _LAUNDERING_RETURN, "-7.0", name="ld.vera")
     assert proc.returncode != 0, proc.stdout
+    # WHICH non-zero exit: a compile refusal is also non-zero, so the bare
+    # code cannot tell a refuted contract from a program that never ran.
+    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
 
 
 _REFINEMENT_OVER_REFINEMENT = """
@@ -1773,6 +1776,7 @@ def test_a_closure_argument_is_obligated(tmp_path: Path) -> None:
 
     proc = _run(tmp_path, _CLOSURE_ARGUMENT, "-7.0", name="ca.vera")
     assert proc.returncode != 0, proc.stdout
+    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
 
 
 def test_a_closure_return_discloses_at_its_consumer() -> None:
@@ -1789,3 +1793,95 @@ def test_a_closure_return_discloses_at_its_consumer() -> None:
     binds = _refine_binds(_CLOSURE_RETURN, "f")
     assert binds, "the consumer of an opaque closure result raised nothing"
     assert all(o.status != "verified" for o in binds), _statuses(binds)
+
+
+# =====================================================================
+# PR #1420 CodeRabbit round 2
+# =====================================================================
+
+_GENERIC_CONSTRUCTOR_FIELD = _PRELUDE + """
+private data Box<T> {
+  MkBox(T)
+}
+""" + _UNREFINED_OPT + """
+private fn consume(@Box<Option<PosInt>> -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match @Box<Option<PosInt>>.0 {
+    MkBox(@Option<PosInt>) -> match @Option<PosInt>.0 {
+      Some(@PosInt) -> @PosInt.0,
+      None -> 41
+    }
+  }
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  consume(MkBox(mkint(@Float64.0)))
+}
+"""
+
+
+def test_a_generic_constructor_field_recovers_its_instantiation(
+    tmp_path: Path,
+) -> None:
+    """A generic field is a `TypeVar` until the checker says what it became.
+
+    `data Box<T> { MkBox(T) }` built at `Box<Option<PosInt>>` passed the
+    registry's unsubstituted field type to the gate, which sees a `TypeVar`,
+    finds no refinement in it and emits nothing — so the program was Tier-1
+    clean while the run refuted the consumer, even though the CONCRETE
+    `MkBox(Option<PosInt>)` spelling of the same program was refuted (PR #1420
+    review).  The instantiated target is recovered the way every other
+    binding-obligation target recovers one (#747).
+    """
+    binds = _refine_binds(_GENERIC_CONSTRUCTOR_FIELD, "f")
+    assert ("violated", "E505") in _statuses(binds), _statuses(binds)
+
+    proc = _run(tmp_path, _GENERIC_CONSTRUCTOR_FIELD, "-7.0", name="gb.vera")
+    assert proc.returncode != 0, proc.stdout
+    assert "Postcondition violation in consume" in (proc.stdout + proc.stderr)
+
+
+_LET_TUPLE_FROM_DISCLOSED = _PRELUDE + """
+private fn mkt(@Float64 -> @Tuple<PosInt, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Tuple(float_to_int(@Float64.0), 5)
+}
+
+public fn f(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Tuple<PosInt, Int> = mkt(@Float64.0);
+  match @Tuple<PosInt, Int>.0 {
+    Tuple(@PosInt, @Int) -> @PosInt.0
+  }
+}
+"""
+
+
+def test_a_let_binding_never_claims_a_boundary_guard() -> None:
+    """A `let` is not a function boundary, so it guards nothing.
+
+    Codegen's component decomposition runs at parameter entry and return exit.
+    Deriving the flag from the TARGET TYPE made a `let @Tuple<PosInt, Int>`
+    record the guarded `tier3` — a runtime check nothing at that site emits,
+    which is the #1362 shape, and inconsistent with the refined arm three
+    lines above it that has always passed `guarded=False` (PR #1420 review).
+
+    A disclosed producer is what makes the flag observable: a refutable value
+    lands on `violated`, where it is never read.
+    """
+    binds = _refine_binds(_LET_TUPLE_FROM_DISCLOSED, "f")
+    assert ("tier3_unguarded", "E506") in _statuses(binds), _statuses(binds)
+    assert ("tier3", "E506") not in _statuses(binds), _statuses(binds)

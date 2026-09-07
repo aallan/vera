@@ -5595,17 +5595,29 @@ class ContractVerifier:
                             guarded=self._is_int_type(field_ty),
                         )
                     # #1410 (PR review F3): a field whose TYPE writes a
-                    # refinement on a component — `data Box { MkBox(Option<
-                    # PosInt>) }` — is claimed by none of the arms above, which
-                    # read the field's HEAD.  Without it the exclusion the
-                    # argument rule makes for a construction was false of this
-                    # shape: `consume(MkBox(mkint(x)))` was skipped as a
-                    # construction while its own site claimed nothing, so the
-                    # payload was obligated nowhere and the run refuted the
-                    # consumer's postcondition.  A constructor field is not a
+                    # refinement on a component.  A field like
+                    # `data Box { MkBox(Option<PosInt>) }` is claimed by none
+                    # of the arms above, which read the field's HEAD, so the
+                    # exclusion the argument rule makes for a construction was
+                    # false of this shape: `consume(MkBox(mkint(x)))` was
+                    # skipped as a construction while its own site claimed
+                    # nothing, the payload was obligated nowhere, and the run
+                    # refuted the consumer's postcondition.
+                    #
+                    # The target goes through `_nested_refinement_formal`,
+                    # which is the recovery every other binding-obligation
+                    # target makes (#747): a GENERIC constructor's declared
+                    # field is a `TypeVar`, and only the checker's recorded
+                    # instantiation says what it became.  Without that,
+                    # `data Box<T> { MkBox(T) }` built at
+                    # `Box<Option<PosInt>>` raised nothing at all, while the
+                    # concrete spelling of the same program was refuted
+                    # (PR #1420 review).  A constructor field is not a
                     # function boundary, so nothing guards it.
                     self._check_nested_refinement_obligation(
-                        decl, arg, field_ty, smt, slot_env, assumptions,
+                        decl, arg,
+                        self._nested_refinement_formal(arg, field_ty),
+                        smt, slot_env, assumptions,
                         site="constructor field", guarded=False,
                     )
             else:
@@ -5852,9 +5864,16 @@ class ContractVerifier:
                     # declared type is a fact by the time anything reads it.
                     # Alongside the arms above, not in the chain: they claim the
                     # let type's HEAD, this one what its structure contains.
+                    # `guarded=False` for the reason the refined arm above is
+                    # also False: codegen's component decomposition runs at a
+                    # FUNCTION boundary, and a `let` is not one.  Deriving the
+                    # flag from the target type claimed a runtime check for a
+                    # `let @Tuple<PosInt, Int>` that nothing at that site
+                    # emits — the #1362 shape, and inconsistent with its own
+                    # neighbour three lines up (PR #1420 review).
                     self._check_nested_refinement_obligation(
                         decl, stmt.value, let_ty, smt, cur_env,
-                        block_assumptions, site="let binding",
+                        block_assumptions, site="let binding", guarded=False,
                     )
                     # Rebind the let slot in cur_env so a later obligation
                     # translates against this value, not a stale outer binding
