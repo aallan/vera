@@ -1268,43 +1268,27 @@ class TestRefinedNonPlainBaseParity1036:
         self, src: str, site: str,
     ) -> None:
         statuses = _refine_bind_statuses(src)
-<<<<<<< HEAD
-        # The property is the ABSENCE of a guarded promise, asserted directly
-        # rather than through "every status is the unguarded one".  Since #1410
-        # a call whose formal writes a refinement INSIDE its type raises an
-        # obligation of its own, and two of these fixtures make such a call —
-        # `array_length(@Array<{ @Int | ... }>.0)`, whose argument's declared
-        # type IS the formal, so it proves modularly.  That `verified` is a
-        # different obligation about a different site; folding it into this
-        # assertion would make the fixture's incidental calls part of a
-        # statement about the boundary's guard.
-        assert "tier3_unguarded" in statuses, (
-            f"a non-plain-arg refined {site} must DISCLOSE — expected a "
-            f"tier3_unguarded record, got {statuses} (#1036)"
-        )
-        assert "tier3" not in statuses, (
-            f"a non-plain-arg refined {site} has no codegen guard, so a "
-            f"'tier3' is an unfulfilled runtime-guard promise: {statuses} "
-            "(#1036)"
-=======
-        assert statuses, f"{site}: no refine_bind obligation to classify"
-        # ONE obligation per shape today, pinned so the `all(...)` below keeps
-        # meaning what it says: with several, a mixed verdict would be read as
-        # "guarded" by the any-not-unguarded reading and the comparison would
-        # silently weaken.  Future hardening, not a current failure.
-        assert len(statuses) == 1, (
-            f"{site}: expected one refine_bind, got {statuses} — the parity "
-            f"comparison below assumes a single site"
-        )
-        verifier_says_guarded = all(s != "tier3_unguarded" for s in statuses)
+        # The ARTIFACT is the oracle, not a remembered status: the boundary
+        # emits a guard for a non-plain type argument — the checker's renderer
+        # treats a refinement or a function type in argument position like any
+        # other type — so `tier3` is the truthful classification here and a
+        # `tier3_unguarded` would be the mirror wrong in the other direction,
+        # disclosing a boundary that DOES trap.
+        #
+        # Read for the boundary's OWN record rather than over every status:
+        # since #1410 a call whose formal writes a refinement INSIDE its type
+        # raises separate obligations at separate sites, and two of these
+        # fixtures make such a call — `array_length(@Array<{ @Int | ... }>.0)`.
+        # Those extra records are about those sites, not about this boundary's
+        # guard.
         kind = _trap_kind(src, "go", None)
-        codegen_guards = kind == "contract_violation"
-        assert codegen_guards == verifier_says_guarded, (
-            f"{site}: the module "
-            f"{'traps' if codegen_guards else 'does NOT trap'} on the empty "
-            f"array (trap kind {kind!r}), verifier says "
-            f"{'guarded' if verifier_says_guarded else 'unguarded'} "
-            f"({statuses}) — the two sides have drifted"
+        assert kind == "contract_violation", (
+            f"a non-plain-arg refined {site} must still trap on the value its "
+            f"predicate forbids — got trap kind {kind!r} (#1036)"
+        )
+        assert "tier3" in statuses, (
+            f"the {site} boundary traps, so its record must count that guard "
+            f"rather than disclose it away: {statuses} (#1036)"
         )
 
     def test_the_return_position_carries_the_guard_too(self) -> None:
@@ -1315,7 +1299,9 @@ class TestRefinedNonPlainBaseParity1036:
         the oracle instead, and the classification is read beside it.
         """
         statuses = _refine_bind_statuses(_NONPLAIN_NAMED_RET)
-        assert statuses and all(s != "tier3_unguarded" for s in statuses), (
+        # The return boundary's own record, beside #1410's nested-refinement
+        # records at other sites in the same fixture (see the cell above).
+        assert "tier3" in statuses, (
             f"the return boundary discloses unguarded: {statuses}"
         )
         with _resolved_pipeline(_NONPLAIN_NAMED_RET) as (prog, arts, res, path):
@@ -1326,7 +1312,6 @@ class TestRefinedNonPlainBaseParity1036:
             ).wat
         assert "call $vera.contract_fail" in wat, (
             "the classification claims a guard the emitted module lacks"
->>>>>>> 6bcf5a9e (Stop disclosing a guard that fires, for a refined base with a non-plain type argument)
         )
 
     def test_plain_base_still_promises_guard(self) -> None:
