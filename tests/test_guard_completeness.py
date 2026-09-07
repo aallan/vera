@@ -1396,3 +1396,279 @@ class TestTheRangeCheckDoesNotRunTheMeasureAgain1222:
             "a PURE measure on the same declined-chain path lost its range "
             "check too"
         )
+
+
+_1222_MIXED_PURITY = """\
+private fn size(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn walk(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, size(@Nat.0))
+  effects(<Exn<Int>>)
+{
+  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2) }
+}
+"""
+
+_1222_RANKABLE_ADT_SIBLING = """\
+private data Tree {
+  Leaf,
+  Node(Tree, Tree)
+}
+
+private fn size(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn walk(@Nat, @Tree -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(size(@Nat.0), @Tree.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { walk(@Nat.0 / 2, @Tree.0) }
+}
+"""
+
+
+class TestTheBoundFlagIsPerComponent1222:
+    """The obligation's guarded flag is computed the way codegen filters.
+
+    Found by the re-verification.  Codegen decides per COMPONENT — the
+    declined-chain path emits a range check for each component whose extra
+    evaluation cannot be observed — while the flag was computed once per
+    CONTRACT and a second test, "is any component non-scalar", stood in for
+    "is the chain declined".  Both over-answered, so two shapes carried an
+    E537 for a component the emitted module does check: exactly the
+    obligation-versus-guard drift this release exists to remove, in the
+    machinery added to remove it.
+    """
+
+    def test_a_mixed_measure_splits_rather_than_condemning_both(
+        self, tmp_path: Path,
+    ) -> None:
+        """`decreases(@Nat.0, size(@Nat.0))` on an `Exn` function.
+
+        The chain guard is declined for the `Exn` row, so the range check
+        evaluates the components itself: it does for the slot reference and
+        does not for the call.  One `tier3`, one `tier3_unguarded` — and the
+        module carries exactly the one check that pairs with them.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _1222_MIXED_PURITY, name="mix1222.vera")
+        bounds = [(o["status"], o.get("error_code"))
+                  for o in obs if o["kind"] == "decreases_bound"]
+        assert bounds == [("tier3", None), ("tier3_unguarded", "E537")], bounds
+        _assert_partition(envelope)
+
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _1222_MIXED_PURITY, "mix1222c.vera")))
+        assert proc.returncode == 0, proc.stderr[-400:]
+        assert proc.stdout.count("i64 range") == 1, (
+            f"expected exactly one range check to pair with the one guarded "
+            f"obligation, got {proc.stdout.count('i64 range')}"
+        )
+
+    def test_a_rankable_adt_sibling_does_not_decline_the_chain(
+        self, tmp_path: Path,
+    ) -> None:
+        """`decreases(size(@Nat.0), @Tree.0)` with a CONCRETE `Tree`.
+
+        A non-scalar component declines the chain only when the backend
+        cannot structurally rank it — the #1177 parameterized-ADT case.  A
+        concrete ADT ranks, so the chain is emitted, the measure is evaluated
+        once by it, and the call component's purity never arises.  Reading
+        "non-scalar" as "declined" put an E537 on a measure the module does
+        check.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _1222_RANKABLE_ADT_SIBLING, name="rank1222.vera")
+        bounds = [(o["status"], o.get("error_code"))
+                  for o in obs if o["kind"] == "decreases_bound"]
+        assert bounds == [("tier3", None)], bounds
+        _assert_partition(envelope)
+
+        proc = _cli("compile", "--wat",
+                    str(_write(tmp_path, _1222_RANKABLE_ADT_SIBLING,
+                               "rank1222c.vera")))
+        assert proc.returncode == 0, proc.stderr[-400:]
+        assert "i64 range" in proc.stdout
+
+    def test_the_disclosure_names_the_cause_it_actually_had(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two causes, two sentences.
+
+        The unguarded leg told the author of a `pure` function that it had
+        been "dropped with an E603", which is the OTHER cause — an effect row
+        the backend cannot lower.  A reader following that goes looking for a
+        diagnostic that was never emitted.
+        """
+        proc = _cli("verify", str(_write(
+            tmp_path, _1222_MIXED_PURITY, "why1222.vera")))
+        out = proc.stdout + proc.stderr
+        assert "termination CHAIN guard is declined" in out, out
+        assert "dropped with an E603" not in out, (
+            f"a `pure`-bodied measure was told its function is E603-dropped:"
+            f"\n{out}"
+        )
+
+
+_N4_REFINED_ELEMENT = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Pos> = [@Int.0];
+  @Array<Pos>.0[0]
+}
+"""
+
+_N4_REFINED_ELEMENT_OPAQUE = """\
+type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Pos> = [handle[Exn<Int>] { throw(@Int) -> { @Int.0 } } in \
+{ throw(@Int.0) }];
+  @Array<Pos>.0[0]
+}
+"""
+
+_N4_NAT_ELEMENT = """\
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Nat> = [@Int.0];
+  nat_to_int(@Array<Nat>.0[0])
+}
+"""
+
+_N4_WIDEN_CONTROL = """\
+public fn ae(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [@Nat.0];
+  @Array<Int>.0[0]
+}
+"""
+
+
+class TestArrayElementNarrowingIsObligated:
+    """An array element narrowed at CONSTRUCTION is on the record.
+
+    Found by the re-verification, and worse than the unguarded sites #1426
+    describes: neither narrowing direction was obligated AT ALL.  `vera
+    verify` reported a clean program — `ok: true`, no `refine_bind`, no
+    `nat_bind` — while `[-4]` was stored into an `@Array<Pos>` and read back
+    out.  An unguarded site at least says so; silence cannot be read in
+    either direction, and the `-4` differential below is what separates the
+    two.
+
+    The cause was refined-first (R9) being absent here: a refinement OVER
+    `@Int` answers `_is_int_type`, so the `@Nat` -> `@Int` widening arm — the
+    only arm this branch had — swallowed a refined element type and the
+    predicate was never asked about.  The `@Nat` narrowing arm was simply
+    missing, which left a site whose runtime guard FIRES with no obligation
+    to count it: a Tier-3 undercount in the other direction.
+    """
+
+    def test_a_refined_element_is_refuted_not_silently_accepted(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, envelope = _obligations(
+            tmp_path, _N4_REFINED_ELEMENT, name="n4a.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("violated", "E505")], obs
+        assert envelope["ok"] is False
+        _assert_partition(envelope)
+
+    def test_and_the_value_it_refutes_does_flow_out(
+        self, tmp_path: Path,
+    ) -> None:
+        """The run differential that makes the silence a defect.
+
+        Without this the cell above is a claim about a status; with it, the
+        status is measured against what the program does.  Nothing guards
+        this site — it is one of #1426's — so `-4` is returned, which is
+        exactly why the obligation has to exist.
+        """
+        out = _run(tmp_path, _N4_REFINED_ELEMENT, "--fn", "f", "--", "-4",
+                   name="n4b.vera")
+        assert out.strip() == "-4", (
+            f"expected the unguarded element to flow out, so that the "
+            f"obligation is what protects the program:\n{out}"
+        )
+
+    def test_an_opaque_refined_element_discloses_rather_than_refutes(
+        self, tmp_path: Path,
+    ) -> None:
+        """The undecided leg, where the guarded flag is actually consulted.
+
+        `tier3_unguarded` + E506, consistent with the other
+        construction-position component sites (#1426) — never a `tier3` that
+        would claim a runtime check this site does not emit.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _N4_REFINED_ELEMENT_OPAQUE, name="n4c.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "refine_bind"]
+        assert binds == [("tier3_unguarded", "E506")], obs
+        _assert_partition(envelope)
+
+    def test_a_nat_element_is_obligated_and_its_guard_counted(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other direction, where a guard exists and had no obligation.
+
+        The store traps on a negative, so the obligation is `guarded` — an
+        absent record here undercounted Tier 3 rather than overstating it,
+        which is the rarer half of the same defect.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _N4_NAT_ELEMENT, name="n4d.vera")
+        binds = [(o["status"], o.get("error_code"))
+                 for o in obs if o["kind"] == "nat_bind"]
+        assert binds == [("violated", "E503")], obs
+        _assert_partition(envelope)
+
+        out = _run(tmp_path, _N4_NAT_ELEMENT, "--fn", "f", "--", "-4",
+                   name="n4e.vera")
+        assert _NAT_GUARD_TRAP in out, (
+            f"the `@Nat` element store does not trap, so the obligation's "
+            f"guarded flag is wrong:\n{out}"
+        )
+
+    def test_the_widening_arm_still_fires(self, tmp_path: Path) -> None:
+        """The over-reach control.
+
+        Routing refined-first must not take the `@Nat` -> `@Int` widening
+        element off the record — #820 guards that store and its obligation
+        counts the guard.
+        """
+        obs, _ = _obligations(tmp_path, _N4_WIDEN_CONTROL, name="n4f.vera")
+        coerce = [(o["status"], o.get("error_code"))
+                  for o in obs if o["kind"] == "nat_to_int_coerce"]
+        assert coerce == [("tier3", None)], obs

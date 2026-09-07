@@ -445,11 +445,16 @@ def test_1399_three_hop_middle_module_is_tainted(tmp_path: Path) -> None:
     headline rather than drift (#1422).  It read `nat_bind` /
     `tier3_unguarded` / E504 until #1412: the relay's disclosed obligation
     was its `Some(nat_to_int(@Nat.0))` narrowing, a generic-instantiated
-    constructor field, which #757 runtime-guarded.  After that PR **no
-    unguarded `@Nat` narrowing is reachable by a compilable program** — a
-    user-declared effect operation's argument is the only one left and its
-    enclosing function is dropped with E603 — so the kind could not be
-    preserved.  The relay's disclosed obligation is now the witness's
+    constructor field, which #757 runtime-guarded.  After that PR **every
+    `@Nat` narrowing at a pattern bind or a boundary is guarded**, and this
+    relay's narrowing is a boundary one — so no unguarded `nat_bind` is
+    available HERE and the kind could not be preserved.  (Unguarded `@Nat`
+    narrowings do still exist: `string_slice`'s clamping index arguments
+    keep their E504 disclosure by design, and a user-declared effect
+    operation's argument keeps its own, its enclosing function being dropped
+    with E603.  Neither is a shape this fixture can put in a middle module
+    whose provability the imported fact decides, which is what the
+    discriminator needs.)  The relay's disclosed obligation is now the witness's
     REFINED constructor field, `refine_bind` / `tier3_unguarded` / E506, a
     site #1412 leaves unguarded on purpose (#1426).  The narrowing is still
     there and still demotes; it is simply guarded, which is the

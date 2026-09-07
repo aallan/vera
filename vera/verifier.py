@@ -4040,8 +4040,8 @@ class ContractVerifier:
     # -----------------------------------------------------------------
 
     def _decreases_bound_guarded(
-        self, decl: ast.FnDecl, contract: ast.Decreases,
-    ) -> bool:
+        self, decl: ast.FnDecl, contract: ast.Decreases, expr: ast.Expr,
+    ) -> str | None:
         """Whether the measure-range check is actually emitted for *decl*
         (#1222) — the semantic mirror of `_dec_measure_bound_check`'s
         reachability; KEEP IN SYNC.
@@ -4071,23 +4071,20 @@ class ContractVerifier:
                 isinstance(eff, ast.EffectRef)
                 and eff.name in narrowing.COMPILABLE_EFFECTS
                 for eff in effect.effects):
-            return False
-        # Second condition: where the CHAIN guard may be declined, the range
-        # check evaluates the measure itself and does so only for a component
-        # an extra evaluation cannot make observable.  The chain is declined
-        # for an `Exn`-declaring function and for a component the backend
-        # cannot rank — the latter being a component that is not scalar — so
-        # those are the two shapes to ask about.  Where the chain IS emitted
-        # the measure is already evaluated and the check reads its locals, so
-        # purity does not arise.
+            return "not_emitted"
+        # Second condition, asked PER COMPONENT because codegen filters per
+        # component: where the CHAIN guard may be declined the range check
+        # evaluates the measure itself, and it does that only for a component
+        # an extra evaluation cannot make observable.  A per-CONTRACT answer
+        # put an E537 on the pure component of a mixed measure whose WAT does
+        # check it — the mirror drift this release exists to remove.  Where
+        # the chain IS emitted the measure is already evaluated and the check
+        # reads its locals, so purity does not arise for any component.
         if not self._decreases_chain_may_be_declined(decl, contract):
-            return True
-        return all(
-            narrowing.measure_component_is_effect_free(expr)
-            for expr in contract.exprs
-            if narrowing.measure_component_needs_range_check(
-                self._resolved_type_of(expr))
-        )
+            return None
+        if narrowing.measure_component_is_effect_free(expr):
+            return None
+        return "not_evaluated"
 
     def _decreases_chain_may_be_declined(
         self, decl: ast.FnDecl, contract: ast.Decreases,
@@ -4106,11 +4103,23 @@ class ContractVerifier:
                 isinstance(eff, ast.EffectRef) and eff.name == "Exn"
                 for eff in effect.effects):
             return True
-        return any(
-            not self._is_int_type(ty) and not self._is_nat_type(ty)
-            for ty in (self._resolved_type_of(e) for e in contract.exprs)
-            if ty is not None
-        )
+        # A non-scalar component declines the chain only when the backend
+        # cannot structurally RANK it, which is the #1177 limitation: a
+        # PARAMETERIZED ADT measure (`List<Int>`) has no per-instantiation
+        # size helper, while a concrete one ranks fine.  Asking merely "is it
+        # non-scalar" over-answered, and put an E537 on a measure whose WAT
+        # does check it.
+        from vera.types import AdtType
+        for e in contract.exprs:
+            ty = self._resolved_type_of(e)
+            if ty is None:
+                continue
+            if self._is_int_type(ty) or self._is_nat_type(ty):
+                continue
+            base = ty.base if isinstance(ty, RefinedType) else ty
+            if not isinstance(base, AdtType) or base.type_args:
+                return True
+        return False
 
     def _record_decreases_bound_tier3(
         self,
@@ -4120,8 +4129,16 @@ class ContractVerifier:
         *,
         guarded: bool,
         reason: str,
+        because: str | None = None,
     ) -> None:
         """Record an undischarged ``decreases_bound`` (#1222), guarded or not.
+
+        *because* names WHY the unguarded leg is unguarded — ``"not_emitted"``
+        when code generation emits no function at all, ``"not_evaluated"``
+        when the chain guard is declined and this component is one the range
+        check will not evaluate.  The two ask the reader to change different
+        things, and a single sentence covering both told the author of a
+        `pure` function that it had been "dropped with an E603".
 
         The guarded leg counts as a runtime check and says nothing further —
         the range guard beside the measure's evaluation is the check, and it
@@ -4146,13 +4163,24 @@ class ContractVerifier:
                 "@Nat is u64 and the `decreases` runtime guard compares "
                 "signed i64, so a measure above i64.MAX reads as negative "
                 f"there.  The `<= i64.MAX` obligation was not discharged: "
-                f"{reason}.  Code generation does not emit this function at "
-                "all — its effect row is one the backend cannot lower, so "
-                "the function is dropped with an E603 — and a runtime check "
-                "in a module with no code in it is no check.  Bound the "
-                "measure below i64.MAX with a `requires`, or give the "
-                "function an effect row the backend can lower so the range "
-                "check is emitted."
+                f"{reason}.  " + (
+                    "Code generation does not emit this function at all — "
+                    "its effect row is one the backend cannot lower, so the "
+                    "function is dropped with an E603 — and a runtime check "
+                    "in a module with no code in it is no check.  Bound the "
+                    "measure below i64.MAX with a `requires`, or give the "
+                    "function an effect row the backend can lower."
+                    if because == "not_emitted" else
+                    "No runtime check covers it either: this function's "
+                    "termination CHAIN guard is declined — it declares "
+                    "`Exn`, or a measure component is a parameterized ADT "
+                    "the backend cannot rank — and the range check that "
+                    "stands in for it evaluates the measure itself, which it "
+                    "will not do for a component whose evaluation can be "
+                    "observed.  Bound the measure below i64.MAX with a "
+                    "`requires`, or measure a slot or arithmetic over slots "
+                    "rather than a call."
+                )
             ),
             spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
             error_code="E537",
@@ -4196,7 +4224,6 @@ class ContractVerifier:
         range here alone would make this one boundary an outlier.
         """
         hi = z3.IntVal(_I64_MAX)
-        guarded = self._decreases_bound_guarded(decl, contract)
         for expr in contract.exprs:
             # THE rule, shared with codegen's selector, over the SAME
             # checker table — not `_is_nat_type`, which is a second
@@ -4204,10 +4231,14 @@ class ContractVerifier:
             if not narrowing.measure_component_needs_range_check(
                     self._resolved_type_of(expr)):
                 continue
+            unguarded_because = self._decreases_bound_guarded(
+                decl, contract, expr)
+            guarded = unguarded_because is None
             term = smt.translate_expr(expr, slot_env)
             if term is None:
                 self._record_decreases_bound_tier3(
                     decl, expr, "tier3", guarded=guarded,
+                    because=unguarded_because,
                     reason=(
                         "the measure component is outside the SMT layer's "
                         "decidable fragment, so there is no term to test "
@@ -4258,6 +4289,7 @@ class ContractVerifier:
             )
             self._record_decreases_bound_tier3(
                 decl, expr, undecided, guarded=guarded,
+                because=unguarded_because,
                 reason=(
                     "the measure is bounded on neither side — an "
                     "unconstrained @Nat is neither provably `<= i64.MAX` nor "
@@ -6463,13 +6495,49 @@ class ContractVerifier:
             # runtime-guarded (`guarded=True`) rather than E531-disclosed.
             target = self._target_type_of(expr)
             base = target.base if isinstance(target, RefinedType) else target
-            if (isinstance(base, AdtType) and base.name == "Array"
-                    and base.type_args
-                    and self._is_int_type(base.type_args[0])):
+            elem_ty = (
+                base.type_args[0]
+                if isinstance(base, AdtType) and base.name == "Array"
+                and base.type_args
+                else None
+            )
+            if (elem_ty is not None and self._is_int_type(elem_ty)
+                    and not self._is_refined_type(elem_ty)):
                 for elem in expr.elements:
                     if self._result_is_nat(elem):
                         self._check_int_widening_obligation(
                             decl, elem, smt, slot_env, list(assumptions),
+                            site="array element", guarded=True,
+                        )
+            # #1426 / re-verification N4: the NARROWING directions at the same
+            # site were not obligated at all — an `[@Int.0]` into an
+            # `@Array<Nat>` or an `@Array<{refined}>` produced no record, so
+            # `verify` reported a clean program and the array carried a value
+            # its element type forbids.  Silent absence is worse than an
+            # unguarded disclosure: the stream did not mention the site, so
+            # nothing could be read off it in either direction.  The `@Nat`
+            # arm IS runtime-guarded (measured: `-4` traps at the element
+            # store); the refined arm is not, and joins the other
+            # construction-position component sites in disclosing E506.
+            elif elem_ty is not None:
+                # Refined-FIRST (R9): a refinement OVER `@Int` reads as an
+                # `@Int` element type to `_is_int_type`, so without this the
+                # widening arm above swallowed it and its predicate was never
+                # obligated at all.
+                for elem in expr.elements:
+                    refined_target = self._refined_binding_target(
+                        elem, elem_ty)
+                    if (refined_target is not None
+                            and self._narrows_into_refined(
+                                elem, refined_target)):
+                        self._check_refined_binding_obligation(
+                            decl, elem, refined_target, smt, slot_env,
+                            assumptions, site="array element",
+                        )
+                    elif (self._nat_binding_target(elem, elem_ty)
+                            and self._narrows_into_nat(elem)):
+                        self._check_nat_binding_obligation(
+                            decl, elem, smt, slot_env, assumptions,
                             site="array element", guarded=True,
                         )
             for elem in expr.elements:
