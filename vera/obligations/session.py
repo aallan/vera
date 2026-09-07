@@ -305,15 +305,29 @@ class VerificationSession:
             if cached is not None:
                 out_diags.extend(cached.diagnostics)
                 out_obls.extend(cached.obligations)
+                # F2: the slice's whole contribution, `where` helpers with
+                # it.  Seeded back onto the verifier as well as into the
+                # session's set, because a LATER fresh slice consults
+                # `_result_disclosed_fns` for the citation behind a forwarder
+                # and would otherwise see a hole where a replayed slice sat.
+                verifier._result_disclosed_fns.update(cached.result_disclosed)
                 stats.replayed_fns += 1
                 continue
 
             d0 = len(verifier.errors)
             o0 = len(verifier.obligations)
+            before = dict(verifier._result_disclosed_fns)
             verifier._verify_fn(decl)
+            # F2: the DELTA this slice produced — the declaration itself and
+            # any `where` helper of it that forwards a disclosed value.
+            contributed = {
+                k: v for k, v in verifier._result_disclosed_fns.items()
+                if k not in before or before[k] != v
+            }
             entry = FnCacheEntry(
                 diagnostics=list(verifier.errors[d0:]),
                 obligations=list(verifier.obligations[o0:]),
+                result_disclosed=contributed,
             )
             self._cache.put(key, entry)
             out_diags.extend(entry.diagnostics)
@@ -338,7 +352,20 @@ class VerificationSession:
         # exactly as the cold `verify_program` path derives it from its own —
         # so the warm and cold summaries agree by construction (the tier counts
         # can't drift from the obligations a consumer reads).
-        disclosed = disclosed_fn_names(out_obls)
+        # #1407: the same union `ContractVerifier._disclosed_fn_names` takes —
+        # the obligation stream says which functions failed to establish their
+        # own declared type, `result_disclosed` says which hand such a value
+        # on, and the fixpoint below needs both or it settles one hop early.
+        # ONE term, not two.  The verifier's own map is the superset: a fresh
+        # slice's contribution is already in it, a replayed slice's is seeded
+        # back onto it above, and the imported-generic-clone pass — which runs
+        # AFTER this loop and verifies bodies of its own — reaches only it
+        # (CodeRabbit, PR #1418).  Unioning the per-slice tally beside it was
+        # measured dead: mutating either term away killed nothing, because
+        # each covered the other.  Keeping the superset alone leaves one term
+        # whose removal the warm cells do catch.
+        disclosed = (disclosed_fn_names(out_obls)
+                     | frozenset(verifier._result_disclosed_fns))
         if not disclosed <= self._disclosed:
             # Re-run knowing what this pass disclosed, exactly as the cold
             # `verify_program` fixpoint does.  The set only grows, so this

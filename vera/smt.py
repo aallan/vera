@@ -9,6 +9,8 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 
 from __future__ import annotations
 
+import dataclasses
+
 import contextlib
 import os
 import re
@@ -536,6 +538,34 @@ class SmtContext:
         # that needs one is provable only from something this run admitted it
         # could not establish, which is a Tier-3 truth and not a Tier-1 proof.
         self._tainted_facts: list[z3.ExprRef] = []
+        # #1406/#1407: the Z3 terms this function's DISCLOSED calls produced.
+        # Disclosure is a property of the VALUE, not of the syntax that names
+        # it: `let @T = mk(x); match @T.0 { … }` reaches the match as a slot
+        # reference and a forwarding wrapper reaches it as a call to a
+        # function carrying no obligation of its own, yet both hand the
+        # caller the very value `mk` failed to establish.  Recording the term
+        # lets the taint follow it through every binding, projection and
+        # branch the SMT layer can see, without naming a single spelling.
+        self._disclosed_terms: list[z3.ExprRef] = []
+        # #1399 x #1406: the CITATION sites that came with each recorded term,
+        # keyed by its Z3 ast id.  An imported disclosure names the module and
+        # function the demotion should cite, and that name is known where the
+        # value is PRODUCED, not where its facts are finally read — a
+        # `let`-bound imported call is a slot reference by the time anything
+        # asks.  Parking the site on the term is what lets the diagnostic
+        # still name the culprit, and lets it name only the culprit: a site is
+        # cited when the value carrying it is the one whose facts were
+        # withheld, not merely because the function called something.
+        self._disclosed_term_sites: dict[int, list[Any]] = {}
+        # Optional hook (injected by the verifier) answering whether a CALL
+        # node targets a function this run disclosed — the verifier owns that
+        # resolution (bare vs module-qualified, local shadows, and the
+        # imported module's manifest), so this layer asks rather than
+        # re-deriving it.  Signature: (call_node) -> (bool, [site, ...]);
+        # the sites are the imported disclosures behind a True, handed over
+        # for the term rather than left on the verifier's live list.
+        # None when no verifier is driving (pure-SMT tests).
+        self._disclosed_call_hook: Any = None
         # Optional hook (injected by the verifier) returning the source-type
         # facts a constructor pattern's refined / @Nat sub-pattern bindings
         # carry, so a match arm body's call PRECONDITIONS see them (CR
@@ -1670,6 +1700,12 @@ class SmtContext:
         index_fn = self._get_index_fn(array_sort, element_sort)
         for i, elt in enumerate(element_z3s):
             self.solver.add(index_fn(lit_const, z3.IntVal(i)) == elt)
+        # #1418 review F1: the literal's own constant is a STAND-IN — an
+        # element's term is related to it only by the axioms above, which the
+        # occurrence walk cannot see — so a disclosed element must be
+        # inherited explicitly or indexing the value back out severs the
+        # taint.
+        self._inherit_disclosure(expr, lit_const)
         return lit_const
 
     def _translate_unary(
@@ -2479,6 +2515,21 @@ class SmtContext:
         else:
             ret_var = self.declare_int(fresh)
 
+        # #1406/#1407: this call's RESULT is the disclosed value.  Recorded
+        # here — the one place a call's term is minted — so every later
+        # reader of that term (a `let` binding, a projection, a branch join,
+        # a `match` scrutinee) sees the taint without any of them having to
+        # recognise the call.  The hook resolves the callee, so a spelling
+        # the verifier can attribute to a disclosed function taints, and one
+        # it cannot does not.
+        if self._disclosed_call_hook is not None:
+            disclosed, sites = self._disclosed_call_hook(call_node)
+            if disclosed:
+                self._disclosed_terms.append(ret_var)
+                if sites:
+                    self._disclosed_term_sites.setdefault(
+                        ret_var.get_id(), []).extend(sites)
+
         # Assume callee postconditions about the return variable
         saved_result = self._result_var
         self._result_var = ret_var
@@ -2580,7 +2631,65 @@ class SmtContext:
         if span is None:  # pragma: no cover — parser always spans statements
             return None
         self._opaque_tainted = True
-        return z3.Const(f"_opaque_{tag}_{span.line}_{span.column}", sort)
+        stand_in = z3.Const(f"_opaque_{tag}_{span.line}_{span.column}", sort)
+        self._inherit_disclosure(node, stand_in)
+        return stand_in
+
+    def _inherit_disclosure(self, node: object, stand_in: z3.ExprRef) -> None:
+        """A stand-in term inherits the disclosure of the value it replaces.
+
+        #1363's asymmetry, one layer down (#1418 review F1).  Where the SMT
+        layer LOSES a value — a ``let`` whose RHS it cannot translate, an
+        array literal whose elements it can only relate by axiom — it mints a
+        fresh constant, and the recorded provenance of any disclosed call
+        inside that expression is severed.  Every reader still takes the
+        payload refinement off the binding's DECLARED type, so the fact
+        survives while the taint does not, and a `Tuple(mk(x), 1)`
+        destructured back out proved at Tier 1 over a value the program
+        refutes.  Carrier-dependent, which is what made it easy to miss: the
+        same spelling whose binding happens to translate demotes correctly.
+
+        Called at every mint rather than at the two known callers, so a
+        future stand-in is covered by existing code.  The walk is over ONE
+        expression's subtree and runs only when a verifier is driving.
+        """
+        if self._disclosed_call_hook is None:
+            return
+        found, sites = self._disclosed_calls_in(node)
+        if not found:
+            return
+        self._disclosed_terms.append(stand_in)
+        if sites:
+            self._disclosed_term_sites.setdefault(
+                stand_in.get_id(), []).extend(sites)
+
+    def _disclosed_calls_in(self, node: object) -> tuple[bool, list[Any]]:
+        """Whether *node*'s subtree contains a disclosed call, and its sites.
+
+        Answers over the AST rather than the Z3 term precisely because this
+        is the path where there is no usable term: the question is what the
+        expression MEANS, not what survived translation of it.
+        """
+        found = False
+        sites: list[Any] = []
+        stack: list[object] = [node]
+        seen: set[int] = set()
+        while stack:
+            cur = stack.pop()
+            if id(cur) in seen:
+                continue
+            seen.add(id(cur))
+            if isinstance(cur, (ast.FnCall, ast.ModuleCall)):
+                hit, hit_sites = self._disclosed_call_hook(cur)
+                if hit:
+                    found = True
+                    sites.extend(hit_sites)
+            if isinstance(cur, ast.Node):
+                stack.extend(
+                    getattr(cur, f.name) for f in dataclasses.fields(cur))
+            elif isinstance(cur, (list, tuple)):
+                stack.extend(cur)
+        return found, sites
 
     def _term_mentions_opaque(self, term: z3.ExprRef) -> bool:
         """#1199: True when *term* contains an ``_opaque_``-named constant
@@ -3525,6 +3634,82 @@ class SmtContext:
             return SmtResult(status="disclosed")
         return result
 
+    def term_is_disclosed(self, term: object) -> bool:
+        """Whether *term* is, or is built from, a disclosed call's result.
+
+        The VALUE half of the #1363 rule (#1406, #1407).  A disclosed call's
+        fresh result term is recorded in
+        :py:meth:`_translate_call_with_info`; this asks whether the term in
+        hand carries one.  ``@T.0`` after ``let @T = mk(x)`` resolves — via
+        :class:`SlotEnv`, which stores the RHS's term rather than a fresh
+        variable of its own — to that very term, and a destructure or
+        sub-pattern projection is an accessor applied to it, so both answer
+        yes without either being spelled as a call.
+
+        OCCURRENCE, not identity, for the same reason
+        :py:func:`~vera.verifier._is_locally_constructed` recurses through
+        ``ite``: a value joined from two branches is disclosed on whichever
+        branch discloses, and a value projected out of a disclosed one is the
+        disclosed value's own component.  Over-approximating is the safe
+        direction — it demotes out of Tier 1, to a runtime check where one
+        exists (a postcondition's E534) and otherwise to an honest disclosure
+        (an unguarded narrowing's E506), where under-approximating claims a
+        proof the run does not have.
+
+        Costs nothing on a clean run: ``_disclosed_terms`` is empty unless
+        this function actually called something disclosed, and the walk is
+        skipped outright when it is.
+        """
+        if term is None or not self._disclosed_terms:
+            return False
+        return self._term_contains(
+            term, {d.get_id() for d in self._disclosed_terms})
+
+    def _term_contains(self, term: object, wanted: set[int]) -> bool:
+        """Whether any ast id in *wanted* occurs in *term*.
+
+        ONE walk, shared by the withholding test and the citation lookup
+        (#1406, #1399): "the value carrying this fact" and "the value this
+        citation belongs to" have to mean the same thing, and two traversals
+        written separately are two chances for them to drift.
+        """
+        stack: list[Any] = [term]
+        seen: set[int] = set()
+        while stack:
+            cur = stack.pop()
+            try:
+                cur_id = cur.get_id()
+            except (AttributeError, z3.Z3Exception):
+                continue
+            if cur_id in wanted:
+                return True
+            if cur_id in seen:
+                continue
+            seen.add(cur_id)
+            try:
+                stack.extend(cur.children())
+            except (AttributeError, z3.Z3Exception):  # pragma: no cover
+                continue
+        return False
+
+    def disclosed_term_sites(self, term: object) -> list[Any]:
+        """The citation sites of the disclosed values occurring in *term*.
+
+        The companion to :py:meth:`term_is_disclosed`: that answers whether to
+        withhold, this answers what to name when the withholding causes a
+        demotion (#1399's imported-disclosure citation, reached through
+        #1406's value taint).  Empty for a purely local disclosure, which
+        needs no citation — its own E504/E506 is in the same output.
+        """
+        if term is None or not self._disclosed_term_sites:
+            return []
+        out: list[Any] = []
+        for recorded in self._disclosed_terms:
+            sites = self._disclosed_term_sites.get(recorded.get_id())
+            if sites and self._term_contains(term, {recorded.get_id()}):
+                out.extend(sites)
+        return out
+
     def _check_refutation(
         self,
         goal: z3.ExprRef,
@@ -3615,6 +3800,19 @@ class SmtContext:
         reported ``disclosed`` — a demotion inherited from a function it has
         nothing to do with.
 
+        ``_disclosed_terms`` goes with them, and the reason is stated
+        honestly (#1406).  No whole program is known to distinguish keeping
+        it: ``_fresh_name`` carries the CALLEE's name (``_call_mk_3``), and
+        ``_fresh_counter`` resets here, so a surviving entry can only collide
+        with a call to the same-named callee — which has the same disclosure
+        status, so the answer would be right by accident.  It is cleared
+        because the list is per-function state on a context reused across a
+        whole program: left standing it grows without bound over a session,
+        and it makes the correctness of every future answer depend on a
+        naming detail two files away rather than on this line.
+        ``test_1406_reset_forgets_the_previous_functions_disclosed_terms``
+        pins the invariant directly, since no program exhibits it.
+
         ``_length_fns`` / ``_index_fns`` MUST be cleared even though
         their ``FuncDeclRef`` objects stay valid across
         ``solver.reset()``: their side-effect axioms do not.
@@ -3636,6 +3834,8 @@ class SmtContext:
         self._opaque_tainted = False
         self._path_conditions.clear()
         self._tainted_facts.clear()   # #1363: per-function, must not survive
+        self._disclosed_terms.clear()  # #1406: ditto — see the docstring
+        self._disclosed_term_sites.clear()  # and the citations riding on them
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

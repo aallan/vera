@@ -335,6 +335,35 @@ class VerifySummary:
     total: int = 0
 
 
+def disclosed_key(name: str, owner: str) -> str:
+    """The name a disclosure is recorded under: bare, or scoped to its owner.
+
+    ONE spelling, shared by the two halves of the disclosed set — the
+    obligation-derived :func:`disclosed_fn_names` and the result-derived
+    ``_result_disclosed_fns`` — because the set is consulted as their UNION
+    and a key spelled two ways is a member the lookup cannot find.
+
+    A top-level name is its own key: it is visible program-wide.  A ``where``
+    helper's is qualified by its top-level owner, because its bare name means
+    a DIFFERENT function in every owner, and a bare key made one owner's
+    tainted helper demote another owner's clean caller (#1418 review F3).
+    That defect was latent in the obligation-derived half from the start and
+    only became reachable when a helper first carried a disclosing obligation
+    of its own; #1420 widened the reachable set to forwarding helpers, which
+    is what turned the F3 cell red, but the isolated shape reproduces on
+    `release/v0.2.0` before #1420 too.
+
+    Scoping cannot LOSE a demotion that was needed, which is the direction
+    that would matter.  A helper is reachable only through its owner's
+    lexical chain (`_scope_fn_names`), and #1383 refuses a bare call to an
+    imported module's helper, so every caller of a helper sits inside the
+    owner and looks it up under this same key.  The residual is unchanged and
+    still errs toward demotion: two helpers of one name under ONE owner share
+    a key.
+    """
+    return f"{owner}\x1fwhere\x1f{name}" if owner else name
+
+
 def disclosed_fn_names(
     obligations: "list[ProofObligation]",
 ) -> frozenset[str]:
@@ -361,7 +390,8 @@ def disclosed_fn_names(
     disclosed and the taint stopped one hop short.
     """
     return frozenset(
-        o.fn_name for o in obligations if is_disclosing(o)
+        disclosed_key(o.fn_name, o.owner)
+        for o in obligations if is_disclosing(o)
     )
 
 
@@ -446,6 +476,16 @@ class VerifyResult:
     # discharge order.  Empty-list default keeps existing constructors
     # (tests, tooling) source-compatible.
     obligations: list[ProofObligation] = field(default_factory=list)
+    #: The functions this run found to be handing on a disclosed value,
+    #: mapped to the import sites behind each.  NOT derivable from
+    #: `obligations`: a forwarder whose declared return is the same refined
+    #: type as its callee's NARROWS nothing, so #1412 obligates it nothing,
+    #: so a consumer reading only the obligation stream misses it.
+    #: `vera/disclosure.py`'s manifest is such a consumer, and without this
+    #: an importer calling that forwarder proved at Tier 1 what the same
+    #: program in one file demotes (#1418 review J1).
+    result_disclosed: dict[str, list[DisclosureSite]] = field(
+        default_factory=dict)
 
 
 def verify(
@@ -494,6 +534,7 @@ def verify(
         diagnostics=verifier.errors,
         summary=verifier.summary,
         obligations=verifier.obligations,
+        result_disclosed=dict(verifier._result_disclosed_fns),
     )
 
 
@@ -578,6 +619,31 @@ class ContractVerifier:
         # Same lifetime as `SmtContext._tainted_facts`, which is what they
         # describe: per function, cleared with the scope set below.
         self._tainted_sites: list[DisclosureSite] = []
+        # #1407: functions whose own obligations are all fine but whose RESULT
+        # is a disclosed value — a forwarding wrapper, a `where` helper, the
+        # tail of a pipe.  They carry no failed obligation, so
+        # `disclosed_fn_names` cannot see them; they are recorded here as each
+        # body is translated, and unioned in by `_disclosed_fn_names` so the
+        # existing fixpoint carries the taint one hop further per pass.
+        # Mapped to the citation sites BEHIND each one, so a demotion reached
+        # through a forwarder can still name the import at the far end of it
+        # (#1399's citation, carried across #1407's hop).  Empty list = the
+        # forwarder hands on a purely local disclosure, which needs no
+        # citation: its own E504/E506 is in this run's output.
+        self._result_disclosed_fns: dict[str, list[DisclosureSite]] = {}
+        # #1418 review F3: the TOP-LEVEL owner whose lexical scope the
+        # function under verification sits in — itself, or the outermost
+        # ancestor of a `where` helper.  A helper's forwarding is keyed under
+        # it (`_result_disclosed_key`), so two helpers of the same bare name
+        # in different top-level functions no longer share an entry: one
+        # forwarding a disclosed producer used to demote the other's clean
+        # caller.  Set beside `_scope_fn_names`, from the same `(decl,
+        # enclosing)`, so visibility and keying cannot disagree.
+        self._scope_owner: str = ""
+        # Whether that owner is a PARENT (a helper is under verification) or
+        # the function's own name (a top-level one is) — `_scope_owner` alone
+        # cannot say, being the function's own name in the top-level case.
+        self._scope_is_helper: bool = False
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -994,6 +1060,14 @@ class ContractVerifier:
             error_code=error_code,
             counterexample=counterexample,
             file=self._current_file,
+            # An obligation belongs to the scope that records it: every one
+            # of this method's call sites passes the `decl.name` of the
+            # function `_verify_fn` is verifying, so `fn_name` IS the scope's
+            # own name.  A guard comparing the two was written here and
+            # removed: it never differed, over 919 cells and 251 example and
+            # conformance programs, which makes it a term no test could
+            # distinguish rather than a safety net.
+            owner=self._scope_owner if self._scope_is_helper else "",
         ))
 
     @staticmethod
@@ -2996,6 +3070,12 @@ class ContractVerifier:
             # pass's entries suppress this pass's recordings, and the
             # obligation would vanish from the stream that is kept.
             self._construction_obligated = set()
+            # #1407: rebuilt for the same reason — which functions hand on a
+            # disclosed value is a property of the pass that translated them,
+            # and this pass withholds more than the last did.  Recomputing
+            # cannot shrink the set: the input `_disclosed_fns` only grows and
+            # the analysis is monotone in it, so the fixpoint still terminates.
+            self._result_disclosed_fns = {}
             self.register_program(program)
             self._verify_all_declarations(program)
 
@@ -3007,8 +3087,16 @@ class ContractVerifier:
         self._verify_shadowed_module_generics()
 
     def _disclosed_fn_names(self) -> frozenset[str]:
-        """This verifier's obligations, through the shared rule."""
-        return disclosed_fn_names(self.obligations)
+        """This verifier's obligations, through the shared rule — plus the
+        functions that merely HAND ON a disclosed value (#1407).
+
+        The two halves answer the same question about different evidence.
+        `disclosed_fn_names` reads the obligation stream, which is where a
+        function that failed to establish its own declared type shows up.  A
+        forwarder leaves no such trace, so it is collected during body
+        translation instead; both feed the one set every consumer reads."""
+        return (disclosed_fn_names(self.obligations)
+                | frozenset(self._result_disclosed_fns))
 
     def _verify_shadowed_module_generics(self) -> None:
         """Verify each IMPORTED generic's clone at the type args the importer
@@ -3391,6 +3479,18 @@ class ContractVerifier:
         bare helper call resolves to the nearest same-named helper (#991) rather
         than through the flat, last-wins registry.
         """
+        # PER-FUNCTION SCOPE STATE, SET WHERE THE FUNCTION IS ENTERED.  Every
+        # exit from this method below is a function whose body may still be
+        # translated — the generic branch's `_check_generic_refined_return`
+        # translates one and installs the disclosure hook — and the hook asks
+        # `_local_fn_names_in_scope()`, which reads these.  Assigned partway
+        # down the non-generic path, they were the PREVIOUS function's on that
+        # route: a generic could have a local call suppressed, or an import
+        # applied to a local call of the same name, by another function's
+        # helpers (CodeRabbit, PR #1418).  `_tainted_sites` goes with them for
+        # the reason its own comment gives — a citation belongs to the
+        # function whose facts were withheld.
+        self._set_fn_scope(decl, enclosing)
         if decl.forall_vars:
             # #1014: a nested generic helper's instances are keyed by its
             # parent-qualified name (``a$where$g`` — the discovery copy is
@@ -3476,11 +3576,6 @@ class ContractVerifier:
         # consult (`_local_fn_names_in_scope`).  Set here so the two answers
         # are built from one `(decl, enclosing)` and cannot disagree about
         # which helpers are visible.
-        self._scope_fn_names = frozenset(
-            wfn.name
-            for group in (decl, *enclosing)
-            for wfn in group.where_fns or ()
-        )
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
@@ -3506,6 +3601,12 @@ class ContractVerifier:
         # arm body's call PRECONDITIONS — the E501 path the narrowing-walk fact
         # carry never reaches.  Stateless, so safe on the warm (shared) smt too.
         smt._subpattern_fact_hook = self._subpattern_source_facts
+        # #1406/#1407: and let it record a DISCLOSED call's result term, so
+        # the taint follows the value into every binding, projection and
+        # branch that value reaches.  The terms it causes to be recorded are
+        # per-function state, which `SmtContext.reset()` clears — so the warm
+        # (shared) smt is safe for the same reason `_tainted_facts` is.
+        smt._disclosed_call_hook = self._disclosed_call_for_value
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -3651,6 +3752,24 @@ class ContractVerifier:
 
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
+
+        # 5.05. #1407: does this function HAND ON a disclosed value?  A
+        #       forwarding wrapper makes no claim that needs the disclosed
+        #       fact, so it contributes no obligation and
+        #       `disclosed_fn_names` — which reads the obligation stream —
+        #       cannot see it, while its caller reads facts off the very
+        #       declared type the original callee failed to establish.  The
+        #       body term already carries the taint (the `let`, the branch
+        #       join, the projection are all in it), so the question is just
+        #       whether the value leaving here is a disclosed one.  Recorded,
+        #       not acted on: `_disclosed_fn_names` unions it and the
+        #       `_rerun_until_disclosure_settles` fixpoint does the rest, one
+        #       hop per pass, so a chain of wrappers of any depth terminates
+        #       for the reason the fixpoint already terminates.
+        if smt.term_is_disclosed(body_expr):
+            self._result_disclosed_fns[
+                self._result_disclosed_key(decl.name, is_helper=bool(enclosing))
+            ] = smt.disclosed_term_sites(body_expr)
 
         # 5.5. Check primitive-operation safety obligations (spec §6.4.3):
         #      @Nat - @Nat underflow (#520), and division/modulo by zero
@@ -6524,6 +6643,21 @@ class ContractVerifier:
                         stmt.value,
                         (ast.SlotRef, ast.FnCall, ast.ModuleCall),
                     )
+                    # #1413: the THIRD reader.  "A call — its callee
+                    # discharged the return type" is precisely the premise
+                    # disclosure withdraws, so a guaranteed source is not
+                    # guaranteed when this run disclosed it.  A `SlotRef`
+                    # source is answered by its TERM (translating one is an
+                    # env lookup, recording no obligation) and a call by its
+                    # callee, which covers a forwarding wrapper too; the
+                    # translation is skipped outright unless some disclosure
+                    # is live, so a clean program pays nothing.
+                    src_term = None
+                    if source_guaranteed and self._disclosure_is_live(smt):
+                        src_term = (
+                            smt.translate_expr(stmt.value, cur_env)
+                            if isinstance(stmt.value, ast.SlotRef) else None
+                        )
                     pushed: list[tuple[str, object]] = []
                     seeds: list[object] = []
                     for i, te in enumerate(stmt.type_bindings):
@@ -6554,7 +6688,19 @@ class ContractVerifier:
                                 comp_fact = self._term_source_fact(
                                     smt, src_args[i], slot_val)
                                 if comp_fact is not None:
-                                    seeds.append(comp_fact)
+                                    # Through the shared gate.  Withholding
+                                    # moves a BLOCK-scoped seed onto a
+                                    # FUNCTION-scoped list, which widens only
+                                    # the second (tainted) attempt — the one
+                                    # whose sole outcome is a `disclosed`
+                                    # demotion.  A fact leaking past its block
+                                    # can therefore cost a Tier-1 proof
+                                    # elsewhere in the function, never grant
+                                    # one; the arm facts have been carried the
+                                    # same way since #1363.
+                                    seeds.extend(self._established_facts(
+                                        [comp_fact], source=stmt.value,
+                                        term=src_term, smt=smt))
                     for tn, sv in pushed:
                         cur_env = cur_env.push(tn, sv)
                     block_assumptions.extend(seeds)
@@ -8069,36 +8215,6 @@ class ContractVerifier:
             return False
         return _is_locally_constructed(val, sort)
 
-    def _value_source_disclosed(self, expr: ast.Expr) -> bool:
-        """Whether the value *expr* PRODUCES came from a call this run
-        disclosed (#1410).
-
-        :py:meth:`_scrutinee_is_disclosed_call` answers of one expression, and
-        that is the wrong grain here: `decl.body` is ALWAYS a ``Block``, so at
-        the return position the bare test answered False for every function
-        there is — measured, and it is what let a `wrap` forwarding a disclosed
-        `mk` publish `Option<PosInt>` at Tier 1.  An argument can be a
-        ``Block`` or a branch just as easily.
-
-        Descend to the value-producing leaves and take ``any``, the same
-        conservatism :py:func:`_is_locally_constructed` takes over an ``ite``
-        and :py:meth:`_all_leaves_construct` over its arms: one leaf standing on a
-        disclosed producer is one path on which the declared type was never
-        established, and the fact must not be granted on the strength of the
-        other.
-        """
-        if isinstance(expr, ast.Block):
-            return (expr.expr is not None
-                    and self._value_source_disclosed(expr.expr))
-        if isinstance(expr, ast.IfExpr):
-            return (self._value_source_disclosed(expr.then_branch)
-                    or (expr.else_branch is not None
-                        and self._value_source_disclosed(expr.else_branch)))
-        if isinstance(expr, ast.MatchExpr):
-            return any(self._value_source_disclosed(arm.body)
-                       for arm in expr.arms)
-        return self._scrutinee_is_disclosed_call(expr)
-
     def _nested_refinement_formal(
         self, arg: ast.Expr, formal: Type | None,
     ) -> Type | None:
@@ -8391,12 +8507,6 @@ class ContractVerifier:
             return
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)
-        # A call to a function this run DISCLOSED did not establish its own
-        # declared type, so that type is not a premise here — the same third
-        # case #1363 named at the match scrutinee, at these boundaries
-        # instead.  Asked of the value's producing LEAVES, because a body is
-        # always a `Block` and the per-expression test answers False for one.
-        disclosed = self._value_source_disclosed(value_node)
         # Guardedness is the SITE half intersected with the TYPE half, the
         # same shape every other `refine_bind` leg uses (#765): the roster
         # says whether codegen guards AT this position, and
@@ -8435,11 +8545,19 @@ class ContractVerifier:
             return
         source_facts, _ = self._nested_refinement_facts(smt, source_ty, val)
         premises = list(assumptions)
-        if source_facts:
-            if disclosed:
-                smt._tainted_facts.extend(source_facts)
-            else:
-                premises.extend(source_facts)
+        # THE GATE, not a fourth hand-rolled copy of it (#1418 review).  This
+        # site had a local test of its own instead — since deleted with its
+        # only call site — which descended to the value's producing leaves and
+        # put a SYNTACTIC question to each, so a `let`-bound disclosed
+        # producer arrived as a slot reference, answered False, and its
+        # declared type was granted as a premise.  That
+        # is #1406 exactly, in a reader added after it: measured, the same
+        # value gave this obligation `tier3_unguarded` spelled
+        # `consume(mk(x))` and `verified` spelled
+        # `let @T = mk(x); consume(@T.0)`.  The gate asks of the VALUE, so
+        # both spellings agree.
+        premises.extend(self._established_facts(
+            source_facts, source=value_node, term=val, smt=smt))
         goal = z3.And(*goal_facts) if len(goal_facts) > 1 else goal_facts[0]
         result = smt.check_valid(goal, premises)
         if result.status == "verified" and complete:
@@ -8887,6 +9005,12 @@ class ContractVerifier:
         # `match` arm would otherwise false-E505/E501 (the arm accessor is
         # translated without the field's source refinement fact).
         smt._subpattern_fact_hook = self._subpattern_source_facts
+        # #1406/#1407: and let it record a DISCLOSED call's result term, so
+        # the taint follows the value into every binding, projection and
+        # branch that value reaches.  The terms it causes to be recorded are
+        # per-function state, which `SmtContext.reset()` clears — so the warm
+        # (shared) smt is safe for the same reason `_tainted_facts` is.
+        smt._disclosed_call_hook = self._disclosed_call_for_value
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.
@@ -9016,7 +9140,15 @@ class ContractVerifier:
         if source_ty is not None:
             src_fact = self._term_source_fact(smt, source_ty, term)
             if src_fact is not None:
-                local_assumptions.append(src_fact)
+                # #1413: the SECOND reader.  The premise is sound on the rule
+                # `_term_source_fact` states — every producer of a refined
+                # value is obligated to discharge it — and a DISCLOSED
+                # producer is the case that rule does not cover.  Through the
+                # shared gate, so it cannot drift from the other two; when it
+                # withholds, the non-verdict branch below already reports the
+                # Tier-3 E506 with `_undecided_reason("disclosed")`'s wording.
+                local_assumptions.extend(self._established_facts(
+                    [src_fact], source=node, term=term, smt=smt))
         result = smt.check_valid(goal, local_assumptions)
         if result.status == "verified":
             self._record_obligation(decl.name, "refine_bind", node, "verified")
@@ -9164,16 +9296,198 @@ class ContractVerifier:
             return []  # literal scrutinee — concrete args, not accessors
         facts = self._subpattern_source_facts_term(
             self._resolved_type_of(scrutinee), scrutinee_z3, pattern, smt)
-        if facts and self._scrutinee_is_disclosed_call(scrutinee):
-            # #1363: the declared type these facts are read off belongs to a
-            # callee whose OWN obligation for it was disclosed, not
-            # discharged.  The boundary rule that a call-produced value's
-            # facts were established elsewhere has a third case — disclosed —
-            # and this is it.  Held apart rather than dropped: a goal that
-            # needs them is still reported, as Tier 3 rather than Tier 1.
-            smt._tainted_facts.extend(facts)
-            return []
-        return facts
+        # #1363: the declared type these facts are read off may belong to a
+        # callee whose OWN obligation for it was disclosed rather than
+        # discharged.  That question, and what to do about it, belong to
+        # :py:meth:`_established_facts` — the one gate every reader shares.
+        return self._established_facts(
+            facts, source=scrutinee, term=scrutinee_z3, smt=smt)
+
+    def _set_fn_scope(
+        self, decl: ast.FnDecl, enclosing: tuple[ast.FnDecl, ...],
+    ) -> None:
+        """Bind the per-function lexical scope, from one ``(decl, enclosing)``.
+
+        The visible ``where``-helper names (#1399's `_local_fn_names_in_scope`),
+        the owning top-level name those helpers' disclosures are keyed under
+        (#1418 review F3), and the citation list that belongs to this function
+        and no other — all three derived here so they cannot disagree about
+        which function is under verification, and called at the ONE place that
+        knows: the entry to :py:meth:`_verify_fn`.
+        """
+        self._scope_fn_names = frozenset(
+            wfn.name
+            for group in (decl, *enclosing)
+            for wfn in group.where_fns or ()
+        )
+        # `enclosing` is built by APPENDING each parent — `top -> H1 -> H2`
+        # gives H2 `(top, H1)` — so the OUTERMOST is index 0.  Taking the
+        # last recorded H2 under `H1$where$H2` while H1 looked it up as
+        # `top$where$H2`, and the miss was in the unsound direction: H1
+        # discharged a Tier-1 obligation from H2's disclosed result
+        # (CodeRabbit, PR #1418).  One owner per top-level function is
+        # the whole point of the key.
+        self._scope_owner = enclosing[0].name if enclosing else decl.name
+        # Which of the two the obligations recorded under this scope belong to.
+        # `_scope_owner` alone cannot say: for a top-level function it IS the
+        # function's own name, so a helper and its owner are indistinguishable
+        # by it.
+        self._scope_is_helper = bool(enclosing)
+        self._tainted_sites = []
+
+    def _result_disclosed_key(self, name: str, *, is_helper: bool) -> str:
+        """The key a forwarding function's disclosure is recorded under (F3).
+
+        A top-level name is its own key: it is visible program-wide, and every
+        other disclosure set here is keyed that way.  A ``where`` helper's is
+        qualified by the top-level owner whose scope it lives in, because its
+        bare name means different functions in different owners — and keying
+        it bare made one owner's tainted helper demote another owner's clean
+        caller, which is a completeness loss rather than a soundness one but
+        is a loss all the same.
+
+        Two helpers of the same name under ONE top-level owner still share a
+        key.  That is the diamond #991 addresses for resolution and this does
+        not: the residual is a demotion, the safe direction, and narrowing it
+        further means carrying the whole lexical chain as the key rather than
+        its root.
+        """
+        return disclosed_key(name, self._scope_owner if is_helper else "")
+
+    def _scoped_forwarder_hit(self, name: str) -> bool:
+        """Whether *name*, called from the scope under verification, resolves
+        to a ``where`` helper this run found to be forwarding a disclosed
+        value (F3).
+
+        Asked only for a name the lexical chain actually supplies
+        (`_scope_fn_names`), so a top-level call is never answered by another
+        function's helper — the mirror of the visibility test
+        `_local_fn_names_in_scope` already applies to the manifest consult.
+        """
+        if name not in self._scope_fn_names:
+            return False
+        return self._result_disclosed_key(
+            name, is_helper=True) in self._disclosed_fns
+
+    def _disclosed_call_for_value(
+        self, call_node: ast.Expr,
+    ) -> tuple[bool, list[DisclosureSite]]:
+        """The SMT layer's hook: is this call disclosed, and on whose word?
+
+        `_scrutinee_is_disclosed_call` records an imported disclosure's
+        citation site as it consults the manifest, which is right when it is
+        asked AT the place a fact is withheld — the site then belongs to this
+        function's demotion.  This hook asks at every modelled call instead,
+        which is earlier and more often, so a site left on the live list here
+        would be cited by a demotion that had nothing to do with it: a
+        function that calls an imported disclosed helper and is demoted for an
+        unrelated local reason would name the import as the culprit.
+
+        So the site is taken back off the list and returned, for the SMT layer
+        to park on the term the call produced.  It is put back by
+        :py:meth:`_established_facts`, and only if that value's facts are the
+        ones actually withheld — which is what makes the citation true of the
+        demotion that carries it, and is also how a `let`-bound imported call
+        keeps its citation at all, its scrutinee being a slot reference by the
+        time anything asks.
+        """
+        before = len(self._tainted_sites)
+        hit = self._scrutinee_is_disclosed_call(call_node)
+        sites = self._tainted_sites[before:]
+        del self._tainted_sites[before:]
+        if hit and not sites:
+            # A FORWARDER answers True from `_result_disclosed_fns` rather
+            # than from the manifest, so it recorded nothing above — but the
+            # import it forwards is exactly what a demotion here should cite,
+            # and the sites were collected when its own body was translated.
+            # Without this the wrapper spelling demotes with no culprit named,
+            # which is the gap #1399 closed for the direct spelling.
+            name = getattr(call_node, "name", "")
+            sites = list(self._result_disclosed_fns.get(name, ()))
+            if not sites and name:
+                sites = list(self._result_disclosed_fns.get(
+                    self._result_disclosed_key(name, is_helper=True), ()))
+        return hit, sites
+
+    def _established_facts(
+        self,
+        facts: list[object],
+        *,
+        source: ast.Expr | None,
+        term: object,
+        smt: SmtContext,
+    ) -> list[object]:
+        """The subset of *facts* this run ESTABLISHED — all of them, or none.
+
+        THE single gate for every reader of a value's declared-type facts
+        (#1363, #1406, #1407, #1413).  There are three such readers — a
+        ``match`` arm's sub-pattern bindings, the premise that lets a
+        projected value re-narrow into a second refinement, and the component
+        invariant a ``let``-destructure seeds — and #1363 gated one of them,
+        which is how two false Tier-1s outlived it, each proving at Tier 1
+        over a value the compiled program then handed back unguarded.  They
+        ASK here rather than each deciding, so a fourth reader is a call to
+        this function or it is a bug, and there is one place to read to learn
+        what the rule is.
+
+        Withheld, never dropped.  A fact this run did not establish goes to
+        ``smt._tainted_facts``, where ``check_valid`` offers it only on the
+        SECOND attempt — so a goal that needs it is still reported, as Tier 3
+        rather than Tier 1, instead of failing as though nothing were known.
+
+        *source* is the expression the value came from and *term* its Z3 term.
+        Either may be absent; they answer different halves of the same
+        question (see :py:meth:`_value_is_disclosed`).
+        """
+        if not facts or not self._value_is_disclosed(source, term, smt):
+            return facts
+        # Attribute it.  A syntactic hit recorded its own site as it consulted
+        # the manifest; a TERM hit's site was parked on the value when the
+        # call produced it (`_disclosed_call_for_value`), so bring it across
+        # now — the demotion that follows is the one it is true of.  Duplicates
+        # are harmless: both citation texts dedupe on `site.cite()`.
+        self._tainted_sites.extend(smt.disclosed_term_sites(term))
+        smt._tainted_facts.extend(facts)
+        return []
+
+    def _disclosure_is_live(self, smt: SmtContext) -> bool:
+        """Whether this run has disclosed anything at all.
+
+        The cheap precondition for the whole mechanism.  With nothing
+        disclosed every gate below answers False, so a caller that would have
+        to WORK to supply :py:meth:`_established_facts` its arguments — the
+        destructure reader translates its source expression — asks this first
+        and skips.  That keeps the cost on programs that actually have a
+        disclosure, which, measured over the corpus, is none of them."""
+        return bool(self._disclosed_fns or smt._disclosed_terms)
+
+    def _value_is_disclosed(
+        self, source: ast.Expr | None, term: object, smt: SmtContext,
+    ) -> bool:
+        """Whether a value came from a function this run disclosed.
+
+        The whole of the #1363 rule, in the form that does not depend on how
+        the value was spelled (#1406, #1407).  Two questions, either of which
+        is enough:
+
+        * is *source* written AS a disclosed call
+          (:py:meth:`_scrutinee_is_disclosed_call`) — the answer that still
+          works when the value has no Z3 term at all; and
+        * is *term* a disclosed call's result
+          (:py:meth:`SmtContext.term_is_disclosed`) — the answer that follows
+          the value through a ``let``, a destructure, a projection, a branch
+          join, and through any wrapper the fixpoint has by now marked
+          disclosed in its own right.
+
+        Neither subsumes the other.  A scrutinee the SMT layer could not
+        translate has no term but is still a recognisable call; a ``let``-bound
+        one has a term but is a slot reference.  Asking both is what makes the
+        demotion a property of the value rather than of the syntax."""
+        return (
+            (source is not None
+             and self._scrutinee_is_disclosed_call(source))
+            or smt.term_is_disclosed(term)
+        )
 
     def _scrutinee_is_disclosed_call(self, scrutinee: ast.Expr) -> bool:
         """Whether *scrutinee* is a call to a function that was disclosed.
@@ -9207,6 +9521,11 @@ class ContractVerifier:
             return False
         name = scrutinee.name
         if name in self._disclosed_fns:
+            return True
+        # F3: a `where` helper's forwarding is keyed under its owner, so the
+        # bare-name test above cannot see it; this asks the scoped question,
+        # and only for a name the lexical chain supplies.
+        if self._scoped_forwarder_hit(name):
             return True
         if isinstance(scrutinee, ast.ModuleCall):
             if self._module_qualified_base(

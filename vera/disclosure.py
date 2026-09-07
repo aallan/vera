@@ -434,6 +434,36 @@ def _verify_for_disclosure(
     # WHICH functions is the shared derivation's answer; the walk below only
     # decorates it with the obligation that earned each one, selected by the
     # same predicate so the two cannot disagree about what disclosed what.
+    #
+    # This loop decorates the OBLIGATION-derived half; the loop after it adds
+    # the RESULT-derived half (G1).  A function is disclosed when its result
+    # is a disclosed value.  Since #1412 that has ONE kind of evidence: an
+    # obligation of its own that was neither proved nor guarded.  A forwarder
+    # used to make no claim and so record nothing, which made it invisible
+    # here while the same declarations in one file demoted correctly — so
+    # this emitted the union of the obligation-derived set with the
+    # result-derived one.  #1412 then obligated a refined return at every
+    # position that publishes it, which closes that gap where it opens: a
+    # forwarder handing on a refined value carries its own unguarded
+    # obligation, and one that does NOT publish the refinement hands on no
+    # fact for a consumer to lean on.
+    #
+    # THE CLAIM IS BOUNDED BY WHAT WAS MEASURED, not by that argument.  With
+    # the union reverted, no verdict moved across a forwarder dropping the
+    # refinement, one through a `where` helper, one returning a tuple
+    # carrying the payload, one two import hops away, and one in an
+    # `Exn`-declared function; and removing it changed no cell in the suite.
+    #
+    # #1412 does NOT guard every narrowing.  `_NAT_CONSTRUCTION_GUARDED_SITES`
+    # is `{"tuple component"}`, so an ARRAY ELEMENT and a `Map` VALUE still
+    # disclose, by design (#1418 review J1).  Neither reaches a consumer as a
+    # declared-type fact in any shape measured: an array's elements are
+    # modelled opaquely, so a consumer indexing one, passing it to a nested
+    # refinement, or re-narrowing it with a `let` is REFUTED (E500) rather
+    # than falsely proved, and a `Map` insert emits no narrowing obligation
+    # at all.  If a shape is found where such a producer's disclosure DOES
+    # reach an importer through a forwarder, this is where the union goes
+    # back — for that case, with the reason on the DisclosureSite.
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
@@ -443,4 +473,41 @@ def _verify_for_disclosure(
                 file=o.file or file, line=o.line, column=o.column,
                 error_code=o.error_code or "",
             )
+    # A forwarder that narrows nothing has no obligation to decorate, so the
+    # loop above skipped it (#1418 review J1).  Cite the import behind it when
+    # there is one, and otherwise the forwarder's own declaration — the
+    # position a reader of the importing diagnostic should open, from which
+    # the local disclosure it hands on is one call away and carries its own
+    # E504/E506 in that module's run.
+    for name, sites in result.result_disclosed.items():
+        if name in manifest:
+            continue
+        if sites:
+            manifest[name] = sites[0]
+            continue
+        manifest[name] = DisclosureSite(
+            module=mod.path, fn_name=name, file=file,
+            line=_decl_line(mod, name), column=0, error_code="",
+        )
     return manifest
+
+
+def _decl_line(mod: ResolvedModule, name: str) -> int:
+    """The line *name* is declared on in *mod*, or 0 when it cannot be found.
+
+    Walks the declarations rather than trusting a registry, because a
+    forwarder may be a ``where`` helper, which the flat last-wins registries
+    cannot name (#1418 review G1).
+    """
+    from vera import ast
+
+    stack = [
+        tld.decl for tld in mod.program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+    ]
+    while stack:
+        decl = stack.pop()
+        if decl.name == name and decl.span is not None:
+            return int(decl.span.line)
+        stack.extend(decl.where_fns or ())
+    return 0
