@@ -10,11 +10,16 @@ join under a `z3.If`, and the raise escaped as an `[E699]` internal compiler
 error on a program `vera check` accepts.
 
 The fix is in the derivation, not in a catch: a refinement contributes its
-BASE.  `{ @Int | P }` is an `Int` at the representation level — `RefinedType`'s
-own docstring says it behaves as its base for subtyping, and the predicate is
-discharged as an obligation at each narrowing site rather than carried in the
-sort — so `Option<{ @Int | P }>` and `Option<Int>` are one sort and the two
-routes agree by construction.
+BASE.  That rule is already stated in `_vera_type_to_z3_sort` — "a
+refinement's Z3 SORT is its base's sort; the predicate constrains values, not
+the carrier set, and is enforced separately" — so `Option<{ @Int | P }>` and
+`Option<Int>` are one sort and the two routes agree by construction.  What was
+missing was ONE implementation of it.
+
+The unwrap is ONE LEVEL and a chain is left unmodelled by design: the
+predicate half of that rule stops at a primitive base, so stripping a chain
+would supply a sort without the predicates and turn valid code into a false
+E526.  See `strip_refinements`.
 
 Same family as #884 (two Vera types colliding on one sort NAME) and #1360 (two
 routes deriving different sorts for a nested constructor).  #1360 made the
@@ -22,7 +27,9 @@ crash emit a parseable envelope; this makes the sorts agree so there is no
 crash to wrap.  #1424 is the same defect reached from a single module and is
 closed by the same fix.
 
-Every cell asserts a REAL VERDICT, not merely the absence of the crash: a
+Four shapes crash on `release/v0.2.0`; the fifth is the unrefined control,
+which never crashed and must not move.  Every cell asserts a REAL VERDICT,
+not merely the absence of the crash: a
 verifier that answered `E699` for these programs was unusable on them, and one
 that answered "no obligations" would be hiding them.
 """
@@ -319,41 +326,122 @@ def test_1421_the_unrefined_shape_is_unchanged(tmp_path: Path) -> None:
 def test_1421_a_refinement_keys_to_its_base() -> None:
     """The unit statement of the rule, under the two routes that disagreed.
 
-    Asserted on the key function rather than only through programs, because
-    the property is an EQUALITY between two spellings of one type: a
-    refinement and its base have to produce the same key, or somewhere a
-    `z3.If` joins two sorts.  A refinement over a refinement lands on the same
-    base, and a type the sort layer cannot name still refuses to be guessed.
+    Asserted on both routes rather than only through programs, because the
+    property is an EQUALITY between two spellings of one type: a refinement
+    and its base have to produce the same key AND the same sort, or somewhere
+    a `z3.If` joins two sorts.
     """
     from vera import ast
-    from vera.smt import _adt_sort_key
+    from vera.smt import SmtContext, _adt_sort_key
     from vera.types import INT, AdtType, RefinedType, TypeVar
 
     pred = ast.BoolLit(value=True)
     pos = RefinedType(base=INT, predicate=pred)
-    nested = RefinedType(base=pos, predicate=pred)
+    chain = RefinedType(base=pos, predicate=pred)
+    smt = SmtContext()
 
     assert _adt_sort_key("Option", (INT,)) == "Option<Int>"
     assert _adt_sort_key("Option", (pos,)) == "Option<Int>"
-    assert _adt_sort_key("Option", (nested,)) == "Option<Int>"
     # ... and inside a nested ADT argument, the position #1360 exercised.
     assert _adt_sort_key(
         "Option", (AdtType("Tuple", (pos, INT)),),
     ) == "Option<Tuple<Int, Int>>"
-    # A type variable is still un-nameable: the key refuses rather than
-    # inventing an instantiation, which is what `_parse_adt_sort_key` relies
-    # on when it declines a key containing `?`.
+
+    # A CHAIN keys `?`, and that asserts a REFUSAL rather than a capability.
+    # `_translate_refined_predicate` reads `{ @Base | P }` with a primitive
+    # base, so neither predicate of `{ { @Int | P } | Q }` is translated;
+    # naming the sort `Option<Int>` would model the value as an unconstrained
+    # `Int` and report `violated`/E526 on code the chain proves safe (review
+    # of PR #1431, F1 — measured, and the program cell below is the witness).
+    assert _adt_sort_key("Option", (chain,)) == "Option<?>"
+    assert smt._vera_type_to_z3_sort(chain) is None
+    # Both routes refuse TOGETHER, which is the agreement being bought here —
+    # the single-refinement case is where they must both succeed.
+    assert smt._vera_type_to_z3_sort(pos) is not None
+
+    # A type variable is un-nameable for its own reason and stays so.
     assert "?" in _adt_sort_key("Option", (TypeVar("T"),))
 
 
 def test_1421_an_unnameable_key_is_still_refused() -> None:
-    """The `?` path stays a refusal, not a sort.
+    """A PIN, not a mutation-killing cell — recorded as such.
 
-    The fix narrows what reaches `?`; it must not narrow it to nothing, or a
-    key that cannot name its arguments would round-trip into a confident but
-    wrong instantiation.
+    `_parse_adt_sort_key` refuses a key containing `?` rather than
+    round-tripping it into a confident but wrong instantiation.  I could not
+    construct a mutation of the fix that this cell kills and the others do
+    not, so it earns its place by pinning a contract the fix leans on, not by
+    discriminating (review of PR #1431, F5).  Removing the `?` guard makes
+    `_parse_adt_sort_key` return an `AdtType` for a type it cannot name, which
+    is what this refuses to let happen silently.
     """
     from vera.smt import SmtContext
 
     assert SmtContext._parse_adt_sort_key("Option<?>") is None
     assert SmtContext._parse_adt_sort_key("Option<Int>") is not None
+
+
+# ---------------------------------------------------------------------------
+# The chain is refused on BOTH routes, and that refusal is load-bearing
+# ---------------------------------------------------------------------------
+
+#: `Small` refines `Pos` refines `Int` — a refinement over a refinement, as a
+#: nested type argument, with a division the chain's own predicates prove safe.
+_TUPLE_CHAIN = """\
+type Pos = { @Int | @Int.0 > 0 };
+type Small = { @Pos | @Pos.0 < 10 };
+
+private fn mk(@Int -> @Option<Tuple<Small, Int>>)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  Some(Tuple(@Int.0, 7))
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(Tuple(@Small, @Int)) -> 100 / @Small.0,
+    None -> 1
+  }
+}
+"""
+
+
+def test_1421_a_refinement_chain_stays_unmodelled(tmp_path: Path) -> None:
+    """Stripping the WHOLE chain would be a false E526 — this is the witness.
+
+    The obvious reading of "a refinement contributes its base" is to strip the
+    chain, and it is wrong.  The predicate half of the rule stops at a
+    primitive base — `_translate_refined_predicate` reads `{ @Base | P }` with
+    `@Base` primitive — so for `{ { @Int | P } | Q }` neither predicate is
+    translated.  Strip the chain and the SORT succeeds while the predicates
+    stay absent: the payload becomes an unconstrained `Int` and
+    `100 / @Small.0` is reported `violated`/**E526** although `Small` proves
+    the divisor lies in `(0, 10)`.  A false positive on valid code, which is
+    the #854/#884 class this project treats as a defect.
+
+    So both routes refuse a chain together, and this program is the
+    discriminator: it reads `div_zero`/`tier3` on `release/v0.2.0` and on this
+    branch, and flips to E526 the moment `strip_refinements` loops.  That is
+    the mutation this cell exists to kill (review of PR #1431, F1/F4).
+
+    Conjoining a chain's predicates so the strip becomes correct is #1434.
+    """
+    result = _verify(_tree(tmp_path, {"p": _TUPLE_CHAIN})["p"])
+    assert result["ok"] is True, result["diagnostics"]
+    div = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == "div_zero"
+    ]
+    assert div == [("tier3", None)], (
+        f"a refinement chain stopped being refused — an E526 here is the "
+        f"unconstrained-Int false positive: {_kinds(result)}"
+    )
+    # The chain's own binding is honestly disclosed rather than proved.
+    assert ("refine_bind", "tier3_unguarded", "E506") in _kinds(result), (
+        _kinds(result)
+    )
