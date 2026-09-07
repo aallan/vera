@@ -424,9 +424,13 @@ public fn boxer(@Int -> @Box<Int>)
         """Its sibling, and the shape #1423 changed.
 
         The same two declarations — ``Box<T>`` in the module, ``Box`` in the
-        entry — with the module taken UNCHANGED, so its only export is
-        ``probe`` (``@Int -> @Int``) and no signature carries a ``Box`` to
-        the entry, whose own declaration shadows the name.  They cannot meet, so the module's is compiled under its own
+        entry — with the module taken UNCHANGED.  It exports both halves
+        (``public data Box<T>`` and ``public fn probe``), so what keeps them
+        apart is the ENTRY's side: ``import blib(probe);`` is selective and
+        admits the function without the type, and ``probe``'s
+        ``@Int -> @Int`` signature carries no ``Box`` either — so nothing
+        reaches the entry, whose own declaration shadows the name in any
+        case.  They cannot meet, so the module's is compiled under its own
         owner-qualified symbol and the program runs.  Before #1423 this was
         E623, and adding an unrelated second module that also declared
         ``Box`` lifted that refusal — the non-monotonicity the entry-owner
