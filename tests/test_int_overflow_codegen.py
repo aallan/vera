@@ -12,8 +12,13 @@ doc — matching the #520 ``nat_sub`` and #552 nat-bind precedent), so it
 classified as ``kind="unreachable"``.  #808 wired it to the ``vera.overflow_trap``
 host import, so an integer-overflow trap now classifies as ``kind="overflow"``
 and carries the overflow Fix paragraph; ``TestOverflowTrapKind808`` pins that,
-with controls proving the #520 ``nat_sub`` underflow and #813 ``@Nat``→``@Int``
-widen guards are unchanged (still bare ``unreachable``).
+with controls proving the ``vera.overflow_trap`` channel does not leak into the
+neighbouring guards.  Those controls assert each neighbour's OWN kind, not a
+shared one: the #520 ``nat_sub`` underflow is still a bare ``unreachable``,
+while the #813 ``@Nat``→``@Int`` widen guard reports ``kind="widen_guard"``
+since #1438 gave it a dedicated ``vera.widen_trap`` signal (the #754 pattern) —
+before that it, too, was indistinguishable from a bare ``unreachable``.  What
+matters for the #808 boundary is that neither reports ``"overflow"``.
 
 Written test-first: every ``*_traps`` test FAILS on the pre-Stage-3 codegen
 (the op wraps silently → no trap → ``execute`` returns a value), and every
@@ -582,9 +587,13 @@ def _trap_kind(source: str, fn: str, args: list[int]) -> str:
 
 
 # #813 @Nat -> @Int widening: a @Nat value above i64.MAX reinterprets to a
-# negative @Int at the return position, so the #813 guard traps.  Its trap stays
-# a bare ``unreachable`` (its own deferred dedicated trap kind, #820) — the #808
-# overflow_trap import must NOT leak into it.  De Bruijn: widen returns @Nat.0.
+# negative @Int at the return position, so the #813 guard traps.  #1438 finally
+# gave that guard the dedicated trap kind #820 deferred: it calls
+# ``vera.widen_trap`` before its ``unreachable``, so the trap reports
+# ``kind="widen_guard"`` instead of the anonymous ``"unreachable"`` it used to
+# share with every non-exhaustive match.  It is still NOT ``"overflow"``, which
+# is the boundary this control measures: the #808 overflow_trap import must NOT
+# leak into it.  De Bruijn: widen returns @Nat.0.
 _NAT_TO_INT_WIDEN = """
 public fn widen(@Nat -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -596,8 +605,11 @@ class TestOverflowTrapKind808:
     """#808: the #798 integer-overflow guard surfaces a precise
     ``kind="overflow"`` (via the ``vera.overflow_trap`` host import) rather than
     the generic ``"unreachable"``, so the runtime diagnostic carries the
-    overflow Fix paragraph.  The ``@Nat``-underflow (#520) and negative-i64
-    (#552 / #813) guards are unchanged and still classify ``"unreachable"``."""
+    overflow Fix paragraph.  The neighbouring guards keep their own
+    classification: the ``@Nat``-underflow (#520) and the negative-i64 nat-bind
+    (#552) still classify ``"unreachable"``, while the ``@Nat``->``@Int`` widen
+    guard (#813) classifies ``"widen_guard"`` — #1438 gave it its own
+    ``vera.widen_trap`` signal.  None of the three is ``"overflow"``."""
 
     def test_int_add_overflow_is_overflow_kind(self) -> None:
         assert _trap_kind(_INT_ADD, "add", [I64_MAX, 1]) == "overflow"
@@ -624,19 +636,22 @@ class TestOverflowTrapKind808:
     def test_nat_mul_overflow_is_overflow_kind(self) -> None:
         assert _trap_kind(_NAT_MUL, "mul", [U64_MAX, 2]) == "overflow"
 
-    # --- controls: unchanged guards still classify "unreachable" ---
+    # --- controls: the neighbouring guards keep their OWN kind ---
     # These pin the #808 boundary: the overflow_trap import is wired ONLY into
-    # the #798 integer-overflow guard, NOT the #520 nat_sub underflow guard nor
-    # the #813 @Nat->@Int widen guard (both deferred, still bare unreachable).
-    # Without them, a regression wiring overflow_trap into *every* guard would
-    # still pass the "overflow" cases above — the controls make the change
-    # distinguishable from "classify everything as overflow".
+    # the #798 integer-overflow guard, NOT the #520 nat_sub underflow guard (a
+    # bare unreachable to this day) nor the #813 @Nat->@Int widen guard (a bare
+    # unreachable until #1438 gave it the vera.widen_trap signal and its own
+    # `widen_guard` kind).  Without them, a regression wiring overflow_trap into
+    # *every* guard would still pass the "overflow" cases above — the controls
+    # make the change distinguishable from "classify everything as overflow".
+    # Each asserts its neighbour's exact kind rather than "not overflow", so a
+    # guard losing its signal is caught here too, not just a leaking one.
 
     def test_nat_sub_underflow_still_unreachable_kind(self) -> None:
         assert _trap_kind(_NAT_SUB, "sub", [3, 5]) == "unreachable"
 
-    def test_nat_to_int_widen_still_unreachable_kind(self) -> None:
-        assert _trap_kind(_NAT_TO_INT_WIDEN, "widen", [U64_MAX]) == "unreachable"
+    def test_nat_to_int_widen_is_widen_guard_kind(self) -> None:
+        assert _trap_kind(_NAT_TO_INT_WIDEN, "widen", [U64_MAX]) == "widen_guard"
 
 
 # A lifted closure body performs the overflowing @Int add (captured + arg).

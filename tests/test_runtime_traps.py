@@ -1577,7 +1577,13 @@ public fn main(@Unit -> @Int)
         the user — the test catches the omission immediately.  The
         canonical kind list comes from the ``WasmTrapError``
         docstring; if a future kind is added there, the table must
-        gain a row to keep this test passing.
+        gain a row to keep this test passing.  ``widen_guard`` is
+        the most recent such row: #1438 gave the ``@Nat`` ->
+        ``@Int`` widening guard a ``vera.widen_trap`` signal of its
+        own, so it no longer classifies as ``unreachable`` and
+        borrows that kind's non-exhaustive-match paragraph — it
+        needs, and here must have, its own ``requires(... <=
+        i64.MAX)`` remedy.
         """
         from vera.runtime.traps import _TRAP_FIX_PARAGRAPHS
         expected_kinds = {
@@ -1589,6 +1595,7 @@ public fn main(@Unit -> @Int)
             "unreachable",
             "overflow",
             "nat_guard",
+            "widen_guard",
             "unknown",
         }
         assert set(_TRAP_FIX_PARAGRAPHS.keys()) == expected_kinds, (

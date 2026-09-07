@@ -362,6 +362,7 @@ class RegistrationMixin:
         nat_fields: list[bool] = []
         int_fields: list[bool] = []
         field_types: list[str] = []
+        field_type_exprs: list[object | None] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -382,6 +383,11 @@ class RegistrationMixin:
                 # structural Eq derivation (type params stay bare, e.g. "T";
                 # aliases and refinements resolve to their ground type).
                 field_types.append(self._field_vera_type_name(field_te, decl))
+                # #1426: and the declared expression itself, for the §2.6.5
+                # predicate guard at construction — the derived name above
+                # resolves a refinement to its base by design, so it cannot
+                # serve.
+                field_type_exprs.append(field_te)
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -390,6 +396,7 @@ class RegistrationMixin:
             total_size=total_size,
             nat_fields=tuple(nat_fields),
             int_fields=tuple(int_fields),
+            field_type_exprs=tuple(field_type_exprs),
             field_types=tuple(field_types),
         )
 

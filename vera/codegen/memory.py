@@ -50,6 +50,18 @@ class ConstructorLayout:
     # to ``field_offsets``; a built-in layout may leave it ``()`` (consumers
     # then fall back to the scalar-rep basis for that layout).
     field_types: tuple[str, ...] = ()
+    # #1426: the DECLARED field type expressions, kept verbatim.  Every other
+    # per-field table here is a derived scalar — a wasm-type string, two
+    # booleans, a resolved name with the refinement discarded — because every
+    # consumer before #1426 asked a base-shaped question.  The §2.6.5
+    # predicate guard asks the opposite one: the predicate IS the answer, and
+    # no derived name can reconstruct it.  This is the only place the
+    # declared syntax exists (the generator keeps no `DataDecl` and no
+    # checker `Environment`), so a construction-site guard reads it here or
+    # not at all.  Same length / empty conventions as `nat_fields`; a
+    # built-in layout leaves it `()` and its fields go unguarded, which is
+    # what they were.
+    field_type_exprs: tuple[object | None, ...] = ()
 
     def __post_init__(self) -> None:
         # #759: ``nat_fields`` runs parallel to ``field_offsets``.  User
@@ -76,6 +88,16 @@ class ConstructorLayout:
             raise ValueError(
                 f"field_types (len {len(self.field_types)}) must match "
                 f"field_offsets (len {len(self.field_offsets)}) or be empty"
+            )
+        # #1426: and so does ``field_type_exprs`` — a mis-indexed entry here
+        # would guard a field with its neighbour's predicate, which is worse
+        # than not guarding it.
+        if (self.field_type_exprs
+                and len(self.field_type_exprs) != len(self.field_offsets)):
+            raise ValueError(
+                f"field_type_exprs (len {len(self.field_type_exprs)}) must "
+                f"match field_offsets (len {len(self.field_offsets)}) or be "
+                "empty"
             )
 
 

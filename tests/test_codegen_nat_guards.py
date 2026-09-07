@@ -1012,27 +1012,48 @@ public fn main(@Unit -> @Unit)
         ):
             execute(result, fn_name="main", args=[])
 
-    def test_generic_ctor_field_negative_does_not_trap_today(self) -> None:
-        """The generic-instantiated constructor field is the one #747 narrowing
-        site with NO runtime guard: constructor layouts carry no per-field @Nat
-        mono metadata, so a generic field instantiated to @Nat erases to i64
-        (#757).  `Some(0 - 5)` building an `Option<Nat>` therefore compiles and
-        runs *without* trapping today — it stores -5 silently.  This pins the
-        deferral so it can't regress to a *silent* loss of the obligation: when
-        #757 lands and emits the guard, this test flips to a trap and becomes the
-        regression anchor, symmetric with the #754 effect-op pin
-        (`test_non_let_tier3_narrowing_warns_unguarded`).  The verifier still
-        obligates the narrowing statically (E503), so a verified program is
-        unaffected — this is purely the codegen runtime backstop (review of
-        #756, #760)."""
-        result = _compile_ok("""
+    def test_generic_ctor_field_negative_traps(self) -> None:
+        """The generic-instantiated constructor field, which #757 closed.
+
+        This pinned the DEFERRAL: constructor layouts carry no per-field
+        `@Nat` metadata, so a generic field instantiated to `@Nat` erased to
+        i64 and `Some(0 - 5)` building an `Option<Nat>` stored `-5` in
+        silence.  The cell said it would flip to a trap when #757 landed.
+
+        #757 landed and it did not flip, because it was not measuring the
+        guard.  `_compile_ok` runs a bare `transform -> compile` with no
+        checker artifacts, so `_expr_target_types` is empty; #757's guard
+        reads a generic field's instantiation from exactly that table, and
+        with the table absent it declines and emits nothing.  The cell went
+        on passing for a reason unrelated to its subject — the same shape
+        run through `vera run`, which threads the artifacts, traps.
+
+        So it compiles the way the real pipeline does and asserts the trap.
+        The kind is `nat_guard`: this is the SIGN direction (#757), not the
+        §2.6.5 predicate at a construction position (#1426), which
+        `Option<Nat>` has no refinement to carry.  Found in the #1426
+        release audit.
+        """
+        from vera.checker import typecheck_with_artifacts
+        from vera.parser import parse_to_ast
+
+        src = """\
 public fn f(@Unit -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 { Some(0 - 5) }
-""")
-        # No pytest.raises: the deferred-guard state means this MUST NOT trap.
-        # If #757 adds the guard, replace this with a pytest.raises(...) block.
-        execute(result, fn_name="f", args=[])
+"""
+        program = parse_to_ast(src)
+        diags, arts = typecheck_with_artifacts(program, src)
+        assert not [d for d in diags if d.severity == "error"], diags
+        result = compile(
+            program,
+            source=src,
+            expr_semantic_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
+        )
+        with pytest.raises(WasmTrapError) as caught:
+            execute(result, fn_name="f", args=[])
+        assert caught.value.kind == "nat_guard", caught.value.kind
 
 
 class TestNatReturnRuntimeGuard758:

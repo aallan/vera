@@ -186,10 +186,14 @@ def _run(result, fn: str, arg: int) -> int | None:
 def _trap_kind(result, fn: str, arg: int) -> str | None:
     """The normalized trap kind for running *fn(arg)*, or ``None`` if no trap.
 
-    Pins the import-door widen guard's bare ``unreachable`` net specifically
+    Callers pin the import-door widen guard by its own ``widen_guard`` kind
     (the same convention as ``test_nat_narrowing_return_differential``'s
     ``_trap_kind``), not merely "some trap" — a divide-by-zero or out-of-bounds
-    trap at ``u64.MAX`` would be a different, wrong guard."""
+    trap at ``u64.MAX`` would be a different, wrong guard.  Before #1438 the
+    widen guard was a bare ``unreachable`` and the strongest available pin was
+    that shared kind, which a non-exhaustive match or a shadow-stack overflow
+    would also have satisfied; the dedicated ``vera.widen_trap`` signal is what
+    lets these cells name the guard they mean."""
     try:
         execute(result, fn_name=fn, args=[arg])
     except WasmTrapError as exc:
@@ -220,12 +224,13 @@ class TestCrossModuleWideningDifferential:
     ) -> None:
         # The fix: the importer's artifact must HONOUR that promise — a @Nat
         # above i64.MAX traps through the import door, never the silent -1, and
-        # with the widen guard's bare ``unreachable`` net (not some other trap).
+        # with the widen guard's own ``widen_guard`` kind (#1438), not some
+        # other trap.
         result = _compile_main(tmp_path, files, main_name)
         kind = _trap_kind(result, fn, U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"{label}: importer at u64.MAX gave trap kind {kind!r} — expected "
-            f"the widen guard's `unreachable` (None = no trap = the guard is "
+            f"the widen guard's `widen_guard` (None = no trap = the guard is "
             f"absent through the import door, a regression of #987)"
         )
 
@@ -280,9 +285,9 @@ class TestTwoLibrariesBothWiden:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         for fn in ("c1", "c2"):
             kind = _trap_kind(result, fn, U64_MAX)
-            assert kind == "unreachable", (
+            assert kind == "widen_guard", (
                 f"{fn} at u64.MAX gave trap kind {kind!r} — expected the widen "
-                f"guard's `unreachable`; a partial module-artifact collection "
+                f"guard's `widen_guard`; a partial module-artifact collection "
                 f"dropped this library's guard through the import door"
             )
 

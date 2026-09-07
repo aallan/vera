@@ -270,12 +270,20 @@ def test_1424_the_same_module_rewrap_gets_a_verdict(tmp_path: Path) -> None:
     Kept beside #1421 rather than folded into it: the issue records the
     cross-module split as what put the two derivations apart, and this shows
     the split was incidental.  One fix closes both.
+
+    The verdict is `tier3` rather than the `tier3_unguarded` this cell was
+    written with: the rewrap is a `Some(...)` CONSTRUCTION, and #1426 gave
+    every construction-position store the §2.6.5 guard, so the site is
+    runtime-checked and its record counts that check.  The property here is
+    that a verdict exists at all — the defect was silence, not the tier — so
+    the assertion follows the site's guardedness rather than pinning a value
+    that a guard-completeness change is expected to move.
     """
     paths = _tree(tmp_path, {"wr": _SAME_MODULE})
     assert _checks(paths["wr"])
     result = _verify(paths["wr"])
     assert result["ok"] is True, result["diagnostics"]
-    assert ("refine_bind", "tier3_unguarded", "E506") in _kinds(result), (
+    assert ("refine_bind", "tier3", "E506") in _kinds(result), (
         _kinds(result)
     )
 

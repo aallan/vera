@@ -96,7 +96,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `monomorphize.py` | 3,891 | Resolve | Shared generic instantiation discovery + AST substitution (verifier and codegen); each clone's De Bruijn recount renders its binder names under the **origin module's** `AliasEnv`, the one its consumers rebuild the clone's scope with (#1208) | `substitute_type_vars()`, `resolve_type_alias()`, `canonicalize_type_aliases()` |
 | `smt.py` | 3,289 | Verify | Z3 translation layer; reads each callee's contract in the module that declared it (`_callee_contract_scope`), swapping the naming env its slots render against and the registry its bare-name calls resolve in as one `CalleeScope` (#1208, #1225) | `SmtContext`, `SlotEnv`, `CalleeScope` |
 | `verifier.py` | 11,648 | Verify | Contract verification; owns the per-module registries every rendering goes through — an imported callee's contract and an imported generic's clone are named, resolved, and quoted in the module that **declared** them (#1208, #1220, #1225) | `verify()` |
-| `narrowing.py` | 192 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
+| `narrowing.py` | 240 | Verify | The ONE derivation of whether a value narrows into a `@Nat` slot, read by BOTH the verifier's `guarded` claim and codegen's guard emission so the two cannot drift (#1362); the type oracle is a parameter because the verifier reads the checker's semantic types while codegen reads declared names | `is_static_nat_typed()`, `has_underflow_leaf()`, `narrows_into_nat()` |
 | `wasm/` | 27,524 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 1,685 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 561 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping | |
@@ -113,7 +113,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_parsing.py` | 1,035 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
 | ` ├ calls_strings.py` | 4,185 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
 | ` ├ closures.py` | 582 | | Closures, anonymous functions, free variable analysis | |
-| ` ├ data.py` | 1,823 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ data.py` | 2,119 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 651 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
 | ` ├ json_serde.py` | 631 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
@@ -132,7 +132,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  workflows.py` | 608 | | Skill-layer workflows: enforced edit sequences (#222 F) | |
 | `codegen/` | 19,686 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 1,402 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
-| `  memory.py` | 105 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
+| `  memory.py` | 135 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
 | `  core.py` | 3,361 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6), skip propagation to callers (#1100) | |
 | `  modules.py` | 2,096 | | Cross-module registration + call detection (C7e), per-module alias + source scopes (#1111/#1186) — `_module_alias_scope` swaps the alias maps *and* the `AliasEnv` every codegen rendering goes through as one pair (#1208) — and the #1317 per-owner ADT rename (`_contended_adt_renames`), which decides which contended `data` declarations are qualified to `mod$<path>$<Name>` and what each namespace calls them afterwards | |
 | `  registration.py` | 613 | | Pass 1 forward declarations, ADT layout | |
@@ -770,7 +770,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 13,467 tests across 202 files: compiler-internals unit tests plus a **conformance suite** (250 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 13,494 tests across 205 files: compiler-internals unit tests plus a **conformance suite** (250 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
@@ -780,7 +780,6 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Verification gaps that downgrade silently** | the §2.6.5 refinement PREDICATE is not runtime-guarded where a refined value is placed into a component at CONSTRUCTION (a constructor field, a tuple component, an array element, a `Map` value, a heterogeneous arm), nor at the `State` write boundaries; each is obligated and disclosed `tier3_unguarded` / E506 rather than claiming a check.  The `@Nat` SIGN direction is guarded at every pattern bind and every boundary — `string_slice`'s clamping index arguments and a user-declared effect op's argument stay disclosed (E504) — and the predicate is guarded at every function boundary and every narrowing pattern bind, with one exception inside that family — a refinement whose BASE is itself a refinement, which code generation cannot lower a guard for and which is disclosed `tier3_unguarded` / E506 like the construction sites (#552, #747, #758, #765, #984, #985) | [#1426](https://github.com/aallan/vera/issues/1426) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |

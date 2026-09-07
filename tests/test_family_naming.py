@@ -936,10 +936,17 @@ def test_refined_nat_cell_emits_the_same_write_guards_as_its_base(
     bare = _compile_ok(_BARE_NAT_CELL, tmp_path, name="bare")
     refined = _compile_ok(_REFINED_NAT_CELL, tmp_path, name="refined")
     assert bare.wat.count("i64.lt_s") > 0
-    assert refined.wat.count("i64.lt_s") == bare.wat.count("i64.lt_s"), (
+    # `>=`, not `==`, since #1439: a refined cell takes the §2.6.5
+    # PREDICATE guard at each write boundary as well as the #1203 sign
+    # guard, and both lower through the same comparison.  The property
+    # this cell was written for is unchanged and is what `>=` states —
+    # the refined cell must not LOSE a guard its base gets.
+    assert refined.wat.count("i64.lt_s") >= bare.wat.count("i64.lt_s"), (
         "the refined cell lost a #1203 narrowing guard its base still gets"
     )
-    assert refined.wat.count("unreachable") == bare.wat.count("unreachable")
+    # Same `>=` for the same reason: the predicate guard traps through its
+    # own `unreachable`, so a refined cell has strictly more of them.
+    assert refined.wat.count("unreachable") >= bare.wat.count("unreachable")
 
 
 _REFINED_STRING_EXN = """\

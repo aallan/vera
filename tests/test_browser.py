@@ -2026,6 +2026,58 @@ class TestBrowserContracts:
         assert safe["error"] is None, safe
         assert safe["value"] == 15, safe
 
+    def test_widen_trap_parity(self, tmp_path: Path) -> None:
+        """#1438: the `@Nat` -> `@Int` WIDENING guard's own trap kind reaches
+        the browser bundle, and the bundle still instantiates.
+
+        The exact twin of the narrowing cell below, for the same reason: the
+        guard declares a new `vera.widen_trap` host import, and an unbound
+        import is a `LinkError` on instantiate rather than a wrong message —
+        so the failure would take down every program containing a widening,
+        which is most of them, and it would not look like a diagnostics bug
+        at all.
+        """
+        # A `let @Int = @Nat.0`, not an array element: the element guard
+        # reads the checker's threaded target-type table, which this file's
+        # `_compile_file` does not populate, so that shape emits no guard
+        # here and the cell would measure the helper rather than the guard.
+        source = (
+            "public fn widen(@Nat -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ let @Int = @Nat.0; @Int.0 }\n"
+        )
+        vera_file = tmp_path / "widen.vera"
+        vera_file.write_text(source, encoding="utf-8")
+        wasm_path, result = _compile_file(vera_file, tmp_path)
+
+        # `-1` is `u64.MAX`'s bit pattern, which is what a `@Nat` above
+        # `i64.MAX` IS at the boundary the guard watches.
+        big = "-1"
+        py_error: str | None = None
+        py_kind: str | None = None
+        try:
+            _run_python(result, fn_name="widen", args=[int(big)])
+        except WasmTrapError as exc:
+            py_error = str(exc)
+            py_kind = exc.kind
+
+        node_result = _run_node(wasm_path, fn="widen", fn_args=[big])
+
+        assert py_error is not None, "Python should trap on the widening"
+        assert py_kind == "widen_guard", py_kind
+        assert "i64.MAX" in py_error, py_error
+        assert node_result["error"] is not None, (
+            "Node should report the widening trap"
+        )
+        assert "i64.MAX" in node_result["error"], node_result["error"]
+
+        # The same no-trap companion, for the same reason: a `@Nat` inside
+        # the signed range returns cleanly, so the trap above is the guard
+        # firing rather than the bundle failing to load.
+        safe = _run_node(wasm_path, fn="widen", fn_args=["7"])
+        assert safe["error"] is None, safe
+        assert safe["value"] == 7, safe
+
     def test_nat_guard_trap_parity(self, tmp_path: Path) -> None:
         """#754: the `@Int` -> `@Nat` narrowing guard's own trap kind reaches
         the browser bundle, and the bundle still instantiates.

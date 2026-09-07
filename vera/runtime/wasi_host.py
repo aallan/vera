@@ -20,7 +20,8 @@ Contract parity with the core-path ``execute()``:
 * traps re-raise as :class:`WasmTrapError` with the same ``kind``
   taxonomy.  The component path loses structured trap frames (WASI.md
   spike check 5), so ``frames`` is always empty; the ``contract_fail``
-  / ``overflow_trap`` / ``nat_guard_trap`` shim names surviving in the
+  / ``overflow_trap`` / ``nat_guard_trap`` / ``widen_trap`` shim names
+  surviving in the
   wasmtime backtrace text stand in for the core path's host-import side
   channels.
 
@@ -203,6 +204,12 @@ def _component_trap_error(
         kind, description, fix = _classify_trap(trap, [violation])
     elif "overflow_trap" in msg:
         kind, description, fix = _classify_trap(trap, [], [True])
+    elif "widen_trap" in msg:
+        # #1438: the widening guard's shim name.  Tested BEFORE the
+        # narrowing one only because the two names are distinct; the order
+        # is not load-bearing, but keeping the more specific spelling first
+        # costs nothing and survives a future name that contains the other.
+        kind, description, fix = _classify_trap(trap, [], None, None, [True])
     elif "nat_guard_trap" in msg:
         # #754: the narrowing guard's shim name, read the same way — a
         # component has no host-side channel, so the backtrace IS the channel.

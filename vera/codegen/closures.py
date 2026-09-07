@@ -921,6 +921,9 @@ class ClosureLiftingMixin:
         # #754: the narrowing guard's own trap signal, propagated at the
         # SAME merge for the same reason — a guard emitted while lowering a
         # postcondition or a lifted closure body sets it on that context.
+        self._needs_widen_trap = (
+            self._needs_widen_trap or ctx._needs_widen_trap
+        )
         self._needs_nat_guard_trap = (
             self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
         )

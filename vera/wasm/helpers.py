@@ -167,6 +167,11 @@ class StateClauseEntry:
         clause: the ``HandlerClause`` to inline.
         family: the resolved cell family — the cell's IDENTITY, so import
             naming and every comparison against another cell (#1218).
+        family_type_expr: the cell's DECLARED type expression, refinement
+            intact (#1439).  `family_base` deliberately strips it, because
+            every #1203 decision is a width; the §2.6.5 predicate guard is
+            the one consumer that needs the predicate itself, and no
+            derived name can reconstruct it.
         family_base: the same family with its refinements stripped — the
             cell's REPRESENTATION, so WASM value type, pointer-ness, and
             which #1203 write guard applies.  Both are carried because a
@@ -207,6 +212,7 @@ class StateClauseEntry:
     decl_effect_op_cells: dict[str, CellNames]
     decl_state_clause_ops: dict[str, "StateClauseEntry"]
     decl_addressable_from: int
+    family_type_expr: object | None = None
 
 
 # =====================================================================

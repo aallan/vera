@@ -452,7 +452,7 @@ class TestGenericInstantiatedFieldsAreGuarded757:
                    name="w757.vera")
         # The WIDEN guard, whose dedicated kind is still a follow-up, so its
         # trap is the bare instruction rather than `_NAT_GUARD_TRAP`.
-        assert "unreachable" in out, (
+        assert "i64.MAX" in out, (
             f"u64.MAX widened into a generic `@Int` field silently — the "
             f"reinterpreted -1 flowed on:\n{out}"
         )
@@ -1394,19 +1394,21 @@ class TestConstructionPositionReachesNestedContainers:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
-    def test_the_refined_map_value_is_caught_only_on_the_way_out(
+    def test_the_refined_map_value_is_caught_at_the_insert(
         self, tmp_path: Path,
     ) -> None:
         """The differential that names WHERE the check lives.
 
-        The insert plants nothing; the trap arrives at the `Some(@Pos)`
-        sub-pattern when the value is read back (#765).  A program that
-        inserts and never reads keeps the forbidden value, which is why the
-        obligation has to exist at the insert.
+        When this cell was written the insert planted nothing and the trap
+        arrived at the `Some(@Pos)` sub-pattern on the way back out (#765),
+        which is why the obligation had to exist at the insert: a program
+        that inserted and never read kept the forbidden value.  #1426 gives
+        the insert its own guard, so the trap now names THAT site — earlier,
+        and on the store-only programs the read-side guard never saw.
         """
         out = _run(tmp_path, _P1_MAP_REFINED_VALUE, "--fn", "f", "--", "-4",
                    name="p1d.vera")
-        assert "Refinement violation in constructor sub-pattern" in out, out
+        assert "Refinement violation in map value insert" in out, out
 
     def test_a_nat_map_value_is_obligated_and_disclosed_unguarded(
         self, tmp_path: Path,
@@ -1425,9 +1427,10 @@ class TestConstructionPositionReachesNestedContainers:
 
         out = _run(tmp_path, _P1_MAP_NAT_VALUE, "--fn", "f", "--", "-4",
                    name="p1f.vera")
-        assert out.strip() == "1", (
-            f"expected the insert to plant no guard, which is what the "
-            f"unguarded flag on this obligation states:\n{out}"
+        assert _NAT_GUARD_TRAP in out, (
+            f"the insert accepted `-4` into a `@Nat` map value.  When this "
+            f"cell was written it did, and the obligation's unguarded flag "
+            f"said so honestly; #1440 gave the store its guard:\n{out}"
         )
 
     def test_a_refined_tuple_inside_an_array_is_obligated(
@@ -1493,7 +1496,7 @@ class TestTupleComponentSitesAreGuarded1416:
     ) -> None:
         out = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", _U64_MAX,
                    name="d1416.vera")
-        assert "unreachable" in out, (
+        assert "i64.MAX" in out, (
             f"u64.MAX read out of a `@Nat` tuple component into an `@Int` "
             f"binding returned a reinterpreted value:\n{out}"
         )
@@ -1831,37 +1834,41 @@ class TestArrayElementNarrowingIsObligated:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
-    def test_and_the_value_it_refutes_does_flow_out(
+    def test_and_the_value_it_refutes_is_refused_at_the_store(
         self, tmp_path: Path,
     ) -> None:
-        """The run differential that makes the silence a defect.
+        """The run differential that makes the status a fact about the run.
 
-        Without this the cell above is a claim about a status; with it, the
-        status is measured against what the program does.  Nothing guards
-        this site — it is one of #1426's — so `-4` is returned, which is
-        exactly why the obligation has to exist.
+        When this cell was written nothing guarded the site — `-4` came back
+        out of a function whose element type forbids it — and the obligation
+        was all that stood between the program and a value its own type
+        rules out.  #1426 gives the element store the §2.6.5 guard, so the
+        value is refused where it goes in.  The cell keeps its force either
+        way: it fails if the program returns the forbidden value.
         """
         out = _run(tmp_path, _N4_REFINED_ELEMENT, "--fn", "f", "--", "-4",
                    name="n4b.vera")
-        assert out.strip() == "-4", (
-            f"expected the unguarded element to flow out, so that the "
-            f"obligation is what protects the program:\n{out}"
+        assert "Refinement violation in array element store" in out, (
+            f"the element store accepted a value its type forbids:\n{out}"
         )
+        assert out.strip() != "-4", out
 
     def test_an_opaque_refined_element_discloses_rather_than_refutes(
         self, tmp_path: Path,
     ) -> None:
         """The undecided leg, where the guarded flag is actually consulted.
 
-        `tier3_unguarded` + E506, consistent with the other
-        construction-position component sites (#1426) — never a `tier3` that
-        would claim a runtime check this site does not emit.
+        `tier3` + E506 since #1426 gave this store a guard: the flag says a
+        runtime check covers it, and one does.  It read `tier3_unguarded`
+        when the cell was written, which was equally truthful then — the
+        point of the cell is that the flag tracks the module, not that it
+        holds one particular value.
         """
         obs, envelope = _obligations(
             tmp_path, _N4_REFINED_ELEMENT_OPAQUE, name="n4c.vera")
         binds = [(o["status"], o.get("error_code"))
                  for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [("tier3_unguarded", "E506")], obs
+        assert binds == [("tier3", "E506")], obs
         _assert_partition(envelope)
 
     def test_a_nat_element_is_obligated_and_its_guard_counted(
@@ -1907,9 +1914,12 @@ class TestArrayElementNarrowingIsObligated:
         """
         out = _run(tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, "--fn", "f", "--",
                    "-4", name="p1g.vera")
-        assert out.strip() == "1", (
-            f"expected the store-only program to complete, showing the "
-            f"element store plants no guard:\n{out}"
+        assert _NAT_GUARD_TRAP in out, (
+            f"the element store accepted `-4` into an `@Array<Nat>`.  This "
+            f"cell was the store-only differential that PROVED the store "
+            f"planted nothing, which is why the obligation was recorded "
+            f"unguarded; #1440 closed it, so the same differential now "
+            f"shows the guard:\n{out}"
         )
         obs, envelope = _obligations(
             tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, name="p1h.vera")
@@ -2246,9 +2256,16 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
 
         The plain `@Array<Int>` element is the control: #820 guards its
         store and `nat_to_int_coerce` counts that guard.  The refined
-        element compiles to the SAME number of traps in `f`, which is what
-        says the guard is there — so an obligation stream that mentioned it
-        only in the plain case was describing two different programs.
+        element must carry AT LEAST the same traps — the widening guard does
+        not go away because the element is refined, which is exactly why the
+        record for it has to exist.
+
+        It carries more since #1426: the §2.6.5 predicate guard is emitted
+        at the same store, and the two are different obligations about
+        different things.  So the comparison is `>=`, not `==`.  It cannot
+        be sharpened to an exact count while the widening guard is a bare
+        `unreachable` with nothing naming it, which is #1438; once that
+        guard signals itself the two can be counted apart by name.
         """
         def traps(source: str, name: str) -> int:
             proc = _cli("compile", "--wat",
@@ -2261,9 +2278,10 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
         plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
         refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
         assert plain > 0, "the control emits no guard, so it controls nothing"
-        assert refined == plain, (
+        assert refined >= plain, (
             f"the refined element emits {refined} traps and the plain one "
-            f"{plain}; this cell's premise is that codegen treats them alike"
+            f"{plain}; a refined element must keep the widening guard a "
+            f"plain one gets, which is what its record counts"
         )
 
 
@@ -2357,4 +2375,3 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
                  for o in obs if o["kind"] == "refine_bind"]
         assert ("tier3_unguarded", "E506") in binds, obs
         _assert_partition(envelope)
-

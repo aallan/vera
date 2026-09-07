@@ -542,8 +542,10 @@ def test_opaque_scrutinee_still_carries_its_declared_facts(tmp_path: Path) -> No
 # a single shape can only ever pin the spelling someone happened to think of.
 #
 # Each shape is paired with a family (`@Nat` and refined) since the two travel
-# through different obligation kinds and the refined one has no runtime guard
-# at all.
+# through different obligation kinds.  The refined one had no runtime guard at
+# all when this suite was written; #765 gave it one at the pattern binds and
+# #1426 at the construction positions, so both families are now checked at run
+# time and the differential below reads the same either way.
 
 _FAMILY = {
     # family: (prelude, component type, binder, arm body, obligation kind)
@@ -630,8 +632,11 @@ def test_no_shape_is_proved_and_then_wrong(
     """The soundness differential, over every shape.
 
     Verify-clean must imply the program is right on the value the narrowing
-    forbids: for `@Nat` that means no trap, for the refined family — which has
-    no runtime guard — that means not returning the forbidden value.
+    forbids, and BOTH halves are asserted for both families: no trap, and not
+    returning the forbidden value.  When this was written the refined family
+    had no runtime guard, so only the second half could bite for it; since
+    #765 and #1426 it is guarded too, and a proved program that trapped would
+    be just as much a contradiction there.
     """
     source = _shaped(shape, family)
     result = _verify(tmp_path, source, name="s.vera")

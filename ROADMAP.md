@@ -12,17 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-13,467 tests, 250 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
-
-## The v0.2.0 burndown
-
-*One open bugs, driven to zero.*
-
-A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
-
-| Issue | What |
-|---|---|
-| [#1438](https://github.com/aallan/vera/issues/1438) | The `@Nat` -> `@Int` widening guard traps as the generic `kind="unreachable"` and shows a Fix naming none of the causes that can fire it. |
+13,494 tests, 250 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## Stage 19 — The verification completeness sprint
 

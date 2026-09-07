@@ -9,13 +9,21 @@ a value no producer established satisfied the parameter silently and the
 callee's postcondition proved at Tier 1 from a fact established nowhere.  Two
 shapes reach it, and they are separate holes rather than one:
 
-* a DISCLOSED producer — ``mk`` declares ``-> Option<PosInt>`` and its own
-  construction obligation resolved ``tier3_unguarded``/E506, so the declared
-  type is a claim this run admitted it could not establish (the parameter-side
-  twin of #1363); and
+* a DISCLOSED producer — ``mk`` declares ``-> Option<PosInt>`` and one of its
+  own obligations resolved ``tier3_unguarded``/E506, so the declared type is a
+  claim this run admitted it could not establish (the parameter-side twin of
+  #1363); and
 * an UNREFINED producer — ``mkint`` declares ``-> Option<Int>``, which the
   checker accepts for an ``Option<PosInt>`` parameter (refinements are erased
   for compatibility), so the payload predicate is not even claimed.
+
+The disclosing obligation used to be the producer's own ``Some(…)``
+CONSTRUCTION site.  #1426 guards the four construction-position component
+stores, so that store now traps on the value the refinement forbids and the
+producer genuinely establishes its declared type — a caller may prove from it,
+and rightly.  Every cell that measures what a caller does with a fact its
+producer withheld therefore moved to a producer that is still disclosed, which
+``_TINY`` below spells out and justifies; none of them changed what it claims.
 
 The second needs no disclosure at all, which is the evidence that the repair
 belongs in obligation EMISSION at the argument position rather than in the
@@ -109,14 +117,73 @@ def _assert_accounting(tmp_path: Path, source: str, name: str = "a.vera") -> dic
 
 _PRELUDE = "type PosInt = { @Int | @Int.0 > 0 };\n"
 
-# The issue's reproducer, verbatim.
-_1410_REPRO = _PRELUDE + """
+# A refinement whose BASE is itself a refinement — the shape that is still
+# DISCLOSED, and disclosed by DESIGN rather than by an omission.
+#
+# What a producer discloses is decided by `disclosed_fn_names`: a function
+# joins the set when one of its own obligations resolved `tier3_unguarded`
+# (or the E534 demotion), because a `tier3` that IS guarded makes the declared
+# type true at run time and a consumer may lean on it.  Until #1426 the
+# construction-position component stores were that unguarded set, so the
+# obvious producer — `mk(@Float64 -> @Option<PosInt>) { Some(float_to_int(x)) }`
+# — disclosed at its `Some(…)` store and every cell below could ask what a
+# caller does with a fact its producer admitted it had not established.  That
+# store is guarded now: it traps on the value the refinement forbids, so the
+# producer genuinely establishes `Option<PosInt>` and callers may prove from
+# it.  The cells that measure withholding therefore moved their producer, not
+# their claim.
+#
+# Composing two membership predicates is unsupported, and a guard that kept
+# only the outer one would silently drop the inner — so codegen emits nothing
+# for this base ANYWHERE: at a function boundary it refuses the program
+# outright (E618) rather than plant a partial guard, and at an internal bind
+# it emits no guard and no diagnostic.  `_refined_boundary_codegen_guardable`
+# mirrors exactly that, so the obligation records `tier3_unguarded`/E506
+# because no guard is emittable, not because one is missing.  Nothing is going
+# to close it the way #1426 closed the construction stores.
+#
+# The E618 half is why the nested refinement is written INSIDE a container and
+# bound by a `let`: `-> @Tiny` (or `-> @Tuple<Tiny, Int>`, whose components a
+# boundary DOES decompose) is refused at compile, while `@Option<Tiny>` at a
+# boundary compiles — the decomposition reaches a parameter's own refinement
+# and its tuple components and no further — and a `let` is not a boundary at
+# all.  Each producer below therefore binds the payload at the nested
+# refinement, where no store guard can be emitted, and forwards that slot into
+# a declared return type spelled at `PosInt`, which is what keeps the
+# consumers' parameter types — and their Tier-1 postcondition proofs — exactly
+# as they were.  `Tiny` is a SUBTYPE of `PosInt`, so the forwarding is not a
+# false relabelling: the producer's declared type is true of every value that
+# is really a `Tiny`, and what it cannot do is establish that this one is.
+#
+# For an ADT payload the producer then discloses TWICE, and the two are worth
+# telling apart because only one of them is durable:
+#
+# * the `Some(…)` store into an `Option<Tiny>` component — no guard is
+#   emittable for that base at any site, ever; and
+# * the producer's own RETURN slot — a refinement written on an ADT payload is
+#   decomposed at no boundary, so a return that publishes one it did not
+#   discharge is unguarded too.
+#
+# The second is inherent rather than chosen: a producer that fails to establish
+# its payload cannot discharge the return goal either, so it always discloses
+# there.  Measured, by mutating `Tiny`'s base to a plain `@Int`: the store
+# becomes `tier3` and the Option cells stay green off the return slot alone,
+# while all three TUPLE cells go red — a tuple return IS decomposed at the exit,
+# so there the nested base is the only thing left that can disclose.  The
+# nested base is what this constant is for; keep it nested.
+_TINY = "\ntype Tiny = { @PosInt | @PosInt.0 < 10 };\n"
+
+_DISCLOSING_PRELUDE = _PRELUDE + _TINY
+
+# The issue's reproducer, with the producer moved to the still-disclosed shape.
+_1410_REPRO = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 private fn consume(@Option<PosInt> -> @Int)
@@ -228,13 +295,14 @@ public fn f(@Float64 -> @Int)
 # A disclosed producer reached through a WRAPPER — the spelling #1406/#1407
 # are about.  The obligation must be EMITTED here whatever the taint knows;
 # whether it is `verified` or disclosed is the taint's answer, not this rule's.
-_WRAPPER = _PRELUDE + """
+_WRAPPER = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 private fn wrap(@Float64 -> @Option<PosInt>)
@@ -331,14 +399,19 @@ public fn f(@Float64 -> @Int)
 """
 
 # The pipe spelling of the reproducer: `mk(x) |> consume()` desugars to
-# `consume(mk(x))`, so it must carry the identical obligation.
-_PIPED = _PRELUDE + """
+# `consume(mk(x))`, so it must carry the identical obligation.  Its producer
+# tracks `_1410_REPRO`'s exactly — a spelling comparison only says something
+# when the two programs differ in the spelling and nothing else, so when the
+# reproducer's `mk` moved to the still-disclosed `let @Option<Tiny>` this one
+# moved with it in the same edit.
+_PIPED = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 private fn consume(@Option<PosInt> -> @Int)
@@ -372,6 +445,14 @@ def test_1410_disclosed_producer_argument_is_not_verified(tmp_path: Path) -> Non
     Pre-fix `f` held no `refine_bind` at all and `consume`'s `ensures` proved
     at Tier 1 from the payload fact — while `vera run --fn f -- -7.0` refuted
     that very postcondition.
+
+    `mk` is the `let @Option<Tiny>` producer rather than the bare
+    `Some(float_to_int(x))` the issue reported: that store is guarded since
+    #1426 and now establishes `Option<PosInt>`, so a caller proving from it is
+    correct rather than a hole.  `_TINY` says which of the replacement's two
+    positions discloses why.  `consume` keeps its parameter at `PosInt` and
+    its postcondition at Tier 1, which is what makes the pairing below a
+    false-Tier-1 differential rather than a Tier-3 check doing its job.
     """
     binds = _refine_binds(_1410_REPRO, "f")
     assert binds, "the call argument raised no refinement obligation at all"
@@ -465,6 +546,14 @@ def test_wrapper_chain_discloses_at_every_link(tmp_path: Path) -> None:
     disclosed-set fixpoint rather than per-caller: `wrap` discloses, and every
     caller's argument obligation then withholds the same premise it withholds
     for `mk`.
+
+    There has to BE something for the fixpoint to carry, and since #1426 the
+    plain `Some(…)` store `mk` used to disclose at is guarded — it establishes
+    the declared type, so nothing propagates and the chain is honestly clean.
+    `mk` is the `let @Option<Tiny>` producer now (see `_TINY`), whose
+    disclosures are both by design rather than by omission — so what this cell
+    measures is the fixpoint carrying one along the chain, not a gap in the
+    guard set that a later PR would quietly close underneath it.
     """
     at_wrap = _refine_binds(_WRAPPER, "wrap")
     at_f = _refine_binds(_WRAPPER, "f")
@@ -629,13 +718,14 @@ def test_unguarded_disclosure_names_the_right_boundary(tmp_path: Path) -> None:
     assert "internal narrowing site" not in rationale, rationale
 
 
-_GENERIC_FORMAL = _PRELUDE + """
+_GENERIC_FORMAL = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 private forall<T> fn ident(@T -> @T)
@@ -673,12 +763,21 @@ def test_generic_formal_reads_its_instantiated_target() -> None:
     every other binding-obligation target is — so the generic spelling raises
     the obligation the concrete one does.
 
-    Both calls raise one.  ``ident``'s argument is the disclosed ``mk`` and
-    discloses; ``consume``'s argument is ``ident(...)``, whose declared result
-    type carries the payload refinement and whose own function is not in the
-    disclosed set, so it proves — the wrapper-laundering shape #1406/#1407 own.
-    The emission is what this rule owns and it happens at BOTH; which of them
-    the taint reaches is the other rule's answer.
+    Both calls raise one, and — measured on the E506 rationales — for two
+    DIFFERENT reasons, which is why the columns and not a status set are what
+    this pins.  ``ident``'s argument is ``mk(...)``, and its proof "leans on a
+    declared-type fact this run disclosed": the disclosed-producer taint.
+    ``consume``'s argument is ``ident(...)``, whose value "is outside the SMT
+    layer's decidable fragment": a generic call's result carries no term to
+    state the payload obligation against, so it discloses whatever ``mk``
+    does — it did so while ``mk`` was still clean.  The emission is what this
+    rule owns and it happens at BOTH.
+
+    ``mk`` is the `let @Option<Tiny>` producer (see `_TINY`).  Its old
+    `Some(float_to_int(x))` store is guarded since #1426 and establishes
+    `Option<PosInt>`, which left the inner position `verified` — the outer one
+    would have stayed disclosed on its own, so the pair would have gone on
+    looking measured while only one half was still testing the taint.
     """
     binds = _refine_binds(_GENERIC_FORMAL, "f")
     # BOTH positions, each named by its own column, rather than a status set
@@ -734,13 +833,14 @@ def test_payload_obligation_is_per_constructor() -> None:
     assert _statuses(binds) == [("verified", "")], _statuses(binds)
 
 
-_TUPLE_DISCLOSED = _PRELUDE + """
+_TUPLE_DISCLOSED = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Tuple<PosInt, Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(float_to_int(@Float64.0), 5)
+  let @Tuple<Tiny, Int> = Tuple(float_to_int(@Float64.0), 5);
+  @Tuple<Tiny, Int>.0
 }
 
 private fn consume(@Tuple<PosInt, Int> -> @Int)
@@ -767,7 +867,18 @@ def test_disclosed_tuple_component_records_the_guarded_tier3() -> None:
     """The same disclosure as #1410's repro, one shape over: a TUPLE component
     IS guarded at the callee's entry, so it records `tier3` — counted in the
     totals, an informational E506 — rather than the unguarded bucket.  Status
-    and guard must agree (#1362), and here the guard exists."""
+    and guard must agree (#1362), and here the guard exists.
+
+    The component `consume` receives has to stay spelled `PosInt` for that to
+    be a real claim: `Tuple<Tiny, Int>` at a boundary is refused outright
+    (E618), and a fixture the compiler will not accept cannot witness a guard
+    that fires.  So the disclosure lives one step back, in `mk`'s
+    `let @Tuple<Tiny, Int>` — a `let` is not a boundary, so the nested base is
+    silently unguarded there instead of refused, which is the `tier3_unguarded`
+    that puts `mk` in the disclosed set.  `mk`'s old `Tuple(float_to_int(x), 5)`
+    store establishes the declared type since #1426, so the withholding this
+    cell classifies would not have happened at all.
+    """
     binds = _refine_binds(_TUPLE_DISCLOSED, "f")
     assert ("tier3", "E506") in _statuses(binds), _statuses(binds)
     assert ("tier3_unguarded", "E506") not in _statuses(binds), _statuses(binds)
@@ -886,12 +997,15 @@ import lib.box(consume);
 
 type PosInt = { @Int | @Int.0 > 0 };
 
+type Tiny = { @PosInt | @PosInt.0 < 10 };
+
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 public fn f(@Float64 -> @Int)
@@ -914,17 +1028,28 @@ def test_imported_callee_argument_carries_the_obligation(
     resolves it — the constructor and alias registries the walk reads are
     per-module, and a lookup that missed the imported side would silently
     raise no obligation rather than fail.
+
+    The producer here is the still-disclosed one (see `_TINY`): `mk` binds the
+    payload at a refinement whose base is a refinement, which no guard can be
+    emitted for, so it discloses by design where the plain `Some(…)` store it
+    used to use is guarded since #1426 and establishes its declared type.  The
+    line the obligation must land on is READ OFF the fixture rather than
+    written as a constant — the constant said 18, the producer grew two lines,
+    and a filter that matches nothing passes its own `all(...)` check while
+    the presence assertion below is the only thing standing between that and a
+    green cell measuring an empty list.
     """
     (tmp_path / "lib").mkdir()
     (tmp_path / "lib" / "box.vera").write_text(_XMOD_LIB, encoding="utf-8")
     main = tmp_path / "main.vera"
     main.write_text(_XMOD_MAIN, encoding="utf-8")
 
+    call_line = 1 + _XMOD_MAIN.splitlines().index("  consume(mk(@Float64.0))")
     proc = _cli("verify", "--json", str(main))
     env = json.loads(proc.stdout)
     at_call = [
         o for o in env["obligations"]
-        if o["kind"] == "refine_bind" and o["location"]["line"] == 18
+        if o["kind"] == "refine_bind" and o["location"]["line"] == call_line
     ]
     assert at_call, [
         (o["kind"], o["status"], o["location"]["line"])
@@ -942,12 +1067,15 @@ module lib.mk;
 
 type PosInt = { @Int | @Int.0 > 0 };
 
+type Tiny = { @PosInt | @PosInt.0 < 10 };
+
 public fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 """
 
@@ -990,6 +1118,15 @@ def test_imported_disclosed_producer_demotes_through_the_manifest(
     anywhere on the argument, while `vera run --fn f -- -7.0` refuted it: the
     disclosure had arrived and nothing was asking.  The obligation is what
     consults it, and the two compose exactly here.
+
+    `lib.mk`'s producer is the `let @Option<Tiny>` one (see `_TINY`), because
+    the `Some(float_to_int(x))` store it used to disclose at is guarded since
+    #1426 and publishes an `Option<PosInt>` the importer may lean on.  With
+    nothing in the defining module's manifest there is no disclosure for the
+    import to carry, so the cell would have gone green measuring the empty
+    case.  The exact single-entry list is still the point: the importer's
+    stream holds ONE `refine_bind`, the argument's, and the library's own two
+    stay in the library's.
     """
     (tmp_path / "lib").mkdir()
     (tmp_path / "lib" / "mk.vera").write_text(
@@ -1129,13 +1266,14 @@ public fn f(@Option<PosInt> -> @Int)
     )
 
 
-_TUPLE_WRAPPER = _PRELUDE + """
+_TUPLE_WRAPPER = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Tuple<PosInt, Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(float_to_int(@Float64.0), 5)
+  let @Tuple<Tiny, Int> = Tuple(float_to_int(@Float64.0), 5);
+  @Tuple<Tiny, Int>.0
 }
 
 private fn wrap(@Float64 -> @Tuple<PosInt, Int>)
@@ -1171,6 +1309,17 @@ def test_return_slot_guardedness_matches_the_return_epilogue(
     exit side without measuring it.  Here the forwarding wrapper's return
     records the guarded `tier3`, and the run traps on `mk`'s return-value
     component guard, which is the site being claimed.
+
+    The return epilogue is only the site that fires if nothing upstream of it
+    does, and #1426 put a guard on the `Tuple(float_to_int(x), 5)` store `mk`
+    used to build directly: the run trapped inside the construction and never
+    reached an epilogue at all, so the cell stopped measuring the site named
+    in its own assertion.  `mk` now builds through a `let @Tuple<Tiny, Int>`,
+    whose component is a refinement over a refinement — no store guard is
+    emittable for that base, so the value travels to the exit, where the
+    declared `Tuple<PosInt, Int>` IS decomposed and does trap.  The same bind
+    is `mk`'s disclosure, which is what stops `wrap`'s forwarding return
+    proving at Tier 1 and leaves the `tier3` this cell classifies.
     """
     binds = _refine_binds(_TUPLE_WRAPPER, "wrap")
     assert _statuses(binds) == [("tier3", "E506")], _statuses(binds)
@@ -1181,13 +1330,14 @@ def test_return_slot_guardedness_matches_the_return_epilogue(
     assert "Refinement violation in mk" in out and "return value" in out, out
 
 
-_LET_BOUND_DISCLOSED = _PRELUDE + """
+_LET_BOUND_DISCLOSED = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 
 private fn consume(@Option<PosInt> -> @Int)
@@ -1224,6 +1374,13 @@ def test_let_bound_disclosed_value_still_raises_the_obligation() -> None:
 
     Asserted as presence, deliberately: pinning today's status would go red the
     moment that rule lands, which is the direction we want it to move.
+
+    A presence assertion holds whatever the producer does, so this cell did not
+    go red when #1426 guarded `mk`'s `Some(…)` store — it simply stopped having
+    a disclosed value in it, which is the whole subject of its name and its
+    docstring.  `mk` moved to the still-disclosed `let @Option<Tiny>` with the
+    cells that did go red, so the spelling under test is once again the one
+    described.
     """
     binds = _refine_binds(_LET_BOUND_DISCLOSED, "f")
     assert binds, (
@@ -1554,13 +1711,14 @@ def test_an_effect_operation_argument_is_obligated() -> None:
 
 
 # F5 — all three spellings of one disclosed producer, pinned together.
-_DISCLOSED_PRODUCER = _PRELUDE + """
+_DISCLOSED_PRODUCER = _DISCLOSING_PRELUDE + """
 private fn mk(@Float64 -> @Option<PosInt>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Some(float_to_int(@Float64.0))
+  let @Option<Tiny> = Some(float_to_int(@Float64.0));
+  @Option<Tiny>.0
 }
 """ + _CONSUME_OPT
 
@@ -1623,6 +1781,16 @@ def test_every_spelling_of_a_disclosed_producer_is_disclosed_somewhere(
     property that matters — the program discloses SOMEWHERE, so no reader is
     left with an unqualified Tier-1 claim — which is true of all three now and
     stays true when that rule lands.
+
+    The disclosure this quantifies over has to be the producer's, and #1426
+    guards the `Some(float_to_int(x))` store the old `mk` disclosed at.  What
+    went red was the RUN half rather than the stream half: the store's own
+    guard traps first, and `_assert_refuses_the_payload` reds a program that
+    never reaches the consumer, because a trap at construction says nothing
+    about what a caller was allowed to assume downstream of it.  `mk` moved to
+    the `let @Option<Tiny>` producer (see `_TINY`), where the store carries no
+    emittable guard, so the value travels to `consume` and is refused where the
+    assumption was made.
     """
     src = _SPELLINGS[spelling]
     result = _verify_source(src)
@@ -1870,13 +2038,14 @@ def test_a_generic_constructor_field_recovers_its_instantiation(
     _assert_refuses_the_payload(proc)
 
 
-_LET_TUPLE_FROM_DISCLOSED = _PRELUDE + """
+_LET_TUPLE_FROM_DISCLOSED = _DISCLOSING_PRELUDE + """
 private fn mkt(@Float64 -> @Tuple<PosInt, Int>)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  Tuple(float_to_int(@Float64.0), 5)
+  let @Tuple<Tiny, Int> = Tuple(float_to_int(@Float64.0), 5);
+  @Tuple<Tiny, Int>.0
 }
 
 public fn f(@Float64 -> @Int)
@@ -1902,7 +2071,18 @@ def test_a_let_binding_never_claims_a_boundary_guard() -> None:
     lines above it that has always passed `guarded=False` (PR #1420 review).
 
     A disclosed producer is what makes the flag observable: a refutable value
-    lands on `violated`, where it is never read.
+    lands on `violated`, where it is never read.  Since #1426 an established
+    one lands on `verified`, where it is never read either — `mkt`'s old
+    `Tuple(float_to_int(x), 5)` store is guarded now, so the `let` binder
+    proved and the flag went unobserved a second way.  `mkt` discloses at a
+    `let @Tuple<Tiny, Int>` instead, whose component base is itself a
+    refinement and so carries no emittable guard at any site.
+
+    The type under the `f` binder stays `Tuple<PosInt, Int>` on purpose: it is
+    a type a boundary WOULD decompose and guard, so an unguarded answer here
+    can only have come from the site.  Spelling the binder at the nested
+    refinement would make the type half answer first and the cell would stop
+    distinguishing the two derivations at all.
     """
     binds = _refine_binds(_LET_TUPLE_FROM_DISCLOSED, "f")
     assert ("tier3_unguarded", "E506") in _statuses(binds), _statuses(binds)
