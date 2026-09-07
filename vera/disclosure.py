@@ -74,13 +74,22 @@ class DisclosureSite:
     line: int
     column: int
     error_code: str
+    #: WHY the defining module left the fact unestablished — "disclosed",
+    #: "refuted" or "undecided" (#1415 review, H1).  Without it the importer
+    #: could only ever say "disclosed", so a library whose obligation was
+    #: REFUTED was cited with a sentence that was true of neither run.
+    reason: str = "disclosed"
 
     def cite(self) -> str:
         """One clause naming the callee, its file position, and its code."""
         where = f"{self.file}:{self.line}" if self.file else "its own module"
         code = f" ({self.error_code})" if self.error_code else ""
+        verb = {
+            "refuted": "refuted at",
+            "undecided": "left undecided at",
+        }.get(self.reason, "disclosed at")
         return (
-            f"'{'.'.join(self.module)}::{self.fn_name}', disclosed at "
+            f"'{'.'.join(self.module)}::{self.fn_name}', {verb} "
             f"{where}{code}"
         )
 
@@ -386,6 +395,7 @@ def _all_fn_names(mod: ResolvedModule) -> ModuleManifest:
         tld.decl.name: DisclosureSite(
             module=mod.path, fn_name=tld.decl.name,
             file=str(mod.file_path), line=0, column=0, error_code="",
+            reason="undecided",
         )
         for tld in mod.program.declarations
         if isinstance(tld.decl, ast.FnDecl)
@@ -415,7 +425,12 @@ def _verify_for_disclosure(
     module nobody managed to verify.
     """
     from vera.checker import typecheck_with_artifacts
-    from vera.verifier import disclosed_fn_names, is_disclosing, verify
+    from vera.verifier import (
+        disclosed_fn_names,
+        fact_not_established,
+        unestablished_reason,
+        verify,
+    )
 
     file = str(mod.file_path)
     check_diags, artifacts = typecheck_with_artifacts(
@@ -437,10 +452,11 @@ def _verify_for_disclosure(
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:
-        if o.fn_name in names and o.fn_name not in manifest and is_disclosing(o):
+        if o.fn_name in names and o.fn_name not in manifest and fact_not_established(o):
             manifest[o.fn_name] = DisclosureSite(
                 module=mod.path, fn_name=o.fn_name,
                 file=o.file or file, line=o.line, column=o.column,
                 error_code=o.error_code or "",
+                reason=unestablished_reason(o) or "disclosed",
             )
     return manifest
