@@ -6,7 +6,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 Defects in shipped compiler, runtime, or tooling behaviour — this table matches the issue tracker's open [`bug`-labelled issues](https://github.com/aallan/vera/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug) one-to-one. Verification-soundness gaps carry the `limitation` label instead and are tracked under [Limitations](#limitations).
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| A call precondition is recorded TWICE, and its E532 demotion warning emitted twice, when the callee is a `forall` generic. `_record_call_demotion_for` dedups on the precondition's object IDENTITY while comparing the call node by SPAN, and a monomorphised instance verifies against a clone whose `Requires` nodes are different objects with the same spans, so a second pass over one call site appends a second record. User-visible as a doubled warning, and double-counted in `verification.tier3_runtime`. | [#1459](https://github.com/aallan/vera/issues/1459) |
 
 ## Limitations
 

@@ -4503,6 +4503,42 @@ class ContractVerifier:
         if len(self.obligations) > before:
             self._construction_obligated.add(memo_key)
 
+    @contextlib.contextmanager
+    def _fact_only(self, smt: SmtContext) -> Iterator[None]:
+        """Ask a translation for its FACT without keeping what it records.
+
+        `translate_expr` records what it meets on the way: a call inside the
+        expression has its preconditions checked, which appends a
+        `CallDemotion` or a `CallViolation` and, downstream, a `call_pre`
+        obligation carrying an E532 warning.  Those are deduped per
+        (contract node, call span), and a monomorphised instance verifies
+        against a CLONE whose contract nodes are different objects, so the
+        dedup does not recognise a second ask as the same one.  The descent
+        re-translates an arm's scrutinee or condition only to learn the path
+        fact — the ordinary walk already recorded that expression — so
+        measured on `ch03_mono_collapse_reindex.vera`, one `call_pre` and
+        its E532 warning were emitted TWICE (R-1412 J1).
+
+        Marks are taken by LENGTH and truncated rather than swapping the
+        lists in, so anything already holding a reference to one keeps it.
+        The construction memo is restored with them, for the reason the
+        buffer swaps elsewhere restore it: a memo that outlives the buffer
+        it was built against suppresses a recording that then never happens.
+        """
+        obl_mark = len(self.obligations)
+        err_mark = len(self.errors)
+        viol_mark = len(smt._call_violations)
+        demo_mark = len(smt._call_demotions)
+        memo = set(self._construction_obligated)
+        try:
+            yield
+        finally:
+            del self.obligations[obl_mark:]
+            del self.errors[err_mark:]
+            del smt._call_violations[viol_mark:]
+            del smt._call_demotions[demo_mark:]
+            self._construction_obligated = memo
+
     def _descend_construction_arm(
         self,
         decl: ast.FnDecl,
@@ -4577,7 +4613,8 @@ class ContractVerifier:
             # unreachable in the arm it was reported for — the verifier
             # refusing precisely the program E505's own fix paragraph asks
             # the author to write (R-1412 H1).
-            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            with self._fact_only(smt):
+                z3_cond = smt.translate_expr(expr.condition, slot_env)
             arms: list[tuple[ast.Expr, object | None]] = []
             if z3_cond is not None:
                 import z3 as z3mod
@@ -4611,19 +4648,21 @@ class ContractVerifier:
             # run time.  That is the #680 misattribution class one container
             # level in, and a wrong `verified` is worse than the silence it
             # replaced.
-            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            with self._fact_only(smt):
+                scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
                 arm_env = slot_env
                 pat_cond = None
                 if scrutinee_z3 is not None:
-                    bound = smt._bind_pattern(
-                        scrutinee_z3, match_arm.pattern, slot_env,
-                    )
+                    with self._fact_only(smt):
+                        bound = smt._bind_pattern(
+                            scrutinee_z3, match_arm.pattern, slot_env,
+                        )
+                        pat_cond = smt._pattern_condition(
+                            scrutinee_z3, match_arm.pattern,
+                        )
                     if bound is not None:
                         arm_env = bound
-                    pat_cond = smt._pattern_condition(
-                        scrutinee_z3, match_arm.pattern,
-                    )
                 else:
                     # Untranslatable scrutinee: the arm still BINDS its
                     # pattern slots, so shadow them as tracked opaque consts

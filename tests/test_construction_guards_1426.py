@@ -36,6 +36,9 @@ import vera
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
+#: The repo root, for the one cell that pins a conformance program.
+_PKG_PARENT_PATH = Path(vera.__file__).resolve().parents[1]
+
 #: What the §2.6.5 guard says when it fires.
 _REFINE_TRAP = "Refinement violation"
 
@@ -729,6 +732,49 @@ def test_the_match_twin_reads_its_arm_condition_too(
         f"{obs}"
     )
     assert envelope["ok"] is True
+    _assert_partition(envelope)
+
+
+def test_the_arm_fact_is_asked_for_without_being_recorded() -> None:
+    """Asking for an arm's fact must not record the ask (R-1412 J1).
+
+    `translate_expr` records what it meets: a call inside the scrutinee has
+    its preconditions checked, appending a `call_pre` obligation and its
+    E532 warning.  Those dedup on (contract node, call span), and a
+    MONOMORPHISED instance verifies against a clone whose contract nodes are
+    different objects, so the dedup did not recognise the descent's second
+    ask as the same one — the record and the user-visible warning were each
+    emitted TWICE.
+
+    Pinned on the conformance program it was found in rather than a
+    synthetic: line 138 is `Some(@Int) -> if @Int.0 == 100 then {`, which
+    composes the two routes (a `match` arm whose body is an `if`) over a
+    generic, and a synthetic reaching the same shape also trips a SECOND,
+    pre-existing duplicate on the same dedup, which would make this cell
+    green for the wrong reason.  Nothing here is construction-specific, so
+    the whole envelope is asserted duplicate-free rather than one record
+    counted.
+    """
+    src = (_PKG_PARENT_PATH / "tests" / "conformance"
+           / "ch03_mono_collapse_reindex.vera")
+    proc = _cli("verify", "--json", str(src))
+    envelope = json.loads(proc.stdout)
+    seen: dict[tuple, int] = {}
+    for o in envelope["obligations"]:
+        loc = o.get("location") or {}
+        key = (o.get("kind"), o.get("description"),
+               loc.get("line"), loc.get("column"))
+        seen[key] = seen.get(key, 0) + 1
+    dupes = {k: n for k, n in seen.items() if n > 1}
+    assert not dupes, (
+        f"an obligation is recorded more than once at one span, so a "
+        f"consumer counting runtime checks double-counts it: {dupes}"
+    )
+    codes = [w.get("error_code") for w in envelope.get("warnings", [])]
+    assert codes.count("E532") == 1, (
+        f"the E532 demotion is user-visible, so a second copy is a second "
+        f"warning on the same line: {codes}"
+    )
     _assert_partition(envelope)
 
 
