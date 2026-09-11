@@ -1026,6 +1026,190 @@ class TestABlockTailIsReadInItsOwnScope:
         _assert_partition(envelope)
 
 
+_DESTR_LITERAL = _PRELUDE + """\
+private fn mk(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(5, 7);
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = mk(@Int.0);
+  7
+}
+"""
+
+_DESTR_OPAQUE = _PRELUDE + """\
+private fn src(@Int -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  Tuple(0 - @Int.0, 0 - @Int.0)
+}
+
+private fn mk(@Int -> @Map<String, Pos>)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = src(@Int.0);
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = mk(@Int.0);
+  7
+}
+"""
+
+
+_HALT_HARVEST = """\
+public fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.0 > 0)
+  effects(<Random>)
+{
+  let @Int = Random.random_int(0 - 9, 0 - 1);
+  assert(@Int.0 > 0);
+  7
+}
+"""
+
+
+def test_a_fact_past_an_uncertain_binding_is_not_harvested(
+    tmp_path: Path,
+) -> None:
+    """HALT: stop reading a block once its env is uncertain (R-1412 N1).
+
+    `_collect_top_level_assert_facts` harvests `assert` / `assume`
+    predicates and pushes them as path conditions over the POSTCONDITION
+    and the refined return.  That consumer is what makes this policy
+    observable, and it is why two earlier attempts to pin HALT failed:
+    both varied the fixture while aiming at construction stores and call
+    preconditions, which never read these facts at all.  The discriminator
+    has to be chosen from the consumer backwards.
+
+    Here the block rebinds `@Int` to a value the SMT layer cannot
+    translate and which is always negative, then asserts `@Int.0 > 0`
+    about that LOCAL.  Under `SKIP` the uncertain binding leaves the
+    parameter visible, so the assert is harvested as a fact about the
+    PARAMETER and discharges `ensures(@Int.0 > 0)` on the return —
+    `verified`, for a postcondition the program never established, with
+    `vera run --fn g -- -3` reaching an `unreachable` instruction against
+    that Tier-1 claim.  `HALT` refuses to read past the uncertainty, so
+    the postcondition is refuted instead.
+
+    The ENSURES status is the assertion: the `assert` itself is Tier 3
+    either way, so a cell watching it — or watching `ok` alone — would
+    pass under both policies.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _HALT_HARVEST, name="haltharvest.vera")
+    ensures = [o["status"] for o in obs if o["kind"] == "ensures"]
+    assert ensures == ["violated"], (
+        f"a fact about the block-local was harvested as a fact about the "
+        f"parameter it shadowed, and discharged the postcondition from it: "
+        f"{obs}"
+    )
+    assert envelope["ok"] is False
+    _assert_partition(envelope)
+
+
+class TestAStoreAfterADestructureIsStillRecorded:
+    """A destructuring `let` must not silence the tail's store.
+
+    The descent first DECLINED to descend past a `let Ctor<...> = ...`,
+    which was fail-closed against proving anything but left the store with
+    no record at all — while codegen guards it from the site table either
+    way.  Measured at that point: 1, 1 and 2 `contract_fail` in the module
+    against zero obligations, which is the guard-WITHOUT-record desync this
+    PR closes everywhere else.  So the descent shadows each binder and
+    keeps going, and these cells hold the two directions apart.
+    """
+
+    def test_a_literal_component_still_proves_the_predicate(
+        self, tmp_path: Path,
+    ) -> None:
+        """A projected literal binder is Tier 1, not a refusal.
+
+        `Tuple(5, 7)` binds a `5` that proves `> 0`.  Shadowing every
+        binder unconditionally — the first shape of this fix — recorded
+        `violated` / E505 here for a program that runs clean, which is the
+        same false refusal the block-tail fix had just removed one
+        statement over.  Literal components are therefore translated in the
+        pre-destructure env; only what does not translate goes opaque.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _DESTR_LITERAL, name="destrlit.vera")
+        assert _store_status(obs) == [("verified", None)], (
+            f"the binder is the literal `5`, which proves the predicate: "
+            f"{obs}"
+        )
+        assert envelope["ok"] is True
+        _assert_partition(envelope)
+
+    def test_an_opaque_binder_does_not_inherit_the_outers_bound(
+        self, tmp_path: Path,
+    ) -> None:
+        """A non-literal source is opaque, and opaque must not prove.
+
+        `mk` carries `requires(@Int.0 > 0)` and the destructure rebinds
+        `@Int` from a CALL, which the projection cannot see into.  If the
+        binder were left resolving to the parameter, the outer's bound
+        would discharge the store's predicate — a Tier-1 claim about a
+        value the destructure replaced.  It is refuted instead, and the
+        program really does trap: `src` returns `0 - @Int.0`, negative for
+        every positive input.
+
+        Skipping the shadow reds this cell, which is what makes the
+        placeholder load-bearing rather than decorative.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _DESTR_OPAQUE, name="destropaque.vera")
+        status = _store_status(obs)
+        assert ("verified", None) not in status, (
+            f"the outer `requires` discharged a predicate about a value the "
+            f"destructure rebound: {obs}"
+        )
+        assert status == [("violated", "E505")], (
+            f"the opaque binder is refutable, so the store is `violated`: "
+            f"{obs}"
+        )
+        _assert_partition(envelope)
+
+    @pytest.mark.parametrize(
+        ("label", "source"),
+        [("literal", _DESTR_LITERAL), ("opaque", _DESTR_OPAQUE)],
+        ids=["literal", "opaque"],
+    )
+    def test_the_store_is_recorded_wherever_it_is_guarded(
+        self, tmp_path: Path, label: str, source: str,
+    ) -> None:
+        """Guard parity at the site: a guarded store carries a record.
+
+        The desync this arm fixes is one-sided — codegen emitted the
+        §2.6.5 guard while the verifier recorded nothing — so the cell
+        asserts the pairing rather than either side alone: the module
+        guards the store, and the obligation stream has an entry for it.
+        A future change that silences the descent again reds here even if
+        every status above still reads plausibly.
+        """
+        obs, _ = _obligations(tmp_path, source, name=f"parity_{label}.vera")
+        assert _store_status(obs), (
+            f"the store past a destructure carries no record at all: {obs}"
+        )
+        wat = _cli("compile", "--wat",
+                   str(_write(tmp_path, source, f"parity_{label}w.vera")))
+        assert wat.returncode == 0, wat.stderr[-400:]
+        body = wat.stdout.split("(func $mk")[1].split("(func ")[0]
+        assert "call $vera.contract_fail" in body, (
+            f"the verifier recorded a store the module does not guard — "
+            f"the parity this PR exists to hold:\n{body[:400]}"
+        )
+
+
 def test_a_call_pre_is_reported_once_per_call_site(tmp_path: Path) -> None:
     """One call site, one `call_pre` record and one E532 (#1459).
 

@@ -4602,6 +4602,72 @@ class ContractVerifier:
             return env.push(type_name, val)
         return env
 
+    def _shadow_destructured_slots(
+        self, stmt: ast.LetDestruct, smt: SmtContext, env: SlotEnv,
+    ) -> SlotEnv:
+        """Rebind every slot a destructure binds, as a TRACKED opaque const.
+
+        For the construction descent, which needs the block's scope and not
+        its precision: it records one obligation about the tail, so what it
+        must never do is resolve a binder to a stale same-type outer and
+        prove something from that outer's bound.  Each binder therefore
+        becomes an opaque value — the store lands at Tier 3 when it depends
+        on one, and stays Tier 1 when it does not.
+
+        A LITERAL-constructor source is projected rather than shadowed,
+        which is not precision for its own sake: `let Tuple<@Int, @Int> =
+        Tuple(5, 7)` binds a `5` that PROVES a `> 0` predicate, and
+        shadowing it recorded `violated` / E505 for a program that runs
+        clean — the same false refusal this descent was just fixed for, one
+        statement over (measured before this arm was written).  Components
+        are translated in the PRE-destructure env and applied after the
+        loop, so a same-type component cannot shadow its own sibling
+        mid-flight.  Only what does not translate becomes opaque.
+
+        EVERY component pushes something, including one whose placeholder
+        cannot be derived, because same-type De Bruijn positions have to
+        stay aligned: skipping one shifts `@Int.0` onto a sibling, which is
+        the #680 failure class that silently discharges against the wrong
+        value.
+        """
+        lit_args: tuple[ast.Expr, ...] = ()
+        if (isinstance(stmt.value, ast.ConstructorCall)
+                and stmt.value.name == stmt.constructor):
+            lit_args = stmt.value.args
+        pushed: list[tuple[str, object]] = []
+        for i, te in enumerate(stmt.type_bindings):
+            type_name = smt._type_expr_to_slot_name(te)
+            if type_name is None:
+                continue
+            slot_val: object | None = None
+            if i < len(lit_args):
+                slot_val = smt.translate_expr(lit_args[i], env)
+            if slot_val is not None:
+                pushed.append((type_name, slot_val))
+                continue
+            stale = env.resolve(type_name, 0)
+            if stale is not None:
+                slot_val = z3.FreshConst(stale.sort(), "shadow")
+            else:
+                slot_val = self._fresh_slot_var(smt, te)
+                if slot_val is None:
+                    resolved = self._resolve_type(te)
+                    if self._is_array_type(resolved):
+                        slot_val = self._declare_array_var(
+                            smt, smt._fresh_name("shadow"), resolved,
+                        )
+                    elif self._is_adt_type(resolved):
+                        slot_val = smt.declare_adt(
+                            smt._fresh_name("shadow"), resolved,
+                        )
+            if slot_val is None:
+                continue
+            self._opaque_shadows.append(slot_val)
+            pushed.append((type_name, slot_val))
+        for tn, sv in pushed:
+            env = env.push(tn, sv)
+        return env
+
     def _descend_construction_arm(
         self,
         decl: ast.FnDecl,
@@ -4764,16 +4830,18 @@ class ContractVerifier:
                     if bound is not None:  # OPAQUE_SHADOW never halts
                         tail_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
-                    # A destructure rebinds several slots at once, and the
-                    # readers that handle it do so differently enough
-                    # (component obligations, literal projection, array/ADT
-                    # placeholders) that there is no one derivation to share
-                    # yet.  Declining to descend is the fail-closed answer:
-                    # it can leave a store unobligated, which is the gap
-                    # #1426 closes elsewhere, but it cannot resolve the
-                    # tail's slots against a stale outer and prove something
-                    # about a value this env does not hold.
-                    return
+                    # A destructure rebinds several slots at once.  Declining
+                    # to descend was the first answer here and it was not
+                    # good enough: codegen guards the tail's store from the
+                    # site table either way, so a silent descent is the
+                    # guard-WITHOUT-record desync this PR closes everywhere
+                    # else (measured: 1, 1 and 2 `contract_fail` in the
+                    # module against no obligation at all).  Shadowing each
+                    # binder keeps the record and still cannot prove from a
+                    # stale outer.
+                    tail_env = self._shadow_destructured_slots(
+                        stmt, smt, tail_env,
+                    )
             self._descend_construction_container(
                 decl, expr.expr, expected, smt, tail_env, assumptions,
                 site=site,

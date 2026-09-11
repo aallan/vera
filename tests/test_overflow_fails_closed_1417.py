@@ -153,7 +153,9 @@ class _Probe(OperatorsMixin):
 
 
 
-def test_the_table_less_fallback_still_names_a_width() -> None:
+def test_the_table_less_fallback_still_names_a_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The control that explains why no program reaches the `None` path.
 
     Emptying the threaded semantic-type table is the obvious way to try to
@@ -162,8 +164,34 @@ def test_the_table_less_fallback_still_names_a_width() -> None:
     it is the reason the cell above must patch the seam — without this, a
     reader would reasonably assume the table lever suffices, write a cell on
     it, and get a green that measures the ordinary path.
+
+    The CLASSIFIER's answer is what this cell is about, so it is read
+    directly rather than inferred from the WAT.  `overflow_trap` appears
+    either way — the fail-closed emitter emits the same guard when the
+    answer is `None` — so a cell asserting only the guard cannot tell a
+    width that was named from one that was defaulted, and would stay green
+    on the very path it exists to rule out (CR PR-review).
     """
-    assert "overflow_trap" in _wat(semantic_types={})
+    seen: list[str | None] = []
+    original = OperatorsMixin._overflow_arith_codegen_type
+
+    def _recording(self: object, expr: object) -> str | None:
+        answer = original(self, expr)
+        seen.append(answer)
+        return answer
+
+    monkeypatch.setattr(
+        OperatorsMixin, "_overflow_arith_codegen_type", _recording)
+    wat = _wat(semantic_types={})
+    assert seen, "the classifier was never consulted, so this measures nothing"
+    assert None not in seen, (
+        f"the table-less compile reached the fail-closed `None` path, so "
+        f"this cell is no longer the control it claims to be: {seen}"
+    )
+    assert set(seen) == {"Int"}, (
+        f"the AST-only fallback named a width other than `Int`: {seen}"
+    )
+    assert "overflow_trap" in wat
 
 
 def test_the_module_still_loads_and_exports_its_entry(
