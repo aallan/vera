@@ -8866,11 +8866,22 @@ class ContractVerifier:
         second: ``200 < 10`` decides, and decides FALSE, but ``Byte`` is not
         among the five bases :py:meth:`_base_slot_name` models, so nothing was
         ever asked (#1251).
+
+        Both causes are read off the chain's PRIMITIVE base, so a refinement
+        over a refinement is diagnosed by what it bottoms out in rather than
+        by the intermediate alias standing between them.
         """
-        parts = ContractVerifier._refined_parts(refined_ty)
+        # The chain's PRIMITIVE base, because that is the one
+        # `_translate_refined_predicate` gates on.  Reading one level named an
+        # intermediate alias — `Pos` for a chain over `@Int` — as the base the
+        # verifier does not model, which is false twice over: `Pos` is not a
+        # base the gate ever consults, and the chain IS modelled, so a Tier-3
+        # here has the OTHER cause and the reader was sent to the wrong one
+        # (R-1431 / CodeRabbit review of PR #1453).
+        parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:  # pragma: no cover — caller checked the shape
             return "the refinement's shape is not one the verifier models"
-        base, _predicate = parts
+        base, _predicates = parts
         if ContractVerifier._base_slot_name(base) is None:
             return (
                 f"the verifier does not model `{pretty_type(base)}` as a "
@@ -10646,16 +10657,35 @@ class ContractVerifier:
                     ce_lines.append(f"    {name} = {value}")
         ce_text = "\n  ".join(ce_lines) if ce_lines else ""
 
-        parts = self._refined_parts(refined_ty)
-        if parts is not None:
-            pred_src = ast.format_expr(parts[1])
+        # The WHOLE chain, because membership is the conjunction over every
+        # level and that is what was refuted (R-1431 review of PR #1453).
+        # Reading one level named the OUTER predicate for a refutation the
+        # INNER one caused — `-5` into `{ @Pos | @Pos.0 < 10 }` reported
+        # against `< 10`, which `-5` satisfies — sending the reader to fix a
+        # predicate that holds.
+        chain = self._refined_chain(refined_ty)
+        if chain is not None:
+            chain_base, chain_predicates = chain
+            # Parenthesised when there is more than one, so a level that is
+            # itself a disjunction does not silently re-associate under the
+            # `&&` this joins them with.
+            if len(chain_predicates) > 1:
+                pred_src = " && ".join(
+                    f"({ast.format_expr(predicate)})"
+                    for predicate in chain_predicates
+                )
+            else:
+                pred_src = ast.format_expr(chain_predicates[0])
             # A refinement over @Nat carries an implicit `>= 0` base invariant
             # that IS part of the checked goal (`value >= 0 && P`).  Surface it
             # so the message — and the suggested `requires(...)` — reflect the
             # real obligation when the base invariant, not P, is what fails
             # (e.g. `{ @Nat | true }`: rendering only `true` / suggesting
-            # `requires(true)` would be misleading; CR d338946).
-            if parts[0] == NAT:
+            # `requires(true)` would be misleading; CR d338946).  Keyed off the
+            # chain's PRIMITIVE base: the outermost base of a chain is another
+            # refinement, never `NAT`, so this prefix went missing exactly
+            # where the rendered predicate was already least complete.
+            if chain_base == NAT:
                 pred_src = f"@Nat.0 >= 0 && {pred_src}"
         else:
             pred_src = "the predicate"
@@ -11158,9 +11188,16 @@ class ContractVerifier:
         case stays obligated and is discharged (or refuted) by Z3.
 
         A source carrying a *stronger* refinement (``@Percentage`` into a
-        ``>= 0`` slot) is deliberately NOT exempted here: it stays obligated
+        ``>= 0`` slot) is deliberately NOT exempted here: it stays obligated,
         and the discharge proves the implication from the source's assumed
-        predicate, so no soundness is lost and no false positive arises.
+        predicate.  That costs no soundness, and costs no false positive
+        **provided the source's predicate actually reaches the solver** —
+        which is a property of the assumption sites, not of this method.  It
+        did not hold for a refinement CHAIN: the refined-return assumption in
+        `SmtContext` gated on one level, so `needpos(mk(x))` for
+        `mk(@Int -> @Small)` was obligated here, discharged against nothing,
+        and refuted (R-1431 review of PR #1453).  The strengthening rule is
+        unchanged; the assumption now carries every level.
         """
         target_parts = self._refined_parts(target_ty)
         if target_parts is None:  # pragma: no cover — caller gates on refined
@@ -11776,6 +11813,31 @@ class ContractVerifier:
         return None
 
     @staticmethod
+    def _refined_chain(ty: Type) -> "tuple[Type, list[ast.Expr]] | None":
+        """The PRIMITIVE base of a refinement chain and every predicate on it.
+
+        `_refined_parts` answers one level, which is all a `{ @Int | P }` needs.
+        A refinement over a refinement — `type Small = { @Pos | @Pos.0 < 10 }`
+        over `type Pos = { @Int | @Int.0 > 0 }` — has its meaning spread over
+        the whole chain, and reading only the outermost level took the base to
+        `Pos`, which is not a modelled primitive, so
+        `_translate_refined_predicate` declined and the type was unmodelled
+        (#1434).  Membership in `Small` is `P AND Q`, and this is what collects
+        both.
+
+        Innermost predicate first, so the conjunction reads in the order the
+        aliases were declared; the conjunction itself is commutative, so the
+        order is for the reader.
+
+        The walk itself is :py:func:`vera.naming.refined_type_chain`, because
+        the SMT layer needs the same answer for the refined-return assumption
+        and cannot import this module (the dependency runs the other way).
+        This stays as the verifier's name for it so the call sites here read
+        alongside `_refined_parts`.
+        """
+        return naming.refined_type_chain(ty)
+
+    @staticmethod
     def _base_slot_name(base: Type) -> str | None:
         """The slot type-name a refinement predicate's binder uses.
 
@@ -11830,34 +11892,47 @@ class ContractVerifier:
         Returns None when the base isn't a primitive or the predicate falls
         outside the decidable fragment (caller treats None as Tier 3, #746).
         """
-        parts = ContractVerifier._refined_parts(refined_ty)
+        parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:
             return None
-        base, predicate = parts
+        base, predicates = parts
         base_name = ContractVerifier._base_slot_name(base)
         if base_name is None:
             return None
-        inner_env = SlotEnv().push(base_name, value_term)
-        # The predicate may reference its binder by a syntactic alias
-        # (`@Age.0` for `type Age = Nat`) that differs from the resolved
-        # primitive `base_name`; bind the value under that key too so the
-        # predicate resolves instead of falsely falling to Tier 3 (CR e6f17b7).
-        # The key is the whole reference RENDERED — against the env the
-        # predicate is about to be translated in, so the push side and the
-        # lookup side are one derivation over one environment.  Its head alone
-        # is not the key for a parameterised binder (`@Box<Cnt>.0` resolves
-        # `Box<Nat>`), and the miss took a provable refinement to Tier 3
-        # (#1226).
-        binder_key = ContractVerifier._predicate_binder_key(
-            predicate, smt._alias_env)
-        if binder_key is not None and binder_key != base_name:
-            inner_env = inner_env.push(binder_key, value_term)
-        translated = smt.translate_expr(predicate, inner_env)
-        if translated is None:
-            return None
+        conjuncts: list[z3.ExprRef] = []
+        for predicate in predicates:
+            # One env per LEVEL: each predicate binds its own name — the
+            # inner `{ @Int | @Int.0 > 0 }` binds `@Int`, the outer
+            # `{ @Pos | @Pos.0 < 10 }` binds `@Pos` — over the same value.
+            inner_env = SlotEnv().push(base_name, value_term)
+            # The predicate may reference its binder by a syntactic alias
+            # (`@Age.0` for `type Age = Nat`) that differs from the resolved
+            # primitive `base_name`; bind the value under that key too so the
+            # predicate resolves instead of falsely falling to Tier 3
+            # (CR e6f17b7).  The key is the whole reference RENDERED —
+            # against the env the predicate is about to be translated in, so
+            # the push side and the lookup side are one derivation over one
+            # environment.  Its head alone is not the key for a parameterised
+            # binder (`@Box<Cnt>.0` resolves `Box<Nat>`), and the miss took a
+            # provable refinement to Tier 3 (#1226).
+            binder_key = ContractVerifier._predicate_binder_key(
+                predicate, smt._alias_env)
+            if binder_key is not None and binder_key != base_name:
+                inner_env = inner_env.push(binder_key, value_term)
+            translated = smt.translate_expr(predicate, inner_env)
+            if translated is None:
+                # One untranslatable level makes the whole membership
+                # undecidable: the conjunction is only as strong as its
+                # weakest conjunct, and dropping one would ASSERT a
+                # membership the run cannot establish.  Tier 3, as before.
+                return None
+            conjuncts.append(translated)
         if base == NAT:
-            return z3.And(value_term >= 0, translated)
-        return translated
+            # The base intrinsic, re-introduced once for the whole chain.
+            conjuncts.insert(0, value_term >= 0)
+        if len(conjuncts) == 1:
+            return conjuncts[0]
+        return z3.And(*conjuncts)
 
     @staticmethod
     def _concrete_refined_verdict(
@@ -11900,6 +11975,13 @@ class ContractVerifier:
         how a MODELLED base behaves here — this gate inherits that exposure,
         it does not widen it.
 
+        Over the WHOLE chain, because membership in `{ @B1 | Q }` over
+        `{ @Byte | P }` is `P AND Q` and a literal decides both (R-1431 review
+        of PR #1453).  Reading one level took the base to a `RefinedType`,
+        failed the primitive gate, and handed back "undecided" for a value the
+        flat spelling of the same predicate decides — so `200` narrowed into a
+        `@Byte` chain disclosed at run time where flat it was a compile error.
+
         Returns ``(holds, rendered_value)``, or None when the value is not
         concrete or the fold settles nothing.  Restricted to a PRIMITIVE base:
         a composite literal does not reduce to a Z3 value, so this would return
@@ -11913,26 +11995,34 @@ class ContractVerifier:
         concreteness gate would decline it on every call.  Wiring it there
         would add a branch nothing can take.
         """
-        parts = ContractVerifier._refined_parts(refined_ty)
+        parts = ContractVerifier._refined_chain(refined_ty)
         if parts is None:  # pragma: no cover — caller checked the shape
             return None
-        base, predicate = parts
+        base, predicates = parts
         if not isinstance(base, PrimitiveType):
             return None
         literal = z3.simplify(value_term)
         if not ContractVerifier._is_z3_literal(literal):
             return None
-        # Bound exactly as `_translate_refined_predicate` binds it, under the
-        # base type-name and (when it differs) the syntactic alias binder, so
-        # the two paths cannot disagree about which key the predicate reads.
-        inner_env = SlotEnv().push(base.name, literal)
-        binder_key = ContractVerifier._predicate_binder_key(
-            predicate, smt._alias_env)
-        if binder_key is not None and binder_key != base.name:
-            inner_env = inner_env.push(binder_key, literal)
-        translated = smt.translate_expr(predicate, inner_env)
-        if translated is None:
-            return None
+        conjuncts: list[z3.ExprRef] = []
+        for predicate in predicates:
+            # Bound exactly as `_translate_refined_predicate` binds it, under
+            # the base type-name and (when it differs) the syntactic alias
+            # binder, so the two paths cannot disagree about which key the
+            # predicate reads.
+            inner_env = SlotEnv().push(base.name, literal)
+            binder_key = ContractVerifier._predicate_binder_key(
+                predicate, smt._alias_env)
+            if binder_key is not None and binder_key != base.name:
+                inner_env = inner_env.push(binder_key, literal)
+            translated = smt.translate_expr(predicate, inner_env)
+            if translated is None:
+                # One level that will not translate leaves membership
+                # undecided: folding the rest would answer about a WEAKER
+                # predicate than the one written, and a `True` from it would
+                # claim a membership nothing established.
+                return None
+            conjuncts.append(translated)
         # Membership is "the value is a valid @Base" AND the predicate, and
         # `_translate_refined_predicate` conjoins the one base that carries an
         # intrinsic (`@Nat`'s `>= 0`).  Carried here for the same reason: the
@@ -11941,8 +12031,10 @@ class ContractVerifier:
         # omission was invisible — and re-deriving it costs one fold on a
         # closed term.
         if base == NAT:
-            translated = z3.And(literal >= 0, translated)
-        folded = z3.simplify(translated)
+            conjuncts.insert(0, literal >= 0)
+        folded = z3.simplify(
+            conjuncts[0] if len(conjuncts) == 1 else z3.And(*conjuncts)
+        )
         if z3.is_true(folded):
             return (True, str(literal))
         if z3.is_false(folded):

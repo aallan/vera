@@ -140,6 +140,7 @@ __all__ = [
     "family_base_name",
     "family_name",
     "predicate_binder_key",
+    "refined_type_chain",
     "refinement_binder_parts",
     "resolve_type_expr",
     "slot_name",
@@ -779,6 +780,44 @@ def slot_ref_key(ref: ast.SlotRef, env: AliasEnv) -> str:
     """
     return slot_name(
         ast.NamedType(name=ref.type_name, type_args=ref.type_args), env)
+
+
+def refined_type_chain(ty: Type) -> tuple[Type, list[ast.Expr]] | None:
+    """The base a refinement chain bottoms out in, and every predicate on it.
+
+    ``type Small = { @Pos | @Pos.0 < 10 }`` over
+    ``type Pos = { @Int | @Int.0 > 0 }`` means ``0 < x < 10``: membership is
+    the CONJUNCTION over the whole chain, and reading one level takes the base
+    to ``Pos`` — not a modelled primitive — so every consumer that gates on the
+    base declines and the type goes unmodelled (#1434).
+
+    Innermost predicate first, so a rendered conjunction reads in the order the
+    aliases were declared; the conjunction itself is commutative, so the order
+    is for the reader.
+
+    Lives here rather than on the verifier because three consumers need the
+    same answer and `vera/smt.py` cannot import `vera/verifier.py` — the
+    dependency runs the other way.  A second copy of the walk in the SMT layer
+    is exactly the drift this module exists to prevent: the refined-return
+    assumption, the violation message, and the concrete-value fold must agree
+    about what membership in a chain IS, or a program is refuted against one
+    reading and reported against another (R-1431 review of PR #1453).
+
+    Returns None for a type that is not refined at all.  Terminates on any
+    well-formed type: each step is a strict sub-term.  A cyclic alias never
+    reaches here — the checker refuses it (`ch02_alias_cycle_rejected`) — so
+    this is a walk, not a fixpoint, and it must not silently tolerate a cycle
+    by capping its depth.
+    """
+    predicates: list[ast.Expr] = []
+    current = ty
+    while isinstance(current, RefinedType):
+        predicates.append(current.predicate)
+        current = current.base
+    if not predicates:
+        return None
+    predicates.reverse()
+    return (current, predicates)
 
 
 def predicate_binder_key(predicate: ast.Expr, env: AliasEnv) -> str | None:

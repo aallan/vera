@@ -2267,24 +2267,26 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
         )
 
 
+#: A refinement-over-refinement `let` whose base the verifier does not model.
+#:
+#: The base is `@Byte`, not `@Int`, since #1434: an `Int` chain's predicates
+#: are now CONJOINED, so `{ @Pos | @Pos.0 < 10 }` over `{ @Int | @Int.0 > 0 }`
+#: is decided rather than disclosed — the `Int` spelling of this fixture is
+#: now a correct `violated`/E505, because a `Pos` carries no upper bound.  What
+#: these cells pin is the E506 RATIONALE for a refined base that codegen will
+#: not guard, and `_base_slot_name` still declines a `@Byte` base (its
+#: `0..255` is never asserted), so the chain stays undecided and the warning
+#: these cells are about is still the one emitted.
 _Q1_REFINED_OVER_REFINED_LET = """\
-type Pos = { @Int | @Int.0 > 0 };
-type Tiny = { @Pos | @Pos.0 < 10 };
+type SmallByte = { @Byte | @Byte.0 < 100 };
+type Tiny = { @SmallByte | @SmallByte.0 < 10 };
 
-public fn mk(@Int -> @Pos)
-  requires(@Int.0 > 0)
+public fn f(@SmallByte -> @Byte)
+  requires(true)
   ensures(true)
   effects(pure)
 {
-  @Int.0
-}
-
-public fn f(@Int -> @Int)
-  requires(@Int.0 > 0)
-  ensures(true)
-  effects(pure)
-{
-  let @Tiny = mk(@Int.0);
+  let @Tiny = @SmallByte.0;
   @Tiny.0
 }
 """
@@ -2357,4 +2359,3 @@ class TestTheUnguardedRationaleNamesTheCauseThatApplies:
                  for o in obs if o["kind"] == "refine_bind"]
         assert ("tier3_unguarded", "E506") in binds, obs
         _assert_partition(envelope)
-
