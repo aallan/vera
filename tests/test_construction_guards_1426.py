@@ -735,45 +735,146 @@ def test_the_match_twin_reads_its_arm_condition_too(
     _assert_partition(envelope)
 
 
-def test_the_arm_fact_is_asked_for_without_being_recorded() -> None:
-    """Asking for an arm's fact must not record the ask (R-1412 J1).
+_1459_GENERIC_CALLEE = _PRELUDE + """\
+private forall<T> fn head(@Array<T> -> @Option<T>)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true) effects(pure)
+{
+  Some(@Array<T>.0[0])
+}
 
-    `translate_expr` records what it meets: a call inside the scrutinee has
-    its preconditions checked, appending a `call_pre` obligation and its
-    E532 warning.  Those dedup on (contract node, call span), and a
-    MONOMORPHISED instance verifies against a clone whose contract nodes are
-    different objects, so the dedup did not recognise the descent's second
-    ask as the same one — the record and the user-visible warning were each
-    emitted TWICE.
+private fn build(@Array<Int> -> @Map<String, Pos>)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true) effects(pure)
+{
+  match head(@Array<Int>.0) {
+    Some(@Int) -> map_insert(map_new(), "a", @Int.0),
+    None -> map_new()
+  }
+}
 
-    Pinned on the conformance program it was found in rather than a
-    synthetic: line 138 is `Some(@Int) -> if @Int.0 == 100 then {`, which
-    composes the two routes (a `match` arm whose body is an `if`) over a
-    generic, and a synthetic reaching the same shape also trips a SECOND,
-    pre-existing duplicate on the same dedup, which would make this cell
-    green for the wrong reason.  Nothing here is construction-specific, so
-    the whole envelope is asserted duplicate-free rather than one record
-    counted.
+public fn f(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = build(@Array<Int>.0);
+  7
+}
+"""
+
+
+_1459_TWO_INSTANCES = """\
+private forall<T> fn head(@Array<T> -> @Option<T>)
+  requires(array_length(@Array<T>.0) > 0)
+  ensures(true) effects(pure)
+{
+  Some(@Array<T>.0[0])
+}
+
+private forall<U> fn wrap(@Array<U> -> @Int)
+  requires(array_length(@Array<U>.0) > 0)
+  ensures(true) effects(pure)
+{
+  match head(@Array<U>.0) {
+    Some(@U) -> 1,
+    None -> 0
+  }
+}
+
+public fn f(@Array<Int>, @Array<String> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true) effects(pure)
+{
+  wrap(@Array<Int>.0) + wrap(@Array<String>.0)
+}
+"""
+
+
+def _call_pre_lines(obs: list[dict]) -> list[int]:
+    """Line of every `call_pre` record, in stream order."""
+    return [(o.get("location") or {}).get("line")
+            for o in obs if o.get("kind") == "call_pre"]
+
+
+def test_a_call_pre_is_reported_once_per_call_site(tmp_path: Path) -> None:
+    """One call site, one `call_pre` record and one E532 (#1459).
+
+    `_report_call_demotions` runs TWICE per function, so a call appearing
+    only in a later clause is not lost, and each run DRAINS the demotion
+    list — so no key applied inside that list can see across the two, and a
+    call TRANSLATED a second time in a later phase arrives looking like a
+    new one.  Two routes reach that: the construction descent asks an arm's
+    scrutinee for its path fact, and #1420's call-argument walk
+    re-translates the call (bisected: `35ff4def` is where this program's
+    duplicate appears).
+
+    The record double-counts in `tier3_runtime` and the warning is shown to
+    the user twice, so this is not an internal accounting detail.  Both
+    halves are asserted, because a fix that deduped only the obligation
+    would leave the doubled warning on screen.
     """
-    src = (_PKG_PARENT_PATH / "tests" / "conformance"
-           / "ch03_mono_collapse_reindex.vera")
-    proc = _cli("verify", "--json", str(src))
-    envelope = json.loads(proc.stdout)
-    seen: dict[tuple, int] = {}
-    for o in envelope["obligations"]:
-        loc = o.get("location") or {}
-        key = (o.get("kind"), o.get("description"),
-               loc.get("line"), loc.get("column"))
-        seen[key] = seen.get(key, 0) + 1
-    dupes = {k: n for k, n in seen.items() if n > 1}
-    assert not dupes, (
-        f"an obligation is recorded more than once at one span, so a "
-        f"consumer counting runtime checks double-counts it: {dupes}"
+    obs, envelope = _obligations(
+        tmp_path, _1459_GENERIC_CALLEE, name="dupe1459.vera")
+    assert len(_call_pre_lines(obs)) == 1, (
+        f"the precondition of one call site is recorded more than once: "
+        f"{_call_pre_lines(obs)}"
     )
     codes = [w.get("error_code") for w in envelope.get("warnings", [])]
     assert codes.count("E532") == 1, (
         f"the E532 demotion is user-visible, so a second copy is a second "
         f"warning on the same line: {codes}"
+    )
+    assert envelope["verification"]["tier3_runtime"] == 1, (
+        f"a duplicated Tier-3 record inflates the runtime-check count a "
+        f"consumer reads: {envelope['verification']}"
+    )
+    _assert_partition(envelope)
+
+
+def test_two_call_sites_of_one_generic_keep_two_records(
+    tmp_path: Path,
+) -> None:
+    """The non-merge direction: dedup must not collapse distinct sites.
+
+    A dedup keyed on the call site is only correct if it still tells two
+    sites apart, so this asserts the shape the fix must NOT reach — two
+    calls to the same `forall` callee, which stay two records.
+
+    It also pins what one call site under TWO monomorphic instances does.
+    `wrap` is instantiated at `Int` and at `String`, and the single `head`
+    call inside it records ONCE, not once per instance — measured
+    identically on this PR's base, so it is the aggregation's long-standing
+    behaviour and not something the dedup here introduced.  That is the
+    answer to "can two instances at one site legitimately differ": they do
+    not reach the stream separately at all, so there is no such shape to
+    preserve.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _1459_TWO_INSTANCES, name="twoinst1459.vera")
+    sites = [((o.get("location") or {}).get("line"),
+              (o.get("location") or {}).get("column"))
+             for o in obs if o.get("kind") == "call_pre"]
+    # Positions are read from the stream rather than written in, so the
+    # cell keeps meaning if the fixture moves a line.
+    assert len(set(sites)) == len(sites), (
+        f"a call site is recorded twice: {sites}"
+    )
+    assert len(sites) == 3, (
+        f"expected the `head` call plus BOTH `wrap` calls: {sites}"
+    )
+    caller_line = max(ln for ln, _ in sites)
+    assert sum(1 for ln, _ in sites if ln == caller_line) == 2, (
+        f"the two DISTINCT `wrap` call sites must keep two records — a "
+        f"site-keyed dedup that merged them would lose one: {sites}"
+    )
+    inner = [s for s in sites if s[0] != caller_line]
+    assert len(inner) == 1, (
+        f"the one `head` call under two instantiations records once, as it "
+        f"does on this PR's base: {sites}"
+    )
+    codes = [w.get("error_code") for w in envelope.get("warnings", [])]
+    assert codes.count("E532") == 3, (
+        f"one warning per recorded site, no more: {codes}"
     )
     _assert_partition(envelope)
 

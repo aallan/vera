@@ -61,6 +61,7 @@ from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
     CalleeScope,
+    CallDemotion,
     SlotEnv,
     SmtContext,
     resolve_timeout_ms,
@@ -4503,42 +4504,6 @@ class ContractVerifier:
         if len(self.obligations) > before:
             self._construction_obligated.add(memo_key)
 
-    @contextlib.contextmanager
-    def _fact_only(self, smt: SmtContext) -> Iterator[None]:
-        """Ask a translation for its FACT without keeping what it records.
-
-        `translate_expr` records what it meets on the way: a call inside the
-        expression has its preconditions checked, which appends a
-        `CallDemotion` or a `CallViolation` and, downstream, a `call_pre`
-        obligation carrying an E532 warning.  Those are deduped per
-        (contract node, call span), and a monomorphised instance verifies
-        against a CLONE whose contract nodes are different objects, so the
-        dedup does not recognise a second ask as the same one.  The descent
-        re-translates an arm's scrutinee or condition only to learn the path
-        fact — the ordinary walk already recorded that expression — so
-        measured on `ch03_mono_collapse_reindex.vera`, one `call_pre` and
-        its E532 warning were emitted TWICE (R-1412 J1).
-
-        Marks are taken by LENGTH and truncated rather than swapping the
-        lists in, so anything already holding a reference to one keeps it.
-        The construction memo is restored with them, for the reason the
-        buffer swaps elsewhere restore it: a memo that outlives the buffer
-        it was built against suppresses a recording that then never happens.
-        """
-        obl_mark = len(self.obligations)
-        err_mark = len(self.errors)
-        viol_mark = len(smt._call_violations)
-        demo_mark = len(smt._call_demotions)
-        memo = set(self._construction_obligated)
-        try:
-            yield
-        finally:
-            del self.obligations[obl_mark:]
-            del self.errors[err_mark:]
-            del smt._call_violations[viol_mark:]
-            del smt._call_demotions[demo_mark:]
-            self._construction_obligated = memo
-
     def _descend_construction_arm(
         self,
         decl: ast.FnDecl,
@@ -4613,8 +4578,7 @@ class ContractVerifier:
             # unreachable in the arm it was reported for — the verifier
             # refusing precisely the program E505's own fix paragraph asks
             # the author to write (R-1412 H1).
-            with self._fact_only(smt):
-                z3_cond = smt.translate_expr(expr.condition, slot_env)
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
             arms: list[tuple[ast.Expr, object | None]] = []
             if z3_cond is not None:
                 import z3 as z3mod
@@ -4648,21 +4612,19 @@ class ContractVerifier:
             # run time.  That is the #680 misattribution class one container
             # level in, and a wrong `verified` is worse than the silence it
             # replaced.
-            with self._fact_only(smt):
-                scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
                 arm_env = slot_env
                 pat_cond = None
                 if scrutinee_z3 is not None:
-                    with self._fact_only(smt):
-                        bound = smt._bind_pattern(
-                            scrutinee_z3, match_arm.pattern, slot_env,
-                        )
-                        pat_cond = smt._pattern_condition(
-                            scrutinee_z3, match_arm.pattern,
-                        )
+                    bound = smt._bind_pattern(
+                        scrutinee_z3, match_arm.pattern, slot_env,
+                    )
                     if bound is not None:
                         arm_env = bound
+                    pat_cond = smt._pattern_condition(
+                        scrutinee_z3, match_arm.pattern,
+                    )
                 else:
                     # Untranslatable scrutinee: the arm still BINDS its
                     # pattern slots, so shadow them as tracked opaque consts
@@ -11747,6 +11709,44 @@ class ContractVerifier:
             error_code="E501",
         )
 
+    def _call_pre_already_reported(
+        self, decl: ast.FnDecl, d: CallDemotion,
+    ) -> bool:
+        """Has this function already reported this call's demotion?
+
+        `_report_call_demotions` runs TWICE per function so a call that
+        appears only in a later clause is not lost, and each run DRAINS the
+        list — so no key applied within the list can see across the two, and
+        a call translated a second time in a later phase arrives looking
+        like a new one.  Measured: one `call_pre` recorded twice at one span
+        with its E532 warning shown twice, which double-counts in
+        `tier3_runtime` and puts two identical warnings on one line
+        (#1459).
+
+        The answer is read from the obligation buffer rather than a side
+        memo, because it has to be a property of the stream actually being
+        built: a memo that outlives the buffer it was built against
+        suppresses a recording that then never happens, which is the trap
+        the speculative passes reset `_construction_obligated` for.  It
+        also gives the per-instance behaviour for free — `_verify_fn` swaps
+        in a fresh buffer per monomorphic instance, so two instances of one
+        call site each find an empty stream and each record their own, and
+        a status that differs between them survives.
+        """
+        span = d.call_node.span
+        line = span.line if span else 0
+        column = span.column if span else 0
+        text = expr_text_for(d.precondition)
+        return any(
+            o.kind == "call_pre"
+            and o.fn_name == decl.name
+            and o.expr_text == text
+            and o.line == line
+            and o.column == column
+            and o.file == self._current_file
+            for o in self.obligations
+        )
+
     def _report_call_demotions(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> None:
@@ -11773,6 +11773,8 @@ class ContractVerifier:
         callee stay distinct.
         """
         for d in smt.drain_call_demotions():
+            if self._call_pre_already_reported(decl, d):
+                continue
             self._record_obligation(
                 decl.name, "call_pre", d.precondition, "tier3",
                 error_code="E532",
