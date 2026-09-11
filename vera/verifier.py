@@ -8493,33 +8493,46 @@ class ContractVerifier:
             )
             return
 
-        if self._contains_opaque_shadow(val):
+        goal = self._translate_refined_predicate(smt, refined_ty, val)
+        if goal is not None and self._contains_opaque_shadow(val):
             # The value TRANSLATED, but into a placeholder standing for a
             # slot the SMT layer could not read — a destructure component
             # from a non-literal source, say.  Z3 will happily pick a
-            # violating assignment for an unconstrained const, and that
-            # countermodel is not a reachable value of the program: a
+            # violating assignment for an unconstrained const, and such a
+            # countermodel names no value the program can produce: a
             # `Tuple(5, 7)` source whose components are opaque here reported
             # `violated` / E505 while `vera run` returned cleanly, and a
             # genuinely negative source produced a BYTE-IDENTICAL stream,
             # which is the tell that the refusal was unconditional rather
-            # than analysed (R-1412).  The trapping-primitive checks route
-            # such operands to Tier 3 for this reason; the refinement
-            # predicate needs the same answer, and `_is_opaque_shadow`'s own
-            # docstring already says so — neither proven safe nor treated as
-            # a real counterexample.
-            self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=eff_guarded,
-                reason=(
-                    "the value being narrowed is, or embeds, a placeholder "
-                    "for a slot rebound by a `let` or destructure the SMT "
-                    "layer could not translate, so a countermodel over it "
-                    "names no value the program can produce"
-                ),
-            )
-            return
-
-        goal = self._translate_refined_predicate(smt, refined_ty, val)
+            # than analysed (R-1412 N4).
+            #
+            # But EMBEDDING a placeholder is not the same as DEPENDING on
+            # it, and only the second earns Tier 3.  `@Int.0 - @Int.0` over
+            # an opaque component is 0 whatever the component is, so its
+            # violation holds for every assignment and the refutation is
+            # real — the program traps.  Withdrawing that would lose a
+            # refusal the compiler can make on a program it can prove wrong
+            # (R-1412 N6).  So the predicate is asked whether ANY assignment
+            # of the placeholders satisfies it: satisfiable means the
+            # countermodel was about one particular unreachable value and
+            # Tier 3 is right; unsatisfiable means it holds of all of them
+            # and the refutation stands.  An unknown answer takes Tier 3,
+            # the direction that claims less.
+            import z3 as z3mod
+            unsat = smt.check_valid(z3mod.Not(goal), list(assumptions))
+            if unsat.status != "verified":
+                self._record_refined_bind_tier3(
+                    decl, value_node, site, guarded=eff_guarded,
+                    reason=(
+                        "the value being narrowed is, or embeds, a "
+                        "placeholder for a slot rebound by a `let` or "
+                        "destructure the SMT layer could not translate, and "
+                        "the predicate is satisfiable for some value that "
+                        "placeholder could take, so the countermodel names "
+                        "no value the program can produce"
+                    ),
+                )
+                return
         if goal is None:
             # #1251(b): the predicate has no SMT sort to reason over, but the
             # VALUE may still be a literal — and a predicate instantiated on a

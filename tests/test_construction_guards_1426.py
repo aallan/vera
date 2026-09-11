@@ -1147,6 +1147,28 @@ public fn f(@Unit -> @Nat)
 """
 
 
+_DESTR_SELF_SUB = _PRELUDE + """\
+private fn src(@Unit -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  Tuple(5, 7)
+}
+
+private fn ins(@Unit -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = src(());
+  map_insert(map_new(), "a", @Int.0 - @Int.0)
+}
+
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  map_size(ins(()))
+}
+"""
+
+
 class TestAStoreAfterADestructureIsStillRecorded:
     """A destructuring `let` must not silence the tail's store.
 
@@ -1215,6 +1237,46 @@ class TestAStoreAfterADestructureIsStillRecorded:
         assert "1" in out, (
             f"the fixture must actually run, or its status proves nothing "
             f"about a correct program:\n{out}"
+        )
+        _assert_partition(envelope)
+
+    def test_a_violation_that_holds_for_every_value_still_refutes(
+        self, tmp_path: Path,
+    ) -> None:
+        """Embedding a placeholder is not the same as depending on it.
+
+        `@Int.0 - @Int.0` over an opaque component is 0 whatever the
+        component turns out to be, so `> 0` fails for EVERY assignment and
+        the refutation is real — the program traps.  Withdrawing it would
+        lose a refusal the compiler can make on a program it can prove
+        wrong, which is what a discharge keyed on "does this term embed a
+        shadow" did (R-1412 N6).
+
+        So the discharge is keyed on the narrower question: is the
+        predicate satisfiable for SOME value the placeholder could take?
+        Satisfiable means the countermodel picked one particular
+        unreachable value and Tier 3 is right; unsatisfiable means it holds
+        of all of them.  This cell is the second half of that pair — its
+        sibling above is a correct program that must NOT be refused, and
+        only the two together distinguish the criterion from either blanket
+        answer.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _DESTR_SELF_SUB, name="destrselfsub.vera")
+        store = [(o["status"], o.get("error_code")) for o in obs
+                 if o["kind"] == "refine_bind"
+                 and o["description"] == "@Int.0 - @Int.0"]
+        assert store == [("violated", "E505")], (
+            f"`@Int.0 - @Int.0` is 0 for every value of an opaque "
+            f"component, so the violation holds always and is not a "
+            f"spurious countermodel: {obs}"
+        )
+        assert envelope["ok"] is False
+        out = _run(tmp_path, _DESTR_SELF_SUB, "--fn", "f",
+                   name="destrselfsubrun.vera")
+        assert _REFINE_TRAP in out, (
+            f"the refuted program must actually trap, or the refusal is "
+            f"the verifier being wrong in the other direction:\n{out}"
         )
         _assert_partition(envelope)
 
