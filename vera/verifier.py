@@ -4624,11 +4624,16 @@ class ContractVerifier:
         loop, so a same-type component cannot shadow its own sibling
         mid-flight.  Only what does not translate becomes opaque.
 
-        EVERY component pushes something, including one whose placeholder
-        cannot be derived, because same-type De Bruijn positions have to
-        stay aligned: skipping one shifts `@Int.0` onto a sibling, which is
-        the #680 failure class that silently discharges against the wrong
-        value.
+        Every component whose slot name resolves and whose placeholder can
+        be derived pushes something, because same-type De Bruijn positions
+        have to stay aligned: skipping one shifts `@Int.0` onto a sibling,
+        which is the #680 failure class that silently discharges against
+        the wrong value.  Two paths push nothing — an unnameable slot, and
+        a type for which none of the scalar, array and ADT placeholders
+        apply, which leaves `Tuple`- and `Map`-typed components.  Neither
+        was reachable by any fixture tried against it, so the gap is
+        recorded rather than papered over with a placeholder whose sort
+        would be a guess (R-1412, reported latent).
         """
         lit_args: tuple[ast.Expr, ...] = ()
         if (isinstance(stmt.value, ast.ConstructorCall)
@@ -8484,6 +8489,32 @@ class ContractVerifier:
                     "the value being narrowed is outside the SMT layer's "
                     "decidable fragment, so there is no term to test the "
                     "predicate against"
+                ),
+            )
+            return
+
+        if self._contains_opaque_shadow(val):
+            # The value TRANSLATED, but into a placeholder standing for a
+            # slot the SMT layer could not read — a destructure component
+            # from a non-literal source, say.  Z3 will happily pick a
+            # violating assignment for an unconstrained const, and that
+            # countermodel is not a reachable value of the program: a
+            # `Tuple(5, 7)` source whose components are opaque here reported
+            # `violated` / E505 while `vera run` returned cleanly, and a
+            # genuinely negative source produced a BYTE-IDENTICAL stream,
+            # which is the tell that the refusal was unconditional rather
+            # than analysed (R-1412).  The trapping-primitive checks route
+            # such operands to Tier 3 for this reason; the refinement
+            # predicate needs the same answer, and `_is_opaque_shadow`'s own
+            # docstring already says so — neither proven safe nor treated as
+            # a real counterexample.
+            self._record_refined_bind_tier3(
+                decl, value_node, site, guarded=eff_guarded,
+                reason=(
+                    "the value being narrowed is, or embeds, a placeholder "
+                    "for a slot rebound by a `let` or destructure the SMT "
+                    "layer could not translate, so a countermodel over it "
+                    "names no value the program can produce"
                 ),
             )
             return

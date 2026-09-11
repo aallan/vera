@@ -1010,6 +1010,14 @@ class TestABlockTailIsReadInItsOwnScope:
         the descent's policy to `SKIP` and this cell goes back to
         `verified`, which is the mutation that proves the policy argument is
         load-bearing rather than decorative.
+
+        The answer is Tier 3 and NOT a refusal.  An opaque placeholder is
+        not a value the program can produce, so a Z3 countermodel over it
+        names nothing reachable — `_is_opaque_shadow`'s own contract is
+        "neither proven safe nor treated as a real counterexample".  Both
+        halves are asserted: the soundness one (never `verified`) and the
+        precision one (never `violated`), because an earlier shape of this
+        fix satisfied the first by refusing everything.
         """
         obs, envelope = _obligations(
             tmp_path, _BLOCK_TAIL_OPAQUE_SHADOW, name="blockopaque.vera")
@@ -1019,9 +1027,9 @@ class TestABlockTailIsReadInItsOwnScope:
             f"`> 0` — the outer parameter's `requires` discharging another "
             f"value's obligation: {obs}"
         )
-        assert status == [("violated", "E505")], (
-            f"the opaque rebinding is refutable at 0, so the store is "
-            f"`violated`: {obs}"
+        assert status == [("tier3", "E506")], (
+            f"the rebinding is opaque, so the predicate is neither provable "
+            f"nor refutable and the store is Tier 3: {obs}"
         )
         _assert_partition(envelope)
 
@@ -1117,6 +1125,28 @@ def test_a_fact_past_an_uncertain_binding_is_not_harvested(
     _assert_partition(envelope)
 
 
+_DESTR_POSITIVE = _PRELUDE + """\
+private fn src(@Unit -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  Tuple(5, 7)
+}
+
+private fn ins(@Unit -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = src(());
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  map_size(ins(()))
+}
+"""
+
+
 class TestAStoreAfterADestructureIsStillRecorded:
     """A destructuring `let` must not silence the tail's store.
 
@@ -1150,6 +1180,44 @@ class TestAStoreAfterADestructureIsStillRecorded:
         assert envelope["ok"] is True
         _assert_partition(envelope)
 
+    def test_a_positive_source_is_not_refused(self, tmp_path: Path) -> None:
+        """The cell that would have caught the over-shoot (R-1412).
+
+        `src` returns `Tuple(5, 7)` and the tail stores a component into a
+        `Pos` map value.  The program is CORRECT and runs clean, and the
+        first shape of the destructure fix reported `violated` / E505 for
+        it — because rebinding pushed a translatable fresh var, so Z3 was
+        handed a real unconstrained term and duly produced a countermodel
+        that names no value `src` can return.
+
+        Every other destructure cell here uses a source that genuinely
+        violates, which is precisely why none of them could see it:
+        "correctly refuted" and "unconditionally refused" are the same
+        observation on a negative source.  The discriminator is a positive
+        one, and the tell was that a negative source produced a
+        byte-identical stream.  The store runs, so the cell asserts the run
+        as well as the status.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _DESTR_POSITIVE, name="destrpos.vera")
+        status = _store_status(obs)
+        assert ("violated", "E505") not in status, (
+            f"a program whose source returns `Tuple(5, 7)` was refused: "
+            f"{obs}"
+        )
+        assert status == [("tier3", "E506")], (
+            f"the component is opaque to the translator, so the store is "
+            f"Tier 3 — the same answer the plain-`let` path gives: {obs}"
+        )
+        assert envelope["ok"] is True
+        out = _run(tmp_path, _DESTR_POSITIVE, "--fn", "f",
+                   name="destrposrun.vera")
+        assert "1" in out, (
+            f"the fixture must actually run, or its status proves nothing "
+            f"about a correct program:\n{out}"
+        )
+        _assert_partition(envelope)
+
     def test_an_opaque_binder_does_not_inherit_the_outers_bound(
         self, tmp_path: Path,
     ) -> None:
@@ -1165,6 +1233,10 @@ class TestAStoreAfterADestructureIsStillRecorded:
 
         Skipping the shadow reds this cell, which is what makes the
         placeholder load-bearing rather than decorative.
+
+        Tier 3, not a refusal: see
+        :py:meth:`TestAStoreAfterADestructureIsStillRecorded.test_a_positive_source_is_not_refused`
+        for the program this distinction protects.
         """
         obs, envelope = _obligations(
             tmp_path, _DESTR_OPAQUE, name="destropaque.vera")
@@ -1173,9 +1245,9 @@ class TestAStoreAfterADestructureIsStillRecorded:
             f"the outer `requires` discharged a predicate about a value the "
             f"destructure rebound: {obs}"
         )
-        assert status == [("violated", "E505")], (
-            f"the opaque binder is refutable, so the store is `violated`: "
-            f"{obs}"
+        assert status == [("tier3", "E506")], (
+            f"the binder is opaque, so the predicate is neither provable "
+            f"nor refutable and the store is Tier 3: {obs}"
         )
         _assert_partition(envelope)
 
@@ -1238,9 +1310,12 @@ def test_a_call_pre_is_reported_once_per_call_site(tmp_path: Path) -> None:
         f"the E532 demotion is user-visible, so a second copy is a second "
         f"warning on the same line: {codes}"
     )
-    assert envelope["verification"]["tier3_runtime"] == 1, (
-        f"a duplicated Tier-3 record inflates the runtime-check count a "
-        f"consumer reads: {envelope['verification']}"
+    tier3_call_pre = [o for o in obs
+                      if o.get("kind") == "call_pre"
+                      and o.get("status") == "tier3"]
+    assert len(tier3_call_pre) == 1, (
+        f"a duplicated Tier-3 call_pre inflates the runtime-check count a "
+        f"consumer reads: {tier3_call_pre}"
     )
     _assert_partition(envelope)
 
