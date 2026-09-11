@@ -588,6 +588,24 @@ class CodeGenerator(
         # backtrace.
         self._prelude_fn_names: set[str] = set()
 
+        # #1442 — the ADT names `inject_prelude` actually LAID DOWN for
+        # this program, as opposed to the ones it can supply.  The two
+        # differ: an injection is demand-driven (a block arrives only
+        # when the program mentions it) and shadowable (an entry-file
+        # `data Request` suppresses the prelude's, per spec 8.4.1), so
+        # membership of `_adt_layouts` answers neither "did the prelude
+        # supply this?" nor "whose type is this?".  Recorded by
+        # OBSERVING the post-injection walk in Pass 1.2 rather than by
+        # re-deriving `inject_prelude`'s demand predicates, for the same
+        # reason the E609/E610 rail beside it is: a second copy of "does
+        # this program want Request?" is a second thing to keep in step.
+        #
+        # Consumed by `validate_handler` (`vera/runtime/server.py`),
+        # which must establish that a `handle(@Request -> @Response)` is
+        # typed by the PRELUDE's Request/Response before it marshals raw
+        # bytes through their layouts.
+        self._prelude_injected_adts: set[str] = set()
+
         # #851 — the concatenated prelude source buffer that injected
         # declarations' spans index into.  Captured from
         # `inject_prelude()` in Pass 1.2 so `_warning` / `_error` can
@@ -2092,6 +2110,9 @@ class CodeGenerator(
             if isinstance(tld.decl, (ast.TypeAliasDecl, ast.DataDecl)):
                 self._stamp_decl_order(tld.decl.name, prelude=True)
             if isinstance(tld.decl, ast.DataDecl):
+                # #1442 — the same observation, for the same reason, one
+                # question earlier: WHICH prelude ADTs this program got.
+                self._prelude_injected_adts.add(tld.decl.name)
                 # Asked by OBSERVING what `inject_prelude` laid down rather
                 # than by re-deriving its demand predicates in Pass 0.5,
                 # where the E609/E610 rails live: a second copy of "does
@@ -2834,11 +2855,26 @@ class CodeGenerator(
         # String and Array<T>.  Alias-resolved via `_resolve_named_type`
         # so `type Name = String` participates.
         fn_string_returns: set[str] = set()
+        # #1442 — the Vera-level signature, beside the lowered one.
+        # `fn_param_types` above records what each parameter LOWERS to,
+        # which conflates every heap type into `i32`; this records what
+        # each parameter and return IS, for consumers that marshal bytes
+        # through a specific ADT's layout.  Same walk, same reason as
+        # `fn_string_returns`: the answer is a property of the declared
+        # type, and `_fn_sigs` has already thrown it away.
+        fn_adt_signatures: dict[str, tuple[tuple[str | None, ...], str | None]]
+        fn_adt_signatures = {}
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
                 if self._return_type_is_string(decl.return_type):
                     fn_string_returns.add(decl.name)
+                fn_adt_signatures[decl.name] = (
+                    tuple(
+                        self._declared_adt_name(pt) for pt in decl.params
+                    ),
+                    self._declared_adt_name(decl.return_type),
+                )
         dropped_fns = self._user_dropped_fns(program, exports)
         return CompileResult(
             wat=wat,
@@ -2861,6 +2897,8 @@ class CodeGenerator(
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
             fn_string_returns=fn_string_returns,
+            fn_adt_signatures=fn_adt_signatures,
+            prelude_injected_adts=set(self._prelude_injected_adts),
             adt_layouts={
                 name: dict(ctors)
                 for name, ctors in self._adt_layouts.items()
@@ -2916,6 +2954,51 @@ class CodeGenerator(
     # -----------------------------------------------------------------
     # Type helpers (used by most mixins)
     # -----------------------------------------------------------------
+
+    def _declared_adt_name(self, te: ast.TypeExpr) -> str | None:
+        """The declared-ADT name *te* denotes, or ``None`` if it is not one.
+
+        #1442.  The lowered ABI cannot answer this: ``Bool``, every heap
+        ADT, and every boxed value all lower to ``i32``, so a consumer
+        that needs to know WHICH type a parameter has — the ``vera
+        serve`` / wasi-p2 handler guard, which marshals raw bytes through
+        an ADT's layout — has to ask the Vera type.
+
+        Taken by the same spine as its neighbours,
+        :func:`vera.naming.classify_named` against ``_alias_env``, so a
+        ``type Req = Request`` alias resolves and a name the namespace
+        does not declare as an ADT answers ``None``.  A
+        ``RefinementType`` answers for its base, since ``@Request where
+        p`` is still a ``Request``.
+
+        Two strips that :meth:`_return_type_is_string` takes are
+        deliberately NOT taken here, because this function answers about
+        IDENTITY rather than representation:
+
+        - ``Future<T>`` is representation-transparent but is not ``T``;
+          a handler returning ``Future<Response>`` returns a future.
+        - a generic's type ARGUMENTS are ignored, so ``Box<Int>`` answers
+          ``Box``; the consumer compares against un-parameterised prelude
+          names, and no caller needs more.
+
+        Returning ``None`` rather than a spelling for the non-ADT cases
+        is what makes the consumer fail closed: a type this function
+        cannot identify is never mistaken for the one it was hoping for.
+        """
+        if isinstance(te, ast.RefinementType):
+            return self._declared_adt_name(te.base_type)
+        if not isinstance(te, ast.NamedType):
+            return None
+        sort = naming.classify_named(te, self._alias_env)
+        if sort in (
+            naming.NameSort.ALIAS,
+            naming.NameSort.ALIAS_ARITY_MISMATCH,
+        ):
+            return self._declared_adt_name(
+                naming.alias_body(te, self._alias_env))
+        if sort is naming.NameSort.DECLARED_ADT:
+            return te.name
+        return None
 
     def _return_type_is_string(self, te: ast.TypeExpr) -> bool:
         """True iff the Vera return type resolves to ``String`` (post-alias).

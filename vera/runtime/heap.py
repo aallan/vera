@@ -131,6 +131,60 @@ def _call_alloc(caller: wasmtime.Caller, size: int) -> int:
     assert isinstance(ptr, int)  # noqa: S101
     return ptr
 
+def _require_readable(
+    memory: wasmtime.Memory,
+    caller: wasmtime.Caller,
+    offset: int,
+    nbytes: int,
+    what: str,
+) -> None:
+    """Refuse an ``(offset, nbytes)`` read that leaves linear memory.
+
+    The ONE bounds check for every raw host reader (#1442), and the same
+    one :func:`_read_wasm_string` grew under #1145 — for the same
+    reason.  Its callers are :func:`_read_i32_at` and
+    :func:`_read_bytes_at` (the ``decode_response_adt`` path),
+    :func:`_read_i32` and :func:`_read_f64` (reached from ``read_json``
+    on the ``json_stringify`` path), and ``markdown.py``'s own
+    ``_read_i32`` / ``_read_i64`` / ``_read_string`` (walking a
+    guest-built AST; the last reaches the slice through
+    :func:`_slice_and_decode`).  Each
+    slices a raw ``ctypes`` pointer, which bounds-checks nothing: an
+    offset past the end reads into wasmtime's guard page and takes the
+    HOST down with ``SIGBUS``, not the guest with a trap.  A negative
+    ``nbytes`` is just as wrong in the other direction — the ctypes
+    slice returns an empty ``bytes``, which ``struct.unpack`` then
+    rejects or, worse, a caller treats as a legitimately empty field.
+
+    What unites them is not the call site but the OFFSET's provenance:
+    every one is handed a value read out of guest memory rather than
+    returned by an allocator.  The two ``data_ptr`` sites that are not
+    on this list — ``_ShadowGuard.push`` and the String-argument
+    marshaller in ``vera/codegen/api.py`` — are writes at
+    allocator-supplied offsets, which is why they are not in the family.
+
+    Raising ``wasmtime.WasmtimeError`` with the ``out of bounds memory
+    access`` reason puts the failure on the path ``execute()`` already
+    classifies as a clean ``out_of_bounds`` trap, with a backtrace and a
+    Fix, exactly like a native guest OOB.
+
+    This is CONTAINMENT, not the primary guard.  Every offset reaching
+    these helpers should already be a pointer the guest allocated, so a
+    violation means something upstream handed the host a value that is
+    not the pointer it was taken for — #1442's own case was a ``handle``
+    whose declared type was not ``Request``, admitted by a
+    ``validate_handler`` that checked the lowered ABI instead of the Vera
+    types.  That hole is closed at its source; this keeps the next one in
+    the family a diagnostic rather than a dead process.
+    """
+    mem_size = memory.data_len(caller)
+    if nbytes < 0 or offset < 0 or offset + nbytes > mem_size:
+        raise wasmtime.WasmtimeError(
+            f"out of bounds memory access: host {what} read of "
+            f"{nbytes} byte(s) at offset {offset} exceeds WASM memory "
+            f"size {mem_size}"
+        )
+
 def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     """Read a little-endian i32 from WASM memory at `offset`.
 
@@ -139,18 +193,27 @@ def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     this version is shared by all module-level helpers that need
     to inspect linear memory (e.g. the bucket-array
     helpers added below for #695/#705).
+
+    Bounds-checked via :func:`_require_readable` before the raw slice
+    (#1442) — see there for why the check cannot live in the ctypes read.
     """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
     return int(struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0])
 
 def _read_bytes_at(
     caller: wasmtime.Caller, offset: int, length: int,
 ) -> bytes:
-    """Read `length` raw bytes from WASM linear memory at `offset`."""
+    """Read `length` raw bytes from WASM linear memory at `offset`.
+
+    Bounds-checked via :func:`_require_readable` before the raw slice
+    (#1442) — see there for why the check cannot live in the ctypes read.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, length, "byte-range")
     buf = memory.data_ptr(caller)
     return bytes(buf[offset:offset + length])
 
@@ -1002,9 +1065,18 @@ def _write_f64(
     )
 
 def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
-    """Read a little-endian i32 from WASM memory."""
+    """Read a little-endian i32 from WASM memory.
+
+    Bounds-checked through :func:`_require_readable` (#1442).  Reached
+    from ``read_json`` on the ``json_stringify`` path
+    (``vera/runtime/json.py``), which walks a guest-built JSON tree by
+    following pointers read out of that tree — so every offset here
+    derives from guest memory contents rather than from an allocator,
+    which is exactly the shape that must not be trusted to a raw slice.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
     val: int = struct.unpack_from(
         "<I", bytes(buf[offset:offset + 4]),
@@ -1012,9 +1084,15 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     return val
 
 def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
-    """Read a little-endian f64 from WASM memory."""
+    """Read a little-endian f64 from WASM memory.
+
+    Bounds-checked through :func:`_require_readable` (#1442); the
+    ``read_json`` sibling of :func:`_read_i32` above, and reached the
+    same way.
+    """
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, offset, 8, "f64")
     buf = memory.data_ptr(caller)
     val: float = struct.unpack_from(
         "<d", bytes(buf[offset:offset + 8]),
