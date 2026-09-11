@@ -571,3 +571,47 @@ class TestAContainerBuiltInReturnPositionIsObligated:
         ):
             out = _run(tmp_path, source, "--fn", "f", "--", "-4", name=name)
             assert "Refinement violation" in out and where in out, out
+
+
+_CR_BRANCHING_RETURN = _PRELUDE + """\
+private fn ins(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 > 100 then { map_insert(map_new(), "a", @Int.0) } else { map_insert(map_new(), "b", @Int.0) }
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = ins(@Int.0);
+  7
+}
+"""
+
+
+def test_a_container_built_inside_a_branch_is_obligated(
+    tmp_path: Path,
+) -> None:
+    """A branch stands where its arms do (CR PR-review).
+
+    The return position hands the declared return type to the container
+    descent, and the descent unwrapped a `Block` but stopped at an `if` or a
+    `match` — so a container built inside a branch entered no descent at
+    all.  Measured before the fix: this program verified `ok: true` with no
+    record at either store while the body emitted TWO guards, which is the
+    F4 class one level in and in the direction that reads as a clean
+    program.
+
+    Both arms are asserted, not just one: a descent that recursed into the
+    `then` and forgot the `else` would satisfy a single-record check.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _CR_BRANCHING_RETURN, name="branchret.vera")
+    stores = [(o["status"], o.get("error_code")) for o in obs
+              if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
+    assert stores.count(("violated", "E505")) == 2, (
+        f"a `Map` value store built inside a branch carries no record while "
+        f"the module guards it: {obs}"
+    )
+    assert envelope["ok"] is False
+    _assert_partition(envelope)

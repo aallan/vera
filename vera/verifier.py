@@ -4526,6 +4526,30 @@ class ContractVerifier:
         # the descent wrapped (R-1412 F4).  Descending here rather than at
         # the call sites keeps the unwrap in the one place that knows what a
         # container position means.
+        # A BRANCH stands where its arms do, for the same reason a block
+        # stands where its tail does (CR PR-review).  Without this, a
+        # container built inside an `if` or a `match` in return position
+        # entered no descent at all: measured, `if c then { map_insert(…) }
+        # else { map_insert(…) }` returning `@Map<String, Pos>` verified
+        # `ok: true` with no record at either store while the body emitted
+        # TWO guards — the F4 class one level in, and in the direction that
+        # reads as a clean program.  Container descent only, so each arm's
+        # scalar obligations stay with the position the branch occupies.
+        if isinstance(expr, ast.IfExpr):
+            for arm in (expr.then_branch, expr.else_branch):
+                if arm is not None:
+                    self._descend_construction_container(
+                        decl, arm, expected, smt, slot_env, assumptions,
+                        site=site,
+                    )
+            return
+        if isinstance(expr, ast.MatchExpr):
+            for match_arm in expr.arms:
+                self._descend_construction_container(
+                    decl, match_arm.body, expected, smt, slot_env,
+                    assumptions, site=site,
+                )
+            return
         if isinstance(expr, ast.Block) and expr.expr is not None:
             # Container descent only, like this method's own contract: the
             # tail's SCALAR obligations belong to whatever position the

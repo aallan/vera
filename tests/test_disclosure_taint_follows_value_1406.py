@@ -100,6 +100,17 @@ def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from vera import narrowing
 
+    # The subtraction's PREMISE, asserted rather than assumed (R-1412 G1).
+    # Both sites have to be in the shipped table for the patch to reinstate
+    # anything: measured, deleting `"tuple component"` upstream leaves all
+    # of this file green — the patched-vs-shipped control included — while
+    # the cells quietly test a premise other than the documented one.
+    assert _PATCHED_SITES <= narrowing.REFINED_BIND_GUARDED_SITES, (
+        f"the shipped table no longer guards "
+        f"{sorted(_PATCHED_SITES - narrowing.REFINED_BIND_GUARDED_SITES)}, "
+        f"so subtracting it reinstates nothing and every verdict in this "
+        f"file is about a different program than its header describes"
+    )
     monkeypatch.setattr(
         narrowing, "REFINED_BIND_GUARDED_SITES",
         narrowing.REFINED_BIND_GUARDED_SITES - _PATCHED_SITES,

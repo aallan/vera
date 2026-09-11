@@ -88,6 +88,18 @@ def test_an_unnameable_width_is_guarded_as_int(
         "emitted no overflow guard, so it wraps in silence while the "
         "obligation claims a runtime check:\n" + wat[:800]
     )
+    # And the SIGNED family specifically.  The default picks which guard is
+    # emitted, and `_emit_overflow_guard` dispatches on it: the `Int` guard
+    # tests the sign-agreement with `i64.xor`, the `Nat` one an unsigned
+    # wrap with `i64.lt_u`.  A regression to `Nat` would still emit an
+    # `overflow_trap` and satisfy the assertion above while range-checking
+    # the site against the wrong bound (CR PR-review).
+    assert "i64.xor" in wat, (
+        "the guard emitted is not the signed `Int` one, so the unknown "
+        "width was read as `Nat` and the site is checked against the "
+        "unsigned range:\n" + wat[:800]
+    )
+    assert "i64.lt_u" not in wat, wat[:800]
 
 
 def test_the_classifier_itself_still_answers_none(

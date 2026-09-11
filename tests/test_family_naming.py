@@ -950,7 +950,13 @@ def test_refined_nat_cell_emits_the_same_write_guards_as_its_base(
             == bare.wat.count("$vera.nat_guard_trap")), (
         "the refined cell lost a #1203 narrowing guard its base still gets"
     )
-    assert "$vera.contract_fail" in refined.wat, (
+    # Scoped to `main`'s own body (CR PR-review): a module-wide search is
+    # satisfied by a `contract_fail` in any prelude helper, which proves
+    # nothing about the refined CELL emitting its predicate guard.
+    _head, _sep, refined_body = refined.wat.partition("(func $main ")
+    assert refined_body, refined.wat[:300]
+    refined_body = refined_body.split("\n  )")[0]
+    assert "$vera.contract_fail" in refined_body, (
         "the refined cell emits no §2.6.5 predicate guard, so the extra "
         "comparisons counted here are not the ones this cell is about"
     )
