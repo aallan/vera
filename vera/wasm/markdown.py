@@ -505,11 +505,19 @@ def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     ``host_md_has_heading`` / ``host_md_extract_text`` /
     ``host_md_count_blocks``) which all decode user-supplied String arguments --
     exactly the same surface as ``IO.print``.
+
+    Bounds-checked through ``heap._require_readable`` before the slice
+    (#1442): ``(ptr, length)`` is guest data — the host imports receive it as
+    i32 arguments and ``_read_string_pair`` reads it out of a guest-built
+    AST — and ``_slice_and_decode`` bounds-checks nothing of its own, so a
+    pair that leaves linear memory must be refused here, the way
+    ``_read_wasm_string`` refuses it for ``IO.print``.
     """
     if length == 0:
         return ""  # pragma: no cover
     memory = caller["memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+    _require_readable(memory, caller, ptr, length, "string")
     return _slice_and_decode(memory, caller, ptr, length)
 
 

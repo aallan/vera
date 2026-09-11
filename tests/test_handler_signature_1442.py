@@ -60,6 +60,7 @@ from vera.runtime.heap import (
 )
 from vera.wasm.markdown import _read_i32 as _md_read_i32
 from vera.wasm.markdown import _read_i64 as _md_read_i64
+from vera.wasm.markdown import _read_string as _md_read_string
 from vera.runtime.server import make_server, validate_handler
 
 
@@ -438,7 +439,9 @@ class TestTheDecodersAreBoundsChecked:
         slice and are reached from `read_json` on the `json_stringify`
         path, and `markdown._read_i32` / `_read_i64` are a third and
         fourth copy walking a guest-built AST by pointers read out of
-        that AST.  In every one of them the offset is guest DATA rather
+        that AST (the string reader beside them is the fifth, checked in
+        its own cell below because it takes a pair).  In every one of
+        them the offset is guest DATA rather
         than an allocator's answer, which is the property that makes a
         raw slice unsafe.
 
@@ -464,6 +467,35 @@ class TestTheDecodersAreBoundsChecked:
             # ...and each still reads what is genuinely in range.
             reader(caller, 0)
             reader(caller, size - width)
+
+    def test_the_markdown_string_reader_is_guarded(self) -> None:
+        """The fifth member, which a `data_ptr` grep does not show.
+
+        `markdown._read_string` never touches `data_ptr` itself: it hands
+        the guest's `(ptr, len)` pair to `heap._slice_and_decode`, whose
+        own docstring says the slice bounds-checks nothing and every
+        caller must.  `_read_wasm_string` does; this one did not, and the
+        family enumeration above missed it for exactly that reason — the
+        rule "a raw slice of `data_ptr`" has to include slices reached
+        through a shared helper.  The pair is guest data in both routes
+        in: the Markdown host imports receive it as i32 arguments, and
+        `_read_string_pair` reads it out of a guest-built AST.
+        """
+        size, caller = self._memory_and_caller()
+        for ptr, length, why in [
+            (size + 4096, 4, "past the end"),
+            (size - 2, 4, "straddling the end"),
+            (-8, 4, "negative pointer"),
+            (0, -1, "negative length"),
+            (16, size, "length overflowing the pointer"),
+        ]:
+            with pytest.raises(wasmtime.WasmtimeError, match="out of bounds"):
+                _md_read_string(caller, ptr, length)
+        # The control: an in-range pair still decodes the bytes that are there.
+        memory = caller["memory"]
+        memory.write(caller, b"hello, guest", 0)
+        assert _md_read_string(caller, 0, 12) == "hello, guest"
+        assert _md_read_string(caller, size - 4, 4) is not None  # exactly at the limit
 
     def test_in_bounds_reads_still_work(self) -> None:
         """The control: a guard that refuses everything is not a fix."""

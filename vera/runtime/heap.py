@@ -146,7 +146,9 @@ def _require_readable(
     :func:`_read_bytes_at` (the ``decode_response_adt`` path),
     :func:`_read_i32` and :func:`_read_f64` (reached from ``read_json``
     on the ``json_stringify`` path), and ``markdown.py``'s own
-    ``_read_i32`` / ``_read_i64`` (walking a guest-built AST).  Each
+    ``_read_i32`` / ``_read_i64`` / ``_read_string`` (walking a
+    guest-built AST; the last reaches the slice through
+    :func:`_slice_and_decode`).  Each
     slices a raw ``ctypes`` pointer, which bounds-checks nothing: an
     offset past the end reads into wasmtime's guard page and takes the
     HOST down with ``SIGBUS``, not the guest with a trap.  A negative
