@@ -1878,18 +1878,19 @@ class TestArrayElementNarrowingIsObligated:
     def test_a_nat_element_is_obligated_and_its_guard_counted(
         self, tmp_path: Path,
     ) -> None:
-        """The other direction, where a guard exists and had no obligation.
+        """The other direction, where a guard existed with no obligation.
 
-        The trap below is real, but it belongs to the READ, not to the
-        store: the fixture ends in `nat_to_int(...[0])`, and the #765
-        pattern-bind guard fires there.  The construction site itself plants
-        nothing — see the store-only cell in
-        :py:class:`TestConstructionPositionReachesNestedContainers`, where
-        `-4` is stored into an `@Array<Nat>` and the program returns
-        normally — so this obligation is recorded UNguarded.  The earlier
-        reading of this cell took the trap as evidence about the store and
-        claimed `guarded`, which asserted a runtime check the site does not
-        emit.
+        The `@Nat` arm was absent at the `ArrayLit` walk outright, so this
+        store's sign narrowing was counted by nobody.  It is recorded now,
+        and `-4` traps — but this fixture cannot say WHICH check trapped,
+        because it ends in `nat_to_int(...[0])` and the read-side
+        pattern-bind guard (#765) fires there too.
+        :py:meth:`test_the_element_store_itself_guards` below is the
+        store-only differential that localizes it: when this cell was
+        written that differential returned normally, which is why the
+        obligation was recorded UNguarded, and #1440 is what changed the
+        answer.  So the trap below is evidence that SOME check covers
+        `-4` — never, on its own, evidence about the store.
         """
         obs, envelope = _obligations(
             tmp_path, _N4_NAT_ELEMENT, name="n4d.vera")
@@ -1901,8 +1902,9 @@ class TestArrayElementNarrowingIsObligated:
         out = _run(tmp_path, _N4_NAT_ELEMENT, "--fn", "f", "--", "-4",
                    name="n4e.vera")
         assert _NAT_GUARD_TRAP in out, (
-            f"the `@Nat` element store does not trap, so the obligation's "
-            f"guarded flag is wrong:\n{out}"
+            f"`-4` reached an `@Array<Nat>` element with no check anywhere: "
+            f"neither the store's sign guard (#1440) nor the read-side "
+            f"pattern-bind guard (#765) fired:\n{out}"
         )
 
     def test_the_element_store_itself_guards(
