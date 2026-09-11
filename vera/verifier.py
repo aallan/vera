@@ -6298,7 +6298,7 @@ class ContractVerifier:
                                 op.parent_effect == "Exn"
                                 or (op.parent_effect == "State"
                                     and self._refined_bind_site_guarded(
-                                        "State write boundary"))
+                                        _STATE_WRITE_SITE))
                             ),
                         )
             if param_types is not None:
@@ -6579,7 +6579,7 @@ class ContractVerifier:
                             op_effect == "Exn"
                             or (op_effect == "State"
                                 and self._refined_bind_site_guarded(
-                                    "State write boundary"))
+                                    _STATE_WRITE_SITE))
                         ),
                     )
             for arg in expr.args:
