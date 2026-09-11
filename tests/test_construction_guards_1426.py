@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from vera import narrowing
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -85,6 +86,19 @@ def _obligations(tmp_path: Path, source: str,
         ) from None
     return envelope["obligations"], envelope
 
+
+
+def _verify_in_process(source: str) -> list:
+    """Obligations from an IN-PROCESS verify, for the cells that patch a table.
+
+    The rest of this file drives the real CLI in a subprocess, which is what
+    makes its claims about the shipped toolchain honest.  A cell that
+    MUTATES a shared table cannot do that — the subprocess would import the
+    unpatched module — so these two run in-process and pay for it by
+    asserting only statuses the verifier itself derives.
+    """
+    from tests.verifier_helpers import _verify
+    return list(_verify(source).obligations)
 
 def _assert_partition(envelope: dict) -> None:
     """`len(obligations) == total + violated + tier3_unguarded`."""
@@ -794,6 +808,222 @@ def _call_pre_lines(obs: list[dict]) -> list[int]:
     """Line of every `call_pre` record, in stream order."""
     return [(o.get("location") or {}).get("line")
             for o in obs if o.get("kind") == "call_pre"]
+
+
+_BLOCK_TAIL_LOCAL = _PRELUDE + """\
+private fn mk(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 5;
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = mk(@Int.0);
+  7
+}
+"""
+
+_BLOCK_TAIL_NO_SHADOW = _PRELUDE + """\
+private fn mk(@String -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 5;
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = mk(@String.0);
+  7
+}
+"""
+
+_BLOCK_TAIL_OPAQUE_SHADOW = _PRELUDE + """\
+private fn mk(@Int -> @Map<String, Pos>)
+  requires(@Int.0 > 0) ensures(true) effects(<Random>)
+{
+  let @Int = Random.random_int(0, 9);
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(<Random>)
+{
+  let @Map<String, Pos> = mk(@Int.0);
+  7
+}
+"""
+
+
+def _store_status(obs: list[dict]) -> list[tuple]:
+    """Status of every refine_bind recorded for the stored slot."""
+    return [(o["status"], o.get("error_code")) for o in obs
+            if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
+
+
+_STATE_OPAQUE = (
+    "handle[Exn<Int>] { throw(@Int) -> { @Int.0 } } in { throw(@Int.0) }"
+)
+
+#: All THREE `State` write positions in one program, each given a value the
+#: SMT layer cannot decide so the obligation lands at Tier 3 — the only
+#: status that CONSULTS the guarded flag at all (a `violated` never reads
+#: it, so a fixture built from refutable values would pin nothing).
+_STATE_THREE_LEGS = _PRELUDE + f"""\
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{{
+  handle[State<Pos>](@Pos = {_STATE_OPAQUE}) {{
+    get(@Unit) -> {{ resume(1) }},
+    put(@Pos) -> {{ resume(()) }} with @Pos = {_STATE_OPAQUE}
+  }} in {{
+    put({_STATE_OPAQUE});
+    1
+  }}
+}}
+"""
+
+
+def test_the_state_entry_moves_all_three_write_legs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the shared table's `State` entry moves init, update and put.
+
+    The three positions keep their own diagnostic-facing site names, because
+    those tell a reader WHICH write to fix, and answer the guardedness
+    question through one key (`_STATE_WRITE_SITE`).  That is only worth
+    anything if the three actually follow the table together, and they did
+    not always: at `74db7ba1` this same mutation moved `put`'s status alone
+    while zeroing all three guards — a table the statuses only partly obeyed
+    (R-1412's F1).
+
+    So the cell asserts the SET of three, not a count and not one leg.  A
+    future tidy-up that reroutes any single position back to a literal
+    leaves that leg on `tier3` while its siblings move, and this reds.
+    """
+    sites = [o for o in _verify_in_process(_STATE_THREE_LEGS)
+             if o.kind == "refine_bind" and o.error_code == "E506"]
+    assert [o.status for o in sites] == ["tier3"] * 3, (
+        f"all three State writes should report a runtime-checked Tier 3 "
+        f"while the table lists the site: "
+        f"{[(o.line, o.status) for o in sites]}"
+    )
+    guarded_lines = sorted(o.line for o in sites)
+
+    monkeypatch.setattr(
+        narrowing, "REFINED_BIND_GUARDED_SITES",
+        frozenset(narrowing.REFINED_BIND_GUARDED_SITES
+                  - {"State write boundary"}),
+    )
+    dropped = [o for o in _verify_in_process(_STATE_THREE_LEGS)
+               if o.kind == "refine_bind" and o.error_code == "E506"]
+    assert [o.status for o in dropped] == ["tier3_unguarded"] * 3, (
+        f"dropping the one table entry must move ALL THREE legs together — "
+        f"a leg still reporting `tier3` is following something other than "
+        f"the shared table: {[(o.line, o.status) for o in dropped]}"
+    )
+    assert sorted(o.line for o in dropped) == guarded_lines, (
+        f"the same three positions must be the ones that moved: "
+        f"{guarded_lines} vs {sorted(o.line for o in dropped)}"
+    )
+
+
+class TestABlockTailIsReadInItsOwnScope:
+    """A `Block` stands where its tail does, in the tail's OWN scope.
+
+    The third instance of one mistake: the descent entering a position
+    without carrying the scope that position implies (the first two were an
+    `if`/`match` arm's path condition and a `match` arm's pattern bindings).
+    Here the descent handed the block's tail the ENCLOSING env, so a tail
+    naming a block-local slot resolved to a same-named outer instead.
+
+    The three cells below are the three grades that mistake has, and they
+    are asserted together because only the middle one looks like a bug from
+    the outside: whether a wrong scope REFUSES, merely loses precision, or
+    PROVES depends entirely on what the outer env happens to hold at the
+    same slot name.
+    """
+
+    def test_a_block_local_binding_proves_the_predicate(
+        self, tmp_path: Path,
+    ) -> None:
+        """Grade (a): the false refusal.
+
+        `let @Int = 5` then a store of `@Int.0` into a `Pos` map value.  The
+        tail's `@Int.0` is the local `5`, which proves `> 0`.  Measured
+        before the fix: `violated` / E505 and `ok: false`, because the
+        descent resolved it to `mk`'s unconstrained `@Int` parameter and
+        refuted THAT — a refusal of a program that compiles and runs clean
+        (`vera run` returns 7, no guard fires).
+        """
+        obs, envelope = _obligations(
+            tmp_path, _BLOCK_TAIL_LOCAL, name="blocklocal.vera")
+        assert _store_status(obs) == [("verified", None)], (
+            f"the tail's `@Int.0` is the block's own `5`, which proves the "
+            f"predicate; anything else is the enclosing scope answering for "
+            f"it: {obs}"
+        )
+        assert envelope["ok"] is True
+        _assert_partition(envelope)
+
+    def test_the_same_binding_without_a_shadow_is_also_tier_1(
+        self, tmp_path: Path,
+    ) -> None:
+        """Grade (b): the degrade, which is the SAME defect looking harmless.
+
+        Identical to (a) but the enclosing parameter is `@String`, so there
+        is no same-type outer to mis-resolve onto — translation simply
+        failed and the store recorded `tier3` / E506.  A reader would call
+        that conservative rather than wrong, which is exactly why the pair
+        is asserted together: one root, and only the shadowed spelling of it
+        is loud.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _BLOCK_TAIL_NO_SHADOW, name="blocknoshadow.vera")
+        assert _store_status(obs) == [("verified", None)], (
+            f"the local `5` proves the predicate whether or not an outer "
+            f"shares its slot name: {obs}"
+        )
+        _assert_partition(envelope)
+
+    def test_an_untranslatable_shadow_does_not_inherit_the_outers_bound(
+        self, tmp_path: Path,
+    ) -> None:
+        """Grade (c): the false PROOF, and the reason the policy is named.
+
+        `mk` carries `requires(@Int.0 > 0)` and the block rebinds `@Int` to
+        `Random.random_int(0, 9)`, which the SMT layer cannot translate and
+        which can be 0.  Reading the tail in the enclosing scope discharged
+        the store's predicate from the PARAMETER's bound and recorded
+        `verified` — a Tier-1 claim, "cannot fail", about a value the
+        verifier never held.  Measured at that head: the artifact trapped 2
+        runs in 24, because codegen guards the store from the site table
+        whatever the verifier concluded.
+
+        `OPAQUE_SHADOW` is what forbids it: the shadowed outer is replaced
+        by a tracked opaque const, so the predicate can no longer be
+        discharged from a bound that belongs to a different value.  Switch
+        the descent's policy to `SKIP` and this cell goes back to
+        `verified`, which is the mutation that proves the policy argument is
+        load-bearing rather than decorative.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _BLOCK_TAIL_OPAQUE_SHADOW, name="blockopaque.vera")
+        status = _store_status(obs)
+        assert ("verified", None) not in status, (
+            f"a `random_int(0, 9)` that can be 0 was PROVED to satisfy "
+            f"`> 0` — the outer parameter's `requires` discharging another "
+            f"value's obligation: {obs}"
+        )
+        assert status == [("violated", "E505")], (
+            f"the opaque rebinding is refutable at 0, so the store is "
+            f"`violated`: {obs}"
+        )
+        _assert_partition(envelope)
 
 
 def test_a_call_pre_is_reported_once_per_call_site(tmp_path: Path) -> None:

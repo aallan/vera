@@ -13,6 +13,7 @@ See spec/06-contracts.md for the full verification specification.
 from __future__ import annotations
 
 import contextlib
+import enum
 
 import z3
 
@@ -178,6 +179,65 @@ _INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
 
 
 
+
+
+class BlockBindingPolicy(enum.Enum):
+    """What a block's `let` does to the slot env when its RHS cannot translate.
+
+    Every reader of a block agrees while the RHS DOES translate: the value is
+    pushed under the binding's slot name, so a later expression resolves the
+    slot to what the block bound and not to a same-named outer.  They diverge
+    only when translation fails, and each divergence is a property of what
+    that reader is FOR — so the policy is named at the call site and the
+    derivation is written once, here.
+
+    Four inline variants of this used to sit in four Block branches.  They
+    agreed exactly where it did not matter and differed exactly where it did,
+    which is how the construction descent came to read a block tail's slot
+    against the enclosing env: it carried no variant at all (#1452 review).
+    """
+
+    SKIP = "skip"
+    """Leave the env alone; a later slot reference resolves to the outer.
+
+    For a reader that only LOOKS for something (`_walk_for_calls` hunts
+    recursive-group calls): it records no obligation, so a stale resolution
+    cannot become a false claim, and pushing an opaque value would lose the
+    outer binding a call argument may still legitimately name.
+    """
+
+    HALT = "halt"
+    """Stop reading the block here.
+
+    For `_collect_top_level_assert_facts`, which harvests facts to ASSUME.
+    Past an untranslatable binding the env is uncertain, and a fact assumed
+    against an uncertain env is an unchecked assumption — the one direction
+    that turns a missing fact into an unsound one.
+    """
+
+    OPAQUE_SHADOW = "opaque_shadow"
+    """Replace a shadowed stale outer with a TRACKED fresh const of its sort.
+
+    For readers that record obligations against the value (the primitive-op
+    walker, and the construction descent).  A stale same-type outer is the
+    dangerous case: `let @Int = random_int(...)` over a parameter carrying
+    `requires(@Int.0 > 0)` would otherwise discharge the block-local value's
+    predicate from the PARAMETER's bound — a Tier-1 claim about a value the
+    verifier never knew.  Tracking the const as an opaque shadow is what
+    routes an operand that IS one to Tier 3 instead of a false E526/E502 on
+    its unconstrained value.
+    """
+
+    FRESH_VAR = "fresh_var"
+    """Always mint a fresh var carrying the declared type's invariant.
+
+    For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
+    every binding whether or not the RHS translated, so a later `@Nat`
+    narrowing obligates against the binding's own type rather than a stale
+    outer's value.  Deliberately NOT seeded with the resolved source type
+    beyond that invariant: a fresh var is disconnected from the value, so
+    asserting more would be an unchecked assumption.
+    """
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -4504,6 +4564,44 @@ class ContractVerifier:
         if len(self.obligations) > before:
             self._construction_obligated.add(memo_key)
 
+    def _apply_let_binding(
+        self,
+        stmt: ast.LetStmt,
+        smt: SmtContext,
+        env: SlotEnv,
+        *,
+        policy: BlockBindingPolicy,
+    ) -> SlotEnv | None:
+        """Advance `env` past one `let`, or None when the block must stop.
+
+        THE derivation of what a block binding does to the slot env, so the
+        scope a `Block` implies cannot differ by which reader walks into it.
+        The translating case is the same for every caller; the caller's
+        `policy` decides only what an untranslatable RHS does, and each
+        policy carries its own rationale on
+        :class:`BlockBindingPolicy`.
+
+        Returning None means HALT — the caller stops reading the block — and
+        is reachable only under that policy.  Every other policy returns an
+        env, unchanged when there is nothing it can soundly bind.
+        """
+        val = smt.translate_expr(stmt.value, env)
+        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+        if val is None:
+            if policy is BlockBindingPolicy.HALT:
+                return None
+            if policy is BlockBindingPolicy.FRESH_VAR:
+                val = self._fresh_slot_var(smt, stmt.type_expr)
+            elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
+                    and type_name is not None):
+                stale = env.resolve(type_name, 0)
+                if stale is not None:
+                    val = z3.FreshConst(stale.sort(), "shadow")
+                    self._opaque_shadows.append(val)
+        if val is not None and type_name is not None:
+            return env.push(type_name, val)
+        return env
+
     def _descend_construction_arm(
         self,
         decl: ast.FnDecl,
@@ -4644,8 +4742,40 @@ class ContractVerifier:
             # again here recorded each twice at one span (measured: a
             # duplicate `nat_to_int_coerce`, one keyed on the block and one
             # on its tail).
+            #
+            # The tail is read in the block's OWN scope, which is the third
+            # instance of this descent entering a position without carrying
+            # the scope that position implies.  Passing the enclosing env
+            # resolved a tail's `@Int.0` to a same-named outer: measured,
+            # `let @Int = 5; map_insert(..., @Int.0)` into a `Pos` value was
+            # `violated` / E505 — a refusal of a program that runs clean —
+            # and with the outer carrying `requires(@Int.0 > 0)` over an
+            # untranslatable `let`, `verified`, a Tier-1 claim the artifact
+            # refutes 2 runs in 24.  `OPAQUE_SHADOW` is the policy that
+            # cannot do the second: a shadowed stale outer becomes a tracked
+            # opaque const rather than staying readable (#1452 review).
+            tail_env = slot_env
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    bound = self._apply_let_binding(
+                        stmt, smt, tail_env,
+                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
+                    )
+                    if bound is not None:  # OPAQUE_SHADOW never halts
+                        tail_env = bound
+                elif isinstance(stmt, ast.LetDestruct):
+                    # A destructure rebinds several slots at once, and the
+                    # readers that handle it do so differently enough
+                    # (component obligations, literal projection, array/ADT
+                    # placeholders) that there is no one derivation to share
+                    # yet.  Declining to descend is the fail-closed answer:
+                    # it can leave a store unobligated, which is the gap
+                    # #1426 closes elsewhere, but it cannot resolve the
+                    # tail's slots against a stale outer and prove something
+                    # about a value this env does not hold.
+                    return
             self._descend_construction_container(
-                decl, expr.expr, expected, smt, slot_env, assumptions,
+                decl, expr.expr, expected, smt, tail_env, assumptions,
                 site=site,
             )
             return
@@ -4978,11 +5108,12 @@ class ContractVerifier:
                 if isinstance(stmt, ast.LetStmt):
                     self._walk_for_calls(group_names, stmt.value,
                                          z3_path_conds, results, smt, cur_env)
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    if val is not None:
-                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                        if type_name is not None:
-                            cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.SKIP,
+                    )
+                    if bound is not None:  # SKIP never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for recursive-group
                     # calls so `decreases` sees a discarded recursive call
@@ -5141,12 +5272,13 @@ class ContractVerifier:
         cur_env = slot_env
         for stmt in body.statements:
             if isinstance(stmt, ast.LetStmt):
-                val = smt.translate_expr(stmt.value, cur_env)
-                if val is None:
+                bound = self._apply_let_binding(
+                    stmt, smt, cur_env,
+                    policy=BlockBindingPolicy.HALT,
+                )
+                if bound is None:
                     break  # env now uncertain — stop (soundness)
-                type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                if type_name is not None:
-                    cur_env = cur_env.push(type_name, val)
+                cur_env = bound
             elif isinstance(stmt, ast.LetDestruct):
                 break  # don't track destructure env here — conservative
             else:
@@ -5324,27 +5456,12 @@ class ContractVerifier:
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                    if val is None and type_name is not None:
-                        # Untranslatable RHS that shadows a stale same-type outer
-                        # binding: replace it with a fresh const of its sort so a
-                        # later op resolves to the (opaque) new value, not the
-                        # stale one.  A stale array's length false-E527s an
-                        # index (`let a = [1,2,3]; let a = array_append(...);
-                        # a[3]`); a stale Int's `requires(... != 0)` falsely
-                        # discharges a division (`let @Int = random_int(...);
-                        # 1 / @Int.0`).  The fresh const is tracked as an opaque
-                        # shadow so a div/sub operand that IS one falls to Tier-3
-                        # rather than a false E526/E502 on its unconstrained value
-                        # (it can't be proven safe, nor is its zero a real
-                        # reachable counterexample).
-                        stale = cur_env.resolve(type_name, 0)
-                        if stale is not None:
-                            val = z3.FreshConst(stale.sort(), "shadow")
-                            self._opaque_shadows.append(val)
-                    if val is not None and type_name is not None:
-                        cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
+                    )
+                    if bound is not None:  # OPAQUE_SHADOW never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
                     # #680 review: a `let Ctor<...> = <value>` destructure can
                     # host a trapping op in its *value* (`Tuple(@Int.0 /
@@ -6734,13 +6851,12 @@ class ContractVerifier:
                     # unchecked assumption (and the checker types `0 - 5` as
                     # `Nat`, so `>= 0` over the value `-5` would vacuously
                     # discharge later obligations).
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    if val is None:
-                        val = self._fresh_slot_var(smt, stmt.type_expr)
-                    if val is not None:
-                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                        if type_name is not None:
-                            cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.FRESH_VAR,
+                    )
+                    if bound is not None:  # FRESH_VAR never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
                     # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
                     # source (`Tuple(<Int>, ...)`) pairs each binding with a
