@@ -4503,6 +4503,38 @@ class ContractVerifier:
         if len(self.obligations) > before:
             self._construction_obligated.add(memo_key)
 
+    def _descend_construction_arm(
+        self,
+        decl: ast.FnDecl,
+        arm: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        path_cond: object | None,
+        *,
+        site: str,
+    ) -> None:
+        """Descend ONE branch arm, under the fact that arm carries.
+
+        `if` and `match` derive that fact differently — a translated
+        condition against its negation, a pattern condition against the
+        scrutinee — but spend it identically, so the push/pop lives here
+        rather than twice at the call sites where one copy could drift.
+        """
+        if path_cond is None:
+            self._descend_construction_container(
+                decl, arm, expected, smt, slot_env, assumptions, site=site,
+            )
+            return
+        smt._path_conditions.append(path_cond)
+        try:
+            self._descend_construction_container(
+                decl, arm, expected, smt, slot_env, assumptions, site=site,
+            )
+        finally:
+            smt._path_conditions.pop()
+
     def _descend_construction_container(
         self,
         decl: ast.FnDecl,
@@ -4536,18 +4568,72 @@ class ContractVerifier:
         # reads as a clean program.  Container descent only, so each arm's
         # scalar obligations stay with the position the branch occupies.
         if isinstance(expr, ast.IfExpr):
-            for arm in (expr.then_branch, expr.else_branch):
-                if arm is not None:
-                    self._descend_construction_container(
-                        decl, arm, expected, smt, slot_env, assumptions,
-                        site=site,
-                    )
+            # An arm carries its CONDITION as well as its expression.  Every
+            # obligation the descent records folds `smt._path_conditions` in,
+            # so entering an arm without pushing the condition refutes a
+            # store the arm itself proves: `if @Int.0 > 100 then
+            # { map_insert(..., @Int.0) }` into a `Pos` value recorded
+            # `violated` / E505, reporting a counterexample (`@Int.0 = 0`)
+            # unreachable in the arm it was reported for — the verifier
+            # refusing precisely the program E505's own fix paragraph asks
+            # the author to write (R-1412 H1).
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            arms: list[tuple[ast.Expr, object | None]] = []
+            if z3_cond is not None:
+                import z3 as z3mod
+                if expr.then_branch is not None:
+                    arms.append((expr.then_branch, z3_cond))
+                if expr.else_branch is not None:
+                    arms.append((expr.else_branch, z3mod.Not(z3_cond)))
+            else:
+                # Untranslatable condition (an effect op, the #779 empty
+                # env).  No path fact exists to spend, so each arm is entered
+                # with only what the branch already carries; declining to
+                # push is the conservative direction, since it can leave an
+                # obligation undischarged but never claim one proved.
+                for bare in (expr.then_branch, expr.else_branch):
+                    if bare is not None:
+                        arms.append((bare, None))
+            for arm_expr, arm_cond in arms:
+                self._descend_construction_arm(
+                    decl, arm_expr, expected, smt, slot_env, assumptions,
+                    arm_cond, site=site,
+                )
             return
         if isinstance(expr, ast.MatchExpr):
+            # The `match` twin reaches the same place by a different route:
+            # the arm's fact is `_pattern_condition` against the translated
+            # scrutinee, and the arm's ENV is `_bind_pattern`.  The env half
+            # is the unsound direction — `@Int.0` inside `Some(@Int) ->` is
+            # the payload, and descending with the OUTER env let an
+            # enclosing `requires(@Int.0 > 0)` discharge it, so the store
+            # recorded `verified` for a predicate `Some(0 - 5)` refutes at
+            # run time.  That is the #680 misattribution class one container
+            # level in, and a wrong `verified` is worse than the silence it
+            # replaced.
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
-                self._descend_construction_container(
-                    decl, match_arm.body, expected, smt, slot_env,
-                    assumptions, site=site,
+                arm_env = slot_env
+                pat_cond = None
+                if scrutinee_z3 is not None:
+                    bound = smt._bind_pattern(
+                        scrutinee_z3, match_arm.pattern, slot_env,
+                    )
+                    if bound is not None:
+                        arm_env = bound
+                    pat_cond = smt._pattern_condition(
+                        scrutinee_z3, match_arm.pattern,
+                    )
+                else:
+                    # Untranslatable scrutinee: the arm still BINDS its
+                    # pattern slots, so shadow them as tracked opaque consts
+                    # rather than let `@Int.0` read a stale same-name outer.
+                    arm_env = self._fresh_pattern_env(
+                        match_arm.pattern, slot_env, smt, track=True,
+                    )
+                self._descend_construction_arm(
+                    decl, match_arm.body, expected, smt, arm_env,
+                    assumptions, pat_cond, site=site,
                 )
             return
         if isinstance(expr, ast.Block) and expr.expr is not None:

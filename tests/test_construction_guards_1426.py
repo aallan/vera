@@ -589,6 +589,58 @@ public fn f(@Int -> @Int)
 """
 
 
+_CR_BRANCH_CONDITION_PROVES = _PRELUDE + """\
+private fn ins(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 > 100 then { map_insert(map_new(), "a", @Int.0) } else { map_new() }
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = ins(@Int.0);
+  7
+}
+"""
+
+_CR_MATCH_CONDITION_PROVES = _PRELUDE + """\
+private fn ins(@Int -> @Map<String, Pos>)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 > 100 {
+    true -> map_insert(map_new(), "a", @Int.0),
+    false -> map_new()
+  }
+}
+
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = ins(@Int.0);
+  7
+}
+"""
+
+_CR_MATCH_BINDER_IS_NOT_THE_PARAMETER = _PRELUDE + """\
+private fn ins(@Int, @Option<Int> -> @Map<String, Pos>)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> map_insert(map_new(), "a", @Int.0),
+    None -> map_new()
+  }
+}
+
+public fn f(@Int, @Option<Int> -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  let @Map<String, Pos> = ins(@Int.0, @Option<Int>.0);
+  7
+}
+"""
+
+
 def test_a_container_built_inside_a_branch_is_obligated(
     tmp_path: Path,
 ) -> None:
@@ -609,9 +661,102 @@ def test_a_container_built_inside_a_branch_is_obligated(
         tmp_path, _CR_BRANCHING_RETURN, name="branchret.vera")
     stores = [(o["status"], o.get("error_code")) for o in obs
               if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
-    assert stores.count(("violated", "E505")) == 2, (
+    assert len(stores) == 2, (
         f"a `Map` value store built inside a branch carries no record while "
         f"the module guards it: {obs}"
     )
+    # Each arm gets its OWN answer, which is what makes this a differential
+    # rather than a count.  `@Int.0 > 100` proves `@Int.0 > 0`, so the `then`
+    # store is Tier 1; the `else` arm holds only `@Int.0 <= 100`, which
+    # admits 0.  Asserting two `violated` (as this cell first did) pins the
+    # defect R-1412 found: a descent that never receives the arm's path
+    # condition refutes BOTH, and the fixture would re-pin it (R-1412 H1).
+    assert stores.count(("verified", None)) == 1, (
+        f"the `then` arm's condition proves the predicate, so its store is "
+        f"Tier 1 — a `violated` is the verifier refusing a correct arm: "
+        f"{obs}"
+    )
+    assert stores.count(("violated", "E505")) == 1, (
+        f"the `else` arm holds only `@Int.0 <= 100`, which admits 0: {obs}"
+    )
     assert envelope["ok"] is False
+    _assert_partition(envelope)
+
+
+def test_an_arm_condition_that_proves_the_predicate_discharges_the_store(
+    tmp_path: Path,
+) -> None:
+    """The arm's path CONDITION has to reach the store (R-1412 H1).
+
+    Descending into an arm without extending the path conditions refutes a
+    store the arm's own condition proves.  This program is correct — it
+    verified `ok: true` before the descent reached the arm at all — and the
+    descent first landed it as `violated` / E505, reporting a counterexample
+    (`@Int.0 = 0`) that is unreachable in the arm it was reported for.  The
+    E505 fix paragraph advises "guard the binding with an `if` whose
+    condition is the predicate"; this program does exactly that, so the
+    refusal contradicted the diagnostic's own advice.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _CR_BRANCH_CONDITION_PROVES, name="branchproved.vera")
+    stores = [(o["status"], o.get("error_code")) for o in obs
+              if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
+    assert stores == [("verified", None)], (
+        f"the arm's own condition proves the predicate, so the store is "
+        f"Tier 1; a `violated` here is the verifier refusing a correct "
+        f"program: {obs}"
+    )
+    assert envelope["ok"] is True
+    _assert_partition(envelope)
+
+
+def test_the_match_twin_reads_its_arm_condition_too(
+    tmp_path: Path,
+) -> None:
+    """The same claim for `match`, which reaches arms by a different route.
+
+    `if` takes its condition from `translate_expr`; a `match` arm takes its
+    from `_pattern_condition` against the translated scrutinee.  Two
+    mechanisms means two chances to drop it, so the pair is asserted rather
+    than the `if` alone.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _CR_MATCH_CONDITION_PROVES, name="matchproved.vera")
+    stores = [(o["status"], o.get("error_code")) for o in obs
+              if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
+    assert stores == [("verified", None)], (
+        f"the `true` arm holds `@Int.0 > 100`, which proves the predicate: "
+        f"{obs}"
+    )
+    assert envelope["ok"] is True
+    _assert_partition(envelope)
+
+
+def test_a_match_arm_binder_is_not_the_outer_parameter(
+    tmp_path: Path,
+) -> None:
+    """The arm's ENV has to reach the store, and this direction is the unsound one.
+
+    `@Int.0` inside `Some(@Int) ->` is the pattern-bound payload, not the
+    parameter one frame out.  Descending with the OUTER env reattributes it
+    silently: `requires(@Int.0 > 0)` then discharges a payload carrying no
+    such bound and the obligation records `verified` — a Tier 1 claim for a
+    predicate `Some(0 - 5)` refutes at run time.  Measured when the descent
+    first reached match arms: `verified`, while the artifact trapped on that
+    input, because codegen guards the store from the site table whatever the
+    verifier concluded.  That gap is the #680 misattribution class one
+    container level in, and it is the reason this cell asserts the STATUS
+    and not just the presence of a record: silence was the old bug, but a
+    wrong `verified` is worse than silence.
+    """
+    obs, envelope = _obligations(
+        tmp_path, _CR_MATCH_BINDER_IS_NOT_THE_PARAMETER,
+        name="binderenv.vera")
+    stores = [(o["status"], o.get("error_code")) for o in obs
+              if o["kind"] == "refine_bind" and o["description"] == "@Int.0"]
+    assert stores == [("violated", "E505")], (
+        f"the arm's `@Int.0` is the `Some` payload, which carries no bound; "
+        f"a `verified` here is the outer parameter's `requires` discharging "
+        f"another slot's obligation: {obs}"
+    )
     _assert_partition(envelope)
