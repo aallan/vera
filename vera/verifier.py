@@ -4382,6 +4382,23 @@ class ContractVerifier:
             tier=3,
         )
 
+    def _construction_refined_guarded(self, site: str, refined_ty: object) -> bool:
+        """Whether codegen lowers a §2.6.5 guard for *refined_ty* at *site*.
+
+        The site half, intersected with the CONSTRUCTION-position base rule:
+        a construction store tees the value into one scalar local, so a base
+        with no scalar representation takes no guard there however guardable
+        it is at a boundary (`{ @String | … }` on a parameter emits one; the
+        same refinement in a constructor field emits none).  Reading the
+        boundary rule alone claimed a check the store does not make.
+        """
+        base = getattr(refined_ty, "base", None)
+        return (
+            self._refined_bind_site_guarded(site)
+            and getattr(base, "name", None)
+            in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES
+        )
+
     def _obligate_construction_component(
         self,
         decl: ast.FnDecl,
@@ -4423,9 +4440,19 @@ class ContractVerifier:
         before = len(self.obligations)
         if (refined_target is not None
                 and self._narrows_into_refined(expr, refined_target)):
+            # A construction store tees the value into ONE SCALAR LOCAL and
+            # compares it there, so a base with no scalar representation —
+            # a `{ @String | … }`, an ADT, an array — takes no guard here
+            # however guardable it is at a BOUNDARY, where the value is
+            # already bound (measured: a `{ @String | … }` constructor field
+            # emits 0 guards in the body while the same refinement on a
+            # parameter emits 1).  Classifying it from the boundary rule
+            # alone claimed a check the store does not make.
             self._check_refined_binding_obligation(
                 decl, expr, refined_target, smt, slot_env, assumptions,
                 site=site,
+                guarded=self._construction_refined_guarded(
+                    site, refined_target),
             )
             # And the RANGE obligation beside it, when the refinement is over
             # `@Int` and the value is a `@Nat` (CR PR-review).  The two are
@@ -6248,6 +6275,8 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="constructor field",
+                            guarded=self._construction_refined_guarded(
+                                "constructor field", refined_target),
                         )
                     elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):

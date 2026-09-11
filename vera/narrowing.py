@@ -75,6 +75,25 @@ MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
 #: this particular refinement's BASE (an erased `@Unit`, a base that is
 #: itself a refinement).  Site and type are intersected wherever a type is in
 #: hand, so membership here is necessary and not sufficient.
+#: The refinement BASES a construction-position guard can be lowered for.
+#:
+#: A construction store tees the value into one scalar local and compares it
+#: there, so the base has to have a scalar WASM representation.  A boundary
+#: guard has no such limit — it runs where the value is already bound, and a
+#: `{ @String | … }` parameter IS guarded there — which is why this is a
+#: CONSTRUCTION-position rule and not a property of the refinement.
+#:
+#: Read by codegen's `_refined_component_wasm_type` and by the verifier's
+#: construction arm, so a base the emitter cannot lower is not classified
+#: guarded.  Without the second reader a `{ @String | … }` constructor field
+#: recorded `tier3` while the store emitted nothing — measured, 0 guards in
+#: the emitted body — which is the false-guarantee class this release exists
+#: to remove.
+REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
+    "Int", "Nat", "Float64", "Bool", "Byte",
+})
+
+
 REFINED_BIND_GUARDED_SITES = frozenset({
     # Function boundaries: the parameter / return predicate guards (#746).
     "return type",

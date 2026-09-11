@@ -278,6 +278,8 @@ class DataMixin:
         name = getattr(parts.base, "name", None)
         if not isinstance(name, str):
             return None
+        if name not in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES:
+            return None
         return {"Int": "i64", "Nat": "i64", "Float64": "f64",
                 "Bool": "i32", "Byte": "i32"}.get(name)
 
