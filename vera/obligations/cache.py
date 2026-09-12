@@ -17,13 +17,22 @@ what its cache key must cover:
    that merely shifts down a line is a cache miss by design —
    conservative, and required for the differential oracle to hold
    exactly.
-2. **Direct callees' interfaces** (``callee_component``): verifying
-   ``f`` checks each callee's preconditions at the call site and
-   assumes its postconditions, so a callee *contract or signature*
-   change must invalidate ``f``.  A callee *body* change must not —
-   bodies are never read across the call boundary.  Only direct local
-   callees matter: transitive callees are read only by their own
-   callers.
+2. **The interface CLOSURE** (``callee_component``): verifying ``f``
+   checks each callee's preconditions at the call site and assumes its
+   postconditions, so a callee *contract or signature* change must
+   invalidate ``f``.  A callee *body* change must not — bodies are
+   never read across the call boundary.
+
+   The closure is not the direct callees alone.  A callee's CONTRACT
+   may name further functions, and interpreting that contract reads
+   THEIR interfaces too: with ``f`` declaring
+   ``ensures(@Int.result == g(()))``, a caller of ``f`` reads ``g``'s
+   contract without calling ``g`` at all.  Hashing direct callees only
+   left such a caller replaying a proof after the fact it rested on had
+   changed — warm reported `verified` where a fresh session reports
+   `violated`/E500 (#1441).  So the component walks contract references
+   transitively, and terminates on a visited set because contracts may
+   be mutually recursive.
 3. **Program context** (``program_context_hash``): ADT / type-alias /
    effect / ability declarations (pattern translation, sort creation,
    type resolution), imported-module contracts (C7d), the solver
@@ -46,7 +55,7 @@ from __future__ import annotations
 import hashlib
 
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from vera import ast
 from vera.errors import Diagnostic
@@ -108,20 +117,156 @@ def fn_structural_hash(decl: ast.FnDecl) -> str:
     return _sha(repr(decl) + "\x1f" + spans)
 
 
+@dataclass(frozen=True)
+class TypeEnvironment:
+    """What a name a declaration mentions can resolve to, for the closure.
+
+    A declaration reads types it never WRITES, by naming a value whose own
+    declaration carries them: a constructor call reaches the field types of
+    the `data` declaration that owns the constructor, and a qualified call
+    reaches the signature of the `op` it names.  Seeding only from the types
+    a declaration writes left both out — each a warm-clean replay where a
+    fresh session refutes with E505 (#1458 review) — so the seed is what the
+    declaration REACHES.
+
+    Keeping the three maps in one record rather than three parameters means
+    a further route is a field here and a case in the seed loop, not another
+    argument threaded through `fn_cache_key`.
+    """
+
+    #: TYPE name -> the types its declaration carries: an alias's target, or
+    #: a `data` declaration's constructor fields.
+    types: dict[str, tuple[ast.TypeExpr, ...]]
+    #: CONSTRUCTOR name -> the field types that constructor takes.
+    constructors: dict[str, tuple[ast.TypeExpr, ...]]
+    #: (qualifier, operation) -> the operation's signature types.
+    effect_ops: dict[tuple[str, str], tuple[ast.TypeExpr, ...]]
+
+
+def _type_reference_calls(
+    type_exprs: Iterable[object],
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
+    out: set[str],
+) -> None:
+    """Collect functions read while INTERPRETING *type_exprs*.
+
+    A refinement predicate may call a function — ``{ @Int | @Int.0 < cap(()) }``
+    — so reading a type reads that function's contract.  A NAMED type hides
+    the predicate behind a declaration, so the walk resolves names through
+    *type_defs* until it reaches the refinements themselves.  Both kinds of
+    declaration carry one: a `type` alias names its target (and #1453 made
+    alias CHAINS real), and a `data` declaration's constructor FIELDS are
+    types the program reads whenever it builds or destructures a value
+    (#1458 review) — a refinement is equally live behind either.
+
+    ``seen`` terminates it, and a name enters it BEFORE its definition is
+    pushed, so a recursive ``data List<T> { Nil, Cons(T, List<T>) }`` is
+    walked once rather than forever.  An alias cycle is refused elsewhere
+    (E-coded at check time), but this runs over whatever map it is handed
+    and must be total regardless.
+    """
+    seen: set[str] = set()
+    stack: list[object] = list(type_exprs)
+    while stack:
+        current = stack.pop()
+        for node in walk_nodes(current):
+            if isinstance(node, ast.FnCall):
+                out.add(node.name)
+            elif isinstance(node, ast.NamedType) and node.name not in seen:
+                seen.add(node.name)
+                stack.extend(type_defs.get(node.name, ()))
+
+
+def interface_closure_names(
+    decl: ast.FnDecl,
+    fn_map: dict[str, ast.FnDecl],
+    env: TypeEnvironment,
+) -> frozenset[str]:
+    """Every function whose INTERFACE is read while verifying *decl*.
+
+    The direct callees, plus everything reachable from there through what a
+    caller READS of each: its CONTRACTS, and the refinement predicates of its
+    SIGNATURE types.  A caller assumes a callee's postcondition, checks its
+    precondition, and takes the refinements on its parameter and return types
+    — so a function named in any of those is one whose contract the caller
+    reads without calling it.
+
+    Bodies are never followed: a body is read only by its own function's
+    verification, which is the distinction that keeps a body-only edit from
+    invalidating callers.
+
+    Terminates on *seen* rather than on the call graph's shape: contracts may
+    refer to each other in a cycle, and a caller of a cyclic pair reads both.
+    """
+    seen: set[str] = set()
+    work: set[str] = set(direct_callee_names(decl))
+    # Everything this declaration REACHES, from ONE walk of its subtree.
+    # A refinement is read wherever its type is reached from: a parameter, a
+    # return, a `where` helper's signature, a `let` annotation, an ADT field
+    # at construction or at destructure — and also where no type is written
+    # at all, through a constructor call or a qualified operation call,
+    # whose own declarations carry the types.  Enumerating the places a type
+    # is WRITTEN left six of those out, each a warm-clean replay where a
+    # fresh session refutes (#1458 review).
+    #
+    # The other two routes cannot reach any of them: a `NamedType` is not a
+    # call, so `direct_callee_names` sees nothing through it, and neither a
+    # `where` helper nor a type, data or effect declaration is in `fn_map`,
+    # so the walk below never resolves the name at all.
+    seeds: list[object] = []
+    for node in walk_nodes(decl):
+        if isinstance(node, ast.TypeExpr):
+            seeds.append(node)
+        elif isinstance(node, ast.ConstructorCall):
+            # `B(3)` reads `B`'s field types, and names no type at all.
+            seeds.extend(env.constructors.get(node.name, ()))
+        elif isinstance(node, ast.QualifiedCall):
+            # `Counter.bump(3)` reads the op's signature, which lives in the
+            # effect declaration.  A MODULE-qualified call misses this map
+            # and is covered instead by the per-module source digests in the
+            # program context hash.
+            seeds.extend(env.effect_ops.get((node.qualifier, node.name), ()))
+    _type_reference_calls(seeds, env.types, work)
+    todo = list(work)
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        callee = fn_map.get(name)
+        if callee is None:            # builtin, or module-qualified
+            continue
+        found: set[str] = set()
+        for contract in callee.contracts:
+            found.update(
+                n.name for n in walk_nodes(contract)
+                if isinstance(n, ast.FnCall)
+            )
+        _type_reference_calls(
+            (*callee.params, callee.return_type), env.types, found)
+        todo.extend(n for n in found if n not in seen)
+    return frozenset(seen)
+
+
 def callee_component(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
+    env: TypeEnvironment,
 ) -> str:
-    """Hash the *interfaces* of every direct callee of *decl*.
+    """Hash the *interfaces* of everything *decl*'s verification reads.
 
     Interface = signature + contracts + type parameters — everything
     the caller's verification reads.  Callee bodies are excluded so a
     body-only edit in a callee does not invalidate its callers.
     Unresolvable names (builtins, module-qualified targets) contribute
     nothing here; the program context hash covers module contracts.
+
+    Over the CLOSURE rather than the direct callees: see this module's
+    header, and #1441 for the stale replay that distinguishes them.
     """
     parts: list[str] = []
-    for name in sorted(direct_callee_names(decl)):
+    for name in sorted(
+            interface_closure_names(decl, fn_map, env)):
         callee = fn_map.get(name)
         if callee is not None and callee is not decl:
             parts.append(
@@ -164,11 +309,12 @@ def fn_cache_key(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
     context_hash: str,
+    env: TypeEnvironment,
 ) -> str:
     """The complete invalidation key for one top-level function."""
     return _sha(
         fn_structural_hash(decl)
-        + callee_component(decl, fn_map)
+        + callee_component(decl, fn_map, env)
         + context_hash
     )
 

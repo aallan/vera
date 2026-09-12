@@ -38,6 +38,7 @@ from vera.obligations.cache import (
     DischargeCache,
     FnCacheEntry,
     fn_cache_key,
+    TypeEnvironment,
     program_context_hash,
 )
 from vera.obligations.core import ProofObligation
@@ -269,6 +270,45 @@ class VerificationSession:
             for tld in program.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
+        # #1458: a type the declaration references is read by whoever
+        # references it, and a NAMED one hides its refinement predicate
+        # behind a declaration — so the closure needs to resolve type names
+        # to see the functions those predicates call.  Both declaration
+        # forms carry a predicate: an alias names its target, and a `data`
+        # declaration's constructor fields are types read at construction
+        # and at destructure.  The declaration TEXT is already covered by
+        # the program context hash; what this reaches is a function the text
+        # names, whose own contract can move while the text does not.
+        type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        ctor_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        op_defs: dict[tuple[str, str], tuple[ast.TypeExpr, ...]] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.TypeAliasDecl):
+                type_defs[tld.decl.name] = (tld.decl.type_expr,)
+            elif isinstance(tld.decl, ast.DataDecl):
+                type_defs[tld.decl.name] = tuple(
+                    field
+                    for ctor in tld.decl.constructors
+                    for field in (ctor.fields or ())
+                )
+                for ctor in tld.decl.constructors:
+                    ctor_defs[ctor.name] = tuple(ctor.fields or ())
+            elif isinstance(tld.decl, (ast.EffectDecl, ast.AbilityDecl)):
+                # A `perform`-style qualified call reads the operation's
+                # signature, and an EFFECT op's PARAMETER refinement is
+                # discharged at the call site — that is the half a cell can
+                # hold to account.  Two pieces here are deliberate
+                # conservatism instead, each measured inert and each costing
+                # one term rather than a branch that would go stale if the
+                # measurement changed: an op's RETURN refinement is not
+                # assumed (the result is `tier3` either way), and a call to
+                # an ABILITY's op raises no obligation at all, so no cell
+                # can red on the `AbilityDecl` arm (#1458 review).
+                for op in tld.decl.operations:
+                    op_defs[(tld.decl.name, op.name)] = (
+                        *op.param_types, op.return_type)
+        env = TypeEnvironment(
+            types=type_defs, constructors=ctor_defs, effect_ops=op_defs)
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
@@ -282,7 +322,7 @@ class VerificationSession:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
-            key = fn_cache_key(decl, fn_map, context_hash)
+            key = fn_cache_key(decl, fn_map, context_hash, env)
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is

@@ -52,6 +52,24 @@ When adding or modifying built-in functions (registered in `vera/environment.py`
 - **Add codegen/runtime tests** in the matching `tests/test_codegen_*.py` feature file — for built-ins, e.g. `test_codegen_string_builtins.py` or `test_codegen_numeric.py` (shared helpers come from `tests/codegen_helpers.py`) — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
 - **Update the example** if an existing example demonstrates the feature, or add a new one in `examples/`.
 
+## Bugs: the class, not the instance
+
+A bug report is one sighting of a fault.  What gets filed, and what gets fixed, is the **class** it belongs to: the set of inputs the same mechanism gets wrong.
+
+### Fixing: close the class
+
+A bug fix closes the class the report belongs to, not the reported instance.  When review shows a fix covers the instance but not the class, the class fix goes into the **same** pull request, bounded to the mechanism at fault — repair where that mechanism decides, not each way the wrong decision surfaces, and do not widen past it.  A fix that closes only the instance is a review-blocking finding, and narrowing the claim to the instance while leaving the issue open is deferral rather than a fix.
+
+Every fix PR states its **class boundary** in the body — which inputs the fix now covers, and which neighbouring ones it deliberately does not, with the reason — and ships a **class instrument**: an exhaustive matrix over the space the class spans, or a generator that samples it.  Hand-picked cases alone are not a class instrument; they demonstrate the instance again.  [TESTING.md](TESTING.md) § Class Instruments has the two shapes and what keeps a cell from being vacuous.
+
+A change that moves *where* a decision is made rather than what it decides is proved by a **verdict-signature diff** — the whole gate's verdicts at both revisions, with no movers except the deliberate ones — not by a green suite, which cannot tell a preserved decision from a coincidentally equal one.
+
+### Filing: file the class, not the manifestation
+
+One issue per class of bug, with its known instances as a checklist in the body.  A finding that is another instance of an open class **extends that issue and its instrument** rather than opening a second one: two issues for one mechanism are fixed twice, or half-fixed once.  A new issue is for a different mechanism.
+
+`KNOWN_ISSUES.md`'s Bugs table stays one row per open `bug` issue, so the table counts classes rather than sightings.
+
 ## Development Setup
 
 ### Prerequisites
@@ -191,7 +209,7 @@ python scripts/check_doc_counts.py       # verify documentation counts match cod
 - Use `dataclasses` for AST nodes and other structured data.
 - Keep functions small and focused.
 - Write docstrings for public functions and classes.
-- Format code with `black`.
+- Lint with `ruff check .`, which pre-commit and CI both run; the rule set is declared in `pyproject.toml`.
 
 ### Specification Documents
 
