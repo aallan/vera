@@ -22,11 +22,15 @@ Response (plain JSON)::
       "diagnostics": <count of error diagnostics in the proposed state>,
     }
 
-The gate: apply iff the proof delta has no ``newly_undischarged``
-obligations AND the proposed state has no error diagnostics.
-``force: true`` overrides both — "this edit knowingly weakens a proof"
-(or doesn't compile yet) is sometimes the intent, but it must be said
-out loud; the default is the enforced gate.
+The gate: apply iff the proof delta has no ``proof_regressions`` (no
+obligation that was ``verified`` is anything else now, whatever it lost
+its proof to), no ``newly_undischarged`` obligations (the edit
+introduced no undischarged obligation of its own — a regression needs
+a ``before`` to regress from, so neither list subsumes the other), AND
+the proposed state has no error diagnostics.  ``force: true`` overrides
+all three — "this edit knowingly weakens a proof" (or doesn't compile
+yet) is sometimes the intent, but it must be said out loud; the default
+is the enforced gate.
 
 On apply, three things happen, in order: a ``workspace/applyEdit``
 request (the LSP-native mechanism — the *client* owns the buffer, so
@@ -138,6 +142,21 @@ def propose_edit(
     delta = speculative["proof_delta"]
     clean = (
         delta is not None
+        # #1443 — the proof-preservation question, asked once, of the
+        # whole status vocabulary.  `newly_undischarged` cannot stand in
+        # for it: `proof_delta` sorts by the AFTER status, so an
+        # obligation that went `verified -> timeout` is filed under
+        # `timed_out` and an edit that destroyed a proof looked clean
+        # here.  The verifier records a postcondition timeout as a
+        # warning with `ok=True`, so the diagnostics count did not catch
+        # it either, and `applied` came back True on an edit that lost a
+        # proof.  The categories remain what they are for presentation;
+        # their separation was never permission to apply.
+        and not delta["proof_regressions"]
+        # Kept beside it, and NOT subsumed by it: an obligation the edit
+        # newly INTRODUCES in an undischarged state has no `before` to
+        # regress from, so the predicate above says nothing about it,
+        # and refusing it is the existing policy.
         and not delta["newly_undischarged"]
         and speculative["diagnostics"] == 0
     )

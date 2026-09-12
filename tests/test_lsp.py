@@ -1421,6 +1421,7 @@ from vera.lsp.server import (  # noqa: E402
     _param,
     _require_str,
 )
+from vera.obligations import ProofObligation  # noqa: E402
 from vera.lsp.workflows import (  # noqa: E402
     _handled_effect_key,
     add_effect,
@@ -1546,6 +1547,207 @@ class TestProposeEditGate:
         assert should is True
         assert response["ok"] is False
         assert response["proof_delta"] is None
+
+
+class _StubSession:
+    """A ``VerificationSession`` stand-in returning a fixed outcome.
+
+    ``speculative_edit`` calls ``verify_source(text, file=...)`` and
+    reads exactly three things off the result -- ``ok``, ``obligations``
+    and ``diagnostics`` -- so a status transition can be injected
+    without a Vera program that actually produces it.  That matters
+    here: ``verified -> timeout`` is a solver's whim, not a property of
+    any source text, so the transition the gate got wrong is not
+    reachable from a fixture at all.  Testing the gate through real
+    verification would leave exactly that row untested, which is how it
+    survived.
+    """
+
+    def __init__(
+        self, obligations: list[ProofObligation], ok: bool = True,
+    ) -> None:
+        self._obligations = obligations
+        self._ok = ok
+
+    def verify_source(
+        self, text: str, file: str | None = None,
+    ) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            ok=self._ok, obligations=self._obligations, diagnostics=[],
+        )
+
+
+def _ob(status: str) -> ProofObligation:
+    """One obligation with fixed identity, varying only in outcome.
+
+    ``content_key`` hashes the identity fields and never the status, so
+    two of these with different statuses are the SAME obligation before
+    and after an edit -- which is what makes a transition a transition
+    rather than a removal plus a discovery.
+    """
+    return ProofObligation(
+        fn_name="f", kind="ensures", expr_text="p", status=status,
+        line=1, column=1, file="/p.vera",
+    )
+
+
+class TestProofPreservationAcrossTheStatusVocabulary:
+    """A proof that is lost needs `force`, whatever it is lost TO.
+
+    The gate read `newly_undischarged` and the error count.  But
+    `proof_delta` sorts by the AFTER status, and routes anything ending
+    in `timeout` to its own `timed_out` category -- so an obligation
+    that went `verified -> timeout` appeared in neither the list the
+    gate consulted nor the diagnostics, and the edit applied.  The
+    verifier records a postcondition timeout as a warning with
+    `ok=True`, so nothing else caught it either: a previously proved
+    obligation silently stopped being proved and `applied` came back
+    `True`.
+
+    The categories are a PRESENTATION of the delta.  Their separation
+    was never permission to apply, and the gate now asks the question
+    directly, over the whole status vocabulary, in one place.
+    """
+
+    @pytest.mark.parametrize(
+        ("before", "after", "applies"),
+        [
+            # A proof survives: nothing to refuse.
+            ("verified", "verified", True),
+            # A proof is LOST.  Every one of these is a regression, and
+            # the vocabulary is enumerated so a new status cannot be
+            # added later and quietly default to "apply".
+            ("verified", "timeout", False),
+            ("verified", "tier3", False),
+            ("verified", "tier3_unguarded", False),
+            ("verified", "violated", False),
+            # Already undischarged and unchanged: the current policy,
+            # deliberately kept.  The edit did not take anything away.
+            ("timeout", "timeout", True),
+            ("tier3", "tier3", True),
+            ("violated", "violated", True),
+            # An obligation that was undischarged and IMPROVED.
+            ("timeout", "verified", True),
+            ("violated", "verified", True),
+        ],
+    )
+    def test_transition(
+        self, before: str, after: str, applies: bool,
+    ) -> None:
+        session = _StubSession([_ob(after)])
+        should, response = propose_edit(
+            session, [_ob(before)], URI, "-- text",  # type: ignore[arg-type]
+        )
+        assert should is applies, (
+            f"{before} -> {after}: expected applies={applies}"
+        )
+        assert response["applied"] is applies
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            ("verified", "timeout"),
+            ("verified", "tier3"),
+            ("verified", "tier3_unguarded"),
+            ("verified", "violated"),
+        ],
+    )
+    def test_force_still_overrides_every_regression(
+        self, before: str, after: str,
+    ) -> None:
+        """`force` is the override for all of them, not just some."""
+        session = _StubSession([_ob(after)])
+        should, response = propose_edit(
+            session, [_ob(before)], URI, "-- text",  # type: ignore[arg-type]
+            force=True,
+        )
+        assert should is True
+        assert response["applied"] is True
+
+    def test_a_newly_introduced_timeout_is_not_a_regression(self) -> None:
+        """A boundary the rule draws deliberately.
+
+        An obligation the edit CREATES, which then times out, took no
+        proof away -- there was nothing there before.  It is reported
+        (`timed_out` carries it, with `status_before: None`) but it does
+        not need `force`.  Pinned because it is the case adjacent to the
+        bug, and the obvious over-correction is to refuse it too.
+        """
+        session = _StubSession([_ob("timeout")])
+        should, response = propose_edit(
+            session, [], URI, "-- text",  # type: ignore[arg-type]
+        )
+        assert should is True
+        assert response["proof_delta"]["timed_out"]
+        assert response["proof_delta"]["timed_out"][0]["status_before"] is None
+
+    @pytest.mark.parametrize(
+        ("status", "applies"),
+        [
+            # Unknown, not false: falls back to a runtime check, and
+            # took no proof away.  Allowed, as before.
+            ("timeout", True),
+            # Z3 produced a counterexample.  A definite falsehood the
+            # edit INTRODUCED — refused, as before.
+            ("violated", False),
+            # Outside the decidable fragment; a runtime check is
+            # emitted.  Refused, as before.
+            ("tier3", False),
+        ],
+    )
+    def test_an_obligation_the_edit_introduces(
+        self, status: str, applies: bool,
+    ) -> None:
+        """The half `proof_regressions` deliberately cannot see.
+
+        A brand-new obligation has no `before`, so the preservation
+        predicate says nothing about it and `newly_undischarged` is the
+        only conjunct that can — which is why both are in the gate and
+        neither subsumes the other.  Without this cell the older
+        conjunct mutation-survives its own removal: every OTHER row in
+        the table has a `before`, so the new predicate covers them all
+        and dropping `newly_undischarged` stays green while a newly
+        introduced `violated` silently starts applying.
+
+        The asymmetry is the point.  `violated` is a counterexample, an
+        error; `timeout` is the solver saying it does not know, a
+        warning with a runtime check behind it.  Introducing an unknown
+        is not the same act as introducing a falsehood.
+        """
+        session = _StubSession([_ob(status)])
+        should, _ = propose_edit(
+            session, [], URI, "-- text",  # type: ignore[arg-type]
+        )
+        assert should is applies
+
+    def test_the_regression_is_reported_not_merely_refused(self) -> None:
+        """The refusal names what was lost, so an agent can act on it."""
+        session = _StubSession([_ob("timeout")])
+        should, response = propose_edit(
+            session, [_ob("verified")], URI, "-- text",  # type: ignore[arg-type]
+        )
+        assert should is False
+        regressed = response["proof_delta"]["proof_regressions"]
+        assert len(regressed) == 1
+        assert regressed[0]["status_before"] == "verified"
+        assert regressed[0]["status_after"] == "timeout"
+        assert regressed[0]["fn"] == "f"
+
+    def test_the_presentation_categories_are_unchanged(self) -> None:
+        """The fix must not reshuffle what the delta reports.
+
+        `verified -> timeout` still presents as `timed_out`, not as
+        `newly_undischarged`: the gate stopped reading the categories,
+        which is different from redefining them.
+        """
+        session = _StubSession([_ob("timeout")])
+        _, response = propose_edit(
+            session, [_ob("verified")], URI, "-- text",  # type: ignore[arg-type]
+        )
+        delta = response["proof_delta"]
+        assert len(delta["timed_out"]) == 1
+        assert delta["newly_undischarged"] == []
+        assert delta["newly_discharged"] == []
 
 
 class TestProposeEditWiring:

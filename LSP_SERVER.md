@@ -140,7 +140,11 @@ set:
                             "expr": "@Nat.0 - 1", "line": 6, "column": 3,
                             "status_before": "verified",
                             "status_after": "violated"}],
-    "timed_out": [], "removed": [], "unchanged": 11
+    "timed_out": [], "removed": [], "unchanged": 11,
+    "proof_regressions": [{"fn": "f", "kind": "nat_sub",
+                           "expr": "@Nat.0 - 1", "line": 6, "column": 3,
+                           "status_before": "verified",
+                           "status_after": "violated"}]
   },
   "diagnostics": 1
 }
@@ -152,6 +156,16 @@ violated or fall to runtime checks), or **strengthens** them
 (previously-runtime obligations now prove) — before committing
 anything.
 
+The first four lists **sort by the obligation's status AFTER the edit**,
+which makes them a presentation of the delta rather than an answer to
+"did this edit take a proof away?".  That question has its own list:
+`proof_regressions` holds every obligation that was `verified` before
+and is anything else after — `timeout`, `tier3`, `tier3_unguarded` or
+`violated` — so an obligation appears in it **as well as** in whichever
+category its new status puts it in (`verified → timeout` is in both
+`timed_out` and `proof_regressions`).  Read `proof_regressions` to ask
+about lost proofs; read the categories to display what happened.
+
 #### `vera/proposeEdit` — the enforced edit workflow
 
 ```json
@@ -161,9 +175,13 @@ anything.
 The whole edit → verify → apply sequence as one method, so the
 verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
-`newly_undischarged` obligations and the proposed state has no error
-diagnostics. On apply the server issues `workspace/applyEdit` (the
-client owns the buffer), updates its canonical state, and republishes
+`proof_regressions` (no obligation lost a proof, whatever it lost it
+to), no `newly_undischarged` obligations (the edit introduced no
+undischarged obligation of its own), and the proposed state has no
+error diagnostics.  Neither list subsumes the other: a regression needs
+a `before` to regress from, and a newly introduced obligation has
+none.  On apply the server issues `workspace/applyEdit` (the client
+owns the buffer), updates its canonical state, and republishes
 diagnostics; on refuse, nothing changes and the response says why:
 
 ```json

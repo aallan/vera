@@ -26,6 +26,7 @@ Response (plain JSON)::
         "timed_out":         [<obligation>...],  # solver unknown
         "removed":           [<obligation>...],  # obligation no longer exists
         "unchanged": <count>,
+        "proof_regressions": [<obligation>...],  # verified → anything else
       },
       "diagnostics": <count of error diagnostics in the speculative state>,
     }
@@ -83,10 +84,32 @@ def proof_delta(
     newly_undischarged: list[dict[str, Any]] = []
     timed_out: list[dict[str, Any]] = []
     removed: list[dict[str, Any]] = []
+    # #1443 — the PROOF-PRESERVATION question, asked over the whole
+    # status vocabulary instead of inferred from the categories beside
+    # it.  Those categories sort by the AFTER status, which makes them a
+    # presentation of the delta and not a statement about what was lost:
+    # `verified -> timeout` lands in `timed_out` and `verified ->
+    # violated` in `newly_undischarged`, so a consumer asking "did this
+    # edit take a proof away?" by reading one list gets a different
+    # answer depending on which way the proof was lost.  The apply gate
+    # asked exactly that, of exactly one list, and let a `verified ->
+    # timeout` edit through.
+    #
+    # Enumerated as "was verified, is not verified" rather than as a
+    # list of losing statuses, so a status added to `ObligationStatus`
+    # later joins the refusal by default rather than by being
+    # remembered here.
+    proof_regressions: list[dict[str, Any]] = []
     unchanged = 0
 
     for key, ob in new.items():
         before = old.get(key)
+        if (
+            before is not None
+            and before.status == "verified"
+            and ob.status != "verified"
+        ):
+            proof_regressions.append(_item(before, ob))
         if before is not None and before.status == ob.status:
             unchanged += 1
         elif ob.status == "verified":
@@ -105,6 +128,7 @@ def proof_delta(
         "timed_out": timed_out,
         "removed": removed,
         "unchanged": unchanged,
+        "proof_regressions": proof_regressions,
     }
 
 
