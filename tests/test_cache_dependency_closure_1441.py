@@ -283,7 +283,7 @@ def test_1441_the_closure_terminates_on_a_contract_cycle() -> None:
     fn_map = {"a": fn_a, "b": fn_b}
 
     caller = fn("caller", "a")
-    names = interface_closure_names(caller, fn_map)
+    names = interface_closure_names(caller, fn_map, {})
     assert names == frozenset({"a", "b"}), names
 
 
@@ -306,7 +306,7 @@ def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
     }
     caller = fn("caller", in_contract=None, in_body="callee")
 
-    names = interface_closure_names(caller, fn_map)
+    names = interface_closure_names(caller, fn_map, {})
     assert "callee" in names, names
     assert "seen" in names, (
         "a function named in a callee's CONTRACT is read by that callee's "
@@ -315,6 +315,181 @@ def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
     assert "unseen" not in names, (
         "a function named only in a callee's BODY is not read across the call "
         f"boundary; including it would cost the body-only optimisation — {names}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The signature half: refinement predicates on a callee's parameter / return
+# ---------------------------------------------------------------------------
+
+#: A caller reads more of a callee than its contracts.  It takes the
+#: refinements on the callee's PARAMETER types (checking them at the call
+#: site) and on its RETURN type (assuming them afterwards) — and a refinement
+#: predicate may call a function, so reading the signature reads that
+#: function's contract.  Walking `contracts` alone missed it, and the first
+#: version of this fix did exactly that (#1458 review).
+#:
+#: A NAMED type hides the predicate behind an alias, so the closure has to
+#: resolve through `alias_map`; #1453 made alias CHAINS real, which the third
+#: fixture below walks.
+_RETURN_ORIGINAL = """public fn cap(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  2
+}
+
+type Small = { @Int | @Int.0 < cap(()) };
+
+public fn mk(@Unit -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn use_it(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 3)
+  effects(pure)
+{
+  mk(())
+}
+"""
+
+#: `cap` 2 -> 9 widens `Small`, so `use_it` can no longer conclude `< 3` from
+#: `mk`'s return type.  `mk` itself still verifies (1 is below either bound),
+#: which is what makes the caller the only thing that moves.
+_RETURN_EDITED = _RETURN_ORIGINAL.replace(
+    "ensures(@Int.result == 2)\n  effects(pure)\n{\n  2\n}",
+    "ensures(@Int.result == 9)\n  effects(pure)\n{\n  9\n}",
+    1,
+)
+
+#: The parameter half.  `needs` takes a refined PARAMETER, so `caller`
+#: discharges that refinement at its call site; raising the floor makes the
+#: argument illegal and the call site is where it is caught (E505).
+_PARAM_ORIGINAL = """public fn floor_of(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+type Pos = { @Int | @Int.0 > floor_of(()) };
+
+public fn needs(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+
+public fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  needs(1)
+}
+"""
+
+_PARAM_EDITED = _PARAM_ORIGINAL.replace(
+    "ensures(@Int.result == 0)\n  effects(pure)\n{\n  0\n}",
+    "ensures(@Int.result == 5)\n  effects(pure)\n{\n  5\n}",
+    1,
+)
+
+#: Two alias hops between the signature and the refinement that names `cap`.
+_CHAIN_ORIGINAL = _RETURN_ORIGINAL.replace(
+    "type Small = { @Int | @Int.0 < cap(()) };",
+    "type Small = { @Int | @Int.0 < cap(()) };\n\ntype Tiny = Small;\n\n"
+    "type Wee = Tiny;",
+    1,
+).replace("public fn mk(@Unit -> @Small)", "public fn mk(@Unit -> @Wee)", 1)
+
+_CHAIN_EDITED = _CHAIN_ORIGINAL.replace(
+    "ensures(@Int.result == 2)\n  effects(pure)\n{\n  2\n}",
+    "ensures(@Int.result == 9)\n  effects(pure)\n{\n  9\n}",
+    1,
+)
+
+
+@pytest.mark.parametrize(
+    "original,edited,route",
+    [
+        (_RETURN_ORIGINAL, _RETURN_EDITED, "refined return type"),
+        (_PARAM_ORIGINAL, _PARAM_EDITED, "refined parameter type"),
+        (_CHAIN_ORIGINAL, _CHAIN_EDITED, "refinement two alias hops away"),
+    ],
+    ids=["through_refined_return", "through_refined_parameter",
+         "through_an_alias_chain"],
+)
+def test_1458_a_refinement_predicate_is_part_of_the_interface(
+    tmp_path: Path, original: str, edited: str, route: str,
+) -> None:
+    """Warm equals fresh when the changed function is read through a TYPE.
+
+    Measured with the closure walking contracts only: warm reported the
+    caller `verified` where a fresh session reports `violated` — E500 for the
+    return route, E505 for the parameter route, since the parameter's
+    refinement is discharged at the call site rather than assumed after it.
+    `propose_edit` sits on this session and would have answered
+    `should_apply=True`.
+    """
+    path = tmp_path / "p.vera"
+    warm = VerificationSession()
+    before = _summary(warm.verify_source(original, file=str(path)))
+    assert before[0] == [], (
+        f"{route}: the original does not verify clean, so this cell measures "
+        f"something other than the edit — {before}"
+    )
+
+    warm_edited = _summary(warm.verify_source(edited, file=str(path)))
+    fresh_edited = _summary(
+        VerificationSession().verify_source(edited, file=str(path)))
+
+    assert warm_edited == fresh_edited, (
+        f"{route}: warm {warm_edited} vs fresh {fresh_edited}"
+    )
+    assert warm_edited[0], (
+        f"{route}: the edit was expected to break the caller and nothing was "
+        f"reported — the fixture no longer exercises the bug"
+    )
+
+
+def test_1458_editing_only_the_predicates_helper_body_still_replays(
+    tmp_path: Path,
+) -> None:
+    """The control for the signature half: a BODY is still not read.
+
+    `cap`'s body changes and its contract does not, so nothing any caller
+    reads has moved — the refinement quotes `cap`'s postcondition, never its
+    body.  Without this, "any function reachable from a signature invalidates
+    everything" would satisfy the three cells above and throw the
+    optimisation away for every refined type in the file.
+    """
+    edited = _RETURN_ORIGINAL.replace("{\n  2\n}", "{\n  1 + 1\n}", 1)
+    assert edited != _RETURN_ORIGINAL
+    assert "ensures(@Int.result == 2)" in edited, "the contract must not move"
+
+    path = tmp_path / "p.vera"
+    warm = VerificationSession()
+    warm.verify_source(_RETURN_ORIGINAL, file=str(path))
+    warm_edited = _summary(warm.verify_source(edited, file=str(path)))
+    replayed = warm.last_run_stats.replayed_fns
+    fresh_edited = _summary(
+        VerificationSession().verify_source(edited, file=str(path)))
+
+    assert warm_edited == fresh_edited, (warm_edited, fresh_edited)
+    assert warm_edited[0] == [], f"the control must stay clean — {warm_edited}"
+    assert replayed >= 1, (
+        "a body-only edit invalidated every caller, so the closure is "
+        "following bodies through signature types rather than refinements"
     )
 
 

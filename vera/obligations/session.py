@@ -269,6 +269,16 @@ class VerificationSession:
             for tld in program.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
+        # #1458: a callee's SIGNATURE types are read by its callers too, and
+        # a named one hides its refinement predicate behind an alias, so the
+        # closure needs the alias map to see the functions that predicate
+        # calls.  Alias TEXT is already covered by the program context hash;
+        # what this reaches is a function the text names.
+        alias_map: dict[str, ast.TypeExpr] = {
+            tld.decl.name: tld.decl.type_expr
+            for tld in program.declarations
+            if isinstance(tld.decl, ast.TypeAliasDecl)
+        }
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
@@ -282,7 +292,7 @@ class VerificationSession:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
-            key = fn_cache_key(decl, fn_map, context_hash)
+            key = fn_cache_key(decl, fn_map, context_hash, alias_map)
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is

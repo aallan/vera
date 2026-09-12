@@ -55,7 +55,7 @@ from __future__ import annotations
 import hashlib
 
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from vera import ast
 from vera.errors import Diagnostic
@@ -117,45 +117,90 @@ def fn_structural_hash(decl: ast.FnDecl) -> str:
     return _sha(repr(decl) + "\x1f" + spans)
 
 
+def _signature_type_calls(
+    type_exprs: Iterable[object],
+    alias_map: dict[str, ast.TypeExpr],
+    out: set[str],
+) -> None:
+    """Collect functions read while INTERPRETING *type_exprs*.
+
+    A refinement predicate may call a function — ``{ @Int | @Int.0 < cap(()) }``
+    — so reading a signature reads that function's contract.  A NAMED type
+    hides the predicate behind an alias, and #1453 made alias CHAINS real, so
+    the walk resolves names through *alias_map* until it reaches the
+    refinements themselves.
+
+    ``seen_aliases`` terminates it: an alias cycle is refused elsewhere
+    (E-coded at check time), but this runs over whatever map it is handed and
+    must be total regardless.
+    """
+    seen_aliases: set[str] = set()
+    stack: list[object] = list(type_exprs)
+    while stack:
+        current = stack.pop()
+        for node in walk_nodes(current):
+            if isinstance(node, ast.FnCall):
+                out.add(node.name)
+            elif (isinstance(node, ast.NamedType)
+                    and node.name not in seen_aliases):
+                seen_aliases.add(node.name)
+                target = alias_map.get(node.name)
+                if target is not None:
+                    stack.append(target)
+
+
 def interface_closure_names(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
+    alias_map: dict[str, ast.TypeExpr],
 ) -> frozenset[str]:
     """Every function whose INTERFACE is read while verifying *decl*.
 
-    The direct callees, plus everything reachable from there through
-    CONTRACTS — because a callee's contract is what the caller assumes,
-    and a contract that names another function makes that function's
-    contract part of what the caller reads.  Bodies are never followed:
-    a body is read only by its own function's verification, which is
-    the distinction that keeps a body-only edit from invalidating
-    callers.
+    The direct callees, plus everything reachable from there through what a
+    caller READS of each: its CONTRACTS, and the refinement predicates of its
+    SIGNATURE types.  A caller assumes a callee's postcondition, checks its
+    precondition, and takes the refinements on its parameter and return types
+    — so a function named in any of those is one whose contract the caller
+    reads without calling it.
 
-    Terminates on *seen* rather than on the call graph's shape:
-    contracts may refer to each other in a cycle, and a caller of a
-    cyclic pair reads both.
+    Bodies are never followed: a body is read only by its own function's
+    verification, which is the distinction that keeps a body-only edit from
+    invalidating callers.
+
+    Terminates on *seen* rather than on the call graph's shape: contracts may
+    refer to each other in a cycle, and a caller of a cyclic pair reads both.
     """
     seen: set[str] = set()
-    work = list(direct_callee_names(decl))
-    while work:
-        name = work.pop()
+    work: set[str] = set(direct_callee_names(decl))
+    # The caller's OWN signature types are read while verifying it, and a
+    # NAMED one hides its predicate behind an alias that `direct_callee_names`
+    # cannot see through.
+    _signature_type_calls((*decl.params, decl.return_type), alias_map, work)
+    todo = list(work)
+    while todo:
+        name = todo.pop()
         if name in seen:
             continue
         seen.add(name)
         callee = fn_map.get(name)
         if callee is None:            # builtin, or module-qualified
             continue
+        found: set[str] = set()
         for contract in callee.contracts:
-            work.extend(
+            found.update(
                 n.name for n in walk_nodes(contract)
-                if isinstance(n, ast.FnCall) and n.name not in seen
+                if isinstance(n, ast.FnCall)
             )
+        _signature_type_calls(
+            (*callee.params, callee.return_type), alias_map, found)
+        todo.extend(n for n in found if n not in seen)
     return frozenset(seen)
 
 
 def callee_component(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
+    alias_map: dict[str, ast.TypeExpr],
 ) -> str:
     """Hash the *interfaces* of everything *decl*'s verification reads.
 
@@ -169,7 +214,8 @@ def callee_component(
     header, and #1441 for the stale replay that distinguishes them.
     """
     parts: list[str] = []
-    for name in sorted(interface_closure_names(decl, fn_map)):
+    for name in sorted(
+            interface_closure_names(decl, fn_map, alias_map)):
         callee = fn_map.get(name)
         if callee is not None and callee is not decl:
             parts.append(
@@ -212,11 +258,12 @@ def fn_cache_key(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
     context_hash: str,
+    alias_map: dict[str, ast.TypeExpr],
 ) -> str:
     """The complete invalidation key for one top-level function."""
     return _sha(
         fn_structural_hash(decl)
-        + callee_component(decl, fn_map)
+        + callee_component(decl, fn_map, alias_map)
         + context_hash
     )
 
