@@ -199,11 +199,16 @@ class ProofObligation:
         right answer for a display of POSITIONS, and the wrong one for
         "did this edit take a proof away?", which an edit that shifts a
         line would otherwise walk past.  So the presentation categories
-        stay keyed on this digest, and the two gate inputs first pair the
-        leftovers span-insensitively, on
-        :func:`vera.lsp.extensions._relocation_key` (file, function, kind,
-        whitespace-normalised text, ties broken in source order): the gate
-        reasons about identity, the presentation reports positions.
+        keep partitioning the speculative stream by this digest -- a
+        relocated obligation is a removal at its old span plus an entry at
+        its new one, which is what a display of positions should say --
+        while :func:`vera.lsp.extensions.proof_delta` additionally pairs
+        the leftovers span-insensitively, on
+        :func:`vera.lsp.extensions._relocation_key`, and reports each
+        entry against the ``before`` it paired with.  So the gate reasons
+        about identity and the presentation reports positions, out of one
+        set of records: the categories say WHERE, the ``status_before``
+        on each says WHAT HAPPENED TO IT.
         """
         ident = (
             f"{self.fn_name}\x1f{self.kind}\x1f{self.expr_text}"

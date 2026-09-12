@@ -1577,8 +1577,16 @@ class _StubSession:
         )
 
 
+#: Every member of ``ObligationStatus``, so a table over transitions
+#: is a table over the whole vocabulary rather than a chosen subset.
+_STATUSES = (
+    "verified", "violated", "tier3", "timeout", "tier3_unguarded",
+)
+
+
 def _ob(
     status: str, line: int = 1, expr: str = "p", fn: str = "f",
+    owner: str = "",
 ) -> ProofObligation:
     """One obligation with fixed identity, varying only in outcome.
 
@@ -1594,7 +1602,7 @@ def _ob(
     """
     return ProofObligation(
         fn_name=fn, kind="ensures", expr_text=expr, status=status,
-        line=line, column=1, file="/p.vera",
+        line=line, column=1, file="/p.vera", owner=owner,
     )
 
 
@@ -1774,9 +1782,13 @@ class TestARelocatedObligationIsStillTheSameObligation:
     `proof_regressions: []` and applied without `force`, while the
     identical injection with no line shift was refused (#1461 review).
 
-    The regression predicate -- and only it; the four presentation
-    categories stay span-keyed -- pairs the leftovers on
-    `_relocation_key`.
+    The pairing changes what each entry is reported AGAINST, not which
+    list it is in: the four categories still partition the speculative
+    stream by the after-status, and a relocated obligation is still a
+    removal at its old span plus an entry at its new one.  What it
+    gains is the `status_before` of the obligation it paired with,
+    which is what lets `proof_regressions` see the loss and lets the
+    gate tell a pair that only moved from one that worsened.
     """
 
     @pytest.mark.parametrize(
@@ -1873,8 +1885,13 @@ class TestARelocatedObligationIsStillTheSameObligation:
         )
         delta = response["proof_delta"]
         assert len(delta["removed"]) == len(analysis.obligations)
-        assert delta["newly_undischarged"] == []
         assert delta["proof_regressions"] == []
+        # The Tier-3 obligation is still REPORTED -- the categories are
+        # a partition of the speculative stream and dropping it would
+        # make the delta unrenderable -- but it is reported against the
+        # `before` it paired with, so the gate can see it did not move.
+        (still_tier3,) = delta["newly_undischarged"]
+        assert still_tier3["status_before"] == still_tier3["status_after"]
         assert should is True
 
     def test_two_identical_obligations_pair_in_source_order(self) -> None:
@@ -1937,6 +1954,34 @@ class TestARelocatedObligationIsStillTheSameObligation:
         # Never a proof regression: none of these started `verified`.
         assert response["proof_delta"]["proof_regressions"] == []
 
+    @pytest.mark.parametrize("relocated", [False, True], ids=["fixed", "moved"])
+    @pytest.mark.parametrize("after", list(_STATUSES))
+    @pytest.mark.parametrize("before", list(_STATUSES))
+    def test_every_speculative_obligation_lands_in_exactly_one_category(
+        self, before: str, after: str, relocated: bool,
+    ) -> None:
+        """The four categories must PARTITION the speculative stream.
+
+        A consumer renders the delta from them, so an obligation that
+        reaches none of them is an obligation the display says went
+        away while it is still there.  The first cut of the relocation
+        fix dropped same-status pairs out of `newly_undischarged` to
+        keep them from reaching the gate, and `violated -> violated`
+        then showed a counterexample vanishing because a line moved
+        (#1461 review F1).  The exclusion belongs in the gate, which
+        reads `status_before` off the entry; the category keeps it.
+        """
+        delta = proof_delta(
+            [_ob(before, line=5)], [_ob(after, line=6 if relocated else 5)],
+        )
+        landed = (
+            delta["unchanged"]
+            + len(delta["newly_discharged"])
+            + len(delta["timed_out"])
+            + len(delta["newly_undischarged"])
+        )
+        assert landed == 1, f"{before} -> {after}: landed in {landed}"
+
     def test_a_deleted_proof_is_not_a_regression(self) -> None:
         """The boundary the pairing draws, stated rather than implied.
 
@@ -1990,6 +2035,61 @@ class TestARelocatedObligationIsStillTheSameObligation:
         )
         assert should is applies
         assert response["proof_delta"]["proof_regressions"] == []
+
+    def test_same_named_helpers_under_two_owners_do_not_pair(self) -> None:
+        """`owner` is load-bearing HERE even though `content_key` omits it.
+
+        `fn_name` is a `where` helper's bare name, so `h` in `a` and `h`
+        in `b` are two functions with one name.  `content_key` can leave
+        `owner` out because the span already separates them -- and this
+        key drops the span, so the justification does not carry over.
+        Without `owner` these two pair against each other, and one
+        owner's lost proof is attributed to the other's (#1461 review).
+        """
+        session = _StubSession([
+            _ob("verified", line=9, fn="h", owner="b"),
+            _ob("timeout", line=4, fn="h", owner="a"),
+        ])
+        should, response = propose_edit(
+            session,  # type: ignore[arg-type]
+            [_ob("verified", line=3, fn="h", owner="a"),
+             _ob("verified", line=8, fn="h", owner="b")],
+            URI, "-- inserted\n",
+        )
+        assert should is False
+        (regressed,) = response["proof_delta"]["proof_regressions"]
+        assert (regressed["line_before"], regressed["line"]) == (3, 4)
+
+    def test_predicates_differing_only_inside_a_literal_do_not_pair(
+        self,
+    ) -> None:
+        """`expr_text` is used verbatim, and this is why.
+
+        `format_expr` has already normalised source spacing by the time
+        the text reaches the key, so re-normalising it collapses only
+        the whitespace the renderer deliberately KEPT -- inside a string
+        literal, where it is part of the value (#1461 review).
+
+        The two spellings swap places, which is what makes the cell
+        able to fail: keyed verbatim they pair by TEXT, so
+        `"a  b"` goes verified -> timeout and is refused.  Collapsed
+        into one group they pair by POSITION instead, every pair looks
+        unchanged, and the edit applies with the lost proof unreported.
+        """
+        wide, thin = 's == "a  b"', 's == "a b"'
+        session = _StubSession([
+            _ob("verified", line=4, expr=thin),
+            _ob("timeout", line=8, expr=wide),
+        ])
+        should, response = propose_edit(
+            session,  # type: ignore[arg-type]
+            [_ob("verified", line=3, expr=wide),
+             _ob("timeout", line=7, expr=thin)],
+            URI, "-- inserted\n",
+        )
+        assert should is False
+        (regressed,) = response["proof_delta"]["proof_regressions"]
+        assert (regressed["line_before"], regressed["line"]) == (3, 8)
 
     def test_an_obligation_that_moved_to_another_function_is_not_paired(
         self,

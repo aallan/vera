@@ -90,7 +90,7 @@ def _regression_item(
     return item
 
 
-def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str]:
+def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str, str]:
     """Span-INSENSITIVE identity, for the regression predicate only.
 
     :meth:`~vera.obligations.core.ProofObligation.content_key` hashes the
@@ -102,10 +102,27 @@ def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str]:
     judge.  An edit that shifts a line and costs a proof further down
     the file therefore walked the gate (#1443 review).
 
-    Whitespace inside ``expr_text`` is normalised because a reformatted
-    expression is the same obligation.  The key is deliberately NOT
-    unique -- two identical asserts in one function share it -- so the
-    caller pairs within a group positionally, in source order.
+    ``owner`` is in it and is NOT optional here, though
+    :meth:`~vera.obligations.core.ProofObligation.content_key` leaves it
+    out.  That omission is justified there by the span -- two
+    same-named ``where`` helpers under different top-level functions are
+    already separated by where they sit -- and dropping the span is
+    exactly what this key does, so the justification does not carry
+    over.  Without it, `h` in `a` and `h` in `b` share a key and pair
+    against each other (PR #1461 review).
+
+    ``expr_text`` is used verbatim.  It comes from
+    :func:`~vera.obligations.core.expr_text_for`, which renders the AST
+    through ``format_expr``, so source spacing is already normalised
+    away before it gets here -- ``requires(@Int.0>0)`` and
+    ``requires(  @Int.0   >   0 )`` both arrive as ``@Int.0 > 0``.
+    Normalising again would only collapse whitespace the renderer
+    deliberately KEPT, inside string literals, fusing the distinct
+    predicates ``"a b"`` and ``"a  b"`` into one key.
+
+    The key is deliberately NOT unique -- two identical asserts in one
+    function share it -- so the caller pairs within a group
+    positionally, in source order.
 
     What the key does NOT deliver, by construction: renaming the
     function, changing the obligation's kind, rewriting the predicate
@@ -114,10 +131,7 @@ def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str]:
     those.  The division of labour is the point: the GATE reasons about
     identity, the presentation categories report positions.
     """
-    return (
-        ob.file or "", ob.fn_name, ob.kind,
-        " ".join(ob.expr_text.split()),
-    )
+    return (ob.file or "", ob.owner, ob.fn_name, ob.kind, ob.expr_text)
 
 
 def proof_delta(
@@ -166,11 +180,13 @@ def proof_delta(
     # unproved is left behind.  It is reported under `removed` with the
     # status it had.
     relocated: dict[str, ProofObligation] = {}
-    new_leftovers: dict[tuple[str, str, str, str], list[ProofObligation]] = {}
+    new_leftovers: dict[
+        tuple[str, str, str, str, str], list[ProofObligation],
+    ] = {}
     for nkey, ob in new.items():
         if nkey not in old:
             new_leftovers.setdefault(_relocation_key(ob), []).append(ob)
-    taken: dict[tuple[str, str, str, str], int] = {}
+    taken: dict[tuple[str, str, str, str, str], int] = {}
     for okey, before_ob in old.items():
         if okey in new:
             continue
@@ -192,24 +208,22 @@ def proof_delta(
             and ob.status != "verified"
         ):
             proof_regressions.append(_regression_item(was, ob))
+        # Every speculative obligation lands in exactly ONE of the four,
+        # relocated or not: the categories are a PARTITION of the new
+        # stream, and a consumer that loses that cannot render the delta.
+        # (An earlier cut of this fix dropped relocated same-status pairs
+        # out of the bottom branch, and `violated -> violated` then
+        # showed a counterexample vanishing because a line moved --
+        # #1461 review F1.)  What relocation changes is the `before` each
+        # entry is REPORTED against, not which list it is in.
         if before is not None and before.status == ob.status:
             unchanged += 1
         elif ob.status == "verified":
-            newly_discharged.append(_item(before, ob))
+            newly_discharged.append(_item(was, ob))
         elif ob.status == "timeout":
-            timed_out.append(_item(before, ob))
-        elif moved_from is None or moved_from.status != ob.status:
-            # violated / tier3 / tier3_unguarded.  This list is the
-            # gate's other input, so relocation is INVISIBLE to it: a
-            # pair is judged exactly as the same pair at a fixed span
-            # would be.  Unchanged across the pair, the obligation is
-            # not an addition and drops out -- which is what stopped a
-            # harmless shift being refused in any program carrying a
-            # Tier-3 obligation (#1461 review, case A2b).  Worsened
-            # across it (`tier3 -> violated`, `timeout -> tier3`), it
-            # stays, because dropping it would let an edit that moved a
-            # line do what the identical unmoved edit is refused for.
-            newly_undischarged.append(_item(before, ob))
+            timed_out.append(_item(was, ob))
+        else:  # violated / tier3 / tier3_unguarded
+            newly_undischarged.append(_item(was, ob))
     for key, ob in old.items():
         if key not in new:
             removed.append(_item(ob, None))

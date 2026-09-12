@@ -159,7 +159,21 @@ def propose_edit(
         # has no `before` for the predicate above to regress from.  (It
         # is not only that: a same-span `verified -> violated` lands
         # here too.  What it uniquely covers is the introduced one.)
-        and not delta["newly_undischarged"]
+        #
+        # Entries whose status did not move are skipped.  They exist
+        # only because `proof_delta` keys its categories on the span:
+        # an obligation that RELOCATED is listed here against the
+        # `before` it was paired with, and one that is undischarged at
+        # both ends of that pair introduced nothing and took nothing
+        # away.  Refusing it made a harmless comment insertion into any
+        # program carrying a Tier-3 obligation need `force` (#1461
+        # review, case A2b).  A pair that WORSENED still has
+        # `status_before != status_after` and is still refused, exactly
+        # as the identical unmoved edit is.
+        and not [
+            item for item in delta["newly_undischarged"]
+            if item["status_before"] != item["status_after"]
+        ]
         and speculative["diagnostics"] == 0
     )
     should_apply = force or clean

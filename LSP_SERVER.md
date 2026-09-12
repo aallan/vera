@@ -173,12 +173,24 @@ a new key: the categories report that as a removal plus a rediscovery,
 which is what a display of positions should say.  The gate cannot
 reason that way — an edit that shifts a line and costs a proof further
 down the file would walk straight past it — so before judging anything
-it pairs the leftovers on a span-insensitive key (file, function, kind,
-whitespace-normalised predicate text; equal keys pair positionally in
-source order).  A pair is one obligation that **moved**, and both gate
-inputs then treat it exactly as they would the same pair at a fixed
-span.  Relocation is invisible to the gate; the presentation keeps its
-span view.
+it pairs the leftovers on a span-insensitive key (file, owning
+function, function, kind, predicate text; equal keys pair positionally
+in source order).  A pair is one obligation that **moved**.  Pairing changes what an entry
+is reported *against*, not which list it is in: the categories still
+partition the speculative stream by the after-status, and a relocated
+obligation is still a removal at its old span plus an entry at its new
+one — it simply carries the `status_before` it paired with, where an
+obligation the edit really did introduce carries `null`.  The gate
+reads that: a `newly_undischarged` entry whose `status_before` equals
+its `status_after` only moved, so it introduced nothing and took
+nothing away.  Relocation is invisible to the gate; the presentation
+keeps its span view.
+
+Each `proof_regressions` entry carries both ends: `line` / `column` are
+where the obligation is now, `line_before` / `column_before` where it
+was.  They differ exactly when the obligation moved — in the same-span
+example above they are equal — and the pair is what points an agent at
+the proof it broke rather than at the line it happens to sit on now.
 
 An old obligation with no counterpart on the new side is a **deletion**,
 not a regression, and does not need `force`: the gate protects proofs,
