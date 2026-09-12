@@ -120,7 +120,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` └ html_serde.py` | 261 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 751 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
 | `markdown_grammar.py` | 147 | Compile | The §9.7.3 grammar, read by BOTH runtimes: patterns, character classes, continuation widths, and the generated copy `runtime.mjs` carries | `PATTERNS`, `CONTINUATION_INDENT`, `fence_close()`, `trim()`, `js_grammar_block()` |
-| `obligations/` | 909 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
+| `obligations/` | 926 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
 | `  core.py` | 236 | | ProofObligation record: identity (content_key) + discharge outcome | |
 | `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations (#1407) | |
 | `  session.py` | 366 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |

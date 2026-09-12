@@ -1819,7 +1819,16 @@ class TestARelocatedObligationIsStillTheSameObligation:
             URI, "-- inserted\n", force=True,
         )
         assert should is True
-        assert len(response["proof_delta"]["proof_regressions"]) == 1
+        delta = response["proof_delta"]
+        assert len(delta["proof_regressions"]) == 1
+        # The PRESENTATION half of the pairing, pinned: `timed_out` is
+        # not a gate input, so nothing else in the suite would notice it
+        # reporting this entry against `None` -- and then the one list
+        # an agent reads to see WHY a timeout appeared would not say the
+        # obligation used to be proved (#1461 review G1).  Contrast
+        # `test_a_newly_introduced_timeout_is_not_a_regression`, where a
+        # genuinely new obligation still reports `None`.
+        assert delta["timed_out"][0]["status_before"] == "verified"
 
     def test_a_harmless_shift_is_not_a_regression(self) -> None:
         """The other half: moving a proof is not losing one."""
@@ -1829,7 +1838,11 @@ class TestARelocatedObligationIsStillTheSameObligation:
             URI, "-- inserted\n",
         )
         assert should is True
-        assert response["proof_delta"]["proof_regressions"] == []
+        delta = response["proof_delta"]
+        assert delta["proof_regressions"] == []
+        # The third `was`-threaded branch, pinned for the same reason as
+        # the one in the force cell above (#1461 review G1).
+        assert delta["newly_discharged"][0]["status_before"] == "verified"
 
     def test_a_harmless_shift_of_real_obligations_applies(self) -> None:
         """The same, through the real verifier rather than a stub.
