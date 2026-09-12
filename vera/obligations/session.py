@@ -295,11 +295,15 @@ class VerificationSession:
                     ctor_defs[ctor.name] = tuple(ctor.fields or ())
             elif isinstance(tld.decl, (ast.EffectDecl, ast.AbilityDecl)):
                 # A `perform`-style qualified call reads the operation's
-                # signature, and an op's PARAMETER refinement is discharged
-                # at the call site.  The return type is carried too: an op's
-                # return refinement is measured inert today (the result is
-                # `tier3` either way), and the seed costs one tuple element
-                # rather than a branch that could go stale if it stops being.
+                # signature, and an EFFECT op's PARAMETER refinement is
+                # discharged at the call site — that is the half a cell can
+                # hold to account.  Two pieces here are deliberate
+                # conservatism instead, each measured inert and each costing
+                # one term rather than a branch that would go stale if the
+                # measurement changed: an op's RETURN refinement is not
+                # assumed (the result is `tier3` either way), and a call to
+                # an ABILITY's op raises no obligation at all, so no cell
+                # can red on the `AbilityDecl` arm (#1458 review).
                 for op in tld.decl.operations:
                     op_defs[(tld.decl.name, op.name)] = (
                         *op.param_types, op.return_type)
