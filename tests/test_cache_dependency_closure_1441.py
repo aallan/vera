@@ -31,7 +31,11 @@ from pathlib import Path
 
 import pytest
 
-from vera.obligations.cache import interface_closure_names
+from vera import ast
+from vera.obligations.cache import (
+    _signature_type_calls,
+    interface_closure_names,
+)
 from vera.obligations.session import VerificationSession
 
 from tests.module_fixture_helpers import resolved_module
@@ -136,7 +140,15 @@ def _summary(result) -> tuple[list[str], list[tuple[str, str, str]]]:
     """Everything a consumer would act on: error codes and obligation verdicts."""
     codes = sorted({d.error_code for d in result.diagnostics
                     if d.severity == "error"})
-    obligations = sorted((o.fn_name, o.kind, o.status) for o in result.obligations)
+    # `owner` is part of the identity, not decoration: `_record_obligation`
+    # keeps a `where` helper's top-level owner beside its bare `fn_name`, and
+    # `_scoped_fn_lookup` resolves same-named helpers per owner, so two
+    # helpers called `h` in different owners can hold different verdicts.
+    # Keyed on the bare name they collapse onto one triple, and an
+    # invalidation that swapped their verdicts would read as agreement
+    # (#1458 review).
+    obligations = sorted(
+        (o.fn_name, o.owner, o.kind, o.status) for o in result.obligations)
     return codes, obligations
 
 
@@ -208,7 +220,7 @@ def test_1441_the_broken_caller_is_the_one_the_edit_reaches(
     assert warm_edited == fresh_edited
     codes, obligations = warm_edited
     assert "E500" in codes, codes
-    statuses = {(fn, kind): status for fn, kind, status in obligations}
+    statuses = {(fn, kind): status for fn, _owner, kind, status in obligations}
     assert statuses[("h", "ensures")] == "violated", obligations
     assert statuses[("g", "ensures")] == "verified", obligations
     assert statuses[("f", "ensures")] == "verified", obligations
@@ -287,6 +299,26 @@ def test_1441_the_closure_terminates_on_a_contract_cycle() -> None:
     caller = fn("caller", "a")
     names = interface_closure_names(caller, fn_map, {})
     assert names == frozenset({"a", "b"}), names
+
+
+def test_1458_the_signature_walk_terminates_on_an_alias_cycle() -> None:
+    """`_signature_type_calls` is total over any alias map it is handed.
+
+    An alias cycle is refused earlier in the pipeline (E-coded at check
+    time), but the walk runs over whatever map the session builds and must
+    terminate regardless — `seen_aliases` is the only thing that makes it
+    so, and nothing else in this file hands it a cycle.  The contract half
+    has the same cell one section up.
+    """
+    alias_map: dict[str, ast.TypeExpr] = {
+        "A": ast.NamedType(name="B", type_args=None),
+        "B": ast.NamedType(name="A", type_args=None),
+    }
+
+    found: set[str] = set()
+    _signature_type_calls(
+        (ast.NamedType(name="A", type_args=None),), alias_map, found)
+    assert found == set(), found
 
 
 def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
@@ -532,6 +564,14 @@ _SEQUENCES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
             ("{\n  1\n}", "{\n  1 + 0\n}"),
             ("ensures(@Int.result >= 0)", "ensures(@Int.result >= 1)"),
             ("{\n  1 + 0\n}", "{\n  2\n}"),
+            # `user` now leans on `base`'s bound, and the next step takes that
+            # bound away: without a state that BREAKS, every step of this
+            # sequence is valid and warm agrees with fresh whatever the cache
+            # does (#1458 review).  The step after restores it, so the
+            # sequence also exercises re-proving something it refuted.
+            ("ensures(@Int.result >= 0)", "ensures(@Int.result >= 1)"),
+            ("ensures(@Int.result >= 1)", "ensures(@Int.result >= 0)"),
+            ("ensures(@Int.result >= 0)", "ensures(@Int.result >= 1)"),
         ),
     ),
 }
@@ -551,6 +591,7 @@ def test_1441_a_sequence_of_edits_never_diverges_from_fresh(
     source, edits = _SEQUENCES[name]
     warm = VerificationSession()
     warm.verify_source(source, file=str(path))
+    seen_codes: set[str] = set()
 
     for step, (old, new) in enumerate(edits, start=1):
         assert source.count(old) >= 1, (
@@ -565,6 +606,13 @@ def test_1441_a_sequence_of_edits_never_diverges_from_fresh(
         assert warm_result == fresh_result, (
             f"{name} step {step}: warm {warm_result} vs fresh {fresh_result}"
         )
+        seen_codes.update(warm_result[0])
+
+    assert seen_codes, (
+        f"{name}: no state in this sequence reported an error, so every step "
+        f"agreed for a program that was valid throughout — a cache that never "
+        f"invalidated would pass it unchanged (#1458 review)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -729,40 +777,95 @@ def _lib(source: str) -> list:
     return [resolved_module(("lib",), source)]
 
 
-#: (dependency kind, edit kind, original, edited, modules before, after).
-#: The kinds are the enumeration; the edit kinds are the three ways a
-#: dependency can move.  Products that are NOT here are stated in the PR
-#: body with their reason — an ADT has no contract to weaken, and removing
-#: an `effect` declaration moves nothing a fresh session reports, so a cell
-#: for it could not fail.
+#: The dependency an owner reads through its OWN `where` helper's signature.
+#: `mk` is a helper, so it is not in `fn_map` and the closure never resolved
+#: its name; its return type's refinement names `cap`, which the owner assumes
+#: after the call.  Measured before the fix (#1458 review): warm reported
+#: `owner` `verified` where a fresh session reports `violated` with E500.
+_WHERE_SIG_ORIGINAL = """public fn cap(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  2
+}
+
+type Small = { @Int | @Int.0 < cap(()) };
+
+public fn owner(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 3)
+  effects(pure)
+{
+  mk(())
+}
+where {
+  fn mk(@Unit -> @Small)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    1
+  }
+}
+"""
+
+_WHERE_SIG_EDITED = _WHERE_SIG_ORIGINAL.replace(
+    "ensures(@Int.result == 2)\n  effects(pure)\n{\n  2\n}",
+    "ensures(@Int.result == 9)\n  effects(pure)\n{\n  9\n}",
+    1,
+)
+
+#: (dependency kind, edit kind, regime, original, edited, modules before,
+#: after).  The kinds are the enumeration; the edit kinds are the ways a
+#: dependency can move.
+#:
+#: REGIME is what a row can hold to account, and it is asserted rather than
+#: described.  A `proof` row leaves the edited program type-correct, so
+#: everything that moves moved in the proof and the row is cache-key
+#: coverage.  A `check` row is one whose kind has no reachable edit that
+#: keeps the program type-correct — removing a type alias, retyping an effect
+#: operation, withdrawing a module export — and the checker re-runs on the
+#: warm path and the cold one alike, so agreement across a refusal is
+#: architecture rather than invalidation (#1458 review).  Those rows are kept
+#: because the agreement is still worth pinning, and labelled because a row
+#: that cannot fail for the reason the matrix claims must not be counted as
+#: though it could.
+#:
+#: Products that are NOT rows are stated in the PR body with their reason: an
+#: ADT, a type alias and an effect declaration have no contract of their own
+#: to weaken, and an effect declaration has no type-correct edit that moves a
+#: proof at all — measured, not assumed.
 _CLASS_MATRIX = [
-    ("callee contract, direct", "contract weakened",
+    ("callee contract, direct", "contract weakened", "proof",
      _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
     ("callee contract, one hop through `ensures`", "contract weakened",
-     _ENSURES_ORIGINAL, _ENSURES_EDITED, None, None),
+     "proof", _ENSURES_ORIGINAL, _ENSURES_EDITED, None, None),
     ("callee contract, one hop through `requires`", "contract weakened",
-     _REQUIRES_ORIGINAL, _REQUIRES_EDITED, None, None),
-    ("refinement on a callee's return type", "contract weakened",
+     "proof", _REQUIRES_ORIGINAL, _REQUIRES_EDITED, None, None),
+    ("refinement on a callee's return type", "contract weakened", "proof",
      _RETURN_ORIGINAL, _RETURN_EDITED, None, None),
-    ("refinement on a callee's parameter type", "contract weakened",
+    ("refinement on a callee's parameter type", "contract weakened", "proof",
      _PARAM_ORIGINAL, _PARAM_EDITED, None, None),
-    ("refinement two alias hops away", "contract weakened",
+    ("refinement two alias hops away", "contract weakened", "proof",
      _CHAIN_ORIGINAL, _CHAIN_EDITED, None, None),
-    ("callee", "declaration removed",
+    ("refinement on a `where` helper's return type", "contract weakened",
+     "proof", _WHERE_SIG_ORIGINAL, _WHERE_SIG_EDITED, None, None),
+    ("callee", "declaration removed", "proof",
      _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
-    ("type alias refinement", "definition changed",
+    ("type alias refinement", "definition changed", "proof",
      _ALIAS_ORIGINAL, _ALIAS_WIDENED, None, None),
-    ("type alias", "declaration removed",
+    ("type alias", "declaration removed", "check",
      _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
-    ("ADT constructors", "definition changed",
+    ("ADT constructors", "definition changed", "check",
      _ADT_ORIGINAL, _ADT_VARIANT_ADDED, None, None),
-    ("ADT", "declaration removed",
+    ("ADT", "declaration removed", "proof",
      _ADT_ORIGINAL, _ADT_REMOVED, None, None),
-    ("effect operation signature", "definition changed",
+    ("effect operation signature", "definition changed", "check",
      _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
-    ("imported module contract", "contract weakened",
+    ("imported module contract", "contract weakened", "proof",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_WEAKENED),
-    ("imported module export", "declaration removed",
+    ("imported module export", "declaration removed", "check",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
 ]
 
@@ -773,6 +876,7 @@ _CLASS_MATRIX_IDS = [
     "refined_return",
     "refined_parameter",
     "alias_chain",
+    "where_helper_refined_return",
     "callee_removed",
     "alias_predicate_changed",
     "alias_removed",
@@ -785,7 +889,7 @@ _CLASS_MATRIX_IDS = [
 
 
 @pytest.mark.parametrize(
-    "kind,edit,original,edited,lib_before,lib_after",
+    "kind,edit,regime,original,edited,lib_before,lib_after",
     _CLASS_MATRIX,
     ids=_CLASS_MATRIX_IDS,
 )
@@ -793,6 +897,7 @@ def test_1441_no_dependency_kind_replays_past_a_change_to_itself(
     tmp_path: Path,
     kind: str,
     edit: str,
+    regime: str,
     original: str,
     edited: str,
     lib_before: str | None,
@@ -831,6 +936,24 @@ def test_1441_no_dependency_kind_replays_past_a_change_to_itself(
     assert warm_edited == fresh_edited, (
         f"{kind} / {edit}: warm {warm_edited} vs fresh {fresh_edited}"
     )
+
+    # What moved, and therefore what this row can hold to account.  A
+    # verification code is E5xx; anything else is the checker refusing, and
+    # the checker runs on both paths whatever the cache does.
+    refused = [c for c in fresh_edited[0] if not c.startswith("E5")]
+    if regime == "proof":
+        assert not refused, (
+            f"{kind} / {edit}: the edited program no longer type-checks "
+            f"({refused}), so agreement here is the checker running twice "
+            f"rather than the cache invalidating — this row is labelled "
+            f"`proof` and must stay type-correct"
+        )
+    else:
+        assert refused, (
+            f"{kind} / {edit}: labelled `check`, but the edited program "
+            f"type-checks clean, so the row is cache-key coverage and should "
+            f"say so — {fresh_edited[0]}"
+        )
 
 
 #: The one candidate dependency that turns out not to be one, and the
@@ -883,7 +1006,8 @@ def test_1441_a_callees_where_helper_is_not_part_of_its_interface(
         "a caller CAN see a callee's where-helper contract, so the helper is "
         f"part of the interface and the closure must reach it — {codes}"
     )
-    assert ("h", "ensures", "violated") in obligations, obligations
+    assert [o for o in obligations
+            if (o[0], o[2], o[3]) == ("h", "ensures", "violated")], obligations
 
     blind = _OPAQUE_HELPER.replace("CALLER_CLAIM", "true", 1)
     edited = blind.replace(

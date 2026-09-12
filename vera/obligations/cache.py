@@ -172,10 +172,22 @@ def interface_closure_names(
     """
     seen: set[str] = set()
     work: set[str] = set(direct_callee_names(decl))
-    # The caller's OWN signature types are read while verifying it, and a
-    # NAMED one hides its predicate behind an alias that `direct_callee_names`
-    # cannot see through.
-    _signature_type_calls((*decl.params, decl.return_type), alias_map, work)
+    # The signature types read while verifying this declaration are its own
+    # AND those of every `where` helper inside it: the owner discharges a
+    # helper's parameter refinement at the call site and assumes its return
+    # refinement afterwards, so a function a helper's refinement names is one
+    # the owner reads.  Neither of the other two routes reaches it — a
+    # `NamedType` is not a call, so `direct_callee_names` cannot see through
+    # it, and a helper is not in `fn_map`, so the walk below never resolves
+    # its name at all.  Measured before the change (#1458 review): warm
+    # reported the owner `verified` where a fresh session reports `violated`
+    # with E500.  `walk_nodes` descends into nested where-blocks, so a helper
+    # inside a helper is covered by the same pass.
+    own_signatures: list[object] = []
+    for node in walk_nodes(decl):
+        if isinstance(node, ast.FnDecl):
+            own_signatures.extend((*node.params, node.return_type))
+    _signature_type_calls(own_signatures, alias_map, work)
     todo = list(work)
     while todo:
         name = todo.pop()
