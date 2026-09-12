@@ -2872,15 +2872,20 @@ violated or fall to runtime checks), or **strengthens** them
 (previously-runtime obligations now prove) — before committing
 anything.
 
-The first four lists **sort by the obligation's status AFTER the edit**,
-which makes them a presentation of the delta rather than an answer to
-"did this edit take a proof away?".  That question has its own list:
-`proof_regressions` holds every obligation that was `verified` before
-and is anything else after — `timeout`, `tier3`, `tier3_unguarded` or
-`violated` — so an obligation appears in it **as well as** in whichever
-category its new status puts it in (`verified → timeout` is in both
-`timed_out` and `proof_regressions`).  Read `proof_regressions` to ask
-about lost proofs; read the categories to display what happened.
+Three of the lists — `newly_discharged`, `newly_undischarged` and
+`timed_out` — **sort the speculative obligations by their status AFTER
+the edit**, and together with `unchanged`, which is a count rather
+than a list, they account for every obligation in the speculative
+stream exactly once.  `removed` is the old side: baseline-only
+obligations, each carrying `status_after: null`.  So the set is a
+presentation of the delta rather than an answer to "did this edit take
+a proof away?".  That question has its own list: `proof_regressions`
+holds every obligation that was `verified` before and is anything else
+after — `timeout`, `tier3`, `tier3_unguarded` or `violated` — so an
+obligation appears in it **as well as** in whichever status list its
+new status puts it in (`verified → timeout` is in both `timed_out` and
+`proof_regressions`).  Read `proof_regressions` to ask
+about lost proofs; read the lists to display what happened.
 
 The two views also differ on **identity**, and deliberately.  An
 obligation is keyed by its span, so one inserted line above it gives it
@@ -2890,11 +2895,12 @@ reason that way — an edit that shifts a line and costs a proof further
 down the file would walk straight past it — so before judging anything
 it pairs the leftovers on a span-insensitive key (file, owning
 function, function, kind, predicate text; equal keys pair positionally
-in source order).  A pair is one obligation that **moved**.  Pairing changes what an entry
-is reported *against*, not which list it is in: the categories still
-partition the speculative stream by the after-status, and a relocated
-obligation is still a removal at its old span plus an entry at its new
-one — it simply carries the `status_before` it paired with, where an
+in source order).  A pair is one obligation that **moved**.  Pairing
+changes what an entry is reported *against*, not which list it is in: the three status lists
+still account for every speculative obligation exactly once, and a
+relocated obligation is still an entry in `removed` at its old span
+plus an entry in a status list at its new one — it simply carries the
+`status_before` it paired with, where an
 obligation the edit really did introduce carries `null`.  The gate
 reads that: a `newly_undischarged` entry whose `status_before` equals
 its `status_after` only moved, so it introduced nothing and took
@@ -2913,7 +2919,10 @@ not contracts — the removal is visible in the edit itself, and no
 unproved code is left behind.  It is reported under `removed` with the
 status it had.  Replacing a proved contract with a differently-worded
 one is a deletion plus an addition, so the replacement is judged as an
-addition: refused if it is `violated` or `tier3`, applied if it merely
+addition: refused if it is `violated`, `tier3` or `tier3_unguarded` —
+every after-status other than `verified` and `timeout` reaches
+`newly_undischarged`, and with no `before` to match, a `status_before`
+of `null` differs from any `status_after` — and applied if it merely
 times out, which is the same boundary any newly introduced timeout
 already sits on.  What the pairing key does not cover, by construction:
 renaming the function, changing the obligation's kind, rewriting the
@@ -2937,11 +2946,13 @@ other: `newly_undischarged` is the only one that can see an obligation
 the edit INTRODUCES, which has no `before` to regress from and so
 arrives with `status_before: null`.  The `status_before` qualifier is
 what lets a **relocated** obligation through: one that is undischarged
-at both ends of its pair is listed here — the categories partition the
-speculative stream, so it has to be — but it introduced nothing and
-took nothing away, so the gate passes it.  A pair that worsened is
-refused exactly as the identical unmoved edit is.  On apply the server issues `workspace/applyEdit` (the client
-owns the buffer), updates its canonical state, and republishes
+at both ends of its pair is listed here — the status lists account for
+every speculative obligation, so it has to be — but it introduced
+nothing and took nothing away, so the gate passes it.  A pair that
+worsened is refused exactly as the identical unmoved edit is.
+
+On apply the server issues `workspace/applyEdit` (the client owns the
+buffer), updates its canonical state, and republishes
 diagnostics; on refuse, nothing changes and the response says why:
 
 ```json
