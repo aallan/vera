@@ -33,6 +33,7 @@ import pytest
 
 from vera import ast
 from vera.obligations.cache import (
+    TypeEnvironment,
     _type_reference_calls,
     interface_closure_names,
 )
@@ -134,6 +135,12 @@ public fn user(@Unit -> @Int)
 
 #: `1` -> `1 + 0`: a different body, the same contract, the same line count.
 _BODY_ONLY_EDITED = _BODY_ONLY_ORIGINAL.replace("{\n  1\n}", "{\n  1 + 0\n}", 1)
+
+
+#: A program with no type, data or effect declarations in it — the two
+#: unit cells below are about the CONTRACT half of the walk, so nothing
+#: they hand it resolves through a declaration.
+_EMPTY_ENV = TypeEnvironment(types={}, constructors={}, effect_ops={})
 
 
 def _summary(result) -> tuple[list[str], list[tuple[str, str, str, str]]]:
@@ -297,7 +304,7 @@ def test_1441_the_closure_terminates_on_a_contract_cycle() -> None:
     fn_map = {"a": fn_a, "b": fn_b}
 
     caller = fn("caller", "a")
-    names = interface_closure_names(caller, fn_map, {})
+    names = interface_closure_names(caller, fn_map, _EMPTY_ENV)
     assert names == frozenset({"a", "b"}), names
 
 
@@ -367,7 +374,7 @@ def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
     }
     caller = fn("caller", in_contract=None, in_body="callee")
 
-    names = interface_closure_names(caller, fn_map, {})
+    names = interface_closure_names(caller, fn_map, _EMPTY_ENV)
     assert "callee" in names, names
     assert "seen" in names, (
         "a function named in a callee's CONTRACT is read by that callee's "
@@ -956,6 +963,44 @@ public fn user(@Unit -> @Int)
 }
 """
 
+#: The routes that name a VALUE rather than a type.  A declaration reads
+#: types it never writes: `B(3)` reads `B`'s field types and mentions no
+#: type at all, and `Counter.bump(3)` reads the operation's signature, which
+#: lives in the effect declaration.  Both were warm-clean where a fresh
+#: session refutes with E505 (#1458 review).
+#:
+#: `build2` binds the payload at `@Int` rather than at `@Small` on purpose:
+#: spelling the binder at the refined type would write the name and seed the
+#: walk directly, which is what the `adt_field_at_construction` row above
+#: does through its `-> @Box` return.
+_CTOR_CALL_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+public data Box { B(Small) }
+
+public fn build2(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match B(3) {
+    B(@Int) -> @Int.0
+  }
+}
+"""
+
+_OP_CALL_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+effect Counter {
+  op bump(Small -> Int);
+}
+
+public fn use_c(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Counter>)
+{
+  Counter.bump(3)
+}
+"""
+
 #: A type-correct ADT edit: the wildcard arm is unreachable while `Sign` has
 #: three constructors, so `rank` proves its bound; a fourth constructor makes
 #: it reachable and the bound false.  The earlier version of this row added a
@@ -1030,6 +1075,12 @@ _CLASS_MATRIX = [
     ("refinement written inline, on a `let` annotation", "contract weakened",
      _LET_INLINE_ORIGINAL, _LET_INLINE_ORIGINAL.replace(*_CAP_TIGHTENED, 1),
      None, None),
+    ("refinement behind an ADT field, reached through a CONSTRUCTOR CALL",
+     "contract weakened", _CTOR_CALL_ORIGINAL,
+     _CTOR_CALL_ORIGINAL.replace(*_CAP_TIGHTENED, 1), None, None),
+    ("refinement on an effect operation's parameter, reached through a "
+     "QUALIFIED CALL", "contract weakened", _OP_CALL_ORIGINAL,
+     _OP_CALL_ORIGINAL.replace(*_CAP_TIGHTENED, 1), None, None),
     ("callee", "declaration removed",
      _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
     ("type alias refinement", "definition changed",
@@ -1055,6 +1106,8 @@ _CLASS_MATRIX_IDS = [
     "adt_field_at_construction",
     "alias_on_a_let_annotation",
     "inline_refinement_on_a_let_annotation",
+    "constructor_call",
+    "effect_op_qualified_call",
     "callee_removed",
     "alias_predicate_changed",
     "adt_variant_added",

@@ -117,6 +117,32 @@ def fn_structural_hash(decl: ast.FnDecl) -> str:
     return _sha(repr(decl) + "\x1f" + spans)
 
 
+@dataclass(frozen=True)
+class TypeEnvironment:
+    """What a name a declaration mentions can resolve to, for the closure.
+
+    A declaration reads types it never WRITES, by naming a value whose own
+    declaration carries them: a constructor call reaches the field types of
+    the `data` declaration that owns the constructor, and a qualified call
+    reaches the signature of the `op` it names.  Seeding only from the types
+    a declaration writes left both out — each a warm-clean replay where a
+    fresh session refutes with E505 (#1458 review) — so the seed is what the
+    declaration REACHES.
+
+    Keeping the three maps in one record rather than three parameters means
+    a further route is a field here and a case in the seed loop, not another
+    argument threaded through `fn_cache_key`.
+    """
+
+    #: TYPE name -> the types its declaration carries: an alias's target, or
+    #: a `data` declaration's constructor fields.
+    types: dict[str, tuple[ast.TypeExpr, ...]]
+    #: CONSTRUCTOR name -> the field types that constructor takes.
+    constructors: dict[str, tuple[ast.TypeExpr, ...]]
+    #: (qualifier, operation) -> the operation's signature types.
+    effect_ops: dict[tuple[str, str], tuple[ast.TypeExpr, ...]]
+
+
 def _type_reference_calls(
     type_exprs: Iterable[object],
     type_defs: dict[str, tuple[ast.TypeExpr, ...]],
@@ -154,7 +180,7 @@ def _type_reference_calls(
 def interface_closure_names(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
-    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
+    env: TypeEnvironment,
 ) -> frozenset[str]:
     """Every function whose INTERFACE is read while verifying *decl*.
 
@@ -174,23 +200,33 @@ def interface_closure_names(
     """
     seen: set[str] = set()
     work: set[str] = set(direct_callee_names(decl))
-    # EVERY type this declaration references, from ONE walk of its subtree —
-    # not an enumeration of the positions a type can be written in.  A
-    # refinement is read wherever its type is: on a parameter or a return,
-    # on a `where` helper's signature, on a `let` annotation, and through an
-    # ADT field at construction and at destructure.  Enumerating positions
-    # left four of those out, each a warm-clean replay where a fresh session
-    # refutes (#1458 review), and would leave the next position out too; a
-    # walk covers a position added later by construction.
+    # Everything this declaration REACHES, from ONE walk of its subtree.
+    # A refinement is read wherever its type is reached from: a parameter, a
+    # return, a `where` helper's signature, a `let` annotation, an ADT field
+    # at construction or at destructure — and also where no type is written
+    # at all, through a constructor call or a qualified operation call,
+    # whose own declarations carry the types.  Enumerating the places a type
+    # is WRITTEN left six of those out, each a warm-clean replay where a
+    # fresh session refutes (#1458 review).
     #
-    # The other two routes cannot reach these: a `NamedType` is not a call,
-    # so `direct_callee_names` sees nothing through it, and neither a
-    # `where` helper nor a type declaration is in `fn_map`, so the walk
-    # below never resolves the name at all.
-    referenced_types = [
-        node for node in walk_nodes(decl) if isinstance(node, ast.TypeExpr)
-    ]
-    _type_reference_calls(referenced_types, type_defs, work)
+    # The other two routes cannot reach any of them: a `NamedType` is not a
+    # call, so `direct_callee_names` sees nothing through it, and neither a
+    # `where` helper nor a type, data or effect declaration is in `fn_map`,
+    # so the walk below never resolves the name at all.
+    seeds: list[object] = []
+    for node in walk_nodes(decl):
+        if isinstance(node, ast.TypeExpr):
+            seeds.append(node)
+        elif isinstance(node, ast.ConstructorCall):
+            # `B(3)` reads `B`'s field types, and names no type at all.
+            seeds.extend(env.constructors.get(node.name, ()))
+        elif isinstance(node, ast.QualifiedCall):
+            # `Counter.bump(3)` reads the op's signature, which lives in the
+            # effect declaration.  A MODULE-qualified call misses this map
+            # and is covered instead by the per-module source digests in the
+            # program context hash.
+            seeds.extend(env.effect_ops.get((node.qualifier, node.name), ()))
+    _type_reference_calls(seeds, env.types, work)
     todo = list(work)
     while todo:
         name = todo.pop()
@@ -207,7 +243,7 @@ def interface_closure_names(
                 if isinstance(n, ast.FnCall)
             )
         _type_reference_calls(
-            (*callee.params, callee.return_type), type_defs, found)
+            (*callee.params, callee.return_type), env.types, found)
         todo.extend(n for n in found if n not in seen)
     return frozenset(seen)
 
@@ -215,7 +251,7 @@ def interface_closure_names(
 def callee_component(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
-    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
+    env: TypeEnvironment,
 ) -> str:
     """Hash the *interfaces* of everything *decl*'s verification reads.
 
@@ -230,7 +266,7 @@ def callee_component(
     """
     parts: list[str] = []
     for name in sorted(
-            interface_closure_names(decl, fn_map, type_defs)):
+            interface_closure_names(decl, fn_map, env)):
         callee = fn_map.get(name)
         if callee is not None and callee is not decl:
             parts.append(
@@ -273,12 +309,12 @@ def fn_cache_key(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
     context_hash: str,
-    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
+    env: TypeEnvironment,
 ) -> str:
     """The complete invalidation key for one top-level function."""
     return _sha(
         fn_structural_hash(decl)
-        + callee_component(decl, fn_map, type_defs)
+        + callee_component(decl, fn_map, env)
         + context_hash
     )
 

@@ -38,6 +38,7 @@ from vera.obligations.cache import (
     DischargeCache,
     FnCacheEntry,
     fn_cache_key,
+    TypeEnvironment,
     program_context_hash,
 )
 from vera.obligations.core import ProofObligation
@@ -279,6 +280,8 @@ class VerificationSession:
         # the program context hash; what this reaches is a function the text
         # names, whose own contract can move while the text does not.
         type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        ctor_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        op_defs: dict[tuple[str, str], tuple[ast.TypeExpr, ...]] = {}
         for tld in program.declarations:
             if isinstance(tld.decl, ast.TypeAliasDecl):
                 type_defs[tld.decl.name] = (tld.decl.type_expr,)
@@ -288,6 +291,20 @@ class VerificationSession:
                     for ctor in tld.decl.constructors
                     for field in (ctor.fields or ())
                 )
+                for ctor in tld.decl.constructors:
+                    ctor_defs[ctor.name] = tuple(ctor.fields or ())
+            elif isinstance(tld.decl, (ast.EffectDecl, ast.AbilityDecl)):
+                # A `perform`-style qualified call reads the operation's
+                # signature, and an op's PARAMETER refinement is discharged
+                # at the call site.  The return type is carried too: an op's
+                # return refinement is measured inert today (the result is
+                # `tier3` either way), and the seed costs one tuple element
+                # rather than a branch that could go stale if it stops being.
+                for op in tld.decl.operations:
+                    op_defs[(tld.decl.name, op.name)] = (
+                        *op.param_types, op.return_type)
+        env = TypeEnvironment(
+            types=type_defs, constructors=ctor_defs, effect_ops=op_defs)
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
@@ -301,7 +318,7 @@ class VerificationSession:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
-            key = fn_cache_key(decl, fn_map, context_hash, type_defs)
+            key = fn_cache_key(decl, fn_map, context_hash, env)
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is
