@@ -143,6 +143,7 @@ set:
     "timed_out": [], "removed": [], "unchanged": 11,
     "proof_regressions": [{"fn": "f", "kind": "nat_sub",
                            "expr": "@Nat.0 - 1", "line": 6, "column": 3,
+                           "line_before": 6, "column_before": 3,
                            "status_before": "verified",
                            "status_after": "violated"}]
   },
@@ -166,6 +167,32 @@ category its new status puts it in (`verified → timeout` is in both
 `timed_out` and `proof_regressions`).  Read `proof_regressions` to ask
 about lost proofs; read the categories to display what happened.
 
+The two views also differ on **identity**, and deliberately.  An
+obligation is keyed by its span, so one inserted line above it gives it
+a new key: the categories report that as a removal plus a rediscovery,
+which is what a display of positions should say.  The gate cannot
+reason that way — an edit that shifts a line and costs a proof further
+down the file would walk straight past it — so before judging anything
+it pairs the leftovers on a span-insensitive key (file, function, kind,
+whitespace-normalised predicate text; equal keys pair positionally in
+source order).  A pair is one obligation that **moved**, and both gate
+inputs then treat it exactly as they would the same pair at a fixed
+span.  Relocation is invisible to the gate; the presentation keeps its
+span view.
+
+An old obligation with no counterpart on the new side is a **deletion**,
+not a regression, and does not need `force`: the gate protects proofs,
+not contracts — the removal is visible in the edit itself, and no
+unproved code is left behind.  It is reported under `removed` with the
+status it had.  Replacing a proved contract with a differently-worded
+one is a deletion plus an addition, so the replacement is judged as an
+addition: refused if it is `violated` or `tier3`, applied if it merely
+times out, which is the same boundary any newly introduced timeout
+already sits on.  What the pairing key does not cover, by construction:
+renaming the function, changing the obligation's kind, rewriting the
+predicate text, or moving the code to another file all make it a new
+obligation to the gate.
+
 #### `vera/proposeEdit` — the enforced edit workflow
 
 ```json
@@ -175,12 +202,12 @@ about lost proofs; read the categories to display what happened.
 The whole edit → verify → apply sequence as one method, so the
 verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
-`proof_regressions` (no obligation lost a proof, whatever it lost it
-to), no `newly_undischarged` obligations (the edit introduced no
-undischarged obligation of its own), and the proposed state has no
-error diagnostics.  Neither list subsumes the other: a regression needs
-a `before` to regress from, and a newly introduced obligation has
-none.  On apply the server issues `workspace/applyEdit` (the client
+`proof_regressions` (no obligation lost a proof — whatever it lost it
+to, and wherever in the file it now sits), no `newly_undischarged`
+obligations, and the proposed state has no error diagnostics.  Neither
+list subsumes the other: `newly_undischarged` is the only one that can
+see an obligation the edit INTRODUCES, which has no `before` to regress
+from.  On apply the server issues `workspace/applyEdit` (the client
 owns the buffer), updates its canonical state, and republishes
 diagnostics; on refuse, nothing changes and the response says why:
 

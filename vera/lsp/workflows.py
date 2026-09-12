@@ -23,11 +23,12 @@ Response (plain JSON)::
     }
 
 The gate: apply iff the proof delta has no ``proof_regressions`` (no
-obligation that was ``verified`` is anything else now, whatever it lost
-its proof to), no ``newly_undischarged`` obligations (the edit
-introduced no undischarged obligation of its own — a regression needs
-a ``before`` to regress from, so neither list subsumes the other), AND
-the proposed state has no error diagnostics.  ``force: true`` overrides
+obligation that was ``verified`` is anything else now — whatever it
+lost its proof to, and wherever in the file it now sits), no
+``newly_undischarged`` obligations (the only conjunct that can see an
+obligation the edit INTRODUCES, which has no ``before`` to regress
+from, so neither list subsumes the other), AND the proposed state has
+no error diagnostics.  ``force: true`` overrides
 all three — "this edit knowingly weakens a proof" (or doesn't compile
 yet) is sometimes the intent, but it must be said out loud; the default
 is the enforced gate.
@@ -153,10 +154,11 @@ def propose_edit(
         # proof.  The categories remain what they are for presentation;
         # their separation was never permission to apply.
         and not delta["proof_regressions"]
-        # Kept beside it, and NOT subsumed by it: an obligation the edit
-        # newly INTRODUCES in an undischarged state has no `before` to
-        # regress from, so the predicate above says nothing about it,
-        # and refusing it is the existing policy.
+        # Kept beside it, and NOT subsumed by it: it is the only
+        # conjunct that can see an obligation the edit INTRODUCES, which
+        # has no `before` for the predicate above to regress from.  (It
+        # is not only that: a same-span `verified -> violated` lands
+        # here too.  What it uniquely covers is the introduced one.)
         and not delta["newly_undischarged"]
         and speculative["diagnostics"] == 0
     )

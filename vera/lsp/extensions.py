@@ -26,7 +26,10 @@ Response (plain JSON)::
         "timed_out":         [<obligation>...],  # solver unknown
         "removed":           [<obligation>...],  # obligation no longer exists
         "unchanged": <count>,
-        "proof_regressions": [<obligation>...],  # verified → anything else
+        "proof_regressions": [<obligation>...],  # verified → anything else,
+                                                 #   span-insensitively, and
+                                                 #   with `line_before` /
+                                                 #   `column_before` added
       },
       "diagnostics": <count of error diagnostics in the speculative state>,
     }
@@ -72,6 +75,51 @@ def _item(
     }
 
 
+def _regression_item(
+    before: ProofObligation, after: ProofObligation,
+) -> dict[str, Any]:
+    """A ``proof_regressions`` entry, which names BOTH spans.
+
+    The obligation may have moved (see :func:`_relocation_key`), so
+    ``line`` / ``column`` -- which :func:`_item` takes from the AFTER
+    side -- are not enough to point an agent at what it broke.
+    """
+    item = _item(before, after)
+    item["line_before"] = before.line
+    item["column_before"] = before.column
+    return item
+
+
+def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str]:
+    """Span-INSENSITIVE identity, for the regression predicate only.
+
+    :meth:`~vera.obligations.core.ProofObligation.content_key` hashes the
+    span, which is right for the presentation categories -- two textually
+    identical obligations at two sites are two obligations -- and wrong
+    for "did this edit take a proof away?": inserting ONE line above a
+    proved obligation gives it a new key, so it presents as a removal
+    plus a rediscovery and the span-keyed pass has no transition to
+    judge.  An edit that shifts a line and costs a proof further down
+    the file therefore walked the gate (#1443 review).
+
+    Whitespace inside ``expr_text`` is normalised because a reformatted
+    expression is the same obligation.  The key is deliberately NOT
+    unique -- two identical asserts in one function share it -- so the
+    caller pairs within a group positionally, in source order.
+
+    What the key does NOT deliver, by construction: renaming the
+    function, changing the obligation's kind, rewriting the predicate
+    text, or moving the code to another file all make it a different
+    obligation to the gate -- a deletion and an addition, judged as
+    those.  The division of labour is the point: the GATE reasons about
+    identity, the presentation categories report positions.
+    """
+    return (
+        ob.file or "", ob.fn_name, ob.kind,
+        " ".join(ob.expr_text.split()),
+    )
+
+
 def proof_delta(
     baseline: list[ProofObligation],
     speculative: list[ProofObligation],
@@ -102,21 +150,65 @@ def proof_delta(
     proof_regressions: list[dict[str, Any]] = []
     unchanged = 0
 
+    # #1443 review -- pair the LEFTOVERS before categorising anything.
+    # `content_key` hashes the span, so an obligation that merely MOVED
+    # arrives under a new key: it looks like a removal plus a brand-new
+    # obligation, and neither gate input could see what actually
+    # happened to it.  An old key with no new twin and a new key with no
+    # old twin that agree on `_relocation_key` are one obligation that
+    # relocated.  Within a group they pair positionally in source order,
+    # so two identical asserts in one function still pair
+    # deterministically.
+    #
+    # An old leftover with no counterpart is a DELETION, deliberately
+    # not a regression: the gate protects proofs, not contracts, a
+    # removed contract is visible in the edit itself, and nothing
+    # unproved is left behind.  It is reported under `removed` with the
+    # status it had.
+    relocated: dict[str, ProofObligation] = {}
+    new_leftovers: dict[tuple[str, str, str, str], list[ProofObligation]] = {}
+    for nkey, ob in new.items():
+        if nkey not in old:
+            new_leftovers.setdefault(_relocation_key(ob), []).append(ob)
+    taken: dict[tuple[str, str, str, str], int] = {}
+    for okey, before_ob in old.items():
+        if okey in new:
+            continue
+        rkey = _relocation_key(before_ob)
+        i = taken.get(rkey, 0)
+        candidates = new_leftovers.get(rkey, [])
+        if i >= len(candidates):
+            continue  # deletion: nothing on the new side to pair with
+        taken[rkey] = i + 1
+        relocated[candidates[i].content_key()] = before_ob
+
     for key, ob in new.items():
         before = old.get(key)
+        moved_from = relocated.get(key)
+        was = before if before is not None else moved_from
         if (
-            before is not None
-            and before.status == "verified"
+            was is not None
+            and was.status == "verified"
             and ob.status != "verified"
         ):
-            proof_regressions.append(_item(before, ob))
+            proof_regressions.append(_regression_item(was, ob))
         if before is not None and before.status == ob.status:
             unchanged += 1
         elif ob.status == "verified":
             newly_discharged.append(_item(before, ob))
         elif ob.status == "timeout":
             timed_out.append(_item(before, ob))
-        else:  # violated / tier3
+        elif moved_from is None or moved_from.status != ob.status:
+            # violated / tier3 / tier3_unguarded.  This list is the
+            # gate's other input, so relocation is INVISIBLE to it: a
+            # pair is judged exactly as the same pair at a fixed span
+            # would be.  Unchanged across the pair, the obligation is
+            # not an addition and drops out -- which is what stopped a
+            # harmless shift being refused in any program carrying a
+            # Tier-3 obligation (#1461 review, case A2b).  Worsened
+            # across it (`tier3 -> violated`, `timeout -> tier3`), it
+            # stays, because dropping it would let an edit that moved a
+            # line do what the identical unmoved edit is refused for.
             newly_undischarged.append(_item(before, ob))
     for key, ob in old.items():
         if key not in new:

@@ -192,6 +192,18 @@ class ProofObligation:
         for the speculative stream (#1246).  A future caller that hands the
         session a raw URI, or an un-normalised path, breaks the delta without
         breaking anything the cache would notice (PR #1283 review).
+
+        The span is also why this key is not the whole story for the
+        ``proposeEdit`` gate.  One inserted line above an obligation gives
+        it a new key, so it presents as a removal plus a rediscovery -- the
+        right answer for a display of POSITIONS, and the wrong one for
+        "did this edit take a proof away?", which an edit that shifts a
+        line would otherwise walk past.  So the presentation categories
+        stay keyed on this digest, and the two gate inputs first pair the
+        leftovers span-insensitively, on
+        :func:`vera.lsp.extensions._relocation_key` (file, function, kind,
+        whitespace-normalised text, ties broken in source order): the gate
+        reasons about identity, the presentation reports positions.
         """
         ident = (
             f"{self.fn_name}\x1f{self.kind}\x1f{self.expr_text}"
