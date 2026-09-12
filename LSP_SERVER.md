@@ -216,10 +216,16 @@ verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
 `proof_regressions` (no obligation lost a proof — whatever it lost it
 to, and wherever in the file it now sits), no `newly_undischarged`
-obligations, and the proposed state has no error diagnostics.  Neither
-list subsumes the other: `newly_undischarged` is the only one that can
-see an obligation the edit INTRODUCES, which has no `before` to regress
-from.  On apply the server issues `workspace/applyEdit` (the client
+entry whose `status_before` differs from its `status_after`, and no
+error diagnostics in the proposed state.  Neither list subsumes the
+other: `newly_undischarged` is the only one that can see an obligation
+the edit INTRODUCES, which has no `before` to regress from and so
+arrives with `status_before: null`.  The `status_before` qualifier is
+what lets a **relocated** obligation through: one that is undischarged
+at both ends of its pair is listed here — the categories partition the
+speculative stream, so it has to be — but it introduced nothing and
+took nothing away, so the gate passes it.  A pair that worsened is
+refused exactly as the identical unmoved edit is.  On apply the server issues `workspace/applyEdit` (the client
 owns the buffer), updates its canonical state, and republishes
 diagnostics; on refuse, nothing changes and the response says why:
 
