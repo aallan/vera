@@ -33,7 +33,7 @@ import pytest
 
 from vera import ast
 from vera.obligations.cache import (
-    _signature_type_calls,
+    _type_reference_calls,
     interface_closure_names,
 )
 from vera.obligations.session import VerificationSession
@@ -302,7 +302,7 @@ def test_1441_the_closure_terminates_on_a_contract_cycle() -> None:
 
 
 def test_1458_the_signature_walk_terminates_on_an_alias_cycle() -> None:
-    """`_signature_type_calls` is total over any alias map it is handed.
+    """`_type_reference_calls` is total over any alias map it is handed.
 
     An alias cycle is refused earlier in the pipeline (E-coded at check
     time), but the walk runs over whatever map the session builds and must
@@ -310,15 +310,42 @@ def test_1458_the_signature_walk_terminates_on_an_alias_cycle() -> None:
     so, and nothing else in this file hands it a cycle.  The contract half
     has the same cell one section up.
     """
-    alias_map: dict[str, ast.TypeExpr] = {
-        "A": ast.NamedType(name="B", type_args=None),
-        "B": ast.NamedType(name="A", type_args=None),
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {
+        "A": (ast.NamedType(name="B", type_args=None),),
+        "B": (ast.NamedType(name="A", type_args=None),),
     }
 
     found: set[str] = set()
-    _signature_type_calls(
-        (ast.NamedType(name="A", type_args=None),), alias_map, found)
+    _type_reference_calls(
+        (ast.NamedType(name="A", type_args=None),), type_defs, found)
     assert found == set(), found
+
+
+def test_1458_the_type_walk_terminates_on_a_recursive_data_declaration() -> None:
+    """The same totality, for the shape a `data` declaration makes reachable.
+
+    `data List<T> { Nil, Cons(T, List<T>) }` names itself in its own field,
+    and unlike an alias cycle that is LEGAL — so the walk meets it in
+    ordinary programs rather than only in a malformed one.  The name enters
+    the seen set before its definition is pushed, which is what makes the
+    self-reference a stop rather than a loop; the predicate on the other
+    field must still come out.
+    """
+    predicate = ast.RefinementType(
+        base_type=ast.NamedType(name="Int", type_args=None),
+        predicate=ast.FnCall(
+            name="cap",
+            args=(),
+        ),
+    )
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {
+        "List": (predicate, ast.NamedType(name="List", type_args=None)),
+    }
+
+    found: set[str] = set()
+    _type_reference_calls(
+        (ast.NamedType(name="List", type_args=None),), type_defs, found)
+    assert found == {"cap"}, found
 
 
 def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
@@ -364,7 +391,7 @@ def test_1441_the_closure_follows_contracts_and_not_bodies() -> None:
 #: version of this fix did exactly that (#1458 review).
 #:
 #: A NAMED type hides the predicate behind an alias, so the closure has to
-#: resolve through `alias_map`; #1453 made alias CHAINS real, which the third
+#: resolve through `type_defs`; #1453 made alias CHAINS real, which the third
 #: fixture below walks.
 _RETURN_ORIGINAL = """public fn cap(@Unit -> @Int)
   requires(true)
@@ -816,57 +843,203 @@ _WHERE_SIG_EDITED = _WHERE_SIG_ORIGINAL.replace(
     1,
 )
 
-#: (dependency kind, edit kind, regime, original, edited, modules before,
-#: after).  The kinds are the enumeration; the edit kinds are the ways a
-#: dependency can move.
+#: The carrier dimension: a refinement predicate reached through an ADT FIELD
+#: rather than through an alias target.  A `data` declaration's field types
+#: are read at construction and at destructure, so a predicate behind one is
+#: as live as a predicate on a signature — and the closure resolved names
+#: through type aliases only, so all four rows below were warm-clean where a
+#: fresh session refutes (#1458 review).
+_ADT_CARRIER_PRELUDE = """public fn cap(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  5
+}
+
+type Small = { @Int | @Int.0 < cap(()) };
+"""
+
+#: Widening `cap` widens `Small`, so a caller can no longer conclude its own
+#: bound.  Positions preserved, so nothing moves for a reason other than the
+#: edit.
+_CAP_WIDENED = (
+    "ensures(@Int.result == 5)\n  effects(pure)\n{\n  5\n}",
+    "ensures(@Int.result == 9)\n  effects(pure)\n{\n  9\n}",
+)
+
+#: Tightening it instead makes a value that WAS legal illegal, which is
+#: caught where the value is built rather than where it is read.
+_CAP_TIGHTENED = (
+    "ensures(@Int.result == 5)\n  effects(pure)\n{\n  5\n}",
+    "ensures(@Int.result == 1)\n  effects(pure)\n{\n  1\n}",
+)
+
+_ADT_RETURN_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+public data Box { B(Small) }
+
+public fn mk(@Unit -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  B(1)
+}
+
+public fn use_it(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 5)
+  effects(pure)
+{
+  match mk(()) {
+    B(@Small) -> @Small.0
+  }
+}
+"""
+
+_ADT_PARAM_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+public data Box { B(Small) }
+
+public fn peek(@Box -> @Int)
+  requires(true)
+  ensures(@Int.result < 5)
+  effects(pure)
+{
+  match @Box.0 {
+    B(@Small) -> @Small.0
+  }
+}
+"""
+
+_ADT_BUILD_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+public data Box { B(Small) }
+
+public fn build(@Unit -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  B(3)
+}
+"""
+
+_LET_ALIAS_ORIGINAL = _ADT_CARRIER_PRELUDE + """
+public fn user(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Small = 3;
+  @Small.0
+}
+"""
+
+#: The control that localises the four above to the TYPE walk: written
+#: inline, the same predicate is an `FnCall` inside the declaration, which
+#: `direct_callee_names` finds without resolving any type name at all.  It
+#: agreed warm-with-fresh before the fix and must keep doing so after.
+_LET_INLINE_ORIGINAL = """public fn cap(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  5
+}
+
+public fn user(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @{ @Int | @Int.0 < cap(()) } = 3;
+  @Int.0
+}
+"""
+
+#: A type-correct ADT edit: the wildcard arm is unreachable while `Sign` has
+#: three constructors, so `rank` proves its bound; a fourth constructor makes
+#: it reachable and the bound false.  The earlier version of this row added a
+#: constructor with no wildcard, which is an EXHAUSTIVENESS error — the
+#: checker refuses, verification never runs, and the row passed against a
+#: cache key that had been replaced by a constant (#1458 review).
+_ADT_WILDCARD_ORIGINAL = """public data Sign { Neg, Zero, Pos }
+
+public fn rank(@Sign -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Sign.0 {
+    Neg -> 0,
+    Zero -> 1,
+    Pos -> 2,
+    _ -> 0 - 1
+  }
+}
+"""
+
+_ADT_WILDCARD_EDITED = _ADT_WILDCARD_ORIGINAL.replace(
+    "{ Neg, Zero, Pos }", "{ Neg, Zero, Pos, Huge }", 1)
+
+#: (dependency kind, edit kind, original, edited, modules before, after).
+#: Two dimensions, both taken from the code that computes the key rather
+#: than from the shapes that were reported: WHERE the type is written (a
+#: parameter, a return, a `where` helper's signature, a `let` annotation, a
+#: callee's signature) and HOW the refinement is reached from there (inline,
+#: through an alias, through a chain of aliases, through an ADT field).
 #:
-#: REGIME is what a row can hold to account, and it is asserted rather than
-#: described.  A `proof` row leaves the edited program type-correct, so
-#: everything that moves moved in the proof and the row is cache-key
-#: coverage.  A `check` row is one whose kind has no reachable edit that
-#: keeps the program type-correct — removing a type alias, retyping an effect
-#: operation, withdrawing a module export — and the checker re-runs on the
-#: warm path and the cold one alike, so agreement across a refusal is
-#: architecture rather than invalidation (#1458 review).  Those rows are kept
-#: because the agreement is still worth pinning, and labelled because a row
-#: that cannot fail for the reason the matrix claims must not be counted as
-#: though it could.
+#: Every row here leaves the edited program type-correct, so everything it
+#: moves moved in the proof and the row can hold the cache key to account.
+#: An edit that makes the CHECKER refuse is a different instrument — the
+#: checker re-runs on the warm path and the cold one alike, so agreement
+#: there is architecture — and lives in `_CHECK_PHASE_GUARDS` below rather
+#: than being counted here.
 #:
-#: Products that are NOT rows are stated in the PR body with their reason: an
-#: ADT, a type alias and an effect declaration have no contract of their own
-#: to weaken, and an effect declaration has no type-correct edit that moves a
-#: proof at all — measured, not assumed.
+#: Two rows are held by the span-sensitive structural hash rather than by
+#: the closure or the context hash, because their edit deletes lines and
+#: every later declaration shifts: `callee_removed` and `adt_removed`.  They
+#: are kept — the invalidation they pin is real — and named so the table
+#: does not claim them for a component that is not carrying them.
 _CLASS_MATRIX = [
-    ("callee contract, direct", "contract weakened", "proof",
+    ("callee contract, direct", "contract weakened",
      _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
     ("callee contract, one hop through `ensures`", "contract weakened",
-     "proof", _ENSURES_ORIGINAL, _ENSURES_EDITED, None, None),
+     _ENSURES_ORIGINAL, _ENSURES_EDITED, None, None),
     ("callee contract, one hop through `requires`", "contract weakened",
-     "proof", _REQUIRES_ORIGINAL, _REQUIRES_EDITED, None, None),
-    ("refinement on a callee's return type", "contract weakened", "proof",
+     _REQUIRES_ORIGINAL, _REQUIRES_EDITED, None, None),
+    ("refinement on a callee's return type", "contract weakened",
      _RETURN_ORIGINAL, _RETURN_EDITED, None, None),
-    ("refinement on a callee's parameter type", "contract weakened", "proof",
+    ("refinement on a callee's parameter type", "contract weakened",
      _PARAM_ORIGINAL, _PARAM_EDITED, None, None),
-    ("refinement two alias hops away", "contract weakened", "proof",
+    ("refinement two alias hops away", "contract weakened",
      _CHAIN_ORIGINAL, _CHAIN_EDITED, None, None),
     ("refinement on a `where` helper's return type", "contract weakened",
-     "proof", _WHERE_SIG_ORIGINAL, _WHERE_SIG_EDITED, None, None),
-    ("callee", "declaration removed", "proof",
+     _WHERE_SIG_ORIGINAL, _WHERE_SIG_EDITED, None, None),
+    ("refinement behind an ADT field, read through a callee's return",
+     "contract weakened", _ADT_RETURN_ORIGINAL,
+     _ADT_RETURN_ORIGINAL.replace(*_CAP_WIDENED, 1), None, None),
+    ("refinement behind an ADT field, on the function's own parameter",
+     "contract weakened", _ADT_PARAM_ORIGINAL,
+     _ADT_PARAM_ORIGINAL.replace(*_CAP_WIDENED, 1), None, None),
+    ("refinement behind an ADT field, discharged at construction",
+     "contract weakened", _ADT_BUILD_ORIGINAL,
+     _ADT_BUILD_ORIGINAL.replace(*_CAP_TIGHTENED, 1), None, None),
+    ("refinement behind an alias, on a `let` annotation", "contract weakened",
+     _LET_ALIAS_ORIGINAL, _LET_ALIAS_ORIGINAL.replace(*_CAP_TIGHTENED, 1),
+     None, None),
+    ("refinement written inline, on a `let` annotation", "contract weakened",
+     _LET_INLINE_ORIGINAL, _LET_INLINE_ORIGINAL.replace(*_CAP_TIGHTENED, 1),
+     None, None),
+    ("callee", "declaration removed",
      _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
-    ("type alias refinement", "definition changed", "proof",
+    ("type alias refinement", "definition changed",
      _ALIAS_ORIGINAL, _ALIAS_WIDENED, None, None),
-    ("type alias", "declaration removed", "check",
-     _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
-    ("ADT constructors", "definition changed", "check",
-     _ADT_ORIGINAL, _ADT_VARIANT_ADDED, None, None),
-    ("ADT", "declaration removed", "proof",
+    ("ADT constructors", "definition changed",
+     _ADT_WILDCARD_ORIGINAL, _ADT_WILDCARD_EDITED, None, None),
+    ("ADT", "declaration removed",
      _ADT_ORIGINAL, _ADT_REMOVED, None, None),
-    ("effect operation signature", "definition changed", "check",
-     _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
-    ("imported module contract", "contract weakened", "proof",
+    ("imported module contract", "contract weakened",
      _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_WEAKENED),
-    ("imported module export", "declaration removed", "check",
-     _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
 ]
 
 _CLASS_MATRIX_IDS = [
@@ -877,19 +1050,43 @@ _CLASS_MATRIX_IDS = [
     "refined_parameter",
     "alias_chain",
     "where_helper_refined_return",
+    "adt_field_via_callee_return",
+    "adt_field_on_own_parameter",
+    "adt_field_at_construction",
+    "alias_on_a_let_annotation",
+    "inline_refinement_on_a_let_annotation",
     "callee_removed",
     "alias_predicate_changed",
-    "alias_removed",
     "adt_variant_added",
     "adt_removed",
-    "effect_op_retyped",
     "module_contract_weakened",
+]
+
+#: Edits whose kind has no type-correct form: removing a type alias, retyping
+#: an effect operation, withdrawing a module export.  The checker refuses
+#: each, so verification never runs and BOTH paths report an empty obligation
+#: stream — which means these cannot hold the cache key to account, and a
+#: cache key replaced by a constant passes every one of them (#1458 review).
+#: They are kept as what they are: agreement across a refusal, pinning that
+#: the checker is not itself replayed.
+_CHECK_PHASE_GUARDS = [
+    ("type alias", "declaration removed",
+     _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
+    ("effect operation signature", "definition changed",
+     _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
+    ("imported module export", "declaration removed",
+     _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
+]
+
+_CHECK_PHASE_GUARD_IDS = [
+    "alias_removed",
+    "effect_op_retyped",
     "module_export_removed",
 ]
 
 
 @pytest.mark.parametrize(
-    "kind,edit,regime,original,edited,lib_before,lib_after",
+    "kind,edit,original,edited,lib_before,lib_after",
     _CLASS_MATRIX,
     ids=_CLASS_MATRIX_IDS,
 )
@@ -897,7 +1094,6 @@ def test_1441_no_dependency_kind_replays_past_a_change_to_itself(
     tmp_path: Path,
     kind: str,
     edit: str,
-    regime: str,
     original: str,
     edited: str,
     lib_before: str | None,
@@ -937,23 +1133,67 @@ def test_1441_no_dependency_kind_replays_past_a_change_to_itself(
         f"{kind} / {edit}: warm {warm_edited} vs fresh {fresh_edited}"
     )
 
-    # What moved, and therefore what this row can hold to account.  A
-    # verification code is E5xx; anything else is the checker refusing, and
-    # the checker runs on both paths whatever the cache does.
+    # The premise that makes the row cache coverage at all.  A verification
+    # code is E5xx; anything else is the checker refusing, and a refusal
+    # means verification never ran — both paths then report an empty
+    # obligation stream and agree whatever the key does.
     refused = [c for c in fresh_edited[0] if not c.startswith("E5")]
-    if regime == "proof":
-        assert not refused, (
-            f"{kind} / {edit}: the edited program no longer type-checks "
-            f"({refused}), so agreement here is the checker running twice "
-            f"rather than the cache invalidating — this row is labelled "
-            f"`proof` and must stay type-correct"
-        )
-    else:
-        assert refused, (
-            f"{kind} / {edit}: labelled `check`, but the edited program "
-            f"type-checks clean, so the row is cache-key coverage and should "
-            f"say so — {fresh_edited[0]}"
-        )
+    assert not refused, (
+        f"{kind} / {edit}: the edited program no longer type-checks "
+        f"({refused}), so agreement here is the checker running twice rather "
+        f"than the cache invalidating — belongs in _CHECK_PHASE_GUARDS"
+    )
+    assert fresh_edited[1], (
+        f"{kind} / {edit}: the edited program produced no obligations at all, "
+        f"so there is no proof for a stale entry to be wrong about"
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,edit,original,edited,lib_before,lib_after",
+    _CHECK_PHASE_GUARDS,
+    ids=_CHECK_PHASE_GUARD_IDS,
+)
+def test_1441_the_checker_is_not_replayed(
+    tmp_path: Path,
+    kind: str,
+    edit: str,
+    original: str,
+    edited: str,
+    lib_before: str | None,
+    lib_after: str | None,
+) -> None:
+    """Warm agrees with fresh when the CHECKER refuses the edited program.
+
+    Not cache coverage, and named so it is not counted as any: verification
+    never runs for these, so both paths report the same empty obligation
+    stream and a cache key replaced by a constant passes every one.  What
+    they pin is that the checker is re-run rather than replayed — a session
+    that cached diagnostics would fail them.
+    """
+    path = tmp_path / "p.vera"
+    mods_before = None if lib_before is None else _lib(lib_before)
+    mods_after = None if lib_after is None else _lib(lib_after)
+
+    warm = VerificationSession()
+    before = _summary(warm.verify_source(
+        original, file=str(path), resolved_modules=mods_before))
+    assert before[0] == [], f"{kind} / {edit}: the original is not clean — {before}"
+
+    warm_edited = _summary(warm.verify_source(
+        edited, file=str(path), resolved_modules=mods_after))
+    fresh_edited = _summary(VerificationSession().verify_source(
+        edited, file=str(path), resolved_modules=mods_after))
+
+    refused = [c for c in fresh_edited[0] if not c.startswith("E5")]
+    assert refused, (
+        f"{kind} / {edit}: the edited program type-checks clean, so this is "
+        f"cache coverage and belongs in _CLASS_MATRIX where a premise can "
+        f"hold it to account — {fresh_edited[0]}"
+    )
+    assert warm_edited == fresh_edited, (
+        f"{kind} / {edit}: warm {warm_edited} vs fresh {fresh_edited}"
+    )
 
 
 #: The one candidate dependency that turns out not to be one, and the

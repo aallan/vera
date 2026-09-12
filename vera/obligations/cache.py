@@ -117,42 +117,44 @@ def fn_structural_hash(decl: ast.FnDecl) -> str:
     return _sha(repr(decl) + "\x1f" + spans)
 
 
-def _signature_type_calls(
+def _type_reference_calls(
     type_exprs: Iterable[object],
-    alias_map: dict[str, ast.TypeExpr],
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
     out: set[str],
 ) -> None:
     """Collect functions read while INTERPRETING *type_exprs*.
 
     A refinement predicate may call a function — ``{ @Int | @Int.0 < cap(()) }``
-    — so reading a signature reads that function's contract.  A NAMED type
-    hides the predicate behind an alias, and #1453 made alias CHAINS real, so
-    the walk resolves names through *alias_map* until it reaches the
-    refinements themselves.
+    — so reading a type reads that function's contract.  A NAMED type hides
+    the predicate behind a declaration, so the walk resolves names through
+    *type_defs* until it reaches the refinements themselves.  Both kinds of
+    declaration carry one: a `type` alias names its target (and #1453 made
+    alias CHAINS real), and a `data` declaration's constructor FIELDS are
+    types the program reads whenever it builds or destructures a value
+    (#1458 review) — a refinement is equally live behind either.
 
-    ``seen_aliases`` terminates it: an alias cycle is refused elsewhere
-    (E-coded at check time), but this runs over whatever map it is handed and
-    must be total regardless.
+    ``seen`` terminates it, and a name enters it BEFORE its definition is
+    pushed, so a recursive ``data List<T> { Nil, Cons(T, List<T>) }`` is
+    walked once rather than forever.  An alias cycle is refused elsewhere
+    (E-coded at check time), but this runs over whatever map it is handed
+    and must be total regardless.
     """
-    seen_aliases: set[str] = set()
+    seen: set[str] = set()
     stack: list[object] = list(type_exprs)
     while stack:
         current = stack.pop()
         for node in walk_nodes(current):
             if isinstance(node, ast.FnCall):
                 out.add(node.name)
-            elif (isinstance(node, ast.NamedType)
-                    and node.name not in seen_aliases):
-                seen_aliases.add(node.name)
-                target = alias_map.get(node.name)
-                if target is not None:
-                    stack.append(target)
+            elif isinstance(node, ast.NamedType) and node.name not in seen:
+                seen.add(node.name)
+                stack.extend(type_defs.get(node.name, ()))
 
 
 def interface_closure_names(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
-    alias_map: dict[str, ast.TypeExpr],
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
 ) -> frozenset[str]:
     """Every function whose INTERFACE is read while verifying *decl*.
 
@@ -172,22 +174,23 @@ def interface_closure_names(
     """
     seen: set[str] = set()
     work: set[str] = set(direct_callee_names(decl))
-    # The signature types read while verifying this declaration are its own
-    # AND those of every `where` helper inside it: the owner discharges a
-    # helper's parameter refinement at the call site and assumes its return
-    # refinement afterwards, so a function a helper's refinement names is one
-    # the owner reads.  Neither of the other two routes reaches it — a
-    # `NamedType` is not a call, so `direct_callee_names` cannot see through
-    # it, and a helper is not in `fn_map`, so the walk below never resolves
-    # its name at all.  Measured before the change (#1458 review): warm
-    # reported the owner `verified` where a fresh session reports `violated`
-    # with E500.  `walk_nodes` descends into nested where-blocks, so a helper
-    # inside a helper is covered by the same pass.
-    own_signatures: list[object] = []
-    for node in walk_nodes(decl):
-        if isinstance(node, ast.FnDecl):
-            own_signatures.extend((*node.params, node.return_type))
-    _signature_type_calls(own_signatures, alias_map, work)
+    # EVERY type this declaration references, from ONE walk of its subtree —
+    # not an enumeration of the positions a type can be written in.  A
+    # refinement is read wherever its type is: on a parameter or a return,
+    # on a `where` helper's signature, on a `let` annotation, and through an
+    # ADT field at construction and at destructure.  Enumerating positions
+    # left four of those out, each a warm-clean replay where a fresh session
+    # refutes (#1458 review), and would leave the next position out too; a
+    # walk covers a position added later by construction.
+    #
+    # The other two routes cannot reach these: a `NamedType` is not a call,
+    # so `direct_callee_names` sees nothing through it, and neither a
+    # `where` helper nor a type declaration is in `fn_map`, so the walk
+    # below never resolves the name at all.
+    referenced_types = [
+        node for node in walk_nodes(decl) if isinstance(node, ast.TypeExpr)
+    ]
+    _type_reference_calls(referenced_types, type_defs, work)
     todo = list(work)
     while todo:
         name = todo.pop()
@@ -203,8 +206,8 @@ def interface_closure_names(
                 n.name for n in walk_nodes(contract)
                 if isinstance(n, ast.FnCall)
             )
-        _signature_type_calls(
-            (*callee.params, callee.return_type), alias_map, found)
+        _type_reference_calls(
+            (*callee.params, callee.return_type), type_defs, found)
         todo.extend(n for n in found if n not in seen)
     return frozenset(seen)
 
@@ -212,7 +215,7 @@ def interface_closure_names(
 def callee_component(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
-    alias_map: dict[str, ast.TypeExpr],
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
 ) -> str:
     """Hash the *interfaces* of everything *decl*'s verification reads.
 
@@ -227,7 +230,7 @@ def callee_component(
     """
     parts: list[str] = []
     for name in sorted(
-            interface_closure_names(decl, fn_map, alias_map)):
+            interface_closure_names(decl, fn_map, type_defs)):
         callee = fn_map.get(name)
         if callee is not None and callee is not decl:
             parts.append(
@@ -270,12 +273,12 @@ def fn_cache_key(
     decl: ast.FnDecl,
     fn_map: dict[str, ast.FnDecl],
     context_hash: str,
-    alias_map: dict[str, ast.TypeExpr],
+    type_defs: dict[str, tuple[ast.TypeExpr, ...]],
 ) -> str:
     """The complete invalidation key for one top-level function."""
     return _sha(
         fn_structural_hash(decl)
-        + callee_component(decl, fn_map, alias_map)
+        + callee_component(decl, fn_map, type_defs)
         + context_hash
     )
 

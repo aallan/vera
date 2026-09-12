@@ -269,16 +269,25 @@ class VerificationSession:
             for tld in program.declarations
             if isinstance(tld.decl, ast.FnDecl)
         }
-        # #1458: a callee's SIGNATURE types are read by its callers too, and
-        # a named one hides its refinement predicate behind an alias, so the
-        # closure needs the alias map to see the functions that predicate
-        # calls.  Alias TEXT is already covered by the program context hash;
-        # what this reaches is a function the text names.
-        alias_map: dict[str, ast.TypeExpr] = {
-            tld.decl.name: tld.decl.type_expr
-            for tld in program.declarations
-            if isinstance(tld.decl, ast.TypeAliasDecl)
-        }
+        # #1458: a type the declaration references is read by whoever
+        # references it, and a NAMED one hides its refinement predicate
+        # behind a declaration — so the closure needs to resolve type names
+        # to see the functions those predicates call.  Both declaration
+        # forms carry a predicate: an alias names its target, and a `data`
+        # declaration's constructor fields are types read at construction
+        # and at destructure.  The declaration TEXT is already covered by
+        # the program context hash; what this reaches is a function the text
+        # names, whose own contract can move while the text does not.
+        type_defs: dict[str, tuple[ast.TypeExpr, ...]] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.TypeAliasDecl):
+                type_defs[tld.decl.name] = (tld.decl.type_expr,)
+            elif isinstance(tld.decl, ast.DataDecl):
+                type_defs[tld.decl.name] = tuple(
+                    field
+                    for ctor in tld.decl.constructors
+                    for field in (ctor.fields or ())
+                )
 
         # #1363 (PR review): the warm path must run under the same disclosed
         # set the cold path computes, or it proves at Tier 1 from facts cold
@@ -292,7 +301,7 @@ class VerificationSession:
             if not isinstance(tld.decl, ast.FnDecl):
                 continue
             decl = tld.decl
-            key = fn_cache_key(decl, fn_map, context_hash, alias_map)
+            key = fn_cache_key(decl, fn_map, context_hash, type_defs)
             if self._disclosed:
                 # A slice proved under a DIFFERENT disclosed set is stale:
                 # its statuses depend on which facts were withheld, which is
