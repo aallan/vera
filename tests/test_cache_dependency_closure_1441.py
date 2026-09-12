@@ -136,7 +136,7 @@ public fn user(@Unit -> @Int)
 _BODY_ONLY_EDITED = _BODY_ONLY_ORIGINAL.replace("{\n  1\n}", "{\n  1 + 0\n}", 1)
 
 
-def _summary(result) -> tuple[list[str], list[tuple[str, str, str]]]:
+def _summary(result) -> tuple[list[str], list[tuple[str, str, str, str]]]:
     """Everything a consumer would act on: error codes and obligation verdicts."""
     codes = sorted({d.error_code for d in result.diagnostics
                     if d.severity == "error"})
