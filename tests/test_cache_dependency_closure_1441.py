@@ -34,6 +34,8 @@ import pytest
 from vera.obligations.cache import interface_closure_names
 from vera.obligations.session import VerificationSession
 
+from tests.module_fixture_helpers import resolved_module
+
 # ---------------------------------------------------------------------------
 # Fixtures: each is (original, edited) differing in ONE declaration
 # ---------------------------------------------------------------------------
@@ -563,3 +565,345 @@ def test_1441_a_sequence_of_edits_never_diverges_from_fresh(
         assert warm_result == fresh_result, (
             f"{name} step {step}: warm {warm_result} vs fresh {fresh_result}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The class matrix: every kind of thing a cached proof depends on
+# ---------------------------------------------------------------------------
+
+#: #1441 was reported as one instance — a helper named in a callee's
+#: `ensures`.  The CLASS is "a cached proof survives a change to something it
+#: depends on", and the cells below are the enumeration of what a proof in
+#: this compiler can depend on, taken from the two components the key is
+#: built out of rather than from the shapes that happened to be reported:
+#: `callee_component` (the interface closure) covers everything
+#: function-shaped, and `program_context_hash` covers every declaration that
+#: is not a function.  A dependency kind neither component reaches is a hole
+#: in the key.
+#:
+#: Vera has no constant declaration form — a named constant is a nullary
+#: function — so "a constant changed" is the callee-contract rows.
+#:
+#: The dedicated cells above pin the specifics of the routes that were
+#: broken (which function moves, which diagnostic code, whether the caller
+#: replays).  This matrix is the sweep: one assertion, over the whole space.
+
+#: The direct route, with no intermediary: `f` assumes `g`'s postcondition.
+_DIRECT_ORIGINAL = """public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  1
+}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  g(())
+}
+"""
+
+_DIRECT_EDITED = _DIRECT_ORIGINAL.replace(
+    "ensures(@Int.result == 1)\n  effects(pure)\n{\n  1\n}",
+    "ensures(@Int.result == 2)\n  effects(pure)\n{\n  2\n}",
+    1,
+)
+
+#: Removal is the other edit a dependency admits: `g` disappears, so `f`'s
+#: postcondition names something that is not there.
+_CALLEE_REMOVED = _ENSURES_ORIGINAL.replace(
+    """public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  1
+}
+
+""",
+    "",
+    1,
+)
+
+#: A refinement predicate written inline, with no function in it at all —
+#: the alias TEXT is the dependency, and the program context hash is what
+#: covers it.
+_ALIAS_ORIGINAL = """type Small = { @Int | @Int.0 < 3 };
+
+public fn mk(@Unit -> @Small)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn use_it(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 3)
+  effects(pure)
+{
+  mk(())
+}
+"""
+
+_ALIAS_WIDENED = _ALIAS_ORIGINAL.replace("@Int.0 < 3 }", "@Int.0 < 9 }", 1)
+_ALIAS_REMOVED = _ALIAS_ORIGINAL.replace(
+    "type Small = { @Int | @Int.0 < 3 };\n\n", "", 1)
+
+_ADT_ORIGINAL = """public data Sign { Neg, Zero, Pos }
+
+public fn rank(@Sign -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Sign.0 {
+    Neg -> 0,
+    Zero -> 1,
+    Pos -> 2
+  }
+}
+"""
+
+_ADT_VARIANT_ADDED = _ADT_ORIGINAL.replace(
+    "{ Neg, Zero, Pos }", "{ Neg, Zero, Pos, Huge }", 1)
+_ADT_REMOVED = _ADT_ORIGINAL.replace(
+    "public data Sign { Neg, Zero, Pos }\n\n", "", 1)
+
+_EFFECT_ORIGINAL = """effect Counter {
+  op bump(Int -> Int);
+}
+
+public fn use_c(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(<Counter>)
+{
+  Counter.bump(@Int.0)
+}
+"""
+
+_EFFECT_RETYPED = _EFFECT_ORIGINAL.replace(
+    "op bump(Int -> Int);", "op bump(Bool -> Int);", 1)
+
+#: An imported module's surface: the caller reads `cap`'s contract across a
+#: module boundary, where the closure cannot follow it — the session's
+#: per-module (path, source digest) keys are what covers this.
+_MODULE_LIB = """module lib;
+
+public fn cap(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  1
+}
+"""
+
+_MODULE_LIB_WEAKENED = _MODULE_LIB.replace(
+    "== 1)\n  effects(pure)\n{\n  1\n}",
+    "== 9)\n  effects(pure)\n{\n  9\n}",
+    1,
+)
+
+_MODULE_LIB_UNEXPORTED = _MODULE_LIB.replace(
+    "public fn cap", "private fn cap", 1)
+
+_MODULE_MAIN = """import lib(cap);
+
+public fn use_mod(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 3)
+  effects(pure)
+{
+  cap(())
+}
+"""
+
+
+def _lib(source: str) -> list:
+    return [resolved_module(("lib",), source)]
+
+
+#: (dependency kind, edit kind, original, edited, modules before, after).
+#: The kinds are the enumeration; the edit kinds are the three ways a
+#: dependency can move.  Products that are NOT here are stated in the PR
+#: body with their reason — an ADT has no contract to weaken, and removing
+#: an `effect` declaration moves nothing a fresh session reports, so a cell
+#: for it could not fail.
+_CLASS_MATRIX = [
+    ("callee contract, direct", "contract weakened",
+     _DIRECT_ORIGINAL, _DIRECT_EDITED, None, None),
+    ("callee contract, one hop through `ensures`", "contract weakened",
+     _ENSURES_ORIGINAL, _ENSURES_EDITED, None, None),
+    ("callee contract, one hop through `requires`", "contract weakened",
+     _REQUIRES_ORIGINAL, _REQUIRES_EDITED, None, None),
+    ("refinement on a callee's return type", "contract weakened",
+     _RETURN_ORIGINAL, _RETURN_EDITED, None, None),
+    ("refinement on a callee's parameter type", "contract weakened",
+     _PARAM_ORIGINAL, _PARAM_EDITED, None, None),
+    ("refinement two alias hops away", "contract weakened",
+     _CHAIN_ORIGINAL, _CHAIN_EDITED, None, None),
+    ("callee", "declaration removed",
+     _ENSURES_ORIGINAL, _CALLEE_REMOVED, None, None),
+    ("type alias refinement", "definition changed",
+     _ALIAS_ORIGINAL, _ALIAS_WIDENED, None, None),
+    ("type alias", "declaration removed",
+     _ALIAS_ORIGINAL, _ALIAS_REMOVED, None, None),
+    ("ADT constructors", "definition changed",
+     _ADT_ORIGINAL, _ADT_VARIANT_ADDED, None, None),
+    ("ADT", "declaration removed",
+     _ADT_ORIGINAL, _ADT_REMOVED, None, None),
+    ("effect operation signature", "definition changed",
+     _EFFECT_ORIGINAL, _EFFECT_RETYPED, None, None),
+    ("imported module contract", "contract weakened",
+     _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_WEAKENED),
+    ("imported module export", "declaration removed",
+     _MODULE_MAIN, _MODULE_MAIN, _MODULE_LIB, _MODULE_LIB_UNEXPORTED),
+]
+
+_CLASS_MATRIX_IDS = [
+    "direct_contract",
+    "hop_through_ensures",
+    "hop_through_requires",
+    "refined_return",
+    "refined_parameter",
+    "alias_chain",
+    "callee_removed",
+    "alias_predicate_changed",
+    "alias_removed",
+    "adt_variant_added",
+    "adt_removed",
+    "effect_op_retyped",
+    "module_contract_weakened",
+    "module_export_removed",
+]
+
+
+@pytest.mark.parametrize(
+    "kind,edit,original,edited,lib_before,lib_after",
+    _CLASS_MATRIX,
+    ids=_CLASS_MATRIX_IDS,
+)
+def test_1441_no_dependency_kind_replays_past_a_change_to_itself(
+    tmp_path: Path,
+    kind: str,
+    edit: str,
+    original: str,
+    edited: str,
+    lib_before: str | None,
+    lib_after: str | None,
+) -> None:
+    """One assertion over the whole space a cached proof can depend on.
+
+    The equality is paired with two premises, because "warm agrees with
+    fresh" is satisfied by two sessions that are equally wrong: the original
+    must verify CLEAN, and the edit must actually move what a fresh session
+    reports.  Without the second, a cache that never invalidated anything
+    would pass every row whose fixture had gone inert.
+    """
+    path = tmp_path / "p.vera"
+    mods_before = None if lib_before is None else _lib(lib_before)
+    mods_after = None if lib_after is None else _lib(lib_after)
+
+    warm = VerificationSession()
+    before = _summary(warm.verify_source(
+        original, file=str(path), resolved_modules=mods_before))
+    assert before[0] == [], (
+        f"{kind} / {edit}: the original does not verify clean, so this cell "
+        f"measures something other than the edit — {before}"
+    )
+
+    warm_edited = _summary(warm.verify_source(
+        edited, file=str(path), resolved_modules=mods_after))
+    fresh_edited = _summary(VerificationSession().verify_source(
+        edited, file=str(path), resolved_modules=mods_after))
+
+    assert fresh_edited != before, (
+        f"{kind} / {edit}: a fresh session reports the same thing before and "
+        f"after the edit, so this row is satisfied by a cache that never "
+        f"invalidates — the fixture has stopped exercising the dependency"
+    )
+    assert warm_edited == fresh_edited, (
+        f"{kind} / {edit}: warm {warm_edited} vs fresh {fresh_edited}"
+    )
+
+
+#: The one candidate dependency that turns out not to be one, and the
+#: measurement that says so rather than an argument that it should be.
+_OPAQUE_HELPER = """public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == lim(()))
+  effects(pure)
+{
+  lim(())
+}
+where {
+  fn lim(@Unit -> @Int)
+    requires(true)
+    ensures(@Int.result == 1)
+    effects(pure)
+  {
+    1
+  }
+}
+
+public fn h(@Unit -> @Int)
+  requires(true)
+  ensures(CALLER_CLAIM)
+  effects(pure)
+{
+  f(())
+}
+"""
+
+
+def test_1441_a_callees_where_helper_is_not_part_of_its_interface(
+    tmp_path: Path,
+) -> None:
+    """A caller cannot read into a callee's `where` block, so it may replay.
+
+    `callee_component` hashes a callee's params, return type, contracts and
+    type parameters — not its `where` helpers.  That is only safe if a
+    caller learns nothing from them, so the premise is measured rather than
+    assumed: a caller that tries to conclude `== 1` from `f`'s postcondition
+    `== lim(())` is REFUTED on the original text, before any edit, because
+    `lim` is opaque across the call boundary.  Editing `lim` therefore moves
+    nothing the caller reads, and replaying it is correct.
+    """
+    path = tmp_path / "p.vera"
+    seeing = _OPAQUE_HELPER.replace("CALLER_CLAIM", "@Int.result == 1", 1)
+    codes, obligations = _summary(
+        VerificationSession().verify_source(seeing, file=str(path)))
+    assert "E500" in codes, (
+        "a caller CAN see a callee's where-helper contract, so the helper is "
+        f"part of the interface and the closure must reach it — {codes}"
+    )
+    assert ("h", "ensures", "violated") in obligations, obligations
+
+    blind = _OPAQUE_HELPER.replace("CALLER_CLAIM", "true", 1)
+    edited = blind.replace(
+        "ensures(@Int.result == 1)\n    effects(pure)\n  {\n    1\n  }",
+        "ensures(@Int.result == 2)\n    effects(pure)\n  {\n    2\n  }",
+        1,
+    )
+    assert edited != blind
+
+    warm = VerificationSession()
+    before = _summary(warm.verify_source(blind, file=str(path)))
+    assert before[0] == [], before
+    warm_edited = _summary(warm.verify_source(edited, file=str(path)))
+    replayed = warm.last_run_stats.replayed_fns
+    fresh_edited = _summary(
+        VerificationSession().verify_source(edited, file=str(path)))
+
+    assert warm_edited == fresh_edited, (warm_edited, fresh_edited)
+    assert replayed >= 1, (
+        "the caller was re-verified for an edit it cannot read, so the "
+        "optimisation has been thrown away for every callee with a `where` "
+        "block"
+    )
