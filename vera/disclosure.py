@@ -436,23 +436,29 @@ def _verify_for_disclosure(
     # same predicate so the two cannot disagree about what disclosed what.
     #
     # This loop decorates the OBLIGATION-derived half; the loop after it adds
-    # the RESULT-derived half (G1).  A function is disclosed when its result
-    # is a disclosed value.  Since #1412 that has ONE kind of evidence: an
-    # obligation of its own that was neither proved nor guarded.  A forwarder
-    # used to make no claim and so record nothing, which made it invisible
-    # here while the same declarations in one file demoted correctly — so
-    # this emitted the union of the obligation-derived set with the
-    # result-derived one.  #1412 then obligated a refined return at every
-    # position that publishes it, which closes that gap where it opens: a
-    # forwarder handing on a refined value carries its own unguarded
-    # obligation, and one that does NOT publish the refinement hands on no
-    # fact for a consumer to lean on.
+    # the RESULT-derived half (G1/J1).  A function is disclosed when its
+    # result is a disclosed value, and that has TWO kinds of evidence, which
+    # is why both loops are here.
     #
-    # THE CLAIM IS BOUNDED BY WHAT WAS MEASURED, not by that argument.  With
-    # the union reverted, no verdict moved across a forwarder dropping the
-    # refinement, one through a `where` helper, one returning a tuple
-    # carrying the payload, one two import hops away, and one in an
-    # `Exn`-declared function; and removing it changed no cell in the suite.
+    # The obligation-derived half is blind to a FORWARDER.  #1412 obligates
+    # NARROWINGS, and a forwarder whose declared return is the same refined
+    # type as its callee's narrows nothing — so it records no obligation to
+    # be found by, however plainly it hands the fact on.  The manifest half
+    # is what sees it: `_result_disclosed_fns` is populated from
+    # `term_is_disclosed` over a function's own result term, so it is the
+    # value-following rule reaching the import boundary, asking by OCCURRENCE
+    # and never by carrier.
+    #
+    # This union was removed once, on the argument that #1412 had closed the
+    # gap — a forwarder either publishes the refinement and is obligated for
+    # it, or drops it and hands on no fact.  The second half holds; the first
+    # does not, for the reason above.  Six carriers were surveyed and none
+    # contradicted it, which settled nothing: a survey is evidence about the
+    # carriers surveyed.  The shape that shows it is a handler-clause `@Nat`
+    # payload narrowing (#1362's category, outside #1412's guards), where the
+    # importer reads `verified` through the forwarder while the same three
+    # declarations in ONE file report `tier3`/E534.  `M_union` reds the four
+    # cells that pin it.
     #
     # #1412 does NOT guard every narrowing.  `_NAT_CONSTRUCTION_GUARDED_SITES`
     # is `{"tuple component"}`, so an ARRAY ELEMENT and a `Map` VALUE still
@@ -461,9 +467,10 @@ def _verify_for_disclosure(
     # modelled opaquely, so a consumer indexing one, passing it to a nested
     # refinement, or re-narrowing it with a `let` is REFUTED (E500) rather
     # than falsely proved, and a `Map` insert emits no narrowing obligation
-    # at all.  If a shape is found where such a producer's disclosure DOES
-    # reach an importer through a forwarder, this is where the union goes
-    # back — for that case, with the reason on the DisclosureSite.
+    # at all.  That paragraph is why the union is not a special case for the
+    # handler-clause carrier: the set of sites #1412 leaves unguarded is not
+    # closed, so the manifest publishes by VALUE rather than by enumerating
+    # them.
     names = disclosed_fn_names(result.obligations)
     manifest: ModuleManifest = {}
     for o in result.obligations:

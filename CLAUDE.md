@@ -133,6 +133,10 @@ Before changing code — **adding or removing** — write the test that proves y
 - Choose inputs that **cannot coincide with a fallback/default value**. A default that happens to equal the right answer makes a real bug invisible — a `forall<T>` instantiation-discovery miss once passed CI because the test's where-helper returned `Bool`, the same value as the inference's phantom-var default, so wrong and right looked identical.
 - For cross-component soundness invariants (e.g. the verifier must statically check exactly the set codegen emits), the proving check is a **differential** — run both sides and compare — not a unit test; a green unit suite can hide a desync between the two.
 
+## Fix the class, not the instance
+
+A bug fix closes the **class** the report belongs to — the set of inputs the same mechanism gets wrong — not the reported instance.  When review shows a fix covers the instance but not the class, the class fix goes in the same PR, bounded to the mechanism at fault.  Every fix PR names its class boundary in the body and ships a class instrument: an exhaustive matrix over the space the class spans, or a generator, never hand-picked cases alone.  One issue per class, with its instances as a checklist — a finding that is another instance of an open class extends that issue and its instrument instead of opening a new one.  The canonical statement is `CONTRIBUTING.md` § Bugs: the class, not the instance; the instrument shapes are in `TESTING.md` § Class Instruments.
+
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
