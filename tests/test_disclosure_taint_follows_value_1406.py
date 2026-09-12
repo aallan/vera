@@ -1,5 +1,41 @@
 """#1406 / #1407 — a disclosed fact's taint follows the VALUE, not the syntax.
 
+**The disclosure in this file is produced by a patched guard table, and that
+is deliberate.**  #1426 gave every construction-position store the §2.6.5
+guard, so a producer that builds a refined payload now ESTABLISHES its
+declared return type on every completing run — and a caller leaning on a
+guarded fact is sound, so `verified` there is the truth.  That closed the
+only shipping shape these cells had: measured on this tree, the original
+producer records `refine_bind` / `tier3` and the caller's postcondition is
+`verified`.
+
+Four other carriers were measured and none reinstates the premise.  The
+by-design roster (`string_slice`'s clamping `@Nat` index, #475) discloses an
+ARGUMENT's sign, which no postcondition leans on — the producer discloses and
+the caller still proves.  A refinement over a refinement withholds the fact
+durably but the SMT layer models no such base, so the goal comes back opaque
+(E522) rather than disclosed (E534), which is a different verdict about a
+different thing.  A refinement over `String` is un-guardable at a
+construction store but its predicate is opaque to the solver, so it lands on
+E522 too.  An imported producer establishes its type exactly as a local one
+does, the guard being emitted in the imported body.
+
+So the fixture removes the producer's construction sites from
+`vera.narrowing.REFINED_BIND_GUARDED_SITES` — the one table both components
+read at call time, the verifier to classify and code generation to decide
+whether to emit.  Removing an entry reinstates precisely what the machinery
+exists for: a construction store that is obligated and unguarded.  Nothing
+else is simulated; the fixtures, the spellings, the envelope and the runs are
+the real ones, and `test_the_patch_is_what_produces_the_disclosure` restores
+the entry to show the cells go green-by-guard without it.
+
+The property under test is unchanged and is the release's central safety net:
+a fact the same run disclosed as neither proved nor guarded is never assumed
+at full strength downstream, however the value is spelled.  The class keeps
+reappearing (#1362, #1363, #1391, #1449, #1455), and the next unguarded site
+will arrive with a spelling nobody enumerated — which is the case these cells
+are held against.
+
 #1363 established the rule: a declared-type fact whose own obligation this run
 DISCLOSED (`tier3_unguarded`, or `tier3` with E534 — neither proved nor
 guarded) must not discharge a downstream goal at Tier 1.  Its implementation
@@ -52,7 +88,88 @@ import vera
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
 
+@pytest.fixture(autouse=True)
+def _unguard_the_producer_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove the producer's construction site from the shared guard table.
+
+    The CLI-driven cells get this through `_DRIVER` in their subprocess; the
+    warm-session cells run the verifier IN this process and need the same
+    table, so it is patched here too.  One fixture, so the two halves of
+    every warm/cold agreement cell are compared under the same rules — which
+    is the whole point of those cells.
+    """
+    from vera import narrowing
+
+    # The subtraction's PREMISE, asserted rather than assumed (R-1412 G1).
+    # Both sites have to be in the shipped table for the patch to reinstate
+    # anything: measured, deleting `"tuple component"` upstream leaves all
+    # of this file green — the patched-vs-shipped control included — while
+    # the cells quietly test a premise other than the documented one.
+    assert _PATCHED_SITES <= narrowing.REFINED_BIND_GUARDED_SITES, (
+        f"the shipped table no longer guards "
+        f"{sorted(_PATCHED_SITES - narrowing.REFINED_BIND_GUARDED_SITES)}, "
+        f"so subtracting it reinstates nothing and every verdict in this "
+        f"file is about a different program than its header describes"
+    )
+    monkeypatch.setattr(
+        narrowing, "REFINED_BIND_GUARDED_SITES",
+        narrowing.REFINED_BIND_GUARDED_SITES - _PATCHED_SITES,
+    )
+
+
+#: The producer construction sites removed from the shared guard table for
+#: the length of every invocation below.  See the module docstring for why.
+#:
+#: Two, because the producers in this file build their payload two ways: a
+#: constructor field (`Some(x)`) and a tuple component (`Some(Tuple(x, 5))`).
+#: Patching only the first left the `destructure` spelling's payload
+#: established by the tuple store, so its consumer re-narrowing proved at
+#: Tier 1 and the cell measured nothing.
+_PATCHED_SITES = frozenset({"constructor field", "tuple component"})
+
+#: Drives the ordinary CLI with that one site removed from
+#: `vera.narrowing.REFINED_BIND_GUARDED_SITES`.
+#:
+#: Both components read that table at call time — the verifier to classify
+#: and code generation to decide whether to emit — so removing the entry
+#: reinstates, exactly, a construction store that is obligated and unguarded.
+#: Nothing else about the pipeline changes: the fixtures, the spellings, the
+#: envelope and the run are the real ones.
+#:
+#: Run in a SUBPROCESS rather than in-process, deliberately.  The `vera run`
+#: legs execute compiled WASM with the guard absent, which is the condition
+#: under test; a fault there must not reach the host process.
+_DRIVER = (
+    "import sys\n"
+    "from vera import narrowing\n"
+    "narrowing.REFINED_BIND_GUARDED_SITES = (\n"
+    "    narrowing.REFINED_BIND_GUARDED_SITES - %r\n"
+    ")\n"
+    "from vera.cli import main\n"
+    "sys.argv = ['vera'] + sys.argv[1:]\n"
+    "raise SystemExit(main())\n"
+) % (set(_PATCHED_SITES),)
+
+
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
+    )
+    return subprocess.run(
+        [sys.executable, "-c", _DRIVER, *args],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+        env=env, timeout=300,
+    )
+
+
+def _cli_unpatched(*args: str) -> subprocess.CompletedProcess[str]:
+    """The same CLI with the table AS SHIPPED — the control for the patch.
+
+    Used by the cell that shows the disclosure is the fixture's doing and
+    not something the release still produces on its own.
+    """
     env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
@@ -2106,3 +2223,46 @@ def test_1418_a_single_arm_rebuild_of_a_clean_value_still_proves(
     out = _run(tmp_path, src)
     assert "violation" not in out, out[-400:]
     assert out.strip().split()[-1] == "7", out[-400:]
+
+
+def test_the_patch_is_what_produces_the_disclosure(tmp_path: Path) -> None:
+    """Restore the table entry and the cells go green BY GUARD, not by proof.
+
+    Without this the file could not be read: every verdict above is taken
+    under a patched table, and a reader has no way to tell a fixture that
+    reinstates a real condition from one that invents a verdict.  So the same
+    source is run twice, through the same CLI, differing only in whether the
+    producer's construction site is in the shared table.
+
+    Patched, the producer discloses and the caller's postcondition is demoted
+    to `tier3` with E534.  As SHIPPED, the store is guarded, the producer
+    establishes its declared type, and the postcondition is `verified` —
+    which is the truth #1426 created and the reason these cells needed a
+    carrier at all.
+    """
+    source = _source("direct", disclosed=True)
+    path = tmp_path / "control.vera"
+    path.write_text(source, encoding="utf-8")
+
+    patched = json.loads(_cli("verify", "--json", str(path)).stdout)
+    shipped = json.loads(_cli_unpatched("verify", "--json", str(path)).stdout)
+
+    def binds(result: dict) -> list[tuple[str, str | None]]:
+        return [(o["status"], o.get("error_code"))
+                for o in result["obligations"] if o["kind"] == "refine_bind"]
+
+    def ensures(result: dict) -> tuple[str, str | None]:
+        hit = [o for o in result["obligations"]
+               if o["kind"] == "ensures"
+               and o["description"] == "@Int.result > 0"]
+        assert len(hit) == 1, result["obligations"]
+        return hit[0]["status"], hit[0].get("error_code")
+
+    assert ("tier3_unguarded", "E506") in binds(patched), binds(patched)
+    assert ensures(patched) == ("tier3", "E534"), ensures(patched)
+
+    assert ("tier3_unguarded", "E506") not in binds(shipped), binds(shipped)
+    assert ensures(shipped) == ("verified", None), (
+        f"with the site in the table the store is guarded, so the producer "
+        f"establishes its type and the caller proves — got {ensures(shipped)}"
+    )

@@ -4547,7 +4547,18 @@ class TestNatIntWideningCliThreading820:
         # Nulling cmd_run's expr_target_types drops the element guard: this run
         # returns -1 with exit 0 instead of trapping.
         assert result.returncode != 0, result.stdout
-        assert "unreachable" in (result.stdout + result.stderr).lower()
+        # #1438 gave the widening guard its own `vera.widen_trap` signal and the
+        # `widen_guard` kind, so the CLI names the boundary that was crossed.
+        # Before that the guard trapped anonymously and this cell could only
+        # look for the word "unreachable" — which the run no longer prints at
+        # all, and which never distinguished the guard from a non-exhaustive
+        # match anyway.  Assert the guard's own message so a run that traps for
+        # some OTHER reason (and so would not prove the element guard is
+        # threaded) fails here.
+        combined = result.stdout + result.stderr
+        assert "@Nat value above i64.MAX widened into an @Int slot" in combined, (
+            combined
+        )
 
     def test_run_array_elem_widening_in_range_exact(self, tmp_path) -> None:
         # In-range control (42 -> exit 0, prints 42) so the trap test above
@@ -4565,9 +4576,15 @@ class TestNatIntWideningCliThreading820:
     # ---- cmd_compile: nulling its expr_target_types drops the WAT guard ----
 
     def test_compile_wat_array_elem_emits_widen_guard(self, tmp_path) -> None:
-        # The widen guard is a negative-i64 sign-bit check (`i64.lt_s` feeding a
-        # trapping `unreachable`); it appears in the emitted `$ae` function only
-        # when cmd_compile threads expr_target_types.
+        # The widen guard is a negative-i64 sign-bit check (`i64.lt_s`) whose
+        # taken branch signals `vera.widen_trap` and then falls into a trapping
+        # `unreachable`; it appears in the emitted `$ae` function only when
+        # cmd_compile threads expr_target_types.  The signal call is #1438's
+        # addition — before it the branch was a bare `unreachable`, so the
+        # runtime could not tell this guard from a non-exhaustive match.  Pin
+        # both halves: `i64.lt_s` alone would stay green if the call were
+        # dropped, which is exactly how the dedicated `widen_guard` kind is
+        # lost.
         path = self._write(tmp_path, self._WIDEN)
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "compile", "--wat", path],
@@ -4577,6 +4594,10 @@ class TestNatIntWideningCliThreading820:
         assert result.returncode == 0, result.stderr
         body = self._wat_function(result.stdout, "ae")
         assert "i64.lt_s" in body, body
+        # The exact target: a substring also matches a hypothetical
+        # `$vera.widen_trap_extra` (CR PR-review).
+        assert any(line.strip() == "call $vera.widen_trap"
+                   for line in body.splitlines()), body
 
     def test_compile_wat_no_widening_control_lacks_guard(self, tmp_path) -> None:
         # Control: an @Int-source array carries no `i64.lt_s` sign-bit guard in

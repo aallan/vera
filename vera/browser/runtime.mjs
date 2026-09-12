@@ -35,6 +35,7 @@ let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
 let lastOverflow = false; // #808: #798 integer-overflow guard fired this call
 let lastNatGuard = false; // #754: @Int -> @Nat narrowing guard fired this call
+let lastWiden = false; // #1438: @Nat -> @Int widening guard fired this call
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 // #920: the WASM value type (`i32`/`i64`/`f64`) of each State<T> cell, keyed
 // by the mangled type suffix — the SAME key as `stateCells`.  Populated from
@@ -501,6 +502,16 @@ function hostOverflowTrap() {
  */
 function hostNatGuardTrap() {
   lastNatGuard = true;
+}
+
+/**
+ * vera.widen_trap() → signal that a @Nat -> @Int widening guard caught a value
+ * above i64.MAX; WASM executes unreachable.
+ * #1438: the widening twin of `hostNatGuardTrap`, for the same reason — the
+ * two guards share an instruction and have different remedies.
+ */
+function hostWidenTrap() {
+  lastWiden = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1804,6 +1815,11 @@ function buildImportObject(module, moduleBytes) {
   // #754: @Int -> @Nat narrowing trap signal (declared by the bind guard)
   if (needed.has('nat_guard_trap')) {
     imports.vera.nat_guard_trap = hostNatGuardTrap;
+  }
+
+  // #1438: @Nat -> @Int widening trap signal (declared by the widen guard)
+  if (needed.has('widen_trap')) {
+    imports.vera.widen_trap = hostWidenTrap;
   }
 
   // State<T> bindings — dynamically created from import names.
@@ -3956,6 +3972,7 @@ export function call(fnName, ...args) {
   lastViolation = '';
   lastOverflow = false;
   lastNatGuard = false;
+  lastWiden = false;
   try {
     return fn(...args);
   } catch (e) {
@@ -3974,6 +3991,10 @@ export function call(fnName, ...args) {
     // #754: the @Int -> @Nat narrowing guard fired before the trap
     if (lastNatGuard && e instanceof WebAssembly.RuntimeError) {
       throw new Error('Negative value bound into a @Nat slot');
+    }
+    // #1438: the @Nat -> @Int widening guard fired before the trap
+    if (lastWiden && e instanceof WebAssembly.RuntimeError) {
+      throw new Error('@Nat value above i64.MAX widened into an @Int slot');
     }
     throw e;
   }
@@ -4028,6 +4049,7 @@ export function reset() {
   lastViolation = '';
   lastOverflow = false;
   lastNatGuard = false;
+  lastWiden = false;
   exitCode = null;
   resetState();
   stdinQueue = [];

@@ -643,10 +643,27 @@ class CallsContainersMixin:
             return None
         ins.extend(arg0)
         # Eval remaining args.
-        for arg in call.args[1:]:
+        for pos, arg in enumerate(call.args[1:], start=1):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            if pos == 2:
+                # #1426: the §2.6.5 predicate on the VALUE going into the
+                # map.  The value argument's own recorded target is the
+                # ERASED base — generic unification resolves `V` against the
+                # `map_new()` receiver — so the refinement is read from the
+                # CALL's target instead, which carries `Map<K, {refined}>`
+                # whole.  Same asymmetry the verifier hit obligating this
+                # site, answered from the same place.
+                value_component = self._adt_arg_type(
+                    self._target_codegen_type_refined(call), 1)
+                arg_instrs = self._emit_construction_refine_guard(
+                    arg_instrs, arg, "map value", "map value insert", env,
+                    component_ty=value_component,
+                )
+                # #1440: the SIGN obligation at the same insert.
+                arg_instrs = self._emit_construction_nat_guard(
+                    arg_instrs, arg, value_component)
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         # Shadow-root the returned wrapper_ptr as the result.

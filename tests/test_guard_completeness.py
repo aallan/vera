@@ -450,9 +450,10 @@ class TestGenericInstantiatedFieldsAreGuarded757:
         """
         out = _run(tmp_path, _757_WIDEN, "--fn", "gf", "--", _U64_MAX,
                    name="w757.vera")
-        # The WIDEN guard, whose dedicated kind is still a follow-up, so its
-        # trap is the bare instruction rather than `_NAT_GUARD_TRAP`.
-        assert "unreachable" in out, (
+        # The WIDEN guard, which names itself since #1438: its trap
+        # classifies as `widen_guard` and its message cites the
+        # `i64.MAX` bound, not the sign guard's `_NAT_GUARD_TRAP`.
+        assert "i64.MAX" in out, (
             f"u64.MAX widened into a generic `@Int` field silently — the "
             f"reinterpreted -1 flowed on:\n{out}"
         )
@@ -1394,27 +1395,32 @@ class TestConstructionPositionReachesNestedContainers:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
-    def test_the_refined_map_value_is_caught_only_on_the_way_out(
+    def test_the_refined_map_value_is_caught_at_the_insert(
         self, tmp_path: Path,
     ) -> None:
         """The differential that names WHERE the check lives.
 
-        The insert plants nothing; the trap arrives at the `Some(@Pos)`
-        sub-pattern when the value is read back (#765).  A program that
-        inserts and never reads keeps the forbidden value, which is why the
-        obligation has to exist at the insert.
+        When this cell was written the insert planted nothing and the trap
+        arrived at the `Some(@Pos)` sub-pattern on the way back out (#765),
+        which is why the obligation had to exist at the insert: a program
+        that inserted and never read kept the forbidden value.  #1426 gives
+        the insert its own guard, so the trap now names THAT site — earlier,
+        and on the store-only programs the read-side guard never saw.
         """
         out = _run(tmp_path, _P1_MAP_REFINED_VALUE, "--fn", "f", "--", "-4",
                    name="p1d.vera")
-        assert "Refinement violation in constructor sub-pattern" in out, out
+        assert "Refinement violation in map value insert" in out, out
 
-    def test_a_nat_map_value_is_obligated_and_disclosed_unguarded(
+    def test_a_nat_map_value_is_obligated_and_guarded(
         self, tmp_path: Path,
     ) -> None:
-        """`Map<String, Nat>`: nothing guards the insert, so E503/E504.
+        """`Map<String, Nat>`: the insert is obligated AND checked.
 
-        The run differential is the store-only one — `-4` is inserted and
-        `f` returns `1` — so this obligation must NOT claim `guarded`.
+        When this cell was written nothing guarded the insert, so the
+        record disclosed E504 and the store-only differential — `-4`
+        inserted, `f` returning `1` — was what proved the disclosure
+        honest.  #1440 gave the insert its guard, so the same differential
+        now shows the trap.
         """
         obs, envelope = _obligations(
             tmp_path, _P1_MAP_NAT_VALUE, name="p1e.vera")
@@ -1425,9 +1431,10 @@ class TestConstructionPositionReachesNestedContainers:
 
         out = _run(tmp_path, _P1_MAP_NAT_VALUE, "--fn", "f", "--", "-4",
                    name="p1f.vera")
-        assert out.strip() == "1", (
-            f"expected the insert to plant no guard, which is what the "
-            f"unguarded flag on this obligation states:\n{out}"
+        assert _NAT_GUARD_TRAP in out, (
+            f"the insert accepted `-4` into a `@Nat` map value.  When this "
+            f"cell was written it did, and the obligation's unguarded flag "
+            f"said so honestly; #1440 gave the store its guard:\n{out}"
         )
 
     def test_a_refined_tuple_inside_an_array_is_obligated(
@@ -1493,7 +1500,7 @@ class TestTupleComponentSitesAreGuarded1416:
     ) -> None:
         out = _run(tmp_path, _1416_DESTRUCTURE, "--fn", "td", "--", _U64_MAX,
                    name="d1416.vera")
-        assert "unreachable" in out, (
+        assert "i64.MAX" in out, (
             f"u64.MAX read out of a `@Nat` tuple component into an `@Int` "
             f"binding returned a reinterpreted value:\n{out}"
         )
@@ -1831,54 +1838,59 @@ class TestArrayElementNarrowingIsObligated:
         assert envelope["ok"] is False
         _assert_partition(envelope)
 
-    def test_and_the_value_it_refutes_does_flow_out(
+    def test_and_the_value_it_refutes_is_refused_at_the_store(
         self, tmp_path: Path,
     ) -> None:
-        """The run differential that makes the silence a defect.
+        """The run differential that makes the status a fact about the run.
 
-        Without this the cell above is a claim about a status; with it, the
-        status is measured against what the program does.  Nothing guards
-        this site — it is one of #1426's — so `-4` is returned, which is
-        exactly why the obligation has to exist.
+        When this cell was written nothing guarded the site — `-4` came back
+        out of a function whose element type forbids it — and the obligation
+        was all that stood between the program and a value its own type
+        rules out.  #1426 gives the element store the §2.6.5 guard, so the
+        value is refused where it goes in.  The cell keeps its force either
+        way: it fails if the program returns the forbidden value.
         """
         out = _run(tmp_path, _N4_REFINED_ELEMENT, "--fn", "f", "--", "-4",
                    name="n4b.vera")
-        assert out.strip() == "-4", (
-            f"expected the unguarded element to flow out, so that the "
-            f"obligation is what protects the program:\n{out}"
+        assert "Refinement violation in array element store" in out, (
+            f"the element store accepted a value its type forbids:\n{out}"
         )
+        assert out.strip() != "-4", out
 
     def test_an_opaque_refined_element_discloses_rather_than_refutes(
         self, tmp_path: Path,
     ) -> None:
         """The undecided leg, where the guarded flag is actually consulted.
 
-        `tier3_unguarded` + E506, consistent with the other
-        construction-position component sites (#1426) — never a `tier3` that
-        would claim a runtime check this site does not emit.
+        `tier3` + E506 since #1426 gave this store a guard: the flag says a
+        runtime check covers it, and one does.  It read `tier3_unguarded`
+        when the cell was written, which was equally truthful then — the
+        point of the cell is that the flag tracks the module, not that it
+        holds one particular value.
         """
         obs, envelope = _obligations(
             tmp_path, _N4_REFINED_ELEMENT_OPAQUE, name="n4c.vera")
         binds = [(o["status"], o.get("error_code"))
                  for o in obs if o["kind"] == "refine_bind"]
-        assert binds == [("tier3_unguarded", "E506")], obs
+        assert binds == [("tier3", "E506")], obs
         _assert_partition(envelope)
 
     def test_a_nat_element_is_obligated_and_its_guard_counted(
         self, tmp_path: Path,
     ) -> None:
-        """The other direction, where a guard exists and had no obligation.
+        """The other direction, where a guard existed with no obligation.
 
-        The trap below is real, but it belongs to the READ, not to the
-        store: the fixture ends in `nat_to_int(...[0])`, and the #765
-        pattern-bind guard fires there.  The construction site itself plants
-        nothing — see the store-only cell in
-        :py:class:`TestConstructionPositionReachesNestedContainers`, where
-        `-4` is stored into an `@Array<Nat>` and the program returns
-        normally — so this obligation is recorded UNguarded.  The earlier
-        reading of this cell took the trap as evidence about the store and
-        claimed `guarded`, which asserted a runtime check the site does not
-        emit.
+        The `@Nat` arm was absent at the `ArrayLit` walk outright, so this
+        store's sign narrowing was counted by nobody.  It is recorded now,
+        and `-4` traps — but this fixture cannot say WHICH check trapped,
+        because it ends in `nat_to_int(...[0])` and the read-side
+        pattern-bind guard (#765) fires there too.
+        :py:meth:`test_the_element_store_itself_guards` below is the
+        store-only differential that localizes it: when this cell was
+        written that differential returned normally, which is why the
+        obligation was recorded UNguarded, and #1440 is what changed the
+        answer.  So the trap below is evidence that SOME check covers
+        `-4` — never, on its own, evidence about the store.
         """
         obs, envelope = _obligations(
             tmp_path, _N4_NAT_ELEMENT, name="n4d.vera")
@@ -1890,26 +1902,32 @@ class TestArrayElementNarrowingIsObligated:
         out = _run(tmp_path, _N4_NAT_ELEMENT, "--fn", "f", "--", "-4",
                    name="n4e.vera")
         assert _NAT_GUARD_TRAP in out, (
-            f"the `@Nat` element store does not trap, so the obligation's "
-            f"guarded flag is wrong:\n{out}"
+            f"`-4` reached an `@Array<Nat>` element with no check anywhere: "
+            f"neither the store's sign guard (#1440) nor the read-side "
+            f"pattern-bind guard (#765) fired:\n{out}"
         )
 
-    def test_the_element_store_itself_plants_no_guard(
+    def test_the_element_store_itself_guards(
         self, tmp_path: Path,
     ) -> None:
         """Store-only: the differential that separates store from read.
 
         A fixture that reads the element back cannot answer where the guard
         lives, because the read-side bind guard (#765) answers first.  This
-        one never reads: `-4` goes into an `@Array<Nat>` and `f` returns
-        `1`.  That is why the construction obligation is recorded UNguarded
-        — claiming otherwise would assert a check that is not in the WAT.
+        one never reads, which is what makes it the proof that #1440
+        landed: when it was written `-4` went into an `@Array<Nat>` and `f`
+        returned `1`, and the obligation was recorded UNguarded because
+        that is what the module did.  The store has its own guard now, so
+        the same differential shows the trap.
         """
         out = _run(tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, "--fn", "f", "--",
                    "-4", name="p1g.vera")
-        assert out.strip() == "1", (
-            f"expected the store-only program to complete, showing the "
-            f"element store plants no guard:\n{out}"
+        assert _NAT_GUARD_TRAP in out, (
+            f"the element store accepted `-4` into an `@Array<Nat>`.  This "
+            f"cell was the store-only differential that PROVED the store "
+            f"planted nothing, which is why the obligation was recorded "
+            f"unguarded; #1440 closed it, so the same differential now "
+            f"shows the guard:\n{out}"
         )
         obs, envelope = _obligations(
             tmp_path, _P1_NAT_ELEMENT_STORE_ONLY, name="p1h.vera")
@@ -2246,9 +2264,16 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
 
         The plain `@Array<Int>` element is the control: #820 guards its
         store and `nat_to_int_coerce` counts that guard.  The refined
-        element compiles to the SAME number of traps in `f`, which is what
-        says the guard is there — so an obligation stream that mentioned it
-        only in the plain case was describing two different programs.
+        element must carry AT LEAST the same traps — the widening guard does
+        not go away because the element is refined, which is exactly why the
+        record for it has to exist.
+
+        It carries more since #1426: the §2.6.5 predicate guard is emitted
+        at the same store, and the two are different obligations about
+        different things.  So the comparison is `>=`, not `==`.  It cannot
+        be sharpened to an exact count while the widening guard is a bare
+        `unreachable` with nothing naming it, which is #1438; once that
+        guard signals itself the two can be counted apart by name.
         """
         def traps(source: str, name: str) -> int:
             proc = _cli("compile", "--wat",
@@ -2256,14 +2281,20 @@ class TestARefinedIntElementCountsItsWideningGuardToo:
             assert proc.returncode == 0, proc.stderr[-400:]
             body, _, rest = proc.stdout.partition("(func $f ")
             assert rest, "no `f` in the emitted module"
-            return rest.split("\n  )")[0].count("unreachable")
+            # The WIDENING signal specifically (#1438), not every trap: the
+            # predicate guard #1426 adds shares the `unreachable`, so a
+            # shared-token count cannot see a missing widening guard
+            # (CR PR-review).
+            return rest.split("\n  )")[0].count("$vera.widen_trap")
 
         plain = traps(_CR_PLAIN_INT_ELEMENT, "cr4b.vera")
         refined = traps(_CR_REFINED_INT_ELEMENT, "cr4c.vera")
         assert plain > 0, "the control emits no guard, so it controls nothing"
         assert refined == plain, (
-            f"the refined element emits {refined} traps and the plain one "
-            f"{plain}; this cell's premise is that codegen treats them alike"
+            f"the refined element emits {refined} widening signals and the "
+            f"plain one {plain}; a refined element must keep exactly the "
+            f"widening guard a plain one gets, which is what its record "
+            f"counts — an extra predicate guard cannot stand in for it"
         )
 
 

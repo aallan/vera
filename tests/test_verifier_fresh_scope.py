@@ -893,11 +893,17 @@ public fn go(@Nat -> @Int)
         assert len(obls) == 1
         assert obls[0].status == "tier3"
 
-    def test_refined_update_discloses_unguarded(self) -> None:
-        """`with @Pos = <clause slot>` — the refined predicate has no
-        handler-boundary guard; the obligation records tier3_unguarded
-        with the E506 disclosure (a guarded claim here would be false —
-        the adversarial round's pre-armed-desync finding)."""
+    def test_refined_update_counts_its_guard(self) -> None:
+        """`with @Pos = <clause slot>` — the refined predicate is guarded
+        at the write, so the obligation records `tier3`.
+
+        It recorded `tier3_unguarded` when this cell was written, and that
+        was truthful then: the three `State` writes lowered the sign guard
+        and never the predicate, so a guarded claim here would have been
+        false — the adversarial round's pre-armed-desync finding.  #1439
+        lowered the predicate at all three, and R-1412 F1 pointed the
+        verifier's guardedness lookup at the same table key codegen uses, so
+        the record now counts the check that exists."""
         result = _verify("""
 type Pos = { @Int | @Int.0 > 0 };
 
@@ -917,12 +923,12 @@ public fn go(@Int -> @Int)
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, [e.error_code for e in errors]
-        unguarded = [o for o in result.obligations
-                     if o.kind == "refine_bind"
-                     and o.status == "tier3_unguarded"]
-        assert len(unguarded) == 1, (
-            f"the untranslatable update narrowing must disclose "
-            f"tier3_unguarded, got "
+        guarded = [o for o in result.obligations
+                   if o.kind == "refine_bind"
+                   and o.status == "tier3"]
+        assert len(guarded) == 1, (
+            f"the untranslatable update narrowing must count its guard as "
+            f"tier3, got "
             f"{[(o.kind, o.status) for o in result.obligations]}"
         )
 

@@ -1838,11 +1838,16 @@ public fn use(@String -> @Int)
         The measured constraint on #1251(b): conjoining or assuming the base
         invariant for a SYMBOLIC ``@Byte`` turns every boundary narrowing into
         a false E505, so the concrete gate must leave this untouched.
+
+        The Tier-3 flavour is `tier3` since #1439 gave the `State` write its
+        predicate guard — what this cell is about is that the demotion
+        SURVIVES the gate rather than becoming a verdict, so it reads the
+        tier and the code, and the guarded flag follows the site.
         """
         result = _verify(self._STATE_INIT)
         binds = [o for o in result.obligations if o.kind == "refine_bind"]
         assert len(binds) == 1, binds
-        assert binds[0].status == "tier3_unguarded", binds[0]
+        assert binds[0].status == "tier3", binds[0]
         assert binds[0].error_code == "E506", binds[0]
         assert not [
             d for d in result.diagnostics if d.severity == "error"
@@ -1943,8 +1948,12 @@ public fn main(@Unit -> @Int)
         `SmallVia`'s predicate routes the byte through a function call, which
         the SMT layer models by the callee's contract rather than by
         evaluation, so `ident(5) < 10` does not fold even though 5 is a
-        literal.  Undecided is undecided: the runtime-guarded disclosure
-        stands rather than a guessed verdict in either direction.
+        literal.  Undecided is undecided: the demotion stands rather than a
+        guessed verdict in either direction.
+
+        It reads `tier3` since #1439 gave the `State` write its predicate
+        guard; the property is the demotion, and the flavour follows the
+        site's guardedness.
         """
         result = _verify("""
 type SmallVia = { @Byte | ident(@Byte.0) < 10 };
@@ -1971,7 +1980,7 @@ public fn main(@Unit -> @Int)
 }
 """)
         binds = [o for o in result.obligations if o.kind == "refine_bind"]
-        assert [o.status for o in binds] == ["tier3_unguarded"], binds
+        assert [o.status for o in binds] == ["tier3"], binds
         assert not [
             d for d in result.diagnostics if d.severity == "error"
         ], [d.description[:90] for d in result.diagnostics]

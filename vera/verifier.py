@@ -13,6 +13,7 @@ See spec/06-contracts.md for the full verification specification.
 from __future__ import annotations
 
 import contextlib
+import enum
 
 import z3
 
@@ -61,6 +62,7 @@ from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
     CalleeScope,
+    CallDemotion,
     SlotEnv,
     SmtContext,
     resolve_timeout_ms,
@@ -114,7 +116,7 @@ _OPAQUE_SCRUTINEE_REASON = (
 #: guard lives only at a function boundary "not at this internal narrowing
 #: site", which was true when every pattern bind was unguarded and is false
 #: now: `let binding`, `match binding`, `tuple destructure` and `ADT
-#: sub-pattern bind` are all in `_REFINED_BIND_GUARDED_SITES`, so a
+#: sub-pattern bind` are all in `narrowing.REFINED_BIND_GUARDED_SITES`, so a
 #: `let @Tiny = mk(...)` that lands here was told to move a binding it has no
 #: reason to move.  What is actually missing at such a site is the BASE — a
 #: refinement over a refinement, which `_emit_bind_refine_guard` will not lower
@@ -144,36 +146,28 @@ _NESTED_SITE_GUARD_NOTE = (
 )
 
 
-#: The SITE half of "does codegen plant a §2.6.5 refinement guard here?" —
-#: THE table, consulted by every `refine_bind` leg rather than restated as a
-#: literal at each of them (#765).
-#:
-#: Scattered literals is how the answer went stale: #765 planted the guard at
-#: the pattern-bind sites and every one of the eight legs that record a
-#: `refine_bind` there would have had to be found and flipped by hand, in a
-#: file where a leg can be reached by five routes (literal argument, projected
-#: accessor, opaque scrutinee, unprojectable nest, monomorphised clone).  A
-#: site whose guard is added tomorrow is added HERE, once.
-#:
-#: The TYPE half is :py:meth:`Verifier._refined_boundary_codegen_guardable` —
-#: whether the guard can be emitted for this particular refinement's base —
-#: and the two are intersected wherever a type is in hand.  A site absent from
-#: this set is unguarded whatever its type: a constructor field or tuple
-#: component AT CONSTRUCTION (the composing boundary guard is the callee's
-#: parameter check, a different site), and a user effect operation's argument,
-#: whose dispatch carries only a target (#754).
 #: Construction-position sites whose `@Nat` store codegen actually guards.
 #:
 #: Measured per site by a STORE-ONLY differential (build the container, never
 #: read it back), because a fixture that reads the component out is answered
 #: by the read-side bind guard (#765) and cannot tell the two apart.  A tuple
-#: component traps at construction (#1416); an array element and a `Map`
-#: value do not — `let @Array<Nat> = [@Int.0]` with `-4` stores and returns
-#: normally, and the trap only arrives if something later reads the element
-#: back as a `@Nat`.  Claiming `guarded` here would assert a runtime check at
-#: a site that has none, which is the false guarantee this PR exists to
-#: remove; the honest answer is E504 disclosure.
-_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({"tuple component"})
+#: component traps at construction (#1416), the constructor field since
+#: #747/#757, and the array element and `Map` value since #1440 — the
+#: store-only differential traps for each.  A site left out of this set
+#: while its store guards under-counts the runtime checks and tells a
+#: reader to add a bound they already have; a site put IN it while its
+#: store does not guard asserts a check that is not there.  Both are the
+#: same desync, so the set is re-measured whenever a store gains a guard.
+_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({
+    "constructor field",
+    "tuple component",
+    # #1440 gave these two their sign guard, so the roster has to say
+    # so: leaving them out recorded `tier3_unguarded` for a store the
+    # module checks, which under-counts the runtime checks and tells a
+    # reader to add a bound they already have (CR PR-review).
+    "array element",
+    "map value",
+})
 
 
 #: The widening dual, on the same evidence (#820's enabler guards the store
@@ -184,18 +178,66 @@ _INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
 })
 
 
-_REFINED_BIND_GUARDED_SITES = frozenset({
-    # Function boundaries: the parameter / return predicate guards (#746).
-    "return type",
-    "call argument",
-    "closure argument",
-    "closure return",
-    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
-    "let binding",
-    "match binding",
-    "tuple destructure",
-    "ADT sub-pattern bind",
-})
+
+
+
+class BlockBindingPolicy(enum.Enum):
+    """What a block's `let` does to the slot env when its RHS cannot translate.
+
+    Every reader of a block agrees while the RHS DOES translate: the value is
+    pushed under the binding's slot name, so a later expression resolves the
+    slot to what the block bound and not to a same-named outer.  They diverge
+    only when translation fails, and each divergence is a property of what
+    that reader is FOR — so the policy is named at the call site and the
+    derivation is written once, here.
+
+    Four inline variants of this used to sit in four Block branches.  They
+    agreed exactly where it did not matter and differed exactly where it did,
+    which is how the construction descent came to read a block tail's slot
+    against the enclosing env: it carried no variant at all (#1452 review).
+    """
+
+    SKIP = "skip"
+    """Leave the env alone; a later slot reference resolves to the outer.
+
+    For a reader that only LOOKS for something (`_walk_for_calls` hunts
+    recursive-group calls): it records no obligation, so a stale resolution
+    cannot become a false claim, and pushing an opaque value would lose the
+    outer binding a call argument may still legitimately name.
+    """
+
+    HALT = "halt"
+    """Stop reading the block here.
+
+    For `_collect_top_level_assert_facts`, which harvests facts to ASSUME.
+    Past an untranslatable binding the env is uncertain, and a fact assumed
+    against an uncertain env is an unchecked assumption — the one direction
+    that turns a missing fact into an unsound one.
+    """
+
+    OPAQUE_SHADOW = "opaque_shadow"
+    """Replace a shadowed stale outer with a TRACKED fresh const of its sort.
+
+    For readers that record obligations against the value (the primitive-op
+    walker, and the construction descent).  A stale same-type outer is the
+    dangerous case: `let @Int = random_int(...)` over a parameter carrying
+    `requires(@Int.0 > 0)` would otherwise discharge the block-local value's
+    predicate from the PARAMETER's bound — a Tier-1 claim about a value the
+    verifier never knew.  Tracking the const as an opaque shadow is what
+    routes an operand that IS one to Tier 3 instead of a false E526/E502 on
+    its unconstrained value.
+    """
+
+    FRESH_VAR = "fresh_var"
+    """Always mint a fresh var carrying the declared type's invariant.
+
+    For `_walk_for_nat_binding_obligations`, which needs a slot to exist for
+    every binding whether or not the RHS translated, so a later `@Nat`
+    narrowing obligates against the binding's own type rather than a stale
+    outer's value.  Deliberately NOT seeded with the resolved source type
+    beyond that invariant: a fresh var is disconnected from the value, so
+    asserting more would be an unchecked assumption.
+    """
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -217,6 +259,21 @@ _REFINED_BIND_GUARDED_SITES = frozenset({
 #: MEASURED, not remembered: `test_nat_arg_guard_parity` derives each builtin's
 #: guard from the emitted module AND from running a negative through it, and
 #: fails if this set disagrees.
+#: The ONE key the three `State` writes ask the guard table with — the
+#: `handle` init, `put`'s argument, and a clause's `with @T = …` override
+#: (#1439, R-1412 F1).  Codegen keys all three on this string; the verifier
+#: recorded the first and third under names of their own, which are not in
+#: the table, so both derived False and disclosed `tier3_unguarded` while
+#: the guard was emitted and trapping.
+#:
+#: Only the GUARDEDNESS question is unified.  Each write keeps its own site
+#: name in the diagnostic, because that names the position a reader has to
+#: go and look at — "handler state init" tells them which of the three to
+#: fix, and "State write boundary" would not.  What must not differ between
+#: them is the answer about codegen, so a drop-mutation on the table entry
+#: moves all three statuses with all three guards.
+_STATE_WRITE_SITE = "State write boundary"
+
 _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 
 
@@ -4139,6 +4196,29 @@ class ContractVerifier:
                 decl, decl.body, ret_type, smt, slot_env, list(assumptions),
                 site="return type",
             )
+            # R-1412 F4: a container CONSTRUCTED in return position takes its
+            # component types from the DECLARED RETURN type, which is the
+            # only place they survive here — the value argument is a
+            # parameter, not a literal, and `map_insert`'s own argument
+            # target carries the erased base.  The array dual reached this
+            # by accident: an `ArrayLit` is visited by the walk wherever it
+            # stands, so `mk(@Int -> @Array<Pos>) { [@Int.0] }` was
+            # obligated while `ins(@Int -> @Map<String, Pos>)` recorded
+            # nothing at its store, and the store was guarded anyway — a
+            # guard counted by no obligation.  Entered with the return type
+            # for the same reason the `let` arm is entered with its declared
+            # type.
+            # CONTAINER descent only.  The return position's own scalar
+            # obligations — the refined predicate, the `@Nat` narrowing, the
+            # `@Nat` -> `@Int` widening — are already raised by the return
+            # legs above, so entering the full component descent here
+            # recorded each of them a second time (a duplicate
+            # `nat_to_int_coerce` at one span, measured).  What is missing at
+            # this position is only the descent INTO a container built here.
+            self._descend_construction_container(
+                decl, decl.body, ret_type, smt, slot_env, list(assumptions),
+                site="return type",
+            )
 
         # #804: drop the top-level assert/assume facts pushed before step 5.8 —
         # they are scoped to the post-body checks (5.8–7b) and must not bleed
@@ -4363,6 +4443,23 @@ class ContractVerifier:
             tier=3,
         )
 
+    def _construction_refined_guarded(self, site: str, refined_ty: object) -> bool:
+        """Whether codegen lowers a §2.6.5 guard for *refined_ty* at *site*.
+
+        The site half, intersected with the CONSTRUCTION-position base rule:
+        a construction store tees the value into one scalar local, so a base
+        with no scalar representation takes no guard there however guardable
+        it is at a boundary (`{ @String | … }` on a parameter emits one; the
+        same refinement in a constructor field emits none).  Reading the
+        boundary rule alone claimed a check the store does not make.
+        """
+        base = getattr(refined_ty, "base", None)
+        return (
+            self._refined_bind_site_guarded(site)
+            and getattr(base, "name", None)
+            in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES
+        )
+
     def _obligate_construction_component(
         self,
         decl: ast.FnDecl,
@@ -4404,9 +4501,19 @@ class ContractVerifier:
         before = len(self.obligations)
         if (refined_target is not None
                 and self._narrows_into_refined(expr, refined_target)):
+            # A construction store tees the value into ONE SCALAR LOCAL and
+            # compares it there, so a base with no scalar representation —
+            # a `{ @String | … }`, an ADT, an array — takes no guard here
+            # however guardable it is at a BOUNDARY, where the value is
+            # already bound (measured: a `{ @String | … }` constructor field
+            # emits 0 guards in the body while the same refinement on a
+            # parameter emits 1).  Classifying it from the boundary rule
+            # alone claimed a check the store does not make.
             self._check_refined_binding_obligation(
                 decl, expr, refined_target, smt, slot_env, assumptions,
                 site=site,
+                guarded=self._construction_refined_guarded(
+                    site, refined_target),
             )
             # And the RANGE obligation beside it, when the refinement is over
             # `@Int` and the value is a `@Nat` (CR PR-review).  The two are
@@ -4457,6 +4564,147 @@ class ContractVerifier:
         if len(self.obligations) > before:
             self._construction_obligated.add(memo_key)
 
+    def _apply_let_binding(
+        self,
+        stmt: ast.LetStmt,
+        smt: SmtContext,
+        env: SlotEnv,
+        *,
+        policy: BlockBindingPolicy,
+    ) -> SlotEnv | None:
+        """Advance `env` past one `let`, or None when the block must stop.
+
+        THE derivation of what a block binding does to the slot env, so the
+        scope a `Block` implies cannot differ by which reader walks into it.
+        The translating case is the same for every caller; the caller's
+        `policy` decides only what an untranslatable RHS does, and each
+        policy carries its own rationale on
+        :class:`BlockBindingPolicy`.
+
+        Returning None means HALT — the caller stops reading the block — and
+        is reachable only under that policy.  Every other policy returns an
+        env, unchanged when there is nothing it can soundly bind.
+        """
+        val = smt.translate_expr(stmt.value, env)
+        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+        if val is None:
+            if policy is BlockBindingPolicy.HALT:
+                return None
+            if policy is BlockBindingPolicy.FRESH_VAR:
+                val = self._fresh_slot_var(smt, stmt.type_expr)
+            elif (policy is BlockBindingPolicy.OPAQUE_SHADOW
+                    and type_name is not None):
+                stale = env.resolve(type_name, 0)
+                if stale is not None:
+                    val = z3.FreshConst(stale.sort(), "shadow")
+                    self._opaque_shadows.append(val)
+        if val is not None and type_name is not None:
+            return env.push(type_name, val)
+        return env
+
+    def _shadow_destructured_slots(
+        self, stmt: ast.LetDestruct, smt: SmtContext, env: SlotEnv,
+    ) -> SlotEnv:
+        """Rebind every slot a destructure binds, as a TRACKED opaque const.
+
+        For the construction descent, which needs the block's scope and not
+        its precision: it records one obligation about the tail, so what it
+        must never do is resolve a binder to a stale same-type outer and
+        prove something from that outer's bound.  Each binder therefore
+        becomes an opaque value — the store lands at Tier 3 when it depends
+        on one, and stays Tier 1 when it does not.
+
+        A LITERAL-constructor source is projected rather than shadowed,
+        which is not precision for its own sake: `let Tuple<@Int, @Int> =
+        Tuple(5, 7)` binds a `5` that PROVES a `> 0` predicate, and
+        shadowing it recorded `violated` / E505 for a program that runs
+        clean — the same false refusal this descent was just fixed for, one
+        statement over (measured before this arm was written).  Components
+        are translated in the PRE-destructure env and applied after the
+        loop, so a same-type component cannot shadow its own sibling
+        mid-flight.  Only what does not translate becomes opaque.
+
+        Every component whose slot name resolves and whose placeholder can
+        be derived pushes something, because same-type De Bruijn positions
+        have to stay aligned: skipping one shifts `@Int.0` onto a sibling,
+        which is the #680 failure class that silently discharges against
+        the wrong value.  Two paths push nothing — an unnameable slot, and
+        a type for which none of the scalar, array and ADT placeholders
+        apply, which leaves `Tuple`- and `Map`-typed components.  Neither
+        was reachable by any fixture tried against it, so the gap is
+        recorded rather than papered over with a placeholder whose sort
+        would be a guess (R-1412, reported latent).
+        """
+        lit_args: tuple[ast.Expr, ...] = ()
+        if (isinstance(stmt.value, ast.ConstructorCall)
+                and stmt.value.name == stmt.constructor):
+            lit_args = stmt.value.args
+        pushed: list[tuple[str, object]] = []
+        for i, te in enumerate(stmt.type_bindings):
+            type_name = smt._type_expr_to_slot_name(te)
+            if type_name is None:
+                continue
+            slot_val: object | None = None
+            if i < len(lit_args):
+                slot_val = smt.translate_expr(lit_args[i], env)
+            if slot_val is not None:
+                pushed.append((type_name, slot_val))
+                continue
+            stale = env.resolve(type_name, 0)
+            if stale is not None:
+                slot_val = z3.FreshConst(stale.sort(), "shadow")
+            else:
+                slot_val = self._fresh_slot_var(smt, te)
+                if slot_val is None:
+                    resolved = self._resolve_type(te)
+                    if self._is_array_type(resolved):
+                        slot_val = self._declare_array_var(
+                            smt, smt._fresh_name("shadow"), resolved,
+                        )
+                    elif self._is_adt_type(resolved):
+                        slot_val = smt.declare_adt(
+                            smt._fresh_name("shadow"), resolved,
+                        )
+            if slot_val is None:
+                continue
+            self._opaque_shadows.append(slot_val)
+            pushed.append((type_name, slot_val))
+        for tn, sv in pushed:
+            env = env.push(tn, sv)
+        return env
+
+    def _descend_construction_arm(
+        self,
+        decl: ast.FnDecl,
+        arm: ast.Expr,
+        expected: Type,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        path_cond: object | None,
+        *,
+        site: str,
+    ) -> None:
+        """Descend ONE branch arm, under the fact that arm carries.
+
+        `if` and `match` derive that fact differently — a translated
+        condition against its negation, a pattern condition against the
+        scrutinee — but spend it identically, so the push/pop lives here
+        rather than twice at the call sites where one copy could drift.
+        """
+        if path_cond is None:
+            self._descend_construction_container(
+                decl, arm, expected, smt, slot_env, assumptions, site=site,
+            )
+            return
+        smt._path_conditions.append(path_cond)
+        try:
+            self._descend_construction_container(
+                decl, arm, expected, smt, slot_env, assumptions, site=site,
+            )
+        finally:
+            smt._path_conditions.pop()
+
     def _descend_construction_container(
         self,
         decl: ast.FnDecl,
@@ -4475,6 +4723,135 @@ class ContractVerifier:
         itself, so memoising it would say "already obligated" about a node
         whose components are obligated one level down.
         """
+        # A BLOCK stands where its tail expression does: a function body is
+        # always one, so a container constructed in return position reaches
+        # the descent wrapped (R-1412 F4).  Descending here rather than at
+        # the call sites keeps the unwrap in the one place that knows what a
+        # container position means.
+        # A BRANCH stands where its arms do, for the same reason a block
+        # stands where its tail does (CR PR-review).  Without this, a
+        # container built inside an `if` or a `match` in return position
+        # entered no descent at all: measured, `if c then { map_insert(…) }
+        # else { map_insert(…) }` returning `@Map<String, Pos>` verified
+        # `ok: true` with no record at either store while the body emitted
+        # TWO guards — the F4 class one level in, and in the direction that
+        # reads as a clean program.  Container descent only, so each arm's
+        # scalar obligations stay with the position the branch occupies.
+        if isinstance(expr, ast.IfExpr):
+            # An arm carries its CONDITION as well as its expression.  Every
+            # obligation the descent records folds `smt._path_conditions` in,
+            # so entering an arm without pushing the condition refutes a
+            # store the arm itself proves: `if @Int.0 > 100 then
+            # { map_insert(..., @Int.0) }` into a `Pos` value recorded
+            # `violated` / E505, reporting a counterexample (`@Int.0 = 0`)
+            # unreachable in the arm it was reported for — the verifier
+            # refusing precisely the program E505's own fix paragraph asks
+            # the author to write (R-1412 H1).
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            arms: list[tuple[ast.Expr, object | None]] = []
+            if z3_cond is not None:
+                import z3 as z3mod
+                if expr.then_branch is not None:
+                    arms.append((expr.then_branch, z3_cond))
+                if expr.else_branch is not None:
+                    arms.append((expr.else_branch, z3mod.Not(z3_cond)))
+            else:
+                # Untranslatable condition (an effect op, the #779 empty
+                # env).  No path fact exists to spend, so each arm is entered
+                # with only what the branch already carries; declining to
+                # push is the conservative direction, since it can leave an
+                # obligation undischarged but never claim one proved.
+                for bare in (expr.then_branch, expr.else_branch):
+                    if bare is not None:
+                        arms.append((bare, None))
+            for arm_expr, arm_cond in arms:
+                self._descend_construction_arm(
+                    decl, arm_expr, expected, smt, slot_env, assumptions,
+                    arm_cond, site=site,
+                )
+            return
+        if isinstance(expr, ast.MatchExpr):
+            # The `match` twin reaches the same place by a different route:
+            # the arm's fact is `_pattern_condition` against the translated
+            # scrutinee, and the arm's ENV is `_bind_pattern`.  The env half
+            # is the unsound direction — `@Int.0` inside `Some(@Int) ->` is
+            # the payload, and descending with the OUTER env let an
+            # enclosing `requires(@Int.0 > 0)` discharge it, so the store
+            # recorded `verified` for a predicate `Some(0 - 5)` refutes at
+            # run time.  That is the #680 misattribution class one container
+            # level in, and a wrong `verified` is worse than the silence it
+            # replaced.
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            for match_arm in expr.arms:
+                arm_env = slot_env
+                pat_cond = None
+                if scrutinee_z3 is not None:
+                    bound = smt._bind_pattern(
+                        scrutinee_z3, match_arm.pattern, slot_env,
+                    )
+                    if bound is not None:
+                        arm_env = bound
+                    pat_cond = smt._pattern_condition(
+                        scrutinee_z3, match_arm.pattern,
+                    )
+                else:
+                    # Untranslatable scrutinee: the arm still BINDS its
+                    # pattern slots, so shadow them as tracked opaque consts
+                    # rather than let `@Int.0` read a stale same-name outer.
+                    arm_env = self._fresh_pattern_env(
+                        match_arm.pattern, slot_env, smt, track=True,
+                    )
+                self._descend_construction_arm(
+                    decl, match_arm.body, expected, smt, arm_env,
+                    assumptions, pat_cond, site=site,
+                )
+            return
+        if isinstance(expr, ast.Block) and expr.expr is not None:
+            # Container descent only, like this method's own contract: the
+            # tail's SCALAR obligations belong to whatever position the
+            # block stands in — a return leg, a `let` arm — and running them
+            # again here recorded each twice at one span (measured: a
+            # duplicate `nat_to_int_coerce`, one keyed on the block and one
+            # on its tail).
+            #
+            # The tail is read in the block's OWN scope, which is the third
+            # instance of this descent entering a position without carrying
+            # the scope that position implies.  Passing the enclosing env
+            # resolved a tail's `@Int.0` to a same-named outer: measured,
+            # `let @Int = 5; map_insert(..., @Int.0)` into a `Pos` value was
+            # `violated` / E505 — a refusal of a program that runs clean —
+            # and with the outer carrying `requires(@Int.0 > 0)` over an
+            # untranslatable `let`, `verified`, a Tier-1 claim the artifact
+            # refutes 2 runs in 24.  `OPAQUE_SHADOW` is the policy that
+            # cannot do the second: a shadowed stale outer becomes a tracked
+            # opaque const rather than staying readable (#1452 review).
+            tail_env = slot_env
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    bound = self._apply_let_binding(
+                        stmt, smt, tail_env,
+                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
+                    )
+                    if bound is not None:  # OPAQUE_SHADOW never halts
+                        tail_env = bound
+                elif isinstance(stmt, ast.LetDestruct):
+                    # A destructure rebinds several slots at once.  Declining
+                    # to descend was the first answer here and it was not
+                    # good enough: codegen guards the tail's store from the
+                    # site table either way, so a silent descent is the
+                    # guard-WITHOUT-record desync this PR closes everywhere
+                    # else (measured: 1, 1 and 2 `contract_fail` in the
+                    # module against no obligation at all).  Shadowing each
+                    # binder keeps the record and still cannot prove from a
+                    # stale outer.
+                    tail_env = self._shadow_destructured_slots(
+                        stmt, smt, tail_env,
+                    )
+            self._descend_construction_container(
+                decl, expr.expr, expected, smt, tail_env, assumptions,
+                site=site,
+            )
+            return
         base = expected.base if isinstance(expected, RefinedType) else expected
         if not isinstance(base, AdtType) or not base.type_args:
             return
@@ -4804,11 +5181,12 @@ class ContractVerifier:
                 if isinstance(stmt, ast.LetStmt):
                     self._walk_for_calls(group_names, stmt.value,
                                          z3_path_conds, results, smt, cur_env)
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    if val is not None:
-                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                        if type_name is not None:
-                            cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.SKIP,
+                    )
+                    if bound is not None:  # SKIP never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.ExprStmt):
                     # Walk a statement-position expression for recursive-group
                     # calls so `decreases` sees a discarded recursive call
@@ -4967,12 +5345,13 @@ class ContractVerifier:
         cur_env = slot_env
         for stmt in body.statements:
             if isinstance(stmt, ast.LetStmt):
-                val = smt.translate_expr(stmt.value, cur_env)
-                if val is None:
+                bound = self._apply_let_binding(
+                    stmt, smt, cur_env,
+                    policy=BlockBindingPolicy.HALT,
+                )
+                if bound is None:
                     break  # env now uncertain — stop (soundness)
-                type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                if type_name is not None:
-                    cur_env = cur_env.push(type_name, val)
+                cur_env = bound
             elif isinstance(stmt, ast.LetDestruct):
                 break  # don't track destructure env here — conservative
             else:
@@ -5150,27 +5529,12 @@ class ContractVerifier:
                     self._walk_for_primitive_op_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                    if val is None and type_name is not None:
-                        # Untranslatable RHS that shadows a stale same-type outer
-                        # binding: replace it with a fresh const of its sort so a
-                        # later op resolves to the (opaque) new value, not the
-                        # stale one.  A stale array's length false-E527s an
-                        # index (`let a = [1,2,3]; let a = array_append(...);
-                        # a[3]`); a stale Int's `requires(... != 0)` falsely
-                        # discharges a division (`let @Int = random_int(...);
-                        # 1 / @Int.0`).  The fresh const is tracked as an opaque
-                        # shadow so a div/sub operand that IS one falls to Tier-3
-                        # rather than a false E526/E502 on its unconstrained value
-                        # (it can't be proven safe, nor is its zero a real
-                        # reachable counterexample).
-                        stale = cur_env.resolve(type_name, 0)
-                        if stale is not None:
-                            val = z3.FreshConst(stale.sort(), "shadow")
-                            self._opaque_shadows.append(val)
-                    if val is not None and type_name is not None:
-                        cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.OPAQUE_SHADOW,
+                    )
+                    if bound is not None:  # OPAQUE_SHADOW never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
                     # #680 review: a `let Ctor<...> = <value>` destructure can
                     # host a trapping op in its *value* (`Tuple(@Int.0 /
@@ -5313,7 +5677,14 @@ class ContractVerifier:
                 # classifies on the operands' COMMON (coerced) type — the width
                 # the i64/u64 op runs at — so a literal-left @Int add and an
                 # @Int add narrowed into a @Nat slot are both i64 (#798).
-                ovf_type = self._overflow_arith_type(expr)
+                # #1417: the verifier fails CLOSED with the emitter.  An
+                # unclassified operand pair skipped the OBLIGATION here just
+                # as it skipped the guard in codegen, so a site the emitter
+                # now guards would carry no record to count it — the same
+                # desync one component over.  An unknown width reads as
+                # `Int`, which is the wider signed interpretation and the
+                # safe reading of the pair (R-1412 F5).
+                ovf_type = self._overflow_arith_fail_closed(expr)
                 if ovf_type is not None and not (
                     expr.op == ast.BinOp.SUB and ovf_type == "Nat"
                 ):
@@ -6109,11 +6480,16 @@ class ContractVerifier:
                             decl, arg, None, smt, slot_env, assumptions,
                             site=op_site,
                             nat_guarded=op_guarded, widen_guarded=op_guarded,
-                            # #1268: only the `throw` payload boundary lowers
-                            # a refinement predicate.  The State write
-                            # boundaries emit sign guards alone, so their
-                            # refined arm stays honestly unguarded.
-                            refined_guarded=op.parent_effect == "Exn",
+                            # #1268 for the `throw` payload, #1439 for the
+                            # `State` writes — both read from the shared
+                            # site table, so this leg and the qualified one
+                            # below cannot answer differently.
+                            refined_guarded=(
+                                op.parent_effect == "Exn"
+                                or (op.parent_effect == "State"
+                                    and self._refined_bind_site_guarded(
+                                        _STATE_WRITE_SITE))
+                            ),
                         )
             if param_types is not None:
                 # A generic function whose `TypeVar` formal is fixed to @Nat
@@ -6200,6 +6576,8 @@ class ContractVerifier:
                         self._check_refined_binding_obligation(
                             decl, arg, refined_target, smt, slot_env,
                             assumptions, site="constructor field",
+                            guarded=self._construction_refined_guarded(
+                                "constructor field", refined_target),
                         )
                     elif (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
@@ -6380,11 +6758,19 @@ class ContractVerifier:
                         decl, arg, formal, smt, slot_env, assumptions,
                         site=op_site,
                         nat_guarded=op_guarded, widen_guarded=op_guarded,
-                        # Only the `throw` payload boundary lowers a
-                        # refinement predicate (#1268); the other write
-                        # boundaries emit sign guards alone, so their
-                        # refined arm stays honestly unguarded.
-                        refined_guarded=op_effect == "Exn",
+                        # #1268 gave the `throw` payload the refinement
+                        # predicate, and #1439 the `State` write boundaries
+                        # — the init, `put`'s argument, and a clause's
+                        # `with @T = …` override — so both write families
+                        # now lower it.  Read from the shared site table
+                        # rather than restated here, so the classification
+                        # and the emitter move together.
+                        refined_guarded=(
+                            op_effect == "Exn"
+                            or (op_effect == "State"
+                                and self._refined_bind_site_guarded(
+                                    _STATE_WRITE_SITE))
+                        ),
                     )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -6538,13 +6924,12 @@ class ContractVerifier:
                     # unchecked assumption (and the checker types `0 - 5` as
                     # `Nat`, so `>= 0` over the value `-5` would vacuously
                     # discharge later obligations).
-                    val = smt.translate_expr(stmt.value, cur_env)
-                    if val is None:
-                        val = self._fresh_slot_var(smt, stmt.type_expr)
-                    if val is not None:
-                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
-                        if type_name is not None:
-                            cur_env = cur_env.push(type_name, val)
+                    bound = self._apply_let_binding(
+                        stmt, smt, cur_env,
+                        policy=BlockBindingPolicy.FRESH_VAR,
+                    )
+                    if bound is not None:  # FRESH_VAR never halts
+                        cur_env = bound
                 elif isinstance(stmt, ast.LetDestruct):
                     # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
                     # source (`Tuple(<Int>, ...)`) pairs each binding with a
@@ -6944,6 +7329,8 @@ class ContractVerifier:
                     decl, expr.state.init_expr, state_ty, smt, slot_env,
                     assumptions, site="handler state init",
                     nat_guarded=True, widen_guarded=True,
+                    refined_guarded=self._refined_bind_site_guarded(
+                        _STATE_WRITE_SITE),
                 )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.state.init_expr, smt, slot_env, assumptions,
@@ -7009,6 +7396,8 @@ class ContractVerifier:
                         decl, clause.state_update[1], upd_ty, smt,
                         SlotEnv(), [], site="handler state update",
                         nat_guarded=True, widen_guarded=True,
+                        refined_guarded=self._refined_bind_site_guarded(
+                            _STATE_WRITE_SITE),
                     )
                     self._walk_for_nat_binding_obligations(
                         decl, clause.state_update[1], smt, SlotEnv(), [],
@@ -7340,6 +7729,37 @@ class ContractVerifier:
             return "Int"
         return None
 
+    def _overflow_arith_fail_closed(
+        self, expr: ast.BinaryExpr,
+    ) -> str | None:
+        """:py:meth:`_overflow_arith_type`, defaulting an UNKNOWN width to
+        ``Int`` but leaving a non-integer operation alone (#1417, R-1412 F5).
+
+        The plain classifier answers ``None`` for two different situations
+        and the fail-closed default is right for only one of them.  An
+        operand whose type the table cannot supply is the case #1417 is
+        about: the width is unknown, the emitter guards it as ``Int``, and
+        an obligation has to exist to count that guard.  An operand that is
+        a `@Float64` — or a `String`, or anything else that does not wrap —
+        is not integer arithmetic at all, and defaulting it obligates a
+        site no guard is emitted for.  Measured: without this split,
+        `@Float64.0 + 1.5` acquired an `int_overflow` record and the
+        corpus's Tier-3 count went from 130 to 232.
+
+        So the default applies only when neither operand is POSITIVELY a
+        non-wrapping type — an unresolved operand keeps the fail-closed
+        reading, a resolved non-integer one is skipped.
+        """
+        known = self._overflow_arith_type(expr)
+        if known is not None:
+            return known
+        for side in (expr.left, expr.right):
+            ty = self._resolved_type_of(side)
+            if ty is not None and not (
+                    self._is_int_type(ty) or self._is_nat_type(ty)):
+                return None
+        return "Int"
+
     def _overflow_arith_type(self, expr: ast.BinaryExpr) -> str | None:
         """The signed/unsigned width of the ``+``/``-``/``*`` in *expr* — the
         type the i64 / u64 machine op is performed at, i.e. the operands' common
@@ -7387,9 +7807,12 @@ class ContractVerifier:
         ``let`` that rebound a stale outer slot), also falls to Tier 3 — its
         value is unknown, so neither a Tier-1 discharge nor a false E528.
         """
-        ovf_type = self._overflow_arith_type(expr)
-        if ovf_type is None:  # pragma: no cover — guarded by the caller
-            return
+        # #1417 / R-1412 F5: fails CLOSED, like its caller and like the
+        # emitter.  Returning here on an unclassified pair dropped the
+        # obligation for exactly the site codegen now guards, which is the
+        # desync the fail-closed default exists to remove.  An unknown width
+        # reads as `Int`, the wider signed interpretation of the pair.
+        ovf_type = self._overflow_arith_fail_closed(expr) or "Int"
         result = smt.translate_expr(expr, slot_env)
         if (result is None
                 or result.sort() != z3.IntSort()
@@ -8042,7 +8465,7 @@ class ContractVerifier:
           :py:meth:`_undecided_reason`.
 
         *guarded* says whether codegen runtime-guards this site.  ``None`` —
-        the default — reads it from :py:data:`_REFINED_BIND_GUARDED_SITES`,
+        the default — reads it from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`,
         which is where the answer belongs: the site string is already a
         parameter here, so a caller restating the same fact as a literal is a
         second copy that can disagree with the first.  A caller passes an
@@ -8071,6 +8494,45 @@ class ContractVerifier:
             return
 
         goal = self._translate_refined_predicate(smt, refined_ty, val)
+        if goal is not None and self._contains_opaque_shadow(val):
+            # The value TRANSLATED, but into a placeholder standing for a
+            # slot the SMT layer could not read — a destructure component
+            # from a non-literal source, say.  Z3 will happily pick a
+            # violating assignment for an unconstrained const, and such a
+            # countermodel names no value the program can produce: a
+            # `Tuple(5, 7)` source whose components are opaque here reported
+            # `violated` / E505 while `vera run` returned cleanly, and a
+            # genuinely negative source produced a BYTE-IDENTICAL stream,
+            # which is the tell that the refusal was unconditional rather
+            # than analysed (R-1412 N4).
+            #
+            # But EMBEDDING a placeholder is not the same as DEPENDING on
+            # it, and only the second earns Tier 3.  `@Int.0 - @Int.0` over
+            # an opaque component is 0 whatever the component is, so its
+            # violation holds for every assignment and the refutation is
+            # real — the program traps.  Withdrawing that would lose a
+            # refusal the compiler can make on a program it can prove wrong
+            # (R-1412 N6).  So the predicate is asked whether ANY assignment
+            # of the placeholders satisfies it: satisfiable means the
+            # countermodel was about one particular unreachable value and
+            # Tier 3 is right; unsatisfiable means it holds of all of them
+            # and the refutation stands.  An unknown answer takes Tier 3,
+            # the direction that claims less.
+            import z3 as z3mod
+            unsat = smt.check_valid(z3mod.Not(goal), list(assumptions))
+            if unsat.status != "verified":
+                self._record_refined_bind_tier3(
+                    decl, value_node, site, guarded=eff_guarded,
+                    reason=(
+                        "the value being narrowed is, or embeds, a "
+                        "placeholder for a slot rebound by a `let` or "
+                        "destructure the SMT layer could not translate, and "
+                        "the predicate is satisfiable for some value that "
+                        "placeholder could take, so the countermodel names "
+                        "no value the program can produce"
+                    ),
+                )
+                return
         if goal is None:
             # #1251(b): the predicate has no SMT sort to reason over, but the
             # VALUE may still be a literal — and a predicate instantiated on a
@@ -8938,7 +9400,7 @@ class ContractVerifier:
         broken sentence a missing reason would.
 
         *guarded* defaults to ``None`` — read the site from
-        :py:data:`_REFINED_BIND_GUARDED_SITES` rather than restating it — and
+        :py:data:`narrowing.REFINED_BIND_GUARDED_SITES` rather than restating it — and
         is intersected with :py:meth:`_refined_boundary_codegen_guardable`
         when *refined_ty* is supplied, since a guarded site still emits
         nothing for a base codegen cannot check.
@@ -9136,7 +9598,7 @@ class ContractVerifier:
         predicate outside the fragment, via
         :py:meth:`_refined_untranslatable_reason`, and either non-verdict via
         :py:meth:`_undecided_reason`.  Whether these projection sites are
-        codegen-guarded is read from :py:data:`_REFINED_BIND_GUARDED_SITES`
+        codegen-guarded is read from :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`
         (they are, since #765) intersected with the refinement's own
         guardability, never restated here.  *node* gives the diagnostic
         location.
@@ -11475,6 +11937,44 @@ class ContractVerifier:
             error_code="E501",
         )
 
+    def _call_pre_already_reported(
+        self, decl: ast.FnDecl, d: CallDemotion,
+    ) -> bool:
+        """Has this function already reported this call's demotion?
+
+        `_report_call_demotions` runs TWICE per function so a call that
+        appears only in a later clause is not lost, and each run DRAINS the
+        list — so no key applied within the list can see across the two, and
+        a call translated a second time in a later phase arrives looking
+        like a new one.  Measured: one `call_pre` recorded twice at one span
+        with its E532 warning shown twice, which double-counts in
+        `tier3_runtime` and puts two identical warnings on one line
+        (#1459).
+
+        The answer is read from the obligation buffer rather than a side
+        memo, because it has to be a property of the stream actually being
+        built: a memo that outlives the buffer it was built against
+        suppresses a recording that then never happens, which is the trap
+        the speculative passes reset `_construction_obligated` for.  It
+        also gives the per-instance behaviour for free — `_verify_fn` swaps
+        in a fresh buffer per monomorphic instance, so two instances of one
+        call site each find an empty stream and each record their own, and
+        a status that differs between them survives.
+        """
+        span = d.call_node.span
+        line = span.line if span else 0
+        column = span.column if span else 0
+        text = expr_text_for(d.precondition)
+        return any(
+            o.kind == "call_pre"
+            and o.fn_name == decl.name
+            and o.expr_text == text
+            and o.line == line
+            and o.column == column
+            and o.file == self._current_file
+            for o in self.obligations
+        )
+
     def _report_call_demotions(
         self, decl: ast.FnDecl, smt: SmtContext,
     ) -> None:
@@ -11501,6 +12001,8 @@ class ContractVerifier:
         callee stay distinct.
         """
         for d in smt.drain_call_demotions():
+            if self._call_pre_already_reported(decl, d):
+                continue
             self._record_obligation(
                 decl.name, "call_pre", d.precondition, "tier3",
                 error_code="E532",
@@ -11657,13 +12159,13 @@ class ContractVerifier:
     def _refined_bind_site_guarded(site: str) -> bool:
         """The SITE half of the refinement-guard question (#765).
 
-        Reads :py:data:`_REFINED_BIND_GUARDED_SITES`, which is the one place
+        Reads :py:data:`narrowing.REFINED_BIND_GUARDED_SITES`, which is the one place
         the answer is written down; intersect with
         :py:meth:`_refined_boundary_codegen_guardable` wherever the
         refinement's own type is in hand, since a guarded site still emits
         nothing for a base codegen cannot check.
         """
-        return site in _REFINED_BIND_GUARDED_SITES
+        return site in narrowing.REFINED_BIND_GUARDED_SITES
 
     @staticmethod
     def _refined_boundary_codegen_guardable(ty: Type) -> bool:

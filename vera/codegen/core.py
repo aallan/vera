@@ -237,6 +237,9 @@ class CodeGenerator(
         # `vera.nat_guard_trap` call, so `_assemble_module` declares the
         # host import.
         self._needs_nat_guard_trap: bool = False
+        # #1438: the widening guard's twin, on the generator that
+        # assembles the module.
+        self._needs_widen_trap: bool = False
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported

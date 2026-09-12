@@ -936,10 +936,33 @@ def test_refined_nat_cell_emits_the_same_write_guards_as_its_base(
     bare = _compile_ok(_BARE_NAT_CELL, tmp_path, name="bare")
     refined = _compile_ok(_REFINED_NAT_CELL, tmp_path, name="refined")
     assert bare.wat.count("i64.lt_s") > 0
-    assert refined.wat.count("i64.lt_s") == bare.wat.count("i64.lt_s"), (
+    # `>=`, not `==`, since #1439: a refined cell takes the §2.6.5
+    # PREDICATE guard at each write boundary as well as the #1203 sign
+    # guard, and both lower through the same comparison.  The property
+    # this cell was written for is unchanged and is what `>=` states —
+    # the refined cell must not LOSE a guard its base gets.
+    # Counted by SIGNAL, not by shared tokens: the sign guard calls
+    # `$vera.nat_guard_trap` and the predicate guard `$vera.contract_fail`,
+    # and both lower through `i64.lt_s` — `refinement_binder_parts` conjoins
+    # the implicit `@Nat >= 0` — so a `>=` on the shared token could not see
+    # a removed sign guard (CR PR-review).
+    assert (refined.wat.count("$vera.nat_guard_trap")
+            == bare.wat.count("$vera.nat_guard_trap")), (
         "the refined cell lost a #1203 narrowing guard its base still gets"
     )
-    assert refined.wat.count("unreachable") == bare.wat.count("unreachable")
+    # Scoped to `main`'s own body (CR PR-review): a module-wide search is
+    # satisfied by a `contract_fail` in any prelude helper, which proves
+    # nothing about the refined CELL emitting its predicate guard.
+    _head, _sep, refined_body = refined.wat.partition("(func $main ")
+    assert refined_body, refined.wat[:300]
+    refined_body = refined_body.split("\n  )")[0]
+    assert "$vera.contract_fail" in refined_body, (
+        "the refined cell emits no §2.6.5 predicate guard, so the extra "
+        "comparisons counted here are not the ones this cell is about"
+    )
+    # `unreachable` is shared by both guards, so it stays a `>=`; the exact
+    # comparison that matters is the per-signal one above.
+    assert refined.wat.count("unreachable") >= bare.wat.count("unreachable")
 
 
 _REFINED_STRING_EXN = """\

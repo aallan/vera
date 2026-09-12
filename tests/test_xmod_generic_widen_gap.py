@@ -18,8 +18,10 @@ the guarded differential (it replaces the honest pin that documented the gap):
 
 - the library's standalone verify must classify the widen Tier-3 (the promise),
 - every instantiation through the import door must TRAP at ``u64.MAX`` with the
-  widen guard's bare ``unreachable`` net — never the silent ``-1`` — for both
-  the unshadowed (bare-call) and shadowed (``lib::wrap`` -> ``mod$…``) doors,
+  widen guard's own ``widen_guard`` kind (#1438; before it, the guard was a bare
+  ``unreachable`` and the pin could not tell it from a non-exhaustive match) —
+  never the silent ``-1`` — for both the unshadowed (bare-call) and shadowed
+  (``lib::wrap`` -> ``mod$…``) doors,
 - in-range values round-trip unchanged, and
 - a LOCAL generic's clones keep their same-file guard (the provenance tagging
   must not mis-route local clones onto a module table or suppressed lookups).
@@ -173,9 +175,12 @@ def _run(result, fn: str, arg: int) -> int | None:
 def _trap_kind(result, fn: str, arg: int) -> str | None:
     """The normalized trap kind for ``fn(arg)``, or ``None`` if no trap.
 
-    Pins the widen guard's bare ``unreachable`` net specifically (the same
-    convention as ``test_xmod_widening_differential._trap_kind``) — a
-    different trap at ``u64.MAX`` would be a different, wrong guard."""
+    Callers pin the widen guard by its own ``widen_guard`` kind (#1438 — the
+    same convention as ``test_xmod_widening_differential._trap_kind``); a
+    different trap at ``u64.MAX`` would be a different, wrong guard.  Until
+    #1438 gave the guard a ``vera.widen_trap`` signal the strongest available
+    pin was the bare ``unreachable`` it shared with every non-exhaustive match,
+    so these cells could only say "an anonymous trap fired here"."""
     try:
         execute(result, fn_name=fn, args=[arg])
     except WasmTrapError as exc:
@@ -206,9 +211,9 @@ class TestImportedGenericWidenDifferential:
             result = _compile_main(tmp_path / label, files, "main.vera")
             for fn in ("callBool", "callInt"):
                 kind = _trap_kind(result, fn, U64_MAX)
-                assert kind == "unreachable", (
+                assert kind == "widen_guard", (
                     f"{label}/{fn}(u64.MAX) trap kind {kind!r} — expected the "
-                    f"widen guard's `unreachable` (None = no trap = the clone "
+                    f"widen guard's `widen_guard` (None = no trap = the clone "
                     f"compiled without its module table, a #998 regression)"
                 )
 
@@ -234,7 +239,7 @@ class TestShadowedGenericWidenDifferential:
     def test_shadowed_generic_clone_traps_at_u64_max(self, tmp_path) -> None:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         kind = _trap_kind(result, "callQualified", U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"callQualified(u64.MAX) trap kind {kind!r} — the shadowed "
             f"(mod$…) clone compiled without its module table"
         )
@@ -262,7 +267,7 @@ class TestHoistedHelperWidenDifferential:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         for fn in ("callBool", "callInt"):
             kind = _trap_kind(result, fn, U64_MAX)
-            assert kind == "unreachable", (
+            assert kind == "widen_guard", (
                 f"{fn}(u64.MAX) trap kind {kind!r} — the hoisted where-helper "
                 f"did not inherit its clone's module origin"
             )
@@ -303,7 +308,7 @@ public fn callOuter(@Nat -> @Int)
     def test_transitive_clone_traps_at_u64_max(self, tmp_path) -> None:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         kind = _trap_kind(result, "callOuter", U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"callOuter(u64.MAX) trap kind {kind!r} — the TRANSITIVE clone "
             f"(chase-site tagging) compiled without its module table"
         )
@@ -345,7 +350,7 @@ public fn callQualified(@Nat -> @Int)
     def test_chase_emitted_clone_traps_at_u64_max(self, tmp_path) -> None:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         kind = _trap_kind(result, "callQualified", U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"callQualified(u64.MAX) trap kind {kind!r} — the chase-emitted "
             f"inner clone (shadowed-body transitive) compiled without its "
             f"module table"
@@ -385,7 +390,7 @@ public fn callRelay(@Nat -> @Int)
     def test_leaf_clone_traps_at_u64_max(self, tmp_path) -> None:
         result = _compile_main(tmp_path, self._FILES, "main.vera")
         kind = _trap_kind(result, "callRelay", U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"callRelay(u64.MAX) trap kind {kind!r} — the leaf module's "
             f"transitive clone lost its originating-module table through "
             f"the 3-module chain"
@@ -406,7 +411,7 @@ class TestLocalGenericCloneControl:
             tmp_path, {"main.vera": _LOCAL_GENERIC}, "main.vera",
         )
         kind = _trap_kind(result, "callLocal", U64_MAX)
-        assert kind == "unreachable", (
+        assert kind == "widen_guard", (
             f"callLocal(u64.MAX) trap kind {kind!r} — the local clone lost "
             f"its same-file widen guard (provenance mis-tag)"
         )

@@ -146,9 +146,23 @@ class OperatorsMixin:
             # (coerced) type — the width the i64/u64 op runs at — so a
             # literal-left @Int add and an @Int add narrowed into a @Nat slot
             # are both i64, in lockstep with the verifier (#798).
-            ovf = self._overflow_arith_codegen_type(expr)
+            #
+            # #1417: an UNCLASSIFIED operand pair fails CLOSED.  The
+            # classifier answers `None` when the threaded type table has no
+            # entry for an operand, and skipping the guard on that answer
+            # meant the arithmetic wrapped in silence while the verifier's
+            # `int_overflow` obligation went on claiming a runtime check —
+            # a false guarantee reachable, in principle, by any path that
+            # loses an entry.  An unknown width is treated as `Int`, which
+            # is the safe reading of the pair: `Int` is the wider signed
+            # interpretation, its guard fires on exactly the values that
+            # would wrap, and a `@Nat` pair mistakenly guarded as `Int`
+            # traps only on values that had already left the range its own
+            # obligation covers.  The classifier itself keeps saying `None`
+            # — "I do not know" is a real answer and collapsing it into a
+            # type would put the guess where the verifier's mirror reads.
+            ovf = self._overflow_arith_codegen_type(expr) or "Int"
             if (op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)
-                    and ovf is not None
                     and not (op == ast.BinOp.SUB and ovf == "Nat")):
                 return self._emit_overflow_guard(left, right, op, ovf)
             return left + right + [self._ARITH_OPS[op]]
@@ -2217,13 +2231,16 @@ class OperatorsMixin:
         when the i64 reads as negative — so the guard traps on ``value < 0``
         (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
         @Nat -> @Int coercion sites the verifier obligates (return, call
-        argument, let).  The bare ``unreachable`` reuses the existing trap
-        taxonomy (a dedicated *widening* trap kind — modelled on the
-        ``kind="overflow"`` #808 added for arithmetic overflow — is a
-        follow-up); the guard never fires on a value the verifier proved
+        argument, let).  It calls ``$vera.widen_trap`` immediately before
+        the ``unreachable``, so the runtime classifies the trap as
+        ``kind="widen_guard"`` and names the ``requires(... <= i64.MAX)``
+        that discharges it (#1438, on the mechanism ``kind="overflow"``
+        got in #808); the guard never fires on a value the verifier proved
         ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
         """
-        return self._emit_negative_i64_guard(value)
+        self._needs_widen_trap = True
+        return self._emit_negative_i64_guard(
+            value, signal="$vera.widen_trap")
 
     def _emit_negative_i64_guard(
         self, value: list[str], *, signal: str | None = None,
@@ -2238,13 +2255,11 @@ class OperatorsMixin:
         *signal* is a host import called immediately before the
         ``unreachable``, so the runtime classifies the trap by which guard
         fired rather than by the instruction they share (#808's mechanism).
-        The narrowing entry point passes ``$vera.nat_guard_trap`` (#754); the
-        widening one passes ``None`` and keeps the generic ``kind`` — so a
-        tripped widen guard is reported as a bare ``unreachable`` beside a Fix
-        about non-exhaustive matches, none of whose three causes is the one
-        that fired.  Tracked as #1438, with the host-import fan-in that makes
-        it its own change rather than one more argument here.  The CALLER
-        raises the corresponding
+        The narrowing entry point passes ``$vera.nat_guard_trap`` (#754) and
+        the widening one ``$vera.widen_trap`` (#1438); before #1438 the
+        widening guard passed ``None`` and its trap was reported as a bare
+        ``unreachable`` beside a Fix naming three causes, none of them a
+        widening.  The CALLER raises the corresponding
         ``_needs_…`` flag — the import's declaration and its call must be
         decided together, and only the caller knows which import it wants.
 
@@ -2552,6 +2567,89 @@ class OperatorsMixin:
         if ty is None:
             return None
         return getattr(ty, "base", ty)
+
+    def _target_codegen_type_refined(self, expr: ast.Expr) -> object | None:
+        """The checker-recorded target of *expr* WITHOUT the refinement
+        unwrap :py:meth:`_target_codegen_type_full` performs (#1426).
+
+        The unwrap exists because every caller before #1426 asked a
+        base-shaped question — "is this component a `@Nat`?", "an `@Int`?" —
+        for which the refinement is noise.  A §2.6.5 guard asks the opposite
+        question: the predicate IS the answer, and the base alone cannot
+        reconstruct it.  So this reads the same table and hands back what is
+        in it.
+        """
+        table = self._expr_target_types
+        if table is None:
+            return None
+        key = ast.span_key(expr)
+        if key is None:
+            return None
+        return table.get(key)
+
+    @staticmethod
+    def refined_type_expr(resolved_ty: object | None) -> ast.TypeExpr | None:
+        """A ``TypeExpr`` the §2.6.5 guard lowering can consume, minted from
+        a checker-side ``RefinedType`` — or ``None`` when there is no
+        refinement to guard (#1426).
+
+        Construction positions know their component's type only as the
+        checker's SEMANTIC type: a constructor layout records a field's name
+        with the predicate already discarded, a `Tuple` carrier has no
+        per-field metadata at all, and an array literal carries a name
+        string.  The guard emitter, by contrast, is written against the
+        SYNTAX — it chases a `TypeExpr`'s alias chain to a
+        `ast.RefinementType`.  The two meet here.
+
+        There is no reverse map from a semantic refinement to the alias that
+        declared it, and there could not be a well-defined one: two aliases
+        may resolve to structurally identical types.  What makes the
+        synthesis exact anyway is that `types.RefinedType` keeps the
+        predicate's own AST node, so nothing is reconstructed — the minted
+        node carries the same predicate the checker recorded, over a
+        `NamedType` naming the RESOLVED base.  Resolving the base is what
+        makes the binder agree: `refinement_binder_parts` names the binder
+        from the base, the predicate references the base it was written
+        over, and a resolved base cannot disagree with itself the way a
+        written alias can.
+
+        ``None`` for a non-refinement, for a refinement over a base with no
+        nameable head (a function type, a bare type variable), and for a
+        refinement OVER a refinement — the last because
+        `_emit_bind_refine_guard` refuses that base anyway, and minting a
+        node it will only reject reads as a guard that exists.
+        """
+        if resolved_ty is None or type(resolved_ty).__name__ != "RefinedType":
+            return None
+        base = getattr(resolved_ty, "base", None)
+        predicate = getattr(resolved_ty, "predicate", None)
+        if base is None or predicate is None:
+            return None
+        if type(base).__name__ == "RefinedType":
+            return None
+        base_name = getattr(base, "name", None)
+        if not isinstance(base_name, str):
+            return None
+        return ast.RefinementType(
+            base_type=ast.NamedType(name=base_name, type_args=None),
+            predicate=predicate,
+        )
+
+    @staticmethod
+    def _adt_arg_type(target: object | None, index: int) -> object | None:
+        """*target*'s ``index``-th type argument, refinement INTACT (#1426).
+
+        The sibling predicates beside this one answer base-shaped questions
+        and unwrap; a §2.6.5 guard needs the refinement itself, so this hands
+        back the argument as recorded.  ``None`` whenever the target is not
+        an ADT with that many arguments — a `Tuple` carrier with no threaded
+        target, an unverified `transform -> compile` — which leaves the
+        component where it was rather than guessing at a predicate.
+        """
+        args = getattr(target, "type_args", None)
+        if not isinstance(args, tuple) or index >= len(args):
+            return None
+        return args[index]
 
     @staticmethod
     def _adt_arg_is_int(target: object | None, index: int) -> bool:

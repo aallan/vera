@@ -363,6 +363,13 @@ class AssemblyMixin:
 
         # #754: import nat_guard_trap so the @Int -> @Nat narrowing guard
         # surfaces the precise `kind="nat_guard"` diagnostic.
+        # #1438: and the widening guard's own signal, declared on the same
+        # terms — a call with no declaration is a module that will not load.
+        if self._needs_widen_trap:
+            parts.append(
+                '  (import "vera" "widen_trap" '
+                "(func $vera.widen_trap))"
+            )
         if self._needs_nat_guard_trap:
             parts.append(
                 '  (import "vera" "nat_guard_trap" '

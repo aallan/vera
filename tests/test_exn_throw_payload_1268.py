@@ -742,8 +742,14 @@ public fn main(@Nat -> @Int)
         """
         result = _compile_ok(self._widen(op, spelling))
         body = wat_fn_body(result.wat, "boom" if op == "throw" else "store")
+        # The signal call between the `if` and the `unreachable` is #1438's:
+        # the widening guard names itself so its trap reports
+        # `kind="widen_guard"` rather than the generic paragraph.  Required,
+        # not optional — a guard that traps anonymously here is the defect
+        # #1438 closed.
         guard = re.compile(
-            r"local\.tee \d+\s+i64\.const 0\s+i64\.lt_s\s+if\s+unreachable\s+end",
+            r"local\.tee \d+\s+i64\.const 0\s+i64\.lt_s\s+if\s+"
+            r"call \$vera\.widen_trap\s+unreachable\s+end",
             re.S,
         )
         assert guard.search(body), body
@@ -817,7 +823,8 @@ public fn main(@Nat -> @Int)
         body = wat_fn_body(_compile_ok(self._REFINED).wat, "boom")
         assert "contract_fail" in body, body
         assert re.search(
-            r"i64\.const 0\s+i64\.lt_s\s+if\s+unreachable", body, re.S,
+            r"i64\.const 0\s+i64\.lt_s\s+if\s+call \$vera\.widen_trap",
+            body, re.S,
         ), body
 
     def test_the_refinement_does_not_weaken_the_boundary(self) -> None:

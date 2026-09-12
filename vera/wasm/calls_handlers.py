@@ -11,7 +11,7 @@ from typing import Callable, ClassVar
 
 from dataclasses import fields, is_dataclass
 
-from vera import ast, naming
+from vera import ast, naming, narrowing
 from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
@@ -1594,6 +1594,9 @@ class CallsHandlersMixin:
             # getattr skipped both branches for refined binders while the
             # verifier recorded the obligation).  `type_name` survives as
             # the nameability gate alone.
+            init_instrs = self._emit_state_write_refine_guard(
+                init_instrs, type_arg, expr.state.init_expr,
+                "State cell init", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(expr.state.init_expr)):
                 init_instrs = self._emit_nat_bind_guard(init_instrs)
@@ -1730,6 +1733,7 @@ class CallsHandlersMixin:
                 clause=clause,
                 family=family,
                 family_base=family_base,
+                family_type_expr=type_arg,
                 state_slot_name=state_slot_name,
                 decl_env=env,
                 get_import=get_import,
@@ -2010,6 +2014,9 @@ class CallsHandlersMixin:
                 return None
             # #1203: put's argument writes the state cell — guard the
             # narrowing/widening at the boundary (the `let` guard's twin).
+            arg_instrs = self._emit_state_write_refine_guard(
+                arg_instrs, entry.family_type_expr, call.args[0],
+                "State put(…) write", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(call.args[0])):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs)
@@ -2157,6 +2164,9 @@ class CallsHandlersMixin:
                 return None
             # #1203: `with @T = <expr>` overrides the state cell — the
             # third write boundary; same guard pair as put's argument.
+            upd_instrs = self._emit_state_write_refine_guard(
+                upd_instrs, entry.family_type_expr, clause.state_update[1],
+                "State with(…) override", env)
             if (family_base == "Nat"
                     and self._narrows_into_nat(clause.state_update[1])):
                 upd_instrs = self._emit_nat_bind_guard(upd_instrs)
@@ -2166,6 +2176,44 @@ class CallsHandlersMixin:
             instructions.extend(upd_instrs)
             instructions.append(f"call {put_import}")
         return instructions
+
+    def _emit_state_write_refine_guard(
+        self,
+        value: list[str],
+        te: ast.TypeExpr | None,
+        arg: ast.Node,
+        where: str,
+        env: "WasmSlotEnv",
+    ) -> list[str]:
+        """The §2.6.5 predicate at a `State` write boundary (#1439).
+
+        All three writes — the `handle` init, `put`'s argument, and a
+        clause's `with @T = …` override — already guard the SIGN direction
+        (#1203), keyed off the cell's REPRESENTATION because that is what a
+        width question needs.  The predicate was the other half and was
+        never emitted, so a `State<{ @Int | @Int.0 > 0 }>` cell took a `-4`
+        and a later reader binding it at the refinement reasoned from a
+        predicate that does not hold.  The `Exn` `throw` payload has taken
+        this guard since #1268; this is the same lowering at the boundary
+        beside it.
+
+        Reads the cell's DECLARED type expression rather than
+        `family_base`, which strips the refinement by design.  Returns
+        *value* untouched for an unrefined cell, or one whose base the
+        lowering cannot emit for.
+        """
+        if te is None:
+            return value
+        if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
+            return value
+        wasm_ty = self._refined_component_wasm_type(te, self._alias_env)
+        if wasm_ty is None:
+            return value
+        tmp = self.alloc_local(wasm_ty)
+        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env)
+        if not guard:
+            return value
+        return [*value, f"local.tee {tmp}", *guard]
 
     @staticmethod
     def _contains_resume(node: object) -> bool:

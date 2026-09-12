@@ -54,6 +54,73 @@ COMPILABLE_EFFECTS = frozenset({
 #: memory, so a function carrying one needs the memory section emitted.
 MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
 
+
+
+#: The SITE half of "does codegen plant a §2.6.5 refinement guard here?" —
+#: THE table, read by the verifier's `refine_bind` legs to classify AND by
+#: codegen to decide whether to emit (#765, extended to construction in
+#: #1426).
+#:
+#: It lives in this module for the reason the rest of this module does: the
+#: two components answer one question, and a copy each is a drift nobody can
+#: see from inside either.  Before #1426 the table was the verifier's alone
+#: and codegen emitted at a hard-coded set of sites that happened to match;
+#: "happened to match" is not a property anything checks.  Now a site is
+#: added HERE once and both halves move together — the classification cannot
+#: promise a guard the backend does not plant, and the backend cannot plant
+#: one the stream does not count.
+#:
+#: The TYPE half is `ContractVerifier._refined_boundary_codegen_guardable` /
+#: `_emit_bind_refine_guard`'s own bail: whether a guard can be emitted for
+#: this particular refinement's BASE (an erased `@Unit`, a base that is
+#: itself a refinement).  Site and type are intersected wherever a type is in
+#: hand, so membership here is necessary and not sufficient.
+#: The refinement BASES a construction-position guard can be lowered for.
+#:
+#: A construction store tees the value into one scalar local and compares it
+#: there, so the base has to have a scalar WASM representation.  A boundary
+#: guard has no such limit — it runs where the value is already bound, and a
+#: `{ @String | … }` parameter IS guarded there — which is why this is a
+#: CONSTRUCTION-position rule and not a property of the refinement.
+#:
+#: Read by codegen's `_refined_component_wasm_type` and by the verifier's
+#: construction arm, so a base the emitter cannot lower is not classified
+#: guarded.  Without the second reader a `{ @String | … }` constructor field
+#: recorded `tier3` while the store emitted nothing — measured, 0 guards in
+#: the emitted body — which is the false-guarantee class this release exists
+#: to remove.
+REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
+    "Int", "Nat", "Float64", "Bool", "Byte",
+})
+
+
+REFINED_BIND_GUARDED_SITES = frozenset({
+    # Function boundaries: the parameter / return predicate guards (#746).
+    "return type",
+    "call argument",
+    "closure argument",
+    "closure return",
+    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
+    "let binding",
+    "match binding",
+    "tuple destructure",
+    "ADT sub-pattern bind",
+    # Construction-position component stores (#1426).  A refined value put
+    # INTO a container was obligated where it was built and checked by
+    # nobody, so it went in and only a reader binding it back at the
+    # refinement caught it.  Guarded by the same lowering, teed off the
+    # value on its way to the store.
+    "constructor field",
+    "tuple component",
+    "array element",
+    "map value",
+    # The `State` write boundaries (#1439): the `handle` init, `put`'s
+    # argument and a clause's `with @T = …` override.  Their SIGN direction
+    # has been guarded since #1203; the predicate is the other half, and the
+    # `Exn` `throw` payload has taken the same lowering since #1268.
+    "State write boundary",
+})
+
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]
 

@@ -90,18 +90,22 @@ def _run(source: str, fn: str, args: list[int]) -> int:
 
 
 def _assert_traps(
-    source: str, fn: str, args: list[int], kind: str = "unreachable",
+    source: str, fn: str, args: list[int], kind: str = "widen_guard",
 ) -> None:
     """Assert the guard at THIS site fires, by its own trap kind.
 
-    Two guards live in this file's fixtures and they now report different
-    kinds: the `@Int` -> `@Nat` narrowing guard carries `nat_guard` (#754),
-    the `@Nat` -> `@Int` widen guard still trips the bare `unreachable` net.
-    A union of the two would accept either at every site, so a narrowing
-    guard regressing to the bare net — the exact condition #754 fixed —
-    would leave every cell here green (PR review).  The default is the widen
-    kind because most sites here are widening; a narrowing site passes its
-    own.
+    Two guards live in this file's fixtures and they report different kinds:
+    the `@Int` -> `@Nat` narrowing guard carries `nat_guard` (#754), and the
+    `@Nat` -> `@Int` widen guard carries `widen_guard` (#1438, which signals
+    `vera.widen_trap` before the `unreachable` on #754's pattern — until then
+    the widen side tripped the bare `unreachable` net, indistinguishable from
+    a non-exhaustive match).  A union of the two would accept either at every
+    site, so a narrowing guard regressing to the bare net — the exact
+    condition #754 fixed — would leave every cell here green (PR review).
+    Since #1438 the same argument runs in the other direction too: a widen
+    guard losing its signal now fails here instead of quietly passing as
+    `unreachable`.  The default is the widen kind because most sites here are
+    widening; a narrowing site passes its own.
     """
     result = _compile_with_types(source)
     with pytest.raises(WasmTrapError) as exc_info:
@@ -188,8 +192,12 @@ class TestFix1DeadGuardUnderTailCall:
             "the @Nat widen-guarded arm's call must be reverted to a plain "
             "call so the appended guard is reached"
         )
-        # ...and the live guard (sign check + trap) follows it.
-        assert "i64.lt_s" in wat and "unreachable" in wat
+        # ...and the live guard (sign check + trap) follows it.  Since #1438 the
+        # widen guard's trap is `call $vera.widen_trap` then `unreachable`, so
+        # pin the signal: a bare `unreachable` appears elsewhere in every module
+        # (GC shadow-stack overflow, array bounds), and asserting only that word
+        # would keep this cell green with no widen guard emitted at all.
+        assert "i64.lt_s" in wat and "call $vera.widen_trap" in wat
 
     def test_tco_recursive_int_arm_return_call_survives(self) -> None:
         # The GENUINE @Int recursive arm is NOT widen-guarded, so its

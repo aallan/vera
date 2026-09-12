@@ -501,15 +501,38 @@ class TestIssueColumnScoping:
         ``#1305`` left with those same rows and the #1312 row beside them.
         ``#1281`` and ``#1304`` left with the #1317 row, which per-owner
         ADT identity retired — and with it the last Bugs row, so the
-        remaining citation is in the Limitations table.  One citation still
-        carries the property, which is what this pins; the scoping itself
-        is pinned independently on synthetic tables above, so the file's
-        contents cannot make the SCAN untested.
+        remaining citation is in the Limitations table.
+
+        ``#1268`` left the same way: its last prose citations lived in the
+        two rows retired when #1439 and #1440 were fixed, and a citation is
+        pinned here for the SCOPING behaviour it exercises, so one whose
+        host row is gone is dropped rather than kept as a reference to text
+        that no longer exists.  ``#1312`` and ``#1317`` carry the property
+        now.  The scoping itself is pinned independently on synthetic
+        tables above, so this cell's job is to keep a REAL example in the
+        loop — which is why the set is re-derived from the file when a fix
+        retires a row, rather than emptied.
         """
         text = (
             _SCRIPT.parent.parent / "KNOWN_ISSUES.md"
         ).read_text(encoding="utf-8")
-        prose_only = {1268}
+        # Re-derived from the merged file, as this cell's own history says
+        # to do: a citation is pinned for the SCOPING behaviour it
+        # exercises, so one whose host row is gone is dropped rather than
+        # kept as a reference to text that no longer exists.  #1268 left
+        # with the rows #1439/#1440 retired, and #1312/#1317 left with the
+        # rows #1437, #1453 and #1456 retired, which is how the set reached
+        # empty.
+        #
+        # An empty set would make the two assertions below vacuous, so the
+        # cell asserts the LIVE fact instead: the file currently carries no
+        # prose-only citation at all, i.e. the two scan widths agree.  That
+        # fails the moment a row cites an issue in its prose without the
+        # Issue column naming it — which is when a real example is back in
+        # the loop and the pin should name it.  The scoping behaviour
+        # itself stays pinned on the synthetic tables above, which is why
+        # this cell can afford to track the document rather than fix a set.
+        prose_only: set[int] = set()
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):
@@ -519,6 +542,11 @@ class TestIssueColumnScoping:
             wide |= _MOD.extract_limitation_table_issues(text, header)
         assert not (narrow & prose_only), sorted(narrow & prose_only)
         assert prose_only <= wide, sorted(prose_only - wide)
+        assert wide == narrow | prose_only, (
+            f"KNOWN_ISSUES.md now carries a prose-only citation this cell "
+            f"does not pin: {sorted(wide - narrow - prose_only)}.  Add it to "
+            f"`prose_only` so a REAL example stays in the loop."
+        )
 
     def test_done_and_open_extractor_scopes_too(self) -> None:
         """`extract_done_and_open` carries the same two widths (#1337).
