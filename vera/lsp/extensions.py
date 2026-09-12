@@ -26,6 +26,10 @@ Response (plain JSON)::
         "timed_out":         [<obligation>...],  # solver unknown
         "removed":           [<obligation>...],  # obligation no longer exists
         "unchanged": <count>,
+        "proof_regressions": [<obligation>...],  # verified → anything else,
+                                                 #   span-insensitively, and
+                                                 #   with `line_before` /
+                                                 #   `column_before` added
       },
       "diagnostics": <count of error diagnostics in the speculative state>,
     }
@@ -71,6 +75,65 @@ def _item(
     }
 
 
+def _regression_item(
+    before: ProofObligation, after: ProofObligation,
+) -> dict[str, Any]:
+    """A ``proof_regressions`` entry, which names BOTH spans.
+
+    The obligation may have moved (see :func:`_relocation_key`), so
+    ``line`` / ``column`` -- which :func:`_item` takes from the AFTER
+    side -- are not enough to point an agent at what it broke.
+    """
+    item = _item(before, after)
+    item["line_before"] = before.line
+    item["column_before"] = before.column
+    return item
+
+
+def _relocation_key(ob: ProofObligation) -> tuple[str, str, str, str, str]:
+    """Span-INSENSITIVE identity, for the regression predicate only.
+
+    :meth:`~vera.obligations.core.ProofObligation.content_key` hashes the
+    span, which is right for the presentation categories -- two textually
+    identical obligations at two sites are two obligations -- and wrong
+    for "did this edit take a proof away?": inserting ONE line above a
+    proved obligation gives it a new key, so it presents as a removal
+    plus a rediscovery and the span-keyed pass has no transition to
+    judge.  An edit that shifts a line and costs a proof further down
+    the file therefore walked the gate (#1443 review).
+
+    ``owner`` is in it and is NOT optional here, though
+    :meth:`~vera.obligations.core.ProofObligation.content_key` leaves it
+    out.  That omission is justified there by the span -- two
+    same-named ``where`` helpers under different top-level functions are
+    already separated by where they sit -- and dropping the span is
+    exactly what this key does, so the justification does not carry
+    over.  Without it, `h` in `a` and `h` in `b` share a key and pair
+    against each other (PR #1461 review).
+
+    ``expr_text`` is used verbatim.  It comes from
+    :func:`~vera.obligations.core.expr_text_for`, which renders the AST
+    through ``format_expr``, so source spacing is already normalised
+    away before it gets here -- ``requires(@Int.0>0)`` and
+    ``requires(  @Int.0   >   0 )`` both arrive as ``@Int.0 > 0``.
+    Normalising again would only collapse whitespace the renderer
+    deliberately KEPT, inside string literals, fusing the distinct
+    predicates ``"a b"`` and ``"a  b"`` into one key.
+
+    The key is deliberately NOT unique -- two identical asserts in one
+    function share it -- so the caller pairs within a group
+    positionally, in source order.
+
+    What the key does NOT deliver, by construction: renaming the
+    function, changing the obligation's kind, rewriting the predicate
+    text, or moving the code to another file all make it a different
+    obligation to the gate -- a deletion and an addition, judged as
+    those.  The division of labour is the point: the GATE reasons about
+    identity, the presentation categories report positions.
+    """
+    return (ob.file or "", ob.owner, ob.fn_name, ob.kind, ob.expr_text)
+
+
 def proof_delta(
     baseline: list[ProofObligation],
     speculative: list[ProofObligation],
@@ -83,18 +146,84 @@ def proof_delta(
     newly_undischarged: list[dict[str, Any]] = []
     timed_out: list[dict[str, Any]] = []
     removed: list[dict[str, Any]] = []
+    # #1443 — the PROOF-PRESERVATION question, asked over the whole
+    # status vocabulary instead of inferred from the categories beside
+    # it.  Those categories sort by the AFTER status, which makes them a
+    # presentation of the delta and not a statement about what was lost:
+    # `verified -> timeout` lands in `timed_out` and `verified ->
+    # violated` in `newly_undischarged`, so a consumer asking "did this
+    # edit take a proof away?" by reading one list gets a different
+    # answer depending on which way the proof was lost.  The apply gate
+    # asked exactly that, of exactly one list, and let a `verified ->
+    # timeout` edit through.
+    #
+    # Enumerated as "was verified, is not verified" rather than as a
+    # list of losing statuses, so a status added to `ObligationStatus`
+    # later joins the refusal by default rather than by being
+    # remembered here.
+    proof_regressions: list[dict[str, Any]] = []
     unchanged = 0
+
+    # #1443 review -- pair the LEFTOVERS before categorising anything.
+    # `content_key` hashes the span, so an obligation that merely MOVED
+    # arrives under a new key: it looks like a removal plus a brand-new
+    # obligation, and neither gate input could see what actually
+    # happened to it.  An old key with no new twin and a new key with no
+    # old twin that agree on `_relocation_key` are one obligation that
+    # relocated.  Within a group they pair positionally in source order,
+    # so two identical asserts in one function still pair
+    # deterministically.
+    #
+    # An old leftover with no counterpart is a DELETION, deliberately
+    # not a regression: the gate protects proofs, not contracts, a
+    # removed contract is visible in the edit itself, and nothing
+    # unproved is left behind.  It is reported under `removed` with the
+    # status it had.
+    relocated: dict[str, ProofObligation] = {}
+    new_leftovers: dict[
+        tuple[str, str, str, str, str], list[ProofObligation],
+    ] = {}
+    for nkey, ob in new.items():
+        if nkey not in old:
+            new_leftovers.setdefault(_relocation_key(ob), []).append(ob)
+    taken: dict[tuple[str, str, str, str, str], int] = {}
+    for okey, before_ob in old.items():
+        if okey in new:
+            continue
+        rkey = _relocation_key(before_ob)
+        i = taken.get(rkey, 0)
+        candidates = new_leftovers.get(rkey, [])
+        if i >= len(candidates):
+            continue  # deletion: nothing on the new side to pair with
+        taken[rkey] = i + 1
+        relocated[candidates[i].content_key()] = before_ob
 
     for key, ob in new.items():
         before = old.get(key)
+        moved_from = relocated.get(key)
+        was = before if before is not None else moved_from
+        if (
+            was is not None
+            and was.status == "verified"
+            and ob.status != "verified"
+        ):
+            proof_regressions.append(_regression_item(was, ob))
+        # Every speculative obligation lands in exactly ONE of the four,
+        # relocated or not: the categories are a PARTITION of the new
+        # stream, and a consumer that loses that cannot render the delta.
+        # (An earlier cut of this fix dropped relocated same-status pairs
+        # out of the bottom branch, and `violated -> violated` then
+        # showed a counterexample vanishing because a line moved --
+        # #1461 review F1.)  What relocation changes is the `before` each
+        # entry is REPORTED against, not which list it is in.
         if before is not None and before.status == ob.status:
             unchanged += 1
         elif ob.status == "verified":
-            newly_discharged.append(_item(before, ob))
+            newly_discharged.append(_item(was, ob))
         elif ob.status == "timeout":
-            timed_out.append(_item(before, ob))
-        else:  # violated / tier3
-            newly_undischarged.append(_item(before, ob))
+            timed_out.append(_item(was, ob))
+        else:  # violated / tier3 / tier3_unguarded
+            newly_undischarged.append(_item(was, ob))
     for key, ob in old.items():
         if key not in new:
             removed.append(_item(ob, None))
@@ -105,6 +234,7 @@ def proof_delta(
         "timed_out": timed_out,
         "removed": removed,
         "unchanged": unchanged,
+        "proof_regressions": proof_regressions,
     }
 
 

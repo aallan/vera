@@ -22,11 +22,16 @@ Response (plain JSON)::
       "diagnostics": <count of error diagnostics in the proposed state>,
     }
 
-The gate: apply iff the proof delta has no ``newly_undischarged``
-obligations AND the proposed state has no error diagnostics.
-``force: true`` overrides both — "this edit knowingly weakens a proof"
-(or doesn't compile yet) is sometimes the intent, but it must be said
-out loud; the default is the enforced gate.
+The gate: apply iff the proof delta has no ``proof_regressions`` (no
+obligation that was ``verified`` is anything else now — whatever it
+lost its proof to, and wherever in the file it now sits), no
+``newly_undischarged`` obligations (the only conjunct that can see an
+obligation the edit INTRODUCES, which has no ``before`` to regress
+from, so neither list subsumes the other), AND the proposed state has
+no error diagnostics.  ``force: true`` overrides
+all three — "this edit knowingly weakens a proof" (or doesn't compile
+yet) is sometimes the intent, but it must be said out loud; the default
+is the enforced gate.
 
 On apply, three things happen, in order: a ``workspace/applyEdit``
 request (the LSP-native mechanism — the *client* owns the buffer, so
@@ -138,7 +143,37 @@ def propose_edit(
     delta = speculative["proof_delta"]
     clean = (
         delta is not None
-        and not delta["newly_undischarged"]
+        # #1443 — the proof-preservation question, asked once, of the
+        # whole status vocabulary.  `newly_undischarged` cannot stand in
+        # for it: `proof_delta` sorts by the AFTER status, so an
+        # obligation that went `verified -> timeout` is filed under
+        # `timed_out` and an edit that destroyed a proof looked clean
+        # here.  The verifier records a postcondition timeout as a
+        # warning with `ok=True`, so the diagnostics count did not catch
+        # it either, and `applied` came back True on an edit that lost a
+        # proof.  The categories remain what they are for presentation;
+        # their separation was never permission to apply.
+        and not delta["proof_regressions"]
+        # Kept beside it, and NOT subsumed by it: it is the only
+        # conjunct that can see an obligation the edit INTRODUCES, which
+        # has no `before` for the predicate above to regress from.  (It
+        # is not only that: a same-span `verified -> violated` lands
+        # here too.  What it uniquely covers is the introduced one.)
+        #
+        # Entries whose status did not move are skipped.  They exist
+        # only because `proof_delta` keys its categories on the span:
+        # an obligation that RELOCATED is listed here against the
+        # `before` it was paired with, and one that is undischarged at
+        # both ends of that pair introduced nothing and took nothing
+        # away.  Refusing it made a harmless comment insertion into any
+        # program carrying a Tier-3 obligation need `force` (#1461
+        # review, case A2b).  A pair that WORSENED still has
+        # `status_before != status_after` and is still refused, exactly
+        # as the identical unmoved edit is.
+        and not [
+            item for item in delta["newly_undischarged"]
+            if item["status_before"] != item["status_after"]
+        ]
         and speculative["diagnostics"] == 0
     )
     should_apply = force or clean

@@ -140,7 +140,12 @@ set:
                             "expr": "@Nat.0 - 1", "line": 6, "column": 3,
                             "status_before": "verified",
                             "status_after": "violated"}],
-    "timed_out": [], "removed": [], "unchanged": 11
+    "timed_out": [], "removed": [], "unchanged": 11,
+    "proof_regressions": [{"fn": "f", "kind": "nat_sub",
+                           "expr": "@Nat.0 - 1", "line": 6, "column": 3,
+                           "line_before": 6, "column_before": 3,
+                           "status_before": "verified",
+                           "status_after": "violated"}]
   },
   "diagnostics": 1
 }
@@ -152,6 +157,63 @@ violated or fall to runtime checks), or **strengthens** them
 (previously-runtime obligations now prove) — before committing
 anything.
 
+Three of the lists — `newly_discharged`, `newly_undischarged` and
+`timed_out` — **sort the speculative obligations by their status AFTER
+the edit**, and together with `unchanged`, which is a count rather
+than a list, they account for every obligation in the speculative
+stream exactly once.  `removed` is the old side: baseline-only
+obligations, each carrying `status_after: null`.  So the set is a
+presentation of the delta rather than an answer to "did this edit take
+a proof away?".  That question has its own list: `proof_regressions`
+holds every obligation that was `verified` before and is anything else
+after — `timeout`, `tier3`, `tier3_unguarded` or `violated` — so an
+obligation appears in it **as well as** in whichever status list its
+new status puts it in (`verified → timeout` is in both `timed_out` and
+`proof_regressions`).  Read `proof_regressions` to ask
+about lost proofs; read the lists to display what happened.
+
+The two views also differ on **identity**, and deliberately.  An
+obligation is keyed by its span, so one inserted line above it gives it
+a new key: the categories report that as a removal plus a rediscovery,
+which is what a display of positions should say.  The gate cannot
+reason that way — an edit that shifts a line and costs a proof further
+down the file would walk straight past it — so before judging anything
+it pairs the leftovers on a span-insensitive key (file, owning
+function, function, kind, predicate text; equal keys pair positionally
+in source order).  A pair is one obligation that **moved**.  Pairing
+changes what an entry is reported *against*, not which list it is in: the three status lists
+still account for every speculative obligation exactly once, and a
+relocated obligation is still an entry in `removed` at its old span
+plus an entry in a status list at its new one — it simply carries the
+`status_before` it paired with, where an
+obligation the edit really did introduce carries `null`.  The gate
+reads that: a `newly_undischarged` entry whose `status_before` equals
+its `status_after` only moved, so it introduced nothing and took
+nothing away.  Relocation is invisible to the gate; the presentation
+keeps its span view.
+
+Each `proof_regressions` entry carries both ends: `line` / `column` are
+where the obligation is now, `line_before` / `column_before` where it
+was.  They differ exactly when the obligation moved — in the same-span
+example above they are equal — and the pair is what points an agent at
+the proof it broke rather than at the line it happens to sit on now.
+
+An old obligation with no counterpart on the new side is a **deletion**,
+not a regression, and does not need `force`: the gate protects proofs,
+not contracts — the removal is visible in the edit itself, and no
+unproved code is left behind.  It is reported under `removed` with the
+status it had.  Replacing a proved contract with a differently-worded
+one is a deletion plus an addition, so the replacement is judged as an
+addition: refused if it is `violated`, `tier3` or `tier3_unguarded` —
+every after-status other than `verified` and `timeout` reaches
+`newly_undischarged`, and with no `before` to match, a `status_before`
+of `null` differs from any `status_after` — and applied if it merely
+times out, which is the same boundary any newly introduced timeout
+already sits on.  What the pairing key does not cover, by construction:
+renaming the function, changing the obligation's kind, rewriting the
+predicate text, or moving the code to another file all make it a new
+obligation to the gate.
+
 #### `vera/proposeEdit` — the enforced edit workflow
 
 ```json
@@ -161,9 +223,21 @@ anything.
 The whole edit → verify → apply sequence as one method, so the
 verification gate cannot be skipped or reordered: the proposed text is
 speculatively verified, and **applies only if** the proof delta has no
-`newly_undischarged` obligations and the proposed state has no error
-diagnostics. On apply the server issues `workspace/applyEdit` (the
-client owns the buffer), updates its canonical state, and republishes
+`proof_regressions` (no obligation lost a proof — whatever it lost it
+to, and wherever in the file it now sits), no `newly_undischarged`
+entry whose `status_before` differs from its `status_after`, and no
+error diagnostics in the proposed state.  Neither list subsumes the
+other: `newly_undischarged` is the only one that can see an obligation
+the edit INTRODUCES, which has no `before` to regress from and so
+arrives with `status_before: null`.  The `status_before` qualifier is
+what lets a **relocated** obligation through: one that is undischarged
+at both ends of its pair is listed here — the status lists account for
+every speculative obligation, so it has to be — but it introduced
+nothing and took nothing away, so the gate passes it.  A pair that
+worsened is refused exactly as the identical unmoved edit is.
+
+On apply the server issues `workspace/applyEdit` (the client owns the
+buffer), updates its canonical state, and republishes
 diagnostics; on refuse, nothing changes and the response says why:
 
 ```json
