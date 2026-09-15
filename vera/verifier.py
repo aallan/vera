@@ -1566,6 +1566,44 @@ class ContractVerifier:
             return None
         return mod_fns.get(name)
 
+    def _callee_in_scope(
+        self, expr: ast.FnCall | ast.ModuleCall, smt: SmtContext,
+    ) -> FunctionInfo | None:
+        """THE declaration a call in the body under verification names (#1455).
+
+        A parameter list is a binder position, and an argument narrows into
+        it, so every obligation the call boundary raises is derived from the
+        callee's formals — which first requires knowing which declaration the
+        name reaches from HERE.  ``env.functions`` cannot answer that: it is
+        the program-wide flat namespace, and since #1378 a ``where`` helper is
+        deliberately absent from it (spec §5.8 — a helper is local to its
+        parent, and publishing it let a sibling's bare call resolve onto it).
+        Asking the flat registry therefore returned ``None`` for every helper
+        call, ``param_types`` was ``None``, and the formal loop never ran: a
+        `@Pos` or `@Nat` parameter of a helper took a refuted argument with
+        NOTHING in the obligation stream while codegen guarded it anyway, so
+        `vera verify` reported Tier 1 on a program that traps.
+
+        ``smt._fn_lookup`` is the scope the declaration is read in
+        (:meth:`_scoped_fn_lookup`, bound by :meth:`_bind_smt_scope`), which
+        is the same chain the checker resolves the call through and codegen
+        mangles it against — helpers of this declaration, then each enclosing
+        parent's, then the declaring module's, then the top level, then the
+        flat registry.  Reading it here is what makes a helper's parameter
+        obligated at the call boundary exactly as a top-level one is, rather
+        than a helper being a special case anywhere.
+
+        Module-qualified calls keep their own per-module registry: a path
+        names the module outright, so no lexical chain applies.
+        """
+        if isinstance(expr, ast.ModuleCall):
+            return self._lookup_module_function(expr.path, expr.name)
+        lookup = smt._fn_lookup
+        if lookup is None:  # pragma: no cover — every walk binds a scope
+            return self.env.lookup_function(expr.name)
+        found: FunctionInfo | None = lookup(expr.name)
+        return found
+
     def _bind_smt_scope(self, smt: SmtContext, scope: CalleeScope) -> None:
         """Hand *smt* the scope the declaration under verification is read in.
 
@@ -6411,10 +6449,7 @@ class ContractVerifier:
 
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
-            if isinstance(expr, ast.FnCall):
-                callee: object | None = self.env.lookup_function(expr.name)
-            else:
-                callee = self._lookup_module_function(expr.path, expr.name)
+            callee: object | None = self._callee_in_scope(expr, smt)
             param_types = getattr(callee, "param_types", None)
             if param_types is None and isinstance(expr, ast.FnCall):
                 # #1203/#1268: a BARE effect operation has no
@@ -9468,8 +9503,16 @@ class ContractVerifier:
         fn_env = self._fn_naming_scope(
             self._current_alias_env, decl, enclosing)
         smt = SmtContext(timeout_ms=self.timeout_ms)
+        # #1455, second site: the SAME lexical chain the main path binds.  The
+        # flat registry stood here, and since #1378 it holds no `where` helper,
+        # so a generic function whose concrete refined return is produced by a
+        # helper call lost the helper's contract: `tier3`/E506 where the
+        # identical top-level spelling proves at Tier 1.  Honest, but a
+        # precision loss with no reason behind it, and it is the one call-site
+        # resolution left reading the flat table where a lexical scope applies.
         self._bind_smt_scope(
-            smt, CalleeScope(fn_env, self.env.lookup_function))
+            smt, CalleeScope(
+                fn_env, self._scoped_fn_lookup(decl, enclosing)))
         for adt_info in self.env.data_types.values():
             smt.register_adt(adt_info)
         # CR PR-review: the generic refined-return fast path translates the body
