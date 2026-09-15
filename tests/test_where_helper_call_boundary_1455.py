@@ -19,9 +19,9 @@ The measured consequence, at ``origin/release/v0.2.0`` 8eca11c0:
   reported "4 verified (Tier 1)" on a program whose caller's ``ensures`` rested
   on a call that traps.
 
-`git bisect --first-parent` over the 35 merges from ``main`` 6dc41d40 to the
-release tip names 2b2ef63f (PR #1378) as the first revision that reports the
-where spelling clean.
+`git bisect --first-parent` over the 34 first-parent revisions from ``main``
+6dc41d40 to the release tip names 2b2ef63f (PR #1378) as the first revision
+that reports the where spelling clean.
 
 The class is every obligation the call boundary raises, at every depth of
 ``where`` nesting, for every spelling of the narrowing — so the matrix below is
@@ -33,10 +33,19 @@ touching the registry, so it was correct throughout and stays correct.
 """
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
+import vera
 from tests.codegen_helpers import _run_refine_trap
 from tests.verifier_helpers import _verify
+
+_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
 
 # =====================================================================
@@ -454,3 +463,78 @@ class TestTheCalleeIsResolvedWhereTheCallIsWritten:
             if o.kind == "refine_bind"
         )
         assert lines == [24], lines
+
+
+# =====================================================================
+# The fourth callee position: a module-qualified call
+# =====================================================================
+
+def _cli(*args: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "vera.cli", *args],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+        env=env, timeout=600,
+    )
+
+
+_LIB = """type Pos = { @Int | @Int.0 > 0 };
+
+public fn h(@Pos -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Pos.0
+}
+"""
+
+_IMPORTER = """import lib;
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  lib::h(0 - 5)
+}
+"""
+
+
+class TestAModuleQualifiedCallIsObligatedToo:
+    """The position `_callee_in_scope` routes DIFFERENTLY, pinned.
+
+    A path names its module outright, so no lexical chain applies and the
+    per-module registry answers instead of `smt._fn_lookup`.  That branch is
+    unchanged by this PR, and the matrix above cannot reach it — every cell
+    there is a bare call in one file.  A qualified call is therefore the one
+    callee position whose obligation nothing here would notice the loss of,
+    which is what makes it worth a cell rather than an argument (CodeRabbit
+    on PR #1465).
+
+    Measured before writing it: the qualified spelling does report E505
+    today, so this is coverage of a working path, not a fix.
+    """
+
+    def test_a_refined_formal_across_an_import_is_refuted(
+        self, tmp_path: Path,
+    ) -> None:
+        (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
+        main = tmp_path / "main.vera"
+        main.write_text(_IMPORTER, encoding="utf-8")
+        proc = _cli("verify", "--json", str(main))
+        envelope = json.loads(proc.stdout)
+        binds = sorted(
+            (o["kind"], o["status"], o.get("error_code"))
+            for o in envelope["obligations"]
+            if o["kind"] in ("refine_bind", "nat_bind")
+        )
+        assert binds == [("refine_bind", "violated", "E505")], (
+            f"a module-qualified call into a refined formal records "
+            f"{binds}; the same call in one file records "
+            f"{_binds(_ISSUE_CONTROL)}"
+        )

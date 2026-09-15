@@ -563,13 +563,6 @@ _KNOWN_RED: dict[tuple[str, str], str] = {
         "Int-based refinement runs.  The opposite failure from this PR's "
         "class — a guard emitted and wrong, rather than a position "
         "unrecorded — so it is filed rather than folded in",
-    ("constructor field", "refined_array"):
-        "pre-existing on main 6dc41d40 and release/v0.2.0 8eca11c0: a "
-        "refinement written on an array ELEMENT is not threaded through a "
-        "constructor field into the array literal, so `MkBox([0 - 5])` into "
-        "an `Array<Pos>` field records nothing and the -5 goes in.  The bare "
-        "`array element` cell against an `@Array<Pos>` PARAMETER does report "
-        "`violated`, which is what says the target threading is the gap",
 }
 
 _CELLS = [
@@ -741,20 +734,22 @@ def test_the_inline_constructor_scrutinee_is_guarded(tmp_path: Path) -> None:
     assert "@Nat" in r["run_output"], r["run_output"]
 
 
-def test_the_inline_constructor_scrutinee_is_not_yet_on_the_record(
+def test_the_inline_constructor_scrutinee_is_on_the_record(
     tmp_path: Path,
 ) -> None:
-    """What does not: the guard above is counted nowhere.
+    """And that the guard above is counted.
 
-    Pinned as what the compiler DOES — see the note on the two cells at the
-    end of this file for why an assertion rather than an `xfail`.  Measured
-    identical at `main` 6dc41d40 and `release/v0.2.0` 8eca11c0.
+    Silent at `main` 6dc41d40 and at `release/v0.2.0` 8eca11c0: the checker
+    typed the constructor's argument against a pattern-derived expected type
+    and recorded no instantiated target, so the narrowing was invisible to
+    the walk while code generation guarded it — an under-count of the Tier-3
+    checks.  Closed by recording the argument's field type at the
+    constructor door; `tests/test_constructor_field_target.py` ranges over
+    the position.
     """
     r = _read(tmp_path, _INLINE_CTOR_SCRUTINEE, "inline.vera")
-    assert not r["obligations"], (
-        "this site now records its narrowing — replace this cell with the "
-        f"positive assertion and fold the shape into the matrix: {r}"
-    )
+    assert r["obligations"], r
+    assert all(status != "verified" for _k, status in r["obligations"]), r
 
 
 # =====================================================================
@@ -790,26 +785,3 @@ def test_1466_a_pair_represented_tuple_component_traps_on_a_value_it_admits(
         f"from _KNOWN_RED, and close the issue:\n{r['run_output']}"
     )
     assert "Refinement violation" in r["run_output"], r["run_output"]
-
-
-def test_a_refined_element_type_in_a_constructor_field_is_not_yet_recorded(
-    tmp_path: Path,
-) -> None:
-    """The second, pinned the same way — until the commit that closes it.
-
-    A refinement written on an array ELEMENT is not threaded through a
-    constructor field into the array literal, so `MkBox([0 - 5])` into an
-    `Array<Pos>` field records nothing and the `-5` goes in.  The bare
-    `array element` cell against an `@Array<Pos>` PARAMETER does report
-    `violated`, which is what says the target threading is the gap rather
-    than the lowering.
-
-    Measured identical at `main` 6dc41d40 and `release/v0.2.0` 8eca11c0.
-    """
-    pre, slot, bad, _good, base = _KINDS["refined_array"]
-    r = _read(tmp_path, _t_constructor_field(pre, slot, bad, base), "c.vera")
-    assert not r["obligations"], (
-        "this site now records its narrowing — remove this cell and the "
-        f"('constructor field', 'refined_array') entry from _KNOWN_RED: {r}"
-    )
-    assert not r["refused"], r["run_output"]

@@ -1350,6 +1350,45 @@ class CallsMixin:
         if mapping:
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
 
+        # #747, at the constructor door: record each argument's INSTANTIATED
+        # field type as its target, whatever the expected type came from.
+        # The generic FUNCTION call has recorded this since #747 and the
+        # constructor never did, so a field type the checker knows only after
+        # inference was invisible to the verifier's narrowing walk, which
+        # consults this table whenever the DECLARED field type is a TypeVar.
+        #
+        # Two shapes measured silent because of it, both with the guard
+        # emitted and nothing on the record:
+        #
+        # * `match Some(0 - 5) { Some(@Nat) -> … }` — the checker infers
+        #   `T = Nat` from the argument (`0 - 5` is two non-negative literals,
+        #   so `Nat - Nat`), types the construction `Option<Nat>`, and the
+        #   narrowing into that `@Nat` field had no target to be read from;
+        # * `MkBox([0 - 5])` into an `Array<Pos>` field — a CONCRETE field
+        #   type, which the expected-type threading above reaches only when
+        #   the constructor is parameterised and the caller supplied an
+        #   `expected`, so a monomorphic constructor's field was never a
+        #   target either.
+        #
+        # Recording only — the `expected` threaded to `_synth_expr` above is
+        # untouched, so no inference decision and no checker diagnostic moves.
+        # A field type still carrying a TypeVar is not recorded, exactly as at
+        # the function door: an uninstantiated target is not a target.
+        # Filling a GAP, never displacing: an entry already here came from the
+        # `expected` the enclosing context forced, which is the instantiation
+        # the caller requires and is strictly more authoritative than one
+        # inferred from the arguments.  `wrap_opt(@Int -> @Option<Nat>)`
+        # returning `Some(@Int.0)` is the case that measures the difference —
+        # `_infer_ctor_type_args` reads `T = Int` off the argument and never
+        # consults the return, so overwriting lost the `nat_bind` that
+        # conformance program exists to pin (the one corpus mover on the
+        # first shape of this change).
+        if self.expr_target_types is not None:
+            for c_arg, c_ft in zip(expr.args, field_types):
+                key = ast.span_key(c_arg)
+                if key is not None and not contains_typevar(c_ft):
+                    self.expr_target_types.setdefault(key, c_ft)
+
         for i, (arg_ty, field_ty) in enumerate(zip(arg_types, field_types)):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
