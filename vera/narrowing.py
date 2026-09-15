@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from vera import ast
+from vera import ast, binders
 
 #: The effects whose operations code generation can lower at all (#754).
 #:
@@ -79,9 +79,19 @@ MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
 #:
 #: A construction store tees the value into one scalar local and compares it
 #: there, so the base has to have a scalar WASM representation.  A boundary
-#: guard has no such limit — it runs where the value is already bound, and a
-#: `{ @String | … }` parameter IS guarded there — which is why this is a
-#: CONSTRUCTION-position rule and not a property of the refinement.
+#: guard over a value that is BOUND has no such limit — it runs where the
+#: whole value already is, and a `{ @String | … }` parameter IS guarded
+#: there — which is why this is a CONSTRUCTION-position rule and not a
+#: property of the refinement.
+#:
+#: It is not a property of every boundary either, which this comment used to
+#: say and #1466 measured otherwise: the tuple DECOMPOSITION at a boundary
+#: tees a component the same scalar way a construction store does, so a
+#: pair-represented component (`@String`, `@Array<T>`) is compared against
+#: its pointer and a value that SATISFIES the refinement traps, on a program
+#: proved at Tier 1.  Four instances, both controls and the mechanism are on
+#: that issue; the fix is the guard-correctness matrix it asks for, not this
+#: roster, which is about construction.
 #:
 #: Read by codegen's `_refined_component_wasm_type` and by the verifier's
 #: construction arm, so a base the emitter cannot lower is not classified
@@ -94,32 +104,15 @@ REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
 })
 
 
-REFINED_BIND_GUARDED_SITES = frozenset({
-    # Function boundaries: the parameter / return predicate guards (#746).
-    "return type",
-    "call argument",
-    "closure argument",
-    "closure return",
-    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
-    "let binding",
-    "match binding",
-    "tuple destructure",
-    "ADT sub-pattern bind",
-    # Construction-position component stores (#1426).  A refined value put
-    # INTO a container was obligated where it was built and checked by
-    # nobody, so it went in and only a reader binding it back at the
-    # refinement caught it.  Guarded by the same lowering, teed off the
-    # value on its way to the store.
-    "constructor field",
-    "tuple component",
-    "array element",
-    "map value",
-    # The `State` write boundaries (#1439): the `handle` init, `put`'s
-    # argument and a clause's `with @T = …` override.  Their SIGN direction
-    # has been guarded since #1203; the predicate is the other half, and the
-    # `Exn` `throw` payload has taken the same lowering since #1268.
-    "State write boundary",
-})
+#: Since #1455/#1445 the membership is DERIVED from
+#: :data:`vera.binders.GUARD_SITES`, where each binder position's guard
+#: answers are declared beside the position itself.  Keeping the roster
+#: as a literal here made it possible to register a position and forget
+#: its guard answer, which is one level up from the drift this module
+#: exists to prevent — a position nothing answered for was SILENT.
+#: The name stays, because every consumer reads it through this module
+#: and a test may monkeypatch it to prove the coupling is load-bearing.
+REFINED_BIND_GUARDED_SITES = binders.guarded_sites("refinement_predicate")
 
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]

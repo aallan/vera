@@ -12,7 +12,17 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-13,961 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+14,170 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+
+## The v0.2.0 burndown
+
+*One open bugs, driven to zero.*
+
+A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
+
+| Issue | What |
+|---|---|
+| [#1466](https://github.com/aallan/vera/issues/1466) | A boundary guard decomposes a refined tuple component as a scalar, so a pair-represented base (`@String`, `@Array<T>`) is checked against its pointer and a value that satisfies the refinement traps — on a program proved at Tier 1. |
 
 ## Stage 19 — The verification completeness sprint
 

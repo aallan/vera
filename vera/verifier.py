@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from vera import ast, narrowing, naming
+from vera import ast, binders, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -158,24 +158,17 @@ _NESTED_SITE_GUARD_NOTE = (
 #: reader to add a bound they already have; a site put IN it while its
 #: store does not guard asserts a check that is not there.  Both are the
 #: same desync, so the set is re-measured whenever a store gains a guard.
-_NAT_CONSTRUCTION_GUARDED_SITES = frozenset({
-    "constructor field",
-    "tuple component",
-    # #1440 gave these two their sign guard, so the roster has to say
-    # so: leaving them out recorded `tier3_unguarded` for a store the
-    # module checks, which under-counts the runtime checks and tells a
-    # reader to add a bound they already have (CR PR-review).
-    "array element",
-    "map value",
-})
+#: Derived from :data:`vera.binders.GUARD_SITES` since #1455, so a
+#: construction position and its guard answers are declared in one
+#: place (the measurement behind each answer is the entry's note).
+_NAT_CONSTRUCTION_GUARDED_SITES = binders.guarded_sites(
+    "nat_sign_at_construction")
 
 
 #: The widening dual, on the same evidence (#820's enabler guards the store
 #: for both container shapes it threads a target type to).
-_INT_WIDENING_CONSTRUCTION_GUARDED_SITES = frozenset({
-    "array element",
-    "tuple component",
-})
+_INT_WIDENING_CONSTRUCTION_GUARDED_SITES = binders.guarded_sites(
+    "int_widen_at_construction")
 
 
 
@@ -6101,6 +6094,90 @@ class ContractVerifier:
             return self._resolve_type(expr.state.type_expr)
         return None
 
+    def _handler_op_payload_type(
+        self, expr: ast.HandleExpr, clause: ast.HandlerClause,
+    ) -> Type | None:
+        """The type the handler's operation delivers to *clause*'s binder.
+
+        `Exn<T>`'s `throw` payload and `State<T>`'s `put` argument are both
+        the effect's own type argument, read from the annotation the way
+        :py:meth:`_handler_cell_type` reads it — the cell/payload type, not
+        a `with` annotation that can diverge from it (#1206).  Every other
+        operation delivers something the binder cannot narrow: `get` takes
+        `@Unit`.
+        """
+        eff = expr.effect
+        if not isinstance(eff, ast.EffectRef) or not eff.type_args:
+            return None
+        if (eff.name, clause.op_name) in (("Exn", "throw"), ("State", "put")):
+            return self._resolve_type(eff.type_args[0])
+        return None
+
+    def _obligate_clause_binder(
+        self, decl: ast.FnDecl, expr: ast.HandleExpr,
+    ) -> None:
+        """Obligate a handler-clause binder declared NARROWER than the
+        payload it receives (#1445, #1448).
+
+        A clause binder is a binder position like any other — it is
+        `ast.HandlerClause.params` in :data:`vera.binders.BINDER_FIELDS`, and
+        the site name comes from there rather than being spelled here, so the
+        string this records under and the one code generation emits under are
+        the same string by construction.
+
+        Neither spelling was on the record.  The `@Nat` one over `Exn`
+        appeared to be — a `nat_to_int(@Nat.0)` in the clause body raises its
+        own obligation — but that is a CALL argument in the body, not the
+        bind, and it vanishes when the body makes no such call; the `State`
+        spelling and both refined spellings recorded nothing at all.
+
+        The obligation is Tier 3 by nature rather than by failure to prove:
+        the bound value is whatever reaches the operation, and no throw or
+        put site pins it, so there is no term to discharge against and a
+        static proof would have to hold for every value of the payload type.
+        That is precisely the case a runtime guard exists for, which is why
+        the honest record is a demotion carrying codegen's answer rather than
+        a refutation.
+        """
+        site = binders.site_of(ast.HandlerClause, "params")
+        for clause in expr.clauses:
+            if not clause.params:
+                continue
+            payload = self._handler_op_payload_type(expr, clause)
+            if payload is None:
+                continue
+            binder = self._resolve_type(clause.params[0])
+            if binder is None:
+                continue
+            # The reason is spelled out at each call site rather than shared
+            # through a local: `test_no_demotion_site_hardcodes_a_solver_reason`
+            # reads these arguments structurally, and a bare Name is
+            # unclassifiable to it — which is the point, since a shared
+            # constant is exactly how a solver-outcome string would slip past
+            # unread.  This text names something known WITHOUT asking the
+            # solver, so an inline literal is the shape that gate wants.
+            if (self._is_refined_type(binder)
+                    and not self._is_refined_type(payload)):
+                self._record_refined_bind_tier3(
+                    decl, clause.body, site, refined_ty=binder,
+                    reason=(
+                        "the bound value is the payload the operation "
+                        "delivers, which no throw or put site pins, so "
+                        "there is no term to test it against"
+                    ),
+                )
+            elif (self._is_nat_type(binder)
+                    and not self._is_nat_type(payload)):
+                self._record_nat_bind_tier3(
+                    decl, clause.body, site, "tier3",
+                    guarded=self._refined_bind_site_guarded(site),
+                    reason=(
+                        "the bound value is the payload the operation "
+                        "delivers, which no throw or put site pins, so "
+                        "there is no term to test it against"
+                    ),
+                )
+
     @staticmethod
     def _tail_resume_value(body: ast.Expr) -> ast.Expr | None:
         """The tail ``resume(v)``'s argument, descending the same join-free
@@ -7336,6 +7413,10 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.HandleExpr):
+            # #1445/#1448: the clause BINDERS, before anything else in
+            # this arm — they are obligated whether or not the handler
+            # declares state, and an `Exn` handler declares none.
+            self._obligate_clause_binder(decl, expr)
             # #779: state-init and BODY are enclosing-scope code; clause
             # bodies and state updates bind the operation's fresh
             # parameters (and the handler state slot), so they walk under

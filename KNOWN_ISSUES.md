@@ -6,7 +6,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 Defects in shipped compiler, runtime, or tooling behaviour — this table matches the issue tracker's open [`bug`-labelled issues](https://github.com/aallan/vera/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug) one-to-one. Verification-soundness gaps carry the `limitation` label instead and are tracked under [Limitations](#limitations).
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| A refinement whose base has a PAIR representation — `@String` and `@Array<T>`, which lower to `(ptr, len)` — is guarded at a function boundary by a check that tees the value into ONE scalar local.  For a bare parameter that is right; for a tuple COMPONENT the decomposition hands the guard a single i32 where the value is two, so the predicate is evaluated against a pointer.  `vera verify` proves the predicate at Tier 1 and the artifact then refuses a value that SATISFIES it: `take(Tuple("x", 1))` against `@Tuple<{ @String | string_length(@String.0) > 0 }, Int>` traps though `string_length("x")` is 1.  Four instances — `@String` and `@Array<T>` at a parameter boundary and at a return boundary — with a bare refined parameter of every base, and the same tuple shape over an `@Int`-based refinement, running clean as the controls.  `Map` and `Set` are single i32 handles, so the scalar tee happens to be correct for them. | [#1466](https://github.com/aallan/vera/issues/1466) |
 
 ## Limitations
 

@@ -11,7 +11,7 @@ from typing import Callable, ClassVar
 
 from dataclasses import fields, is_dataclass
 
-from vera import ast, naming, narrowing
+from vera import ast, binders, naming, narrowing
 from vera.naming import display_adt_name
 from vera.monomorphize import mangle_type_name
 from vera.slots import effect_op_result_names, type_expr_slot_name
@@ -2074,6 +2074,9 @@ class CallsHandlersMixin:
                     clause.params[0],
                     "handler clause parameter has no slot name",
                 )
+            instructions.extend(self._emit_clause_binder_guard(
+                clause.params[0], arg_local, family_base, entry.family,
+                f"{clause.op_name}(…) clause binder", clause, clause_env))
             clause_env = clause_env.push(param_slot, arg_local)
         if state_slot_name is not None and state_local is not None:
             clause_env = clause_env.push(state_slot_name, state_local)
@@ -2214,6 +2217,64 @@ class CallsHandlersMixin:
         if not guard:
             return value
         return [*value, f"local.tee {tmp}", *guard]
+
+    def _emit_clause_binder_guard(
+        self,
+        te: object,
+        value_local: int,
+        family_base: str | None,
+        payload_family: str | None,
+        where: str,
+        node: object,
+        env: "WasmSlotEnv",
+    ) -> list[str]:
+        """Guard a handler-clause binder declared NARROWER than the payload
+        it receives (#1445, #1448).
+
+        A clause binder is a binder position — `ast.HandlerClause.params` in
+        :data:`vera.binders.BINDER_FIELDS` — and it was the one pattern-bind
+        site with no guard.  The clause body then reasons from a declared
+        type the value need not satisfy.
+
+        Emitted over the local the binder is about to be pushed under, so the
+        check runs before any of the body does, and gated on the site being
+        in `vera.narrowing.REFINED_BIND_GUARDED_SITES` — the same table the
+        verifier's classification reads, asked with the same site name from
+        the same registry, so the guard and the guarded status cannot
+        disagree.
+
+        Both directions, because the two spellings fail differently: the sign
+        guard for a `@Nat` binder over a plain payload, and the §2.6.5
+        predicate for a refined one.  `family_base` is the payload's own
+        base, so a binder no narrower than what it receives is left alone.
+        """
+        site = binders.site_of(ast.HandlerClause, "params")
+        if site not in narrowing.REFINED_BIND_GUARDED_SITES:
+            return []
+        if not isinstance(te, ast.TypeExpr):
+            return []
+        # NARROWER, asked the same way the verifier asks it: a binder whose
+        # identity is the payload's own is not a narrowing, so there is
+        # nothing to check.  `_family_name` is the refinement-PRESERVING
+        # name, which is the right comparison here — `Exn<Pos>` bound at
+        # `@Pos` narrows nothing, while `Exn<Int>` bound at `@Pos` does,
+        # and both share a representation base.  Without this the emitter
+        # planted a guard at a site the classification records nothing for,
+        # which is the drift in the other direction: measured as the single
+        # WAT mover on `ch07_exn_payload_guard.vera`, whose whole point is a
+        # payload already at the clause's type.
+        if payload_family is not None and self._family_name(te) == payload_family:
+            return []
+        guard: list[str] = []
+        base = self._resolve_base_type_name(
+            self._type_expr_to_slot_name(te) or "")
+        if base == "Nat" and family_base != "Nat":
+            guard.extend(self._emit_nat_bind_guard(
+                [f"local.get {value_local}"]))
+            guard.append("drop")
+        guard.extend(self._emit_bind_refine_guard(
+            te, value_local, where, node, env))
+        return guard
 
     @staticmethod
     def _contains_resume(node: object) -> bool:
@@ -2611,6 +2672,9 @@ class CallsHandlersMixin:
                     clause.params[0],
                     "handler clause parameter has no slot name",
                 )
+            binder_guard = self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, family_base, family,
+                f"{clause.op_name}(…) clause binder", clause, env)
             handler_env = env.push(caught_slot, thrown_local)
         else:
             # A patternless `throw()` clause binds nothing in the checker
@@ -2618,9 +2682,19 @@ class CallsHandlersMixin:
             # skewed the clause body's same-typed references onto it (PR
             # #1202 adversarial round, F2).
             handler_env = env
+            # A clause that binds nothing narrows nothing, so there is no
+            # guard to plant — but the name is still read below, and leaving
+            # it undefined here raised `UnboundLocalError` on every
+            # patternless `throw()` clause.
+            binder_guard = []
         handler_instrs = self.translate_expr(clause.body, handler_env)
         if handler_instrs is None:
             return None  # pragma: no cover
+        # #1445/#1448: the binder's guard runs BEFORE the clause body, which
+        # is the whole point — the body reasons from the binder's declared
+        # type, so a check after it would be reading a value the body has
+        # already trusted.
+        handler_instrs = binder_guard + handler_instrs
 
         # Assemble the try_table structure.
         # i32_pair (String, Array<T>) must expand to "i32 i32" in WAT result
