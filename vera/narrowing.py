@@ -141,9 +141,24 @@ def narrows_into_refinement(
     comparison is over conjoined predicate SETS rather than over one level or
     over a name: *declared* narrows *source* when it bottoms out in a
     different base, or when it adds a predicate the source does not already
-    carry.  The same chain under two names does not narrow, and a source
-    carrying MORE than the declared type asks for does not either — that is a
-    widening, and the value already satisfies what it is being bound at.
+    carry.  A source carrying MORE than the declared type asks for does not
+    narrow — that is a widening, and the value already satisfies what it is
+    being bound at.
+
+    Predicate identity is TEXTUAL, so "the same chain under two names" holds
+    only while the two spell their predicates the same way.  An alias that
+    names the whole type does: `type P2 = Pos;` renders `@Int.0 > 0` either
+    way, and `Exn<Pos>` bound at `@P2` narrows nothing.  An alias inside the
+    refinement's BASE does not, because the predicate embeds the base's
+    spelling — `Big = { @Pos | @Pos.0 > 100 }` and
+    `SBig = { @P2 | @P2.0 > 100 }` are the same type and render
+    `{'@Int.0 > 0', '@Pos.0 > 100'}` against
+    `{'@Int.0 > 0', '@P2.0 > 100'}`, so `Exn<Big>` bound at `@SBig` reads as
+    a narrowing and is obligated.  Measured, and in the safe direction: it
+    over-obligates rather than under-obligating, the record is
+    `tier3_unguarded` rather than a claimed guard, and both oracles agree on
+    it, so the two components stay in step (R-1465 review).  Comparing
+    normalised predicates instead is #1450's seam, not this one's.
 
     Its consumers today are the handler-clause binder's two halves.  The
     other pattern-bind positions — `let`, `match`, a destructuring `let` —

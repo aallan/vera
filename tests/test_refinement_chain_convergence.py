@@ -303,3 +303,96 @@ def test_the_other_pattern_bind_positions_agree_with_the_rule(
         f"narrows={actual}, the shared rule says narrows={rule}, and this "
         f"pair is not in _DELIBERATE_DISAGREEMENT"
     )
+
+
+# =====================================================================
+# Where "the same chain under two names" stops being true
+# =====================================================================
+
+#: Predicate identity is TEXTUAL, so an alias is invisible to the rule only
+#: while it does not change how the predicates are spelled.
+#:
+#: `P2 = Pos` names the whole type, and both render `@Int.0 > 0`, so the rule
+#: sees one chain.  `SBig = { @P2 | @P2.0 > 100 }` is the SAME TYPE as
+#: `Big = { @Pos | @Pos.0 > 100 }`, but the predicate embeds the base's
+#: spelling, so the two render `{'@Int.0 > 0', '@Pos.0 > 100'}` against
+#: `{'@Int.0 > 0', '@P2.0 > 100'}` and the rule reads a narrowing where there
+#: is none.
+#:
+#: Pinned rather than fixed, and the direction is why: it OVER-obligates, the
+#: record is `tier3_unguarded` rather than a claimed guard, and both oracles
+#: agree on it — so the two components stay in step and nothing is proved
+#: that should not be.  Comparing normalised predicates is #1450's seam.
+#: Found by the reviewer of PR #1465.
+_ALIAS_IN_THE_BASE = """type Pos = { @Int | @Int.0 > 0 };
+type P2 = Pos;
+type Big = { @Pos | @Pos.0 > 100 };
+type SBig = { @P2 | @P2.0 > 100 };
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 100)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Big>] {
+    throw(@SBig) -> { @SBig.0 }
+  } in {
+    throw(@Int.0)
+  }
+}
+"""
+
+#: The control: the same program with the binder's base spelled the way the
+#: payload's is.  Identical predicates, so the rule sees one chain.
+_SAME_SPELLING = _ALIAS_IN_THE_BASE.replace(
+    "type SBig = { @P2 | @P2.0 > 100 };",
+    "type SBig = { @Pos | @Pos.0 > 100 };")
+
+
+def _clause_binder_records(source: str) -> list[tuple[str, str]]:
+    """The clause binder's records — the ones on the clause BODY node, which
+    has no renderable source text and renders `<expr>`."""
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path as _Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _Path(tmp) / "p.vera"
+        path.write_text(source, encoding="utf-8")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(
+            _Path(__import__("vera").__file__).resolve().parents[1])
+        proc = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "--json", str(path)],
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            check=False, timeout=600,
+        )
+    envelope = json.loads(proc.stdout)
+    assert not [d for d in envelope["diagnostics"]
+                if d.get("severity") == "error"], envelope["diagnostics"]
+    return sorted(
+        (o["kind"], o["status"]) for o in envelope["obligations"]
+        if o["kind"] == "refine_bind" and o["description"] == "<expr>"
+    )
+
+
+def test_an_alias_spelled_the_same_way_is_one_chain() -> None:
+    """The control, and the half the docstring's sentence is true of."""
+    assert _clause_binder_records(_SAME_SPELLING) == []
+
+
+def test_an_alias_in_the_refinements_base_reads_as_a_narrowing() -> None:
+    """What the rule does today, pinned as such.
+
+    `SBig` and `Big` are the same type; the rule obligates the bind anyway,
+    because the predicates render differently.  The record is
+    `tier3_unguarded`, which is the safe direction — it claims no guard — and
+    both oracles reach it, so the components do not disagree.  If a later
+    change normalises predicates before comparing them, this cell fails and
+    the docstring's paragraph about textual identity comes out with it.
+    """
+    assert _clause_binder_records(_ALIAS_IN_THE_BASE) == [
+        ("refine_bind", "tier3_unguarded")]

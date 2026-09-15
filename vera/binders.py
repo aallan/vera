@@ -473,7 +473,12 @@ class BinderPosition:
     type_expr: ast.TypeExpr | None
     #: Index within a sequence field, or 0.
     index: int
-    #: The diagnostic site, with a pattern binder's inherited from its owner.
+    #: The diagnostic site, with a pattern binder's inherited from its
+    #: owner, and ``None`` for a contract-only occurrence — a site NAME is
+    #: as much a claim about a guard as the key is, so a consumer reading
+    #: one and not the other must not see `closure argument` for a closure
+    #: that never reaches a run (R-1465 review).  The registration's own
+    #: ``binder.site`` still says what the position is called in general.
     site: str | None
     #: Whether this occurrence is inside a contract-only construct.
     #:
@@ -487,7 +492,7 @@ class BinderPosition:
 
     def key(self) -> str | None:
         """The guard key for this occurrence, or None when it has none."""
-        if self.site is None or self.contract_only:
+        if self.site is None:
             return None
         return self.binder.guard_key or self.site
 
@@ -531,7 +536,8 @@ def _positions_in_field(
             yield BinderPosition(
                 owner=node, binder=binder,
                 type_expr=item if isinstance(item, ast.TypeExpr) else None,
-                index=index, site=site, contract_only=contract_only,
+                index=index, site=None if contract_only else site,
+                contract_only=contract_only,
             )
 
 

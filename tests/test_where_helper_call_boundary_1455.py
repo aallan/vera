@@ -659,9 +659,19 @@ class TestEveryReaderOfACallAnswersTheSameForBothSpellings:
         assert helper == top, dict(zip(
             _CALL_ORACLES, [(a, b) for a, b in zip(top, helper)]))
 
-    def test_the_readings_are_not_all_none(self) -> None:
-        """The premise: the spy reached a call the readers can answer about.
+    def test_the_control_reads_what_a_nat_returning_callee_should(
+        self,
+    ) -> None:
+        """The premise, pinned to the readings rather than to non-emptiness.
 
-        Five `None`s would compare equal and mean nothing.
+        Four of the five are booleans and so never `None`, which means an
+        "are they all None?" premise could not detect the two spellings
+        regressing TOGETHER (CodeRabbit on PR #1465).  These are what the
+        five say about `nat_to_int(h(()))` where `h` returns `@Nat`: the
+        declared return name is `Nat`, the call is statically `@Nat` and
+        carries `@Nat` provenance, so it does NOT narrow into `@Nat` and the
+        call-argument guard question does not arise.  If those move, the
+        equality cell above is comparing two spellings of something else.
         """
-        assert any(r is not None for r in _oracle_readings(_ORACLE_TOP))
+        assert _oracle_readings(_ORACLE_TOP) == (
+            "Nat", True, True, False, False)

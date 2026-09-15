@@ -413,13 +413,43 @@ def test_a_contract_only_binder_never_inherits_a_guarded_site() -> None:
     be waiting for the first one.
     """
     program = parse_to_ast(_QUANTIFIER_IN_A_REFINEMENT)
-    quantifiers = [
-        p for p in binders.binder_positions(program)
-        if p.binder.kind == "quantifier binder"
-    ]
+    positions = list(binders.binder_positions(program))
+
+    quantifiers = [p for p in positions
+                   if p.binder.kind == "quantifier binder"]
     assert quantifiers, "the walk did not reach the quantifier at all"
     assert {p.site for p in quantifiers} == {None}, (
         f"a contract-only binder inherited a position: "
         f"{[p.site for p in quantifiers]}"
     )
     assert {p.key() for p in quantifiers} == {None}
+
+    # The half `contract_only` was added FOR.  A quantifier binder's site is
+    # already `None` from its own registration, so the assertions above pass
+    # whether or not the flag does anything; the predicate is an `AnonFn`,
+    # whose `params` and `return_type` ARE registered with guarded sites, and
+    # those are what must come back keyless (CodeRabbit on PR #1465).
+    closures = [p for p in positions
+                if p.binder.kind in ("closure parameter", "closure return")]
+    assert closures, (
+        "the walk did not reach the quantifier's `AnonFn` predicate, so the "
+        "cell that matters is not being exercised"
+    )
+    assert {b.binder.site for b in closures} == {
+        "closure argument", "closure return"}, (
+        f"the fixture's closure positions are not REGISTERED at the guarded "
+        f"sites, so their keylessness proves nothing: "
+        f"{[b.binder.site for b in closures]}"
+    )
+    assert all(p.contract_only for p in closures)
+    # The occurrence carries neither the key NOR the site name: a site name
+    # is as much a claim about a guard as the key is, and a consumer reading
+    # one and not the other would see `closure argument` here.
+    assert {p.site for p in closures} == {None}, (
+        f"a closure inside a quantifier's predicate names a guarded site: "
+        f"{[(p.binder.kind, p.site) for p in closures]}"
+    )
+    assert {p.key() for p in closures} == {None}, (
+        f"a closure inside a quantifier's predicate names a guard key: "
+        f"{[(p.binder.kind, p.key()) for p in closures]}"
+    )

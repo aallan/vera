@@ -478,7 +478,15 @@ class TestThePayloadMayBeRefinedToo:
         keeps `ch07_exn_payload_guard.vera`'s emitted WAT where it was: no
         record, and a payload the handler admits still runs.
         """
-        _binds_all, envelope = _binds(tmp_path, _SAME_FAMILY, "same.vera")
+        all_binds, envelope = _binds(tmp_path, _SAME_FAMILY, "same.vera")
+        # The premise: this fixture DOES record a narrowing — the `throw`
+        # argument against the declared payload — so the negative below is
+        # about the clause binder rather than about a program that records
+        # nothing at all (CodeRabbit on PR #1465).
+        assert any(k == "refine_bind" for k, _s, _c in all_binds), (
+            f"the fixture emitted no narrowing record at all, so the "
+            f"exemption is untested: {all_binds}"
+        )
         binds = _clause_binds(envelope)
         assert not [b for b in binds if b[0] == "refine_bind"], (
             f"a binder at the payload's own type is not a narrowing: {binds}"
