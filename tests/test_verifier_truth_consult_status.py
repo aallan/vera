@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests.codegen_helpers import wat_calls
 from vera import narrowing
 from vera.environment import TypeEnv
 
@@ -101,43 +102,65 @@ public fn f(@Int -> @Int)
 def test_1362_unguarded_narrowing_is_disclosed_not_claimed_guarded(
     tmp_path: Path,
 ) -> None:
-    """The issue's repro: `tier3_unguarded` + E504, never plain `tier3`.
+    """The issue's property: a status never claims a guard the module lacks.
 
-    `tier3` is counted in `tier3_runtime`, whose meaning is runtime-guarded.
-    Claiming it here overcounts guarded obligations AND skips the disclosure
-    machinery that exists for exactly this case.
+    `tier3` is counted in `tier3_runtime`, whose meaning is runtime-guarded,
+    so claiming it where nothing is emitted overcounts guarded obligations
+    AND skips the disclosure machinery that exists for exactly this case.
+
+    This repro now carries TWO `nat_bind` records, and the property is that
+    each matches its own site.  #1445 gave the clause BINDER its guard, so
+    that record is `tier3`; the `nat_to_int(@Nat.0)` CALL in the clause body
+    is a different site with no guard of its own, and it stays
+    `tier3_unguarded` with the E504.  When this cell was written the binder
+    had no guard and no record — the single disclosure it asserted was the
+    call's, which is the confusion #1445's own investigation turned up.
     """
     result = _verify(tmp_path, _1362_REPRO)
-    binds = [o for o in result["obligations"] if o["kind"] == "nat_bind"]
-    assert len(binds) == 1, [(o["kind"], o["status"]) for o in result["obligations"]]
-    assert binds[0]["status"] == "tier3_unguarded", (
-        f"status {binds[0]['status']!r} claims a runtime guard; the emitted "
-        f"module has none"
+    # Each record with the SITE it belongs to, not a sorted list of
+    # statuses: the two swapped would satisfy a sorted comparison exactly as
+    # the right assignment does, and the swap is the defect this cell is
+    # about (CodeRabbit on PR #1465).  The clause BINDER's node is the clause
+    # body, which has no renderable source text and renders `<expr>`; the
+    # CALL's is the argument `@Nat.0`, so the descriptions name them apart.
+    binds = sorted(
+        (o["description"], o["status"]) for o in result["obligations"]
+        if o["kind"] == "nat_bind"
     )
+    assert binds == [
+        ("<expr>", "tier3"),
+        ("@Nat.0", "tier3_unguarded"),
+    ], [(o["kind"], o["description"], o["status"])
+        for o in result["obligations"]]
     assert "E504" in [w.get("error_code") for w in result["warnings"]]
 
 
 def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     """The claim is checked against the artifact, not against itself.
 
-    `tier3_unguarded` asserts the emitted module plants no guard here — so the
-    module is inspected.  Without this the status could be renamed without
-    being made true.
+    A status could otherwise be renamed without being made true, so the
+    module is inspected and the program is run.
+
+    Both readings moved with #1445, and in the direction that matters: the
+    module now carries the clause binder's guard, and the negative the
+    binder used to admit is refused.  The `tier3` record above is what
+    counts that guard.  Asserting the old "no guard, `-7` flows through"
+    here would now be asserting the defect.
     """
     wat = _wat(tmp_path, _1362_REPRO)
     assert wat.startswith("(module"), wat[:300]
-    assert "unreachable" not in wat, (
-        "the module DOES carry a guard — the obligation should then be "
-        f"`tier3`, not disclosed:\n{wat}"
+    assert wat_calls(wat, "vera.nat_guard_trap"), (
+        "the module carries no sign guard, so the `tier3` record above "
+        f"claims a check that is not there:\n{wat}"
     )
-    # And the value the guard would have caught flows through untrapped.
     p = tmp_path / "r.vera"
     p.write_text(_1362_REPRO, encoding="utf-8")
     run = _cli("run", str(p), "--fn", "f", "--", "-7")
-    assert run.returncode == 0 and run.stdout.strip() == "-7", (
-        f"expected the negative to pass through unguarded: {run.stdout!r} "
-        f"{run.stderr[-300:]!r}"
+    assert run.returncode != 0, (
+        f"the binder admitted `-7`: {run.stdout!r} {run.stderr[-300:]!r}"
     )
+    assert "Negative value bound into a @Nat slot" in (
+        run.stdout + run.stderr), run.stdout + run.stderr[-300:]
 
 
 def test_1362_a_guarded_callee_is_still_tier3(tmp_path: Path) -> None:

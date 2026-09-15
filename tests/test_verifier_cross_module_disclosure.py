@@ -80,17 +80,30 @@ def _triples(result: dict) -> list[tuple[str, str, str | None]]:
     ]
 
 
-def _obl(result: dict, kind: str, text: str | None = None) -> dict:
-    """The single obligation of *kind* (optionally whose clause reads *text*).
+def _obl(
+    result: dict, kind: str, text: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """The single obligation of *kind* (optionally whose clause reads *text*,
+    and optionally at *status*).
 
     Selected by the clause's own text rather than by line number: every
     fixture here is assembled from templates, so a line index would silently
     re-point at a different function the moment a template gains a line.
+
+    *status* separates two records of one kind at one site.  Since #1445 the
+    disclosing fixture carries both: the clause BINDER, now guarded and so
+    `tier3`, and the `nat_to_int(@Nat.0)` call in the clause body, which has
+    no guard of its own and stays `tier3_unguarded`.  A citation is about the
+    second — it is the one that produced the E504 a reader is being sent to —
+    so the caller says which, rather than the helper picking whichever comes
+    first.
     """
     hits = [
         o for o in result["obligations"]
         if o["kind"] == kind
         and (text is None or o["description"] == text)
+        and (status is None or o["status"] == status)
     ]
     assert len(hits) == 1, (
         f"expected exactly one {kind} obligation"
@@ -1532,7 +1545,7 @@ def test_1399_the_cross_module_e534_cites_the_culprit(tmp_path: Path) -> None:
         "main": "import lib;\n\n" + _USE_IT.format(call="lib::mk"),
     })
     lib_result = _verify(paths["lib"])
-    culprit = _obl(lib_result, "nat_bind")
+    culprit = _obl(lib_result, "nat_bind", status="tier3_unguarded")
     assert culprit["status"] == "tier3_unguarded", culprit
 
     result = _verify(paths["main"])

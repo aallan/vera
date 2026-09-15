@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from vera import ast
+from vera import ast, binders
 
 #: The effects whose operations code generation can lower at all (#754).
 #:
@@ -79,9 +79,19 @@ MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
 #:
 #: A construction store tees the value into one scalar local and compares it
 #: there, so the base has to have a scalar WASM representation.  A boundary
-#: guard has no such limit — it runs where the value is already bound, and a
-#: `{ @String | … }` parameter IS guarded there — which is why this is a
-#: CONSTRUCTION-position rule and not a property of the refinement.
+#: guard over a value that is BOUND has no such limit — it runs where the
+#: whole value already is, and a `{ @String | … }` parameter IS guarded
+#: there — which is why this is a CONSTRUCTION-position rule and not a
+#: property of the refinement.
+#:
+#: It is not a property of every boundary either, which this comment used to
+#: say and #1466 measured otherwise: the tuple DECOMPOSITION at a boundary
+#: tees a component the same scalar way a construction store does, so a
+#: pair-represented component (`@String`, `@Array<T>`) is compared against
+#: its pointer and a value that SATISFIES the refinement traps, on a program
+#: proved at Tier 1.  Four instances, both controls and the mechanism are on
+#: that issue; the fix is the guard-correctness matrix it asks for, not this
+#: roster, which is about construction.
 #:
 #: Read by codegen's `_refined_component_wasm_type` and by the verifier's
 #: construction arm, so a base the emitter cannot lower is not classified
@@ -94,32 +104,99 @@ REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
 })
 
 
-REFINED_BIND_GUARDED_SITES = frozenset({
-    # Function boundaries: the parameter / return predicate guards (#746).
-    "return type",
-    "call argument",
-    "closure argument",
-    "closure return",
-    # Narrowing binds, guarded by `_emit_bind_refine_guard` (#765).
-    "let binding",
-    "match binding",
-    "tuple destructure",
-    "ADT sub-pattern bind",
-    # Construction-position component stores (#1426).  A refined value put
-    # INTO a container was obligated where it was built and checked by
-    # nobody, so it went in and only a reader binding it back at the
-    # refinement caught it.  Guarded by the same lowering, teed off the
-    # value on its way to the store.
-    "constructor field",
-    "tuple component",
-    "array element",
-    "map value",
-    # The `State` write boundaries (#1439): the `handle` init, `put`'s
-    # argument and a clause's `with @T = …` override.  Their SIGN direction
-    # has been guarded since #1203; the predicate is the other half, and the
-    # `Exn` `throw` payload has taken the same lowering since #1268.
-    "State write boundary",
-})
+#: Since #1455/#1445 the membership is DERIVED from
+#: :data:`vera.binders.GUARD_SITES`, where each binder position's guard
+#: answers are declared beside the position itself.  Keeping the roster
+#: as a literal here made it possible to register a position and forget
+#: its guard answer, which is one level up from the drift this module
+#: exists to prevent — a position nothing answered for was SILENT.
+#: The name stays, because every consumer reads it through this module
+#: and a test may monkeypatch it to prove the coupling is load-bearing.
+REFINED_BIND_GUARDED_SITES = binders.guarded_sites("refinement_predicate")
+
+#: A declared type's refinement chain, comparable across the two components:
+#: the name the chain bottoms out in, and the set of predicates conjoined on
+#: the way down, keyed by rendered text.  A type carrying no refinement
+#: answers ``(its own name, frozenset())`` — "no predicates" is an answer.
+RefinementChain = tuple[str, frozenset[str]]
+
+
+def narrows_into_refinement(
+    source: RefinementChain | None, declared: RefinementChain | None,
+) -> bool:
+    """Does binding a *source*-typed value at a *declared* type NARROW?
+
+    THE derivation of that question, the way :func:`narrows_into_nat` is the
+    derivation of the sign one.  It exists because two components were asking
+    it two different ways and disagreeing on every program where both types
+    are refined: the verifier asked "is the declared type refined and the
+    source's not?", which exempted a refined payload bound at a STRICTER
+    refinement, and the emitter compared refinement-preserving family NAMES,
+    which does not.  So `handle[Exn<Pos>] { throw(@Neg) -> … }` was guarded
+    and recorded nowhere, and `Big = { @Pos | @Pos.0 > 100 }` over an
+    `Exn<Pos>` payload was neither — silent and unguarded, which is #1448
+    again at the chain spelling (R-1465 review).
+
+    Membership in a chain is the CONJUNCTION over its whole length, so the
+    comparison is over conjoined predicate SETS rather than over one level or
+    over a name: *declared* narrows *source* when it bottoms out in a
+    different base, or when it adds a predicate the source does not already
+    carry.  A source carrying MORE than the declared type asks for does not
+    narrow — that is a widening, and the value already satisfies what it is
+    being bound at.
+
+    Predicate identity is TEXTUAL, so "the same chain under two names" holds
+    only while the two spell their predicates the same way.  An alias that
+    names the whole type does: `type P2 = Pos;` renders `@Int.0 > 0` either
+    way, and `Exn<Pos>` bound at `@P2` narrows nothing.  An alias inside the
+    refinement's BASE does not, because the predicate embeds the base's
+    spelling — `Big = { @Pos | @Pos.0 > 100 }` and
+    `SBig = { @P2 | @P2.0 > 100 }` are the same type and render
+    `{'@Int.0 > 0', '@Pos.0 > 100'}` against
+    `{'@Int.0 > 0', '@P2.0 > 100'}`, so `Exn<Big>` bound at `@SBig` reads as
+    a narrowing and is obligated.  Measured, and in the safe direction: it
+    over-obligates rather than under-obligating, the record is
+    `tier3_unguarded` rather than a claimed guard, and both oracles agree on
+    it, so the two components stay in step (R-1465 review).  Comparing
+    normalised predicates instead is #1450's seam, not this one's.
+
+    Its consumers today are the handler-clause binder's two halves.  The
+    other pattern-bind positions — `let`, `match`, a destructuring `let` —
+    answer the same question through `_narrows_into_refined` /
+    `_refined_field_narrows`, which compare ONE level rather than the
+    conjoined chain, and a differential over twelve (source, declared) pairs
+    puts them at the same answer on every pair but one:
+    `test_refinement_chain_convergence.py`.  The exception is a source
+    carrying a STRONGER refinement than the slot asks for — `Big`'s
+    `> 0 AND > 100` into `Pos`'s `> 0`.  This rule exempts it, because the
+    value satisfies what it is bound at; those positions obligate it and
+    DISCHARGE it from the source's assumed predicate, which is a free Tier 1
+    where a value term exists to discharge against.  At a clause binder no
+    term exists — the bound value is whatever reaches the operation, and no
+    throw or put site pins it — so the same obligation would be a `tier3`
+    that can never become anything else.  The difference is deliberate on
+    both sides and measured rather than assumed; converging them is a
+    decision about that pair, not a tidy-up.
+
+    The chains are the caller's to produce, because the two components hold
+    different things: the verifier has the checker's semantic types
+    (:func:`vera.naming.refined_type_chain`), code generation has the
+    source's type expressions and the alias table
+    (:func:`vera.naming.refined_type_expr_chain`).  A chain the caller cannot
+    see at all is ``None``: an unknown DECLARED type narrows nothing, because
+    there is no predicate to check, and an unknown SOURCE narrows everything,
+    because it establishes nothing.
+    """
+    if declared is None:
+        return False
+    if source is None:
+        return True
+    declared_base, declared_predicates = declared
+    source_base, source_predicates = source
+    if declared_base != source_base:
+        return True
+    return not declared_predicates <= source_predicates
+
 
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]

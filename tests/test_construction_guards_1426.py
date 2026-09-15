@@ -1034,11 +1034,24 @@ class TestABlockTailIsReadInItsOwnScope:
         _assert_partition(envelope)
 
 
+#: `Tuple(0, 5)`, not `Tuple(5, 7)` (#1460).  `@Int.0` is the SECOND binder
+#: the destructure introduces — De Bruijn, most recent first — so with two
+#: POSITIVE components the cell stayed green whichever component the
+#: projection bound, and could not tell a reversed order from a correct one.
+#: Exactly one positive component is what makes it able to fail: the store
+#: still verifies, because `@Int.0` is the `5`, and `_DESTR_LITERAL_REVERSED`
+#: below is the same program with the components swapped, which reports
+#: `violated`.
+#:
+#: The issue asked for `Tuple(5, 0)`, reasoning that `@Int.0` names the first
+#: component.  Measured at 8eca11c0 it names the second, so that value
+#: INVERTS this cell rather than strengthening it — which is the confusion
+#: the weak fixture existed to hide, one level up.
 _DESTR_LITERAL = _PRELUDE + """\
 private fn mk(@Int -> @Map<String, Pos>)
   requires(true) ensures(true) effects(pure)
 {
-  let Tuple<@Int, @Int> = Tuple(5, 7);
+  let Tuple<@Int, @Int> = Tuple(0, 5);
   map_insert(map_new(), "a", @Int.0)
 }
 
@@ -1049,6 +1062,13 @@ public fn f(@Int -> @Int)
   7
 }
 """
+
+#: The discriminating twin: the same program with the tuple's components
+#: swapped.  It is what makes `_DESTR_LITERAL`'s `verified` a claim about
+#: WHICH component the projection binds rather than about both of them being
+#: positive, and it is the cell `Tuple(5, 7)` could not supply.
+_DESTR_LITERAL_REVERSED = _DESTR_LITERAL.replace(
+    "Tuple(0, 5)", "Tuple(5, 0)")
 
 _DESTR_OPAQUE = _PRELUDE + """\
 private fn src(@Int -> @Tuple<Int, Int>)
@@ -1186,7 +1206,8 @@ class TestAStoreAfterADestructureIsStillRecorded:
     ) -> None:
         """A projected literal binder is Tier 1, not a refusal.
 
-        `Tuple(5, 7)` binds a `5` that proves `> 0`.  Shadowing every
+        `Tuple(0, 5)` binds the `5` — `@Int.0` is the SECOND binder the
+        destructure introduces — and it proves `> 0`.  Shadowing every
         binder unconditionally — the first shape of this fix — recorded
         `violated` / E505 here for a program that runs clean, which is the
         same false refusal the block-tail fix had just removed one
@@ -1458,3 +1479,93 @@ def test_a_match_arm_binder_is_not_the_outer_parameter(
         f"another slot's obligation: {obs}"
     )
     _assert_partition(envelope)
+
+
+# =====================================================================
+# #1460 — the opaque-shadow gate runs after the proof, not before it
+# =====================================================================
+
+#: A predicate true of every value, over a component the SMT layer holds as
+#: an opaque placeholder.  `@Int.0 == @Int.0` is satisfiable whatever the
+#: placeholder takes, so the gate fired and an earned Tier 1 became `tier3` /
+#: E506 — the gate exists to filter REFUTATIONS whose countermodel names a
+#: value the program cannot produce, and a proof is not one of those.
+_PROVABLE_OVER_OPAQUE = """type Anything = { @Int | @Int.0 == @Int.0 };
+
+private fn src(@Unit -> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  Tuple(5, 7)
+}
+
+private fn ins(@Unit -> @Map<String, Anything>)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = src(());
+  map_insert(map_new(), "a", @Int.0)
+}
+
+public fn f(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  map_size(ins(()))
+}
+"""
+
+
+class TestTheOpaqueShadowGateFiltersRefutationsOnly:
+    """#1460 part 1.  Two cells, in the two directions the gate must split.
+
+    The gate cannot be tested by its own presence — it is invisible when it
+    does not fire — so what is asserted is the pair: a provable predicate
+    keeps its Tier 1, and a refutation whose countermodel names an
+    unreachable value is still demoted.  One without the other is satisfied
+    by deleting the gate, or by never reaching it.
+    """
+
+    def test_a_provable_predicate_over_an_opaque_value_is_tier_1(
+        self, tmp_path: Path,
+    ) -> None:
+        """`tier3` / E506 before, `verified` after."""
+        obs, envelope = _obligations(
+            tmp_path, _PROVABLE_OVER_OPAQUE, name="provable_opaque.vera")
+        assert _store_status(obs) == [("verified", None)], (
+            f"the predicate holds for every value the placeholder could "
+            f"take, so the proof is available and the gate must not "
+            f"intercept it: {obs}"
+        )
+        _assert_partition(envelope)
+
+    def test_a_refutation_over_an_opaque_value_is_still_demoted(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other direction, unchanged: the gate still does its job.
+
+        Reordering it behind the proof must not neutralise it, and this is
+        the cell that would fail if it had been deleted rather than moved.
+        """
+        obs, envelope = _obligations(
+            tmp_path, _DESTR_OPAQUE, name="refute_opaque.vera")
+        assert _store_status(obs) == [("tier3", "E506")], obs
+        _assert_partition(envelope)
+
+
+class TestTheLiteralDestructureFixtureCanTellItsComponentsApart:
+    """#1460 part 2: the mutation that shows the fixture discriminates.
+
+    `_DESTR_LITERAL` stores `@Int.0` after `let Tuple<@Int, @Int> =
+    Tuple(0, 5)`, and asserts `verified` because `@Int.0` is the `5`.  With
+    the components swapped it binds the `0` and reports `violated` — which is
+    the reading `Tuple(5, 7)` could not produce, since two positive
+    components leave the cell green whichever one the projection binds.
+    """
+
+    def test_swapping_the_components_flips_the_status(
+        self, tmp_path: Path,
+    ) -> None:
+        obs, _ = _obligations(
+            tmp_path, _DESTR_LITERAL_REVERSED, name="destrrev.vera")
+        assert _store_status(obs) == [("violated", "E505")], (
+            f"the projection binds `@Int.0`, the SECOND component, so "
+            f"swapping the tuple must move the status: {obs}"
+        )

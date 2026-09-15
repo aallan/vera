@@ -141,6 +141,7 @@ __all__ = [
     "family_name",
     "predicate_binder_key",
     "refined_type_chain",
+    "refined_type_expr_chain",
     "refinement_binder_parts",
     "resolve_type_expr",
     "slot_name",
@@ -973,6 +974,45 @@ class RefinementBinder:
     binder_name: str
     base: ast.TypeExpr
     base_is_refinement: bool
+
+
+def refined_type_expr_chain(
+    te: ast.TypeExpr, env: AliasEnv,
+) -> tuple[str, frozenset[str]]:
+    """A type EXPRESSION's refinement chain, as (base name, predicate texts).
+
+    The syntactic twin of :func:`refined_type_chain`, which answers the same
+    question about a resolved :class:`~vera.types.Type`.  Two answers rather
+    than one because the two consumers hold different things — the verifier
+    has the checker's semantic types, code generation has the source's type
+    expressions and the alias table — and `vera/narrowing.py` takes the
+    answer as an ORACLE for exactly that reason.  What must not differ is the
+    RULE, which is
+    :func:`vera.narrowing.narrows_into_refinement`, and
+    `test_refinement_chain_convergence.py` is the differential that keeps
+    these two from drifting apart, the way
+    `test_refinement_binder_convergence_1208.py` keeps
+    :func:`refinement_binder_parts` and its reference side together.
+
+    A type that carries no refinement answers ``(its own name, frozenset())``
+    rather than ``None``: "no predicates" is an answer, and it is the one that
+    makes a plain `@Int` payload compare correctly against a `@Pos` binder.
+    Predicates are keyed by their rendered text, which is what the semantic
+    side can also produce for the same declaration.
+    """
+    predicates: set[str] = set()
+    node: ast.TypeExpr = te
+    seen: set[int] = set()
+    while True:
+        parts = refinement_binder_parts(node, env)
+        if parts is None:
+            break
+        predicates.add(ast.format_expr(parts.predicate))
+        if id(parts.base) in seen:  # pragma: no cover — checker refuses cycles
+            break
+        seen.add(id(parts.base))
+        node = parts.base
+    return (slot_name(node, env) or "", frozenset(predicates))
 
 
 def refinement_binder_parts(
