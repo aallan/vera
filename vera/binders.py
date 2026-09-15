@@ -411,11 +411,15 @@ CONSTRUCTION_SITES: dict[type[ast.Node], tuple[str, ...]] = {
 def site_of(node_class: type[ast.Node], field_name: str) -> str:
     """The diagnostic site name of one registered binder position.
 
-    The accessor both emitters go through, so the string that links an
-    obligation to the guard that backs it is written once.  A site spelled
-    out at the recording site and again at the emitting site is two things
-    that can drift, and a drift there is invisible from inside either: the
-    status simply describes a guard that is somewhere else.
+    The accessor for a position whose two halves have been converged onto
+    it: today that is the `handler clause binder` alone, read by the
+    verifier's obligation and by the emitter's guard, so the string that
+    links a status to the guard behind it is written once for that position.
+    The other thirteen site names are still string literals at their own
+    call sites — around eighty of them across `vera/` — and converging them
+    is what this accessor exists to make possible, not something it has
+    already done.  Saying otherwise would claim a coupling that is not there
+    yet (R-1465 review).
 
     Raises rather than returning a default — a caller asking about a field
     that is not a binder position, or one whose site its owner supplies, has
@@ -471,10 +475,19 @@ class BinderPosition:
     index: int
     #: The diagnostic site, with a pattern binder's inherited from its owner.
     site: str | None
+    #: Whether this occurrence is inside a contract-only construct.
+    #:
+    #: A quantifier's predicate is an `AnonFn`, and an `AnonFn`'s parameters
+    #: are a registered position with a guarded site — so `forall(@T, dom,
+    #: fn(@T -> @Bool) …)` yielded `closure argument` for a closure that is
+    #: translated to a Z3 bound variable and never lifted, applied or run
+    #: (R-1465 review).  The KIND is still reported, because the position is
+    #: really there; what it may not do is name a guard key.
+    contract_only: bool = False
 
     def key(self) -> str | None:
         """The guard key for this occurrence, or None when it has none."""
-        if self.site is None:
+        if self.site is None or self.contract_only:
             return None
         return self.binder.guard_key or self.site
 
@@ -487,16 +500,24 @@ def binder_positions(node: object) -> Iterator[BinderPosition]:
     the obligation emission and the guard emission start from; neither decides
     anything here.
 
+    Its consumers today are the tests: the completeness matrix in
+    `test_binder_positions.py`, which holds the registry to `vera/ast.py`, and
+    the class instrument in `test_binder_position_generator.py`, which
+    enumerates the positions to build its cells.  No compiler pass walks it
+    yet — each still finds its own positions on its own descent — so this is
+    the shape a pass would consume rather than one that has replaced them.
+
     A pattern field yields its own position and descends, so `Some(@Pos)`
     under a match arm yields the arm's `match binding`, the sub-pattern's
     `ADT sub-pattern bind`, and the `@Pos` binder under it carrying the
     sub-pattern's site.
     """
-    yield from _walk(node, inherited=None)
+    yield from _walk(node, inherited=None, contract_only=False)
 
 
 def _positions_in_field(
     node: ast.Node, binder: BinderField, value: object, site: str | None,
+    contract_only: bool,
 ) -> Iterator[BinderPosition]:
     """The positions *binder*'s field declares on *node*."""
     if binder.field == "state_update":
@@ -510,17 +531,32 @@ def _positions_in_field(
             yield BinderPosition(
                 owner=node, binder=binder,
                 type_expr=item if isinstance(item, ast.TypeExpr) else None,
-                index=index, site=site,
+                index=index, site=site, contract_only=contract_only,
             )
 
 
-def _walk(node: object, inherited: str | None) -> Iterator[BinderPosition]:
+def _pattern_valued(child: object) -> bool:
+    """Whether *child* is a pattern, or a sequence holding one."""
+    if isinstance(child, ast.Pattern):
+        return True
+    if isinstance(child, tuple):
+        return any(isinstance(item, ast.Pattern) for item in child)
+    return False
+
+
+def _walk(
+    node: object, inherited: str | None, contract_only: bool,
+) -> Iterator[BinderPosition]:
     if isinstance(node, tuple):
         for item in node:
-            yield from _walk(item, inherited)
+            yield from _walk(item, inherited, contract_only)
         return
     if not isinstance(node, ast.Node):
         return
+    # A quantifier's whole subtree is contract-only: its binder, and the
+    # `AnonFn` predicate's parameters and return with it.
+    contract_only = contract_only or isinstance(
+        node, (ast.ForallExpr, ast.ExistsExpr))
 
     by_field = {b.field: b for b in BINDER_FIELDS.get(type(node), ())}
     for fld in getattr(node, "__dataclass_fields__", {}):
@@ -529,9 +565,17 @@ def _walk(node: object, inherited: str | None) -> Iterator[BinderPosition]:
         site = inherited
         if binder is not None:
             site = binder.site if binder.site is not None else inherited
-            yield from _positions_in_field(node, binder, child, site)
-        # Descend exactly once per field, carrying the site this field
-        # establishes — so a `BindingPattern` under a registered pattern
-        # field knows which position it is, and a quantifier written inside
-        # a parameter's refinement predicate is still reached.
-        yield from _walk(child, site)
+            yield from _positions_in_field(
+                node, binder, child, site, contract_only)
+        # Descend exactly once per field.  The site travels only through a
+        # PATTERN, which is the one place a position is declared by one node
+        # and spelled by another: a `BindingPattern` under a `MatchArm` is a
+        # `match binding` and the same node under a `ConstructorPattern` is
+        # an `ADT sub-pattern bind`.  Everything else clears it.  Carrying it
+        # further gave a quantifier written inside a parameter's refinement
+        # predicate the enclosing position's site, so `key()` answered
+        # `call argument` for a contract-only binder that never reaches a run
+        # and can have no guard (CodeRabbit on PR #1465).
+        yield from _walk(
+            child, site if _pattern_valued(child) else None,
+            contract_only)

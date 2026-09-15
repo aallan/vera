@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests.codegen_helpers import wat_calls
 from vera import narrowing
 from vera.environment import TypeEnv
 
@@ -116,11 +117,21 @@ def test_1362_unguarded_narrowing_is_disclosed_not_claimed_guarded(
     call's, which is the confusion #1445's own investigation turned up.
     """
     result = _verify(tmp_path, _1362_REPRO)
-    statuses = sorted(o["status"] for o in result["obligations"]
-                      if o["kind"] == "nat_bind")
-    assert statuses == ["tier3", "tier3_unguarded"], [
-        (o["kind"], o["status"]) for o in result["obligations"]
-    ]
+    # Each record with the SITE it belongs to, not a sorted list of
+    # statuses: the two swapped would satisfy a sorted comparison exactly as
+    # the right assignment does, and the swap is the defect this cell is
+    # about (CodeRabbit on PR #1465).  The clause BINDER's node is the clause
+    # body, which has no renderable source text and renders `<expr>`; the
+    # CALL's is the argument `@Nat.0`, so the descriptions name them apart.
+    binds = sorted(
+        (o["description"], o["status"]) for o in result["obligations"]
+        if o["kind"] == "nat_bind"
+    )
+    assert binds == [
+        ("<expr>", "tier3"),
+        ("@Nat.0", "tier3_unguarded"),
+    ], [(o["kind"], o["description"], o["status"])
+        for o in result["obligations"]]
     assert "E504" in [w.get("error_code") for w in result["warnings"]]
 
 
@@ -138,7 +149,7 @@ def test_1362_the_claim_and_the_module_agree(tmp_path: Path) -> None:
     """
     wat = _wat(tmp_path, _1362_REPRO)
     assert wat.startswith("(module"), wat[:300]
-    assert "call $vera.nat_guard_trap" in wat, (
+    assert wat_calls(wat, "vera.nat_guard_trap"), (
         "the module carries no sign guard, so the `tier3` record above "
         f"claims a check that is not there:\n{wat}"
     )

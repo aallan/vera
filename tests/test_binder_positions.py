@@ -382,3 +382,44 @@ def test_the_state_writes_share_one_guard_key_under_three_names() -> None:
         "handler state init", "handler state update",
     }
     assert {p.key() for p in writes} == {"State write boundary"}
+
+
+_QUANTIFIER_IN_A_REFINEMENT = """type Small = { @Int | forall(@Int, [1], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }) };
+
+public fn f(@Small -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Small.0
+}
+"""
+
+
+def test_a_contract_only_binder_never_inherits_a_guarded_site() -> None:
+    """The site travels through a PATTERN and nothing else.
+
+    A pattern is the one place a position is declared by one node and spelled
+    by another, which is why the site is inherited at all: the same
+    `BindingPattern` is a `match binding` under an arm and an
+    `ADT sub-pattern bind` under a constructor pattern.  Carried further, a
+    quantifier written inside a parameter's refinement predicate took the
+    enclosing position's site and `key()` answered `call argument` — a guard
+    key, for a binder that is translated to a Z3 bound variable and never
+    reaches a run (CodeRabbit on PR #1465).
+
+    No production consumer reads `key()` for a quantifier today, which is
+    exactly why the registry has to be right about it: the wrong answer would
+    be waiting for the first one.
+    """
+    program = parse_to_ast(_QUANTIFIER_IN_A_REFINEMENT)
+    quantifiers = [
+        p for p in binders.binder_positions(program)
+        if p.binder.kind == "quantifier binder"
+    ]
+    assert quantifiers, "the walk did not reach the quantifier at all"
+    assert {p.site for p in quantifiers} == {None}, (
+        f"a contract-only binder inherited a position: "
+        f"{[p.site for p in quantifiers]}"
+    )
+    assert {p.key() for p in quantifiers} == {None}

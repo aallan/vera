@@ -37,8 +37,15 @@ Red at `origin/release/v0.2.0` 8eca11c0, before the fixes in this PR:
 | handler clause binder x refined `@String` | silent, no guard |
 | call argument (`where` helper) x all four | silent (#1455; fixed in the first commit of this PR) |
 
-One cell is red at BOTH revisions and is marked `xfail(strict=True)` with its
-measurement — see `_KNOWN_SILENT` below.
+Three defects the generator finds are RECORDED rather than trimmed away.  Two
+of them this PR closes; the third is `_KNOWN_RED` below, whose products are
+skipped in the matrix and pinned by a cell of their own at the end of the
+file, asserting what the compiler does today.  Nothing here is `xfail`ed: no
+test in this suite is, and `scripts/check_doc_counts.py` gates TESTING.md's
+breakdown as `passed + stress-deselected + skipped == collected`, which has no
+term for one.  A pinning assertion has the property that matters — it fails
+the day the defect is fixed — without making every future PR write a fourth
+number.
 """
 from __future__ import annotations
 
@@ -51,7 +58,7 @@ from pathlib import Path
 import pytest
 
 import vera
-from vera import binders
+from vera import binders, narrowing
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -322,14 +329,25 @@ def _t_map_value(pre: str, slot: str, value: str, base: str) -> str:
 """
 
 
+#: The payload a clause binder must be NARROWER than, per refinement kind's
+#: base.  `refined_array`'s slot and its base are both `Array<Pos>`, so using
+#: the base as the payload made the binder equal to what it receives — no
+#: narrowing, and a program identical to the `effect-operation argument`
+#: cell's.  A cell that cannot fail reads as coverage, which is the one thing
+#: TESTING.md § Class Instruments says is worse than an absent cell
+#: (CodeRabbit on PR #1465).
+_CLAUSE_PAYLOAD = {"Array<Pos>": "Array<Int>"}
+
+
 def _t_handler_clause_binder(pre: str, slot: str, value: str, base: str) -> str:
     """#1445 / #1448's own spelling: the clause binds the thrown payload."""
+    payload = _CLAUSE_PAYLOAD.get(base, base)
     return pre + f"""public fn f(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {{
-  handle[Exn<{base}>] {{
+  handle[Exn<{payload}>] {{
     throw({slot}) -> {{ 1 }}
   }} in {{
     throw({value})
@@ -551,6 +569,18 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, str], str] = {
 #: with the measurement.  Marked rather than removed: a class instrument
 #: trimmed until it is green measures the trimming.
 _KNOWN_RED: dict[tuple[str, str], str] = {
+    ("handler clause binder", "refined_array"):
+        "the refinement is on the array ELEMENT, not on the binder, so "
+        "`_refined_field_narrows` sees no RefinedType and the clause binder "
+        "raises nothing — `handle[Exn<Array<Int>>] { throw(@Array<Pos>) -> "
+        "… }` over `throw([0 - 5])` verifies clean and runs, returning 1.  "
+        "spec §11.17 already says a refinement written on an array element "
+        "takes no guard at any boundary, so the absent GUARD is documented; "
+        "what is not is the absent RECORD, since an uncovered site is "
+        "supposed to be disclosed rather than silent.  Same mechanism as "
+        "the nested-refinement family (#1410), a different one from the "
+        "positions this PR closes, and measured only once the cell stopped "
+        "using the binder's own type as the payload",
     ("tuple component", "refined_string"):
         "#1466, pre-existing on main 6dc41d40 and release/v0.2.0 8eca11c0: "
         "the "
@@ -661,6 +691,81 @@ def test_a_satisfying_value_passes(cell: tuple[str, int, str],
     assert not r["refused"], (
         f"{site}/{kind}: the satisfying value traps at run time:\n"
         f"{r['run_output']}"
+    )
+
+
+#: Sites the §2.6.5 predicate lowering has no scalar to tee a value into.
+#:
+#: Stated as a RULE over the cell rather than read from `GUARD_SITES`,
+#: deliberately: the point of the reading below is that dropping a registry
+#: entry must RED a generator cell, and a reading that consulted the registry
+#: to decide what to expect would skip instead (R-1465 review, Finding 3).
+def _lowerable(site: str, kind: str) -> tuple[bool, str]:
+    """Can a guard be emitted for this cell's base at this position?"""
+    if kind == "refined_array":
+        return (False, "the refinement is on the array ELEMENT, so the slot "
+                       "carries no predicate of its own for the lowering to "
+                       "emit — the nested-refinement family (#1410)")
+    base = _KINDS[kind][4]
+    construction = {
+        s for sites in binders.CONSTRUCTION_SITES.values() for s in sites
+    }
+    if (site in construction
+            and base not in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES):
+        return (False, "a construction store tees the value into one scalar "
+                       "local, and this base has no scalar representation "
+                       "(`narrowing.REFINED_CONSTRUCTION_SCALAR_BASES`)")
+    return (True, "")
+
+
+#: Positions whose guard is not a property of the position, so a cell cannot
+#: expect one.  Hand-stated with the reason, NOT derived from `GUARD_SITES`.
+_NOT_GUARDED_POSITIONS: dict[str, str] = {
+    "effect-operation argument":
+        "guarded for a BUILT-IN effect's operation and not for a "
+        "user-declared one, so the answer belongs to the effect rather than "
+        "to the position (#754, #1268) — this template happens to use `Exn`, "
+        "and pinning a refusal here would pin the effect it chose",
+    "State-op resume":
+        "codegen wraps a `get` clause's net value, so the answer belongs to "
+        "the clause's dispatch path rather than to the position (#1203)",
+}
+
+
+@pytest.mark.parametrize("cell", _CELLS, ids=_ids)
+def test_a_site_that_can_be_guarded_refuses_rather_than_disclosing(
+    cell: tuple[str, int, str], tmp_path: Path,
+) -> None:
+    """The third reading: a guard is PRESENT where one can be emitted.
+
+    "Never silently accepted" is satisfied by an honest `tier3_unguarded`
+    disclosure, which is right — but it means the matrix cannot tell a guard
+    from its absence: dropping the `handler clause binder` entry from
+    `GUARD_SITES` flips every affected status to `tier3_unguarded` and every
+    cell above stays green (R-1465 review, measured: 0 of 133 executed cells
+    red under that mutation).  This reading is what makes the drop visible.
+
+    Its expectation is a RULE over the cell — a lowerable base at a position
+    whose guard is a property of the position — and not a lookup in the
+    registry, because a reading that asked the registry what to expect would
+    agree with a registry that had just lost the entry.
+    """
+    site, index, kind = cell
+    _skip_or_xfail(site, kind)
+    not_guarded = _NOT_GUARDED_POSITIONS.get(site)
+    if not_guarded is not None:
+        pytest.skip(f"the position does not decide its guard: {not_guarded}")
+    can_lower, why = _lowerable(site, kind)
+    if not can_lower:
+        pytest.skip(f"no guard can be emitted for this base: {why}")
+    pre, slot, bad, _good, base = _KINDS[kind]
+    r = _read(tmp_path, _TEMPLATES[site][index](pre, slot, bad, base),
+              "bad.vera")
+    assert r["errors"] or r["refused"], (
+        f"{site}/{kind}: the value is refused by nothing — not by "
+        f"verification, and not by the artifact — though a guard can be "
+        f"emitted for this base at this position.  The stream says "
+        f"{r['obligations']}:\n{r['run_output']}"
     )
 
 
@@ -785,3 +890,31 @@ def test_1466_a_pair_represented_tuple_component_traps_on_a_value_it_admits(
         f"from _KNOWN_RED, and close the issue:\n{r['run_output']}"
     )
     assert "Refinement violation" in r["run_output"], r["run_output"]
+
+
+def test_a_refined_element_type_at_a_clause_binder_is_not_yet_recorded(
+    tmp_path: Path,
+) -> None:
+    """The third pinned shape, asserted as what the compiler DOES.
+
+    `handle[Exn<Array<Int>>] { throw(@Array<Pos>) -> … }` binds an
+    `Array<Int>` payload at an `Array<Pos>` binder.  The refinement is on the
+    ELEMENT rather than on the binder, so the narrowing test sees no
+    `RefinedType` and the clause raises nothing; `throw([0 - 5])` verifies
+    clean and the program runs.
+
+    spec §11.17 already says a refinement written on an array element takes
+    no guard at any boundary, so the missing GUARD is documented.  The
+    missing RECORD is not — an uncovered site is supposed to disclose itself
+    — but the mechanism is the nested-refinement family (#1410) rather than
+    the positions this PR closes, so it is recorded here rather than fixed.
+    """
+    pre, slot, bad, _good, base = _KINDS["refined_array"]
+    r = _read(tmp_path, _t_handler_clause_binder(pre, slot, bad, base),
+              "clausearr.vera")
+    assert not r["obligations"], (
+        "the clause binder now records its element narrowing — remove this "
+        "cell and the ('handler clause binder', 'refined_array') entry from "
+        f"_KNOWN_RED: {r}"
+    )
+    assert not r["refused"], r["run_output"]

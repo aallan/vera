@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests.codegen_helpers import wat_calls
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -79,6 +80,26 @@ def _binds(tmp_path: Path, source: str, name: str) -> tuple[list, dict]:
     return ([(o["kind"], o["status"], o.get("error_code"))
              for o in envelope["obligations"]
              if o["kind"] in ("refine_bind", "nat_bind")], envelope)
+
+
+def _clause_binds(envelope: dict) -> list[tuple[str, str, str | None]]:
+    """Only the records the CLAUSE BINDER raises.
+
+    A handler program carries other narrowing records at the same effect —
+    the `throw` op ARGUMENT against the declared payload, most of all — and a
+    cell that counted every `refine_bind` would read one of those as the
+    binder's.  The binder's node is the clause BODY, which has no renderable
+    source text and so renders `<expr>`; every other record here names the
+    expression it is about.  The same distinction
+    `test_verifier_truth_consult_status.py` draws between the binder and the
+    call in its clause body.
+    """
+    return sorted(
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in envelope["obligations"]
+        if o["kind"] in ("refine_bind", "nat_bind")
+        and o["description"] == "<expr>"
+    )
 
 
 def _assert_partition(envelope: dict) -> None:
@@ -280,7 +301,7 @@ def test_the_site_table_moves_both_halves_together(
 
     on_statuses, on_wat = status_and_wat()
     assert "tier3" in on_statuses, on_statuses
-    assert "call $vera.contract_fail" in on_wat
+    assert wat_calls(on_wat, "vera.contract_fail")
 
     monkeypatch.setattr(
         narrowing, "REFINED_BIND_GUARDED_SITES",
@@ -291,7 +312,176 @@ def test_the_site_table_moves_both_halves_together(
         f"the classification still claims a guard after the site left the "
         f"table, so it is not reading the table: {off_statuses}"
     )
-    assert "call $vera.contract_fail" not in off_wat, (
+    assert not wat_calls(off_wat, "vera.contract_fail"), (
         "the emitter still plants the guard after the site left the table, "
         "so it is not reading the table either"
     )
+
+
+# =====================================================================
+# The PAYLOAD axis: what the binder is narrower THAN
+# =====================================================================
+#
+# Every fixture above declares an UNREFINED payload (`Exn<Int>`,
+# `State<Int>`), so none of them can reach the question the two components
+# were answering differently: what happens when the payload is refined TOO.
+# The reviewer of PR #1465 found both failure modes there, and this is the
+# axis that holds them.
+
+_TWO_FAMILIES = """type Pos = { @Int | @Int.0 > 0 };
+type Neg = { @Int | @Int.0 < 0 };
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Pos>] {
+    throw(@Neg) -> { @Neg.0 }
+  } in {
+    throw(@Int.0)
+  }
+}
+"""
+
+_STATE_TWO_FAMILIES = """type Pos = { @Int | @Int.0 > 0 };
+type Neg = { @Int | @Int.0 < 0 };
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Pos>](@Pos = 1) {
+    get(@Unit) -> { resume(1) },
+    put(@Neg) -> { resume(()) }
+  } in {
+    put(@Int.0);
+    2
+  }
+}
+"""
+
+_CHAIN_OVER_REFINED = """type Pos = { @Int | @Int.0 > 0 };
+type Big = { @Pos | @Pos.0 > 100 };
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Pos>] {
+    throw(@Big) -> { @Big.0 }
+  } in {
+    throw(@Int.0)
+  }
+}
+"""
+
+_SAME_FAMILY = """type Pos = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Pos>] {
+    throw(@Pos) -> { @Pos.0 }
+  } in {
+    throw(@Int.0)
+  }
+}
+"""
+
+
+class TestThePayloadMayBeRefinedToo:
+    """Four payload shapes, and what each must do.
+
+    The two components asked the narrowing question two different ways —
+    the verifier "is the declared type refined and the payload's not?", the
+    emitter "do the refinement-preserving family names differ?" — and they
+    disagree on every program where both are refined.  Both failure modes
+    the class claim rules out were reachable through this axis:
+
+    * `Exn<Pos>` bound at `@Neg`: the emitter guarded it (different family
+      names) and the verifier recorded nothing (the payload IS refined).  A
+      guard the stream does not count.
+    * `Exn<Pos>` bound at `Big = { @Pos | … }`: the family names differ, so
+      the emitter guarded — but the base is itself a refinement, so the
+      §2.6.5 lowering declines and nothing was emitted after all, and the
+      verifier still recorded nothing.  Silent AND unguarded: #1448 again,
+      at the chain spelling, on the one pattern-bind position where `let`
+      and `match` both obligate it.
+
+    Both sides now call `narrowing.narrows_into_refinement` over the
+    CONJOINED chains, so `Exn<Pos>` bound at `@Pos` — the same chain — is
+    exempt at both, and everything else is obligated at both.
+    """
+
+    def test_a_disjoint_family_is_obligated(self, tmp_path: Path) -> None:
+        _binds_all, envelope = _binds(tmp_path, _TWO_FAMILIES, "twofam.vera")
+        binds = _clause_binds(envelope)
+        assert any(k == "refine_bind" and s == "tier3" for k, s, _ in binds), (
+            f"the binder narrows `Pos` to `Neg`, which shares no predicate "
+            f"with it, and the emitter guards it: {binds}"
+        )
+        _assert_partition(envelope)
+
+    def test_a_disjoint_family_refuses_a_payload_it_forbids(
+        self, tmp_path: Path,
+    ) -> None:
+        """`5` satisfies `Pos` and violates `Neg`, so the guard must fire.
+
+        At 8eca11c0 this program ran and returned `5`; at 26af842f it
+        trapped with nothing on the record.  Both halves are pinned, so
+        neither can come back alone.
+        """
+        out = _run(tmp_path, _TWO_FAMILIES, "5", "twofam_run.vera")
+        assert _REFINE_TRAP in out, out
+
+    def test_the_state_side_twin(self, tmp_path: Path) -> None:
+        _binds_all, envelope = _binds(
+            tmp_path, _STATE_TWO_FAMILIES, "st_twofam.vera")
+        binds = _clause_binds(envelope)
+        assert any(k == "refine_bind" and s == "tier3" for k, s, _ in binds), (
+            f"the `put` clause binder narrows `Pos` to `Neg`: {binds}"
+        )
+        out = _run(tmp_path, _STATE_TWO_FAMILIES, "5", "st_twofam_run.vera")
+        assert _REFINE_TRAP in out, out
+
+    def test_a_chain_over_the_payload_is_at_least_on_the_record(
+        self, tmp_path: Path,
+    ) -> None:
+        """`Big = { @Pos | … }` over an `Exn<Pos>` payload.
+
+        Whether it can be GUARDED is the pre-existing E618 question — a
+        refinement whose base is itself a refinement is one the §2.6.5
+        lowering will not compose — so `tier3_unguarded` is the honest
+        answer and the cell asks for a record, not for a guard.  What it may
+        not be is silent, which is what it was.
+        """
+        _binds_all, envelope = _binds(
+            tmp_path, _CHAIN_OVER_REFINED, "chain.vera")
+        binds = _clause_binds(envelope)
+        assert any(k == "refine_bind" for k, _s, _c in binds), (
+            f"the chain adds `> 100` to the payload's `> 0` and nothing "
+            f"records it: {binds}"
+        )
+        _assert_partition(envelope)
+
+    def test_the_same_chain_is_exempt_at_both_sides(
+        self, tmp_path: Path,
+    ) -> None:
+        """`Exn<Pos>` bound at `@Pos` narrows nothing.
+
+        The over-reach control for the two cells above, and the one that
+        keeps `ch07_exn_payload_guard.vera`'s emitted WAT where it was: no
+        record, and a payload the handler admits still runs.
+        """
+        _binds_all, envelope = _binds(tmp_path, _SAME_FAMILY, "same.vera")
+        binds = _clause_binds(envelope)
+        assert not [b for b in binds if b[0] == "refine_bind"], (
+            f"a binder at the payload's own type is not a narrowing: {binds}"
+        )
+        out = _run(tmp_path, _SAME_FAMILY, "5", "same_run.vera")
+        assert out.strip() == "5", out

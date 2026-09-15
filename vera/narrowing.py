@@ -114,6 +114,75 @@ REFINED_CONSTRUCTION_SCALAR_BASES = frozenset({
 #: and a test may monkeypatch it to prove the coupling is load-bearing.
 REFINED_BIND_GUARDED_SITES = binders.guarded_sites("refinement_predicate")
 
+#: A declared type's refinement chain, comparable across the two components:
+#: the name the chain bottoms out in, and the set of predicates conjoined on
+#: the way down, keyed by rendered text.  A type carrying no refinement
+#: answers ``(its own name, frozenset())`` — "no predicates" is an answer.
+RefinementChain = tuple[str, frozenset[str]]
+
+
+def narrows_into_refinement(
+    source: RefinementChain | None, declared: RefinementChain | None,
+) -> bool:
+    """Does binding a *source*-typed value at a *declared* type NARROW?
+
+    THE derivation of that question, the way :func:`narrows_into_nat` is the
+    derivation of the sign one.  It exists because two components were asking
+    it two different ways and disagreeing on every program where both types
+    are refined: the verifier asked "is the declared type refined and the
+    source's not?", which exempted a refined payload bound at a STRICTER
+    refinement, and the emitter compared refinement-preserving family NAMES,
+    which does not.  So `handle[Exn<Pos>] { throw(@Neg) -> … }` was guarded
+    and recorded nowhere, and `Big = { @Pos | @Pos.0 > 100 }` over an
+    `Exn<Pos>` payload was neither — silent and unguarded, which is #1448
+    again at the chain spelling (R-1465 review).
+
+    Membership in a chain is the CONJUNCTION over its whole length, so the
+    comparison is over conjoined predicate SETS rather than over one level or
+    over a name: *declared* narrows *source* when it bottoms out in a
+    different base, or when it adds a predicate the source does not already
+    carry.  The same chain under two names does not narrow, and a source
+    carrying MORE than the declared type asks for does not either — that is a
+    widening, and the value already satisfies what it is being bound at.
+
+    Its consumers today are the handler-clause binder's two halves.  The
+    other pattern-bind positions — `let`, `match`, a destructuring `let` —
+    answer the same question through `_narrows_into_refined` /
+    `_refined_field_narrows`, which compare ONE level rather than the
+    conjoined chain, and a differential over twelve (source, declared) pairs
+    puts them at the same answer on every pair but one:
+    `test_refinement_chain_convergence.py`.  The exception is a source
+    carrying a STRONGER refinement than the slot asks for — `Big`'s
+    `> 0 AND > 100` into `Pos`'s `> 0`.  This rule exempts it, because the
+    value satisfies what it is bound at; those positions obligate it and
+    DISCHARGE it from the source's assumed predicate, which is a free Tier 1
+    where a value term exists to discharge against.  At a clause binder no
+    term exists — the bound value is whatever reaches the operation, and no
+    throw or put site pins it — so the same obligation would be a `tier3`
+    that can never become anything else.  The difference is deliberate on
+    both sides and measured rather than assumed; converging them is a
+    decision about that pair, not a tidy-up.
+
+    The chains are the caller's to produce, because the two components hold
+    different things: the verifier has the checker's semantic types
+    (:func:`vera.naming.refined_type_chain`), code generation has the
+    source's type expressions and the alias table
+    (:func:`vera.naming.refined_type_expr_chain`).  A chain the caller cannot
+    see at all is ``None``: an unknown DECLARED type narrows nothing, because
+    there is no predicate to check, and an unknown SOURCE narrows everything,
+    because it establishes nothing.
+    """
+    if declared is None:
+        return False
+    if source is None:
+        return True
+    declared_base, declared_predicates = declared
+    source_base, source_predicates = source
+    if declared_base != source_base:
+        return True
+    return not declared_predicates <= source_predicates
+
+
 #: Answers "what Vera type name does this call return?", or None when unknown.
 FnCallTypeOracle = Callable[[ast.Expr], "str | None"]
 

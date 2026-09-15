@@ -538,3 +538,130 @@ class TestAModuleQualifiedCallIsObligatedToo:
             f"{binds}; the same call in one file records "
             f"{_binds(_ISSUE_CONTROL)}"
         )
+
+
+# =====================================================================
+# Every reader of a CALL answers the same for both spellings
+# =====================================================================
+
+_ORACLE_TOP = """private fn h(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(h(()))
+}
+"""
+
+_ORACLE_WHERE = """public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(h(()))
+}
+where {
+  fn h(@Unit -> @Nat)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    0
+  }
+}
+"""
+
+#: The readers that answer a question about a CALL by looking its callee up.
+#: Named here so a reader added later that reaches for the flat registry has
+#: somewhere it is missing FROM.
+_CALL_ORACLES = (
+    "_declared_ret_type_name",
+    "_is_nat_typed",
+    "_has_nat_origin",
+    "narrows_into_nat",
+    "_call_arg_nat_guarded",
+)
+
+
+def _oracle_readings(source: str) -> tuple[object, ...]:
+    """The five readings, taken at the `h(())` node during the real walk."""
+    from vera import ast as vast
+    from vera import narrowing
+    from vera import verifier as verifier_module
+    from vera.checker import typecheck_with_artifacts
+    from vera.parser import parse_to_ast
+
+    program = parse_to_ast(source)
+    diags, arts = typecheck_with_artifacts(program, source)
+    assert not [d for d in diags if d.severity == "error"], diags
+
+    seen: dict[str, tuple[object, ...]] = {}
+    original = verifier_module.ContractVerifier._walk_for_nat_binding_obligations
+
+    def spy(self, decl, expr, smt, slot_env, assumptions):  # type: ignore[no-untyped-def]
+        if isinstance(expr, vast.FnCall) and expr.name == "h" and not seen:
+            seen["r"] = (
+                self._declared_ret_type_name(expr),
+                self._is_nat_typed(expr),
+                self._has_nat_origin(expr),
+                narrowing.narrows_into_nat(
+                    expr, self._declared_ret_type_name, self._has_nat_origin),
+                self._call_arg_nat_guarded("nat_to_int", expr),
+            )
+        return original(self, decl, expr, smt, slot_env, assumptions)
+
+    verifier_module.ContractVerifier._walk_for_nat_binding_obligations = spy
+    try:
+        verifier_module.verify(
+            program, source,
+            expr_types=arts.expr_semantic_types,
+            expr_target_types=arts.expr_target_types,
+        )
+    finally:
+        verifier_module.ContractVerifier._walk_for_nat_binding_obligations = (
+            original)
+    assert "r" in seen, "the walk never reached the `h(())` call"
+    return seen["r"]
+
+
+class TestEveryReaderOfACallAnswersTheSameForBothSpellings:
+    """The five readings, at one call node, in both spellings.
+
+    Three readers besides the formal loop answer a question about a CALL by
+    looking its callee up — the declared return type name, the static `@Nat`
+    typing, and the `@Nat` provenance — and two more are derived from them.
+    All five read the flat registry, so all five went blind to a `where`
+    helper when #1378 stopped publishing helpers there.
+
+    The reviewer of this PR measured every one of them flipping between the
+    two spellings — `Nat` -> None, True -> False, True -> False, False ->
+    True, False -> True — with NO difference in the obligation stream or the
+    emitted guards, because the consumers that read them happened to reach
+    the same answer another way.  That is the state this cell exists to stop
+    being re-entered: a reader that answers differently for one function
+    depending on how the call is spelled is the same omission, whether or not
+    a consumer notices today.  Asserted as EQUALITY between the spellings
+    rather than as literal values, so it is about the property and not about
+    what `@Nat` happens to make these five say.
+    """
+
+    def test_the_readings_do_not_depend_on_the_spelling(self) -> None:
+        top = _oracle_readings(_ORACLE_TOP)
+        helper = _oracle_readings(_ORACLE_WHERE)
+        assert helper == top, dict(zip(
+            _CALL_ORACLES, [(a, b) for a, b in zip(top, helper)]))
+
+    def test_the_readings_are_not_all_none(self) -> None:
+        """The premise: the spy reached a call the readers can answer about.
+
+        Five `None`s would compare equal and mean nothing.
+        """
+        assert any(r is not None for r in _oracle_readings(_ORACLE_TOP))

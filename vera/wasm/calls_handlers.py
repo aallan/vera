@@ -2075,7 +2075,7 @@ class CallsHandlersMixin:
                     "handler clause parameter has no slot name",
                 )
             instructions.extend(self._emit_clause_binder_guard(
-                clause.params[0], arg_local, family_base, entry.family,
+                clause.params[0], arg_local, family_base, entry.family_type_expr,
                 f"{clause.op_name}(…) clause binder", clause, clause_env))
             clause_env = clause_env.push(param_slot, arg_local)
         if state_slot_name is not None and state_local is not None:
@@ -2223,9 +2223,9 @@ class CallsHandlersMixin:
         te: object,
         value_local: int,
         family_base: str | None,
-        payload_family: str | None,
+        payload_te: ast.TypeExpr | None,
         where: str,
-        node: object,
+        node: ast.Node,
         env: "WasmSlotEnv",
     ) -> list[str]:
         """Guard a handler-clause binder declared NARROWER than the payload
@@ -2253,17 +2253,18 @@ class CallsHandlersMixin:
             return []
         if not isinstance(te, ast.TypeExpr):
             return []
-        # NARROWER, asked the same way the verifier asks it: a binder whose
-        # identity is the payload's own is not a narrowing, so there is
-        # nothing to check.  `_family_name` is the refinement-PRESERVING
-        # name, which is the right comparison here — `Exn<Pos>` bound at
-        # `@Pos` narrows nothing, while `Exn<Int>` bound at `@Pos` does,
-        # and both share a representation base.  Without this the emitter
-        # planted a guard at a site the classification records nothing for,
-        # which is the drift in the other direction: measured as the single
-        # WAT mover on `ch07_exn_payload_guard.vera`, whose whole point is a
-        # payload already at the clause's type.
-        if payload_family is not None and self._family_name(te) == payload_family:
+        # NARROWER, asked through the ONE derivation the verifier's
+        # obligation also calls: `narrows_into_refinement` over the conjoined
+        # chains, with this side's oracle — the source's type expressions and
+        # the alias table, where the verifier has the checker's semantic
+        # types.  A comparison of refinement-preserving NAMES stood here and
+        # answered a different question from the verifier's condition, so the
+        # two disagreed on every program where both types are refined: a
+        # disjoint binder over a refined payload was guarded and recorded
+        # nowhere (R-1465 review).  Neither side decides this any more.
+        if payload_te is not None and not narrowing.narrows_into_refinement(
+                naming.refined_type_expr_chain(payload_te, self._alias_env),
+                naming.refined_type_expr_chain(te, self._alias_env)):
             return []
         guard: list[str] = []
         base = self._resolve_base_type_name(
@@ -2673,7 +2674,7 @@ class CallsHandlersMixin:
                     "handler clause parameter has no slot name",
                 )
             binder_guard = self._emit_clause_binder_guard(
-                clause.params[0], thrown_local, family_base, family,
+                clause.params[0], thrown_local, family_base, type_arg,
                 f"{clause.op_name}(…) clause binder", clause, env)
             handler_env = env.push(caught_slot, thrown_local)
         else:

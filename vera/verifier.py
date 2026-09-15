@@ -820,6 +820,11 @@ class ContractVerifier:
         # out of the flat registry entirely — they cannot clobber a top-level
         # entry, and this on-demand construction is the only way to reach
         # one's contract, from inside its parent's scope alone.
+        #: The lexical lookup for the declaration under verification, set by
+        #: `_bind_smt_scope` and read by `_fn_in_scope` (#1455).  None
+        #: outside a function's verification, where the flat registry is the
+        #: only table there is.
+        self._fn_lookup_in_scope: Callable[[str], FunctionInfo | None] | None = None
         self._top_level_fn_infos: dict[str, FunctionInfo] = {}
         self._scoped_fn_info_cache: dict[
             tuple[int, str | None], FunctionInfo
@@ -1559,6 +1564,30 @@ class ContractVerifier:
             return None
         return mod_fns.get(name)
 
+    def _fn_in_scope(self, name: str) -> FunctionInfo | None:
+        """THE resolution of a bare function NAME in the declaration under
+        verification (#1455).
+
+        `_scoped_fn_lookup`'s chain — this declaration's helpers, each
+        enclosing parent's, the declaring module's, the top level, the flat
+        registry — recorded by :meth:`_bind_smt_scope`.  Every reader that
+        answers a question about a call goes through it, because a reader
+        that answers differently for one function depending on how the call
+        is SPELLED is the #1378 omission whether or not today's consumers
+        notice: measured, `_declared_ret_type_name` went `Nat` -> None,
+        `_is_nat_typed` and `_has_nat_origin` True -> False, and
+        `narrows_into_nat` and `_call_arg_nat_guarded` False -> True, between
+        a `where` helper and its top-level twin, with no observable
+        difference in the obligation stream or the emitted guards (R-1465
+        review).  No observable difference today is not a property; one
+        answer is.
+        """
+        lookup = self._fn_lookup_in_scope
+        if lookup is None:
+            return self.env.lookup_function(name)
+        found: FunctionInfo | None = lookup(name)
+        return found
+
     def _callee_in_scope(
         self, expr: ast.FnCall | ast.ModuleCall, smt: SmtContext,
     ) -> FunctionInfo | None:
@@ -1610,6 +1639,13 @@ class ContractVerifier:
         """
         smt._alias_env = scope.alias_env
         smt._fn_lookup = scope.fn_lookup
+        # #1455: and on the verifier, for the readers that answer a question
+        # about a CALL without an `smt` in hand — the three type oracles
+        # below.  Recorded HERE because this is the one place the verifier
+        # says where it is, so the answer those readers get and the answer
+        # the SMT layer resolves a call with cannot come from different
+        # scopes.
+        self._fn_lookup_in_scope = scope.fn_lookup
         smt._module_fn_lookup = self._lookup_module_function
         smt._callee_scope_lookup = self._callee_scope
 
@@ -6156,8 +6192,26 @@ class ContractVerifier:
             # constant is exactly how a solver-outcome string would slip past
             # unread.  This text names something known WITHOUT asking the
             # solver, so an inline literal is the shape that gate wants.
+            # THE narrowing question, asked once: `narrows_into_refinement`
+            # over the CONJOINED chains, with the semantic-type oracle.  The
+            # emitter asks the same function with its own oracle, so the two
+            # cannot answer differently — which they did, in both directions,
+            # while each had a condition of its own (R-1465 review): this
+            # side tested whether the PAYLOAD was refined, exempting a
+            # stricter binder over a refined payload, and the emitter
+            # compared refinement-preserving family NAMES, which does not.
+            # Which KIND of record, then whether it narrows.  A bare `@Nat`
+            # is a `PrimitiveType`, not a `RefinedType` — its `>= 0` is baked
+            # into `declare_nat` — and #552/#747 keep the `nat_bind` and
+            # `refine_bind` paths disjoint for it, so the refined arm asks
+            # only about a binder that IS refined.  The narrowing question
+            # itself is the shared one either way; this selects which of the
+            # two records answers it, exactly as the emitter's sign leg and
+            # predicate leg are separate.
             if (self._is_refined_type(binder)
-                    and not self._is_refined_type(payload)):
+                    and narrowing.narrows_into_refinement(
+                        self._refinement_chain_of(payload),
+                        self._refinement_chain_of(binder))):
                 self._record_refined_bind_tier3(
                     decl, clause.body, site, refined_ty=binder,
                     reason=(
@@ -8166,7 +8220,7 @@ class ContractVerifier:
         name = getattr(call, "name", None)
         if not isinstance(name, str):
             return None
-        info = self.env.lookup_function(name)
+        info = self._fn_in_scope(name)
         ret = getattr(info, "return_type", None) if info is not None else None
         return getattr(ret, "name", None)
 
@@ -8610,7 +8664,47 @@ class ContractVerifier:
             return
 
         goal = self._translate_refined_predicate(smt, refined_ty, val)
-        if goal is not None and self._contains_opaque_shadow(val):
+        if goal is None:
+            # #1251(b): the predicate has no SMT sort to reason over, but the
+            # VALUE may still be a literal — and a predicate instantiated on a
+            # literal is arithmetic, not inference.  `200 < 10` decides.
+            concrete = self._concrete_refined_verdict(smt, refined_ty, val)
+            if concrete is None:
+                self._record_refined_bind_tier3(
+                    decl, value_node, site, guarded=eff_guarded,
+                    reason=self._refined_untranslatable_reason(refined_ty),
+                )
+            elif concrete[0]:
+                # P holds of the value, so `premises => P` is valid whatever
+                # the premises are — including premises no state satisfies.
+                # Nothing the path can say changes that, which is why this
+                # side needs no reachability question (and why asking one
+                # could only add a timeout to a settled answer).
+                self._record_obligation(
+                    decl.name, "refine_bind", value_node, "verified")
+            else:
+                self._reject_or_excuse_concrete_violation(
+                    decl, value_node, refined_ty, smt, assumptions,
+                    site=site, guarded=eff_guarded, value=concrete[1],
+                )
+            return
+
+        result = smt.check_valid(goal, list(assumptions))
+
+        if result.status == "verified":
+            # #1460: the PROOF is taken first, and the opaque-shadow gate
+            # below consults it rather than running ahead of it.  The gate
+            # exists to filter REFUTATIONS whose countermodel names a value
+            # the program cannot produce; a predicate true for every value is
+            # also satisfiable, so running it first intercepted proofs too and
+            # an earned Tier 1 became `tier3` / E506.  Nothing is proved here
+            # that was not provable before — the same query, asked before the
+            # filter instead of after it.
+            self._record_obligation(
+                decl.name, "refine_bind", value_node, "verified")
+            return
+
+        if self._contains_opaque_shadow(val):
             # The value TRANSLATED, but into a placeholder standing for a
             # slot the SMT layer could not read — a destructure component
             # from a non-literal source, say.  Z3 will happily pick a
@@ -8649,37 +8743,8 @@ class ContractVerifier:
                     ),
                 )
                 return
-        if goal is None:
-            # #1251(b): the predicate has no SMT sort to reason over, but the
-            # VALUE may still be a literal — and a predicate instantiated on a
-            # literal is arithmetic, not inference.  `200 < 10` decides.
-            concrete = self._concrete_refined_verdict(smt, refined_ty, val)
-            if concrete is None:
-                self._record_refined_bind_tier3(
-                    decl, value_node, site, guarded=eff_guarded,
-                    reason=self._refined_untranslatable_reason(refined_ty),
-                )
-            elif concrete[0]:
-                # P holds of the value, so `premises => P` is valid whatever
-                # the premises are — including premises no state satisfies.
-                # Nothing the path can say changes that, which is why this
-                # side needs no reachability question (and why asking one
-                # could only add a timeout to a settled answer).
-                self._record_obligation(
-                    decl.name, "refine_bind", value_node, "verified")
-            else:
-                self._reject_or_excuse_concrete_violation(
-                    decl, value_node, refined_ty, smt, assumptions,
-                    site=site, guarded=eff_guarded, value=concrete[1],
-                )
-            return
 
-        result = smt.check_valid(goal, list(assumptions))
-
-        if result.status == "verified":
-            self._record_obligation(
-                decl.name, "refine_bind", value_node, "verified")
-        elif result.status == "violated":
+        if result.status == "violated":
             self._record_obligation(
                 decl.name, "refine_bind", value_node, "violated",
                 error_code="E505",
@@ -8692,7 +8757,6 @@ class ContractVerifier:
                 decl, value_node, site, guarded=eff_guarded,
                 reason=self._undecided_reason(result.status),
             )
-
     # -----------------------------------------------------------------
     # #1410 — refinements written INSIDE a formal's type
     # -----------------------------------------------------------------
@@ -11469,7 +11533,7 @@ class ContractVerifier:
                 return False
             return all(self._is_nat_typed(arm.body) for arm in expr.arms)
         if isinstance(expr, ast.FnCall):
-            fn = self.env.lookup_function(expr.name)
+            fn = self._fn_in_scope(expr.name)
             if fn is not None:
                 # FunctionInfo.return_type is already a resolved Type
                 # (vera/environment.py:43), no need for _resolve_type.
@@ -11627,7 +11691,7 @@ class ContractVerifier:
             resolved = self._resolved_type_of(expr)
             if resolved is not None and self._is_nat_type(resolved):
                 return True
-            fn = self.env.lookup_function(expr.name)
+            fn = self._fn_in_scope(expr.name)
             if fn is None:
                 return False
             return self._is_nat_type(fn.return_type)
@@ -12420,6 +12484,28 @@ class ContractVerifier:
         primitive and the two never co-fire on one site (R9).
         """
         return isinstance(ty, RefinedType)
+
+    @staticmethod
+    def _refinement_chain_of(ty: Type | None) -> "narrowing.RefinementChain | None":
+        """This side's oracle for :func:`narrowing.narrows_into_refinement`.
+
+        The verifier reads the checker's SEMANTIC types, so the chain comes
+        from :func:`naming.refined_type_chain` — the same walk the SMT
+        layer's refined-return assumption and the violation message use, so
+        what "membership in a chain" means is one answer here too.  A type
+        carrying no refinement answers its own name with an empty predicate
+        set rather than ``None``, which is what makes a plain `@Int` payload
+        compare correctly against a `@Pos` binder; ``None`` is reserved for a
+        type this side cannot see at all.
+        """
+        if ty is None:
+            return None
+        chain = naming.refined_type_chain(ty)
+        if chain is None:
+            return (pretty_type(ty), frozenset())
+        base, predicates = chain
+        return (pretty_type(base),
+                frozenset(ast.format_expr(p) for p in predicates))
 
     @staticmethod
     def _refined_parts(ty: Type) -> "tuple[Type, ast.Expr] | None":
