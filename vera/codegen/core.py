@@ -1601,19 +1601,20 @@ class CodeGenerator(
         * **infrastructure** — the built-in and prelude ADTs, visible
           everywhere;
         * **foreign** — declared by another module THIS namespace imports.
-          A namespace that imports the type must resolve its constructors;
-          one that does not import it must not see them at all.
+          A namespace that imports the type must resolve its constructors.
         * **own** — declared by the namespace compiling.  Applied last, so a
           local declaration shadows an imported constructor, which is what
           §8.5.2 says it does.
 
-        An ADT declared by the ENTRY file belongs to `own` only while the
-        entry is compiling.  A module's body is not a party to it — it
-        cannot name the entry's declarations — so it is excluded outright
-        rather than demoted to `foreign`, which would still let it shadow
-        the prelude one class later: measured, an unused entry
-        `data Mine { Pad(Bool), Some(Bool) }` dropped a module's
-        `show(Some(x))` where the control renders `Some(42)`.
+        A declaration the namespace cannot NAME is in none of the three: it
+        is dropped before the classes are applied, because a name it cannot
+        write must not answer for one it can.  That covers the entry file's
+        declarations while a module compiles, a sibling module's that this
+        one never imports, and a module reached only transitively from the
+        entry — each measured taking the prelude's `Some` away from a body
+        that renders `Some(42)` without it.  Dropped rather than demoted to
+        `foreign`: `foreign` is applied after `infra`, so a stranger placed
+        there would still shadow the prelude.
 
         Returns the constructor layouts, the ownership map, and the
         type-parameter index table, all three built from the same ordering
@@ -1625,6 +1626,14 @@ class CodeGenerator(
         display = self._contended_adt_display_names
         declarers = self._module_adt_declarers
         declared = self._namespace_declared_adts
+        # What this namespace can NAME: its own declarations plus the public
+        # ones it imports.  `None` where no table was built (a single-file
+        # compile) or for the PRELUDE, which is not a user namespace and is
+        # answered by the classes below instead.
+        members = (
+            self._adt_namespace_members.get(active)
+            if self._adt_namespace_members else None
+        )
         infra: list[str] = []
         foreign: list[str] = []
         own: list[str] = []
@@ -1661,14 +1670,39 @@ class CodeGenerator(
                 # here put `Mine` in front of `MdInline` for the prelude's own
                 # `MdText`.
                 foreign.append(adt_name)
+            elif (members is not None and bare not in members
+                    and bare not in self._builtin_adt_name_set()):
+                # A declaration this namespace cannot NAME — the entry file's
+                # while a module compiles, a sibling module's that this one
+                # never imports, a module reached only transitively from the
+                # entry.  `_adt_namespace_members` is the checker's own view
+                # of each namespace (its declarations plus what it imports,
+                # public names only), so asking it here makes the two sides
+                # answer the same question.
+                #
+                # Excluded outright rather than demoted to `foreign`, where
+                # it would still shadow infrastructure one class later.  All
+                # three measured that way: an unused entry
+                # `data Mine { Pad(Bool), Some(Bool) }` dropped a module's
+                # `show(Some(x))`; a SIBLING module declaring the same
+                # dropped it just as well inside a module that never imports
+                # the sibling; and a module reached only through another
+                # dropped the ENTRY's own `show(Some(x))`.  Each renders
+                # `Some(42)` on its control.
+                #
+                # A declaration of a PRELUDE type's name is never a stranger,
+                # whoever wrote it: restating the prelude's shape suppresses
+                # its injection (§8.4.1), so that declaration IS the one
+                # layout every namespace uses.  Dropping it from a namespace
+                # that does not import its module took the prelude's own type
+                # away with it — measured as an E602 in the entry for
+                # `HtmlNode`, `Request` and `Response`, whose blocks the
+                # prelude injects on demand.
+                continue
             elif owner is None:
-                # An ENTRY-file declaration, and `active` is a real module.
-                # A module's body cannot name it, so it is excluded outright
-                # rather than demoted to `foreign` — where it would still
-                # shadow the prelude's one class later: measured, an unused
-                # entry `data Mine { Pad(Bool), Some(Bool) }` dropped a
-                # module's `show(Some(x))` where the control renders
-                # `Some(42)`.
+                # An ENTRY-file declaration while a module compiles, with no
+                # membership table to ask — a single-file compile registers
+                # none.  Same answer by the same reasoning as above.
                 continue
             else:
                 foreign.append(adt_name)

@@ -923,6 +923,125 @@ def namespace_fn_names(
 
 
 @dataclass(frozen=True)
+class NamespaceCtorOwners:
+    """Which ADT each bare CONSTRUCTOR name denotes in each namespace (#1436).
+
+    The third consumer of one owner.  The checker resolves a constructor
+    against the namespace that writes it, codegen's
+    ``_namespace_ctor_projection`` builds the by-name tables the wasm layer
+    reads the same way, and discovery — which names a clone after the type it
+    infers from a constructor ARGUMENT — has to answer identically or the two
+    sides of the #732 differential emit and discover different clones.  It
+    did not: with a flat map, a module body's ``gid(Sq(x))`` discovered
+    ``gid$Mine`` from an ENTRY declaration the module cannot name while the
+    call site emitted ``gid$Shape``, and the function was dropped (E602/E620)
+    on a check-clean, verify-clean program.
+
+    ``by_namespace`` maps a module path — ``None`` for the entry program — to
+    that namespace's constructor → ADT map: the infrastructure every
+    namespace holds, then the public constructors its OWN imports admit (a
+    constructor is admitted by its PARENT type's name, §8.5.4), then its own
+    declarations, which shadow both (§8.5.2).  That is the ordering codegen's
+    projection applies to layouts, stated over declarations for the consumers
+    that have no layouts.
+    """
+
+    by_namespace: Mapping[
+        tuple[str, ...] | None, Mapping[str, str],
+    ]
+
+    def visible(
+        self, path: tuple[str, ...] | None,
+    ) -> Mapping[str, str] | None:
+        """*path*'s constructor → ADT map, or ``None`` for a namespace this
+        table does not describe — never an EMPTY map, which would claim the
+        namespace can name no constructor at all.
+        """
+        return self.by_namespace.get(path)
+
+
+def namespace_ctor_owners(
+    entry: ast.Program,
+    modules: Iterable[tuple[tuple[str, ...], ast.Program]],
+    registry: Mapping[str, Iterable[str]],
+) -> NamespaceCtorOwners:
+    """Build the per-namespace constructor ownership tables (#1436).
+
+    *registry* is the consumer's own ADT → constructor names view, read for
+    one thing only: the INFRASTRUCTURE floor — the constructors every
+    namespace holds whatever it declares or imports.  An ADT some namespace
+    DECLARES is not infrastructure and is placed by the per-namespace passes
+    below instead; the PRELUDE's own declarations are, and are read from
+    :func:`~vera.prelude.prelude_data_decls` rather than recognised in the
+    registry, because a consumer working on a prelude-INJECTED program would
+    otherwise take them for the entry file's (the verifier's discovery copy
+    is injected; the program codegen hands in is not, and both must answer
+    the same).  Reading them per ADT, rather than inverting a by-name map,
+    is what keeps a user declaration that borrows `Some` from erasing
+    `Option`'s claim to it.
+
+    Everything else is read from the declarations as written, exactly as
+    :func:`namespace_fn_names` reads functions: imports are per namespace and
+    never inherited, so a module reached only transitively from the entry
+    contributes nothing to the entry's map while keeping everything its own
+    imports allow.
+    """
+    from vera.prelude import prelude_data_decls
+
+    module_list = list(modules)
+    declared_adts = {
+        tld.decl.name
+        for _path, prog in [((), entry), *module_list]
+        for tld in prog.declarations
+        if isinstance(tld.decl, ast.DataDecl)
+    }
+    base = {
+        ctor: adt for adt, ctors in registry.items()
+        if adt not in declared_adts
+        for ctor in ctors
+    }
+    base.update({
+        ctor.name: decl.name
+        for decl in prelude_data_decls().values()
+        for ctor in decl.constructors
+    })
+    public_adts: dict[tuple[str, ...], dict[str, tuple[str, ...]]] = {}
+    for path, prog in module_list:
+        public_adts[path] = {
+            tld.decl.name: tuple(
+                ctor.name for ctor in tld.decl.constructors
+            )
+            for tld in prog.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+            and (tld.visibility or "private") == "public"
+        }
+
+    def owners(prog: ast.Program) -> dict[str, str]:
+        out = dict(base)
+        for imp in prog.imports:
+            exported = public_adts.get(tuple(imp.path))
+            if exported is None:
+                continue
+            for adt_name in sorted(exported):
+                for ctor_name in exported[adt_name]:
+                    # A selective import admits a constructor by naming its
+                    # PARENT type or the constructor itself (§8.5.4).
+                    if (imp.names is None
+                            or adt_name in imp.names
+                            or ctor_name in imp.names):
+                        out[ctor_name] = adt_name
+        for tld in prog.declarations:
+            if isinstance(tld.decl, ast.DataDecl):
+                for ctor in tld.decl.constructors:
+                    out[ctor.name] = tld.decl.name
+        return out
+
+    return NamespaceCtorOwners({
+        key: owners(prog) for key, prog in [(None, entry), *module_list]
+    })
+
+
+@dataclass(frozen=True)
 class NamespaceAdtNames:
     """Which bare TYPE and CONSTRUCTOR names two imports both supply (#1304).
 
@@ -1951,6 +2070,19 @@ class MonoContext:
     # that has not been threaded, or a walk entered outside any scope, keeps
     # the flat answer — never an EMPTY one, which would claim no name at all.
     namespace_fn_names: NamespaceFnNames | None = None
+    # #1436: the per-namespace constructor ownership tables ``ctor_to_adt``
+    # is NARROWED by while a declaration is being walked, the data-side twin
+    # of ``namespace_fn_names``.  Flat, one namespace's declaration answered
+    # for another's and discovery named a clone after an ADT the walked body
+    # cannot see.  Entered by :meth:`Monomorphizer.namespace_scope`, the same
+    # seam; ``None`` keeps the flat answer for a consumer not yet threaded.
+    namespace_ctor_owners: NamespaceCtorOwners | None = None
+    # #1436: the type-parameter index table keyed by OWNING ADT.  The flat
+    # ``ctor_tp_indices`` above cannot represent two data types sharing a
+    # constructor name, so it is read only where this one has no entry.
+    adt_ctor_tp_indices: Mapping[str, Mapping[str, tuple[int | None, ...]]] = (
+        field(default_factory=dict)
+    )
     # #1274 (F1): ``(module path, name)`` pairs whose generic is QUALIFIED-ONLY
     # — reached under ``mod$<path>$name``, never under the bare name.  A
     # ``ModuleCall`` to one of these must NOT be discovered as an instantiation
@@ -2035,6 +2167,10 @@ class Monomorphizer:
         # The module namespace the walk is currently in (`namespace_scope`),
         # carried onto every record so a diagnostic names the right file.
         self._namespace_path: tuple[str, ...] | None = None
+        # #1436: the ctor → ADT map of the namespace being walked, or ``None``
+        # outside any scope (and for a consumer that supplied no tables),
+        # where the flat map answers as it always did.
+        self._scope_ctor_owners: Mapping[str, str] | None = None
 
     @contextlib.contextmanager
     def namespace_scope(
@@ -2070,14 +2206,55 @@ class Monomorphizer:
         # file: precisely the misattribution `origin` exists to prevent.
         saved_path = self._namespace_path
         saved = self._scope_fn_names
+        saved_owners = self._scope_ctor_owners
         self._namespace_path = path
         if self.ctx.namespace_fn_names is not None:
             self._scope_fn_names = self.ctx.namespace_fn_names.visible(path)
+        if self.ctx.namespace_ctor_owners is not None:
+            # #1436: the constructor half of the same narrowing, saved and
+            # restored with the other two for the reason the comment above
+            # gives — a field restored on one branch and not the other is how
+            # a stale scope outlives its block.
+            self._scope_ctor_owners = self.ctx.namespace_ctor_owners.visible(
+                path)
         try:
             yield
         finally:
             self._namespace_path = saved_path
             self._scope_fn_names = saved
+            self._scope_ctor_owners = saved_owners
+
+    def _ctor_owner(
+        self, name: str, ctor_to_adt: Mapping[str, str],
+    ) -> str | None:
+        """Which ADT *name* denotes in the namespace being walked (#1436).
+
+        A narrowing, never a widening: outside a scope, or for a consumer
+        that supplied no tables, this is exactly the flat answer discovery
+        gave before.  Inside one it is that namespace's own map, with no
+        fallback to the flat one — a constructor another namespace declares
+        and this one cannot name must not resolve here, which is the whole
+        defect.
+        """
+        if self._scope_ctor_owners is None:
+            return ctor_to_adt.get(name)
+        return self._scope_ctor_owners.get(name)
+
+    def _ctor_tp_indices(
+        self, adt_name: str, ctor_name: str,
+    ) -> tuple[int | None, ...] | None:
+        """*ctor_name*'s per-field type-parameter indices, under the ADT that
+        owns it here (#1436).
+
+        The flat table answers only where the owner-keyed one has no entry —
+        a consumer that has not been threaded, or a constructor registered
+        before the per-owner map existed — so an ADT present in the
+        owner-keyed table is never answered for by another's entry.
+        """
+        owned = self.ctx.adt_ctor_tp_indices.get(adt_name)
+        if owned is not None:
+            return owned.get(ctor_name)
+        return self.ctx.ctor_tp_indices.get(ctor_name)
 
     def _bare_call_is_user_fn(self, name: str) -> bool:
         """Discovery's leg of :func:`~vera.slots.bare_call_denotes_user_fn`.
@@ -2946,9 +3123,9 @@ class Monomorphizer:
                 return f"{expr.type_name}<{', '.join(arg_names)}>"
             return expr.type_name
         if isinstance(expr, ast.ConstructorCall):
-            return ctor_to_adt.get(expr.name)
+            return self._ctor_owner(expr.name, ctor_to_adt)
         if isinstance(expr, ast.NullaryConstructor):
-            return ctor_to_adt.get(expr.name)
+            return self._ctor_owner(expr.name, ctor_to_adt)
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
                            ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
@@ -3240,13 +3417,13 @@ class Monomorphizer:
                 return (expr.type_name, tuple(arg_names))
             return (expr.type_name, ())
         if isinstance(expr, ast.ConstructorCall):
-            adt_name = ctor_to_adt.get(expr.name)
+            adt_name = self._ctor_owner(expr.name, ctor_to_adt)
             if adt_name:
                 # Use the per-field ADT type-param index mapping when available.
                 # This correctly handles sparse constructors like Err(e) whose
                 # single field maps to Result's *second* type param (E, index 1),
                 # not the first (T, index 0) as naïve positional zipping implies.
-                field_tp_idx = self.ctx.ctor_tp_indices.get(expr.name)
+                field_tp_idx = self._ctor_tp_indices(adt_name, expr.name)
                 adt_tp_count = self.ctx.adt_tp_counts.get(adt_name, 0)
                 if field_tp_idx is not None and adt_tp_count > 0:
                     result_tps: list[str | None] = [None] * adt_tp_count
@@ -3374,10 +3551,10 @@ class Monomorphizer:
         """
         if not isinstance(expr, ast.ConstructorCall):
             return self._infer_vera_type_name(expr, ctor_to_adt)
-        base = ctor_to_adt.get(expr.name)
+        base = self._ctor_owner(expr.name, ctor_to_adt)
         if base is None:
             return None
-        tp_indices = self.ctx.ctor_tp_indices.get(expr.name)
+        tp_indices = self._ctor_tp_indices(base, expr.name)
         tp_count = self.ctx.adt_tp_counts.get(base, 0)
         if not tp_indices or tp_count == 0:
             return base

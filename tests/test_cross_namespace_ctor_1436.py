@@ -28,7 +28,13 @@ from typing import ClassVar
 
 import pytest
 
-from tests.module_fixture_helpers import build_multi_module, module_value
+from vera.codegen.api import CompileResult
+
+from tests.module_fixture_helpers import (
+    build_multi_module,
+    build_multi_module_past_check,
+    module_value,
+)
 
 _LIB = """\
 module s3lib;
@@ -408,3 +414,1264 @@ public fn sh_(@Unit -> @String)
         verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         assert module_value(result, fn) == ("ok", expected)
+
+
+# ---------------------------------------------------------------------------
+# The CLASS instrument: the owner-collision matrix, and the scan that keeps
+# the per-owner registry the only path a constructor name is resolved by.
+# ---------------------------------------------------------------------------
+
+#: One module source per CARRIER — the kind of declaration the colliding name
+#: belongs to.  Each is written so that every position below names the
+#: carrier's constructor inside the MODULE's own body: a position whose
+#: program does not name the colliding constructor would be a cell whose
+#: premise cannot fail.
+#:
+#: * ``plain`` — the module's own non-generic ADT, the shape #1436 was filed
+#:   on;
+#: * ``generic`` — the module's own generic ADT, which reaches the wasm layer
+#:   through the type-parameter index table as well as through the layouts;
+#: * ``prelude`` — the prelude's ``Option``, which no namespace declares, so
+#:   the collision is with infrastructure rather than with another module.
+_CARRIER_LIB: dict[str, str] = {
+    "plain": """\
+module mlib;
+
+public data Shape {
+  Sq(Int),
+  Circ(Int)
+}
+
+public data Holder {
+  H(Shape)
+}
+
+public fn mk_first(@Int -> @Shape)
+  requires(true)
+  ensures(@Shape.result == Sq(@Int.0))
+  effects(pure)
+{
+  Sq(@Int.0)
+}
+
+public fn mk_second(@Int -> @Shape)
+  requires(true)
+  ensures(@Shape.result == Circ(@Int.0))
+  effects(pure)
+{
+  Circ(@Int.0)
+}
+
+public fn arm(@Shape -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Shape.0 {
+    Sq(@Int) -> 100 + @Int.0,
+    Circ(@Int) -> 200 + @Int.0
+  }
+}
+
+public fn nested(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(Sq(@Int.0)) {
+    Some(Sq(@Int)) -> 300 + @Int.0,
+    Some(Circ(@Int)) -> 400 + @Int.0,
+    None -> 0
+  }
+}
+
+public fn stated(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Shape>](@Shape = Sq(@Int.0)) {
+    get(@Unit) -> { resume(@Shape.0) },
+    put(@Shape) -> { resume(()) }
+  } in {
+    arm(get(()))
+  }
+}
+
+public fn fielded(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match H(Sq(@Int.0)) {
+    H(@Shape) -> arm(@Shape.0)
+  }
+}
+
+public fn rendered(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Sq(@Int.0))
+}
+
+public fn tagged(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if Sq(@Int.0) == Circ(@Int.0) then {
+    0
+  } else {
+    if Sq(@Int.0) == Sq(@Int.0) then { 1 } else { 2 }
+  }
+}
+public forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn via_generic(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  arm(gid(Sq(@Int.0)))
+}
+
+""",
+    "generic": """\
+module mlib;
+
+public data Box<T> {
+  Wrap(T),
+  Empty
+}
+
+public data Holder {
+  H(Box<Int>)
+}
+
+public fn mk_first(@Int -> @Box<Int>)
+  requires(true)
+  ensures(@Box<Int>.result == Wrap(@Int.0))
+  effects(pure)
+{
+  Wrap(@Int.0)
+}
+
+public fn mk_second(@Int -> @Box<Int>)
+  requires(true)
+  ensures(@Box<Int>.result == Empty)
+  effects(pure)
+{
+  Empty
+}
+
+public fn arm(@Box<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Box<Int>.0 {
+    Wrap(@Int) -> 100 + @Int.0,
+    Empty -> 200
+  }
+}
+
+public fn nested(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(Wrap(@Int.0)) {
+    Some(Wrap(@Int)) -> 300 + @Int.0,
+    Some(Empty) -> 400,
+    None -> 0
+  }
+}
+
+public fn stated(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Box<Int>>](@Box<Int> = Wrap(@Int.0)) {
+    get(@Unit) -> { resume(@Box<Int>.0) },
+    put(@Box<Int>) -> { resume(()) }
+  } in {
+    arm(get(()))
+  }
+}
+
+public fn fielded(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match H(Wrap(@Int.0)) {
+    H(@Box<Int>) -> arm(@Box<Int>.0)
+  }
+}
+
+public fn rendered(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Wrap(@Int.0))
+}
+
+public fn tagged(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if Wrap(@Int.0) == Empty then {
+    0
+  } else {
+    if Wrap(@Int.0) == Wrap(@Int.0) then { 1 } else { 2 }
+  }
+}
+public forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn via_generic(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  arm(gid(Wrap(@Int.0)))
+}
+
+""",
+    "prelude": """\
+module mlib;
+
+public data Holder {
+  H(Option<Int>)
+}
+
+public fn mk_first(@Int -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == Some(@Int.0))
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn mk_second(@Int -> @Option<Int>)
+  requires(true)
+  ensures(@Option<Int>.result == None)
+  effects(pure)
+{
+  None
+}
+
+public fn arm(@Option<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> 100 + @Int.0,
+    None -> 200
+  }
+}
+
+public fn nested(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(Some(@Int.0)) {
+    Some(Some(@Int)) -> 300 + @Int.0,
+    Some(None) -> 400,
+    None -> 0
+  }
+}
+
+public fn stated(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = Some(@Int.0)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    arm(get(()))
+  }
+}
+
+public fn fielded(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match H(Some(@Int.0)) {
+    H(@Option<Int>) -> arm(@Option<Int>.0)
+  }
+}
+
+public fn rendered(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Some(@Int.0))
+}
+
+public fn tagged(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if Some(@Int.0) == None then {
+    0
+  } else {
+    if Some(@Int.0) == Some(@Int.0) then { 1 } else { 2 }
+  }
+}
+public forall<T> fn gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn via_generic(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  arm(gid(Some(@Int.0)))
+}
+
+""",
+}
+
+#: The entry file.  Every export but ``call_result`` drives the MODULE, so the
+#: cell observes what the module's own body compiled to; ``call_result`` binds
+#: the module's value in the ENTRY's namespace and hands it back, so the two
+#: namespaces meet on one value.
+_MATRIX_MAIN = """\
+import mlib;
+%(imports)s
+%(shadow)spublic fn construction(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::arm(mlib::mk_first(7))
+}
+
+public fn match_arm(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::arm(mlib::mk_second(7))
+}
+
+public fn nested_pattern(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::nested(7)
+}
+
+public fn call_result(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let %(ty)s = mlib::mk_first(7);
+  mlib::arm(%(ty)s.0)
+}
+
+public fn state_cell(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::stated(7)
+}
+
+public fn adt_field(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::fielded(7)
+}
+
+public fn data_segment(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::rendered(7)
+}
+
+public fn tag_eq(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::tagged(7)
+}
+
+public fn generic_call(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  mlib::via_generic(7)
+}
+"""
+
+#: The entry-side `match` on a value the module returned, appended to the
+#: entry when the two namespaces' readings are asserted together.
+_ENTRY_MATCH_FN = """
+public fn entry_match(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match mlib::mk_first(7) {
+%(arms)s
+  }
+}
+"""
+
+#: Per carrier: the constructor name the collision is on, the carrier's type
+#: as an entry-file slot, and the arms of the entry-side match.
+_CARRIER_CTOR = {"plain": "Sq", "generic": "Wrap", "prelude": "Some"}
+_CARRIER_TYPE = {
+    "plain": "@Shape", "generic": "@Box<Int>", "prelude": "@Option<Int>",
+}
+_CARRIER_ARMS = {
+    "plain": "    Sq(@Int) -> 500 + @Int.0,\n    Circ(@Int) -> 600",
+    "generic": "    Wrap(@Int) -> 500 + @Int.0,\n    Empty -> 600",
+    "prelude": "    Some(@Int) -> 500 + @Int.0,\n    None -> 600",
+}
+
+#: The declarations that take the carrier's constructor name away from it,
+#: by the OWNER of the taking declaration — the second dimension.
+#:
+#: ``entry_differing`` gives the name a different arity, a different field
+#: type AND a different tag position, so a projection that lets the wrong
+#: declaration answer is observable in every position.  ``entry_identical``
+#: gives it the module's own shape — not a coincidence-agreement cell, as
+#: it turns out: identity is the ADT's and not the shape's, so at the base
+#: revision the module's own `show(Sq(x))` is DROPPED naming the entry's
+#: `Other` even though the two layouts are identical.  ``sibling_module``
+#: and ``transitive_module`` move the taking declaration into a module the
+#: compiling namespace never imports: the same mechanism, reached from the
+#: other side.
+#:
+#: The two module-owned shadows exist for the ``prelude`` carrier only, and
+#: the absence is a property of the language rather than a gap: two MODULES
+#: declaring one constructor name are refused at compile before any
+#: projection is built, which
+#: :meth:`TestOwnerCollisionMatrix.test_two_modules_sharing_a_name_are_refused`
+#: asserts.  Only a name the PRELUDE owns can be contended from a module.
+_SHADOW_MODULE = """\
+module xlib;
+
+public data Mine {
+  Pad(Bool),
+  Some(Bool)
+}
+
+public fn xping(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+#: A relay, so the shadowing module is reached only THROUGH another one and
+#: the entry never imports it.
+_RELAY_MODULE = """\
+module ylib;
+
+import xlib;
+
+public fn yping(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  xlib::xping(@Int.0)
+}
+"""
+
+#: An entry export that calls the extra module, so the shadow is part of the
+#: build rather than an unreachable file.
+_KEEPALIVE = """
+public fn keepalive(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  %s
+}
+"""
+
+_ENTRY_SHADOWS = {
+    "entry_differing": "Mine",
+    "entry_identical": "Other",
+}
+_MODULE_SHADOWS = ("sibling_module", "transitive_module")
+
+_SHADOWS_BY_CARRIER: dict[str, tuple[str, ...]] = {
+    "plain": ("none", "entry_differing", "entry_identical"),
+    "generic": ("none", "entry_differing", "entry_identical"),
+    "prelude": (
+        "none", "entry_differing", "entry_identical",
+        "sibling_module", "transitive_module",
+    ),
+}
+
+#: The entry-file declaration each entry-owned shadow splices in.
+_ENTRY_SHADOW_DECL: dict[str, dict[str, str]] = {
+    "plain": {
+        "entry_differing":
+            "private data Mine {\n  Pad(Bool),\n  Sq(Bool)\n}\n\n",
+        "entry_identical":
+            "private data Other {\n  Sq(Int),\n  Circ(Int)\n}\n\n",
+    },
+    "generic": {
+        "entry_differing":
+            "private data Mine {\n  Pad(Bool),\n  Wrap(Bool)\n}\n\n",
+        "entry_identical":
+            "private data Other<T> {\n  Wrap(T),\n  Empty\n}\n\n",
+    },
+    "prelude": {
+        "entry_differing":
+            "private data Mine {\n  Pad(Bool),\n  Some(Bool)\n}\n\n",
+        "entry_identical":
+            "private data Other {\n  None,\n  Some(Int)\n}\n\n",
+    },
+}
+
+
+#: Which module function each position's answer is produced by — the premise
+#: assertion below reads these blocks and checks each one really names the
+#: colliding constructor.
+_POSITION_MODULE_FN = {
+    "construction": "mk_first",
+    "match_arm": "arm",
+    "nested_pattern": "nested",
+    "call_result": "mk_first",
+    "state_cell": "stated",
+    "adt_field": "fielded",
+    "data_segment": "rendered",
+    "tag_eq": "tagged",
+    # The ninth path a constructor name is resolved through: the type
+    # argument DISCOVERY infers for a generic call from a constructor
+    # argument, which decides the clone's name on both sides.
+    "generic_call": "via_generic",
+}
+
+#: What each position must answer — the value the SOURCE names.  The module's
+#: second constructor carries a field for ``plain`` (`Circ(Int)`) and is
+#: nullary for the other two (`Empty` / `None`), which is the only reason
+#: ``match_arm`` differs between carriers.
+_MATRIX_EXPECTED: dict[str, dict[str, object]] = {
+    "plain": {
+        "construction": 107,
+        "match_arm": 207,
+        "nested_pattern": 307,
+        "call_result": 107,
+        "state_cell": 107,
+        "adt_field": 107,
+        "data_segment": "Sq(7)",
+        "tag_eq": 1,
+        "generic_call": 107,
+    },
+    "generic": {
+        "construction": 107,
+        "match_arm": 200,
+        "nested_pattern": 307,
+        "call_result": 107,
+        "state_cell": 107,
+        "adt_field": 107,
+        "data_segment": "Wrap(7)",
+        "tag_eq": 1,
+        "generic_call": 107,
+    },
+    "prelude": {
+        "construction": 107,
+        "match_arm": 200,
+        "nested_pattern": 307,
+        "call_result": 107,
+        "state_cell": 107,
+        "adt_field": 107,
+        "data_segment": "Some(7)",
+        "tag_eq": 1,
+        "generic_call": 107,
+    },
+}
+
+
+def _matrix_files(carrier: str, shadow: str) -> dict[str, str]:
+    """The program for one (carrier, shadow) pair.
+
+    ``mlib`` is the module under observation in every one: it declares (or,
+    for the ``prelude`` carrier, uses) the contended name and never imports
+    the shadowing declaration, whoever owns it.
+    """
+    files = {"mlib.vera": _CARRIER_LIB[carrier]}
+    decl = _ENTRY_SHADOW_DECL[carrier].get(shadow, "")
+    imports = ""
+    keepalive = ""
+    if shadow == "sibling_module":
+        files["xlib.vera"] = _SHADOW_MODULE
+        imports = "import xlib;\n"
+        keepalive = _KEEPALIVE % "xlib::xping(1)"
+    elif shadow == "transitive_module":
+        files["xlib.vera"] = _SHADOW_MODULE
+        files["ylib.vera"] = _RELAY_MODULE
+        imports = "import ylib;\n"
+        keepalive = _KEEPALIVE % "ylib::yping(1)"
+    files["main.vera"] = (
+        _MATRIX_MAIN % {
+            "imports": imports,
+            "shadow": decl,
+            "ty": _CARRIER_TYPE[carrier],
+        }
+    ) + keepalive
+    return files
+
+
+@pytest.fixture(scope="module")
+def owner_collision_builds(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[tuple[str, str], tuple[
+    list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+]]:
+    """One build per (carrier, shadow): every cell reads one of these."""
+    built = {}
+    for carrier in _CARRIER_LIB:
+        for shadow in _SHADOWS_BY_CARRIER[carrier]:
+            built[(carrier, shadow)] = build_multi_module(
+                tmp_path_factory.mktemp(f"{carrier}_{shadow}"),
+                _matrix_files(carrier, shadow),
+            )
+    return built
+
+
+class TestOwnerCollisionMatrix:
+    """The class instrument for #1436: an owner collision on every path a
+    constructor name is resolved through.
+
+    The class is *a constructor name means the declaration of the namespace
+    that uses it*, and it spans three dimensions, enumerated from what the
+    resolution is built out of rather than from the reported instance:
+
+    * **carrier** — whose declaration the name belongs to: a module's own
+      non-generic ADT, a module's own generic ADT (which adds the
+      type-parameter index table to the two layout maps), or the prelude's
+      ``Option``, which no namespace declares;
+    * **shadow** — what the entry file does to the name: nothing (the
+      control), declare it with a different shape and tag position, or
+      declare it with the module's own shape, where a flat projection agreed
+      by coincidence;
+    * **position** — the path that resolves it: construction, a match arm, a
+      nested constructor pattern, a value crossing the namespace boundary in
+      a binder, a ``State`` cell, a field of another ADT, the data segment
+      ``show`` renders the constructor name from, and the tag ``==`` compares.
+
+    Every cell asserts the same three things together, because the defect was
+    silent in two of them: `vera verify` clean, codegen clean, and the value
+    the SOURCE names at run.  The shadow declarations are never used by the
+    program (except in
+    :class:`TestBothNamespacesReadTheirOwnDeclaration`), so a cell cannot
+    pass by the shadow being unreachable.
+    """
+
+    @pytest.mark.parametrize("position", sorted(_POSITION_MODULE_FN))
+    @pytest.mark.parametrize(
+        "carrier,shadow",
+        [(c, sh) for c in sorted(_CARRIER_LIB)
+         for sh in _SHADOWS_BY_CARRIER[c]],
+    )
+    def test_the_module_keeps_its_own_reading(
+        self,
+        carrier: str,
+        shadow: str,
+        position: str,
+        owner_collision_builds: dict[tuple[str, str], tuple[
+            list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+        ]],
+    ) -> None:
+        verify_errors, result, cg_errors = owner_collision_builds[
+            (carrier, shadow)]
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        # A SKIP is the other face of this defect and lands nowhere near the
+        # two error streams above: codegen drops the function and records a
+        # note, so a cell that only asserted the value would be green for
+        # every export that survived and silent about the one that did not.
+        dropped = [
+            (d.error_code, d.description) for d in result.diagnostics
+            if d.error_code in {"E602", "E604", "E620"}
+        ]
+        assert not dropped, dropped
+        assert module_value(result, position) == (
+            "ok", _MATRIX_EXPECTED[carrier][position])
+
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_each_shadow_really_takes_the_name(self, carrier: str) -> None:
+        """The cells' LABEL, asserted rather than asserted-about.
+
+        A shadow that does not spell the carrier's constructor makes every
+        cell in its column vacuous — green because nothing contends, not
+        because the projection is scoped.  The control column is asserted to
+        declare nothing, for the same reason: a control that quietly
+        declared something would not be one.
+        """
+        ctor = _CARRIER_CTOR[carrier]
+        for shadow in _SHADOWS_BY_CARRIER[carrier]:
+            files = _matrix_files(carrier, shadow)
+            taking = files["main.vera"].split("public fn construction")[0]
+            if "xlib.vera" in files:
+                taking = files["xlib.vera"]
+            if shadow == "none":
+                assert "data " not in taking, (
+                    f"{carrier}/none is not a control: {taking!r}")
+                continue
+            assert f"{ctor}(" in taking, (
+                f"{carrier}/{shadow} never declares {ctor}: {taking!r}")
+
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_the_shadowed_module_never_imports_the_shadow(
+        self, carrier: str,
+    ) -> None:
+        """`mlib` is the namespace under observation, and it must be able to
+        reach NONE of the shadowing declarations — otherwise the cell is
+        about §8.5.2 shadowing, which is legal, rather than about a namespace
+        answering for one that never imported it.
+        """
+        for shadow in _SHADOWS_BY_CARRIER[carrier]:
+            assert "import" not in _matrix_files(carrier, shadow)["mlib.vera"]
+
+    @pytest.mark.parametrize("position", sorted(_POSITION_MODULE_FN))
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_each_position_really_names_the_constructor(
+        self, carrier: str, position: str,
+    ) -> None:
+        """The other half of the label: the module body this position's
+        answer comes from must NAME the contended constructor, or the cell
+        measures a program the collision cannot reach.
+        """
+        fn = _POSITION_MODULE_FN[position]
+        blocks = _CARRIER_LIB[carrier].split("\npublic fn ")
+        body = next((b for b in blocks if b.startswith(f"{fn}(")), None)
+        assert body is not None, f"{carrier} declares no {fn}"
+        assert _CARRIER_CTOR[carrier] in body, (
+            f"{carrier}.{fn} never names {_CARRIER_CTOR[carrier]}")
+
+    def test_two_modules_sharing_a_name_are_refused(
+        self, tmp_path: Path,
+    ) -> None:
+        """Why the module-owned shadows exist for the prelude carrier only.
+
+        A product that is absent from a matrix has to say why, or it reads as
+        an oversight.  Two MODULES declaring one constructor name are refused
+        before any projection is built, so the pair cannot reach the
+        mechanism this PR repairs — which is also why a module can only
+        contend for a name the PRELUDE owns.
+        """
+        files = _matrix_files("plain", "none")
+        files["xlib.vera"] = _SHADOW_MODULE.replace(
+            "Some(Bool)", "Sq(Bool)")
+        files["main.vera"] = files["main.vera"].replace(
+            "import mlib;", "import mlib;\nimport xlib;") + (
+                _KEEPALIVE % "xlib::xping(1)")
+        check_errors, _result, _cg_errors = build_multi_module_past_check(
+            tmp_path, files)
+        assert any(
+            code == "E157" and "more than one import" in desc
+            for code, desc in check_errors
+        ), check_errors
+
+
+class TestBothNamespacesReadTheirOwnDeclaration:
+    """The three layers agree, asserted in ONE program (#1436).
+
+    The matrix above keeps the entry's declaration unused, which is the
+    reported instance.  Here the entry USES the name it took, so the
+    checker's owner, the verifier's owner and codegen's tag are all
+    observable at once on the same source:
+
+    * the CHECKER resolves the entry's ``Sq`` to the ENTRY's ADT — it says so
+      in E314, naming that type against a scrutinee of the module's;
+    * the VERIFIER resolves the module's ``Sq`` to the MODULE's ADT — the
+      module's ``ensures(@Shape.result == Sq(@Int.0))`` is discharged with no
+      diagnostic, on the same program;
+    * CODEGEN agrees with both — the module's exports still answer the
+      module's values while the entry's declaration owns the name in the
+      entry.
+
+    The E314 is the instrument, not the complaint: the entry's own reading is
+    what makes the refusal correct, and reading the ADT it names is how this
+    test asks the checker whose declaration the name belongs to.
+    """
+
+    @pytest.mark.parametrize(
+        "shadow", ["entry_differing", "entry_identical"])
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_the_checker_names_the_entrys_adt_while_codegen_keeps_the_modules(
+        self, carrier: str, shadow: str, tmp_path: Path,
+    ) -> None:
+        files = _matrix_files(carrier, shadow)
+        files["main.vera"] += _ENTRY_MATCH_FN % {
+            "arms": _CARRIER_ARMS[carrier]}
+        check_errors, result, cg_errors = build_multi_module_past_check(
+            tmp_path, files)
+        owner = _ENTRY_SHADOWS[shadow]
+        assert any(
+            code == "E314" and f"constructor of {owner}" in desc
+            for code, desc in check_errors
+        ), check_errors
+        # ... and the module's own bodies are untouched by it.
+        for position in ("construction", "data_segment", "tag_eq"):
+            assert module_value(result, position) == (
+                "ok", _MATRIX_EXPECTED[carrier][position]), (
+                    position, cg_errors)
+
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_the_control_accepts_the_same_match(
+        self, carrier: str, tmp_path: Path,
+    ) -> None:
+        """The premise for the cells above: with no shadow the entry-side
+        match is accepted and answers, so the refusal they assert is the
+        entry's declaration talking and not the fixture being malformed.
+        """
+        files = _matrix_files(carrier, "none")
+        files["main.vera"] += _ENTRY_MATCH_FN % {
+            "arms": _CARRIER_ARMS[carrier]}
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert module_value(result, "entry_match") == ("ok", 507)
+
+
+#: Every by-name constructor lookup left in the compiler, counted per
+#: (file, function, table).  Frozen deliberately: a NEW bare lookup fails
+#: the scan whatever comment it carries, which a marker rail cannot do,
+#: and a vanished one fails too, so a row cannot outlive the site it
+#: describes.  Adding a row is the review-visible act of admitting a
+#: lookup that cannot name an owner; the reasons live at the sites, in
+#: their `# ctor-owner-exempt:` markers.
+_BY_NAME_INVENTORY: dict[tuple[str, str, str], int] = {
+    ("vera/codegen/core.py", "CodeGenerator.__init__", "_ctor_adt_tp_indices"): 1,
+    ("vera/codegen/modules.py", "CrossModuleMixin._register_modules", "_ctor_adt_tp_indices"): 3,
+    ("vera/codegen/registration.py", "RegistrationMixin._register_builtin_adts", "_ctor_adt_tp_indices"): 4,
+    ("vera/codegen/registration.py", "RegistrationMixin._register_data", "_ctor_adt_tp_indices"): 2,
+    ("vera/smt.py", "SmtContext.__init__", "_ctor_to_adt"): 1,
+    ("vera/smt.py", "SmtContext._ctor_instantiation_from_args", "_ctor_to_adt"): 1,
+    ("vera/smt.py", "SmtContext._find_sort_for_ctor", "_ctor_to_adt"): 1,
+    ("vera/smt.py", "SmtContext._translate_ctor_call", "_ctor_to_adt"): 1,
+    ("vera/smt.py", "SmtContext.register_adt", "_ctor_to_adt"): 1,
+    ("vera/wasm/calls.py", "CallsMixin._translate_call", "_ctor_layouts"): 1,
+    ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._composite_ctor_plans", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/calls_handlers.py", "CallsHandlersMixin._recover_ctor_ptype", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_layouts"): 1,
+    ("vera/wasm/context.py", "WasmContext.__init__", "_ctor_to_adt"): 1,
+    ("vera/wasm/context.py", "WasmContext._owned_ctor_layout", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._collect_nested_tag_checks", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._ctor_field_targets_byte", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/data.py", "DataMixin._ctor_field_tp_index", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/data.py", "DataMixin._extract_constructor_fields", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/data.py", "DataMixin._resolve_nested_scrutinee_type", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._setup_match_arm_env", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._translate_constructor_call", "_ctor_layouts"): 1,
+    ("vera/wasm/data.py", "DataMixin._translate_match_condition", "_ctor_layouts"): 1,
+    ("vera/wasm/inference.py", "InferenceMixin._ctor_to_adt_name", "_ctor_to_adt"): 1,
+    ("vera/wasm/inference.py", "InferenceMixin._get_arg_type_info_wasm", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/inference.py", "InferenceMixin._infer_block_result_type", "_ctor_layouts"): 2,
+    ("vera/wasm/inference.py", "InferenceMixin._infer_expr_wasm_type", "_ctor_layouts"): 2,
+    ("vera/wasm/operators.py", "OperatorsMixin._full_ctor_type_name", "_ctor_adt_tp_indices"): 1,
+    ("vera/wasm/operators.py", "OperatorsMixin._generate_adt_eq_fn_body", "_ctor_adt_tp_indices"): 1,
+}
+
+
+
+def _emitted_and_discovered(
+    tmp_path: Path, files: dict[str, str],
+) -> tuple[set[object], set[object]]:
+    """``(codegen emitted, verifier discovered)`` instantiations for *files*.
+
+    The two sides of the #732 differential, driven over one program.  Read
+    from the registered records each side actually consumes — codegen's
+    ``_emitted_instances`` and the verifier's ``_instances`` — rather than
+    recomputed, so a seam that stops threading the tables surfaces here.
+    """
+    from vera.codegen.core import CodeGenerator
+    from vera.parser import parse_to_ast
+    from vera.resolver import ModuleResolver
+    from vera.verifier import ContractVerifier
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name, src in files.items():
+        (tmp_path / name).write_text(src, encoding="utf-8")
+    main_path = tmp_path / "main.vera"
+    source = files["main.vera"]
+    program = parse_to_ast(source)
+    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+        program, main_path)
+    gen = CodeGenerator(
+        source=source, file=str(main_path), resolved_modules=resolved)
+    gen.compile_program(program)
+    emitted = set(getattr(gen, "_emitted_instances", set()))
+    verifier = ContractVerifier(
+        source=source, file=str(main_path), resolved_modules=resolved)
+    verifier.register_program(program)
+    discovered = {
+        (name, ct)
+        for name, cts in verifier._instances.items()
+        for ct in cts
+    }
+    return emitted, discovered
+
+
+class TestBothSidesDiscoverTheSameClone:
+    """The #732 differential over an owner collision (#1436).
+
+    Codegen names a clone after the ADT its scoped projection gives the
+    constructor argument; the verifier names one after the ADT its own
+    per-namespace table gives it.  Threading either side alone makes the two
+    disagree — the shape that dropped `via_generic` with `[E602] call target
+    'gid$Shape' not registered` while discovery had recorded `gid$Mine` — and
+    an equality between two sets is exactly what catches it, which no
+    single-sided test can.
+
+    The premise beside the equality: both sets must actually CONTAIN the
+    clone the module's body calls, under the module's own ADT.  Two empty
+    sets are equal, and so are two that agree on the entry's declaration.
+    """
+
+    @pytest.mark.parametrize("shadow", ["none", "entry_differing"])
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_the_clone_named_is_the_modules_own_adt(
+        self, carrier: str, shadow: str, tmp_path: Path,
+    ) -> None:
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path, _matrix_files(carrier, shadow))
+        assert emitted == discovered, (emitted ^ discovered)
+        owner = _CARRIER_OWNER[carrier]
+        assert any(
+            name == "gid" and any(owner == t.split("<")[0] for t in types)
+            for name, types in emitted
+        ), (owner, sorted(emitted))
+        assert not any(
+            name == "gid" and any(t.split("<")[0] in _SHADOW_ADTS
+                                  for t in types)
+            for name, types in emitted
+        ), sorted(emitted)
+
+
+#: The ADT the module's own constructor belongs to, per carrier — the type
+#: argument discovery must infer for `gid` inside the module's body.
+_CARRIER_OWNER = {"plain": "Shape", "generic": "Box", "prelude": "Option"}
+#: The ADTs an entry-file shadow declares; no clone may be named after one
+#: from a module's body.
+_SHADOW_ADTS = frozenset({"Mine", "Other"})
+
+class TestTheScopedProjectionIsTheOnlyLookupPath:
+    """The structural half of the class instrument (#1436).
+
+    The behavioural matrix can only fail for a path some program reaches.
+    This one fails for a path that merely EXISTS: it walks the compiler for
+    by-name constructor lookups and holds the population to an inventory, and
+    it holds every ``WasmContext`` to taking all three by-name tables from
+    the namespace-scoped projection.
+
+    That second cell is the one a marker cannot satisfy.  #1454's review
+    found six read sites re-labelled "resolved in the compiling namespace's
+    scoped projection" while `_ctor_adt_tp_indices` was still handed to the
+    context raw — the reason was false and the rail that checks markers
+    cannot tell.  Here the claim is checked where it is made, at the
+    construction of the context those sites read from.
+    """
+
+    #: The flat, by-name tables.  A lookup in one of them is a constructor
+    #: name resolved without an owner.
+    _ATTRS = frozenset({
+        "_ctor_layouts", "_ctor_to_adt", "_ctor_adt_tp_indices",
+    })
+    #: Where a by-name lookup can live, discovered by globbing so a new
+    #: module joins by existing.
+    _DIRS = ("vera/wasm", "vera/codegen")
+    _EXTRA_FILES = ("vera/smt.py",)
+    #: The keyword arguments a `WasmContext` resolves constructor names
+    #: through, every one of which must come from the scoped projection.
+    _CONTEXT_KWARGS = ("ctor_layouts", "ctor_to_adt", "ctor_adt_tp_indices")
+
+    @staticmethod
+    def _sites() -> dict[tuple[str, str, str], int]:
+        """Every by-name lookup, counted per (file, function, table)."""
+        import ast as pyast
+        from collections import Counter
+        from pathlib import Path as _P
+
+        cls_ = TestTheScopedProjectionIsTheOnlyLookupPath
+        root = _P(__file__).resolve().parents[1]
+        files = [
+            str(f.relative_to(root))
+            for d in cls_._DIRS for f in sorted((root / d).glob("*.py"))
+        ] + list(cls_._EXTRA_FILES)
+        found: Counter[tuple[str, str, str]] = Counter()
+        for rel in files:
+            tree = pyast.parse((root / rel).read_text(encoding="utf-8"))
+            spans: list[tuple[int, int, str]] = []
+            for owner in pyast.walk(tree):
+                if not isinstance(owner, pyast.ClassDef):
+                    continue
+                for fn in pyast.walk(owner):
+                    if isinstance(fn, (pyast.FunctionDef,
+                                       pyast.AsyncFunctionDef)):
+                        spans.append(
+                            (fn.lineno, fn.end_lineno or fn.lineno,
+                             f"{owner.name}.{fn.name}"))
+            for fn in pyast.walk(tree):
+                if (isinstance(fn, (pyast.FunctionDef, pyast.AsyncFunctionDef))
+                        and not any(s[0] == fn.lineno for s in spans)):
+                    spans.append(
+                        (fn.lineno, fn.end_lineno or fn.lineno, fn.name))
+            for node in pyast.walk(tree):
+                if not (isinstance(node, pyast.Attribute)
+                        and node.attr in cls_._ATTRS):
+                    continue
+                where = next(
+                    (name for a, b, name in sorted(spans)
+                     if a <= node.lineno <= b),
+                    "<module>",
+                )
+                found[(rel.replace("\\", "/"), where, node.attr)] += 1
+        return dict(found)
+
+    def test_the_by_name_population_is_the_inventory(self) -> None:
+        """No by-name lookup outside the inventory, and none missing from it.
+
+        Both directions, because each catches what the other cannot: a new
+        site is a lookup that escaped the registry, and a vanished one is an
+        inventory row that has stopped describing the compiler and would
+        otherwise keep excusing a site that no longer exists.
+        """
+        assert self._sites() == _BY_NAME_INVENTORY
+
+    def test_the_mono_context_flat_tables_are_read_only_by_the_readers(
+        self,
+    ) -> None:
+        """The third layer's flat tables are LOOKED UP in exactly two places.
+
+        Discovery names a clone after the type it infers from a constructor
+        ARGUMENT, so `MonoContext.ctor_to_adt` / `ctor_tp_indices` decide a
+        constructor's owner just as codegen's projection does.  A lookup BY
+        NAME is narrowed per namespace by `Monomorphizer._ctor_owner` and
+        `_ctor_tp_indices`; one anywhere else is a fourth derivation of the
+        same name's meaning, and the differential only catches it once a
+        program reaches it.
+
+        The table is matched both off the context and as the ``ctor_to_adt``
+        argument the walk threads, because the readers are handed the
+        parameter form and a bypass would be written the same way.
+        Enumerations are not lookups and are left alone: `_declared_type_names`
+        takes `.values()` to collect every type name that exists anywhere,
+        which is a question about the PROGRAM and not about what one
+        constructor denotes here — narrowing it per namespace would shrink a
+        set that is deliberately namespace-wide.
+        """
+        import ast as pyast
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[1]
+        path = root / "vera" / "monomorphize.py"
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        spans: list[tuple[int, int, str]] = []
+        for owner in pyast.walk(tree):
+            if not isinstance(owner, pyast.ClassDef):
+                continue
+            for fn in pyast.walk(owner):
+                if isinstance(fn, (pyast.FunctionDef, pyast.AsyncFunctionDef)):
+                    spans.append(
+                        (fn.lineno, fn.end_lineno or fn.lineno, fn.name))
+
+        def is_table(node: object) -> bool:
+            """The flat map, however it reached the expression.
+
+            Either off the context, or as the ``ctor_to_adt`` argument
+            discovery threads through every walk function — the same table,
+            and the parameter is the form the readers are actually handed.
+            """
+            if (isinstance(node, pyast.Attribute)
+                    and node.attr in {"ctor_to_adt", "ctor_tp_indices"}
+                    and isinstance(node.value, pyast.Attribute)
+                    and node.value.attr == "ctx"):
+                return True
+            return (
+                isinstance(node, pyast.Name)
+                and node.id in {"ctor_to_adt", "ctor_tp_indices"}
+            )
+
+        def where(lineno: int) -> str:
+            return next(
+                (n for a, b, n in sorted(spans) if a <= lineno <= b),
+                "<module>",
+            )
+
+        lookups: list[tuple[int, str]] = []
+        for node in pyast.walk(tree):
+            if isinstance(node, pyast.Subscript) and is_table(node.value):
+                lookups.append((node.lineno, where(node.lineno)))
+            elif (isinstance(node, pyast.Call)
+                    and isinstance(node.func, pyast.Attribute)
+                    and node.func.attr == "get"
+                    and is_table(node.func.value)):
+                lookups.append((node.lineno, where(node.lineno)))
+        readers = {"_ctor_owner", "_ctor_tp_indices"}
+        outside = [site for site in lookups if site[1] not in readers]
+        assert not outside, (
+            "MonoContext's flat constructor tables are looked up outside "
+            f"{sorted(readers)}, which bypasses the per-namespace "
+            f"narrowing: {outside}"
+        )
+        # Not vacuous: both readers must still be doing the lookup.
+        assert {site[1] for site in lookups} == readers, lookups
+
+    def test_every_wasm_context_takes_all_three_tables_from_the_projection(
+        self,
+    ) -> None:
+        """Each of the three tables reaches the wasm layer scoped.
+
+        The keyword's value must be a name the enclosing function bound by
+        unpacking ``_namespace_ctor_projection()`` — not ``self.<flat map>``,
+        which is how the type-parameter table stayed unscoped under six
+        markers that said otherwise.
+        """
+        import ast as pyast
+        from pathlib import Path as _P
+
+        root = _P(__file__).resolve().parents[1]
+        seen = 0
+        for path in sorted((root / "vera" / "codegen").glob("*.py")):
+            tree = pyast.parse(path.read_text(encoding="utf-8"))
+            for fn in pyast.walk(tree):
+                if not isinstance(fn, (pyast.FunctionDef,
+                                       pyast.AsyncFunctionDef)):
+                    continue
+                bound: set[str] = set()
+                for stmt in pyast.walk(fn):
+                    if not isinstance(stmt, pyast.Assign):
+                        continue
+                    call = stmt.value
+                    if (isinstance(call, pyast.Call)
+                            and isinstance(call.func, pyast.Attribute)
+                            and call.func.attr == "_namespace_ctor_projection"):
+                        for target in stmt.targets:
+                            if isinstance(target, pyast.Tuple):
+                                bound |= {
+                                    e.id for e in target.elts
+                                    if isinstance(e, pyast.Name)
+                                }
+                for call in pyast.walk(fn):
+                    if not (isinstance(call, pyast.Call)
+                            and isinstance(call.func, pyast.Name)
+                            and call.func.id == "WasmContext"):
+                        continue
+                    seen += 1
+                    kwargs = {
+                        kw.arg: kw.value for kw in call.keywords
+                        if kw.arg is not None
+                    }
+                    for name in self._CONTEXT_KWARGS:
+                        value = kwargs.get(name)
+                        assert isinstance(value, pyast.Name), (
+                            f"{path.name}:{call.lineno} passes {name}="
+                            f"{pyast.dump(value) if value else None!r} — it "
+                            "must come from `_namespace_ctor_projection()`"
+                        )
+                        assert value.id in bound, (
+                            f"{path.name}:{call.lineno} passes {name}="
+                            f"{value.id}, which is not bound from "
+                            "`_namespace_ctor_projection()` in "
+                            f"{fn.name}"
+                        )
+        assert seen == 2, (
+            "expected the two context constructions (a function body and a "
+            f"lifted closure body); found {seen}"
+        )
+
+
+#: The ENTRY-side pair that reads the verifier's answer: a claim its body
+#: satisfies, and one its body refutes, both stated over the ENTRY's OWN
+#: declaration of the contended name.  `%(ctor)s` is the name an imported
+#: module also declares, so a verifier that had taken the module's reading
+#: would type the result differently or discharge the wrong claim.
+_ENTRY_VERIFIER_PAIR = """
+public fn entry_true(@Bool -> @Mine)
+  requires(true)
+  ensures(@Mine.result == %(ctor)s(@Bool.0))
+  effects(pure)
+{
+  %(ctor)s(@Bool.0)
+}
+
+public fn entry_false(@Bool -> @Mine)
+  requires(true)
+  ensures(@Mine.result == Pad(@Bool.0))
+  effects(pure)
+{
+  %(ctor)s(@Bool.0)
+}
+"""
+
+
+class TestTheVerifierReadsTheNameInTheNamespaceThatWroteIt:
+    """The verifier's reading of the name, as a differential (#1436).
+
+    The entry declares `Mine`, whose constructor an imported module also
+    declares, and states two postconditions over it: one its body satisfies
+    and one its body refutes.  Both are needed.  A DISCHARGED postcondition
+    on its own says little about which declaration the name was given — a
+    verifier that had stopped telling two constructors apart would discharge
+    it just as happily — and a refuted one on its own is satisfied by a
+    verifier that refutes everything.  Together they pin the reading: the
+    true claim holds, the false one is refuted, and `vera run` returns the
+    value the entry's own declaration names while the module keeps its.
+    """
+
+    @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
+    def test_the_entrys_own_claims_are_decided_against_its_own_declaration(
+        self, carrier: str, tmp_path: Path,
+    ) -> None:
+        files = _matrix_files(carrier, "entry_differing")
+        files["main.vera"] += _ENTRY_VERIFIER_PAIR % {
+            "ctor": _CARRIER_CTOR[carrier]}
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not cg_errors, cg_errors
+        assert [code for code, _ in verify_errors] == ["E500"], verify_errors
+        assert "entry_false" in verify_errors[0][1], verify_errors
+        # The module's own reading is untouched by either claim.
+        for position in ("construction", "data_segment", "tag_eq"):
+            assert module_value(result, position) == (
+                "ok", _MATRIX_EXPECTED[carrier][position])

@@ -35,6 +35,7 @@ from vera.monomorphize import (
     importer_occupied_bare_names,
     module_qualified_generic_names,
     module_qualified_generic_targets,
+    namespace_ctor_owners,
     namespace_fn_names,
     pipe_desugared_call,
     public_generic_names,
@@ -2024,6 +2025,10 @@ class ContractVerifier:
         """
         ctor_to_adt: dict[str, str] = {}
         ctor_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        # #1436: the same indices keyed by OWNING ADT, so a constructor name
+        # two namespaces declare does not take its field positions from
+        # whichever declaration was recorded last.
+        adt_ctor_tp_indices: dict[str, dict[str, tuple[int | None, ...]]] = {}
         adt_tp_counts: dict[str, int] = {}
 
         def _record_adt(
@@ -2039,13 +2044,15 @@ class ContractVerifier:
             tp_index = {tp: i for i, tp in enumerate(tps)}
             for cname, field_names in ctors:
                 ctor_to_adt[cname] = adt_name
-                ctor_tp_indices[cname] = (
+                indices = (
                     () if field_names is None
                     else tuple(
                         tp_index.get(fn) if fn is not None else None
                         for fn in field_names
                     )
                 )
+                ctor_tp_indices[cname] = indices
+                adt_ctor_tp_indices.setdefault(adt_name, {})[cname] = indices
 
         # 1. Env data types: builtins (Option/Result/Json/Future/...) plus the
         #    user ADTs the verifier registered (whose constructors live under
@@ -2094,14 +2101,18 @@ class ContractVerifier:
             adt_tp_counts.setdefault(cinfo.parent_type, len(tps))
             tp_index = {tp: i for i, tp in enumerate(tps)}
             ctor_to_adt.setdefault(cinfo.name, cinfo.parent_type)
-            ctor_tp_indices.setdefault(
-                cinfo.name,
+            imported_indices = (
                 () if cinfo.field_types is None
                 else tuple(
                     tp_index.get(ft.name) if isinstance(ft, TypeVar) else None
                     for ft in cinfo.field_types
-                ),
+                )
             )
+            ctor_tp_indices.setdefault(cinfo.name, imported_indices)
+            # #1436: and under its owner, where an entry declaration sharing
+            # the bare name cannot displace it.
+            adt_ctor_tp_indices.setdefault(
+                cinfo.parent_type, {}).setdefault(cinfo.name, imported_indices)
 
         type_aliases: dict[str, ast.TypeExpr] = {}
         type_alias_params: dict[str, tuple[str, ...]] = {}
@@ -2235,6 +2246,24 @@ class ContractVerifier:
                 [(mod.path, mod.program) for mod in self._resolved_modules],
                 prelude=self._disc_prelude_fn_names,
             ),
+            # #1436: the constructor half of the same narrowing, and for the
+            # same reason — flat, an ENTRY declaration answered for a name a
+            # module's body meant as its own (or the prelude's), and this
+            # side discovered a clone codegen does not emit.  The prelude's
+            # ADT names are passed separately because this program is
+            # post-injection and codegen's is not: reading them off the
+            # declarations would make the two sides' answers depend on WHEN
+            # each was built, which is what the #732 differential cannot
+            # tolerate.
+            namespace_ctor_owners=namespace_ctor_owners(
+                disc_program,
+                [(mod.path, mod.program) for mod in self._resolved_modules],
+                {
+                    adt_name: tuple(adt.constructors)
+                    for adt_name, adt in self.env.data_types.items()
+                },
+            ),
+            adt_ctor_tp_indices=adt_ctor_tp_indices,
             # #1327/#1366/#1369: the same checker table codegen's own
             # `_build_mono_context` threads — the ENTRY program's, which the
             # CLI hands to both.  The two consultors must back off to the SAME
