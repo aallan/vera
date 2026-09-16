@@ -753,7 +753,34 @@ def test_1451_an_unreachable_arm_is_not_a_contradiction(
 # The demotion leaves an already-disclosed obligation's code alone (F3)
 # ---------------------------------------------------------------------------
 
+# An UNGUARDED disclosure: `@Unit` is erased, so codegen cannot emit a
+# boundary predicate check and the refinement is recorded `tier3_unguarded`
+# with its own E506 (the shape `test_verifier_refinements.py` pins).  That is
+# what the carve-out is about — an obligation already outside every counted
+# tier, carrying a reason the demotion did not create.
 _DISCLOSED_UNDER_UNSAT = """\
+private fn always_false(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  false
+}
+
+type Checked = { @Unit | always_false(()) };
+
+public fn f(@Int, @Unit -> @Checked)
+  requires(@Int.0 > 5 && @Int.0 < 3)
+  ensures(true)
+  effects(pure)
+{
+  ()
+}
+"""
+
+# A GUARDED one, for contrast: the refinement over a `@PosInt` payload gets a
+# real runtime check, so it is `tier3` and counted in `tier3_runtime`.
+_GUARDED_UNDER_UNSAT = """\
 type PosInt = { @Int | @Int.0 > 0 };
 
 public fn f(@Int -> @Option<PosInt>)
@@ -796,6 +823,40 @@ def test_1451_an_already_disclosed_obligation_keeps_its_code(
     assert [w["error_code"] for w in at_line] == ["E506"], at_line
     # The contract obligations still demote, so the cell is not vacuous.
     assert "E538" in _codes(result), _codes(result)
+
+
+def test_1451_a_guarded_tier3_obligation_is_demoted_and_recoded(
+    tmp_path: Path,
+) -> None:
+    """The other side of the carve-out, so its boundary is pinned, not assumed.
+
+    An obligation that IS runtime-guarded is `tier3` and counted in
+    `tier3_runtime` — a claim that a check will run.  Under premises with no
+    model the guard is emitted but unreachable, so leaving it there would
+    count a runtime check no run performs; it moves to `tier3_unguarded` and
+    takes E538, unlike the cell above.  The premise beside it is the
+    satisfiable twin, which must keep the guarded status and the E506 that
+    goes with it — without which this cell would pass over a compiler that
+    had stopped guarding anything.
+    """
+    sat = _verify(_write(
+        tmp_path / "sat",
+        _GUARDED_UNDER_UNSAT.replace("@Int.0 > 5 && @Int.0 < 3", "@Int.0 > 5"),
+    ))
+    guarded = [o for o in sat["obligations"] if o["kind"] == "refine_bind"]
+    assert guarded, _triples(sat)
+    assert all(
+        (o["status"], o["error_code"]) == ("tier3", "E506") for o in guarded
+    ), _triples(sat)
+
+    unsat = _verify(_write(tmp_path / "unsat", _GUARDED_UNDER_UNSAT))
+    demoted = [o for o in unsat["obligations"] if o["kind"] == "refine_bind"]
+    assert len(demoted) == len(guarded), _triples(unsat)
+    assert all(
+        (o["status"], o["error_code"]) == ("tier3_unguarded", "E538")
+        for o in demoted
+    ), _triples(unsat)
+    assert unsat["verification"]["tier3_runtime"] == 0, unsat["verification"]
 
 
 # ---------------------------------------------------------------------------
