@@ -1552,40 +1552,6 @@ class CodeGenerator(
         )
 
 
-    #: Cache for :meth:`_builtin_adt_name_set`, filled on first use.
-    _BUILTIN_ADT_NAMES: frozenset[str] | None = None
-
-    @classmethod
-    def _builtin_adt_name_set(cls) -> frozenset[str]:
-        """The ADT names `_register_builtin_adts` installs, derived from a
-        fresh registrar rather than snapshotted mid-compilation (#1436).
-
-        Snapshotting `_adt_layouts` after the call was wrong in the only
-        case that matters: a module compile registers the built-ins again
-        on a generator that already holds the program's own ADTs, so the
-        snapshot swallowed `Shape` and classified an imported type as
-        infrastructure.  Asking a throwaway registrar cannot drift from
-        what the method actually writes, and the answer is the same for
-        every generator, so it is cached on the class.
-        """
-        cached = cls.__dict__.get("_BUILTIN_ADT_NAMES")
-        if cached is None:
-            from vera.prelude import prelude_adt_names
-            probe = CodeGenerator()
-            probe._register_builtin_adts()
-            # BOTH registries, because neither is the whole set: the
-            # registrar holds `Option` / `Result` / `Ordering` / `UrlParts` /
-            # `Tuple` / `MdInline` / `MdBlock`, and the PRELUDE injects
-            # `Json`, `HtmlNode`, `Request` and `Response` on demand.  The
-            # prelude's four own no module, so reading the registrar alone
-            # classified them as ENTRY declarations and hid them from the
-            # prelude's own bodies — measured, `json_keys` lost `JNull` and
-            # 76 dual-target conformance cells went red.
-            cached = frozenset(probe._adt_layouts) | frozenset(
-                prelude_adt_names())
-            cls._BUILTIN_ADT_NAMES = cached
-        return cached
-
     def _namespace_ctor_projection(
         self,
     ) -> tuple[dict[str, object], dict[str, str],

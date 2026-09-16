@@ -1033,6 +1033,17 @@ def namespace_ctor_owners(
                 if imp.names is not None and adt_name not in imp.names:
                     continue
                 for ctor_name in exported[adt_name]:
+                    # An IMPORTED declaration may not take a name
+                    # infrastructure already holds — the checker's injection
+                    # is a `setdefault` over an environment the built-ins
+                    # populate, and §8.5.2 gives the shadow to a LOCAL
+                    # declaration rather than to an import.  Codegen's
+                    # projection applies `foreign` the same way, and the two
+                    # owner derivations disagreeing is how the two sides of
+                    # the #732 differential name different clones (PR #1454
+                    # review).
+                    if ctor_name in base:
+                        continue
                     out[ctor_name] = adt_name
         for tld in prog.declarations:
             if isinstance(tld.decl, ast.DataDecl):

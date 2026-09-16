@@ -1491,6 +1491,9 @@ public data %s {
 
 #: The same declaration under a name nothing else claims: the control that
 #: says the cells below measure the COLLISION and not the extra module.
+#: The constructor names the borrowed-name declaration carries.
+_PRELUDE_NAME_DIFFERING_CTORS = ("Err", "Ok", "Some")
+
 _PRELUDE_NAME_CONTROL = """\
 public data Zz {
   Zerr(String),
@@ -1617,6 +1620,25 @@ public fn x_result(@Unit -> @Int)
   xlib::x_result(())
 }
 
+public forall<T> fn ent_gid(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+public fn ent_generic(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match ent_gid(Some(42)) {
+    Some(@Int) -> 100 + @Int.0,
+    None -> 0
+  }
+}
+
 public fn keep(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -1634,6 +1656,7 @@ _PRELUDE_EXPECTED = {
     "ent_hash": 0,
     "ent_match": 142,
     "ent_result": 42,
+    "ent_generic": 142,
     "prelude_comb": 42,
     "x_show": "Some(42)",
     "x_result": 42,
@@ -1661,6 +1684,28 @@ def _prelude_name_files(
         files["main.vera"] = _PRELUDE_MAIN % {
             "import": "import alib;", "keep": "alib::a_ping(1)"}
     return files
+
+
+@pytest.fixture(scope="module")
+def prelude_name_builds(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[tuple[str, str, str], tuple[
+    list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+]]:
+    """One build per (type, shape, reach); every cell below reads one.
+
+    `observation` does not change the program, so parametrizing over it
+    would compile the same 24 programs seven times each (PR #1454 review).
+    """
+    return {
+        (name, shape, reach): build_multi_module(
+            tmp_path_factory.mktemp(f"{name}_{shape}_{reach}"),
+            _prelude_name_files(name, shape, reach),
+        )
+        for name in _PRELUDE_RESTATEMENTS
+        for shape in ("differing", "identical", "control")
+        for reach in ("direct", "transitive")
+    }
 
 
 class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
@@ -1691,18 +1736,100 @@ class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
         "name", sorted(_PRELUDE_RESTATEMENTS))
     def test_the_prelude_keeps_its_constructors(
         self, name: str, shape: str, reach: str, observation: str,
-        tmp_path: Path,
+        prelude_name_builds: dict[tuple[str, str, str], tuple[
+            list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+        ]],
     ) -> None:
-        files = _prelude_name_files(name, shape, reach)
-        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
-        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
-        dropped = [
-            (d.error_code, d.description) for d in result.diagnostics
-            if d.error_code in {"E602", "E604", "E620"}
-        ]
-        assert not dropped, dropped
+        _verify, result, _cg = prelude_name_builds[(name, shape, reach)]
         assert module_value(result, observation) == (
             "ok", _PRELUDE_EXPECTED[observation])
+
+    @pytest.mark.parametrize("reach", ["direct", "transitive"])
+    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_nothing_is_reported_and_nothing_is_dropped(
+        self, name: str, shape: str, reach: str,
+        prelude_name_builds: dict[tuple[str, str, str], tuple[
+            list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+        ]],
+    ) -> None:
+        """The silence around each program, asserted once per build.
+
+        These programs are legal under §8.4.1 and this PR does not reach
+        for a new refusal: whether a differently-shaped declaration of a
+        demand-injected prelude name should be REFUSED is a language
+        question, deliberately left open.  The cells above pin the VALUES;
+        this one pins that nothing was reported to get them, and that no
+        function was skipped on the way.
+        """
+        verify_errors, result, cg_errors = prelude_name_builds[
+            (name, shape, reach)]
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert [d.error_code for d in result.diagnostics] == [], (
+            result.diagnostics)
+
+    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_both_sides_agree_over_an_imported_prelude_name(
+        self, name: str, shape: str, tmp_path: Path,
+    ) -> None:
+        """The same equality where the collision is with INFRASTRUCTURE.
+
+        An imported ADT whose constructors are spelled `Some`, `Ok` or
+        `Err` reaches each side's owner table through a different door —
+        codegen's projection applies imports without displacing
+        infrastructure, and the shared derivation has to say the same or
+        the two name different clones and the caller is dropped (E602/E620).
+        The cell the carrier matrix runs cannot see this: its collisions are
+        with another namespace's ADT, never with the prelude's own.
+        """
+        emitted, discovered = _emitted_and_discovered(
+            tmp_path, _prelude_name_files(name, shape, "direct"))
+        # Premise first: two empty sets are equal, and these programs are
+        # only a differential at all because the entry instantiates its own
+        # `forall` over a value built with the contended constructor.
+        assert any(fn == "ent_gid" for fn, _types in emitted), sorted(emitted)
+        assert emitted == discovered, (emitted ^ discovered)
+        # ... and the clone is named after the PRELUDE's type, not the
+        # imported declaration that borrowed its constructor's spelling.
+        assert all(
+            not any(t.split("<")[0] == name for t in types)
+            for fn, types in emitted if fn == "ent_gid"
+        ), sorted(emitted)
+
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_an_import_does_not_take_an_infrastructure_name(
+        self, name: str,
+    ) -> None:
+        """The rule itself, asked of the shared owner table (#1454 review).
+
+        Codegen's projection applies `foreign` without displacing
+        infrastructure; the derivation the verifier's discovery narrows by
+        has to say the same, or the two name different clones.  Asked of the
+        table directly rather than through a program, because the checker's
+        span-keyed type table answers a `ConstructorCall` first and would
+        mask a disagreement here until some shape outran it — which is
+        exactly the kind of latency a structural cell exists to remove.
+        """
+        from vera.monomorphize import namespace_ctor_owners
+        from vera.parser import parse_to_ast
+
+        files = _prelude_name_files(name, "differing", "direct")
+        lib = parse_to_ast(files["tlib.vera"])
+        entry = parse_to_ast(files["main.vera"])
+        owners = namespace_ctor_owners(
+            entry, [(("tlib",), lib)],
+            {"Option": ("None", "Some"), "Result": ("Ok", "Err"),
+             name: tuple(_PRELUDE_NAME_DIFFERING_CTORS)},
+        )
+        entry_owners = owners.visible(None) or {}
+        for ctor, owner in (("Some", "Option"), ("Ok", "Result"),
+                            ("Err", "Result")):
+            assert entry_owners.get(ctor) == owner, (
+                f"the entry's {ctor} resolves to {entry_owners.get(ctor)!r}, "
+                f"not the prelude's {owner}")
+        # The declaring module keeps its own reading of the same names.
+        assert (owners.visible(("tlib",)) or {}).get("Some") == name
 
     @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
     def test_the_declaring_module_reads_its_own(
@@ -1739,23 +1866,6 @@ public fn mod_show(@Unit -> @String)
         assert module_value(result, "mod_show") == ("ok", "Some(true)")
         # ... while the entry still reads the prelude's.
         assert module_value(result, "ent_show") == ("ok", "Some(42)")
-
-    def test_no_cell_carries_a_diagnostic(self, tmp_path: Path) -> None:
-        """The absence of a diagnostic is part of what is asserted.
-
-        These programs are legal under §8.4.1 and this PR does not reach for
-        a new refusal: whether a differently-shaped declaration of a
-        demand-injected prelude name should be refused is a language
-        question, deliberately left open.  The cells above therefore pin the
-        VALUES; this one pins that nothing was reported to get them.
-        """
-        for name in sorted(_PRELUDE_RESTATEMENTS):
-            for shape in ("differing", "identical", "control"):
-                files = _prelude_name_files(name, shape, "direct")
-                _verify, result, _cg = build_multi_module(
-                    tmp_path / f"{name}_{shape}", files)
-                assert [d.error_code for d in result.diagnostics] == [], (
-                    name, shape, result.diagnostics)
 
 
 class TestTheTwoOwnerDerivationsAdmitByTheSameKey:
