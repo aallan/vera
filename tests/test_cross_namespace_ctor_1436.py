@@ -1325,6 +1325,7 @@ def _emitted_and_discovered(
     ``_emitted_instances`` and the verifier's ``_instances`` — rather than
     recomputed, so a seam that stops threading the tables surfaces here.
     """
+    from vera.checker import typecheck_with_artifacts
     from vera.codegen.core import CodeGenerator
     from vera.parser import parse_to_ast
     from vera.resolver import ModuleResolver
@@ -1338,12 +1339,30 @@ def _emitted_and_discovered(
     program = parse_to_ast(source)
     resolved = ModuleResolver(_root=tmp_path).resolve_imports(
         program, main_path)
+    # The checker's side-tables, threaded into BOTH sides exactly as the CLI
+    # threads them (PR #1454 review): `MonoContext.expr_types` is the table
+    # both consultors fall back to when their own walk names nothing, so a
+    # differential run without it compares a configuration production never
+    # uses — and a desync that only appears with the tables present would
+    # pass.
+    diags, arts = typecheck_with_artifacts(
+        program, source, file=str(main_path), resolved_modules=resolved,
+        collect_module_artifacts=True,
+    )
+    assert not [d for d in diags if d.severity == "error"], diags
     gen = CodeGenerator(
-        source=source, file=str(main_path), resolved_modules=resolved)
+        source=source, file=str(main_path), resolved_modules=resolved,
+        expr_semantic_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+        module_artifacts=arts.module_artifacts,
+    )
     gen.compile_program(program)
     emitted = set(getattr(gen, "_emitted_instances", set()))
     verifier = ContractVerifier(
-        source=source, file=str(main_path), resolved_modules=resolved)
+        source=source, file=str(main_path), resolved_modules=resolved,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
     verifier.register_program(program)
     discovered = {
         (name, ct)
