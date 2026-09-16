@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from vera.verifier import _PREMISE_CHECK_TIMEOUT_MS
 import z3
 
 from vera.checker.core import typecheck
@@ -37,7 +39,6 @@ from vera.smt import (
     resolve_timeout_ms,
 )
 from vera.verifier import ContractVerifier, verify
-from vera.verifier import _PREMISE_CHECK_TIMEOUT_MS
 
 ROOT = Path(__file__).parent.parent
 EXAMPLES = ROOT / "examples"
@@ -216,17 +217,17 @@ class TestBudgetReachesTheSolver:
         return seen
 
     def _assert_budget(self, seen: list[int], budget: int) -> None:
-        """*budget* reached the solver, and only the screening budget beside it.
+        """*budget* is the only number the solver is ever given.
 
-        Stronger than the `set(seen) == {budget}` this asserted before #1451
-        added a second, documented number to the plumbing.  Three properties
-        rather than one: the caller's budget is applied, the ONLY other value
-        the solver ever sees is the premise-consistency screening budget
-        (`min(_PREMISE_CHECK_TIMEOUT_MS, budget)` — a third number appearing
-        here is a leak, which is what the old equality was really guarding),
-        and the LAST value set is the caller's, so every obligation still to
-        be discharged runs under the budget the caller chose rather than under
-        a screening budget left standing.
+        #1451 added a two-stage premise-consistency screen.  Stage 1 runs
+        under its own short budget, so a second number is expected here;
+        stage 2 runs on a SCRATCH solver, so it never reaches this spy at all.
+        Three properties rather than the `set(seen) == {budget}` this asserted
+        before: the caller's budget is applied, the ONLY other value the
+        solver ever sees is stage 1's documented budget (a third number is a
+        leak, which is what the old equality was really guarding), and the
+        LAST value set is the caller's, so every obligation still to be
+        discharged runs under the budget the caller chose.
         """
         assert seen, "the solver was never given a timeout"
         screening = min(_PREMISE_CHECK_TIMEOUT_MS, budget)

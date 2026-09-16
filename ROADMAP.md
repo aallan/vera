@@ -24,6 +24,7 @@ A bug class outranks stage work, so the next release takes the open `bug`-labell
 |---|---|
 | [#1466](https://github.com/aallan/vera/issues/1466) | A boundary guard decomposes a refined tuple component as a scalar, so a pair-represented base (`@String`, `@Array<T>`) is checked against its pointer and a value that satisfies the refinement traps — on a program proved at Tier 1. |
 | [#1470](https://github.com/aallan/vera/issues/1470) | A refutation can rest on a value whose refinement the solver cannot state: the sort is built, the predicate is not, and the counterexample names a value the type forbids. |
+| [#1468](https://github.com/aallan/vera/issues/1468) | A false precondition on a `forall` generic callee is disclosed as **E532** at the call site instead of refuted as **E501**, so a program calling it is accepted. |
 
 ## Stage 19 — The verification completeness sprint
 

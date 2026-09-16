@@ -3573,7 +3573,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E536**: Termination metric outside the i64 range the guard compares in
 - **E537**: Termination metric range unverified and not runtime-guarded
 - **E538**: Premise set unsatisfiable (no call can reach the body)
-- **E539**: Internal: verifier-derived premises are contradictory
+- **E539**: Premise set contradicts a verifier-derived fact
 - **E600**: Unsupported parameter type
 - **E601**: Unsupported return type
 - **E602**: Unsupported body expression type

@@ -464,10 +464,18 @@ def test_1451_a_verifier_derived_contradiction_refuses_to_certify(
     assert all(o.status == "tier3_unguarded" for o in caller), [
         (o.kind, o.status) for o in caller
     ]
-    text = next(d.description for d in result.diagnostics
-                if d.error_code == "E539")
-    assert "internal" in text.lower(), text
-    assert "'caller'" in text, text
+    e539 = next(d for d in result.diagnostics if d.error_code == "E539")
+    assert "derived from the program" in e539.description, e539.description
+    assert "'caller'" in e539.description, e539.description
+    # E539 must NOT open by calling itself internal (#1457 review, Medium 3).
+    # The same code is reached when an `assume` the author wrote contradicts a
+    # callee's postcondition, which is the program disagreeing with itself and
+    # not a compiler defect; the bug report belongs in the `fix`, as the last
+    # resort it is, rather than in the sentence the reader sees first.
+    assert "internal" not in e539.description.lower(), e539.description
+    assert "report this program" not in e539.description.lower(), (
+        e539.description)
+    assert "report the program" in (e539.fix or "").lower(), e539.fix
 
 
 # ---------------------------------------------------------------------------
@@ -825,19 +833,26 @@ def test_1451_an_already_disclosed_obligation_keeps_its_code(
     assert "E538" in _codes(result), _codes(result)
 
 
-def test_1451_a_guarded_tier3_obligation_is_demoted_and_recoded(
+def test_1451_a_guarded_tier3_obligation_keeps_its_status_and_code(
     tmp_path: Path,
 ) -> None:
-    """The other side of the carve-out, so its boundary is pinned, not assumed.
+    """The carve-out's general form: only a `verified` obligation is demoted.
 
-    An obligation that IS runtime-guarded is `tier3` and counted in
-    `tier3_runtime` — a claim that a check will run.  Under premises with no
-    model the guard is emitted but unreachable, so leaving it there would
-    count a runtime check no run performs; it moves to `tier3_unguarded` and
-    takes E538, unlike the cell above.  The premise beside it is the
-    satisfiable twin, which must keep the guarded status and the E506 that
-    goes with it — without which this cell would pass over a compiler that
-    had stopped guarding anything.
+    An obligation that came back anything but `verified` under a premise set
+    with no model reached that verdict for a reason the contradiction did not
+    supply — `check_valid` answers `unsat` for EVERY goal here, so `tier3`,
+    `timeout` and `tier3_unguarded` can only have come from untranslatability,
+    an unmodelled base, or an expired budget (#1457 review, Medium 1).  Each
+    already carries the code of its own reason and a warning at its own line,
+    so rewriting it left the obligation array and the diagnostic stream naming
+    different codes for one site.  A GUARDED `tier3` is the sharpest case: it
+    would be relabelled `tier3_unguarded`, whose documented meaning is
+    "neither proved nor guarded", while codegen — which consults no verdict at
+    all — still emits the guard.
+
+    The premise beside it is the satisfiable twin, which must report the same
+    status and code, so the cell measures the carve-out rather than a compiler
+    that had stopped guarding anything.
     """
     sat = _verify(_write(
         tmp_path / "sat",
@@ -850,13 +865,22 @@ def test_1451_a_guarded_tier3_obligation_is_demoted_and_recoded(
     ), _triples(sat)
 
     unsat = _verify(_write(tmp_path / "unsat", _GUARDED_UNDER_UNSAT))
-    demoted = [o for o in unsat["obligations"] if o["kind"] == "refine_bind"]
-    assert len(demoted) == len(guarded), _triples(unsat)
+    kept = [o for o in unsat["obligations"] if o["kind"] == "refine_bind"]
+    assert len(kept) == len(guarded), _triples(unsat)
     assert all(
-        (o["status"], o["error_code"]) == ("tier3_unguarded", "E538")
-        for o in demoted
+        (o["status"], o["error_code"]) == ("tier3", "E506") for o in kept
     ), _triples(unsat)
-    assert unsat["verification"]["tier3_runtime"] == 0, unsat["verification"]
+    # ... and the diagnostics agree with the array at every one of those lines.
+    for o in kept:
+        at_line = [
+            w["error_code"] for w in unsat["warnings"]
+            if w["location"]["line"] == o["location"]["line"]
+        ]
+        assert at_line == ["E506"], (o, at_line)
+    # The cell is not vacuous: the CONTRACT obligations still demote, and
+    # nothing in the function is certified.
+    assert "E538" in _codes(unsat), _codes(unsat)
+    assert unsat["verification"]["tier1_verified"] == 0, unsat["verification"]
 
 
 # ---------------------------------------------------------------------------
@@ -1028,6 +1052,51 @@ def test_1451_a_contradiction_in_the_same_context_is_still_refuted(
     codes = [d.error_code for d in result.diagnostics]
     assert "E538" in codes, codes
     assert result.summary.tier1_verified == 0, result.summary
+
+
+def test_1451_an_undecided_full_set_still_asks_the_author_layer(
+    tmp_path: Path,
+) -> None:
+    """A contradiction the author wrote survives an undecided full set.
+
+    `unknown` on the full set means nothing may be blamed on the VERIFIER —
+    but the author's layer is the pre-body snapshot, with no rank axiom and
+    no derived fact in it, so it is still answerable and a refutation there is
+    as real as one found in the full set.  Skipping it would make the whole
+    check conditional on the verifier's own derived facts being decidable,
+    which is backwards: the premise set would go unchecked on exactly the
+    programs whose reasoning is hardest.
+
+    No whole program is known to reach this pairing — a contradictory premise
+    set is refuted by propagation before any quantifier is instantiated, so
+    the full set answers `unsat` even under rank axioms (the cell above
+    measures that) — so the verdict is injected, the same way `check_valid`'s
+    `opaque` branch is driven in `test_verifier_refinements.py`.  Injected or
+    not, the branch has a contract, and it is pinned here rather than left
+    unfalsifiable.
+    """
+    from vera import verifier as vmod
+
+    original = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None
+    )
+    try:
+        result = _verify_in_process(_write(tmp_path / "bad", _UNSAT_REQUIRES))
+        healthy = _verify_in_process(_write(tmp_path / "ok", _HEALTHY))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = original  # type: ignore[assignment]
+
+    codes = [d.error_code for d in result.diagnostics]
+    assert "E538" in codes, codes
+    assert "E539" not in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary
+    # ... and an undecided full set over a HEALTHY contract still says
+    # nothing, so the branch reports a refutation rather than the `unknown`.
+    assert not [
+        d for d in healthy.diagnostics if d.error_code in ("E538", "E539")
+    ], [d.error_code for d in healthy.diagnostics]
+    assert healthy.summary.tier1_verified > 0, healthy.summary
 
 
 def test_1451_an_undecidable_author_layer_demotes_without_attributing(
@@ -1360,6 +1429,27 @@ def test_1451_vacuity_matrix(
         assert all(
             o["status"] in ("tier3_unguarded", "violated") for o in unsat_slice
         ), [(o["kind"], o["status"]) for o in unsat_slice]
+        if kind_name == "call_pre":
+            # Say what the contradiction actually bought, rather than only
+            # that E538 fired: the call whose precondition the satisfiable
+            # side REFUSES is here proved from the contradiction, so it
+            # records no obligation IN THIS FUNCTION and the disclosure is the
+            # only thing standing between that and a silent false Tier 1.
+            assert not [
+                o for o in unsat_slice if o["kind"] == "call_pre"
+            ], _triples(unsat)
+            # The `where` shape is the exception, and a load-bearing one: the
+            # contradiction is the HELPER's, so the PARENT's call to it is a
+            # genuine E501 and the program is refused — which is what keeps
+            # the warning-not-error decision honest for a function anyone
+            # actually calls.  Everywhere else the caller is outside the
+            # fixture, and the program stands.
+            if route.shape == "where":
+                assert unsat["ok"] is False, _triples(unsat)
+                assert ("call_pre", "violated", "E501") in _triples(
+                    unsat), _triples(unsat)
+            else:
+                assert unsat["ok"] is True, _triples(unsat)
     else:
         assert "E538" not in _codes(unsat), (
             f"{route_name}/{kind_name}: an unreachable arm is the program's "
@@ -1374,7 +1464,15 @@ def test_1451_vacuity_matrix(
             # A function-level obligation is outside the arm, so the dead arm
             # must not move it: it stays refuted on both sides.
             assert [o["status"] for o in dead] == ["violated"], dead
-        elif kind_name != "call_pre":
+        elif kind_name == "call_pre":
+            # The satisfiable side refuses this program (asserted above); the
+            # dead arm's call precondition is proved from the arm fact, so it
+            # records nothing and the program is accepted.  Assert BOTH, or
+            # the cell says only that no E538 fired — which a check that had
+            # stopped running entirely would also satisfy.
+            assert unsat["ok"] is True, _triples(unsat)
+            assert dead == [], _triples(unsat)
+        else:
             assert [o["status"] for o in dead] == ["verified"], dead
             assert all(o["status"] != "verified" for o in live), live
 
@@ -1394,8 +1492,271 @@ def test_1451_a_path_local_contradiction_certifies_nothing_a_run_reaches(
     """
     src = _render(route_name, "nat_bind", sat=False)
     path = _write(tmp_path, src)
-    assert "E538" not in _codes(_verify(path))
+    verdict = _verify(path)
+    assert "E538" not in _codes(verdict), _codes(verdict)
+    # The premise: the arm really does certify a `nat_bind` from the
+    # contradiction.  Without it the run below would pass over a program that
+    # had no vacuous proof in it to be unreachable.
+    assert ("nat_bind", "verified", None) in _triples(verdict), _triples(verdict)
     proc = _cli("run", str(path), "--fn", "subject", "--", "7")
     assert proc.returncode == 0, (proc.stdout, proc.stderr[-600:])
-    assert "0" in proc.stdout, proc.stdout
+    # The OTHER branch's value, exactly — `in` would be satisfied by a trap
+    # message that happened to contain a zero.
+    assert proc.stdout.strip() == "0", proc.stdout
     assert "Nat" not in proc.stderr, proc.stderr[-600:]
+
+
+# ---------------------------------------------------------------------------
+# Round two of the adversarial review of PR #1457
+# ---------------------------------------------------------------------------
+
+_ASSUME_OVER_A_CALL = """\
+private fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 100)
+  effects(pure)
+{
+  101
+}
+
+public fn caller(@Int -> @Int)
+  requires(@Int.0 == 1)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  assume(g(@Int.0) < 0);
+  0
+}
+"""
+
+_ASSUME_AFTER_A_LET = _ASSUME_OVER_A_CALL.replace(
+    "  assume(g(@Int.0) < 0);\n",
+    "  let @Int = g(@Int.0);\n  assume(@Int.0 < 0);\n",
+)
+
+
+@pytest.mark.parametrize(
+    "source", [
+        pytest.param(_ASSUME_OVER_A_CALL, id="assume-over-a-call"),
+        pytest.param(_ASSUME_AFTER_A_LET, id="assume-after-a-let"),
+    ],
+)
+def test_1451_the_screen_reads_the_terms_the_obligations_ran_under(
+    source: str, tmp_path: Path,
+) -> None:
+    """RED before: a second walk answered about a premise set nobody ran under.
+
+    Translating a predicate has EFFECTS.  A call inside one mints a fresh call
+    constant, constrained only by the guarded implication the same walk adds
+    to the base context.  The first draft of the `assume` layer walked the
+    body TWICE — once to thread `_path_conditions`, once with `assumes_only`
+    to collect premises — so the screen was handed a fact about `_call_g_5`
+    while every obligation had been discharged under `_call_g_4`.  It answered
+    `sat` about a set no obligation ran under, and `ensures(@Int.result ==
+    42)` stayed VERIFIED over a body returning `0`, with `vera run --fn caller
+    -- 1` trapping on the postcondition the run had just certified.
+
+    Both spellings are cells because the second walk re-translated preceding
+    top-level `let` right-hand sides too, not only the `assume` predicate, so
+    a `let` in front of the `assume` reproduced it identically.  One walk now,
+    partitioned, handing the screen the very terms `_path_conditions` got.
+    """
+    result = _verify(_write(tmp_path, source))
+    assert not [
+        o for o in result["obligations"]
+        if o["kind"] == "ensures" and o["status"] == "verified"
+        and o["location"]["line"] > 8
+    ], _triples(result)
+    assert "E539" in _codes(result), (_codes(result), _triples(result))
+    caller_obls = [
+        o for o in result["obligations"] if o["location"]["line"] > 8
+    ]
+    assert caller_obls and all(
+        o["status"] == "tier3_unguarded" for o in caller_obls
+    ), _triples(result)
+
+
+_PELL_50 = """\
+public fn f(@Int, @Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 50 && @Int.1 > 0 && @Int.1 < 50 && @Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1))
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+
+_PELL_60 = """\
+public fn f(@Int, @Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 60 && @Int.1 > 0 && @Int.1 < 60 && @Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1))
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  0
+}
+"""
+
+
+def test_1451_a_contradiction_beyond_the_screening_budget_is_still_caught(
+    tmp_path: Path,
+) -> None:
+    """RED before: the screen was narrower than the budget the vacuity used.
+
+    `x * x == 2 * (y * y)` with `0 < x, y < 60` has no integer model — the
+    irrationality of the square root of two, in sixty cases — but Z3 needs
+    about a second to say so, not the 250 ms the screening query is given.
+    The first draft demoted only on a REFUTATION and asked nothing else, so
+    every contradiction refutable between 250 ms and the run's budget was
+    missed in silence: `ensures(@Int.result == 42)` VERIFIED over a body
+    returning `0`, exactly the issue's repro with a slower contradiction.
+
+    The author's layer is what closes it, and it is asked at the RUN's budget
+    rather than the screen's, so `--timeout-ms` now widens detection instead
+    of only widening the obligation queries it is competing with.
+    """
+    # An explicit, generous budget, because the point of the cell is that
+    # detection now scales with `--timeout-ms` rather than with stage 1's
+    # 250 ms: this refutation needs about eight seconds of real search, and a
+    # cell that raced the default would measure the machine's load rather
+    # than the check.  The cost is paid once, here, deliberately — the
+    # division of labour between the stages is pinned by the cell below,
+    # which injects stage 1's verdict instead of waiting for it.
+    path = _write(tmp_path, _PELL_60)
+    proc = _cli("verify", "--json", "--timeout-ms", "120000", str(path))
+    result = json.loads(proc.stdout)
+    assert "E538" in _codes(result), (_codes(result), _triples(result))
+    assert result["verification"]["tier1_verified"] == 0, (
+        result["verification"])
+    assert not [
+        o for o in result["obligations"]
+        if o["kind"] == "ensures" and o["status"] == "verified"
+    ], _triples(result)
+
+
+def test_1451_the_second_stage_refutes_on_the_quantifier_free_subset(
+    tmp_path: Path,
+) -> None:
+    """The two stages divide the work the way their budgets can afford.
+
+    Stage 1 asks the WHOLE premise set at a short budget: a contradiction
+    that propagates is refuted there even under rank axioms.  Stage 2 asks the
+    quantifier-free SUBSET at the discharge budget, which is sound because a
+    refutation on a subset is a refutation on the whole, and affordable
+    because the rank axioms are what send Z3 to MBQI.
+
+    Both verdicts are asserted, on both fixtures, because the division is the
+    claim: the Pell contradiction must be invisible to stage 1 and refuted by
+    stage 2 (a one-stage screen at the short budget misses it, which is what
+    #1457's High 2 measured), while a recursive-ADT measure must be undecided
+    at stage 1 and ACCEPTED by stage 2 — a stage 2 that refuted it would be
+    demoting a program that verifies.
+    """
+    from vera import verifier as vmod
+
+    seen: list[tuple[str, str]] = []
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    o_qf = vmod.ContractVerifier._quantifier_free_premises_satisfiable
+    label = {True: "sat", False: "unsat", None: "unknown"}
+
+    def blind_stage1(self, smt, assumed):  # type: ignore[no-untyped-def]
+        seen.append(("stage1", "unknown"))
+        return None
+
+    def spy_full(self, smt, assumed):  # type: ignore[no-untyped-def]
+        v = o_full(self, smt, assumed)
+        seen.append(("stage1", label[v]))
+        return v
+
+    def spy_qf(self, smt, assumed):  # type: ignore[no-untyped-def]
+        v = o_qf(self, smt, assumed)
+        seen.append(("stage2", label[v]))
+        return v
+
+    vmod.ContractVerifier._quantifier_free_premises_satisfiable = spy_qf  # type: ignore[assignment]
+    try:
+        # Stage 1 BLINDED, on a contradiction it would otherwise refute in a
+        # fifth of a second.  The alternative — a fixture hard enough that
+        # stage 1 really times out — costs eight seconds of search and races
+        # the machine's load, which measures the host rather than the design.
+        # Injecting the verdict pins the same property in milliseconds: what
+        # stage 1 does not decide, stage 2 must refute.
+        vmod.ContractVerifier._full_premises_satisfiable = blind_stage1  # type: ignore[assignment]
+        seen.clear()
+        hard = _verify_in_process(_write(tmp_path / "hard", _PELL_50))
+        hard_seen = list(seen)
+
+        # Unblinded, so the rank-axiom leg measures the real stage 1.
+        vmod.ContractVerifier._full_premises_satisfiable = spy_full  # type: ignore[assignment]
+        seen.clear()
+        rank = _verify_in_process(_write(tmp_path / "rank", _RECURSIVE_MEASURE))
+        rank_seen = list(seen)
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+        vmod.ContractVerifier._quantifier_free_premises_satisfiable = o_qf  # type: ignore[assignment]
+
+    # `verify_program` re-verifies while the disclosed set moves, so both
+    # fixtures are screened more than once and the verdicts are asserted as
+    # OCCURRENCES rather than as a fixed sequence.
+    assert ("stage2", "unsat") in hard_seen, hard_seen
+    assert "E538" in [d.error_code for d in hard.diagnostics], hard_seen
+    assert hard.summary.tier1_verified == 0, hard.summary
+
+    # And the other half of the division: a recursive-ADT measure must be
+    # UNDECIDED at stage 1 — the real one, not the blind one — and ACCEPTED by
+    # stage 2, since a stage 2 that refuted it would demote a program that
+    # verifies.
+    assert ("stage1", "unknown") in rank_seen, rank_seen
+    assert ("stage2", "unsat") not in rank_seen, rank_seen
+    assert not [
+        d for d in rank.diagnostics if d.error_code in ("E538", "E539")
+    ], rank_seen
+    assert rank.summary.tier1_verified > 0, rank.summary
+
+
+def test_1451_vera_test_does_not_call_a_demoted_function_tier_1(
+    tmp_path: Path,
+) -> None:
+    """The demotion has to reach every consumer, not only `verify --json`.
+
+    `vera test` partitioned functions by `status in ("tier3", "timeout")` to
+    decide which contracts were proved.  A demoted obligation is neither, so
+    the issue's own repro printed "VERIFIED (Tier 1)" and skipped its trials —
+    the false Tier 1 this PR exists to stop, surviving in a second reader
+    (#1457 review, Medium 2).  The class property is observable: no consumer
+    may report a premise set with no model as a proof.
+    """
+    proc = _cli("test", str(_write(tmp_path, _UNSAT_REQUIRES)))
+    assert "Tier 1" not in proc.stdout, proc.stdout
+    assert "VERIFIED" not in proc.stdout, proc.stdout
+    assert "unsatisfiable" in proc.stdout, proc.stdout
+
+
+def test_1451_the_lsp_does_not_call_a_demoted_function_tier_1(
+    tmp_path: Path,
+) -> None:
+    """... and neither does the editor.
+
+    `_tier_hints` said "Tier 1 — all contracts proven by Z3" whenever no
+    obligation was `tier3` or `timeout`, which a wholly demoted slice
+    satisfies.  The control is the healthy twin, which must still read Tier 1:
+    a hint that had stopped claiming anything would pass the first assertion
+    on its own.
+    """
+    from types import SimpleNamespace
+
+    from vera.lsp.features import _tier_hints
+
+    def hints(path: Path) -> str:
+        result = _verify_in_process(path)
+        analysis = SimpleNamespace(
+            obligations=result.obligations,  # type: ignore[attr-defined]
+            path=str(path),
+        )
+        return " ".join(
+            d.message for d in _tier_hints(analysis))  # type: ignore[arg-type]
+
+    bad_text = hints(_write(tmp_path / "bad", _UNSAT_REQUIRES))
+    good_text = hints(_write(tmp_path / "ok", _HEALTHY))
+    assert "Tier 1" not in bad_text, bad_text
+    assert "neither proved nor guarded" in bad_text, bad_text
+    assert "Tier 1" in good_text, good_text
