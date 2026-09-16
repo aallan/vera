@@ -414,7 +414,8 @@ class CallsHandlersMixin:
         tp_count = self._adt_tp_counts.get(adt_name, 0)
         if tp_count == 0:
             return None  # non-generic ADT — bare name already correct
-        # ctor-owner-exempt: no owner available at this site
+        # ctor-owner-exempt: resolved in the compiling namespace's scoped
+        # projection (#1436)
         field_tp_idx = self._ctor_adt_tp_indices.get(arg.name)
         if field_tp_idx is None:
             return None

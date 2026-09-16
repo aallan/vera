@@ -10,7 +10,7 @@ import functools
 from collections import deque
 
 from vera import ast
-from vera.codegen.memory import ConstructorLayout, _align_up
+from vera.codegen.memory import _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import gc_shadow_push, is_gc_pointer_base
@@ -313,13 +313,11 @@ class ClosureLiftingMixin:
         more closures on that inner ctx; without this hook they would be
         dropped on the floor when the inner ctx goes out of scope.
         """
-        # Flatten ADT layouts for context
-        ctor_layouts: dict[str, ConstructorLayout] = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
+        # #1436: namespace-scoped, as in `functions.py` — a lifted closure
+        # body belongs to the declaration that contains it and resolves
+        # constructor names in that declaration's namespace.
+        ctor_layouts, ctor_to_adt, ns_tp_indices = (
+            self._namespace_ctor_projection())
 
         ctx = WasmContext(
             self.string_pool,
@@ -348,7 +346,10 @@ class ClosureLiftingMixin:
             # that lifts outside a function compile) falls back to the flat
             # registry inside `WasmContext`, which is the pre-#1299 answer.
             scoped_fns=scoped_fns,
-            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            # #1436: the namespace-scoped table, not the flat one —
+            # a generic entry declaration otherwise reached a module's
+            # structural-Eq through this map alone.
+            ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )

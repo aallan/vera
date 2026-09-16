@@ -430,13 +430,11 @@ class FunctionCompilationMixin:
                         )
                         effect_op_cells["throw"] = exn_cell
 
-        # Flatten ADT layouts into ctor_name -> layout for WasmContext
-        ctor_layouts = {}
-        ctor_to_adt: dict[str, str] = {}
-        for adt_name, layouts in self._adt_layouts.items():
-            ctor_layouts.update(layouts)
-            for ctor_name in layouts:
-                ctor_to_adt[ctor_name] = adt_name
+        # #1436: the by-name projections, scoped to the namespace whose
+        # body is compiling.  Flattening `_adt_layouts` across every
+        # namespace let one namespace's declaration answer for another's.
+        ctor_layouts, ctor_to_adt, ns_tp_indices = (
+            self._namespace_ctor_projection())
         # #1253/#1316: the NAMESPACE's data types, not every layout this
         # compilation registered.  `_adt_layouts` is one map across every
         # absorbed namespace; `_alias_env.data_types` is the set
@@ -468,7 +466,10 @@ class FunctionCompilationMixin:
             # `known_fns` above stays flat for the guard rail, which asks
             # whether a resolved target has a symbol, not whose name it is.
             scoped_fns=self._scoped_fn_names(where_scope, decl.name),
-            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            # #1436: the namespace-scoped table, not the flat one —
+            # a generic entry declaration otherwise reached a module's
+            # structural-Eq through this map alone.
+            ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )

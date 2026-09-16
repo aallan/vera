@@ -39,6 +39,7 @@ from vera.prelude import (
     data_decl_shape,
     mentioned_fn_names,
     prelude_adt_names,
+    prelude_data_decls,
 )
 from vera.slots import family_fallback_name
 from vera.wasm import StringPool
@@ -305,9 +306,19 @@ class CodeGenerator(
         # indices (or None for concrete fields).  Used by the monomorphizer and WASM
         # type inference to correctly bind forall vars from sparse constructors like
         # Err(e) whose single field maps to Result's *second* type param (E), not T.
-        # ctor-owner-exempt: declares the flat projection; the per-owner map is
-        # built from it
+        # ctor-owner-exempt: declares the map the namespace-scoped projection
+        # is built from (#1436)
         self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        # #1436: the same indices keyed per OWNING ADT.  The flat mirror
+        # above cannot represent two data types sharing a constructor name,
+        # which is what let one namespace's declaration answer for another's.
+        self._adt_ctor_tp_indices: dict[
+            str, dict[str, tuple[int | None, ...]]
+        ] = {}
+        # #1436: the ENTRY program's own `data` declarations, by name, so the
+        # shape test that decides whether a declaration RESTATES a prelude
+        # type can be asked of the entry as well as of a module.
+        self._entry_data_decls: dict[str, ast.DataDecl] = {}
         # Maps ADT name → number of type parameters (needed to produce full-length
         # type-arg tuples with None placeholders for unknown positions).
         self._adt_tp_counts: dict[str, int] = {}
@@ -1540,6 +1551,162 @@ class CodeGenerator(
             | self._builtin_adt_names | prelude_adt_names()
         )
 
+
+    def _namespace_ctor_projection(
+        self,
+    ) -> tuple[dict[str, object], dict[str, str],
+               dict[str, tuple[int | None, ...]]]:
+        """The by-name constructor tables, scoped to the namespace whose body
+        is compiling (#1436).
+
+        `_adt_layouts` is one map across every namespace a compilation
+        absorbs, so flattening it by bare CONSTRUCTOR name let a declaration
+        in one namespace answer for another's.  Measured: an entry-file
+        `private data Mine { Pad(Bool), Sq(Bool) }` took the `Sq` slot from
+        an imported `data Shape { Sq(Int), Circ(Int) }`, and the MODULE's own
+        `mk_sq` then emitted `Mine.Sq`'s tag while its own `match` dispatched
+        on `Shape`'s.
+
+        Three classes, applied in this order so the later ones shadow:
+
+        * **infrastructure** — the built-in and prelude ADTs, visible
+          everywhere;
+        * **foreign** — declared by another module THIS namespace imports.
+          A namespace that imports the type must resolve its constructors.
+        * **own** — declared by the namespace compiling.  Applied last, so a
+          local declaration shadows an imported constructor, which is what
+          §8.5.2 says it does.
+
+        A declaration the namespace cannot NAME is in none of the three: it
+        is dropped before the classes are applied, because a name it cannot
+        write must not answer for one it can.  That covers the entry file's
+        declarations while a module compiles, a sibling module's that this
+        one never imports, and a module reached only transitively from the
+        entry — each measured taking the prelude's `Some` away from a body
+        that renders `Some(42)` without it.  Dropped rather than demoted to
+        `foreign`: `foreign` is applied after `infra`, so a stranger placed
+        there would still shadow the prelude.
+
+        Returns the constructor layouts, the ownership map, and the
+        type-parameter index table, all three built from the same ordering
+        — the last of those because it is keyed by bare constructor name
+        too, and a generic entry declaration otherwise reached a module's
+        structural-Eq through it alone.
+        """
+        active = self._active_module_path
+        display = self._contended_adt_display_names
+        declarers = self._module_adt_declarers
+        declared = self._namespace_declared_adts
+        # What this namespace can NAME: its own declarations plus the public
+        # ones it imports.  `None` where no table was built (a single-file
+        # compile) or for the PRELUDE, which is not a user namespace and is
+        # answered by the classes below instead.
+        members = (
+            self._adt_namespace_members.get(active)
+            if self._adt_namespace_members else None
+        )
+        infra: list[str] = []
+        foreign: list[str] = []
+        own: list[str] = []
+        for adt_name in self._adt_layouts:
+            bare = display.get(adt_name, adt_name)
+            if bare not in declared:
+                # Global infrastructure — the built-in and prelude ADTs, which
+                # no namespace declares.  Derived rather than listed, so the
+                # prelude's demand-injected `Json` / `HtmlNode` / `Request` /
+                # `Response` are infrastructure and not mistaken for entry
+                # declarations, which is what hid `JNull` from the prelude's
+                # own `json_keys` and reddened 76 dual-target cells.
+                infra.append(adt_name)
+                continue
+            owner = self._adt_layout_owners.get(adt_name)
+            if self._restates_prelude(bare, owner):
+                # A declaration that RESTATES the prelude's own type is the
+                # one layout everyone uses — §8.4.1 makes it suppress the
+                # injection — so it belongs to every namespace, including
+                # the prelude's own combinator bodies.  Keyed on the SHAPE
+                # and not on the name: a declaration that merely borrows a
+                # prelude type's name is an ordinary ADT of the module that
+                # wrote it, and letting it in here put a module's
+                # `data Json { Some(Bool), … }` in front of `Option`'s
+                # `Some` in every namespace (#1454 review, finding 1).
+                infra.append(adt_name)
+                continue
+            # EVERY module that declares this name, not just the one whose
+            # layout won the flat slot: two modules restating one type both
+            # own their restatement (#1277), and asking only the winner made
+            # the other a stranger to its own declaration.
+            mine = active is not None and active in declarers.get(bare, ())
+            if mine or owner == active or (owner is None and active is None):
+                own.append(adt_name)
+            elif members is not None and bare not in members:
+                # A declaration this namespace cannot NAME — the entry file's
+                # while a module compiles, a sibling module's that this one
+                # never imports, a module reached only transitively from the
+                # entry.  `_adt_namespace_members` is the checker's own view
+                # of each namespace (its declarations plus what it imports,
+                # public names only), so asking it here makes the two sides
+                # answer the same question.
+                #
+                # Excluded outright rather than demoted to `foreign`, where
+                # it would still shadow infrastructure one class later.  All
+                # three measured that way: an unused entry
+                # `data Mine { Pad(Bool), Some(Bool) }` dropped a module's
+                # `show(Some(x))`; a SIBLING module declaring the same
+                # dropped it just as well inside a module that never imports
+                # the sibling; and a module reached only through another
+                # dropped the ENTRY's own `show(Some(x))`.  Each renders
+                # `Some(42)` on its control.
+                #
+                # A declaration of a PRELUDE type's name is never a stranger,
+                # whoever wrote it: restating the prelude's shape suppresses
+                # its injection (§8.4.1), so that declaration IS the one
+                # layout every namespace uses.  Dropping it from a namespace
+                # that does not import its module took the prelude's own type
+                # away with it — measured as an E602 in the entry for
+                # `HtmlNode`, `Request` and `Response`, whose blocks the
+                # prelude injects on demand.
+                continue
+            elif owner is None:
+                # An ENTRY-file declaration while a module compiles, with no
+                # membership table to ask — a single-file compile registers
+                # none.  Same answer by the same reasoning as above.
+                continue
+            else:
+                foreign.append(adt_name)
+        ctor_layouts: dict[str, object] = {}
+        ctor_to_adt: dict[str, str] = {}
+        tp_indices: dict[str, tuple[int | None, ...]] = {}
+
+        def apply(adt_name: str, *, keep_infra: bool) -> None:
+            owned_tp = self._adt_ctor_tp_indices.get(adt_name, {})
+            for ctor_name, layout in self._adt_layouts[adt_name].items():
+                if keep_infra and ctor_name in infra_ctors:
+                    continue
+                ctor_layouts[ctor_name] = layout
+                ctor_to_adt[ctor_name] = adt_name
+                if ctor_name in owned_tp:
+                    tp_indices[ctor_name] = owned_tp[ctor_name]
+
+        infra_ctors: set[str] = set()
+        for adt_name in infra:
+            apply(adt_name, keep_infra=False)
+            infra_ctors |= set(self._adt_layouts[adt_name])
+        # An IMPORTED declaration may not take a name infrastructure already
+        # holds.  The checker's injection is a `setdefault` over an
+        # environment the built-ins already populate, so the incumbent wins
+        # there (§8.5.2 gives the shadow to a LOCAL declaration, not to an
+        # import); codegen answered the other way, and a module's
+        # `public data Response { Err(String), Ok(Int) }` then made an
+        # importer's own `match parse_int("42") { Ok(@Int) -> … }` return
+        # the `Err` arm (#1454 review, finding 1).
+        for adt_name in foreign:
+            apply(adt_name, keep_infra=True)
+        # The namespace's OWN declarations shadow both, which is §8.5.2.
+        for adt_name in own:
+            apply(adt_name, keep_infra=False)
+        return ctor_layouts, ctor_to_adt, tp_indices
+
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:
         """Where *name* sits in the declaration-index space *order* keys (#1227).
 
@@ -1612,6 +1779,43 @@ class CodeGenerator(
             return
         self._decl_order[name] = self._decl_order_next
         self._decl_order_next += 1
+
+    def _restates_prelude(
+        self, bare: str, owner: tuple[str, ...] | None,
+    ) -> bool:
+        """Does *owner*'s declaration of *bare* restate the PRELUDE's type?
+
+        The question the projection has to ask of a declaration that borrows
+        a prelude type's NAME, and it is about SHAPE, not the name (#1454
+        review, finding 1).  §8.4.1 lets a declaration restate the prelude's
+        own type — same constructors, same order, same field types, type
+        parameters compared positionally — and that declaration then IS the
+        one layout everyone uses, so it belongs to every namespace.  A
+        declaration under a prelude name with a DIFFERENT shape is an
+        ordinary ADT of the module that wrote it, legal while nothing
+        demands the prelude's (§8.4.1's "stands alone until"), and it must
+        not answer for the prelude's constructors anywhere else: measured, a
+        module's `public data Json { Some(Bool), ZPad(Int) }` turned an
+        entry's `show(Some(42))` into `Some(false)` and made
+        `hash(Some(42)) == hash(Some(43))`, with no diagnostic from any
+        stage.
+
+        Asked through :meth:`_contends_with_prelude` for a module, so this
+        and the Pass-1.2 E621 rail cannot disagree about which declarations
+        share a layout; the entry's declarations are compared here by the
+        same :func:`~vera.prelude.data_decl_shape` the rail uses.
+        """
+        prelude_decl = prelude_data_decls().get(bare)
+        if prelude_decl is None:
+            return False
+        if owner is None:
+            entry_decl = self._entry_data_decls.get(bare)
+            if entry_decl is None:
+                return False
+            return data_decl_shape(
+                entry_decl, self._type_aliases, self._type_alias_params,
+            ) == data_decl_shape(prelude_decl)
+        return not self._contends_with_prelude(prelude_decl, owner)
 
     def _contends_with_prelude(
         self, prelude_decl: ast.DataDecl, owner: tuple[str, ...],
@@ -1954,6 +2158,14 @@ class CodeGenerator(
 
     def _compile_program(self, program: ast.Program) -> CompileResult:
         """Compile a complete Vera program to WebAssembly."""
+        # #1436: the entry's declarations, for `_restates_prelude`.  Recorded
+        # here because this is the one place the entry program is in hand
+        # before any namespace is compiled.
+        self._entry_data_decls = {
+            tld.decl.name: tld.decl
+            for tld in program.declarations
+            if isinstance(tld.decl, ast.DataDecl)
+        }
         # Pass 0a: reject programs with typed holes
         holes = _find_holes(program)
         if holes:

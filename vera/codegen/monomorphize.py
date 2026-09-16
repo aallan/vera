@@ -23,6 +23,7 @@ from vera import ast
 from vera.monomorphize import (
     MonoContext,
     Monomorphizer,
+    NamespaceCtorOwners,
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
@@ -88,6 +89,26 @@ def _simple_return_type_name(te: ast.TypeExpr | None) -> str | None:
 class MonomorphizationMixin:
     """Methods for monomorphizing generic functions."""
 
+    def _namespace_ctor_owner_tables(self) -> NamespaceCtorOwners:
+        """Each namespace's constructor → ADT map, from the scoped projection.
+
+        ``_namespace_ctor_projection`` is what the wasm layer resolves a
+        constructor through, so asking it once per namespace gives discovery
+        the same owner the call site will emit.  Building it here instead of
+        from the declarations keeps the two in step through the per-owner ADT
+        renames, whose mangled names are what the emitted symbol carries.
+        """
+        tables: dict[tuple[str, ...] | None, dict[str, str]] = {}
+        saved = self._active_module_path
+        try:
+            for path in [None, *(m.path for m in self._resolved_modules)]:
+                self._active_module_path = path
+                _layouts, ctor_to_adt, _tp = self._namespace_ctor_projection()
+                tables[path] = ctor_to_adt
+        finally:
+            self._active_module_path = saved
+        return NamespaceCtorOwners(tables)
+
     def _build_mono_context(
         self,
         generic_decls: dict[str, ast.FnDecl],
@@ -147,6 +168,18 @@ class MonomorphizationMixin:
             # named a clone from the invisible declaration's return type
             # while the rewrite named one from the cell's.
             namespace_fn_names=getattr(self, "_namespace_tables", None),
+            # #1436: the constructor half of the same narrowing, built from
+            # THE registry that answers this side's call sites — one call to
+            # `_namespace_ctor_projection` per namespace — so discovery names
+            # a clone after the ADT the WASM rewrite will resolve the same
+            # constructor to.  Built from the projection rather than from the
+            # declarations because only the projection carries the per-owner
+            # renames (#1409/#1423) the emitted symbol is spelled with.
+            namespace_ctor_owners=self._namespace_ctor_owner_tables(),
+            # #1436: and the owner-keyed type-parameter indices, so a
+            # constructor two namespaces declare does not take its field
+            # positions from whichever declaration registered last.
+            adt_ctor_tp_indices=getattr(self, "_adt_ctor_tp_indices", {}),
             # #1274 (F1): every (module, name) the Pass-0 classification made
             # qualified-only, so a rerouted `deep::gen(...)` is not mistaken for
             # an instantiation of the importer's own `gen`.
@@ -1662,11 +1695,16 @@ class MonomorphizationMixin:
         # in lockstep.
         tp_names = self._adt_tp_param_names.get(base, ())
         tp_mapping = dict(zip(tp_names, args))
+        owned_tp = self._adt_ctor_tp_indices.get(base, {})
         for ctor_name, layout in layouts.items():
-            # ctor-owner-exempt: no owner in hand at this read; unreached by
-            # all 289 corpus programs and the ambiguous shapes are E213/E121 at
-            # check — the owner-qualified table is #1436's
-            tp_indices = self._ctor_adt_tp_indices.get(ctor_name)
+            # #1436: the OWNING ADT's indices.  `layouts` came from
+            # `_adt_layouts[base]`, so the owner is in hand here and the flat
+            # table — where another namespace's declaration of the same
+            # constructor name may have won the slot — has no business
+            # answering.  The gate must agree exactly with codegen's
+            # structural-Eq generator, and the generator reads the layout of
+            # THIS ADT.
+            tp_indices = owned_tp.get(ctor_name)
             for i, (_offset, wasm_type) in enumerate(layout.field_offsets):
                 tp_i = (
                     tp_indices[i]
