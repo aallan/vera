@@ -1098,9 +1098,12 @@ class TestOwnerCollisionMatrix:
       a binder, a ``State`` cell, a field of another ADT, the data segment
       ``show`` renders the constructor name from, and the tag ``==`` compares.
 
-    Every cell asserts the same three things together, because the defect was
-    silent in two of them: `vera verify` clean, codegen clean, and the value
-    the SOURCE names at run.  The shadow declarations are never used by the
+    The cells of one column share a single build — nine positions read nine
+    exports of one program — so each position cell asserts its own VALUE and
+    the build's silence is asserted once beside them, in
+    :meth:`test_the_build_itself_is_clean`.  That silence is half of what is
+    under test, because the defect was silent in `vera verify`, in codegen's
+    error stream, and (where it dropped a function) in both.  The shadow declarations are never used by the
     program (except in
     :class:`TestBothNamespacesReadTheirOwnDeclaration`), so a cell cannot
     pass by the shadow being unreachable.
@@ -1121,20 +1124,44 @@ class TestOwnerCollisionMatrix:
             list[tuple[str, str]], CompileResult, list[tuple[str, str]],
         ]],
     ) -> None:
+        _verify_errors, result, _cg_errors = owner_collision_builds[
+            (carrier, shadow)]
+        assert module_value(result, position) == (
+            "ok", _MATRIX_EXPECTED[carrier][position])
+
+    @pytest.mark.parametrize(
+        "carrier,shadow",
+        [(c, sh) for c in sorted(_CARRIER_LIB)
+         for sh in _SHADOWS_BY_CARRIER[c]],
+    )
+    def test_the_build_itself_is_clean(
+        self,
+        carrier: str,
+        shadow: str,
+        owner_collision_builds: dict[tuple[str, str], tuple[
+            list[tuple[str, str]], CompileResult, list[tuple[str, str]],
+        ]],
+    ) -> None:
+        """The silence around each column, asserted once per BUILD.
+
+        The nine position cells share one build and read their own export
+        from it, so a property of the build belongs here rather than in each
+        of them — otherwise one dropped function reds all nine and the
+        column's failure says nothing about which position is wrong.
+
+        A SKIP is the other face of this defect and lands in neither error
+        stream: codegen drops the function and records a note, so a cell
+        that asserted only values would be green for every export that
+        survived and silent about the one that did not.
+        """
         verify_errors, result, cg_errors = owner_collision_builds[
             (carrier, shadow)]
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
-        # A SKIP is the other face of this defect and lands nowhere near the
-        # two error streams above: codegen drops the function and records a
-        # note, so a cell that only asserted the value would be green for
-        # every export that survived and silent about the one that did not.
         dropped = [
             (d.error_code, d.description) for d in result.diagnostics
             if d.error_code in {"E602", "E604", "E620"}
         ]
         assert not dropped, dropped
-        assert module_value(result, position) == (
-            "ok", _MATRIX_EXPECTED[carrier][position])
 
     @pytest.mark.parametrize("carrier", sorted(_CARRIER_LIB))
     def test_each_shadow_really_takes_the_name(self, carrier: str) -> None:
@@ -1414,6 +1441,426 @@ _CARRIER_OWNER = {"plain": "Shape", "generic": "Box", "prelude": "Option"}
 #: The ADTs an entry-file shadow declares; no clone may be named after one
 #: from a module's body.
 _SHADOW_ADTS = frozenset({"Mine", "Other"})
+
+
+#: The four prelude ADTs the prelude injects ON DEMAND, with the shape each
+#: restatement has to match verbatim to be the one layout (§8.4.1).  A module
+#: may also declare a DIFFERENTLY shaped type of one of these names — §8.4.1's
+#: "stands alone until" — and that declaration is an ordinary ADT of its own
+#: module, which is the case the projection got wrong.
+_PRELUDE_RESTATEMENTS = {
+    "Json": """\
+public data Json {
+  JNull,
+  JBool(Bool),
+  JNumber(Float64),
+  JString(String),
+  JArray(Array<Json>),
+  JObject(Map<String, Json>)
+}
+""",
+    "HtmlNode": """\
+public data HtmlNode {
+  HtmlElement(String, Map<String, String>, Array<HtmlNode>),
+  HtmlText(String),
+  HtmlComment(String)
+}
+""",
+    "Request": """\
+public data Request {
+  Request(String, String, Map<String, String>, String)
+}
+""",
+    "Response": """\
+public data Response {
+  Response(Int, Map<String, String>, String)
+}
+""",
+}
+
+#: A declaration under the same NAME whose constructors collide with
+#: `Option`'s and `Result`'s at other tags and other field types — the shape
+#: the review's finding 1 is written on.
+_PRELUDE_NAME_DIFFERING = """\
+public data %s {
+  Err(String),
+  Ok(Int),
+  Some(Bool)
+}
+"""
+
+#: The same declaration under a name nothing else claims: the control that
+#: says the cells below measure the COLLISION and not the extra module.
+_PRELUDE_NAME_CONTROL = """\
+public data Zz {
+  Zerr(String),
+  Zok(Int),
+  Zsome(Bool)
+}
+"""
+
+_PRELUDE_LIB = """\
+module tlib;
+
+%(decl)s
+public fn tping(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+#: A module that neither declares the type nor imports the module that does,
+#: reached from the entry only through `alib`.
+_UNRELATED_LIB = """\
+module xlib;
+
+public fn x_show(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Some(42))
+}
+
+public fn x_result(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match parse_int("42") {
+    Ok(@Int) -> @Int.0,
+    Err(@String) -> 0 - 1
+  }
+}
+"""
+
+_RELAY_LIB = """\
+module alib;
+
+import tlib;
+
+public fn a_ping(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  tlib::tping(@Int.0)
+}
+"""
+
+_PRELUDE_MAIN = """\
+%(import)s
+import xlib;
+
+public fn ent_show(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Some(42))
+}
+
+public fn ent_hash(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if hash(Some(42)) == hash(Some(43)) then { 1 } else { 0 }
+}
+
+public fn ent_match(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(42) {
+    Some(@Int) -> 100 + @Int.0,
+    None -> 0
+  }
+}
+
+public fn ent_result(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match parse_int("42") {
+    Ok(@Int) -> @Int.0,
+    Err(@String) -> 0 - 1
+  }
+}
+
+public fn prelude_comb(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(Some(42), 7)
+}
+
+public fn x_show(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  xlib::x_show(())
+}
+
+public fn x_result(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  xlib::x_result(())
+}
+
+public fn keep(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  %(keep)s
+}
+"""
+
+#: What every one of these programs must answer, in every column: the
+#: prelude's own reading of `Some`, `Ok` and `Err`, because no namespace here
+#: declares any of them.
+_PRELUDE_EXPECTED = {
+    "ent_show": "Some(42)",
+    "ent_hash": 0,
+    "ent_match": 142,
+    "ent_result": 42,
+    "prelude_comb": 42,
+    "x_show": "Some(42)",
+    "x_result": 42,
+}
+
+
+def _prelude_name_files(
+    name: str, shape: str, reach: str,
+) -> dict[str, str]:
+    """The four-namespace program for one (type, shape, reach) cell."""
+    decl = {
+        "differing": _PRELUDE_NAME_DIFFERING % name,
+        "identical": _PRELUDE_RESTATEMENTS[name],
+        "control": _PRELUDE_NAME_CONTROL,
+    }[shape]
+    files = {
+        "tlib.vera": _PRELUDE_LIB % {"decl": decl},
+        "xlib.vera": _UNRELATED_LIB,
+    }
+    if reach == "direct":
+        files["main.vera"] = _PRELUDE_MAIN % {
+            "import": "import tlib;", "keep": "tlib::tping(1)"}
+    else:
+        files["alib.vera"] = _RELAY_LIB
+        files["main.vera"] = _PRELUDE_MAIN % {
+            "import": "import alib;", "keep": "alib::a_ping(1)"}
+    return files
+
+
+class TestAPreludeNamedDeclarationKeepsItsOwnNamespace:
+    """A module's declaration under a PRELUDE type's name (#1454 review, 1).
+
+    §8.4.1 lets a module declare a differently-shaped type of a prelude
+    name that nothing demands — it "stands alone until" the prelude's is
+    needed — and the first form of the scoping treated every declaration
+    under a prelude NAME as infrastructure, so its constructors overwrote
+    the prelude's in every namespace: `show(Some(42))` rendered
+    `Some(false)`, `hash(Some(42)) == hash(Some(43))` was true, and
+    `match parse_int("42")` took the `Err` arm — in the entry, inside an
+    unrelated module, and in the prelude's own combinator bodies, with no
+    diagnostic from any stage.
+
+    The carve-out is keyed on SHAPE now: a declaration that restates the
+    prelude's type IS the one layout and belongs everywhere; one that only
+    borrows the name is an ordinary ADT of the module that wrote it.  Four
+    namespaces are observed per cell — the declaring module, the entry, a
+    module that can name neither, and the prelude's own bodies — across the
+    four demand-injected types, both shapes, and both reaches.
+    """
+
+    @pytest.mark.parametrize("observation", sorted(_PRELUDE_EXPECTED))
+    @pytest.mark.parametrize("reach", ["direct", "transitive"])
+    @pytest.mark.parametrize("shape", ["differing", "identical", "control"])
+    @pytest.mark.parametrize(
+        "name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_the_prelude_keeps_its_constructors(
+        self, name: str, shape: str, reach: str, observation: str,
+        tmp_path: Path,
+    ) -> None:
+        files = _prelude_name_files(name, shape, reach)
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        dropped = [
+            (d.error_code, d.description) for d in result.diagnostics
+            if d.error_code in {"E602", "E604", "E620"}
+        ]
+        assert not dropped, dropped
+        assert module_value(result, observation) == (
+            "ok", _PRELUDE_EXPECTED[observation])
+
+    @pytest.mark.parametrize("name", sorted(_PRELUDE_RESTATEMENTS))
+    def test_the_declaring_module_reads_its_own(
+        self, name: str, tmp_path: Path,
+    ) -> None:
+        """Inside the module that wrote it, the borrowed name is ITS type.
+
+        The other half of the rule, and the one a fix that simply hid the
+        declaration would break: codegen follows the checker's owner in the
+        declaring namespace too, where the local declaration shadows the
+        prelude's constructor (§8.5.2).
+        """
+        files = _prelude_name_files(name, "differing", "direct")
+        files["tlib.vera"] += """
+public fn t_show(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Some(true))
+}
+"""
+        files["main.vera"] += """
+public fn mod_show(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  tlib::t_show(())
+}
+"""
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert module_value(result, "mod_show") == ("ok", "Some(true)")
+        # ... while the entry still reads the prelude's.
+        assert module_value(result, "ent_show") == ("ok", "Some(42)")
+
+    def test_no_cell_carries_a_diagnostic(self, tmp_path: Path) -> None:
+        """The absence of a diagnostic is part of what is asserted.
+
+        These programs are legal under §8.4.1 and this PR does not reach for
+        a new refusal: whether a differently-shaped declaration of a
+        demand-injected prelude name should be refused is a language
+        question, deliberately left open.  The cells above therefore pin the
+        VALUES; this one pins that nothing was reported to get them.
+        """
+        for name in sorted(_PRELUDE_RESTATEMENTS):
+            for shape in ("differing", "identical", "control"):
+                files = _prelude_name_files(name, shape, "direct")
+                _verify, result, _cg = build_multi_module(
+                    tmp_path / f"{name}_{shape}", files)
+                assert [d.error_code for d in result.diagnostics] == [], (
+                    name, shape, result.diagnostics)
+
+
+class TestTheTwoOwnerDerivationsAdmitByTheSameKey:
+    """Both owner tables admit a constructor by its TYPE's name (#1454
+    review, finding 4).
+
+    Codegen's `_build_adt_membership` and the shared
+    `namespace_ctor_owners` answer one question — which constructors a
+    namespace can name — and a selective import admits them by naming the
+    PARENT type (§8.5.4).  Naming the constructor itself is not a form the
+    checker accepts, so a derivation that admitted it would differ from
+    both the other layer and the language, and nothing would notice until
+    the shape became reachable.
+    """
+
+    _LIB = """\
+module ilib;
+
+public data Shape {
+  Sq(Int),
+  Circ(Int)
+}
+
+public fn mk(@Int -> @Shape)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Sq(@Int.0)
+}
+"""
+
+    _USE = """\
+import ilib(%s);
+
+public fn go(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Sq(7) {
+    Sq(@Int) -> 1,
+    Circ(@Int) -> 2
+  }
+}
+"""
+
+    def test_the_constructor_name_in_an_import_list_admits_nothing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The checker's answer, which the tables must not contradict.
+
+        Naming the CONSTRUCTOR in the import list leaves it unresolved — the
+        use is refused — while naming its TYPE admits it and the same
+        program is accepted.  The refusal's CODE depends on what the use
+        site then falls back to, so the cell asserts the admission and not a
+        particular diagnostic.
+        """
+        by_ctor, _result, _cg = build_multi_module_past_check(
+            tmp_path / "ctor",
+            {"ilib.vera": self._LIB, "main.vera": self._USE % "Sq"})
+        assert by_ctor, "naming the constructor admitted it"
+        verify_errors, result, cg_errors = build_multi_module(
+            tmp_path / "type",
+            {"ilib.vera": self._LIB, "main.vera": self._USE % "Shape"})
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert module_value(result, "go") == ("ok", 1)
+
+    @pytest.mark.parametrize(
+        "names,admits", [(None, True), (("Shape",), True), (("Sq",), False)])
+    def test_the_shared_derivation_admits_only_by_type_name(
+        self, names: tuple[str, ...] | None, admits: bool,
+    ) -> None:
+        """And the shared table agrees, cell by cell.
+
+        Driven directly rather than through a program, because the
+        constructor-name form is exactly the one the checker refuses first:
+        asking the table itself is the only way to see what it would have
+        answered.
+        """
+        from vera.monomorphize import namespace_ctor_owners
+        from vera.parser import parse_to_ast
+
+        lib = parse_to_ast(self._LIB)
+        imp = "import ilib;" if names is None else (
+            f"import ilib({', '.join(names)});")
+        entry = parse_to_ast(imp + """
+
+public fn go(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+""")
+        owners = namespace_ctor_owners(
+            entry, [(("ilib",), lib)], {"Shape": ("Sq", "Circ")},
+        )
+        visible = owners.visible(None) or {}
+        assert ("Sq" in visible) is admits, (names, sorted(visible))
+        # The declaring module always names its own, whatever the importer
+        # asked for.
+        assert (owners.visible(("ilib",)) or {}).get("Sq") == "Shape"
+
 
 class TestTheScopedProjectionIsTheOnlyLookupPath:
     """The structural half of the class instrument (#1436).

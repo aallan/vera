@@ -1023,13 +1023,17 @@ def namespace_ctor_owners(
             if exported is None:
                 continue
             for adt_name in sorted(exported):
+                # A selective import admits a type's constructors by naming
+                # the TYPE (§8.5.4); the constructor's own name in the list
+                # is not a form the checker accepts — `import m(Sq)` for a
+                # constructor is E210 — and admitting it here would make
+                # this derivation answer a question codegen's
+                # `_build_adt_membership` answers the other way (#1454
+                # review, finding 4).
+                if imp.names is not None and adt_name not in imp.names:
+                    continue
                 for ctor_name in exported[adt_name]:
-                    # A selective import admits a constructor by naming its
-                    # PARENT type or the constructor itself (§8.5.4).
-                    if (imp.names is None
-                            or adt_name in imp.names
-                            or ctor_name in imp.names):
-                        out[ctor_name] = adt_name
+                    out[ctor_name] = adt_name
         for tld in prog.declarations:
             if isinstance(tld.decl, ast.DataDecl):
                 for ctor in tld.decl.constructors:
