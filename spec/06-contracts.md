@@ -448,6 +448,8 @@ The check is stated in two layers, because the two causes ask the reader for dif
 
 **The full premise set** adds every fact the verifier itself derives — an assumed callee postcondition, a refined return's predicate, a declared-type fact read off a constructor sub-pattern.  Satisfiable at the contract layer and unsatisfiable here means the contradiction is the compiler's, not the program's: **E539**, reported as internal, with the same demotion.  A `violated` obligation already on record is left alone, since a contradiction cannot manufacture a refutation.
 
+Where the full set is refuted and the author's layer is neither proved satisfiable nor refuted inside the budget, the contradiction cannot be attributed to either.  The function is demoted just the same and reported under **E538** — the code that claims least — with the diagnostic saying that the premise at fault could not be determined.
+
 A branch's own path condition is NOT part of either layer.  An `if` or `match` arm whose guard cannot hold under the precondition is *unreachable*, not contradictory: its obligations are discharged under that guard by construction, and demoting the function for it would report the program's shape as a defect.  So the check is per *function*, not per *path*, and a `tier1_verified` count may still contain an obligation proved inside an arm no call can enter.
 
 Only a REFUTATION demotes.  An undecided satisfiability check has established nothing, and demoting a function on an expired budget would turn a slow solver into a wrong verdict — the distinction §6.8 draws everywhere else between "could not decide" and "decided against".
