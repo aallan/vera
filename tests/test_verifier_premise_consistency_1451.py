@@ -41,6 +41,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -632,3 +633,708 @@ def test_1451_the_screening_budget_does_not_widen_a_smaller_one(
     result = json.loads(proc.stdout)
     assert result["verification"]["timeout_ms"] == 50, result["verification"]
     assert "E538" in _codes(result), _codes(result)
+
+
+# ---------------------------------------------------------------------------
+# `assume` is a premise too (#1457 review, F1)
+# ---------------------------------------------------------------------------
+
+_ONE_ASSUME = """\
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(@Int.0 < 3);
+  let @Nat = @Int.0;
+  @Nat.0
+}
+"""
+
+_TWO_ASSUMES = """\
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  assume(@Int.0 < 3);
+  assume(@Int.0 > 5);
+  let @Nat = @Int.0;
+  @Nat.0
+}
+"""
+
+
+def test_1451_one_assume_alone_still_refutes_the_narrowing(
+    tmp_path: Path,
+) -> None:
+    """The control leg for the `assume` layer: green before and after.
+
+    `assume(@Int.0 < 3)` leaves the narrowing `let @Nat = @Int.0` refutable,
+    and it must stay refuted — a check that demoted any function containing an
+    `assume` would pass the next cell while destroying this one.
+    """
+    result = _verify(_write(tmp_path, _ONE_ASSUME))
+    assert ("nat_bind", "violated", "E503") in _triples(result), _triples(result)
+    assert "E538" not in _codes(result), _codes(result)
+
+
+def test_1451_a_contradictory_assume_is_a_premise_too(tmp_path: Path) -> None:
+    """RED before: `assume` facts were invisible to both layers.
+
+    They live in `SmtContext._path_conditions` (#804) and are folded into
+    every `check_valid` query rather than asserted into the base context, and
+    step 8's restore point drops them before the consistency check ran — so
+    adding a second, contradictory `assume` flipped the refuted narrowing
+    above to `verified` with `tier1_verified: 3`, exit 0, and no E538 or E539,
+    while `vera run -- -5` still trapped on that very narrowing.
+
+    An `assume` is taken on trust, which makes it exactly the premise a
+    contradiction is cheapest to smuggle in through: `requires(x > 5 && x < 3)`
+    and two contradictory assumes are the same garbage-in.
+    """
+    result = _verify(_write(tmp_path, _TWO_ASSUMES))
+    assert "E538" in _codes(result), (_codes(result), _triples(result))
+    assert not [
+        o for o in result["obligations"] if o["status"] == "verified"
+    ], _triples(result)
+    assert result["verification"]["tier1_verified"] == 0, (
+        result["verification"])
+
+
+def test_1451_the_demotion_points_at_the_assume_line(tmp_path: Path) -> None:
+    """... and names the line that contributed the contradiction.
+
+    The `requires` here is `true` and blameless; pointing the diagnostic at it
+    would send the reader to a clause with nothing wrong with it.
+    """
+    result = _verify(_write(tmp_path, _TWO_ASSUMES))
+    e538 = [w for w in result["warnings"] if w.get("error_code") == "E538"]
+    assert len(e538) == 1, _codes(result)
+    assert e538[0]["source_line"].strip().startswith("assume("), e538[0]
+    assert "assume" in e538[0]["fix"], e538[0]["fix"]
+
+
+_UNREACHABLE_ARM = """\
+public fn f(@Int -> @Int)
+  requires(@Int.0 > 5)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 < 3 then {
+    @Int.0
+  } else {
+    1
+  }
+}
+"""
+
+
+def test_1451_an_unreachable_arm_is_not_a_contradiction(
+    tmp_path: Path,
+) -> None:
+    """Branch path conditions stay OUT of both layers, deliberately.
+
+    `_path_conditions` carries two different things: the `assume` facts the
+    cell above folds in, and the guard of whichever branch is being walked.
+    An arm whose guard cannot hold under the precondition is *unreachable*,
+    not contradictory — its obligations are discharged under that guard by
+    construction, and demoting the function for it would report the program's
+    own shape as a defect.
+    """
+    result = _verify(_write(tmp_path, _UNREACHABLE_ARM))
+    assert result["ok"] is True, result["diagnostics"]
+    assert "E538" not in _codes(result), _codes(result)
+    assert "E539" not in _codes(result), _codes(result)
+    assert result["verification"]["tier1_verified"] > 0, result["verification"]
+
+
+# ---------------------------------------------------------------------------
+# The demotion leaves an already-disclosed obligation's code alone (F3)
+# ---------------------------------------------------------------------------
+
+_DISCLOSED_UNDER_UNSAT = """\
+type PosInt = { @Int | @Int.0 > 0 };
+
+public fn f(@Int -> @Option<PosInt>)
+  requires(@Int.0 > 5 && @Int.0 < 3)
+  ensures(true)
+  effects(pure)
+{
+  Some(handle[Exn<Int>] {
+    throw(@PosInt) -> { @PosInt.0 }
+  } in {
+    throw(@Int.0)
+  })
+}
+"""
+
+
+def test_1451_an_already_disclosed_obligation_keeps_its_code(
+    tmp_path: Path,
+) -> None:
+    """The demotion has nothing to do to an obligation already out of the tiers.
+
+    Rewriting its `error_code` to E538 left the obligation array and the
+    diagnostic stream naming DIFFERENT codes for one line — the E506 warning
+    survives at the site while the obligation claimed E538 (#1457 review, F3).
+    The same carve-out `violated` gets, one layer along: it is already counted
+    in no tier, so the demotion is a no-op on it and should read as one.
+    """
+    result = _verify(_write(tmp_path, _DISCLOSED_UNDER_UNSAT))
+    disclosed = [
+        o for o in result["obligations"] if o["kind"] == "refine_bind"
+    ]
+    assert len(disclosed) == 1, _triples(result)
+    assert disclosed[0]["status"] == "tier3_unguarded", _triples(result)
+    assert disclosed[0]["error_code"] == "E506", _triples(result)
+    # ... and the warning at that line agrees with it.
+    at_line = [
+        w for w in result["warnings"]
+        if w["location"]["line"] == disclosed[0]["location"]["line"]
+    ]
+    assert [w["error_code"] for w in at_line] == ["E506"], at_line
+    # The contract obligations still demote, so the cell is not vacuous.
+    assert "E538" in _codes(result), _codes(result)
+
+
+# ---------------------------------------------------------------------------
+# One query per function (F2)
+# ---------------------------------------------------------------------------
+
+def test_1451_the_check_costs_one_query_per_function(tmp_path: Path) -> None:
+    """The full set is asked FIRST, and its `sat` settles both layers.
+
+    The author's premises are a SUBSET of the full set, so a model of the
+    full set is a model of theirs — which means the second query is reachable
+    only when there is something to attribute. Asking the author's layer
+    first, as the first draft did, was unconditionally two queries per
+    function and the heading said one (#1457 review, F2).
+    """
+    from vera import verifier as vmod
+
+    seen = {"full": 0, "author": 0, "fns": 0}
+    of = vmod.ContractVerifier._full_premises_satisfiable
+    oa = vmod.ContractVerifier._contract_premises_satisfiable
+    oe = vmod.ContractVerifier._enforce_premise_consistency
+
+    def full(self, smt, assumed):  # type: ignore[no-untyped-def]
+        seen["full"] += 1
+        return of(self, smt, assumed)
+
+    def author(self, contract, assumed, smt):  # type: ignore[no-untyped-def]
+        seen["author"] += 1
+        return oa(self, contract, assumed, smt)
+
+    def enforce(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
+        seen["fns"] += 1
+        return oe(self, decl, smt, obl_start, contract, assumed)
+
+    vmod.ContractVerifier._full_premises_satisfiable = full  # type: ignore[assignment]
+    vmod.ContractVerifier._contract_premises_satisfiable = author  # type: ignore[assignment]
+    vmod.ContractVerifier._enforce_premise_consistency = enforce  # type: ignore[assignment]
+    try:
+        _verify_in_process(_write(tmp_path / "ok", _HEALTHY))
+        clean = dict(seen)
+        _verify_in_process(_write(tmp_path / "bad", _UNSAT_REQUIRES))
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = of  # type: ignore[assignment]
+        vmod.ContractVerifier._contract_premises_satisfiable = oa  # type: ignore[assignment]
+        vmod.ContractVerifier._enforce_premise_consistency = oe  # type: ignore[assignment]
+
+    assert clean["fns"] == clean["full"], (
+        f"the full set must be asked exactly once per function: {clean}")
+    assert clean["author"] == 0, (
+        f"a satisfiable function must cost ONE query: {clean}")
+    # The contradictory one pays the second, which is what buys the
+    # attribution between E538 and E539.  Counted as a DELTA: the fixpoint in
+    # `verify_program` re-verifies when the disclosed set moves, so absolute
+    # totals are not one-per-source-function and pinning them would make this
+    # cell about that loop rather than about the query order.
+    assert seen["author"] > clean["author"], (clean, seen)
+    assert seen["full"] - clean["full"] == seen["fns"] - clean["fns"], (
+        clean, seen)
+
+
+# ---------------------------------------------------------------------------
+# An undecided premise query is not a contradiction
+# ---------------------------------------------------------------------------
+
+_RECURSIVE_MEASURE = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+public fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+"""
+
+_RECURSIVE_MEASURE_UNSAT = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+public fn length_from(@List<Int>, @Int -> @Nat)
+  requires(@Int.0 > 5 && @Int.0 < 3)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length_from(@List<Int>.1, @Int.1)
+  }
+}
+"""
+
+
+def _premise_verdicts(path: Path) -> tuple[list[str], object]:
+    """Verify in process, recording what each premise query answered.
+
+    The verdict itself is the label these two cells assert: without it they
+    would pass on a program whose full premise set came back `sat` in a
+    millisecond, which exercises nothing about the undecided branch.
+    """
+    from vera import verifier as vmod
+
+    seen: list[str] = []
+    original = vmod.ContractVerifier._full_premises_satisfiable
+
+    def spy(self, smt, assumed):  # type: ignore[no-untyped-def]
+        verdict = original(self, smt, assumed)
+        seen.append({True: "sat", False: "unsat", None: "unknown"}[verdict])
+        return verdict
+
+    vmod.ContractVerifier._full_premises_satisfiable = spy  # type: ignore[assignment]
+    try:
+        return seen, _verify_in_process(path)
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = original  # type: ignore[assignment]
+
+
+def test_1451_an_undecided_premise_query_is_not_a_contradiction(
+    tmp_path: Path,
+) -> None:
+    """RED before: a `decreases` measure over a recursive ADT got a false E539.
+
+    Those rank axioms are quantified, so the full premise set sends Z3 to MBQI
+    and reliably exhausts the 250 ms screening budget — the PR's own cost table
+    is the measurement, seven corpus programs, every one a timeout.  Reading
+    that `unknown` as "unsatisfiable" reported the verifier's own premises as
+    contradictory over `length` and demoted every obligation in it, on a
+    program that verifies.
+
+    `unknown` decides nothing.  The premise beside the assertion is the verdict
+    itself: this cell is about the undecided branch, and a fixture whose full
+    set came back `sat` would exercise the ordinary path instead.
+    """
+    seen, result = _premise_verdicts(_write(tmp_path, _RECURSIVE_MEASURE))
+    assert "unknown" in seen, seen
+    codes = [d.error_code for d in result.diagnostics]
+    assert "E539" not in codes, codes
+    assert "E538" not in codes, codes
+    assert result.summary.tier1_verified > 0, result.summary
+
+
+def test_1451_a_contradiction_in_the_same_context_is_still_refuted(
+    tmp_path: Path,
+) -> None:
+    """... and the repair does not buy its silence by giving up detection.
+
+    The complement, without which the cell above is satisfied by a check that
+    returns early on `unknown` and never reports anything again: the SAME
+    quantified context, with a contradictory `requires`.  It is refuted rather
+    than left undecided, which is why only a refutation needs to demote — Z3
+    reaches UNSAT by propagation before it instantiates a rank axiom, so the
+    contradictions this check exists to catch are the ones it answers fastest,
+    and the budget that expires on a consistent premise set is not the budget
+    a contradiction has to fit inside.
+    """
+    seen, result = _premise_verdicts(
+        _write(tmp_path, _RECURSIVE_MEASURE_UNSAT))
+    assert "unsat" in seen and "unknown" not in seen, seen
+    codes = [d.error_code for d in result.diagnostics]
+    assert "E538" in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary
+
+
+def test_1451_an_undecidable_author_layer_demotes_without_attributing(
+    tmp_path: Path,
+) -> None:
+    """The third verdict of the attribution query, reached by injection.
+
+    A refuted full premise set whose AUTHOR layer comes back `unknown` cannot
+    be blamed on either side: calling it internal would accuse the compiler of
+    something that may be the contract, and saying nothing would keep a
+    vacuous proof.  No whole program is known to reach it — the author layer
+    is the pre-body snapshot, small and quantifier-free — so the outcome is
+    injected directly, the same way `check_valid`'s `opaque` and `unknown`
+    branches are driven in `test_verifier_refinements.py`.  Without a cell the
+    branch is unfalsifiable; with one, its contract is pinned: demote, warn
+    under the code that claims least, and do NOT say E539.
+    """
+    from vera import verifier as vmod
+
+    original = vmod.ContractVerifier._contract_premises_satisfiable
+    vmod.ContractVerifier._contract_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, contract, assumed, smt: None
+    )
+    try:
+        result = _verify_in_process(_write(tmp_path, _UNSAT_REQUIRES))
+    finally:
+        vmod.ContractVerifier._contract_premises_satisfiable = original  # type: ignore[assignment]
+
+    codes = [d.error_code for d in result.diagnostics]
+    assert "E538" in codes, codes
+    assert "E539" not in codes, codes
+    assert "could not be determined" in "".join(
+        d.description for d in result.diagnostics), codes
+    assert result.summary.tier1_verified == 0, result.summary
+    assert all(
+        o.status == "tier3_unguarded" for o in result.obligations
+    ), [(o.kind, o.status) for o in result.obligations]
+
+
+# ---------------------------------------------------------------------------
+# The class instrument: the vacuity matrix
+# ---------------------------------------------------------------------------
+#
+# The class is not "a contradictory `requires`".  It is: an obligation
+# discharged against a premise set with no model, reported as a proof.  The
+# matrix therefore ranges over every ROUTE by which the premise set an
+# obligation runs under can go unsatisfiable, crossed with every KIND of
+# obligation that can be discharged against it.
+#
+# The routes are read off the code that COLLECTS the premises, not off the
+# bug reports, so a source the collector has and the matrix does not shows up
+# as a missing row.  `_verify_fn` builds them in three places:
+#
+#   * the solver's base context (step 4) — a parameter's declared-type
+#     constraint (`@Nat`'s implicit `>= 0`), each refined parameter's
+#     predicate, and every translatable `requires`;
+#   * `SmtContext._path_conditions` (#804) — the top-level `assume` facts,
+#     AND the guard of whichever branch or arm is being walked;
+#   * the base context again, after the body (step 5 onward) — the facts the
+#     verifier itself derives: a callee's postcondition, a refined return, a
+#     declared-type fact off a constructor sub-pattern.
+#
+# The third is layer 2 and is not reachable from source (the two producers
+# `vera/smt.py` knows about are both defended against by hand), so it is
+# measured by the `_guard_fact` plant above rather than by a cell here.  The
+# second splits: an `assume` is a PREMISE and belongs in the author's layer,
+# while a branch guard is the program's own shape — an arm that cannot run is
+# unreachable, not contradictory.  Both halves are cells, with opposite
+# expectations, because getting either backwards is a defect: folding a guard
+# in would demote every function with a dead arm, and leaving an `assume` out
+# was the bug #1457's review found.
+
+class _Route(NamedTuple):
+    """One way to make the premise set an obligation is discharged under UNSAT.
+
+    *shape* selects the rendering; *layer* is what the design owes the cell —
+    ``"author"`` must report the vacuity and certify nothing, ``"path"`` must
+    NOT, because the obligation sits in an arm no call can enter.
+    """
+
+    shape: str
+    layer: str
+    params: str
+    unsat_requires: tuple[str, ...]
+    sat_requires: tuple[str, ...]
+    unsat_preamble: str = ""
+    sat_preamble: str = ""
+
+
+_ROUTES: dict[str, _Route] = {
+    # --- the base context: `requires` ---------------------------------
+    "requires_conjunction": _Route(
+        "plain", "author", "",
+        ("@Int.0 > 5 && @Int.0 < 3",), ("@Int.0 > 5 && @Int.0 > 3",),
+    ),
+    "requires_two_clauses": _Route(
+        "plain", "author", "",
+        ("@Int.0 > 5", "@Int.0 < 3"), ("@Int.0 > 5", "@Int.0 > 3"),
+    ),
+    # --- the base context: a parameter's declared type -----------------
+    "nat_bound_vs_requires": _Route(
+        "plain", "author", ", @Nat", ("@Nat.0 < 0",), ("@Nat.0 > 0",),
+    ),
+    # --- the base context: a refined parameter's predicate -------------
+    "refinement_vs_requires": _Route(
+        "plain", "author", ", @Neg", ("@Neg.0 > 5",), ("@Neg.0 < -5",),
+    ),
+    "refinement_vs_refinement": _Route(
+        "plain", "author", ", @Neg, @Pos",
+        ("@Neg.0 == @Pos.0",), ("@Neg.0 < @Pos.0",),
+    ),
+    # --- `_path_conditions`: the `assume` half -------------------------
+    "assume_pair": _Route(
+        "plain", "author", "", ("true",), ("true",),
+        "assume(@Int.0 > 5);\n  assume(@Int.0 < 3);",
+        "assume(@Int.0 > 5);\n  assume(@Int.0 > 3);",
+    ),
+    "assume_vs_requires": _Route(
+        "plain", "author", "", ("@Int.0 > 5",), ("@Int.0 > 5",),
+        "assume(@Int.0 < 3);", "assume(@Int.0 > 3);",
+    ),
+    "refinement_vs_assume": _Route(
+        "plain", "author", ", @Neg", ("true",), ("true",),
+        "assume(@Neg.0 > 5);", "assume(@Neg.0 < -5);",
+    ),
+    # --- a nested scope with its own contract --------------------------
+    "where_helper_contract": _Route(
+        "where", "author", "",
+        ("@Int.0 > 5 && @Int.0 < 3",), ("@Int.0 > 5 && @Int.0 > 3",),
+    ),
+    # --- `_path_conditions`: the branch half, which must NOT demote -----
+    "branch_guard": _Route(
+        "branch", "path", "", ("@Int.0 > 5",), ("@Int.0 > 5",),
+    ),
+    "match_arm_fact": _Route(
+        "match", "path", "", ("@Int.0 > 5",), ("@Int.0 >= 0",),
+    ),
+}
+
+
+class _Kind(NamedTuple):
+    """One kind of obligation to discharge against the route's premises.
+
+    *ensures* is the subject's postcondition and *body* its body, chosen so
+    that under a SATISFIABLE premise set the obligation is NOT verified — the
+    status premise each cell asserts, without which "not verified under the
+    contradiction" would be satisfied by an obligation that was never
+    provable in the first place.
+    """
+
+    ensures: str
+    body: str
+
+
+_KINDS: dict[str, _Kind] = {
+    "ensures": _Kind("@Int.result == 42", "0"),
+    "assert": _Kind("true", "assert(@Int.0 == 424242);\n  0"),
+    "call_pre": _Kind("true", "needs_big(@Int.0)"),
+    "refine_bind": _Kind("true", "let @Pos = @Int.0;\n  @Pos.0"),
+    "nat_bind": _Kind("true", "let @Nat = @Int.0 - 100;\n  @Nat.0"),
+    "int_overflow": _Kind("true", "@Int.0 * @Int.0"),
+}
+
+# Products that are NOT cells, with the reason (CONTRIBUTING.md § Bugs: the
+# class, not the instance requires each one stated).
+_NOT_CELLS = {
+    # A literal pattern PINS the scrutinee, so the product is a constant on
+    # both sides of the differential and `int_overflow` reads `verified`
+    # whether or not the arm fact contradicts anything.  The cell could not
+    # tell the contradiction from the bound, which is worse than not having
+    # it.
+    ("match_arm_fact", "int_overflow"),
+}
+
+_MATRIX_PRELUDE = """\
+type Pos = { @Int | @Int.0 > 1000000 };
+type Neg = { @Int | @Int.0 < 0 };
+
+private fn needs_big(@Int -> @Int)
+  requires(@Int.0 > 1000000)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+def _indent(text: str, spaces: int) -> str:
+    pad = " " * spaces
+    return ("\n" + pad).join(text.split("\n"))
+
+
+def _render(route_name: str, kind_name: str, *, sat: bool) -> str:
+    """The subject program for one cell, on the satisfiable or the UNSAT side."""
+    route, kind = _ROUTES[route_name], _KINDS[kind_name]
+    clauses = route.sat_requires if sat else route.unsat_requires
+    preamble = route.sat_preamble if sat else route.unsat_preamble
+    req = "".join(f"  requires({c})\n" for c in clauses)
+    pre = f"  {preamble}\n" if preamble else ""
+
+    if route.shape == "where":
+        # The contradiction is the HELPER's, so the parent stays healthy and
+        # the helper's own slice is what must be refused.
+        return (
+            f"{_MATRIX_PRELUDE}\n"
+            f"public fn subject(@Int -> @Int)\n"
+            f"  requires(@Int.0 > 5)\n"
+            f"  ensures(true)\n"
+            f"  effects(pure)\n"
+            f"{{\n  helper(@Int.0)\n}}\n"
+            f"where {{\n"
+            f"  fn helper(@Int -> @Int)\n"
+            f"{_indent(req.rstrip(), 2)}\n"
+            f"    ensures({kind.ensures})\n"
+            f"    effects(pure)\n"
+            f"  {{\n    {_indent(kind.body, 4)}\n  }}\n"
+            f"}}\n"
+        )
+
+    if route.shape == "branch":
+        # dead vs live, with a live guard that does NOT bound the arithmetic —
+        # `@Int.0 < 300` would make `int_overflow` verified on both sides.
+        guard = "@Int.0 < 3" if not sat else "@Int.0 > 3"
+        body = (
+            f"if {guard} then {{\n    {_indent(kind.body, 4)}\n"
+            f"  }} else {{\n    0\n  }}"
+        )
+    elif route.shape == "match":
+        body = (
+            f"match @Int.0 {{\n    0 -> {{\n      "
+            f"{_indent(kind.body, 6)}\n    }},\n    _ -> 0\n  }}"
+        )
+    else:
+        body = kind.body
+
+    return (
+        f"{_MATRIX_PRELUDE}\n"
+        f"public fn subject(@Int{route.params} -> @Int)\n"
+        f"{req}"
+        f"  ensures({kind.ensures})\n"
+        f"  effects(pure)\n"
+        f"{{\n{pre}  {body}\n}}\n"
+    )
+
+
+def _slice_from(result: dict, source: str, marker: str) -> list[dict]:
+    """The obligations of the function whose declaration starts at *marker*.
+
+    Scoped by line rather than by counting, so a fixture that stops producing
+    the shape it means to produce shows up as an empty slice rather than as
+    an assertion that happens to hold over someone else's obligations.
+    """
+    first = [
+        i for i, line in enumerate(source.splitlines(), start=1)
+        if line.lstrip().startswith(marker)
+    ]
+    assert len(first) == 1, f"{marker!r} is not unique in the fixture"
+    return [o for o in result["obligations"] if o["location"]["line"] >= first[0]]
+
+
+_MATRIX_CELLS = [
+    (r, k) for r in _ROUTES for k in _KINDS if (r, k) not in _NOT_CELLS
+]
+
+
+@pytest.mark.parametrize(("route_name", "kind_name"), _MATRIX_CELLS)
+def test_1451_vacuity_matrix(
+    route_name: str, kind_name: str, tmp_path: Path,
+) -> None:
+    """Every route to an unsatisfiable premise set, crossed with every kind.
+
+    Each cell is a DIFFERENTIAL, not a literal-status assertion: the same body
+    and the same obligation kind are rendered twice, once with the route's
+    premises contradictory and once with them satisfiable, and both sides are
+    asserted.  The satisfiable side is the status premise — it proves the
+    fixture really produces an obligation of this kind and that the obligation
+    is NOT provable, so "not verified under the contradiction" cannot be
+    satisfied by an obligation that was absent or unprovable anyway.
+
+    For an ``author``-layer route the contradictory side must report the
+    vacuity (E538) and certify NOTHING in the affected function.  For a
+    ``path``-layer route it must do neither: a branch or arm whose guard
+    cannot hold under the precondition is unreachable, its obligations are
+    discharged under that guard by construction, and demoting the function for
+    it would report the program's own shape as a defect.  That cell is the
+    over-reach guard on the other cells — a check that folded path conditions
+    into layer 1 would pass every ``author`` row and fail these.
+    """
+    route = _ROUTES[route_name]
+    marker = "fn helper(" if route.shape == "where" else "public fn subject("
+
+    sat_src = _render(route_name, kind_name, sat=True)
+    sat = _verify(_write(tmp_path / "sat", sat_src))
+    sat_slice = _slice_from(sat, sat_src, marker)
+    assert "E538" not in _codes(sat), (route_name, kind_name, _codes(sat))
+    assert "E539" not in _codes(sat), (route_name, kind_name, _codes(sat))
+    if kind_name == "call_pre":
+        # A PROVABLE call precondition records no obligation at all (only the
+        # `violated` and `tier3` recorders exist), so the premise here is the
+        # refusal itself: with satisfiable premises this program is rejected.
+        assert ("call_pre", "violated", "E501") in _triples(sat), _triples(sat)
+        assert sat["ok"] is False, sat["verification"]
+    else:
+        target = [o for o in sat_slice if o["kind"] == kind_name]
+        assert target, (
+            f"{route_name}/{kind_name}: the fixture produced no {kind_name} "
+            f"obligation, so the cell would hold vacuously — "
+            f"{[o['kind'] for o in sat_slice]}"
+        )
+        assert all(o["status"] != "verified" for o in target), (
+            f"{route_name}/{kind_name}: provable under satisfiable premises, "
+            f"so the contradictory side proves nothing — "
+            f"{[(o['status'], o.get('error_code')) for o in target]}"
+        )
+
+    unsat_src = _render(route_name, kind_name, sat=False)
+    unsat = _verify(_write(tmp_path / "unsat", unsat_src))
+    unsat_slice = _slice_from(unsat, unsat_src, marker)
+
+    if route.layer == "author":
+        assert "E538" in _codes(unsat), (
+            f"{route_name}/{kind_name}: the premise set has no model and the "
+            f"run said nothing — {_codes(unsat)} / {_triples(unsat)}"
+        )
+        assert not [o for o in unsat_slice if o["status"] == "verified"], (
+            f"{route_name}/{kind_name}: certified under a premise set with no "
+            f"model — {[(o['kind'], o['status']) for o in unsat_slice]}"
+        )
+        assert all(
+            o["status"] in ("tier3_unguarded", "violated") for o in unsat_slice
+        ), [(o["kind"], o["status"]) for o in unsat_slice]
+    else:
+        assert "E538" not in _codes(unsat), (
+            f"{route_name}/{kind_name}: an unreachable arm is the program's "
+            f"shape, not a contradictory premise set — {_codes(unsat)}"
+        )
+        assert "E539" not in _codes(unsat), _codes(unsat)
+        # ... and the differential holds: the arm fact really does contradict
+        # the precondition, which is what the `verified` above rests on.
+        dead = [o for o in unsat_slice if o["kind"] == kind_name]
+        live = [o for o in sat_slice if o["kind"] == kind_name]
+        if kind_name == "ensures":
+            # A function-level obligation is outside the arm, so the dead arm
+            # must not move it: it stays refuted on both sides.
+            assert [o["status"] for o in dead] == ["violated"], dead
+        elif kind_name != "call_pre":
+            assert [o["status"] for o in dead] == ["verified"], dead
+            assert all(o["status"] != "verified" for o in live), live
+
+
+@pytest.mark.parametrize("route_name", ["branch_guard", "match_arm_fact"])
+def test_1451_a_path_local_contradiction_certifies_nothing_a_run_reaches(
+    route_name: str, tmp_path: Path,
+) -> None:
+    """The soundness the `path` rows rest on, measured rather than argued.
+
+    Those rows accept a `verified` obligation discharged under a premise set
+    with no model, on the ground that no call can enter the arm.  That is a
+    claim about the RUN, so the run is what settles it: the `nat_bind` the
+    dead arm certifies is one whose violation traps loudly, and an argument
+    satisfying the precondition must return the other branch's value instead
+    of reaching it.
+    """
+    src = _render(route_name, "nat_bind", sat=False)
+    path = _write(tmp_path, src)
+    assert "E538" not in _codes(_verify(path))
+    proc = _cli("run", str(path), "--fn", "subject", "--", "7")
+    assert proc.returncode == 0, (proc.stdout, proc.stderr[-600:])
+    assert "0" in proc.stdout, proc.stdout
+    assert "Nat" not in proc.stderr, proc.stderr[-600:]

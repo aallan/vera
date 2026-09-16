@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from vera import ast, binders, carriers, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
@@ -839,6 +839,10 @@ class ContractVerifier:
         # ... and the REASONS the facts withheld from THIS function were
         # unestablished.  Same lifetime as the sites.
         self._tainted_reasons: set[str] = set()
+        # #1451/#1457 F1: the first top-level `assume` of the function under
+        # verification, so a premise contradiction can be reported at the line
+        # that contributed it rather than at a blameless `requires`.
+        self._first_assume_node: ast.Node | None = None
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -4101,15 +4105,16 @@ class ContractVerifier:
         for a in assumptions:
             smt.solver.add(a)
 
-        # 4b. #1451 LAYER 1 — the user's contract alone.  The solver now holds
-        #     exactly what the author wrote: the parameters' type constraints
+        # 4b. #1451: SNAPSHOT the author's premises.  The solver now holds
+        #     exactly what the author wrote — the parameters' type constraints
         #     (`declare_nat`'s implicit `>= 0`, an ADT's datatype sort), each
-        #     refined parameter's predicate, and every translatable `requires`.
-        #     Nothing the verifier derived is in yet — the body is translated
-        #     at step 5 — so an UNSAT here is the author's contradiction and
-        #     can be reported as one.  Measured HERE rather than at step 8c
-        #     because after the body runs the two are indistinguishable.
-        contract_unsat = self._premises_satisfiable(smt) is False
+        #     refined parameter's predicate, and every translatable `requires`
+        #     — and nothing the verifier derived, since the body is translated
+        #     at step 5.  Taken here because after the body runs the two are
+        #     no longer separable; only a LIST COPY, no query, because the
+        #     attribution is needed at most once and only when the full set
+        #     has already failed (#1457 review, F2).
+        contract_premises: list[object] = list(smt.solver.assertions())
 
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
@@ -4181,11 +4186,20 @@ class ContractVerifier:
         #       above already saw them positionally via the per-block threading;
         #       this carries the top-level ones forward to the post-body checks.)
         tlf_depth = len(smt._path_conditions)
+        assumed_premises: list[object] = []
         if decl.body is not None:
             for fact in self._collect_top_level_assert_facts(
                 decl.body, smt, slot_env,
             ):
                 smt._path_conditions.append(fact)
+            # #1457 review F1: the `assume` half of those facts is a PREMISE —
+            # taken on trust, folded into every `check_valid` query, and
+            # dropped again below before #1451's check could ever see it.  Kept
+            # for that check, which is otherwise blind to the one premise
+            # source the language lets an author assert without proof.
+            assumed_premises = self._collect_top_level_assert_facts(
+                decl.body, smt, slot_env, assumes_only=True,
+            )
 
         # 5.8. #801: divisions / moduli / array indexes inside an ENSURES
         #      predicate trap at runtime too (contracts evaluate eagerly, no
@@ -4589,7 +4603,9 @@ class ContractVerifier:
         #     reported means anything, so the whole slice is demoted.  Runs
         #     before step 9 so a `where` helper's own obligations are outside
         #     the slice and get their own verdict.
-        self._enforce_premise_consistency(decl, smt, obl_start, contract_unsat)
+        self._enforce_premise_consistency(
+            decl, smt, obl_start, contract_premises, assumed_premises,
+        )
 
         # 9. Verify where-block functions
         if decl.where_fns:
@@ -4603,45 +4619,97 @@ class ContractVerifier:
     # Premise consistency (#1451)
     # -----------------------------------------------------------------
 
-    def _premises_satisfiable(self, smt: SmtContext) -> bool | None:
-        """Whether the solver's BASE context has a model — one query.
-
-        ``True`` / ``False`` / ``None`` for sat / unsat / undecided.  The base
-        context is exactly the premise set: ``check_valid`` asserts a goal's
-        negation inside a ``push`` / ``pop`` pair, so nothing a discharge added
-        survives to be seen here.
+    @staticmethod
+    def _verdict(result: object) -> bool | None:
+        """sat / unsat / unknown as ``True`` / ``False`` / ``None``.
 
         ``unknown`` is NOT a contradiction.  A budget that ran out has decided
         nothing, and demoting a whole function on it would turn a slow solver
         into a wrong verdict — the same distinction the disclosure reasons draw
         between "could not decide" and "decided against".
-
-        Runs under the screening budget rather than the query budget — see
-        :data:`_PREMISE_CHECK_TIMEOUT_MS` for the measurement behind that — and
-        restores the run's own budget afterwards, since the solver is shared
-        with every obligation still to be discharged.
         """
-        smt.solver.set(
-            "timeout", min(_PREMISE_CHECK_TIMEOUT_MS, smt._timeout_ms),
-        )
-        try:
-            result = smt.solver.check()
-        finally:
-            smt.solver.set("timeout", smt._timeout_ms)
         if result == z3.unsat:
             return False
         if result == z3.sat:
             return True
         return None
 
-    def _premise_site(self, decl: ast.FnDecl) -> ast.Node:
+    def _full_premises_satisfiable(
+        self, smt: SmtContext, assumed: list[object],
+    ) -> bool | None:
+        """Whether the WHOLE premise set has a model — one query.
+
+        The solver's base context is the premise set as far as the discharges
+        saw it: ``check_valid`` asserts a goal's negation inside a ``push`` /
+        ``pop`` pair, so nothing a discharge added survives to be read here.
+        *assumed* carries what the base context does NOT hold — the top-level
+        ``assume`` predicates, which live in ``_path_conditions`` (#804) and
+        are folded into every query by ``check_valid`` rather than asserted,
+        and which step 8's restore point has already dropped by the time this
+        runs (#1457 review, F1).  They are premises every obligation was
+        discharged under, so a check that skipped them would answer about a
+        set no obligation was actually proved against.
+
+        Runs under the screening budget — see
+        :data:`_PREMISE_CHECK_TIMEOUT_MS` for the measurement behind that —
+        and restores the run's own budget afterwards, since the solver is
+        shared with every obligation still to be discharged.
+        """
+        smt.solver.push()
+        try:
+            for fact in assumed:
+                smt.solver.add(fact)
+            smt.solver.set(
+                "timeout", min(_PREMISE_CHECK_TIMEOUT_MS, smt._timeout_ms),
+            )
+            try:
+                return self._verdict(smt.solver.check())
+            finally:
+                smt.solver.set("timeout", smt._timeout_ms)
+        finally:
+            smt.solver.pop()
+
+    def _contract_premises_satisfiable(
+        self, contract: list[object], assumed: list[object], smt: SmtContext,
+    ) -> bool | None:
+        """The same question of the AUTHOR's premises alone, on a scratch solver.
+
+        *contract* is the base context as it stood before the body was
+        translated — the parameters' type constraints, their refinement
+        predicates and every translatable ``requires`` — and *assumed* the
+        top-level ``assume`` predicates.  Both are the author's; a
+        contradictory ``assume`` is the same garbage-in as
+        ``requires(x > 5 && x < 3)``, and the ruling on #1457 F1 is that they
+        belong in one layer rather than two.
+
+        A scratch solver rather than the shared one, because by the time this
+        is asked the shared context has the body's derived facts in it and
+        there is no way to take them back out.  Under the RUN's budget, not
+        the screening one: this context is tiny and quantifier-free, it is
+        only ever reached when the full set already failed, and its answer
+        decides which of two very different things the reader is told.
+        """
+        probe = z3.Solver()
+        probe.set("timeout", smt._timeout_ms)
+        for fact in (*contract, *assumed):
+            probe.add(fact)
+        return self._verdict(probe.check())
+
+    def _premise_site(
+        self, decl: ast.FnDecl, *, assumed: bool = False,
+    ) -> ast.Node:
         """Where to point the demotion.
 
-        The first non-trivial ``requires`` is what the author reads as the
-        precondition, and it is the half of layer 1 they can edit; a
-        contradiction that comes entirely from a refined parameter's own
-        predicate has no such clause, so the declaration itself is the site.
+        A top-level ``assume`` wins when there is one (#1457 review, F1): it
+        is the premise a reader is least expecting to be load-bearing, and
+        pointing at a `requires` that may be perfectly satisfiable would send
+        them to the wrong line.  Otherwise the first non-trivial ``requires``,
+        which is what the author reads as the precondition and the half they
+        can edit; and a contradiction that comes entirely from a refined
+        parameter's own predicate has neither, so the declaration is the site.
         """
+        if assumed and self._first_assume_node is not None:
+            return self._first_assume_node
         for contract in decl.contracts:
             if isinstance(contract, ast.Requires) and not self._is_trivial(
                 contract,
@@ -4664,9 +4732,16 @@ class ContractVerifier:
         refutation on record was reached against a consistent PREFIX of the
         premises (a `requires`-clause walk runs before step 4 asserts them) and
         is a real one.  Erasing it would trade a false proof for a lost error.
+
+        An obligation ALREADY disclosed keeps its own code, for the same
+        reason and one layer along (#1457 review, F3): its `E504` / `E506`
+        warning is already in the diagnostic stream at that line, and
+        overwriting the obligation's code left the array and the diagnostics
+        naming different codes for one site.  It is already out of every
+        counted tier, so there is nothing for the demotion to do to it.
         """
         for obligation in self.obligations[obl_start:]:
-            if obligation.status == "violated":
+            if obligation.status in ("violated", "tier3_unguarded"):
                 continue
             obligation.status = "tier3_unguarded"
             obligation.error_code = error_code
@@ -4676,7 +4751,8 @@ class ContractVerifier:
         decl: ast.FnDecl,
         smt: SmtContext,
         obl_start: int,
-        contract_unsat: bool,
+        contract: list[object],
+        assumed: list[object],
     ) -> None:
         """Refuse to certify a function whose premises contradict (#1451).
 
@@ -4689,34 +4765,70 @@ class ContractVerifier:
 
         Two layers, because the two causes ask the reader for different things:
 
-        * layer 1 is the author's contract, and the answer is to weaken it;
-        * layer 2 is the verifier's own derived facts, and the answer is a bug
-          report.  ``vera/smt.py`` documents two producers it defends against
-          by hand — the unmodelled-base refined return, and #953's
-          path-guarded call facts — and the point of a general check is that
-          the next premise source does not have to be foreseen.
+        * the AUTHOR's premises — the parameters' types and refinements, the
+          ``requires`` clauses, and the top-level ``assume`` predicates — where
+          the answer is to weaken one of them;
+        * the FULL premise set, which adds what the verifier derived, where the
+          answer is a bug report.  ``vera/smt.py`` documents two producers it
+          defends against by hand — the unmodelled-base refined return, and
+          #953's path-guarded call facts — and the point of a general check is
+          that the next premise source does not have to be foreseen.
 
-        One query per function in the common case, two only when layer 1 is
-        satisfiable and the full set is not.
+        ONE query for a function whose premises have a model, and the order is
+        what makes that true (#1457 review, F2).  The author's premises are a
+        SUBSET of the full set, so a model of the full set is a model of
+        theirs: asking the full set first settles both layers when it answers
+        sat, and the second query is reached only when the first failed to
+        find one.  Measured over the corpus, that is one query for all but a
+        handful of functions, where asking layer 1 first was unconditionally
+        two.
+
+        Branch path conditions are deliberately NOT part of either layer.  An
+        arm whose guard cannot hold is unreachable rather than contradictory,
+        and its obligations are discharged under that guard by construction —
+        demoting the function for it would report a vacuity that is the
+        program's shape, not a defect (#1457 review, F1).
+
+        ``unknown`` on the full set is NOT a contradiction, and the difference
+        matters here more than anywhere else in this file: a `decreases`
+        measure over a recursive ADT installs quantified rank axioms that send
+        Z3 to MBQI, so the full set reliably runs out of the screening budget
+        on exactly the programs that are hardest to reason about.  Reading
+        that as unsat reported a false **E539** — "the verifier's own premises
+        are contradictory" — over `length`, `append` and their kin, and
+        demoted every obligation in them.  Only a REFUTATION demotes, and
+        nothing is given up by that: a contradictory premise set is refuted by
+        propagation before a single quantifier is instantiated — measured at
+        under a millisecond in the very context that leaves a consistent one
+        undecided at 250 ms — so the contradictions this exists to catch are
+        the ones the query answers fastest.
         """
-        if contract_unsat:
+        full = self._full_premises_satisfiable(smt, assumed)
+        if full is not False:
+            return
+
+        author = self._contract_premises_satisfiable(contract, assumed, smt)
+        if author is False:
             self._warning(
-                self._premise_site(decl),
-                f"Precondition in '{decl.name}' is unsatisfiable, so no call "
-                f"can reach the body and nothing in it was verified against a "
-                f"reachable state. Every obligation in this function is "
-                f"reported as unverified.",
+                self._premise_site(decl, assumed=bool(assumed)),
+                f"The premises of '{decl.name}' are unsatisfiable, so no call "
+                f"can reach the body under them and nothing in it was "
+                f"verified against a reachable state. Every obligation in "
+                f"this function is reported as unverified.",
                 rationale=(
                     "A contradictory premise set entails every goal, so each "
                     "obligation would discharge without the body having been "
                     "checked at all. The declared parameter types, their "
-                    "refinement predicates and the precondition have no "
-                    "common model."
+                    "refinement predicates, the precondition and any "
+                    "top-level `assume` have no common model — an `assume` "
+                    "is taken on trust, so a contradictory one is as "
+                    "load-bearing here as a contradictory `requires`."
                 ),
                 fix=(
-                    "Weaken the precondition (or the parameter's refinement) "
-                    "until some argument satisfies it, or delete the function "
-                    "if no call can be intended."
+                    "Weaken whichever of them is wrong — the precondition, a "
+                    "parameter's refinement, or an `assume` — until some "
+                    "argument satisfies them together, or delete the "
+                    "function if no call can be intended."
                 ),
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                 error_code="E538",
@@ -4725,22 +4837,50 @@ class ContractVerifier:
             self._demote_function_obligations(obl_start, "E538")
             return
 
-        if self._premises_satisfiable(smt) is not False:
+        if author is not True:
+            # The full set failed and the author's own premises could not be
+            # decided, so there is nothing to attribute the contradiction to.
+            # Saying "internal" would blame the compiler for something that
+            # may be the contract; saying nothing keeps a vacuous proof.
+            # Demote without attributing, under the code that claims least.
+            self._demote_function_obligations(obl_start, "E538")
+            self._warning(
+                self._premise_site(decl, assumed=bool(assumed)),
+                f"The premises of '{decl.name}' are unsatisfiable, so nothing "
+                f"in it was verified against a reachable state. Every "
+                f"obligation in this function is reported as unverified. "
+                f"Which premise is at fault could not be determined within "
+                f"the solver budget.",
+                rationale=(
+                    "A contradictory premise set entails every goal. The "
+                    "contract layer alone was neither proved satisfiable nor "
+                    "refuted, so the contradiction cannot be attributed to "
+                    "the author's premises or to the verifier's derived ones."
+                ),
+                fix=(
+                    "Re-run with a larger budget (`--timeout-ms`) to get the "
+                    "attribution, then weaken the premise it names."
+                ),
+                spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+                error_code="E538",
+                tier=3,
+            )
             return
 
         self._warning(
-            self._premise_site(decl),
+            self._premise_site(decl, assumed=bool(assumed)),
             f"Internal: the verifier's own premises for '{decl.name}' are "
-            f"contradictory although its contract is satisfiable, so every "
-            f"obligation in it would discharge vacuously. Every obligation in "
-            f"this function is reported as unverified. Please report this "
-            f"program.",
+            f"contradictory although the program's own are satisfiable, so "
+            f"every obligation in it would discharge vacuously. Every "
+            f"obligation in this function is reported as unverified. Please "
+            f"report this program.",
             rationale=(
-                "The contract alone has a model, so the contradiction was "
-                "introduced by a fact the verifier derived — an assumed "
-                "callee postcondition, a refined return, or another "
-                "declared-type fact. A proof resting on it would be vacuous, "
-                "and the failure is the compiler's rather than the program's."
+                "The declared types, the precondition and any `assume` have a "
+                "model between them, so the contradiction was introduced by a "
+                "fact the verifier derived — an assumed callee postcondition, "
+                "a refined return, or another declared-type fact. A proof "
+                "resting on it would be vacuous, and the failure is the "
+                "compiler's rather than the program's."
             ),
             fix=(
                 "No source change is expected. Report the program on the "
@@ -5878,6 +6018,7 @@ class ContractVerifier:
 
     def _collect_top_level_assert_facts(
         self, body: ast.Expr, smt: SmtContext, slot_env: SlotEnv,
+        *, assumes_only: bool = False,
     ) -> list[object]:
         """#804: predicates of UNCONDITIONAL top-level assert/assume statements.
 
@@ -5891,7 +6032,18 @@ class ContractVerifier:
         ``let`` / any destructure (the env is then uncertain — a later assert
         could read a stale shadow) and never descends into ``if`` / ``match``
         (those asserts are conditional, not guaranteed at return).
+
+        *assumes_only* narrows the walk to ``assume`` statements, for #1451's
+        author-premise layer: an ``assume`` is taken on trust and is therefore
+        a premise, while an ``assert`` is an obligation the verifier discharges
+        and reports on its own (a contradictory one is already the E507 the
+        assert rule gives it).  It also records the first such statement in
+        ``_first_assume_node``, so the demotion can point at the line the
+        contradiction came from rather than at a `requires` that may be
+        blameless.
         """
+        if assumes_only:
+            self._first_assume_node = None
         facts: list[object] = []
         if not isinstance(body, ast.Block):
             return facts
@@ -5908,9 +6060,19 @@ class ContractVerifier:
             elif isinstance(stmt, ast.LetDestruct):
                 break  # don't track destructure env here — conservative
             else:
+                is_assume = isinstance(stmt, ast.ExprStmt) and isinstance(
+                    stmt.expr, ast.AssumeExpr,
+                )
+                if assumes_only and not is_assume:
+                    continue
                 fact = self._assumed_block_fact(stmt, smt, cur_env)
                 if fact is not None:
                     facts.append(fact)
+                    if (assumes_only and is_assume
+                            and self._first_assume_node is None):
+                        self._first_assume_node = cast(
+                            "ast.ExprStmt", stmt,
+                        ).expr
         return facts
 
     def _walk_for_primitive_op_obligations(
