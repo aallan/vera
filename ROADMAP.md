@@ -55,7 +55,7 @@ Exit criterion: each listed drift class has a generator or a gate, and a release
 
 *Production controls for the headline effects.*
 
-Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  The Http and Inference control rows are current KNOWN_ISSUES limitations; the provider and example rows are supporting work on the same effect surface.
+Before the flagship builds on them, `Http` and `Inference` get the controls real agent workloads need: auth headers, status codes, timeouts and verbs on one side; cost gates, deterministic replays, mocking, and provider breadth on the other.  A second model tier joins the same surface: typed decisions carrying a confidence value ([#1467](https://github.com/aallan/vera/issues/1467)), which begin as a user-declared effect and are promoted to a built-in only once their calibration is measured.  The Http and Inference control rows are current KNOWN_ISSUES limitations; the provider and example rows are supporting work on the same effect surface.
 
 Exit criterion: the Http and Inference limitation rows are retired; an agent can call an authenticated API and mock the model call in tests.
 
@@ -67,6 +67,7 @@ Exit criterion: the Http and Inference limitation rows are retired; an agent can
 | [#356](https://github.com/aallan/vera/issues/356) | Http: PUT / PATCH / DELETE. |
 | [#370](https://github.com/aallan/vera/issues/370) | Inference: configurable `max_tokens` / `temperature` — cost gates and deterministic replays. |
 | [#372](https://github.com/aallan/vera/issues/372) | Inference: user-defined `handle[Inference]` handlers — mocking, caching, routing. |
+| [#1467](https://github.com/aallan/vera/issues/1467) | `Decision` effect — typed probabilistic decisions from System One models: `noul` / `choice` / `score` return a value already in the type system with a `Confidence` refinement, a fast tier beside `Inference` so a function's effect row states what it may spend.  Userland first (a declared effect with a handler over `Http.post`), then a calibration measurement as a hard gate, then promotion to a built-in host effect mirroring `Http` and `DB` with the `async` whitelist entry; a batch `Decision.ask` and handler support follow, the latter decided with #372. |
 | [#373](https://github.com/aallan/vera/issues/373) | Host-import `Array<Float64>` returns (`alloc_result_ok_float_array`) — the infrastructure #371 needs. |
 | [#371](https://github.com/aallan/vera/issues/371) | `Inference.embed` — vector embeddings, unblocked by #373. |
 | [#451](https://github.com/aallan/vera/issues/451) | Provider: Google Gemini. |

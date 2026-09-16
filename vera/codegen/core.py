@@ -308,6 +308,12 @@ class CodeGenerator(
         # ctor-owner-exempt: declares the map the namespace-scoped projection
         # is built from (#1436)
         self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        # #1436: the same indices keyed per OWNING ADT.  The flat mirror
+        # above cannot represent two data types sharing a constructor name,
+        # which is what let one namespace's declaration answer for another's.
+        self._adt_ctor_tp_indices: dict[
+            str, dict[str, tuple[int | None, ...]]
+        ] = {}
         # Maps ADT name → number of type parameters (needed to produce full-length
         # type-arg tuples with None placeholders for unknown positions).
         self._adt_tp_counts: dict[str, int] = {}
@@ -1559,17 +1565,28 @@ class CodeGenerator(
         """
         cached = cls.__dict__.get("_BUILTIN_ADT_NAMES")
         if cached is None:
+            from vera.prelude import prelude_adt_names
             probe = CodeGenerator()
             probe._register_builtin_adts()
-            cached = frozenset(probe._adt_layouts)
+            # BOTH registries, because neither is the whole set: the
+            # registrar holds `Option` / `Result` / `Ordering` / `UrlParts` /
+            # `Tuple` / `MdInline` / `MdBlock`, and the PRELUDE injects
+            # `Json`, `HtmlNode`, `Request` and `Response` on demand.  The
+            # prelude's four own no module, so reading the registrar alone
+            # classified them as ENTRY declarations and hid them from the
+            # prelude's own bodies — measured, `json_keys` lost `JNull` and
+            # 76 dual-target conformance cells went red.
+            cached = frozenset(probe._adt_layouts) | frozenset(
+                prelude_adt_names())
             cls._BUILTIN_ADT_NAMES = cached
         return cached
 
     def _namespace_ctor_projection(
         self,
-    ) -> tuple[dict[str, object], dict[str, str]]:
-        """The by-name constructor projections, scoped to the namespace whose
-        body is compiling (#1436).
+    ) -> tuple[dict[str, object], dict[str, str],
+               dict[str, tuple[int | None, ...]]]:
+        """The by-name constructor tables, scoped to the namespace whose body
+        is compiling (#1436).
 
         `_adt_layouts` is one map across every namespace a compilation
         absorbs, so flattening it by bare CONSTRUCTOR name let a declaration
@@ -1577,47 +1594,95 @@ class CodeGenerator(
         `private data Mine { Pad(Bool), Sq(Bool) }` took the `Sq` slot from
         an imported `data Shape { Sq(Int), Circ(Int) }`, and the MODULE's own
         `mk_sq` then emitted `Mine.Sq`'s tag while its own `match` dispatched
-        on `Shape`'s — `show(mk_sq(7))` rendered `Circ(7)` and
-        `tag(mk_circ(7))` returned the `Sq` arm.
+        on `Shape`'s.
 
         Three classes, applied in this order so the later ones shadow:
 
         * **infrastructure** — the built-in and prelude ADTs, visible
           everywhere;
-        * **foreign** — declared by a module other than the one compiling.
-          A namespace that imports the type must still resolve its
-          constructors, so these are included rather than dropped;
+        * **foreign** — declared by another module THIS namespace imports.
+          A namespace that imports the type must resolve its constructors;
+          one that does not import it must not see them at all.
         * **own** — declared by the namespace compiling.  Applied last, so a
-          local declaration shadows an imported constructor of the same
-          name, which is what §8.5.2 says it does.
+          local declaration shadows an imported constructor, which is what
+          §8.5.2 says it does.
 
-        An ADT declared by the ENTRY file is `own` only while the entry is
-        compiling: a module's body must not see it at all, which is the half
-        that was miscompiling.
+        An ADT declared by the ENTRY file belongs to `own` only while the
+        entry is compiling.  A module's body is not a party to it — it
+        cannot name the entry's declarations — so it is excluded outright
+        rather than demoted to `foreign`, which would still let it shadow
+        the prelude one class later: measured, an unused entry
+        `data Mine { Pad(Bool), Some(Bool) }` dropped a module's
+        `show(Some(x))` where the control renders `Some(42)`.
+
+        Returns the constructor layouts, the ownership map, and the
+        type-parameter index table, all three built from the same ordering
+        — the last of those because it is keyed by bare constructor name
+        too, and a generic entry declaration otherwise reached a module's
+        structural-Eq through it alone.
         """
         active = self._active_module_path
-        builtins = self._builtin_adt_name_set()
+        display = self._contended_adt_display_names
+        declarers = self._module_adt_declarers
+        declared = self._namespace_declared_adts
         infra: list[str] = []
         foreign: list[str] = []
         own: list[str] = []
         for adt_name in self._adt_layouts:
-            if adt_name in builtins:
+            bare = display.get(adt_name, adt_name)
+            if bare not in declared:
+                # Global infrastructure — the built-in and prelude ADTs, which
+                # no namespace declares.  Derived rather than listed, so the
+                # prelude's demand-injected `Json` / `HtmlNode` / `Request` /
+                # `Response` are infrastructure and not mistaken for entry
+                # declarations, which is what hid `JNull` from the prelude's
+                # own `json_keys` and reddened 76 dual-target cells.
                 infra.append(adt_name)
                 continue
             owner = self._adt_layout_owners.get(adt_name)
-            if owner is None:
-                # No module owns it: an ENTRY-file declaration.  Visible only
-                # while the entry itself is compiling.
-                (own if active is None else foreign).append(adt_name)
+            # EVERY module that declares this name, not just the one whose
+            # layout won the flat slot: two modules restating one type both
+            # own their restatement (#1277), and asking only the winner made
+            # the other a stranger to its own declaration.
+            mine = active is not None and active in declarers.get(bare, ())
+            if mine or owner == active or (owner is None and active is None):
+                own.append(adt_name)
+            elif (owner is None and active == PRELUDE_NAMESPACE
+                    and adt_name in self._builtin_adt_name_set()):
+                # The PRELUDE is not a user module, and an entry declaration
+                # RESTATING a prelude type suppresses the prelude's own
+                # injection (§8.4.1) — the entry's is then the one layout
+                # everyone uses, and the prelude's combinator bodies must
+                # resolve against it: a program declaring `public data
+                # Option<T> { None, Some(T) }` and calling `option_map` needs
+                # exactly that.  Gated on the NAME being a prelude type's:
+                # an unrelated entry declaration that merely borrows a
+                # constructor spelling suppresses nothing, and letting it in
+                # here put `Mine` in front of `MdInline` for the prelude's own
+                # `MdText`.
+                foreign.append(adt_name)
+            elif owner is None:
+                # An ENTRY-file declaration, and `active` is a real module.
+                # A module's body cannot name it, so it is excluded outright
+                # rather than demoted to `foreign` — where it would still
+                # shadow the prelude's one class later: measured, an unused
+                # entry `data Mine { Pad(Bool), Some(Bool) }` dropped a
+                # module's `show(Some(x))` where the control renders
+                # `Some(42)`.
                 continue
-            (own if owner == active else foreign).append(adt_name)
+            else:
+                foreign.append(adt_name)
         ctor_layouts: dict[str, object] = {}
         ctor_to_adt: dict[str, str] = {}
+        tp_indices: dict[str, tuple[int | None, ...]] = {}
         for adt_name in infra + foreign + own:
+            owned_tp = self._adt_ctor_tp_indices.get(adt_name, {})
             for ctor_name, layout in self._adt_layouts[adt_name].items():
                 ctor_layouts[ctor_name] = layout
                 ctor_to_adt[ctor_name] = adt_name
-        return ctor_layouts, ctor_to_adt
+                if ctor_name in owned_tp:
+                    tp_indices[ctor_name] = owned_tp[ctor_name]
+        return ctor_layouts, ctor_to_adt, tp_indices
 
     def _adt_decl_index(self, name: str, order: dict[str, int]) -> int:
         """Where *name* sits in the declaration-index space *order* keys (#1227).

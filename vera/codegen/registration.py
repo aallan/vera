@@ -297,15 +297,27 @@ class RegistrationMixin:
         # Result<T, E>), not to T (index 0) as naïve positional zipping would do.
         # ctor-owner-exempt: registers the built-in layouts; no user owner
         # exists yet
+        self._adt_ctor_tp_indices.setdefault("Option", {})["None"] = ()
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["None"] = ()         # Option<T>: no fields
         # ctor-owner-exempt: registers the built-in layouts; no user owner
         # exists yet
+        self._adt_ctor_tp_indices.setdefault("Option", {})["Some"] = (0,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Some"] = (0,)       # field 0 → T (index 0)
         # ctor-owner-exempt: registers the built-in layouts; no user owner
         # exists yet
+        self._adt_ctor_tp_indices.setdefault("Result", {})["Ok"] = (0,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Ok"] = (0,)         # field 0 → T (index 0)
         # ctor-owner-exempt: registers the built-in layouts; no user owner
         # exists yet
+        self._adt_ctor_tp_indices.setdefault("Result", {})["Err"] = (1,)
+        # ctor-owner-exempt: the flat mirror of the built-in tp-indices; the
+        # per-owner map is written beside it (#1436)
         self._ctor_adt_tp_indices["Err"] = (1,)        # field 0 → E (index 1)
         self._adt_tp_counts["Option"] = 1
         self._adt_tp_counts["Result"] = 2
@@ -350,13 +362,19 @@ class RegistrationMixin:
                         indices.append(tp_index[field_te.name])
                     else:
                         indices.append(None)
-                # ctor-owner-exempt: keyed by bare ctor name, so a user
-                # declaration overwrites a built-in's entry; owner-keying it is
-                # #1436
+                # #1436: recorded per OWNING ADT as well as flat, so the
+                # namespace-scoped projection can rebuild the by-name table
+                # for the namespace compiling instead of inheriting whichever
+                # declaration registered last.
+                self._adt_ctor_tp_indices.setdefault(
+                    decl.name, {})[ctor.name] = tuple(indices)
+                # ctor-owner-exempt: the flat mirror, rebuilt per namespace by
+                # `_namespace_ctor_projection`
                 self._ctor_adt_tp_indices[ctor.name] = tuple(indices)
             else:
-                # ctor-owner-exempt: same by-name write as above; owner-keying
-                # it is #1436
+                self._adt_ctor_tp_indices.setdefault(
+                    decl.name, {})[ctor.name] = ()
+                # ctor-owner-exempt: the flat mirror, as above
                 self._ctor_adt_tp_indices[ctor.name] = ()
 
     def _compute_constructor_layout(

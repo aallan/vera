@@ -24,6 +24,7 @@ bodies ever seeing the entry's.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -272,3 +273,138 @@ import s4lib;
             tmp_path, {"s4lib.vera": self._LIB_STR, "main.vera": main})
         assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
         assert module_value(result, "shown") == ("ok", "Sq(7)")
+
+
+class TestEntryDeclarationIsInvisibleToModules:
+    """#1454 review F1 — a module's body must not see the entry's ADTs.
+
+    Classifying an entry-file declaration as `foreign` when a module
+    compiles put it in the projection one class before `own`, so it still
+    shadowed the PRELUDE's constructor inside a module's body.  Measured:
+    an entry `private data Mine { Pad(Bool), Some(Bool) }` — never used —
+    dropped a module's `show(Some(x))` behind an `[E620]`, where the
+    control renders `Some(42)`.
+
+    A module cannot NAME the entry's declarations, so they are excluded
+    outright rather than demoted.
+    """
+
+    _LIB = """\
+module plib;
+
+public fn wrap(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Some(@Int.0))
+}
+"""
+    _MAIN = """\
+import plib;
+
+%(shadow)spublic fn go(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  plib::wrap(42)
+}
+"""
+
+    @pytest.mark.parametrize("shadow", [True, False])
+    def test_a_prelude_ctor_keeps_its_meaning_inside_a_module(
+        self, shadow: bool, tmp_path: Path,
+    ) -> None:
+        sh = "private data Mine {\n  Pad(Bool),\n  Some(Bool)\n}\n\n"
+        files = {
+            "plib.vera": self._LIB,
+            "main.vera": self._MAIN % {"shadow": sh if shadow else ""},
+        }
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert module_value(result, "go") == ("ok", "Some(42)")
+
+
+class TestGenericAxis:
+    """#1454 review F2 — the type-parameter index table is scoped too.
+
+    `_ctor_adt_tp_indices` is keyed by bare constructor name as well, and
+    reached `WasmContext` unscoped while the layouts were already per
+    namespace.  A generic entry declaration therefore isolated itself to
+    that map: a module's own `Wrap(3) == Wrap(3)` came back FALSE under an
+    unused entry `data Mine<T> { Pad(Bool), Wrap(T, Bool) }`, with `show`
+    and `hash` dropped — check-clean and verify-clean throughout.
+    """
+
+    _GLIB = """\
+module glib;
+
+public data Box<T> {
+  Wrap(T),
+  Empty
+}
+
+public fn same(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if Wrap(@Int.0) == Wrap(@Int.0) then { 1 } else { 0 }
+}
+
+public fn shown(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  show(Wrap(@Int.0))
+}
+"""
+    _MAIN = """\
+import glib;
+
+%(shadow)spublic fn eq_(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  glib::same(3)
+}
+
+public fn sh_(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  glib::shown(3)
+}
+"""
+
+    #: A USER generic shadow, and the prelude's own generic constructor.
+    _SHADOWS: ClassVar[dict[str, str]] = {
+        "user_generic": "private data Mine<T> {\n  Pad(Bool),\n  Wrap(T, Bool)\n}\n\n",
+        "prelude_Some": "private data Mine<T> {\n  Pad(Bool),\n  Some(T, Bool)\n}\n\n",
+        # The DISCRIMINATOR (#1454 review R2): a NON-generic entry shadow of
+        # a generic module constructor.  It isolates the defect to the
+        # type-parameter index map — the layouts scoping alone does not fix
+        # it, and reverting both tp-index threadings drops the module's
+        # functions with an [E620] while the generic shadows above stay
+        # green.
+        "nongeneric_discriminator":
+            "private data Mine {\n  Pad(Bool),\n  Wrap(Bool)\n}\n\n",
+        "none": "",
+    }
+
+    @pytest.mark.parametrize("shadow", sorted(_SHADOWS))
+    @pytest.mark.parametrize("fn,expected", [("eq_", 1), ("sh_", "Wrap(3)")])
+    def test_a_generic_module_adt_keeps_its_type_argument(
+        self, shadow: str, fn: str, expected: object, tmp_path: Path,
+    ) -> None:
+        files = {
+            "glib.vera": self._GLIB,
+            "main.vera": self._MAIN % {"shadow": self._SHADOWS[shadow]},
+        }
+        verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+        assert not verify_errors and not cg_errors, (verify_errors, cg_errors)
+        assert module_value(result, fn) == ("ok", expected)

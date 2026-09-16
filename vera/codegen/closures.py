@@ -316,7 +316,8 @@ class ClosureLiftingMixin:
         # #1436: namespace-scoped, as in `functions.py` — a lifted closure
         # body belongs to the declaration that contains it and resolves
         # constructor names in that declaration's namespace.
-        ctor_layouts, ctor_to_adt = self._namespace_ctor_projection()
+        ctor_layouts, ctor_to_adt, ns_tp_indices = (
+            self._namespace_ctor_projection())
 
         ctx = WasmContext(
             self.string_pool,
@@ -345,7 +346,10 @@ class ClosureLiftingMixin:
             # that lifts outside a function compile) falls back to the flat
             # registry inside `WasmContext`, which is the pre-#1299 answer.
             scoped_fns=scoped_fns,
-            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            # #1436: the namespace-scoped table, not the flat one —
+            # a generic entry declaration otherwise reached a module's
+            # structural-Eq through this map alone.
+            ctor_adt_tp_indices=ns_tp_indices,
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
             adt_tp_param_names=getattr(self, "_adt_tp_param_names", None),
         )

@@ -710,16 +710,27 @@ class CrossModuleMixin:
                     if adt_name in temp._adt_tp_counts:
                         self._adt_tp_counts.setdefault(
                             adt_name, temp._adt_tp_counts[adt_name])
+                    # #1436: carry the module's tp-indices under BOTH keys —
+                    # the per-owner map the namespace-scoped projection reads,
+                    # and the flat mirror.  Copying only the flat one left a
+                    # module's own generic ADT absent from the scoped table, so
+                    # its structural-Eq lost the type argument and
+                    # `Wrap(3) == Wrap(3)` came back false.
+                    _owned_tp = temp._adt_ctor_tp_indices.get(adt_name, {})
                     for _ctor_name in layouts:
-                        # ctor-owner-exempt: builds the flat projection handed
-                        # to the wasm layer
+                        if _ctor_name in _owned_tp:
+                            self._adt_ctor_tp_indices.setdefault(
+                                adt_name, {}).setdefault(
+                                    _ctor_name, _owned_tp[_ctor_name])
+                        # ctor-owner-exempt: the flat mirror, rebuilt per
+                        # namespace by `_namespace_ctor_projection`
                         if _ctor_name in temp._ctor_adt_tp_indices:
-                            # ctor-owner-exempt: builds the flat projection
-                            # handed to the wasm layer
+                            # ctor-owner-exempt: the flat mirror carried
+                            # alongside the per-owner copy above (#1436)
                             self._ctor_adt_tp_indices.setdefault(
                                 _ctor_name,
-                                # ctor-owner-exempt: builds the flat projection
-                                # handed to the wasm layer
+                                # ctor-owner-exempt: the flat mirror carried
+                                # alongside the per-owner copy above (#1436)
                                 temp._ctor_adt_tp_indices[_ctor_name])
                     self._needs_alloc = True
                     self._needs_memory = True

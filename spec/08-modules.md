@@ -360,9 +360,7 @@ import vera.collections(List);
 ```
 
 Constructor names follow the same shadowing rules as function names: a local
-declaration shadows an imported constructor (§8.5.2) — though see §11.16 for the compilation
-caveat on that pair, tracked as [#1436](https://github.com/aallan/vera/issues/1436) — and a
-constructor name two
+declaration shadows an imported constructor (§8.5.2), and a constructor name two
 imports both supply is refused (§8.5.2.2, **E157**) exactly as a function name
 is. An imported type's constructors are admitted by the type's name, so a
 selective import naming the type admits all of them.
