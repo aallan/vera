@@ -3924,6 +3924,15 @@ class ContractVerifier:
                 # predicate to Tier 3).
                 array_var = self._declare_array_var(smt, z3_name, param_ty)
                 var = array_var if array_var is not None else smt.declare_int(z3_name)
+            elif carriers.projected_carrier_name(param_ty) is not None:
+                # #1430 — a `Map` or `Set` reached no sort branch at all and
+                # fell through to `declare_int`, an unconstrained integer with
+                # no elements to quantify over, so an element refinement on
+                # one could only ever be disclosed.  The `Array` arm above
+                # takes precedence: it IS its own element sequence.
+                coll_var = self._declare_collection_var(smt, z3_name, param_ty)
+                var = (coll_var if coll_var is not None
+                       else smt.declare_int(z3_name))
             elif self._is_adt_type(param_ty):
                 adt_var = smt.declare_adt(z3_name, param_ty)
                 var = adt_var if adt_var is not None else smt.declare_int(z3_name)
@@ -9362,7 +9371,7 @@ class ContractVerifier:
         return facts, complete
 
     #: Element bases codegen can emit a boundary element-guard for — the
-    #: verifier's mirror of `_array_element_guard_parts`'s stride table
+    #: verifier's mirror of `_element_guard_parts`'s stride table
     #: (#1430).  Kept as data next to the predicate that reads it so the two
     #: halves of the #1362 invariant — a `guarded` claim must match what
     #: codegen actually emits — can be differentially compared rather than
@@ -9378,7 +9387,9 @@ class ContractVerifier:
     #: whose elements are honestly unguarded however scalar their base.
     #: Mirrors the emitter's own table for the same reason the base set does,
     #: and is held to it by the same differential.
-    _GUARDABLE_ELEMENT_PROJECTIONS: frozenset[str | None] = frozenset({None})
+    _GUARDABLE_ELEMENT_PROJECTIONS: frozenset[str | None] = frozenset({
+        None, "map_keys", "map_values", "set_to_array",
+    })
 
     def _element_guard_emitted(
         self, smt: SmtContext, ty: Type | None,
@@ -13125,6 +13136,31 @@ class ContractVerifier:
         if element_sort is None:
             return None
         return smt.declare_array_var(name, element_sort)
+
+    def _declare_collection_var(
+        self,
+        smt: "SmtContext",
+        name: str,
+        ty: Type,
+    ) -> z3.ExprRef | None:
+        """Declare a `Map`/`Set`-typed Z3 constant in its carrier sort.
+
+        The `Array` twin (:py:meth:`_declare_array_var`), for the containers
+        that reach their elements through a projection (#1430).  Returns None
+        when a type argument has no Z3 sort, which leaves the caller on
+        today's `declare_int` fallback rather than half-modelling the value.
+        """
+        from vera.types import AdtType
+        base = self._strip_refinements(ty)
+        if not isinstance(base, AdtType) or not base.type_args:
+            return None
+        sorts: list[z3.SortRef] = []
+        for arg in base.type_args:
+            sort = smt._vera_type_to_z3_sort(arg)
+            if sort is None:
+                return None
+            sorts.append(sort)
+        return smt.declare_collection_var(name, base.name, tuple(sorts))
 
     @staticmethod
     def _is_string_type(ty: Type) -> bool:

@@ -1032,7 +1032,7 @@ def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
             "codegen/functions.py", "codegen/closures.py",
             "codegen/contracts.py", "wasm/calls_handlers.py",
         )
-        if re.search(r"self\._emit_array_element_guards\(",
+        if re.search(r"self\._emit_element_guards\(",
                      (root / rel).read_text(encoding="utf-8"))
     }
     # contracts.py DEFINES the emitter and calls it from no boundary of its
@@ -1043,3 +1043,170 @@ def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
         f"the element-guard roster and the emitter's call sites disagree: "
         f"wired={sorted(wired)} named={sorted(named)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The class instrument: carrier kind x fact shape x consumer (#1430)
+# ---------------------------------------------------------------------------
+#
+# The class is "a container's element refinements are stated per container",
+# so the instrument ranges over the CARRIERS and asserts they answer alike:
+# identical statuses for identical element facts, one guard shape, one trap.
+# A cell per carrier written by hand would demonstrate the instance three
+# times; the product is what says the lowering is one lowering.
+
+#: carrier -> (declared slot, an expression producing a good one from `@Int.0`,
+#:             the position's name in a trap message)
+_CARRIERS: dict[str, tuple[str, str, str]] = {
+    "array": ("@Array<Pos>", "array_append([], @Int.0)", "array element"),
+    "map": ("@Map<String, Pos>", 'map_insert(map_new(), "a", @Int.0)',
+            "map value"),
+    "set": ("@Set<Pos>", "set_add(set_new(), @Int.0)", "set element"),
+}
+
+#: The same three, with the element type left UNREFINED — what an opaque
+#: producer hands over, so the consumer's parameter is a real narrowing.
+_PLAIN = {"array": "@Array<Int>", "map": "@Map<String, Int>",
+          "set": "@Set<Int>"}
+
+#: What the consumer does with the carrier.  Two consumers, because a fact
+#: that reaches one and not the other is the drift this class is made of.
+_CONSUMERS = {
+    "size": {"array": "array_length", "map": "map_size", "set": "set_size"},
+}
+
+
+def _forwarding(carrier: str) -> str:
+    """A parameter forwarded to a callee at the SAME refined carrier type."""
+    slot, _produce, _kind = _CARRIERS[carrier]
+    size = _CONSUMERS["size"][carrier]
+    return (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n"
+        f"private fn consume({slot} -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  {size}({slot}.0)\n}}\n\n"
+        f"private fn forward({slot} -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  consume({slot}.0)\n}}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  forward(" + _CARRIERS[carrier][1].replace("@Int.0", "5")
+        + ")\n}\n"
+    )
+
+
+def _laundered(carrier: str, value: str) -> str:
+    """A carrier built behind an UNREFINED return, so the consumer's
+    parameter is the only boundary the element predicate can be checked at."""
+    slot, produce, _kind = _CARRIERS[carrier]
+    plain = _PLAIN[carrier]
+    size = _CONSUMERS["size"][carrier]
+    return (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n"
+        f"private fn launder(@Int -> {plain})\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  {produce}\n}}\n\n"
+        f"private fn consume({slot} -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  {size}({slot}.0)\n}}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  consume(launder({value}))\n}}\n"
+    )
+
+
+@pytest.mark.parametrize("carrier", sorted(_CARRIERS))
+def test_forwarding_proves_at_tier_1_for_every_carrier(
+    carrier: str, tmp_path: Path,
+) -> None:
+    """The case #1430 measured: a forwarded carrier goes `verified`.
+
+    The issue's own synthetic case is a `Map<K, Refined>` forwarded inside a
+    callee, which went `verified` -> `tier3_unguarded` when #1410 removed the
+    type-comparison shortcut.  It comes back as a DISCHARGED obligation — the
+    parameter's assumed element fact and the argument's goal name the same
+    projection symbol, so the query is closed by congruence rather than by a
+    shortcut — and it must do so for every carrier, which is the whole claim
+    of one lowering.
+    """
+    envelope = _verify(tmp_path, _forwarding(carrier), f"fwd-{carrier}")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["verified"] >= 1, (
+        f"{carrier}: forwarding a refined carrier did not discharge: "
+        f"{statuses}"
+    )
+    assert statuses["tier3_unguarded"] == 0, statuses
+
+
+def test_every_carrier_answers_the_same_way() -> None:
+    """The product's point: the three carriers report ALIKE.
+
+    Asserted as one comparison over the whole set rather than three separate
+    expectations — the #1461 lesson — so a carrier that drifts shows up as a
+    disagreement instead of as a cell someone forgot to update.
+    """
+    import tempfile
+
+    seen: dict[str, tuple] = {}
+    for carrier in sorted(_CARRIERS):
+        with tempfile.TemporaryDirectory() as d:
+            envelope = _verify(Path(d), _forwarding(carrier), f"cmp-{carrier}")
+        seen[carrier] = tuple(sorted(_refine_bind_statuses(envelope).items()))
+    assert len(set(seen.values())) == 1, (
+        f"the carriers do not answer alike on the same element fact: {seen}"
+    )
+
+
+@pytest.mark.parametrize("carrier", sorted(_CARRIERS))
+def test_a_laundered_element_traps_at_the_boundary(
+    carrier: str, tmp_path: Path,
+) -> None:
+    """A violating element from an opaque producer is refused at RUN TIME.
+
+    The guard is what licenses the R1 assumption, so the cell reads the
+    emitted module and the process exit rather than a status: a `Map` or
+    `Set` boundary projects its handle through the same host import an
+    ordinary `map_values(m)` call would and walks the pair that comes back,
+    which is why one loop serves every carrier.
+    """
+    source = _laundered(carrier, "0 - 5")
+    result = _run(tmp_path, source, f"bad-{carrier}")
+    assert result.returncode != 0, (
+        f"{carrier}: a violating element crossed a guarded boundary and the "
+        f"program ran to completion: {result.stdout}"
+    )
+    assert _CARRIERS[carrier][2] in result.stdout + result.stderr, result.stdout
+
+
+@pytest.mark.parametrize("carrier", sorted(_CARRIERS))
+def test_a_satisfying_element_is_not_refused_at_run_time(
+    carrier: str, tmp_path: Path,
+) -> None:
+    """The direction #1466 is about: the guard must not refuse a good value.
+
+    A guard that traps on a value its predicate admits is worse than no
+    guard, so every carrier's good case is run, not merely verified.
+    """
+    result = _run(tmp_path, _laundered(carrier, "5"), f"good-{carrier}")
+    assert result.returncode == 0, (
+        f"{carrier}: a satisfying element was refused at run time: "
+        f"{result.stdout}{result.stderr}"
+    )
+
+
+@pytest.mark.parametrize("carrier", sorted(_CARRIERS))
+def test_the_guarded_carrier_holds_under_eager_gc(
+    carrier: str, tmp_path: Path,
+) -> None:
+    """A projection ALLOCATES the array it returns, so the walk runs with a
+    collection at every allocation.
+
+    `Map` and `Set` reach their elements through a host import that builds a
+    fresh array; the array carrier does not allocate at all.  Both are run
+    here, because what the cell holds to account is that the walk reads the
+    sequence it was handed rather than a swept one.
+    """
+    result = _run(tmp_path, _laundered(carrier, "0 - 5"), f"eager-{carrier}",
+                  eager_gc=True)
+    assert result.returncode != 0, result.stdout
+    assert _CARRIERS[carrier][2] in result.stdout + result.stderr, result.stdout

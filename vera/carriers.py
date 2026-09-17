@@ -59,7 +59,15 @@ class ElementCarrier:
 #: Container name -> its element positions, as (kind, type-argument index,
 #: projection).  A `Map` has TWO: a refinement can be written on either the
 #: key or the value, and they are separate goals with separate projections.
-_CARRIERS: dict[str, tuple[tuple[str, int, str | None], ...]] = {
+#:
+#: Public, because the two consumers hold different things: the verifier has
+#: the checker's semantic types and reads it through
+#: :func:`element_carriers`, while code generation has type EXPRESSIONS and an
+#: alias table and reads the table directly after resolving its own aliases —
+#: the same split :func:`vera.narrowing.narrows_into_refinement` makes by
+#: taking caller-produced chains.  What must not differ between them is the
+#: LIST, and that is what lives here.
+CARRIER_POSITIONS: dict[str, tuple[tuple[str, int, str | None], ...]] = {
     "Array": (("array element", 0, None),),
     "Map": (("map key", 0, "map_keys"), ("map value", 1, "map_values")),
     "Set": (("set element", 0, "set_to_array"),),
@@ -79,7 +87,7 @@ def element_carriers(ty: Type | None) -> tuple[ElementCarrier, ...]:
         ty = ty.base
     if not isinstance(ty, AdtType):
         return ()
-    spec = _CARRIERS.get(ty.name)
+    spec = CARRIER_POSITIONS.get(ty.name)
     if spec is None:
         return ()
     out: list[ElementCarrier] = []
@@ -97,6 +105,25 @@ def element_carriers(ty: Type | None) -> tuple[ElementCarrier, ...]:
 def is_carrier(ty: Type | None) -> bool:
     """Whether *ty* is one of the container types with element positions."""
     return bool(element_carriers(ty))
+
+
+def projected_carrier_name(ty: Type | None) -> str | None:
+    """The container's name when *ty* is a carrier reached through a
+    PROJECTION — a `Map` or a `Set` — and None otherwise.
+
+    An `Array` is excluded because it is its own element sequence: it already
+    has a Z3 sort and observers, and the arm that asks this question is the
+    one deciding whether to mint a carrier sort for a container that has
+    none.
+    """
+    if isinstance(ty, RefinedType):
+        ty = ty.base
+    if not isinstance(ty, AdtType):
+        return None
+    spec = CARRIER_POSITIONS.get(ty.name)
+    if spec is None or all(p is None for _k, _i, p in spec):
+        return None
+    return ty.name
 
 
 #: The binder positions where code generation plants an ELEMENT guard, and

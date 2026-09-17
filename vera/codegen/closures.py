@@ -552,7 +552,7 @@ class ClosureLiftingMixin:
             (value_local, value_local + 1, param_te)
             for _i, param_te, value_local in param_info
             if (self._type_expr_to_wasm_type(param_te) == "i32_pair"
-                and self._array_element_guard_parts(param_te) is not None)
+                and self._element_guard_parts(param_te))
         ]
 
         # Compute capture layout (must match _translate_anon_fn).
@@ -821,7 +821,7 @@ class ClosureLiftingMixin:
             anon_fn.return_type)
         refine_guard_instrs: list[str] = []
         ret_has_elements = (
-            self._array_element_guard_parts(anon_fn.return_type) is not None)
+            bool(self._element_guard_parts(anon_fn.return_type)))
         if (refined_param_checks or component_param_checks
                 or element_param_checks
                 or ret_refined_parts is not None or ret_has_components
@@ -840,7 +840,7 @@ class ClosureLiftingMixin:
             # type forbids.
             for ptr_local, len_local, param_te in element_param_checks:
                 refine_guard_instrs.extend(
-                    self._emit_array_element_guards(
+                    self._emit_element_guards(
                         ctx, closure_sig, param_te, ptr_local, len_local,
                         env, "parameter"))
             for value_local, parts in refined_param_checks:
@@ -885,7 +885,7 @@ class ClosureLiftingMixin:
                         "return value")
                     # #1430: the elements of an `Array<Refined>` result, over
                     # the (ptr, len) pair already spilled here.
-                    ret_guard.extend(self._emit_array_element_guards(
+                    ret_guard.extend(self._emit_element_guards(
                         ctx, closure_sig, anon_fn.return_type, ptr_l, len_l,
                         env, "return value"))
                     if ret_refined_parts is not None:

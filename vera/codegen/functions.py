@@ -575,9 +575,11 @@ class FunctionCompilationMixin:
         # `_emit_component_refinement_guards`).  Collected alongside the
         # directly-refined params and emitted in the same pre-body block.
         component_param_checks: list[tuple[int, ast.TypeExpr]] = []
-        #: `(ptr local, len local, declared type)` per `Array<Refined>` param
-        #: whose elements codegen guards at entry (#1430).
-        element_param_checks: list[tuple[int, int, ast.TypeExpr]] = []
+        #: `(ptr-or-handle local, len local, declared type)` per carrier
+        #: param whose elements codegen guards at entry (#1430).  The len is
+        #: None for a `Map` or `Set`, whose single i32 is a HANDLE the guard
+        #: projects to a sequence rather than a pointer it can walk.
+        element_param_checks: list[tuple[int, int | None, ast.TypeExpr]] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -623,7 +625,7 @@ class FunctionCompilationMixin:
                 # reaches its ELEMENTS — and the verifier assumes them under
                 # R1.  The length half is what makes the guard possible, and
                 # it is already in hand here.
-                if self._array_element_guard_parts(param_te) is not None:
+                if self._element_guard_parts(param_te):
                     element_param_checks.append((ptr_idx, len_idx, param_te))
                 gc_pointer_params.append(ptr_idx)
                 continue
@@ -649,6 +651,12 @@ class FunctionCompilationMixin:
             # input: that one is the syntactic head (it has to be, it keys
             # the binding table), which classified a refined or aliased
             # `@Byte` formal as a heap pointer.
+            # #1430: a `Map` or `Set` formal is one i32 handle, so its
+            # elements are reached by projecting it — the guard calls
+            # `map_values` and walks the pair that comes back, which is why
+            # the len half is None here where an array's is a real local.
+            if self._element_guard_parts(param_te):
+                element_param_checks.append((local_idx, None, param_te))
             if wt == "i32" and is_gc_pointer_base(
                 self._family_base_te(param_te)
             ):
@@ -815,7 +823,7 @@ class FunctionCompilationMixin:
             # callee still may not read an element the refinement forbids.
             for ptr_local, len_local, param_te in element_param_checks:
                 refine_guard_instrs.extend(
-                    self._emit_array_element_guards(
+                    self._emit_element_guards(
                         ctx, ast.format_fn_signature(decl), param_te,
                         ptr_local, len_local, env, "parameter"))
 
