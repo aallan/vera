@@ -2480,3 +2480,115 @@ def test_1403_a_placeholder_never_becomes_a_counterexample(
         if o["kind"] == kind and o["status"] != "verified"
     ]
     assert hits == ([verdict] if verdict is not None else []), _triples(result)
+
+
+# ---------------------------------------------------------------------------
+# The gate decides CHAINS, and decides nothing else (review L1/L2)
+# ---------------------------------------------------------------------------
+
+_ORDER = """\
+type C1 = {{ @Int | @Int.0 > 0 }};
+type C2 = {{ @C1 | Some(@C1.0) == None }};
+
+private fn mk(@Int -> @Option<C2>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+{pre}  Some(@Int.0)
+}}
+
+public fn use_it(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(@C2) -> @C2.0,
+    None -> 0
+  }}
+}}
+"""
+
+#: A SINGLE refinement whose predicate cannot be stated.  Its carrier is
+#: modelled without it, which is a false refusal — and deliberately left
+#: alone here; see the cell.
+_SINGLE_UNSTATABLE = """\
+type U = { @Int | int_to_float(@Int.0) > 0.0 && @Int.0 > 0 };
+
+private fn mk(@Int -> @Option<U>)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+public fn use_it(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures(true)
+  effects(pure)
+{
+  match mk(@Int.0) {
+    Some(@U) -> 100 / @U.0,
+    None -> 0
+  }
+}
+"""
+
+
+def test_1403_the_statability_gate_decides_chains_only(tmp_path: Path) -> None:
+    """The gate's boundary, in the two directions that could over-reach.
+
+    It decides ONE thing: whether to unwrap a CHAIN.  Two neighbours are
+    deliberately outside it, and this cell is what stops the boundary
+    drifting:
+
+    * a SINGLE refinement whose predicate cannot be stated keeps the
+      behaviour it has on `release/v0.2.0` and on `main` — its carrier is
+      modelled without its predicate and `100 / @U.0` is refused E526 with
+      the divisor 0, on a program that runs and returns 25.  That is a real
+      defect and it is [#1470](https://github.com/aallan/vera/issues/1470),
+      whose fix is one under-constrained gate consulted by every refutation
+      site.  Closing it HERE would trade that false refusal for lost Tier-1
+      proofs at every parameter and result of such a type, on obligations
+      that never needed the predicate — a trade this change is not designed
+      for and the corpus cannot measure, since it declares no such
+      refinement.
+    * the ORDER sensitivity of predicate translation is also outside it.  A
+      chain whose predicate names a constructor translates only once that
+      constructor's sort exists, so an unrelated earlier `let` changes the
+      verdict — `tier3_unguarded`/E506 without it, `violated`/E505 with it.
+      That is true on `release/v0.2.0` too, unchanged here: the gate asks
+      the same question the predicate translation already answered, and a
+      NO is never memoised, so the gate adds no order sensitivity of its own
+      and removes none.  Asserting both variants pins that.
+    """
+    plain = _verify(_tree(tmp_path / "plain", {
+        "p": _ORDER.format(pre="")})["p"])
+    letfirst = _verify(_tree(tmp_path / "letfirst", {
+        "p": _ORDER.format(pre="  let @Option<Int> = Some(@Int.0);\n")})["p"])
+    binds = [
+        [(o["status"], o.get("error_code")) for o in r["obligations"]
+         if o["kind"] == "refine_bind" and o["status"] != "verified"]
+        for r in (plain, letfirst)
+    ]
+    assert binds == [[("tier3_unguarded", "E506")], [("violated", "E505")]], (
+        f"the pre-existing order sensitivity of predicate translation moved. "
+        f"If the accepted variant is now refused like its twin, #1470 has "
+        f"been fixed and this half of the cell should be rewritten to assert "
+        f"order independence rather than pin its absence: {binds}"
+    )
+
+    single = _verify(_tree(tmp_path / "single", {"p": _SINGLE_UNSTATABLE})["p"])
+    assert single["ok"] is False, _triples(single)
+    assert [
+        (o["status"], o.get("error_code")) for o in single["obligations"]
+        if o["kind"] == "div_zero"
+    ] == [("violated", "E526")], _triples(single)
+    run = _cli("run", str(_tree(tmp_path / "single", {
+        "p": _SINGLE_UNSTATABLE})["p"]), "--fn", "use_it", "--", "4")
+    assert run.returncode == 0 and run.stdout.strip().endswith("25"), (
+        f"#1470's program stopped running clean, so the refusal may no "
+        f"longer be false: {run.stdout} {run.stderr}"
+    )

@@ -16,10 +16,17 @@ the carrier set, and is enforced separately" — so `Option<{ @Int | P }>` and
 `Option<Int>` are one sort and the two routes agree by construction.  What was
 missing was ONE implementation of it.
 
-The unwrap is ONE LEVEL and a chain is left unmodelled by design: the
-predicate half of that rule stops at a primitive base, so stripping a chain
-would supply a sort without the predicates and turn valid code into a false
-E526.  See `strip_refinements`.
+The unwrap runs to the END of a chain, and the rule has a second condition
+that says why that is safe: a refinement is represented as its base only
+while its whole predicate can be STATED.  Unwrapping is what makes the sort;
+the predicate is what gives it meaning, and a level outside the decidable
+fragment (spec §2.6.4 cause 3) would leave a sort with nothing said about the
+value it carries — which is worse than no sort, since a counterexample may
+then name a value the type forbids.  So `SmtContext._refinement_statable`
+asks that question once and the sort derivation reads it; an unstatable
+refinement keeps `?` and `None`.  The predicate half became able to read a
+whole chain in #1434, which is what made the unwrap safe for chains at all.
+See `strip_refinements` for the rule in full.
 
 Same family as #884 (two Vera types colliding on one sort NAME) and #1360 (two
 routes deriving different sorts for a nested constructor).  #1360 made the

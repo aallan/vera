@@ -624,6 +624,8 @@ class SmtContext:
         #: property of the type, but the translation that decides it runs
         #: against this context's registries.
         self._statable: dict[str, bool] = {}
+        #: The types currently being asked about, for the re-entrant case.
+        self._asking: set[str] = set()
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._adt_registry_version = 0
@@ -887,12 +889,28 @@ class SmtContext:
         if self._refinement_statable_hook is None:
             return True
         key = repr(ty)
-        cached = self._statable.get(key)
-        if cached is not None:
-            return cached
-        self._statable[key] = True
-        answer = bool(self._refinement_statable_hook(ty))
-        self._statable[key] = answer
+        if self._statable.get(key):
+            return True
+        if key in self._asking:
+            # Re-entered while answering: translating a predicate can ask for
+            # a sort, which can ask this again for the same type.  An
+            # optimistic answer breaks the cycle the way it would be broken
+            # anyway for a type whose predicate does translate.
+            return True
+        self._asking.add(key)
+        try:
+            answer = bool(self._refinement_statable_hook(ty))
+        finally:
+            self._asking.discard(key)
+        if answer:
+            # Only a YES is a property of the type and worth keeping.  A NO
+            # may be "not yet": translating the predicate LOOKS UP the sorts
+            # it mentions and does not create them, so a predicate naming a
+            # constructor answers no until something else has built that
+            # sort.  Caching that turned one unrelated `let` nobody reads
+            # into the difference between accepting and refusing a program
+            # (review of PR #1415, L1), so a no is re-asked.
+            self._statable[key] = True
         return answer
 
     def _vera_type_to_z3_sort(
@@ -2928,8 +2946,13 @@ class SmtContext:
                             return None
                         hook = getattr(self, "_recorded_type_hook", None)
                         rhs_ty = hook(stmt.value) if hook else None
-                        if isinstance(rhs_ty, RefinedType):
-                            rhs_ty = rhs_ty.base
+                        # Through the shared helper, so a refinement OVER
+                        # a refinement reaches the ADT underneath too — a
+                        # hand-rolled one-level unwrap left a `RefinedType`
+                        # here and the `AdtType` test below then bailed
+                        # (CodeRabbit, outside-diff at 7e161677).
+                        if rhs_ty is not None:
+                            rhs_ty = strip_refinements(rhs_ty)
                         if not (isinstance(rhs_ty, AdtType)
                                 and rhs_ty.type_args is not None
                                 and len(rhs_ty.type_args)
@@ -3489,8 +3512,13 @@ class SmtContext:
         if hook is None:
             return None
         recorded = hook(expr)
-        if isinstance(recorded, RefinedType):
-            recorded = recorded.base
+        # Through the shared helper, for the same reason as the
+        # destructure path: a chain left a `RefinedType` here, the `AdtType`
+        # test below discarded the hint, and `_find_sort_for_ctor` fell back
+        # to the base-name scan that #918's pinning exists to replace
+        # (CodeRabbit, outside-diff at 7e161677).
+        if recorded is not None:
+            recorded = strip_refinements(recorded)
         if not isinstance(recorded, AdtType) or contains_typevar(recorded):
             return None
         # Route through the #918 pinning machinery rather than materialising the
@@ -3955,6 +3983,7 @@ class SmtContext:
         # would answer a later function from an earlier one's environment —
         # the warm/cold divergence `_tainted_facts` is cleared to avoid.
         self._statable.clear()
+        self._asking.clear()
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

@@ -12958,16 +12958,42 @@ class ContractVerifier:
         is primitive by construction — :py:meth:`_refined_chain` walks to it
         and :py:meth:`_base_slot_name` refuses anything else — so deriving
         its sort cannot re-enter this question.
+
+        BOUNDED TO A CHAIN OVER A SCALAR CARRIER, and the early returns say
+        so.  A single refinement answers yes — see the comment on that
+        return.  And:
+        where the chain does not bottom out in a primitive — a refinement
+        over an ADT (`{ @Box | P }`), over an `Array`, over a `Tuple` — the
+        answer is "model it", as before.  The hazard this question exists to
+        stop is a scalar the solver may pick a forbidden value for; a refined
+        ADT's sort is what lets a projection out of it be reasoned about at
+        all, and its predicate was never stated (spec §2.6.4 cause 2 refuses
+        the base outright, not the predicate).  Declining THAT sort would
+        take away structural reasoning and buy nothing.  A refinement over a
+        base with no scalar carrier is therefore not this question's business
+        and answers yes.
         """
         parts = self._refined_chain(ty)
         if parts is None:
-            return False
-        base, _predicates = parts
+            return True
+        base, predicates = parts
+        if len(predicates) < 2:
+            # A SINGLE refinement is outside this question, and deliberately:
+            # its carrier has been modelled without its predicate since long
+            # before a chain could be unwrapped at all, so declining it here
+            # would trade that base's false refusals for lost Tier-1 proofs
+            # on obligations that never needed the predicate — a trade this
+            # change is not designed for and the corpus cannot measure,
+            # since it declares no such refinement.  That is its own class
+            # (#1470) and its own fix: one under-constrained gate consulted
+            # by every refutation site.  What this question decides is the
+            # thing this change introduced — whether to unwrap a CHAIN.
+            return True
         if self._base_slot_name(base) is None:
-            return False
+            return True
         base_sort = smt._vera_type_to_z3_sort(base)
         if base_sort is None:
-            return False
+            return True
         probe = z3.FreshConst(base_sort, "statable")
         return self._translate_refined_predicate(smt, ty, probe) is not None
 
