@@ -12,7 +12,7 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-14,755 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+14,795 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.2.0 burndown
 
@@ -33,7 +33,6 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
-| [#1403](https://github.com/aallan/vera/issues/1403) | A `match` arm's `assert` is discharged without the arm's sub-pattern facts, so an assertion that follows from a bound payload's declared type can never prove and always falls to a runtime check (E535). |
 
 ## Stage 20 — The single-source sprint
 

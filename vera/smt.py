@@ -261,7 +261,7 @@ _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 # =====================================================================
 
 def strip_refinements(ty: Type) -> Type:
-    """The type a refinement is REPRESENTED as — ONE level (#1421).
+    """The type a refinement is REPRESENTED as — the WHOLE chain (#1421).
 
     The rule is stated in `_vera_type_to_z3_sort`: a refinement's Z3 sort is
     its base's sort, because the predicate constrains values, not the carrier
@@ -271,26 +271,32 @@ def strip_refinements(ty: Type) -> Type:
     and disagreed on a refinement OVER a refinement, which is the #1421
     disagreement one level further in (review of PR #1431, F1).
 
-    UNWRAPS ONE LEVEL, DELIBERATELY, and a chain is therefore left unmodelled.
-    The predicate half of the rule stops at a primitive base:
-    `_translate_refined_predicate` reads `{ @Base | P }` where `@Base` is a
-    primitive, so for `{ { @Int | P } | Q }` neither `P` nor `Q` is
-    translated.  Stripping the whole chain would make the SORT succeed while
-    the predicates stayed absent — the value becomes an unconstrained `Int`,
-    and a division by a payload the chain proves positive is reported
-    `violated`/E526 on valid code.  Measured: `Option<Tuple<Small, Int>>` with
-    `Small = { @Pos | @Pos.0 < 10 }` over `Pos = { @Int | @Int.0 > 0 }` reads
-    `div_zero`/`tier3` on `release/v0.2.0` and E526 with a whole-chain strip.
-    A type the verifier honestly refuses to model beats one it models without
-    the predicate that gives it meaning, so both routes agree by refusing:
-    the key keeps its `?` and the sort stays `None`, and the enclosing
-    obligation falls to an honest Tier 3.
+    It unwrapped ONE level for as long as a chain was unmodellable, and a
+    chain therefore had no sort at all.  Stripping the whole chain makes the
+    SORT succeed, and that is only right while the PREDICATE reaches the
+    value too — otherwise the value becomes an unconstrained `Int` and a
+    division by a payload the chain proves positive is reported
+    `violated`/E526 on valid code.  Two things had to land first, and both
+    have:
 
-    Conjoining a chain's predicates — which would make the whole strip correct
-    — is tracked as #1434.
+    * #1434 made `_translate_refined_predicate` read the whole chain and
+      conjoin its levels, so `{ { @Int | P } | Q }` states `P && Q` rather
+      than neither; and
+    * #1403 made every obligation inside a `match` arm read the facts the
+      arm establishes, which is how the conjoined predicate reaches a
+      division over a bound payload — the measurement that kept this at one
+      level was taken with the arm's facts absent, so the payload was
+      unconstrained for a reason that no longer holds.
+
+    Measured on the discriminator both ways round:
+    `Option<Tuple<Small, Int>>` with `Small = { @Pos | @Pos.0 < 10 }` over
+    `Pos = { @Int | @Int.0 > 0 }` reads `div_zero`/`tier3` while this
+    unwraps one level and **verified** once it unwraps the chain, and a
+    payload the chain does NOT exclude is still refused
+    (`tests/test_verifier_refined_sort_derivation.py`).
     """
-    if isinstance(ty, RefinedType):
-        return ty.base
+    while isinstance(ty, RefinedType):
+        ty = ty.base
     return ty
 
 

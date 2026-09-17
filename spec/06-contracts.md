@@ -105,6 +105,16 @@ Assertions serve two purposes:
 1. They document intermediate invariants for human readers.
 2. They provide "stepping stones" for the verifier, breaking complex proofs into smaller steps.
 
+**Every obligation discharged inside a `match` arm** — an assertion, a call precondition, a `@Nat` narrowing, and each §6.4.3 primitive-operation safety obligation — is discharged against the facts that arm establishes, including the declared-type facts its constructor sub-pattern bindings carry ([#1403](https://github.com/aallan/vera/issues/1403)).  One arm establishes one set of facts and every obligation in it reads them: binding `Some(@Nat)` off an `Option<Nat>` proves `assert(nat_to_int(@Nat.0) >= 0)` at Tier 1, and binding `Some(@PosInt)` off an `Option<PosInt>` likewise discharges `100 / @PosInt.0` rather than reporting E526.
+
+The rule of §6.4.2 applies to all of them, and it keys on whether the fact was ESTABLISHED rather than on any one way of failing to establish it: where the producer's own obligation left the fact unestablished — disclosed as unguarded, refuted, or undecided within the solver budget — the fact is withheld, the obligation falls to its runtime check, and the demotion is reported — **E535** for an assertion, whose guard is the §11.14.1 trap, and **E534** for a contract or a safety obligation, whose guard is the operation's own trap.  A demoted obligation is never silent: a `tier3` that no diagnostic surfaces would break the accounting `vera verify --json` documents.
+
+The demotion says which of the three it was, because they ask the reader to do different things — raise the budget, fix the producer, or plant a guard.
+
+An arm's **context is one derivation** for every obligation in it, which is what makes the rule above a rule rather than a property of a particular walk.  It follows that an arm's pattern binder shadows a same-named outer slot for *every* obligation in the arm — no obligation is discharged against the enclosing value a binder has taken the name of — and that where the scrutinee cannot be modelled at all, every binder the pattern declares stands for an unreadable value: an obligation over one is neither discharged nor refuted, but falls to its runtime guard.  Refusing such a value is as wrong as proving from it, because the counterexample names nothing the program can produce.
+
+One boundary is worth stating, because the Tier-1 claim inherits whatever the producer's own obligation set does not cover: for a **nested** sub-pattern bind the codegen payload guard that backs the direct case is not yet emitted ([#765](https://github.com/aallan/vera/issues/765)), so the arm's nested fact rests on the producer's own construction obligation alone.
+
 ### 6.2.6 Assumptions (`assume`)
 
 An assumption is a predicate that the compiler MUST accept as true without proof:

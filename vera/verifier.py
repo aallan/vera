@@ -66,6 +66,7 @@ from vera.smt import (
     CallDemotion,
     SlotEnv,
     SmtContext,
+    SmtResult,
     resolve_timeout_ms,
 )
 from vera.types import (
@@ -232,6 +233,30 @@ class BlockBindingPolicy(enum.Enum):
     beyond that invariant: a fresh var is disconnected from the value, so
     asserting more would be an unchecked assumption.
     """
+
+
+@dataclass(frozen=True)
+class ArmContext:
+    """What one `match` arm means to a walk that descends it.
+
+    Three things, and they are three because three separate derivations
+    answer them: the slot env the arm binds (`SmtContext._bind_pattern`),
+    the fact that this arm was taken (`_pattern_condition`), and the facts
+    the arm's pattern ESTABLISHES (`_subpattern_source_facts`).  Carrying
+    them as one value is what stops a reader taking two of the three, which
+    is the #1403 shape: the walk that discharges every body `assert` bound
+    the pattern and pushed the discriminant and never asked for the facts.
+
+    Built only by :py:meth:`ContractVerifier._enter_match_arm`.
+    """
+
+    env: SlotEnv
+    condition: object | None
+    facts: tuple[object, ...]
+
+    def assuming(self, base: Sequence[object]) -> list[object]:
+        """*base* plus what this arm establishes."""
+        return [*base, *self.facts]
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -442,12 +467,13 @@ def disclosed_fn_names(
     """
     return frozenset(
         disclosed_key(o.fn_name, o.owner)
-        for o in obligations if is_disclosing(o)
+        for o in obligations if fact_not_established(o)
     )
 
 
-def is_disclosing(obligation: "ProofObligation") -> bool:
-    """Whether one obligation puts its function in the disclosed set.
+def fact_not_established(obligation: "ProofObligation") -> bool:
+    """Whether one obligation leaves its function's declared-type fact
+    UNESTABLISHED, so a caller may not assume it.
 
     Factored out of :func:`disclosed_fn_names` so a consumer that needs the
     obligation ITSELF — the per-module manifest, which cites the culprit's
@@ -458,7 +484,81 @@ def is_disclosing(obligation: "ProofObligation") -> bool:
     return (
         obligation.status == "tier3_unguarded"
         or (obligation.status == "tier3" and obligation.error_code == "E534")
+        # ... and REFUTED, which the first version of this predicate missed
+        # (#1415 review, G2).  A fact whose establishing obligation the run
+        # proved FALSE is not merely unproved — a caller reading it proves
+        # from a premise the same run disproved, which is how a `div_zero`
+        # came to read `verified` beside its producer's `refine_bind`
+        # /`violated`/E505.  "Could not establish" and "established the
+        # opposite" are different messages but the same decision here.
+        or obligation.status == "violated"
+        # ... and TIMED OUT (#1415 review, H2).  A budget that ran out is not
+        # a fact either: the run reached no verdict, so a caller reading it
+        # proves from something nobody decided.  The three cases differ in
+        # what the reader should do — raise the budget, fix the producer, or
+        # plant a guard — which is why `unestablished_reason` keeps them
+        # apart while this predicate treats them alike.
+        or obligation.status == "timeout"
     )
+
+
+def unestablished_reason(obligation: "ProofObligation") -> str | None:
+    """WHY an obligation left its fact unestablished, or ``None`` if it did
+    not (#1415 review, H1/H2).
+
+    The demotion's wording turns on this: "could neither prove nor guard" is
+    untrue of a refutation, where the run decided and decided against, and
+    equally untrue of a timeout, where the budget ran out before it decided
+    anything.  One classifier so the local and the imported paths cannot
+    describe the same status differently.
+    """
+    if obligation.status == "violated":
+        return "refuted"
+    if obligation.status == "timeout":
+        return "undecided"
+    if obligation.status == "tier3_unguarded" or (
+        obligation.status == "tier3" and obligation.error_code == "E534"
+    ):
+        return "disclosed"
+    return None
+
+
+#: Wording for each reason, shared by the local and imported paths.
+UNESTABLISHED_PHRASE: dict[str, str] = {
+    "disclosed": "a fact this run could neither prove nor guard",
+    "refuted": "a fact this run proved FALSE",
+    "undecided": "a fact this run could not decide within the budget",
+}
+
+
+def unestablished_reasons(
+    obligations: "list[ProofObligation]",
+) -> dict[str, str]:
+    """Each function's reason, for the message that cites it.
+
+    A function with several unestablished obligations takes the most decided
+    one — a refutation says more than a timeout, which says more than a
+    disclosure — so a caller is told the strongest thing the run knows rather
+    than whichever obligation happened to come first.
+
+    Keyed by :func:`disclosed_key`, the same spelling
+    :func:`disclosed_fn_names` uses, because the two are read TOGETHER: the
+    set answers "is this producer disclosed" and this map answers "and why",
+    and a key spelled two ways makes the second question miss for exactly
+    the names the first one found — a ``where`` helper, whose bare name means
+    a different function under every owner (#1418 review F3).
+    """
+    rank = {"refuted": 3, "undecided": 2, "disclosed": 1}
+    out: dict[str, str] = {}
+    for o in obligations:
+        reason = unestablished_reason(o)
+        if reason is None:
+            continue
+        key = disclosed_key(o.fn_name, o.owner)
+        prev = out.get(key)
+        if prev is None or rank[reason] > rank[prev]:
+            out[key] = reason
+    return out
 
 
 def summarize(
@@ -650,6 +750,11 @@ class ContractVerifier:
         self._construction_obligated: set[
             tuple[int, tuple[int, int, int, int] | None, str]
         ] = set()
+        # #1415 G2/H2: of those, WHY each one's fact is unestablished —
+        # disclosed, refuted, or undecided — because the demotion's wording
+        # turns on it and only one of the three is "could neither prove nor
+        # guard".
+        self._unestablished: dict[str, str] = {}
         # #1399: the same question for an IMPORTED callee, whose obligations
         # never enter this run's stream and so can never appear in the set
         # above.  Answered from each module's own verification through
@@ -695,6 +800,9 @@ class ContractVerifier:
         # the function's own name (a top-level one is) — `_scope_owner` alone
         # cannot say, being the function's own name in the top-level case.
         self._scope_is_helper: bool = False
+        # ... and the REASONS the facts withheld from THIS function were
+        # unestablished.  Same lifetime as the sites.
+        self._tainted_reasons: set[str] = set()
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -3212,6 +3320,7 @@ class ContractVerifier:
             if disclosed <= seen:
                 return
             self._disclosed_fns = seen = disclosed
+            self._unestablished = unestablished_reasons(self.obligations)
             # Both buffers are rebuilt, matching the per-instance idiom in
             # `_verify_generic_instances`: a status and its diagnostic are
             # properties of the proof that produced them, and the previous
@@ -3732,6 +3841,7 @@ class ContractVerifier:
         # Cleared with it: a citation belongs to the function whose facts were
         # withheld, and one left standing would name another function's callee.
         self._tainted_sites = []
+        self._tainted_reasons = set()
         # #1208: THIS function's naming scope — its declaring module's env
         # narrowed by the `forall` variables in scope over it.  Both the slot
         # names declared below and the SMT context that resolves references to
@@ -4146,13 +4256,8 @@ class ContractVerifier:
                         decl.name, "ensures", contract, "tier3",
                         error_code="E534",
                     )
-                    self._warning(
-                        contract,
-                        self._disclosed_demotion_text(decl),
-                        rationale=self._disclosed_demotion_rationale(),
-                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
-                        error_code="E534",
-                        tier=3,
+                    self._report_disclosed_demotion(
+                        contract, f"Postcondition in '{decl.name}'",
                     )
                 else:  # pragma: no cover
                     # unknown / timeout
@@ -4698,6 +4803,103 @@ class ContractVerifier:
             return env.push(type_name, val)
         return env
 
+    def _enter_match_arm(
+        self,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object | None,
+        pattern: ast.Pattern,
+        smt: SmtContext,
+        env: SlotEnv,
+    ) -> ArmContext:
+        """THE derivation of what one `match` arm means to a walk that
+        descends it — the `match` twin of :py:meth:`_apply_let_binding`.
+
+        Four walks descend an arm: the construction descent, the
+        recursive-call walk behind `decreases`, the primitive-operation walk
+        that discharges every §6.4.3 safety obligation and every body
+        `assert`, and the `@Nat`/refinement narrowing walk.  Each assembled
+        the arm's context inline out of the same three single derivations —
+        `_bind_pattern`, `_pattern_condition` and
+        :py:meth:`_subpattern_source_facts` — and the four copies disagreed
+        about all three.  One asked for the arm's established facts and three
+        did not, which is #1403: an `assert`, a `/` and an `arr[i]` in an arm
+        were discharged without the facts the arm establishes, while a call
+        precondition in the same arm had them.  Composing the three here is
+        what makes "one arm establishes one set of facts" a property of the
+        code rather than a claim about it.
+
+        An untranslatable scrutinee has ONE answer — every binder the pattern
+        declares is shadowed by a TRACKED fresh const of its sort — because
+        the two other behaviours the inline copies carried were both measured
+        defects, and both ship in v0.1.13:
+
+        * Keeping the OUTER env, as the call walk did, resolves `@Nat.0`
+          inside `Some(@Nat) ->` to the enclosing PARAMETER.  A recursive
+          call's argument then translates against a value the arm never
+          binds, and `decreases(@Nat.0)` was reported **verified** for a
+          function whose runtime measure guard traps on its first call.
+        * Leaving the shadow UNTRACKED, as the narrowing walk did, hides it
+          from :py:meth:`_contains_opaque_shadow`, so the gate that filters
+          refutations never engages and Z3's countermodel for an
+          unconstrained const is taken as real: a correct program was refused
+          **E505** where `vera run` returns cleanly.
+
+        They are wrong for one reason — a value the SMT layer cannot read is
+        neither the outer binding nor a counterexample — so neither survives
+        as an option a caller could pick.
+
+        The facts are derived for every caller rather than on request.  A
+        reader that discharges an obligation inside the arm needs them by
+        definition, and the disclosure rule rides along: where the producer's
+        own obligation left the fact unestablished,
+        :py:meth:`_subpattern_source_facts` routes it to `_tainted_facts` and
+        returns none, so `check_valid` withholds it and the site falls to its
+        runtime guard.
+        """
+        if scrutinee_z3 is None:
+            return ArmContext(
+                self._fresh_pattern_env(pattern, env, smt, track=True),
+                None, (),
+            )
+        arm_env = env
+        bound = smt._bind_pattern(scrutinee_z3, pattern, env)
+        if bound is not None:
+            arm_env = bound
+        facts: tuple[object, ...] = ()
+        if isinstance(pattern, ast.ConstructorPattern):
+            facts = tuple(self._subpattern_source_facts(
+                scrutinee, scrutinee_z3, pattern, smt))
+        return ArmContext(
+            arm_env, smt._pattern_condition(scrutinee_z3, pattern), facts)
+
+    @contextlib.contextmanager
+    def _under_arm(self, smt: SmtContext, arm: ArmContext) -> Iterator[None]:
+        """Hold *arm*'s discriminant on `smt._path_conditions` for a body walk.
+
+        The push and the matching pop live here because an unbalanced pop
+        leaks one arm's discriminant into the next, and two walks wrote the
+        same `try`/`finally` around it while a third kept its own copy in
+        :py:meth:`_descend_construction_arm` and the fourth spent the
+        condition as a list entry instead.  An irrefutable pattern has no
+        discriminant and the block is then a no-op.
+
+        The discriminant is a premise like any other, so dropping it can only
+        make a proof harder — the direction that shows up as a false refusal
+        rather than a false proof.  Measured: with it gone, an assertion that
+        re-matches the scrutinee inside a `Some(_)` arm falls to `tier3`/E535
+        and a division whose divisor does the same is refused E526, because
+        the solver is free to answer `None` in an arm the pattern already
+        settled.
+        """
+        pushed = arm.condition is not None
+        if pushed:
+            smt._path_conditions.append(arm.condition)
+        try:
+            yield
+        finally:
+            if pushed:
+                smt._path_conditions.pop()
+
     def _shadow_destructured_slots(
         self, stmt: ast.LetDestruct, smt: SmtContext, env: SlotEnv,
     ) -> SlotEnv:
@@ -4867,39 +5069,30 @@ class ContractVerifier:
                 )
             return
         if isinstance(expr, ast.MatchExpr):
-            # The `match` twin reaches the same place by a different route:
-            # the arm's fact is `_pattern_condition` against the translated
-            # scrutinee, and the arm's ENV is `_bind_pattern`.  The env half
-            # is the unsound direction — `@Int.0` inside `Some(@Int) ->` is
-            # the payload, and descending with the OUTER env let an
-            # enclosing `requires(@Int.0 > 0)` discharge it, so the store
-            # recorded `verified` for a predicate `Some(0 - 5)` refutes at
-            # run time.  That is the #680 misattribution class one container
-            # level in, and a wrong `verified` is worse than the silence it
-            # replaced.
+            # The `match` twin reaches the same place by a different route,
+            # through the one arm-context derivation
+            # (:py:meth:`_enter_match_arm`).  The env half is the unsound
+            # direction — `@Int.0` inside `Some(@Int) ->` is the payload, and
+            # descending with the OUTER env let an enclosing
+            # `requires(@Int.0 > 0)` discharge it, so the store recorded
+            # `verified` for a predicate `Some(0 - 5)` refutes at run time.
+            # That is the #680 misattribution class one container level in,
+            # and a wrong `verified` is worse than the silence it replaced.
+            #
+            # #1403: the arm's ESTABLISHED FACTS reach this descent too. A
+            # refined store whose value is a bound payload — `Some(@Pos) ->
+            # Some(@Pos.0)` at an `Option<Pos>` return — is discharged from
+            # the payload's own declared type, where before it fell to a
+            # Tier-3 it had everything needed to decide.
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for match_arm in expr.arms:
-                arm_env = slot_env
-                pat_cond = None
-                if scrutinee_z3 is not None:
-                    bound = smt._bind_pattern(
-                        scrutinee_z3, match_arm.pattern, slot_env,
-                    )
-                    if bound is not None:
-                        arm_env = bound
-                    pat_cond = smt._pattern_condition(
-                        scrutinee_z3, match_arm.pattern,
-                    )
-                else:
-                    # Untranslatable scrutinee: the arm still BINDS its
-                    # pattern slots, so shadow them as tracked opaque consts
-                    # rather than let `@Int.0` read a stale same-name outer.
-                    arm_env = self._fresh_pattern_env(
-                        match_arm.pattern, slot_env, smt, track=True,
-                    )
+                arm = self._enter_match_arm(
+                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                    smt, slot_env,
+                )
                 self._descend_construction_arm(
-                    decl, match_arm.body, expected, smt, arm_env,
-                    assumptions, pat_cond, site=site,
+                    decl, match_arm.body, expected, smt, arm.env,
+                    arm.assuming(assumptions), arm.condition, site=site,
                 )
             return
         if isinstance(expr, ast.Block) and expr.expr is not None:
@@ -5309,20 +5502,23 @@ class ContractVerifier:
             self._walk_for_calls(group_names, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for arm in expr.arms:
-                arm_env = slot_env
-                arm_conds = z3_path_conds
-                if scrutinee_z3 is not None:
-                    bound = smt._bind_pattern(scrutinee_z3, arm.pattern,
-                                              slot_env)
-                    if bound is not None:
-                        arm_env = bound
-                    pat_cond = smt._pattern_condition(scrutinee_z3,
-                                                      arm.pattern)
-                    if pat_cond is not None:
-                        arm_conds = z3_path_conds + [pat_cond]
-                self._walk_for_calls(group_names, arm.body, arm_conds,
-                                     results, smt, arm_env)
+            for match_arm in expr.arms:
+                # #1403: through the one arm-context derivation, which is
+                # what stopped this walk reading an arm against the
+                # enclosing env.  It spends the discriminant and the arm's
+                # facts as PREMISES of the measure goal rather than on
+                # `_path_conditions`, because `_verify_decreases` folds its
+                # own premise set into the query.
+                arm = self._enter_match_arm(
+                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                    smt, slot_env,
+                )
+                arm_conds = list(z3_path_conds)
+                if arm.condition is not None:
+                    arm_conds.append(arm.condition)
+                arm_conds.extend(arm.facts)
+                self._walk_for_calls(group_names, match_arm.body, arm_conds,
+                                     results, smt, arm.env)
             return
 
         # PR #1179 review F1: these value-carrying nodes were silently
@@ -5800,39 +5996,36 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for arm in expr.arms:
-                arm_env = slot_env
-                pat_cond = None
-                if scrutinee_z3 is not None:
-                    bound = smt._bind_pattern(
-                        scrutinee_z3, arm.pattern, slot_env,
-                    )
-                    if bound is not None:
-                        arm_env = bound
-                    pat_cond = smt._pattern_condition(
-                        scrutinee_z3, arm.pattern,
-                    )
-                else:
-                    # Untranslatable scrutinee (e.g. an effect op): the arm
-                    # still binds pattern slots, so shadow them as TRACKED
-                    # opaque consts.  Else `@Int.0` reads a stale same-name
-                    # outer — `requires(@Int.0 != 0)` would silently discharge
-                    # `1 / @Int.0` on the matched field, which can be 0 (#680
-                    # review, outside-diff; mirrors the nat-binding walker).
-                    arm_env = self._fresh_pattern_env(
-                        arm.pattern, slot_env, smt, track=True,
-                    )
-                if pat_cond is not None:
-                    smt._path_conditions.append(pat_cond)
-                    try:
-                        self._walk_for_primitive_op_obligations(
-                            decl, arm.body, smt, arm_env, assumptions,
-                        )
-                    finally:
-                        smt._path_conditions.pop()
-                else:
+            for match_arm in expr.arms:
+                # #1403: through the one arm-context derivation, which is
+                # what gives this walk the facts the arm establishes.  It is
+                # the walk that discharges every §6.4.3 safety obligation AND
+                # every body `assert`, and it was the one consumer that asked
+                # for the env and the discriminant but not the facts — so an
+                # `assert` that follows from a bound payload's declared type
+                # could never prove, and `Some(@PosInt) -> 100 / @PosInt.0`
+                # was refused E526 although the payload's own type says the
+                # divisor is positive.
+                #
+                # The reach is EVERY obligation this walk discharges, not the
+                # assert alone, and deliberately so: one arm establishes one
+                # set of facts, and a `/`, an `arr[i]` and an `assert` in it
+                # are all discharged from the same context (#1415 review, F1).
+                # The disclosure rule then reaches all of them for free:
+                # where the producer's own obligation left the fact
+                # unestablished, `_subpattern_source_facts` routes it to
+                # `smt._tainted_facts` and returns none, so `check_valid`
+                # withholds it and the site falls to its runtime guard.
+                # `_record_undecided_safety` is what makes that fall SAY so,
+                # rather than recording a silent `tier3`.
+                arm = self._enter_match_arm(
+                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
+                    smt, slot_env,
+                )
+                with self._under_arm(smt, arm):
                     self._walk_for_primitive_op_obligations(
-                        decl, arm.body, smt, arm_env, assumptions,
+                        decl, match_arm.body, smt, arm.env,
+                        arm.assuming(assumptions),
                     )
             return
 
@@ -7328,39 +7521,29 @@ class ContractVerifier:
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for arm in expr.arms:
-                arm_env = slot_env
-                pat_cond = None
-                if scrutinee_z3 is not None:
-                    bound = smt._bind_pattern(
-                        scrutinee_z3, arm.pattern, slot_env,
-                    )
-                    if bound is not None:
-                        arm_env = bound
-                    pat_cond = smt._pattern_condition(
-                        scrutinee_z3, arm.pattern,
-                    )
-                else:
-                    # Scrutinee untranslatable: bind the arm's pattern slots to
-                    # fresh vars so an obligation in the arm reads the new
-                    # binding, not a stale outer slot of the same name shadowed
-                    # by the pattern (CR #756; mirrors the LetDestruct guard).
-                    arm_env = self._fresh_pattern_env(
-                        arm.pattern, slot_env, smt,
-                    )
-                # Prove the arm's @Nat narrowing obligations AND walk its
-                # body under the arm's discriminant condition `pat_cond`
-                # (`is-<Ctor>(scrutinee)`).  A sub-pattern field accessor is
-                # only read when the arm is taken, so discharging it must
-                # assume the constructor matched — otherwise Z3 may witness a
-                # negative payload in a branch that never reads it, a false
-                # E503 (CR #756).  A `BindingPattern` is irrefutable, so its
-                # pat_cond is None and the push is a no-op.
-                arm_cond_pushed = pat_cond is not None
-                if arm_cond_pushed:
-                    smt._path_conditions.append(pat_cond)
-                try:
+                # #1403: through the one arm-context derivation.  Its
+                # untranslatable case is what fixes this walk's own defect —
+                # it minted the fresh binders UNTRACKED, so
+                # `_contains_opaque_shadow` could not see them, the gate that
+                # filters refutations never engaged, and a correct program was
+                # refused E505 on a placeholder Z3 was free to pick a
+                # violating value for.
+                #
+                # Prove the arm's @Nat narrowing obligations AND walk its body
+                # under the arm's discriminant condition.  A sub-pattern field
+                # accessor is only read when the arm is taken, so discharging
+                # it must assume the constructor matched — otherwise Z3 may
+                # witness a negative payload in a branch that never reads it,
+                # a false E503 (CR #756).  An irrefutable pattern has no
+                # discriminant and `_under_arm` is then a no-op.
+                arm_ctx = self._enter_match_arm(
+                    expr.scrutinee, scrutinee_z3, arm.pattern,
+                    smt, slot_env,
+                )
+                arm_env = arm_ctx.env
+                with self._under_arm(smt, arm_ctx):
                     # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
-                    arm_assumptions = assumptions
+                    arm_assumptions = list(assumptions)
                     if isinstance(arm.pattern, ast.BindingPattern):
                         pat_ty = self._resolve_type(arm.pattern.type_expr)
                         # Refined-first (R9): a refinement-over-@Nat bind
@@ -7390,17 +7573,23 @@ class ContractVerifier:
                     elif isinstance(arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
                         # non-@Nat ADT field — the @Int payload of
-                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.  The
-                        # returned facts (each bound field's source-type
-                        # guarantee) are assumed for THIS arm's body only, so a
-                        # downstream narrowing depending on a binding's
-                        # invariant discharges instead of a false E503 (CR).
-                        arm_assumptions = assumptions + (
-                            self._obligate_subpattern_narrowings(
-                                decl, expr.scrutinee, scrutinee_z3,
-                                arm.pattern, smt, slot_env, assumptions,
-                            )
+                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
+                        #
+                        # This OBLIGATES; the facts each bound field carries
+                        # from its source type come from `arm_ctx`, which is
+                        # where every consumer now gets them.  They used to be
+                        # returned from here as well, so the same derivation
+                        # ran twice for this one walk and once for everybody
+                        # else — which is how three readers came to disagree
+                        # about what an arm establishes (#1403).
+                        self._obligate_subpattern_narrowings(
+                            decl, expr.scrutinee, scrutinee_z3,
+                            arm.pattern, smt, slot_env, assumptions,
                         )
+                    # A downstream narrowing that depends on a binding's own
+                    # invariant discharges from the arm's facts instead of
+                    # reporting a false E503 (CR).
+                    arm_assumptions = arm_ctx.assuming(arm_assumptions)
                     # #820: obligate a @Nat arm body widening into the @Int join
                     # (under this arm's discriminant condition), mirroring
                     # codegen's per-arm guard in `_translate_match`.
@@ -7412,9 +7601,6 @@ class ContractVerifier:
                     self._walk_for_nat_binding_obligations(
                         decl, arm.body, smt, arm_env, arm_assumptions,
                     )
-                finally:
-                    if arm_cond_pushed:
-                        smt._path_conditions.pop()
             return
 
         # Expression containers that hold arbitrary sub-expressions: a
@@ -7682,10 +7868,10 @@ class ContractVerifier:
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
-            self._record_obligation(
-                decl.name, "nat_sub", expr,
-                "tier3" if result.status in ("opaque", "disclosed")
-                else "timeout",
+            self._record_undecided_safety(
+                decl, "nat_sub", expr, result,
+                subject=f"Subtraction in '{decl.name}'",
+                otherwise="tier3" if result.status == "opaque" else "timeout",
             )
 
     def _check_div_zero_obligation(
@@ -7765,10 +7951,10 @@ class ContractVerifier:
         else:
             # Solver timeout — or #1199's "opaque" (the goal mentions an
             # effect-op stand-in), which is plain Tier-3, not a timeout.
-            self._record_obligation(
-                decl.name, "div_zero", expr,
-                "tier3" if result.status in ("opaque", "disclosed")
-                else "timeout",
+            self._record_undecided_safety(
+                decl, "div_zero", expr, result,
+                subject=f"Division in '{decl.name}'",
+                otherwise="tier3" if result.status == "opaque" else "timeout",
             )
 
     def _check_assert_obligation(
@@ -7909,7 +8095,11 @@ class ContractVerifier:
             self._report_index_oob(decl, expr, result.counterexample)
         else:
             # Opaque / dynamic length — beyond Tier 1 (#427); runtime-guarded.
-            self._record_obligation(decl.name, "index_bounds", expr, "tier3")
+            self._record_undecided_safety(
+                decl, "index_bounds", expr, result,
+                subject=f"Index bound in '{decl.name}'",
+                otherwise="tier3",
+            )
 
     def _overflow_int_type(self, expr: ast.Expr) -> str | None:
         """Return ``"Int"`` / ``"Nat"`` if *expr* resolves to a wrapping machine
@@ -8043,7 +8233,11 @@ class ContractVerifier:
             self._report_overflow(decl, expr, safe.counterexample)
         else:
             # Dynamic operands — beyond Tier 1; the codegen overflow trap guards.
-            self._record_obligation(decl.name, "int_overflow", expr, "tier3")
+            self._record_undecided_safety(
+                decl, "int_overflow", expr, safe,
+                subject=f"Arithmetic in '{decl.name}'",
+                otherwise="tier3",
+            )
 
     def _check_float_to_int_domain_obligation(
         self,
@@ -10211,6 +10405,9 @@ class ContractVerifier:
             return False
         name = scrutinee.name
         if name in self._disclosed_fns:
+            reason = self._unestablished.get(name)
+            if reason is not None:
+                self._tainted_reasons.add(reason)
             return True
         # F3: a `where` helper's forwarding is keyed under its owner, so the
         # bare-name test above cannot see it; this asks the scoped question,
@@ -10263,10 +10460,94 @@ class ContractVerifier:
         if site is None:
             return False
         self._tainted_sites.append(site)
+        # H1: the importer discards the library's obligations, so the reason
+        # has to travel with the name or the citation can only guess.
+        self._tainted_reasons.add(site.reason)
         return True
 
-    def _disclosed_demotion_text(self, decl: ast.FnDecl) -> str:
+    def _report_disclosed_demotion(
+        self,
+        node: ast.Node,
+        subject: str,
+        *,
+        closing: str = "Contract will be checked at runtime.",
+    ) -> None:
+        """The ONE emitter of E534 (#1399, #1403 review F1).
+
+        Both callers say the same thing about the same phenomenon — an
+        obligation that holds only from a fact some run disclosed — and they
+        differ only in what they name and which trap backs them.  Kept as one
+        function rather than two `self._warning` calls sharing a code so the
+        wording, the rationale and the citation cannot drift apart, and so the
+        code stays a single site for `check_diagnostic_fields`.
+
+        ONE citation, literal at the call below, for both callers: E534 names
+        one concept — an obligation that fell to Tier 3 because a fact it
+        needed was disclosed — and §6.8 is where that tier is accounted for.
+        A per-caller citation would have to be passed in, and a non-literal
+        `spec_ref` is one the gate cannot validate against the spec at all.
+        """
+        self._warning(
+            node,
+            self._disclosed_demotion_text(subject, closing=closing),
+            rationale=self._disclosed_demotion_rationale(),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E534",
+            tier=3,
+        )
+
+    def _record_undecided_safety(
+        self,
+        decl: ast.FnDecl,
+        kind: ObligationKind,
+        node: ast.Expr,
+        result: SmtResult,
+        *,
+        subject: str,
+        otherwise: ObligationStatus,
+    ) -> None:
+        """Record a §6.4.3 safety obligation that no verdict settled (#1403).
+
+        ``disclosed`` is not the same non-verdict as ``opaque`` or a timeout.
+        It means the goal WOULD have proved, from a fact the producing
+        module's own run could neither prove nor guard — so the site falls to
+        its codegen trap for a REASON the reader can act on, and one recorded
+        with no code and no warning tells them nothing.  That was the shape of
+        the regression this closes: `100 / @PosInt.0` in an arm whose producer
+        was disclosed went from a refused ``E526`` to ``ok: true`` carrying a
+        silent ``div_zero``/``tier3`` (review of PR #1415, F1).  It also broke
+        the ``verify --json`` partition table's own contract, which says a
+        ``tier3`` is surfaced as an informational warning.
+
+        *otherwise* is the status this site recorded before — passed in rather
+        than re-derived, because the sites disagree (a `div_zero` maps a
+        solver ``unknown`` to ``timeout``, an `index_bounds` to ``tier3``) and
+        this helper must not quietly harmonise them.
+        """
+        if result.status == "disclosed":
+            self._record_obligation(
+                decl.name, kind, node, "tier3", error_code="E534",
+            )
+            self._report_disclosed_demotion(
+                node, subject,
+                closing="The operation's own runtime trap (§6.4.3) is what "
+                        "guards it.",
+            )
+            return
+        self._record_obligation(decl.name, kind, node, otherwise)
+
+    def _disclosed_demotion_text(
+        self, subject: str, closing: str = "Contract will be checked at "
+        "runtime.",
+    ) -> str:
         """The E534 description, naming the culprit when it is an import.
+
+        *subject* names the obligation this demoted — "Postcondition in
+        'f'", "Division in 'f'" — because the rule is about the ARM's
+        obligations, not only its contracts (#1403 review, F1): every
+        obligation discharged inside a match arm reads the arm's facts,
+        so every one of them can be demoted by a disclosure and every one
+        must say so.
 
         In one file the reader already has the culprit: the ``E504`` that
         disclosed the fact is in the same output, a few lines away.  Across an
@@ -10276,11 +10557,7 @@ class ContractVerifier:
         told only that something, somewhere, was not established.
         """
         if not self._tainted_sites:
-            return (
-                f"Postcondition in '{decl.name}' holds only from a fact this "
-                f"run could neither prove nor guard. Contract will be checked "
-                f"at runtime."
-            )
+            return f"{subject} holds only from {self._withheld_phrase()}. {closing}"
         cited = list(dict.fromkeys(
             site.cite() for site in self._tainted_sites
         ))
@@ -10293,10 +10570,45 @@ class ContractVerifier:
             "that module's" if len(modules) == 1 else "those modules'"
         )
         return (
-            f"Postcondition in '{decl.name}' holds only from {fact} of "
-            f"{', '.join(cited)}, which {owner} own verification could "
-            f"neither prove nor guard. Contract will be checked at runtime."
+            f"{subject} holds only from {fact} of {', '.join(cited)}, "
+            f"which {owner} own verification {self._withheld_verb()}. "
+            f"{closing}"
         )
+
+    def _withheld_verb(self) -> str:
+        """What the DEFINING run did, for a citation that names the module.
+
+        The clause after "which that module's own verification …" has to agree
+        with the reason the same way the un-cited sentence does; hardcoding
+        "could neither prove nor guard" made the importer's message claim
+        something untrue of a library whose obligation was refuted (#1415
+        review, H1) — my own cell caught it after the reason was already
+        travelling correctly.
+        """
+        reasons = self._tainted_reasons
+        if len(reasons) == 1:
+            return {
+                "refuted": "proved FALSE",
+                "undecided": "could not decide within the budget",
+            }.get(next(iter(reasons)), "could neither prove nor guard")
+        if not reasons:
+            return "could neither prove nor guard"
+        return "did not establish"
+
+    def _withheld_phrase(self) -> str:
+        """How to describe the facts withheld from the function in hand.
+
+        One reason gets its own words; a mix gets the neutral statement that
+        covers all three, because "proved FALSE" and "could not decide" are
+        contradictory claims and a sentence asserting both would be wrong
+        whichever way the reader took it.
+        """
+        reasons = self._tainted_reasons
+        if len(reasons) == 1:
+            return UNESTABLISHED_PHRASE[next(iter(reasons))]
+        if not reasons:
+            return UNESTABLISHED_PHRASE["disclosed"]
+        return "facts this run did not establish"
 
     def _disclosed_demotion_rationale(self) -> str:
         """... and the rationale, which must be true of the run that emits it.
@@ -10510,21 +10822,18 @@ class ContractVerifier:
         smt: SmtContext,
         slot_env: SlotEnv,
         assumptions: list[object],
-    ) -> list[object]:
+    ) -> None:
         """#747: obligate each @Nat sub-pattern binding that narrows a
         non-@Nat ADT field — ``match opt { Some(@Nat.0) -> }`` on
         ``Option<Int>``.
 
-        Returns a list of arm-local Z3 facts (CR PR-review): each bound field
-        carries its DECLARED type's guarantee — a refined field's predicate, a
-        bare ``@Nat``'s ``>= 0`` — so the caller can assume them while walking
-        the arm body.  Without this a downstream narrowing that depends on a
-        binding's invariant fails with a false ``E503`` (e.g.
-        ``Some(@PosInt) -> takes_nat(@PosInt.0)`` on ``Option<PosInt>`` — the
-        payload is ``> 0`` hence ``>= 0``, but the arm body never saw the fact).
-        The fact is the field's SOURCE type via ``_term_source_fact`` (sound by
-        its producer-discharge argument), NOT the sub-pattern's narrowed type —
-        so a genuine narrowing stays *obligated* below, never silently assumed.
+        Obligates only.  The facts each bound field carries from its DECLARED
+        type are :py:meth:`_subpattern_source_facts`, read by every consumer
+        through :py:meth:`_enter_match_arm`; this used to return them as well,
+        so the derivation ran here for one walk and there for the others, and
+        the readers drifted (#1403).  A genuine narrowing stays *obligated*
+        below and is never among those facts, because they are made of the
+        field's SOURCE type.
 
         The field's Z3 term is an uninterpreted accessor, so only a
         *genuine* narrowing (the source field is not already @Nat) is
@@ -10543,11 +10852,7 @@ class ContractVerifier:
         field_types = self._instantiated_field_types(
             pattern.name, self._resolved_type_of(scrutinee))
         if field_types is None:
-            return []
-        # The arm-local source-type facts (shared with `_walk_for_calls`, which
-        # seeds them into call-precondition assumptions — CR PR-review).
-        facts = self._subpattern_source_facts(
-            scrutinee, scrutinee_z3, pattern, smt)
+            return
         # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
         # binds the constructor's own arguments — translatable AST nodes,
         # obligated directly.  An opaque scrutinee binds uninterpreted
@@ -10671,7 +10976,6 @@ class ContractVerifier:
                     self._record_int_widen_tier3(
                         decl, scrutinee, "ADT sub-pattern bind", "tier3",
                         guarded=True)
-        return facts
 
     def _record_nested_subpattern_fallbacks(
         self,
