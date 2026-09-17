@@ -2078,3 +2078,79 @@ def test_1403_an_obligation_knows_which_arm_it_is_in(
         (o["status"], o.get("error_code")) for o in result["obligations"]
         if o["kind"] == kind
     ] == [("verified", None)], _triples(result)
+
+
+# ---------------------------------------------------------------------------
+# ... and the structural half: one assembly point, checked against the source
+# ---------------------------------------------------------------------------
+
+def test_1403_the_arm_context_has_one_assembly_point() -> None:
+    """The three derivations are composed in ONE place, held by the AST.
+
+    The grids above measure what the arm's context MEANS; this measures
+    where it is BUILT, which is the part a green suite cannot see.  A fifth
+    walk that assembles its own context out of `_bind_pattern`,
+    `_pattern_condition` and `_subpattern_source_facts` would pass every
+    cell above — it would simply be wrong in some way none of them reaches,
+    which is how the four copies this PR removes came to exist, one review
+    finding at a time.
+
+    So: in `vera/verifier.py`, every call to any of those three, and to
+    `_fresh_pattern_env`, sits inside `_enter_match_arm`.  Read from the
+    AST rather than by grep, so a mention in a comment or a docstring is
+    not a call and cannot make this pass or fail by accident.
+
+    `_fresh_pattern_env`'s own recursion into sub-patterns is exempt by
+    name — it is the derivation, not a second assembly of it.  The SMT
+    layer's `_translate_match` composes the same three for a different job,
+    building the arm's If-chain VALUE, and is deliberately outside this
+    scan: it consumes each derivation once, so there is no second
+    derivation there either, but it is not a walk that discharges
+    obligations and the seam does not fit its shape.
+    """
+    import ast as py_ast
+    from pathlib import Path
+
+    import vera
+
+    src = Path(vera.__file__).resolve().parent / "verifier.py"
+    tree = py_ast.parse(src.read_text(encoding="utf-8"))
+
+    watched = {
+        "_bind_pattern", "_pattern_condition", "_subpattern_source_facts",
+        "_fresh_pattern_env",
+    }
+    exempt_owners = {"_enter_match_arm", "_fresh_pattern_env"}
+
+    stray: list[tuple[str, str, int]] = []
+    for fn in py_ast.walk(tree):
+        if not isinstance(fn, (py_ast.FunctionDef, py_ast.AsyncFunctionDef)):
+            continue
+        if fn.name in exempt_owners:
+            continue
+        for node in py_ast.walk(fn):
+            if (isinstance(node, py_ast.Call)
+                    and isinstance(node.func, py_ast.Attribute)
+                    and node.func.attr in watched):
+                stray.append((fn.name, node.func.attr, node.lineno))
+
+    assert stray == [], (
+        "a second assembly of the arm's context has appeared — route it "
+        "through `_enter_match_arm` instead:\n"
+        + "\n".join(f"  {owner} calls {attr} at verifier.py:{line}"
+                    for owner, attr, line in stray)
+    )
+
+    # ... and the seam really does call all four, so the scan above is not
+    # green because the names have been renamed out from under it.
+    seam = next(
+        fn for fn in py_ast.walk(tree)
+        if isinstance(fn, py_ast.FunctionDef)
+        and fn.name == "_enter_match_arm"
+    )
+    called = {
+        node.func.attr for node in py_ast.walk(seam)
+        if isinstance(node, py_ast.Call)
+        and isinstance(node.func, py_ast.Attribute)
+    }
+    assert watched <= called, f"the seam stopped composing: {watched - called}"

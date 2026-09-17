@@ -7520,7 +7520,7 @@ class ContractVerifier:
                 decl, expr.scrutinee, smt, slot_env, assumptions,
             )
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
-            for arm in expr.arms:
+            for match_arm in expr.arms:
                 # #1403: through the one arm-context derivation.  Its
                 # untranslatable case is what fixes this walk's own defect —
                 # it minted the fresh binders UNTRACKED, so
@@ -7536,16 +7536,16 @@ class ContractVerifier:
                 # witness a negative payload in a branch that never reads it,
                 # a false E503 (CR #756).  An irrefutable pattern has no
                 # discriminant and `_under_arm` is then a no-op.
-                arm_ctx = self._enter_match_arm(
-                    expr.scrutinee, scrutinee_z3, arm.pattern,
+                arm = self._enter_match_arm(
+                    expr.scrutinee, scrutinee_z3, match_arm.pattern,
                     smt, slot_env,
                 )
-                arm_env = arm_ctx.env
-                with self._under_arm(smt, arm_ctx):
+                arm_env = arm.env
+                with self._under_arm(smt, arm):
                     # Site 4: top-level `match <value> { @Nat / @Refined -> }`.
                     arm_assumptions = list(assumptions)
-                    if isinstance(arm.pattern, ast.BindingPattern):
-                        pat_ty = self._resolve_type(arm.pattern.type_expr)
+                    if isinstance(match_arm.pattern, ast.BindingPattern):
+                        pat_ty = self._resolve_type(match_arm.pattern.type_expr)
                         # Refined-first (R9): a refinement-over-@Nat bind
                         # discharges its full predicate, not only `>= 0`.
                         if (self._is_refined_type(pat_ty)
@@ -7570,7 +7570,7 @@ class ContractVerifier:
                                 decl, expr.scrutinee, smt, slot_env,
                                 list(assumptions), site="match binding",
                             )
-                    elif isinstance(arm.pattern, ast.ConstructorPattern):
+                    elif isinstance(match_arm.pattern, ast.ConstructorPattern):
                         # Site 1 (#747): @Nat sub-patterns narrowing a
                         # non-@Nat ADT field — the @Int payload of
                         # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
@@ -7584,22 +7584,22 @@ class ContractVerifier:
                         # about what an arm establishes (#1403).
                         self._obligate_subpattern_narrowings(
                             decl, expr.scrutinee, scrutinee_z3,
-                            arm.pattern, smt, slot_env, assumptions,
+                            match_arm.pattern, smt, slot_env, assumptions,
                         )
                     # A downstream narrowing that depends on a binding's own
                     # invariant discharges from the arm's facts instead of
                     # reporting a false E503 (CR).
-                    arm_assumptions = arm_ctx.assuming(arm_assumptions)
+                    arm_assumptions = arm.assuming(arm_assumptions)
                     # #820: obligate a @Nat arm body widening into the @Int join
                     # (under this arm's discriminant condition), mirroring
                     # codegen's per-arm guard in `_translate_match`.
-                    if match_hetero_int and self._result_is_nat(arm.body):
+                    if match_hetero_int and self._result_is_nat(match_arm.body):
                         self._check_int_widening_obligation(
-                            decl, arm.body, smt, arm_env,
+                            decl, match_arm.body, smt, arm_env,
                             list(arm_assumptions), site="heterogeneous match arm",
                         )
                     self._walk_for_nat_binding_obligations(
-                        decl, arm.body, smt, arm_env, arm_assumptions,
+                        decl, match_arm.body, smt, arm_env, arm_assumptions,
                     )
             return
 
