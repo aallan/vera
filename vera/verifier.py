@@ -3661,7 +3661,9 @@ class ContractVerifier:
             # still re-surfaces its representative diagnostic: `tier3` re-emits
             # the Tier-3 warning (E506 etc.) so an instantiated generic warns
             # like the non-generic path, and `violated` / `tier3_unguarded`
-            # re-emit their error / warning (PR #767 review).  `verified` is
+            # re-emit theirs at whatever severity the emitter chose — an error
+            # for `violated` and for E538, a warning for E504/E506/E531
+            # (PR #767 review; #1451 for the severity).  `verified` is
             # silent.  Informational tier3 diagnostics are not synthesized if
             # the instance emitted none.
             if met != "verified":
@@ -3680,14 +3682,17 @@ class ContractVerifier:
         """Re-emit the representative instance's diagnostic, prefixed with the
         instantiation(s) that exhibit the failing/unguarded outcome.
 
-        The match is by (severity, span) — NOT error code — because an
+        The match is by (span, error code) where the obligation carries a
+        code, and by (span, severity) where it does not — because an
         obligation's ``error_code`` does not always equal its diagnostic's: a
         violated ``ensures`` records the obligation with no code but the
-        diagnostic carries ``E500``.  When the obligation *does* carry a code we
-        additionally require it, to disambiguate co-located diagnostics.  If no
-        diagnostic matches, the outcome is still surfaced (synthesized from the
-        obligation) — a violation must NEVER be silently dropped, which would be
-        a false Tier-1.
+        diagnostic carries ``E500``.  The severity is deliberately NOT part of
+        the match once a code is in hand: a status does not determine a
+        severity (**E538** is an error on a ``tier3_unguarded`` obligation),
+        and inferring one dropped the diagnostic whose severity disagreed.  If
+        no diagnostic matches, the outcome is still surfaced (synthesized from
+        the obligation) — a violation must NEVER be silently dropped, which
+        would be a false Tier-1.
         """
         severity = "error" if rep_ob.status == "violated" else "warning"
         # Group instantiation labels by the same equivalence `_meet_status`
@@ -3707,14 +3712,26 @@ class ContractVerifier:
             f"In generic function '{decl.name}' instantiated at "
             f"{shown}{more}: "
         )
+        # Matched by (span, CODE) at either severity where the obligation
+        # carries a code, and by (span, severity) only where it does not.  A
+        # severity derived from the STATUS was true of every code until E538
+        # became an error on a `tier3_unguarded` obligation (#1451, MD-7):
+        # the lookup then missed, the no-synthesis fallback below declined,
+        # and the refusal was dropped — the obligation said E538 and neither
+        # diagnostic stream said anything, which is this PR's own class in the
+        # one path that RE-EMITS a diagnostic instead of emitting it.  A code
+        # plus an exact span identifies the diagnostic; what severity it
+        # carries is the emitter's to choose, not this function's to infer.
         src = next(
             (
                 d for d in errs_by_instance.get(rep_concrete, [])
-                if d.severity == severity
-                and d.location.line == rep_ob.line
+                if d.location.line == rep_ob.line
                 and d.location.column == rep_ob.column
-                and (not rep_ob.error_code
-                     or d.error_code == rep_ob.error_code)
+                and (
+                    d.error_code == rep_ob.error_code
+                    if rep_ob.error_code
+                    else d.severity == severity
+                )
             ),
             None,
         )

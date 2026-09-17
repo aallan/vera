@@ -611,6 +611,78 @@ def test_1451_the_codes_are_registered_and_attributed() -> None:
         assert SINCE.get(code), code
 
 
+_UNSAT_GENERIC = """\
+private forall<T> fn callee(@T -> @Int)
+  requires(false)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+public fn caller(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  callee(@Int.0)
+}
+"""
+
+_SAT_GENERIC = _UNSAT_GENERIC.replace("requires(false)", "requires(true)")
+
+
+def test_1451_an_instantiated_generic_reports_its_refusal(
+    tmp_path: Path,
+) -> None:
+    """The demotion survives the generic aggregation, at its own severity.
+
+    A generic's obligations are discharged once per instantiation into a
+    scratch buffer and then collapsed one per source site, and the
+    representative instance's diagnostic is RE-EMITTED for the survivor.
+    That re-emission looked its diagnostic up by span, code and a severity
+    derived from the STATUS — `error` for `violated`, `warning` for everything
+    else — which held for every code until E538 became an error on a
+    `tier3_unguarded` obligation.  With the inference in place the lookup
+    missed, the fallback declined to synthesise what it took for an
+    informational warning, and the run reported the obligation as
+    `tier3_unguarded`/E538 with no diagnostic in either stream and `ok: true`.
+    That is this PR's own class — a demotion no reader sees — in the one path
+    that re-emits a diagnostic rather than emitting it.
+
+    The prefix is asserted and not only the code, because the prefix is what
+    distinguishes a re-emitted per-instance diagnostic from one emitted
+    directly: without it the cell would pass on a refusal that reached the
+    reader by some other route. The satisfiable twin is the differential —
+    without it, a check that refused every generic would pass the first half.
+    """
+    unsat = _verify(_write(tmp_path / "unsat", _UNSAT_GENERIC))
+    assert unsat["ok"] is False, unsat["diagnostics"]
+    e538 = [d for d in unsat["diagnostics"] if d.get("error_code") == "E538"]
+    assert len(e538) == 1, (unsat["diagnostics"], _triples(unsat))
+    assert e538[0]["severity"] == "error", e538[0]
+    assert "instantiated at" in e538[0]["description"], e538[0]["description"]
+    assert "'callee'" in e538[0]["description"], e538[0]["description"]
+
+    # ... and the obligation array agrees with it at the same line.
+    demoted = [
+        o for o in unsat["obligations"] if o.get("error_code") == "E538"
+    ]
+    assert demoted, _triples(unsat)
+    assert all(o["status"] == "tier3_unguarded" for o in demoted), demoted
+    assert e538[0]["location"]["line"] in [
+        o["location"]["line"] for o in demoted
+    ], (e538[0]["location"], _triples(unsat))
+
+    # The twin: the same generic with a satisfiable precondition keeps its
+    # proofs and reports nothing, so neither leg is satisfied by a screen that
+    # had stopped discriminating.
+    sat = _verify(_write(tmp_path / "sat", _SAT_GENERIC))
+    assert "E538" not in _codes(sat), _codes(sat)
+    assert "E539" not in _codes(sat), _codes(sat)
+    assert sat["verification"]["tier1_verified"] > 0, sat["verification"]
+
+
 def test_1451_the_refusal_lands_at_the_definition(tmp_path: Path) -> None:
     """E538 is an ERROR, at the clause that is wrong, and the run exits 1.
 
