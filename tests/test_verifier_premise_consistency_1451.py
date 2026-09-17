@@ -1301,41 +1301,77 @@ def test_1451_an_undecided_full_set_still_asks_the_author_layer(
     assert healthy.summary.tier1_verified > 0, healthy.summary
 
 
-def test_1451_an_undecidable_author_layer_demotes_without_attributing(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "verdict,code,severity,refused",
+    [
+        pytest.param(False, "E538", "error", True, id="author-refuted"),
+        pytest.param(None, "E539", "warning", False, id="author-undecided"),
+        pytest.param(True, "E539", "warning", False, id="author-satisfiable"),
+    ],
+)
+def test_1451_the_attribution_verdict_decides_the_severity(
+    tmp_path: Path, verdict: bool | None, code: str, severity: str,
+    refused: bool,
 ) -> None:
-    """The third verdict of the attribution query, reached by injection.
+    """All three verdicts of the attribution query, and what each may claim.
 
-    A refuted full premise set whose AUTHOR layer comes back `unknown` cannot
-    be blamed on either side: calling it internal would accuse the compiler of
-    something that may be the contract, and saying nothing would keep a
-    vacuous proof.  No whole program is known to reach it — the author layer
-    is the pre-body snapshot, small and quantifier-free — so the outcome is
-    injected directly, the same way `check_valid`'s `opaque` and `unknown`
-    branches are driven in `test_verifier_refinements.py`.  Without a cell the
-    branch is unfalsifiable; with one, its contract is pinned: demote, warn
-    under the code that claims least, and do NOT say E539.
+    The whole matrix rather than the one reachable row, because the CLAIM is
+    the mapping: a refusal names the clause to weaken, so only a REFUTATION of
+    the author's own premises earns E538 and an error.  `unknown` establishes
+    nothing — the same rule the rest of this file applies to the screen itself
+    — and `sat` establishes that the contradiction needs a derived fact, which
+    may be one the author does not control.  Both of those decline to certify
+    under E539 and leave the program standing.
+
+    That is what keeps the accept/refuse verdict CHECKABLE.  Refusing on an
+    undecided attribution makes acceptance depend on solver speed in the wrong
+    direction: the same program refused at one `--timeout-ms` and accepted at
+    a larger one, where the layer answers `sat`.  Measured on the
+    `x * x == 2 * (y * y)` fixture, whose author-layer query really does
+    answer `unsat` on one pass and `unknown` on the next.  A larger budget may
+    now turn an accept into the attributed refusal, which is the direction
+    every other Z3-backed diagnostic here already moves in, and never the
+    other way.
+
+    The verdicts are injected: only `unsat` is reachable by a whole program of
+    ordinary size, since the author layer is the pre-body snapshot — small and
+    quantifier-free — so a cell per row is what makes the other two rows
+    falsifiable at all.  The demotion is asserted on every row, or the cell
+    would be satisfied by a screen that had stopped demoting.
     """
     from vera import verifier as vmod
 
     original = vmod.ContractVerifier._contract_premises_satisfiable
     vmod.ContractVerifier._contract_premises_satisfiable = (  # type: ignore[assignment]
-        lambda self, contract, assumed, smt: None
+        lambda self, contract, assumed, smt: verdict
     )
     try:
         result = _verify_in_process(_write(tmp_path, _UNSAT_REQUIRES))
     finally:
         vmod.ContractVerifier._contract_premises_satisfiable = original  # type: ignore[assignment]
 
-    codes = [d.error_code for d in result.diagnostics]
-    assert "E538" in codes, codes
-    assert "E539" not in codes, codes
-    assert "could not be determined" in "".join(
-        d.description for d in result.diagnostics), codes
+    diags = [d for d in result.diagnostics if d.error_code in ("E538", "E539")]
+    assert [d.error_code for d in diags] == [code], [
+        (d.error_code, d.severity) for d in result.diagnostics
+    ]
+    assert diags[0].severity == severity, (diags[0].severity, diags[0].description)
+    # The program is refused exactly when the refusal can name a clause.
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert bool(errors) is refused, [
+        (d.severity, d.error_code) for d in result.diagnostics
+    ]
+    # ... and every row demotes, so no row is satisfied by a screen that has
+    # stopped running.
     assert result.summary.tier1_verified == 0, result.summary
     assert all(
         o.status == "tier3_unguarded" for o in result.obligations
     ), [(o.kind, o.status) for o in result.obligations]
+    assert all(
+        o.error_code == code for o in result.obligations
+    ), [(o.kind, o.error_code) for o in result.obligations]
+    if verdict is None:
+        assert "could not be determined" in diags[0].description, (
+            diags[0].description)
 
 
 # ---------------------------------------------------------------------------
@@ -1790,51 +1826,22 @@ public fn f(@Int, @Int -> @Int)
 }
 """
 
-_PELL_60 = """\
-public fn f(@Int, @Int -> @Int)
-  requires(@Int.0 > 0 && @Int.0 < 60 && @Int.1 > 0 && @Int.1 < 60 && @Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1))
-  ensures(@Int.result == 42)
-  effects(pure)
-{
-  0
-}
-"""
-
-
-def test_1451_a_contradiction_beyond_the_screening_budget_is_still_caught(
-    tmp_path: Path,
-) -> None:
-    """RED before: the screen was narrower than the budget the vacuity used.
-
-    `x * x == 2 * (y * y)` with `0 < x, y < 60` has no integer model — the
-    irrationality of the square root of two, in sixty cases — but Z3 needs
-    about a second to say so, not the 250 ms the screening query is given.
-    The first draft demoted only on a REFUTATION and asked nothing else, so
-    every contradiction refutable between 250 ms and the run's budget was
-    missed in silence: `ensures(@Int.result == 42)` VERIFIED over a body
-    returning `0`, exactly the issue's repro with a slower contradiction.
-
-    The author's layer is what closes it, and it is asked at the RUN's budget
-    rather than the screen's, so `--timeout-ms` now widens detection instead
-    of only widening the obligation queries it is competing with.
-    """
-    # An explicit, generous budget, because the point of the cell is that
-    # detection now scales with `--timeout-ms` rather than with stage 1's
-    # 250 ms: this refutation needs about eight seconds of real search, and a
-    # cell that raced the default would measure the machine's load rather
-    # than the check.  The cost is paid once, here, deliberately — the
-    # division of labour between the stages is pinned by the cell below,
-    # which injects stage 1's verdict instead of waiting for it.
-    path = _write(tmp_path, _PELL_60)
-    proc = _cli("verify", "--json", "--timeout-ms", "120000", str(path))
-    result = json.loads(proc.stdout)
-    assert "E538" in _codes(result), (_codes(result), _triples(result))
-    assert result["verification"]["tier1_verified"] == 0, (
-        result["verification"])
-    assert not [
-        o for o in result["obligations"]
-        if o["kind"] == "ensures" and o["status"] == "verified"
-    ], _triples(result)
+# The end-to-end leg of this property USED to live here, on a 60-case Pell
+# fixture verified through the CLI.  It is gone, and what removed it is a
+# measurement rather than a preference: `x * x == 2 * (y * y)` over
+# `0 < x, y < 60` is nonlinear integer arithmetic, where `unknown` is a
+# legitimate answer at any budget, and Z3 gives different ones for the same
+# query on the same host.  Four runs at `--timeout-ms 120000` reported E538
+# twice, E539 once (the screen refuted but the attribution query came back
+# undecided) and nothing at all once (stage 2 itself answered `unknown` on the
+# pass whose buffers survive the `verify_program` fixpoint).  No assertion
+# about that run is stable — not the code, not the severity, not
+# `tier1_verified` — so a cell making one measures the solver's mood.
+#
+# What IS deterministic is the division of labour, and the cell below pins it
+# by injecting stage 1's verdict: what stage 1 does not decide, stage 2 is
+# asked, at the discharge budget, on the quantifier-free subset.  Spec §6.8.2
+# states the residual this leaves in the same terms.
 
 
 def test_1451_the_second_stage_refutes_on_the_quantifier_free_subset(

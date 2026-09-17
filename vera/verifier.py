@@ -4840,13 +4840,14 @@ class ContractVerifier:
     def _report_unsatisfiable_contract(
         self, decl: ast.FnDecl, assumed: list[object],
     ) -> None:
-        """The E538 error, from either of the two places that can reach it.
+        """The E538 error: the author's own premises were REFUTED.
 
-        Both are the same finding — the author's own premises have no common
-        model — so they say it in one place: whether the full set was refuted
-        and the attribution landed here, or the full set was undecided and
-        this layer answered on its own, the reader is told the same thing and
-        acts on the same clause.
+        Reached only on a refutation of that layer, never on an undecided
+        one.  The undecided case shares the demotion but not the code: it is
+        reported as the warning E539, because a refusal names the clause to
+        weaken and `unknown` names nothing — and because refusing there would
+        make the same program refused at one `--timeout-ms` and accepted at a
+        larger one, where the layer comes back `sat`.
 
         An ERROR, and the program is refused at the definition.  Contracts are
         the source of truth here (DESIGN.md), and a premise set with no model
@@ -5005,15 +5006,22 @@ class ContractVerifier:
             # may be the contract; saying nothing keeps a vacuous proof.
             # Demote without attributing, under the code that claims least.
             #
-            # E538 is one code at one severity, so this refuses too, and that
-            # is the safe direction rather than an accident of the flip: the
-            # full premise set WAS refuted, so the function certifies nothing
-            # whatever the cause, and a budget large enough to attribute the
-            # contradiction can only move it to E539 — an accept that a slow
-            # solver turns into a refusal, never a refusal it turns into an
-            # accept.  The `fix` says how to get the attribution.
-            self._demote_function_obligations(obl_start, "E538")
-            self._error(
+            # A WARNING, not the E538 error, and the difference is what makes
+            # the refusal checkable.  E538 blames the author's premises, and
+            # the only thing that establishes that blame is a REFUTATION of
+            # them; `unknown` establishes nothing, exactly as everywhere else
+            # in this file.  Refusing here would make acceptance depend on
+            # solver speed in the wrong direction: the same program refused at
+            # one `--timeout-ms` and ACCEPTED at a larger one, where the
+            # author's layer comes back `sat` and the report is the warning
+            # E539.  Measured on the `x * x == 2 * (y * y)` fixture, whose
+            # author-layer query answers `unsat` in about 2 s on one pass and
+            # `unknown` in about 2 s on the next.  So the undecided case joins
+            # the `sat` case under E539: the run declines to certify, which is
+            # the honest claim, and a larger budget can only move it to the
+            # attributed refusal.
+            self._demote_function_obligations(obl_start, "E539")
+            self._warning(
                 self._premise_site(decl, assumed=bool(assumed)),
                 f"The premises of '{decl.name}' are unsatisfiable, so nothing "
                 f"in it was verified against a reachable state. Every "
@@ -5024,14 +5032,19 @@ class ContractVerifier:
                     "A contradictory premise set entails every goal. The "
                     "contract layer alone was neither proved satisfiable nor "
                     "refuted, so the contradiction cannot be attributed to "
-                    "the author's premises or to the verifier's derived ones."
+                    "the author's premises or to the verifier's derived ones. "
+                    "The program is not refused on an undecided attribution: "
+                    "a refusal names the clause to weaken, and E538 names one "
+                    "only where the author's own premises were refuted."
                 ),
                 fix=(
                     "Re-run with a larger budget (`--timeout-ms`) to get the "
-                    "attribution, then weaken the premise it names."
+                    "attribution; if it names a premise of yours, weaken that "
+                    "one."
                 ),
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
-                error_code="E538",
+                error_code="E539",
+                tier=3,
             )
             return
 

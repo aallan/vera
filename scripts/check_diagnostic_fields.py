@@ -901,20 +901,6 @@ def _enclosing_qualified_names(tree: ast.AST) -> dict[int, str]:
 # — verified against the actual description/rationale text at every site
 # (2026-09-03 audit, alongside this gate's introduction).
 KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
-    # Premise set with no model (#1451): one finding, two shapes.  The
-    # shared helper carries the ATTRIBUTED text — the author's own premises
-    # are contradictory — reached both when the full set was refuted and
-    # when it was undecided and the author's layer answered alone.  The site
-    # left in `_enforce_premise_consistency` is the UNATTRIBUTED form, said
-    # when the full set was refuted and the author's layer could not be
-    # decided, so which premise is at fault is not known.  Same code because
-    # the consequence is identical — every obligation in the function is
-    # reported unverified — and it is the reader's clause to weaken either
-    # way; different text because only one of them can name the clause.
-    "E538": frozenset({
-        ("vera/verifier.py", "ContractVerifier._enforce_premise_consistency"),
-        ("vera/verifier.py", "ContractVerifier._report_unsatisfiable_contract"),
-    }),
     # Uninferred generic type argument: codegen's own monomorphization
     # discovery pass and the verifier's independent mirror of the same
     # check both report it where they find it (#1368).
