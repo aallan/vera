@@ -910,6 +910,18 @@ class SmtContext:
             # sort.  Caching that turned one unrelated `let` nobody reads
             # into the difference between accepting and refusing a program
             # (review of PR #1415, L1), so a no is re-asked.
+            #
+            # DEFENSIVE, not load-bearing, and said plainly because this
+            # project does not keep an addition nothing can distinguish:
+            # what closes L1 at the current bound is the DEPTH rule above —
+            # a single refinement is outside this question, and the
+            # constructor-naming predicates that make a no unstable are
+            # single-level in every program either the review or I could
+            # build.  Memoising the no reds nothing today.  It is kept
+            # because the bound is the narrow part: the day this question
+            # decides more than whether to unwrap a chain, a cached "not
+            # yet" is exactly the failure L1 was, and #1470's fix has to
+            # make the answer a property of the type before that is safe.
             self._statable[key] = True
         return answer
 
