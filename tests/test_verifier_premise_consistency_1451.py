@@ -18,13 +18,18 @@ source reintroduced the class.
 
 Two layers, so the diagnostic can name the culprit:
 
-* **Layer 1**, the user's contract alone — param types and refinements plus
-  `requires`.  UNSAT means no call can reach the body: **E538**, a warning,
-  and every obligation in the function demoted to `tier3_unguarded`.
-* **Layer 2**, the full premise set including verifier-derived facts.  SAT at
-  layer 1 and UNSAT at layer 2 means the VERIFIER introduced the
-  contradiction, which is an internal soundness failure rather than anything
-  the author wrote: **E539**, and the same refusal to certify.
+* **Layer 1**, the author's premises alone — param types and refinements,
+  `requires`, and every top-level `assume`.  REFUTED means no call can reach
+  the body: **E538**, an ERROR that refuses the program at the definition,
+  with every obligation in the function demoted to `tier3_unguarded`.
+* **Layer 2**, the full premise set including verifier-derived facts.  A
+  refuted full set whose author layer is satisfiable means the contradiction
+  needs a derived fact — a callee's postcondition, a refined return, a
+  declared-type fact — which is usually the program disagreeing with itself
+  and only sometimes the compiler's: **E539**, a warning, with the same
+  refusal to certify.  An author layer that could not be DECIDED lands there
+  too, because a refusal names the clause to weaken and `unknown` names
+  nothing.
 
 The layer-2 cell plants the contradiction by neutering `_guard_fact` — the
 #953 defence — on a program with two calls in mutually exclusive arms whose
@@ -1987,6 +1992,420 @@ def test_1451_the_lsp_does_not_call_a_demoted_function_tier_1(
 
 
 # ---------------------------------------------------------------------------
+# Surviving the generic aggregation: the class, not the instance
+# ---------------------------------------------------------------------------
+#
+# A generic's obligations are discharged once per instantiation into a scratch
+# buffer and collapsed one per source site, and the representative instance's
+# diagnostic is RE-EMITTED for the survivor.  Every way that re-emission can
+# fail to find its diagnostic is a way for an obligation to name a code no
+# diagnostic in the run carries — `ok: true` over a premise set with no model,
+# which is this file's own class arriving through a different door.
+#
+# The matrix below is read off the code that makes the decision
+# (`_emit_aggregated_diagnostic`), not off the sightings: it keys on the
+# obligation's STATUS, the diagnostic's SEVERITY, whether the two share a
+# SPAN, and whether the obligation carries a CODE.  Driving it through whole
+# Vera programs would cover the handful of shapes a program can produce today;
+# driving the function directly covers the product, including the combinations
+# no emitter produces yet.
+
+
+def _fake_obligation(status: str, code: str, line: int) -> object:
+    from vera.obligations import ProofObligation
+
+    return ProofObligation(
+        fn_name="g", kind="ensures", expr_text="e", status=status,
+        line=line, column=3, error_code=code, file="p.vera",
+    )
+
+
+def _fake_diagnostic(severity: str, code: str, line: int) -> object:
+    from vera.errors import Diagnostic, SourceLocation
+
+    return Diagnostic(
+        description="the finding", severity=severity, error_code=code,
+        location=SourceLocation(file="p.vera", line=line, column=3),
+        source_line="", rationale="r", fix="f", spec_ref="s",
+    )
+
+
+@pytest.mark.parametrize("status", ["violated", "tier3", "tier3_unguarded"])
+@pytest.mark.parametrize("severity", ["error", "warning"])
+@pytest.mark.parametrize("same_span", [True, False], ids=["same", "elsewhere"])
+@pytest.mark.parametrize("coded", [True, False], ids=["coded", "uncoded"])
+def test_1451_a_diagnostic_survives_the_generic_collapse(
+    status: str, severity: str, same_span: bool, coded: bool,
+) -> None:
+    """Every (status, severity, span, code) a collapse can see, and what
+    reaches the reader.
+
+    The rule the code must obey, and the one it broke twice: a diagnostic the
+    instance emitted for an obligation that survives the meet must reach the
+    output, ONCE, carrying the code and severity its emitter chose.  The
+    severity was inferred from the status until E538 became an error on a
+    `tier3_unguarded` obligation; the span was required to coincide with the
+    obligation's until a FUNCTION-level diagnostic — #1451's premise reports,
+    which land on the `assume` or `requires` at fault rather than on the lines
+    of the obligations they demote — met it.  Both are rows here rather than
+    two more E538 fixtures, because the next emitter to break the rule will
+    not be E538.
+
+    Two products are NOT cells, and both are the same documented decline: an
+    UNCODED obligation that is not `violated`, whose instance diagnostic does
+    not sit at its span with the matching severity, is not synthesised.  There
+    is no code to name it by, the obligation is already counted and guarded,
+    and inventing an informational warning the instance never emitted would
+    report a guard that no run performs.  A `violated` one is synthesised
+    regardless, since a violation must never be silently dropped.
+    """
+    from types import SimpleNamespace
+
+    from vera import verifier as vmod
+
+    code = "E538" if coded else ""
+    verifier = object.__new__(vmod.ContractVerifier)
+    verifier.obligations, verifier.errors = [], []
+    verifier.file = "p.vera"
+    diag_line = 10 if same_span else 20
+    per_instance = [
+        (
+            (concrete,),
+            [_fake_obligation(status, code, 10)],
+            [_fake_diagnostic(severity, code or "E500", diag_line)],
+        )
+        for concrete in ("Int", "Bool")
+    ]
+    verifier._aggregate_generic_instances(
+        SimpleNamespace(name="g"), per_instance,
+    )
+    got = [(d.severity, d.error_code) for d in verifier.errors]
+
+    # The obligation survives the collapse on every row — the premise beside
+    # the assertion, so a row cannot pass because the aggregation dropped it.
+    assert [o.status for o in verifier.obligations] == [status], (
+        verifier.obligations)
+
+    if coded:
+        assert [c for _s, c in got] == ["E538"], got
+        expected = "error" if (status == "violated" and not same_span) else severity
+        assert got[0][0] == expected, got
+    elif status == "violated":
+        # Re-emitted where it matched, synthesised where it did not, but an
+        # error either way.
+        assert got == [("error", "E500")], got
+    elif same_span and severity == "warning":
+        assert got == [("warning", "E500")], got
+    else:
+        assert got == [], got
+
+
+_GENERIC_UNSAT_WITH_ASSUME = """\
+private forall<T> fn callee(@T, @Int -> @Int)
+  requires(@Int.0 > 5 && @Int.0 < 3)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  assume(@Int.0 != 777);
+  0
+}
+
+public fn caller(@Int, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  callee(@Bool.0, @Int.0)
+}
+"""
+
+_GENERIC_TWO_ASSUMES = """\
+private forall<T> fn callee(@T, @Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  assume(nat_to_int(@Nat.0) < 3);
+  assume(nat_to_int(@Nat.0) > 5);
+  @Nat.0
+}
+
+public fn caller(@Nat, @Bool -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  callee(@Bool.0, @Nat.0)
+}
+"""
+
+_GENERIC_DERIVED = """\
+private fn h(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 100)
+  effects(pure)
+{
+  101
+}
+
+private forall<T> fn callee(@T, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  assume(h(@Int.0) < 0);
+  0
+}
+
+public fn caller(@Int, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  callee(@Bool.0, @Int.0)
+}
+"""
+
+
+def _unreached_codes(result: dict) -> list[tuple[str, str, str | None]]:
+    """Obligation codes that no diagnostic in the same run carries."""
+    reported = set(_codes(result))
+    return [
+        (o["kind"], o["status"], o.get("error_code"))
+        for o in result["obligations"]
+        if o.get("error_code") and o["error_code"] not in reported
+    ]
+
+
+@pytest.mark.parametrize(
+    "source,expected_code,refused",
+    [
+        pytest.param(_GENERIC_UNSAT_WITH_ASSUME, "E538", True, id="requires"),
+        pytest.param(_GENERIC_TWO_ASSUMES, "E538", True, id="assume-pair"),
+        pytest.param(_GENERIC_DERIVED, "E539", False, id="derived-fact"),
+    ],
+)
+def test_1451_a_generic_premise_report_reaches_the_reader(
+    tmp_path: Path, source: str, expected_code: str, refused: bool,
+) -> None:
+    """The end-to-end half: no obligation names a code the run never reports.
+
+    Each fixture puts the contradiction inside a `forall` generic and moves
+    the premise site OFF the obligations' lines — which a single top-level
+    `assume` is enough to do, since the diagnostic prefers the `assume` over a
+    `requires` that may be blameless.  Before the span fix all three reported
+    `ok: true`, exit 0, with the obligations naming E538 or E539 and neither
+    diagnostic stream carrying either (#1457 review, High 1).
+
+    The cross-stream invariant is asserted rather than the one code, because
+    the invariant is the property: an obligation that names a code the reader
+    never sees is a demotion nobody can act on, whatever the code.  The
+    expected code is asserted beside it as the status premise — without it the
+    cell would pass on a program that demoted nothing at all.
+    """
+    result = _verify(_write(tmp_path, source))
+    assert expected_code in [
+        o.get("error_code") for o in result["obligations"]
+    ], _triples(result)
+    assert not _unreached_codes(result), (
+        _unreached_codes(result), _codes(result))
+    assert expected_code in _codes(result), _codes(result)
+    assert result["ok"] is not refused, (result["ok"], _codes(result))
+    # It came through the aggregation, not from some other emitter.
+    reported = [
+        d for d in (*result["diagnostics"], *result["warnings"])
+        if d.get("error_code") == expected_code
+    ]
+    assert any(
+        "instantiated at" in d["description"] for d in reported
+    ), [d["description"][:80] for d in reported]
+
+
+def test_1451_no_corpus_obligation_names_an_unreported_code(
+    tmp_path: Path,
+) -> None:
+    """... and the same invariant over the whole corpus, as the control.
+
+    The crafted fixtures show the instrument can fail; this shows the fix
+    costs nothing across 253 conformance programs and 43 examples, where every
+    obligation code already reaches a diagnostic.  Run in process, and with
+    the number of coded obligations asserted, so a run that produced none
+    cannot pass it.
+    """
+    import vera
+
+    root = Path(vera.__file__).resolve().parents[1]
+    programs = sorted(
+        (*(root / "tests" / "conformance").glob("*.vera"),
+         *(root / "examples").glob("*.vera")),
+    )
+    coded = 0
+    violations: list[tuple[str, str, str]] = []
+    for path in programs:
+        try:
+            result = _verify_in_process(path)
+        except Exception:  # noqa: BLE001 — a negative fixture, skipped
+            continue
+        reported = {
+            d.error_code for d in result.diagnostics if d.error_code  # type: ignore[attr-defined]
+        }
+        for o in result.obligations:  # type: ignore[attr-defined]
+            if not o.error_code:
+                continue
+            coded += 1
+            if o.error_code not in reported:
+                violations.append((path.name, o.kind, o.error_code))
+    assert coded > 0, "no corpus obligation carried a code at all"
+    assert not violations, violations[:10]
+
+
+# ---------------------------------------------------------------------------
+# The refusal is budget-MONOTONE
+# ---------------------------------------------------------------------------
+
+_DERIVED_SLOW_AUTHOR = """\
+private fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 100)
+  effects(pure)
+{
+  101
+}
+
+public fn f(@Int, @Int -> @Int)
+  requires(@Int.1 * @Int.1 == 2 * (@Int.0 * @Int.0) + 1 && @Int.1 > 1000 && @Int.1 < 10000000 && @Int.0 > 0)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  assume(g(@Int.1) < 0);
+  0
+}
+"""
+
+_DERIVED_UNDECIDABLE_AUTHOR = _DERIVED_SLOW_AUTHOR.replace(
+    "@Int.1 > 1000 && @Int.1 < 10000000",
+    "@Int.1 > 1000000 && @Int.1 < 1000000000000",
+)
+
+
+@pytest.mark.parametrize(
+    "source,refused,ladder",
+    [
+        pytest.param(
+            _DERIVED_SLOW_AUTHOR, False, (250, 1000, 10000, 60000),
+            id="derived-slow-author"),
+        # Three rungs, not four: this one's author layer is undecided at every
+        # budget reached, so each rung costs the WHOLE budget twice over (the
+        # `verify_program` fixpoint re-verifies) — 120 s measured at 60000,
+        # for a property the rungs below already exhibit.
+        pytest.param(
+            _DERIVED_UNDECIDABLE_AUTHOR, False, (250, 1000, 10000),
+            id="derived-undecidable"),
+        pytest.param(
+            _UNSAT_REQUIRES, True, (250, 1000, 10000, 60000),
+            id="author-refuted"),
+    ],
+)
+def test_1451_the_refusal_is_budget_monotone(
+    tmp_path: Path, source: str, refused: bool, ladder: tuple[int, ...],
+) -> None:
+    """A larger budget may ADD a refusal; it may never remove one.
+
+    E538 rests on a REFUTATION of the author's premises, and a refutation does
+    not expire as the budget grows, so the refused set is non-decreasing in
+    `--timeout-ms`.  The two derived-fact programs are the cases that made the
+    old rule unsound: their contradiction is between an `assume` and a
+    callee's postcondition, while the author layer alone is satisfiable —
+    slowly in the first (nonlinear, `unknown` under a small budget and `sat`
+    under a larger one) and beyond any budget reached here in the second.
+    Refusing on that undecided layer made the same program refused at one
+    budget and ACCEPTED at a larger one, which is not a verdict anyone can
+    check (#1457 review, High 2).
+
+    The third row is the over-reach control: a program whose author layer IS
+    refuted must be refused at every rung, including the smallest.  Without it
+    a change that simply stopped refusing would satisfy the first two.
+
+    The verdict is asserted as the PROPERTY over a ladder, not as three
+    literal outcomes: what is claimed is monotonicity, and a cell that pinned
+    literals would go red on a host where one rung decided differently while
+    the property still held.
+    """
+    path = _write(tmp_path, source)
+    seen: list[tuple[int, bool]] = []
+    for budget in ladder:
+        proc = _cli("verify", "--json", "--timeout-ms", str(budget), str(path))
+        envelope = json.loads(proc.stdout)
+        seen.append((budget, envelope["ok"] is False))
+        assert (proc.returncode == 1) is (envelope["ok"] is False), (
+            budget, proc.returncode, envelope["ok"])
+
+    refusals = [is_refused for _b, is_refused in seen]
+    assert refusals == sorted(refusals), (
+        f"a larger budget removed a refusal, so acceptance depends on solver "
+        f"speed: {seen}")
+    if refused:
+        assert all(refusals), seen
+    else:
+        assert not any(refusals), seen
+
+
+# ---------------------------------------------------------------------------
+# The boundary: a generic is screened through its instantiations
+# ---------------------------------------------------------------------------
+
+_UNINSTANTIATED_GENERIC = """\
+public forall<T> fn callee(@T -> @Int)
+  requires(false)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+"""
+
+
+def test_1451_an_uninstantiated_generic_is_not_screened(
+    tmp_path: Path,
+) -> None:
+    """The boundary, stated rather than discovered.
+
+    The screen runs on the monomorphized CLONE, like every other obligation of
+    a generic body: a still-generic signature cannot be translated to SMT at
+    all, since its parameters have no sort.  A `forall` generic that nothing
+    instantiates therefore has no clone to screen, and its obligations are
+    reported UNINSTANTIATED (`E520`) — counted in no tier, claiming nothing —
+    rather than demoted.  Nothing is certified either way, which is what the
+    class is about; what the program does not get is the refusal.
+
+    Pinned with its complement, because the pair is the boundary: the same
+    contract instantiated once IS refused.  Spec §6.8.2 says so, so a future
+    template-level screen changes a documented sentence rather than a silent
+    expectation.
+    """
+    alone = _verify(_write(tmp_path / "alone", _UNINSTANTIATED_GENERIC))
+    assert alone["ok"] is True, alone["diagnostics"]
+    assert "E538" not in _codes(alone), _codes(alone)
+    assert "E520" in _codes(alone), _codes(alone)
+    assert alone["verification"]["tier1_verified"] == 0, alone["verification"]
+
+    used = _verify(_write(
+        tmp_path / "used",
+        _UNINSTANTIATED_GENERIC + """
+public fn caller(@Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  callee(@Bool.0)
+}
+""",
+    ))
+    assert used["ok"] is False, (_codes(used), _triples(used))
+    assert "E538" in _codes(used), _codes(used)
+
+
+# ---------------------------------------------------------------------------
 # The completeness condition, asserted rather than measured
 # ---------------------------------------------------------------------------
 #
@@ -2154,19 +2573,26 @@ def test_1451_no_corpus_premise_set_shares_a_symbol_across_the_split() -> None:
     assert screened >= 10, screened
     assert captured, "no premise set was screened at all"
 
-    with_quantifiers = 0
+    both_halves = 0
     shared: list[tuple[str, str, set[str]]] = []
     for file, fn_name, facts in captured:
         quantified, free = _symbol_halves(facts)
-        if quantified:
-            with_quantifiers += 1
+        if quantified and free:
+            both_halves += 1
         overlap = quantified & free
         if overlap:
             shared.append((Path(file).name, fn_name, overlap))
 
-    assert with_quantifiers > 0, (
-        f"no captured premise set had a quantified half, so the disjointness "
-        f"below holds for the wrong reason — {len(captured)} contexts"
+    # BOTH halves, not just the quantified one (#1457 review, Low 2): an
+    # intersection is empty whenever EITHER side is, so counting contexts that
+    # have a quantified half still leaves the assertion satisfiable by a
+    # corpus whose quantifier-free halves all came back empty.  Only a context
+    # with symbols on both sides can exhibit a violation, so only those count
+    # as coverage.
+    assert both_halves > 0, (
+        f"no captured premise set had symbols in BOTH halves, so the "
+        f"disjointness below holds for the wrong reason — {len(captured)} "
+        f"contexts"
     )
     assert not shared, (
         f"a quantifier-free premise mentions a symbol only the quantified "

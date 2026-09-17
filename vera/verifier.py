@@ -3645,6 +3645,7 @@ class ContractVerifier:
                     order.append(key)
                 groups[key].append((concrete, ob))
 
+        agg_start, err_start = len(self.obligations), len(self.errors)
         for key in order:
             members = groups[key]
             met = self._meet_status([ob.status for _, ob in members])
@@ -3670,6 +3671,72 @@ class ContractVerifier:
                 self._emit_aggregated_diagnostic(
                     decl, members, rep_concrete, rep_ob, errs_by_instance,
                 )
+
+        # A FUNCTION-level diagnostic sits at no obligation's span, so the
+        # per-site re-emission above cannot reach it whatever its severity:
+        # #1451's premise reports land on the `assume` or the `requires` that
+        # is at fault, while the obligations they demote are on their own
+        # lines.  The no-synthesis fallback then drops it and the aggregated
+        # obligation names a code no diagnostic in the run carries — the same
+        # silent accept the per-instance path exists to prevent, and this PR's
+        # own class in the one path that RE-EMITS rather than emits (#1457
+        # review, High 1).  The severity axis was closed first and was only
+        # half of it; the span axis is this.
+        #
+        # Tied to the OBLIGATION STREAM rather than swept blind: only a code
+        # that an aggregated, non-`verified` obligation actually carries is
+        # re-emitted, so an informational warning the aggregation deliberately
+        # declines to synthesize stays declined, and the corpus does not move.
+        # Once per SITE and not once per instantiation, like the W003 sweep
+        # above, because the source clause is one clause however many times its
+        # generic is instantiated.
+        # Minus what the per-site path has already surfaced for this
+        # aggregation, including a SYNTHESIZED one: a `violated` obligation
+        # whose diagnostic sits elsewhere is synthesised into an error above,
+        # and re-emitting the instance's own copy beside it would report one
+        # finding twice, at two severities.
+        already = {
+            d.error_code for d in self.errors[err_start:] if d.error_code
+        }
+        wanted = {
+            o.error_code for o in self.obligations[agg_start:]
+            if o.status != "verified" and o.error_code
+        } - already
+        if wanted:
+            obligation_spans = {
+                (ob.line, ob.column)
+                for _c, obls, _e in per_instance for ob in obls
+            }
+            by_site: dict[tuple[str, int, int, str], list[tuple[str, ...]]] = {}
+            site_diag: dict[tuple[str, int, int, str], Diagnostic] = {}
+            for concrete, _obls, errs in per_instance:
+                for diag in errs:
+                    if diag.error_code not in wanted:
+                        continue
+                    loc = diag.location
+                    line = getattr(loc, "line", 0)
+                    column = getattr(loc, "column", 0)
+                    if (line, column) in obligation_spans:
+                        continue  # the per-site path already answered for it
+                    site = (diag.error_code, line, column, diag.description)
+                    if site in seen_obligation_free:
+                        continue
+                    by_site.setdefault(site, []).append(concrete)
+                    site_diag.setdefault(site, diag)
+            for site, concretes in by_site.items():
+                seen_obligation_free.add(site)
+                labels = sorted(
+                    f"{decl.name}<{', '.join(c)}>" for c in concretes)
+                shown = ", ".join(labels[:3])
+                more = "" if len(labels) <= 3 else f" (+{len(labels) - 3} more)"
+                diag = site_diag[site]
+                self.errors.append(replace(
+                    diag,
+                    description=(
+                        f"In generic function '{decl.name}' instantiated at "
+                        f"{shown}{more}: {diag.description}"
+                    ),
+                ))
 
     def _emit_aggregated_diagnostic(
         self,
@@ -5038,9 +5105,10 @@ class ContractVerifier:
                     "only where the author's own premises were refuted."
                 ),
                 fix=(
-                    "Re-run with a larger budget (`--timeout-ms`) to get the "
-                    "attribution; if it names a premise of yours, weaken that "
-                    "one."
+                    "Re-run with a larger budget (`--timeout-ms`) to find out "
+                    "which. A larger budget can only ADD an attribution, so "
+                    "it may name a premise of yours and refuse the program "
+                    "(E538) — it will not turn this into a clean run."
                 ),
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                 error_code="E539",
