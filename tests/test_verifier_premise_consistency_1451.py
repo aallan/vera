@@ -101,8 +101,18 @@ def _triples(result: dict) -> list[tuple[str, str, str | None]]:
     ]
 
 
-def _codes(result: dict, key: str = "warnings") -> list[str | None]:
-    return [d.get("error_code") for d in result[key]]
+def _codes(result: dict, key: str | None = None) -> list[str | None]:
+    """The codes the run reported, at either severity unless *key* says which.
+
+    The envelope splits by severity — errors into `diagnostics`, warnings into
+    `warnings` — and E538 is an error while E539 is a warning, so a cell that
+    read one key would be asserting the severity by accident every time it
+    meant to assert that the vacuity was reported at all.  The severity is a
+    claim in its own right and is pinned in one place, by
+    `test_1451_the_refusal_lands_at_the_definition`.
+    """
+    keys = (key,) if key is not None else ("diagnostics", "warnings")
+    return [d.get("error_code") for k in keys for d in result[k]]
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +195,8 @@ def test_1451_the_demotion_says_no_call_can_reach_the_body(
     was established — is what the author acts on.
     """
     result = _verify(_write(tmp_path, _UNSAT_REQUIRES))
-    e538 = [w for w in result["warnings"] if w.get("error_code") == "E538"]
+    # E538 is an ERROR, so it arrives in `diagnostics`, not `warnings`.
+    e538 = [d for d in result["diagnostics"] if d.get("error_code") == "E538"]
     assert len(e538) == 1, _codes(result)
     text = e538[0]["description"]
     assert "'f'" in text, text
@@ -293,7 +304,8 @@ def test_1451_a_where_helper_is_checked_like_any_other_function(
     declarations` would silently miss every helper.
     """
     result = _verify(_write(tmp_path, _WHERE_HELPER_UNSAT))
-    e538 = [w for w in result["warnings"] if w.get("error_code") == "E538"]
+    # E538 is an ERROR, so it arrives in `diagnostics`, not `warnings`.
+    e538 = [d for d in result["diagnostics"] if d.get("error_code") == "E538"]
     assert len(e538) == 1, _codes(result)
     assert "'helper'" in e538[0]["description"], e538[0]["description"]
     # The JSON obligation carries its expression text, not its function, so
@@ -391,7 +403,7 @@ public fn caller(@Nat -> @Nat)
 """
 
 
-def _verify_in_process(path: Path) -> object:
+def _verify_in_process(path: Path, timeout_ms: int | None = None) -> object:
     from vera.checker import typecheck_with_artifacts
     from vera.parser import parse
     from vera.resolver import ModuleResolver
@@ -409,6 +421,7 @@ def _verify_in_process(path: Path) -> object:
         program, text, file=str(path), resolved_modules=resolved,
         expr_types=artifacts.expr_semantic_types,
         expr_target_types=artifacts.expr_target_types,
+        timeout_ms=timeout_ms,
     )
 
 
@@ -476,6 +489,12 @@ def test_1451_a_verifier_derived_contradiction_refuses_to_certify(
     assert "report this program" not in e539.description.lower(), (
         e539.description)
     assert "report the program" in (e539.fix or "").lower(), e539.fix
+    # ... and it stays a WARNING where its sibling E538 is an error.  The
+    # premise at fault here is one the author may not control — a callee's
+    # postcondition, a refined return, a declared-type fact — so refusing the
+    # program would refuse it for a clause that is not in it.  E538's premises
+    # are all the author's own, which is what makes refusal precise there.
+    assert e539.severity == "warning", (e539.severity, e539.description)
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +609,45 @@ def test_1451_the_codes_are_registered_and_attributed() -> None:
         assert code in ERROR_CODES, sorted(ERROR_CODES)[-6:]
         assert ERROR_CODES[code], code
         assert SINCE.get(code), code
+
+
+def test_1451_the_refusal_lands_at_the_definition(tmp_path: Path) -> None:
+    """E538 is an ERROR, at the clause that is wrong, and the run exits 1.
+
+    A premise set with no model is a contract that admits no argument, so it
+    constrains no behaviour: there is nothing for a tier to describe, and
+    leaving the program to stand made the signal something the author had to
+    go and read.  The refusal is reported where the clause is, not at a call
+    site — a caller may be in another module, or may not exist yet.
+
+    Asserted as the whole shape rather than "an E538 exists somewhere": the
+    severity, the key of the envelope it arrives in, the exit code, the line,
+    and the `fix` an error is required to carry.  `_codes` reads both keys, so
+    without this cell the severity would be unpinned everywhere.
+    """
+    path = _write(tmp_path, _UNSAT_REQUIRES)
+    proc = _cli("verify", "--json", str(path))
+    result = json.loads(proc.stdout)
+
+    assert proc.returncode == 1, (proc.returncode, proc.stdout[:400])
+    assert result["ok"] is False, result["diagnostics"]
+    assert "E538" not in _codes(result, "warnings"), _codes(result, "warnings")
+
+    errors = [
+        d for d in result["diagnostics"] if d.get("error_code") == "E538"
+    ]
+    assert len(errors) == 1, result["diagnostics"]
+    e538 = errors[0]
+    assert e538["severity"] == "error", e538
+    # The `requires` line of the fixture — the premise the author can edit —
+    # rather than the body or the `ensures` that discharged vacuously.
+    assert e538["location"]["line"] == 2, (e538["location"], _UNSAT_REQUIRES)
+    # `check_diagnostic_fields` requires a fix on an error; a warning is
+    # exempt, so the flip makes this field load-bearing.
+    assert e538["fix"], e538
+    # And the run still says what it established, which is nothing.
+    assert result["verification"]["tier1_verified"] == 0, (
+        result["verification"])
 
 
 _WIDE_CONTRADICTION = """\
@@ -717,7 +775,8 @@ def test_1451_the_demotion_points_at_the_assume_line(tmp_path: Path) -> None:
     would send the reader to a clause with nothing wrong with it.
     """
     result = _verify(_write(tmp_path, _TWO_ASSUMES))
-    e538 = [w for w in result["warnings"] if w.get("error_code") == "E538"]
+    # E538 is an ERROR, so it arrives in `diagnostics`, not `warnings`.
+    e538 = [d for d in result["diagnostics"] if d.get("error_code") == "E538"]
     assert len(e538) == 1, _codes(result)
     assert e538[0]["source_line"].strip().startswith("assume("), e538[0]
     assert "assume" in e538[0]["fix"], e538[0]["fix"]
@@ -939,6 +998,77 @@ def test_1451_the_check_costs_one_query_per_function(tmp_path: Path) -> None:
     assert seen["author"] > clean["author"], (clean, seen)
     assert seen["full"] - clean["full"] == seen["fns"] - clean["fns"], (
         clean, seen)
+
+
+def test_1451_stage_two_is_asked_only_when_stage_one_decided_nothing(
+    tmp_path: Path,
+) -> None:
+    """A `sat` at stage 1 settles stage 2, so stage 2 is not asked.
+
+    A model of the whole premise set is a model of every SUBSET of it, the
+    quantifier-free one included, so once stage 1 has exhibited a model the
+    only answer stage 2 can give is `sat` — and it asks at the full DISCHARGE
+    budget to be told so.  RED before the gate, which ran stage 2 whenever
+    stage 1 was `is not False`: that is every clean function in the corpus
+    (#1457 review, CodeRabbit).
+
+    Both legs, because the gate has to be shown to lose no DETECTION as well
+    as to save the query.  With stage 1 blinded to `unknown` — the one verdict
+    that now reaches stage 2 — the same program must still be asked, so an
+    unsatisfiable quantifier-free subset is still refuted wherever stage 1
+    fails to decide.
+    """
+    from vera import verifier as vmod
+
+    seen: list[tuple[str, str]] = []
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    o_qf = vmod.ContractVerifier._quantifier_free_premises_satisfiable
+    label = {True: "sat", False: "unsat", None: "unknown"}
+
+    def spy_full(self, smt, assumed):  # type: ignore[no-untyped-def]
+        v = o_full(self, smt, assumed)
+        seen.append(("stage1", label[v]))
+        return v
+
+    def blind_stage1(self, smt, assumed):  # type: ignore[no-untyped-def]
+        seen.append(("stage1", "unknown"))
+        return None
+
+    def spy_qf(self, smt, assumed):  # type: ignore[no-untyped-def]
+        v = o_qf(self, smt, assumed)
+        seen.append(("stage2", label[v]))
+        return v
+
+    vmod.ContractVerifier._quantifier_free_premises_satisfiable = spy_qf  # type: ignore[assignment]
+    try:
+        vmod.ContractVerifier._full_premises_satisfiable = spy_full  # type: ignore[assignment]
+        seen.clear()
+        decided = _verify_in_process(_write(tmp_path / "ok", _HEALTHY))
+        decided_seen = list(seen)
+
+        vmod.ContractVerifier._full_premises_satisfiable = blind_stage1  # type: ignore[assignment]
+        seen.clear()
+        blinded = _verify_in_process(_write(tmp_path / "blind", _HEALTHY))
+        blinded_seen = list(seen)
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+        vmod.ContractVerifier._quantifier_free_premises_satisfiable = o_qf  # type: ignore[assignment]
+
+    # The status premise beside the assertion: stage 1 really answered `sat`,
+    # and the screen really ran.  Without it the cell is satisfied by a run
+    # that never reached the check — which is what a broken screen looks like.
+    assert ("stage1", "sat") in decided_seen, decided_seen
+    assert not [s for s in decided_seen if s[0] == "stage2"], decided_seen
+    assert decided.summary.tier1_verified > 0, decided.summary  # type: ignore[attr-defined]
+
+    # ... and the detection the gate must not cost: blinded, stage 2 is asked,
+    # and on a healthy program it answers `sat` and demotes nothing.
+    assert ("stage2", "sat") in blinded_seen, blinded_seen
+    assert not [
+        d for d in blinded.diagnostics  # type: ignore[attr-defined]
+        if d.error_code in ("E538", "E539")
+    ], blinded_seen
+    assert blinded.summary.tier1_verified > 0, blinded.summary  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -1429,6 +1559,10 @@ def test_1451_vacuity_matrix(
         assert all(
             o["status"] in ("tier3_unguarded", "violated") for o in unsat_slice
         ), [(o["kind"], o["status"]) for o in unsat_slice]
+        # ... and the program is REFUSED, on every author row.  E538 is an
+        # error, so the refusal is the signal the author gets at the
+        # definition rather than a tier they have to go and read.
+        assert unsat["ok"] is False, (route_name, kind_name, _codes(unsat))
         if kind_name == "call_pre":
             # Say what the contradiction actually bought, rather than only
             # that E538 fired: the call whose precondition the satisfiable
@@ -1438,18 +1572,16 @@ def test_1451_vacuity_matrix(
             assert not [
                 o for o in unsat_slice if o["kind"] == "call_pre"
             ], _triples(unsat)
-            # The `where` shape is the exception, and a load-bearing one: the
-            # contradiction is the HELPER's, so the PARENT's call to it is a
-            # genuine E501 and the program is refused — which is what keeps
-            # the warning-not-error decision honest for a function anyone
-            # actually calls.  Everywhere else the caller is outside the
-            # fixture, and the program stands.
+            # The `where` shape refuses TWICE over, and the second refusal is
+            # load-bearing: the contradiction is the HELPER's, so the PARENT's
+            # call to it is a genuine E501 beside the helper's own E538.  The
+            # call site answering separately is what covers a callee compiled
+            # from another module, where this run never sees the definition.
             if route.shape == "where":
-                assert unsat["ok"] is False, _triples(unsat)
                 assert ("call_pre", "violated", "E501") in _triples(
                     unsat), _triples(unsat)
             else:
-                assert unsat["ok"] is True, _triples(unsat)
+                assert "E501" not in _codes(unsat), _codes(unsat)
     else:
         assert "E538" not in _codes(unsat), (
             f"{route_name}/{kind_name}: an unreachable arm is the program's "
@@ -1682,7 +1814,16 @@ def test_1451_the_second_stage_refutes_on_the_quantifier_free_subset(
         # stage 1 does not decide, stage 2 must refute.
         vmod.ContractVerifier._full_premises_satisfiable = blind_stage1  # type: ignore[assignment]
         seen.clear()
-        hard = _verify_in_process(_write(tmp_path / "hard", _PELL_50))
+        # An explicit, generous budget for the same reason the end-to-end cell
+        # carries one: this refutation needs seconds of real search, and at
+        # the default 10 s it finishes with about 2.8 s to spare on a loaded
+        # host.  A cell that close to its budget measures the machine, and
+        # what it would report is `unknown` — the verdict this leg exists to
+        # rule out.  Stage 2's budget IS the discharge budget, so raising it
+        # is the whole remedy; it caps the query and does not lengthen it.
+        hard = _verify_in_process(
+            _write(tmp_path / "hard", _PELL_50), timeout_ms=120_000,
+        )
         hard_seen = list(seen)
 
         # Unblinded, so the rank-axiom leg measures the real stage 1.
@@ -1729,6 +1870,10 @@ def test_1451_vera_test_does_not_call_a_demoted_function_tier_1(
     assert "Tier 1" not in proc.stdout, proc.stdout
     assert "VERIFIED" not in proc.stdout, proc.stdout
     assert "unsatisfiable" in proc.stdout, proc.stdout
+    # ... and it agrees with `vera verify` about the program, now that E538 is
+    # an error: a reader that printed the refusal and exited 0 would be the
+    # same disagreement between two consumers in a quieter form.
+    assert proc.returncode == 1, (proc.returncode, proc.stdout)
 
 
 def test_1451_the_lsp_does_not_call_a_demoted_function_tier_1(
@@ -1760,3 +1905,192 @@ def test_1451_the_lsp_does_not_call_a_demoted_function_tier_1(
     assert "Tier 1" not in bad_text, bad_text
     assert "neither proved nor guarded" in bad_text, bad_text
     assert "Tier 1" in good_text, good_text
+
+
+# ---------------------------------------------------------------------------
+# The completeness condition, asserted rather than measured
+# ---------------------------------------------------------------------------
+#
+# Stage 2 drops the QUANTIFIED premises and asks the rest.  That is sound
+# whatever it drops — a refutation on a subset is a refutation on the whole —
+# and it is COMPLETE, so that a `sat` there really does mean the whole set has
+# a model, exactly while the two halves share no uninterpreted symbol: a model
+# of the quantifier-free half then extends to one of the whole set by
+# interpreting the dropped symbols freely, which for the rank axioms a
+# `decreases` measure installs is structural depth.
+#
+# That is a property of what the verifier ASSERTS, not of this check, so it
+# can lapse from anywhere — a new quantified premise (Tier 2 hints, #427), or
+# an existing one growing a term over a rank symbol.  Asserting it here is
+# what turns "by measurement at this revision" into a condition that cannot
+# lapse in silence.
+
+
+def _uninterpreted_symbols(expr: object) -> set[str]:
+    """The uninterpreted function and constant names occurring in *expr*.
+
+    Datatype constructors, accessors and recognizers carry their own decl
+    kinds and are NOT collected: they are interpreted by the datatype
+    declaration, shared by construction, and a model of one half never has to
+    disagree with the other about them.  A quantifier's body is walked so a
+    symbol applied only under a binder still counts; the bound variables
+    themselves are `Var` nodes rather than applications, so they contribute
+    nothing.
+    """
+    import z3
+
+    out: set[str] = set()
+    stack: list[object] = [expr]
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        node_id = node.get_id()  # type: ignore[attr-defined]
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        if z3.is_quantifier(node):
+            stack.append(node.body())  # type: ignore[attr-defined]
+            continue
+        if z3.is_app(node):
+            decl = node.decl()  # type: ignore[attr-defined]
+            if decl.kind() == z3.Z3_OP_UNINTERPRETED:
+                out.add(decl.name())
+            stack.extend(node.children())  # type: ignore[attr-defined]
+    return out
+
+
+def _symbol_halves(facts: list[object]) -> tuple[set[str], set[str]]:
+    """Split *facts* the way stage 2 does, and collect each half's symbols."""
+    import z3
+
+    quantified: set[str] = set()
+    free: set[str] = set()
+    for fact in facts:
+        has_q = any(
+            z3.is_quantifier(sub)
+            for sub in _subterms(fact)
+        )
+        (quantified if has_q else free).update(_uninterpreted_symbols(fact))
+    return quantified, free
+
+
+def _subterms(expr: object) -> list[object]:
+    import z3
+
+    out: list[object] = []
+    stack: list[object] = [expr]
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        node_id = node.get_id()  # type: ignore[attr-defined]
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        out.append(node)
+        if z3.is_quantifier(node):
+            stack.append(node.body())  # type: ignore[attr-defined]
+        elif z3.is_app(node):
+            stack.extend(node.children())  # type: ignore[attr-defined]
+    return out
+
+
+def test_1451_the_instrument_sees_a_shared_symbol() -> None:
+    """The differential's negative control: it can fail.
+
+    A quantified fact and a quantifier-free one over the SAME uninterpreted
+    function is the shape that would make stage 2's `sat` mean nothing, since
+    the quantifier-free model would then have to agree with the dropped axiom.
+    Built by hand rather than found, because no program produces it — which is
+    the claim the corpus leg makes, and which would be unfalsifiable without
+    this one.
+    """
+    import z3
+
+    rank = z3.Function("rank_list", z3.IntSort(), z3.IntSort())
+    x, y = z3.Int("x"), z3.Int("y")
+
+    shared_q, shared_free = _symbol_halves(
+        [z3.ForAll([x], rank(x) >= 0), rank(3) == 7],
+    )
+    assert shared_q & shared_free == {"rank_list"}, (shared_q, shared_free)
+
+    ok_q, ok_free = _symbol_halves([z3.ForAll([x], rank(x) >= 0), y > 0])
+    assert not (ok_q & ok_free), (ok_q, ok_free)
+    # ... and the halves are both non-empty, or "disjoint" would be the
+    # instrument reporting that it collected nothing.
+    assert ok_q == {"rank_list"} and ok_free == {"y"}, (ok_q, ok_free)
+
+
+def test_1451_no_corpus_premise_set_shares_a_symbol_across_the_split() -> None:
+    """Stage 2 is refutation-COMPLETE on every corpus program that has ranks.
+
+    The context step 8c screens is captured as the check sees it — the
+    solver's base assertions plus the top-level `assume` facts folded in by
+    `check_valid` — split into the two halves stage 2 splits it into, and the
+    uninterpreted symbols of each collected.  An empty intersection is the
+    hypothesis of the extension argument in spec §6.8.2; a shared symbol is a
+    soundness finding about the SCREEN, not about the program.
+
+    Over every corpus program carrying a `decreases` measure, which is where
+    quantified premises come from today.  Two counts are asserted beside the
+    disjointness: the programs really were screened, and at least one context
+    really had a quantified half — without which every intersection is empty
+    because one side is.
+    """
+    import vera
+    from vera import verifier as vmod
+
+    root = Path(vera.__file__).resolve().parents[1]
+    programs = sorted(
+        p for p in (
+            *(root / "tests" / "conformance").glob("*.vera"),
+            *(root / "examples").glob("*.vera"),
+        )
+        if "decreases(" in p.read_text(encoding="utf-8")
+    )
+    assert len(programs) >= 10, [p.name for p in programs]
+
+    captured: list[tuple[str, str, list[object]]] = []
+    original = vmod.ContractVerifier._enforce_premise_consistency
+
+    def capture(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
+        captured.append(
+            (self._current_file, decl.name,
+             [*smt.solver.assertions(), *assumed]),
+        )
+        return original(self, decl, smt, obl_start, contract, assumed)
+
+    vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
+    try:
+        screened = 0
+        for path in programs:
+            try:
+                _verify_in_process(path)
+            except Exception:  # noqa: BLE001 — a negative fixture, skipped
+                continue
+            screened += 1
+    finally:
+        vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
+
+    assert screened >= 10, screened
+    assert captured, "no premise set was screened at all"
+
+    with_quantifiers = 0
+    shared: list[tuple[str, str, set[str]]] = []
+    for file, fn_name, facts in captured:
+        quantified, free = _symbol_halves(facts)
+        if quantified:
+            with_quantifiers += 1
+        overlap = quantified & free
+        if overlap:
+            shared.append((Path(file).name, fn_name, overlap))
+
+    assert with_quantifiers > 0, (
+        f"no captured premise set had a quantified half, so the disjointness "
+        f"below holds for the wrong reason — {len(captured)} contexts"
+    )
+    assert not shared, (
+        f"a quantifier-free premise mentions a symbol only the quantified "
+        f"premises constrain, so stage 2's `sat` no longer implies the whole "
+        f"set has a model (spec §6.8.2) — {shared}"
+    )

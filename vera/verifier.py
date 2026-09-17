@@ -4716,6 +4716,11 @@ class ContractVerifier:
         quantified fact and does not propagate inside stage 1's budget.  It is
         disclosed in spec §6.8.2 rather than papered over; no program is known
         that reaches it.
+
+        Reached only on an UNDECIDED stage 1 — a `sat` there already exhibits
+        a model of this subset, so asking again would spend the discharge
+        budget to be told so.  The gate lives in
+        :py:meth:`_enforce_premise_consistency`.
         """
         probe = z3.Solver()
         probe.set("timeout", smt._timeout_ms)
@@ -4784,8 +4789,10 @@ class ContractVerifier:
 
         A ``verified`` recorded against contradictory premises is not a proof
         — ``Not(goal)`` is unsatisfiable alongside them whatever the goal is —
-        so it becomes ``tier3_unguarded``, which the summary counts in no tier
-        and the documented partition surfaces as a warning.
+        so it becomes ``tier3_unguarded``, which the summary counts in no
+        tier.  The diagnostic beside it is a warning for E539 and an ERROR for
+        E538, which refuses the program; the status says the same thing either
+        way, because what was established is nothing in both cases.
 
         A ``violated`` is left alone.  It is the one verdict a contradiction
         cannot manufacture: an UNSAT context discharges everything, so a
@@ -4816,15 +4823,26 @@ class ContractVerifier:
     def _report_unsatisfiable_contract(
         self, decl: ast.FnDecl, assumed: list[object],
     ) -> None:
-        """The E538 warning, from either of the two places that can reach it.
+        """The E538 error, from either of the two places that can reach it.
 
         Both are the same finding — the author's own premises have no common
         model — so they say it in one place: whether the full set was refuted
         and the attribution landed here, or the full set was undecided and
         this layer answered on its own, the reader is told the same thing and
         acts on the same clause.
+
+        An ERROR, and the program is refused at the definition.  Contracts are
+        the source of truth here (DESIGN.md), and a premise set with no model
+        is a contract that says nothing about any call: there is no argument
+        it admits, so there is no behaviour it constrains.  Reporting it as a
+        tier would leave the language accepting a declaration whose meaning is
+        empty, and leave the author to notice the tier; the signal belongs at
+        the definition, where the clause that is wrong is.  Its sibling E539 —
+        the author's premises satisfiable, the FULL set contradictory — stays
+        a warning, because the fact at fault there can be one the author does
+        not directly control.
         """
-        self._warning(
+        self._error(
             self._premise_site(decl, assumed=bool(assumed)),
             f"The premises of '{decl.name}' are unsatisfiable, so no call "
             f"can reach the body under them and nothing in it was "
@@ -4847,7 +4865,6 @@ class ContractVerifier:
             ),
             spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
             error_code="E538",
-            tier=3,
         )
 
     def _enforce_premise_consistency(
@@ -4871,9 +4888,13 @@ class ContractVerifier:
 
         * the AUTHOR's premises — the parameters' types and refinements, the
           ``requires`` clauses, and the top-level ``assume`` predicates — where
-          the answer is to weaken one of them;
+          the answer is to weaken one of them, and where the program is
+          refused (**E538**, an error);
         * the FULL premise set, which adds what the verifier derived, where the
-          answer is a bug report.  ``vera/smt.py`` documents two producers it
+          answer is usually still to weaken a premise the program itself
+          states — and only where none is at fault is it a bug report, which
+          is why that half stays a warning.  ``vera/smt.py`` documents two
+          producers it
           defends against by hand — the unmodelled-base refined return, and
           #953's path-guarded call facts — and the point of a general check is
           that the next premise source does not have to be foreseen.
@@ -4886,6 +4907,14 @@ class ContractVerifier:
         find one.  Measured over the corpus, that is one query for all but a
         handful of functions, where asking layer 1 first was unconditionally
         two.
+
+        The same subset argument gates stage 2, and for the same reason: a
+        model of the whole premise set is a model of its quantifier-free
+        part, so once stage 1 answers `sat` the only answer stage 2 can give
+        is `sat` — at the full discharge budget, to learn what is already
+        known.  Stage 2 runs on an UNDECIDED stage 1 and nowhere else, which
+        loses no detection, because an unsatisfiable quantifier-free subset
+        is still reached whenever stage 1 failed to decide.
 
         Branch path conditions are deliberately NOT part of either layer.  An
         arm whose guard cannot hold is unreachable rather than contradictory,
@@ -4929,7 +4958,15 @@ class ContractVerifier:
 
         # Stage 1: the whole premise set, quantified facts included, at the
         # short budget.  A contradiction that propagates is refuted here.
-        if self._full_premises_satisfiable(smt, assumed) is not False:
+        stage1 = self._full_premises_satisfiable(smt, assumed)
+        if stage1 is True:
+            # A model of the whole premise set is a model of every SUBSET of
+            # it, so stage 2 could only rediscover this one — and it would
+            # spend the full discharge budget doing it (#1457 review,
+            # CodeRabbit).  Nothing is given up by returning here: stage 2 is
+            # informative only where stage 1 decided nothing.
+            return
+        if stage1 is None:
             # Stage 2: the quantifier-free SUBSET, at the discharge budget.
             # A refutation on a subset is a refutation on the whole, and
             # dropping the rank axioms is what makes that budget affordable.
@@ -4950,8 +4987,16 @@ class ContractVerifier:
             # Saying "internal" would blame the compiler for something that
             # may be the contract; saying nothing keeps a vacuous proof.
             # Demote without attributing, under the code that claims least.
+            #
+            # E538 is one code at one severity, so this refuses too, and that
+            # is the safe direction rather than an accident of the flip: the
+            # full premise set WAS refuted, so the function certifies nothing
+            # whatever the cause, and a budget large enough to attribute the
+            # contradiction can only move it to E539 — an accept that a slow
+            # solver turns into a refusal, never a refusal it turns into an
+            # accept.  The `fix` says how to get the attribution.
             self._demote_function_obligations(obl_start, "E538")
-            self._warning(
+            self._error(
                 self._premise_site(decl, assumed=bool(assumed)),
                 f"The premises of '{decl.name}' are unsatisfiable, so nothing "
                 f"in it was verified against a reachable state. Every "
@@ -4970,7 +5015,6 @@ class ContractVerifier:
                 ),
                 spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                 error_code="E538",
-                tier=3,
             )
             return
 
