@@ -294,13 +294,34 @@ def strip_refinements(ty: Type) -> Type:
     unwraps one level and **verified** once it unwraps the chain, and a
     payload the chain does NOT exclude is still refused
     (`tests/test_verifier_refined_sort_derivation.py`).
+
+    THE RULE THIS OBEYS, and the reason it is not the whole story: *a
+    refinement is represented as its base only while its predicate can be
+    STATED*.  Unwrapping is what makes the sort; the predicate is what gives
+    the sort its meaning, and a level of the chain that calls something
+    outside the decidable fragment (spec §2.6.4 cause 3) leaves the value a
+    bare `Int` with nothing said about it.  Such a term must not exist at
+    all: the solver is free to choose a value the type forbids, so
+    `{ @L1 | int_to_float(@L1.0) > 0.0 }` over `{ @Int | @Int.0 > 0 }`
+    refuted `100 / @L2.0` with the divisor 0 — a value `L1` excludes and
+    `vera run` never produces (review of PR #1415, J1).  So the question
+    "does this refinement's whole predicate translate, at every depth?" is
+    asked ONCE, by `SmtContext._refinement_statable`, and the SORT
+    derivation reads it: an unstatable refinement keeps the `?` key and the
+    `None` sort, exactly as it did before a chain could be unwrapped at all.
+    This function stays pure and unconditional; it says what a refinement is
+    REPRESENTED as, and its callers decide whether to represent it.
     """
     while isinstance(ty, RefinedType):
         ty = ty.base
     return ty
 
 
-def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
+def _adt_sort_key(
+    adt_name: str,
+    type_args: tuple[Type, ...],
+    statable: "Callable[[Type], bool] | None" = None,
+) -> str:
     """Build a canonical key for an ADT sort, e.g. ``List<Int>``.
 
     ONE derivation of the sort a type argument contributes, wherever a term
@@ -323,11 +344,18 @@ def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
         return adt_name
     arg_strs = []
     for a in type_args:
+        if (statable is not None and isinstance(a, RefinedType)
+                and not statable(a)):
+            # A refinement whose predicate cannot be STATED is not modelled:
+            # see `strip_refinements`.  `?` is the same refusal a type
+            # variable earns, and it keeps the key and the sort agreeing.
+            arg_strs.append("?")
+            continue
         a = strip_refinements(a)
         if isinstance(a, PrimitiveType):
             arg_strs.append(a.name)
         elif isinstance(a, AdtType):
-            arg_strs.append(_adt_sort_key(a.name, a.type_args))
+            arg_strs.append(_adt_sort_key(a.name, a.type_args, statable))
         else:
             # A type variable or a shape the sort layer does not model: the
             # key stays un-nameable on purpose, and `_parse_adt_sort_key`
@@ -585,6 +613,17 @@ class SmtContext:
         # its base-name scan would be ambiguous (#994 F1).  Signature:
         # (expr_ast) -> Type | None.  None when no verifier is driving.
         self._recorded_type_hook: Any = None
+        # Optional hook (injected by the verifier) answering whether a
+        # refinement's WHOLE predicate translates — the chain walk and the
+        # predicate translation both live on the verifier.  Signature:
+        # (Type) -> bool.  None means "no predicates are in play", which is
+        # true of a pure-SMT test and is what this layer assumed before the
+        # question existed.  See `strip_refinements` for the rule.
+        self._refinement_statable_hook: Any = None
+        #: Its memo, keyed by the type's repr.  Per context: the answer is a
+        #: property of the type, but the translation that decides it runs
+        #: against this context's registries.
+        self._statable: dict[str, bool] = {}
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._adt_registry_version = 0
@@ -829,6 +868,33 @@ class SmtContext:
         self._vars[name] = v
         return v
 
+    def _refinement_statable(self, ty: Type) -> bool:
+        """Can this refinement's WHOLE predicate be stated to the solver?
+
+        THE one place that question is asked; `strip_refinements` explains
+        why the sort derivation has to ask it.  Answered by the verifier
+        through `_refinement_statable_hook`, which owns the chain walk and
+        the predicate translation; without a hook — a pure-SMT test, where no
+        predicate is in play — the answer is yes, which is what this layer
+        did before the question existed.
+
+        Memoised per type, and the entry is planted BEFORE the hook runs:
+        translating a predicate can ask for a sort, which can ask this again
+        for the same type, and an optimistic in-progress answer breaks that
+        cycle the way it would be broken anyway for a type whose predicate
+        does translate.
+        """
+        if self._refinement_statable_hook is None:
+            return True
+        key = repr(ty)
+        cached = self._statable.get(key)
+        if cached is not None:
+            return cached
+        self._statable[key] = True
+        answer = bool(self._refinement_statable_hook(ty))
+        self._statable[key] = answer
+        return answer
+
     def _vera_type_to_z3_sort(
         self,
         ty: Type,
@@ -862,6 +928,15 @@ class SmtContext:
         # Through the shared helper, and through it in a CHAIN: a single
         # unwrap here disagreed with the sort key's loop on a refinement over
         # a refinement (#1431 review, F1).
+        #
+        # ... but only while the predicate can be STATED.  An unwrap that
+        # models the carrier while the predicate stays untranslated creates a
+        # term with nothing said about it, which the solver may then choose a
+        # forbidden value for; `strip_refinements` states the rule and
+        # :py:meth:`_refinement_statable` is where the question is asked
+        # (review of PR #1415, J1).
+        if isinstance(ty, RefinedType) and not self._refinement_statable(ty):
+            return None
         ty = strip_refinements(ty)
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
@@ -874,7 +949,8 @@ class SmtContext:
                 return _FLOAT64_SORT
             return None
         if isinstance(ty, AdtType):
-            key = _adt_sort_key(ty.name, ty.type_args)
+            key = _adt_sort_key(
+                ty.name, ty.type_args, self._refinement_statable)
             # In-progress member of the current mutually-recursive group:
             # hand back its builder so Z3 resolves the forward reference.
             if builders is not None and key in builders:
@@ -948,7 +1024,7 @@ class SmtContext:
         worklist: list[tuple[str, tuple[Type, ...]]] = [(root_name, root_args)]
         while worklist:
             name, args = worklist.pop()
-            key = _adt_sort_key(name, args)
+            key = _adt_sort_key(name, args, self._refinement_statable)
             if key in group or key in self._z3_sorts:
                 continue
             info = self._adt_registry.get(name)
@@ -1015,7 +1091,8 @@ class SmtContext:
         single pass instead of recursing unboundedly into fresh sort creation.
         A self-recursive datatype is the singleton-group case.
         """
-        key = _adt_sort_key(adt_name, type_args)
+        key = _adt_sort_key(
+            adt_name, type_args, self._refinement_statable)
         if key in self._z3_sorts:
             return self._z3_sorts[key]
 
@@ -3156,7 +3233,8 @@ class SmtContext:
         instantiation is cached, so it never rebuilds an ``Int`` twin of an
         existing ``Nat`` sort.
         """
-        key = _adt_sort_key(adt_name, type_args)
+        key = _adt_sort_key(
+            adt_name, type_args, self._refinement_statable)
         exact = self._z3_sorts.get(key)
         if exact is not None:
             return exact
@@ -3871,6 +3949,12 @@ class SmtContext:
         self._tainted_facts.clear()   # #1363: per-function, must not survive
         self._disclosed_terms.clear()  # #1406: ditto — see the docstring
         self._disclosed_term_sites.clear()  # and the citations riding on them
+        # The statability memo is per FUNCTION, not per process: the answer is
+        # a property of the type, but it is decided by a translation run
+        # against this context's live scope, and a warm session that kept it
+        # would answer a later function from an earlier one's environment —
+        # the warm/cold divergence `_tainted_facts` is cleared to avoid.
+        self._statable.clear()
         self._length_fns = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }

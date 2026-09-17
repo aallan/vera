@@ -2154,3 +2154,329 @@ def test_1403_the_arm_context_has_one_assembly_point() -> None:
         and isinstance(node.func, py_ast.Attribute)
     }
     assert watched <= called, f"the seam stopped composing: {watched - called}"
+
+
+# ---------------------------------------------------------------------------
+# A refinement the solver cannot STATE is not modelled (review J1)
+# ---------------------------------------------------------------------------
+
+#: `L2`'s outer level calls `int_to_float`, which is outside the decidable
+#: fragment, so `_translate_refined_predicate` declines the WHOLE chain —
+#: spec §2.6.4 cause 3.  Its inner level still forbids 0.
+_UNSTATABLE = """\
+type L1 = {{ @Int | @Int.0 > 0 }};
+type L2 = {{ @L1 | int_to_float(@L1.0) > 0.0 }};
+
+private fn needs_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+private fn mk(@Int -> @Option<L2>)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{{
+  Some(@Int.0)
+}}
+
+public fn use_it(@Int -> {ret})
+  requires(@Int.0 > 0 && @Int.0 < 10)
+  ensures({post})
+  effects(pure)
+{{
+  match mk(@Int.0) {{
+    Some(@L2) -> {body},
+    None -> {fallback}
+  }}
+}}
+"""
+
+#: consumer -> (return type, postcondition, arm body, other arm, the kind
+#: whose verdict this cell reads, the verdict it must read).
+_UNSTATABLE_CASES = {
+    "div": ("@Int", "true", "100 / @L2.0", "0", "div_zero", ("tier3", None)),
+    "ensures": ("@Int", "@Int.result > 0", "@L2.0", "1", "ensures",
+                ("tier3", "E522")),
+    "call_pre": ("@Int", "true", "needs_pos(@L2.0)", "0", "call_pre", None),
+    # Two records here, and both are the tip's: the PRODUCER's own
+    # construction (unguarded, E506) and the arm's store.
+    "store": ("@Option<L1>", "true", "Some(@L2.0)", "None", "refine_bind",
+              [("tier3_unguarded", "E506"), ("tier3", "E506")]),
+}
+
+
+@pytest.mark.parametrize("consumer", sorted(_UNSTATABLE_CASES))
+def test_1403_an_unstatable_refinement_is_not_a_counterexample(
+    tmp_path: Path, consumer: str,
+) -> None:
+    """RED before: modelling a refinement whose predicate cannot be stated.
+
+    A refinement's Z3 sort is its base's and its predicate is carried
+    separately, so unwrapping the carrier while the predicate stays
+    untranslated leaves a term with NOTHING said about the value it holds.
+    The solver is then free to choose a value the type forbids, and it does:
+    with the whole-chain unwrap and no statability question, all four
+    consumers below refused this program — `100 / @L2.0` with the divisor 0,
+    which `L1` excludes and `vera run` never produces (review of PR #1415,
+    J1).
+
+    The cure is not to filter such a counterexample at each site that might
+    produce one, but not to create the term: the question "does this
+    refinement's whole predicate translate, at every depth?" is asked once
+    and the SORT derivation reads it, so an unstatable refinement keeps the
+    `?` key and the `None` sort it had before a chain could be unwrapped at
+    all.  A chain whose levels all translate still unwraps — that is what the
+    `chain` row of the grid above measures, and it is why this is not a
+    revert.
+
+    Every cell is the verdict `release/v0.2.0` gives, because the program was
+    always accepted; what changed is that this head no longer refuses it.
+    """
+    ret, post, body, fallback, kind, verdict = _UNSTATABLE_CASES[consumer]
+    src = _UNSTATABLE.format(
+        ret=ret, post=post, body=body, fallback=fallback)
+    path = _tree(tmp_path, {"p": src})["p"]
+    result = _verify(path)
+    assert result["ok"] is True, result["diagnostics"]
+    hits = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == kind and o["status"] != "verified"
+    ]
+    expected = ([] if verdict is None
+                else verdict if isinstance(verdict, list) else [verdict])
+    assert hits == expected, _triples(result)
+
+
+def test_1403_an_unstatable_refinement_still_runs_and_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """The two directions that keep the cells above from being a free pass.
+
+    Not modelling a value costs precision, so the pair that matters is: the
+    program the head refused RUNS and returns what the refutation said was
+    impossible, and an `ensures` over such a value does NOT prove.
+    """
+    ret, post, body, fallback, _kind, _v = _UNSTATABLE_CASES["div"]
+    path = _tree(tmp_path / "run", {"p": _UNSTATABLE.format(
+        ret=ret, post=post, body=body, fallback=fallback)})["p"]
+    run = _cli("run", str(path), "--fn", "use_it", "--", "4")
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip().endswith("25"), run.stdout
+
+    # ... and the false-proof direction: an `ensures` the value cannot
+    # support must not be proved by the absence of a model for it.
+    false_post = _UNSTATABLE.format(
+        ret="@Int", post="@Int.result > 5", body="@L2.0", fallback="6")
+    bad = _verify(_tree(tmp_path / "neg", {"p": false_post})["p"])
+    tail = [
+        (o["status"], o.get("error_code")) for o in bad["obligations"]
+        if o["kind"] == "ensures"
+    ]
+    assert ("verified", None) != tail[-1], _triples(bad)
+
+
+# ---------------------------------------------------------------------------
+# The unestablished REASON reaches every route that withholds (review J2/J3)
+# ---------------------------------------------------------------------------
+
+_REFUTING_HELPER = """\
+type Pos = {{ @Int | @Int.0 > 0 }};
+
+{top}public fn caller(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{{
+  match helper(@Int.0) {{
+    Some(@Pos) -> 100 / @Pos.0,
+    None -> 1
+  }}
+}}
+{where}"""
+
+_HELPER_BODY = """  fn helper(@Int -> @Option<Pos>)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    Some(0 - 5)
+  }
+"""
+
+
+@pytest.mark.parametrize(
+    "spelling", ["where-helper", "top-level"],
+)
+def test_1403_the_withheld_reason_reaches_the_where_helper_route(
+    tmp_path: Path, spelling: str,
+) -> None:
+    """The same refuted producer earns the same wording either way it is spelt.
+
+    `_scrutinee_is_disclosed_call` has three routes to "yes, withheld" — the
+    bare name, the module manifest, and a `where` helper this run found to be
+    forwarding.  Two of them stamped the REASON; the third answered yes
+    without one, so `_withheld_phrase` fell back to its "disclosed" default
+    and a producer whose own obligation the run PROVED FALSE was described as
+    one it "could neither prove nor guard" — but only when it was written as
+    a helper (review of PR #1415, J2).
+
+    Both spellings are one cell because the top-level one is the control:
+    it is the wording the helper one has to match, and it passed throughout.
+
+    This is also the only reader of `unestablished_reasons`' owner-keyed
+    spelling (J3): the entry for a helper is keyed by `disclosed_key(name,
+    owner)`, the same key this route tests membership with, so reverting
+    that keying to the bare name makes the lookup miss and this cell reds.
+    """
+    if spelling == "where-helper":
+        src = _REFUTING_HELPER.format(
+            top="", where="where {\n" + _HELPER_BODY + "}\n")
+    else:
+        src = _REFUTING_HELPER.format(
+            top=_HELPER_BODY.replace("  fn ", "private fn ").replace(
+                "\n    ", "\n  ").replace("\n  {", "\n{").replace(
+                "\n  }", "\n}") + "\n",
+            where="")
+    result = _verify(_tree(tmp_path / spelling, {"p": src})["p"])
+    assert ("refine_bind", "violated", "E505") in _triples(result), (
+        f"the producer stopped being refuted, so this cell is vacuous: "
+        f"{_triples(result)}"
+    )
+    assert ("div_zero", "tier3", "E534") in _triples(result), _triples(result)
+    e534 = [w for w in result["warnings"] if w.get("error_code") == "E534"]
+    assert len(e534) == 1, [w.get("error_code") for w in result["warnings"]]
+    assert "proved FALSE" in e534[0]["description"], e534[0]["description"]
+    assert "could neither prove nor guard" not in e534[0]["description"], (
+        e534[0]["description"]
+    )
+
+
+def test_1403_the_reason_map_is_keyed_the_way_the_set_is() -> None:
+    """`unestablished_reasons` spells its keys the way `disclosed_fn_names`
+    does, because the two are read together.
+
+    The set answers "is this producer withheld" and the map answers "and
+    why"; a key spelled two ways makes the second question miss for exactly
+    the names the first one finds — a `where` helper, whose bare name means a
+    different function under every owner.  Stated as a unit equality so the
+    pairing is asserted rather than inferred from one program.
+    """
+    from vera.obligations.core import ProofObligation
+    from vera.verifier import (
+        disclosed_fn_names, disclosed_key, unestablished_reasons,
+    )
+
+    obls = [
+        ProofObligation(
+            fn_name="helper", kind="refine_bind", status="violated",
+            expr_text="x", line=1, column=1, error_code="E505",
+            owner="caller",
+        ),
+        ProofObligation(
+            fn_name="mk", kind="nat_bind", status="tier3_unguarded",
+            expr_text="y", line=2, column=1, error_code="E504",
+        ),
+    ]
+    reasons = unestablished_reasons(obls)
+    assert set(reasons) == set(disclosed_fn_names(obls)), (
+        f"the map and the set disagree about how a name is spelled: "
+        f"{sorted(reasons)} vs {sorted(disclosed_fn_names(obls))}"
+    )
+    assert reasons[disclosed_key("helper", "caller")] == "refuted"
+    assert reasons[disclosed_key("mk", "")] == "disclosed"
+
+
+# ---------------------------------------------------------------------------
+# Where the refutation gate is NOT consulted, and why that is not reachable
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_ENSURES = """\
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = Some(9)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    match get(()) {
+      Some(@Int) -> @Int.0,
+      None -> 1
+    }
+  }
+}
+"""
+
+_PLACEHOLDER_CALL_PRE = """\
+private fn needs_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  1
+}
+
+public fn probe(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Option<Int>>](@Option<Int> = Some(9)) {
+    get(@Unit) -> { resume(@Option<Int>.0) },
+    put(@Option<Int>) -> { resume(()) }
+  } in {
+    match get(()) {
+      Some(@Int) -> needs_pos(@Int.0),
+      None -> 0
+    }
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "source,kind,verdict",
+    [
+        pytest.param(_PLACEHOLDER_ENSURES, "ensures", ("tier3", "E522"),
+                     id="postcondition-demotes-first"),
+        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", None,
+                     id="call-precondition-is-never-reached"),
+    ],
+)
+def test_1403_a_placeholder_never_becomes_a_counterexample(
+    tmp_path: Path, source: str, kind: str, verdict: tuple | None,
+) -> None:
+    """The two refutation sites with no gate, pinned at WHY they are safe.
+
+    `_contains_opaque_shadow` and the satisfiability re-ask behind it are
+    consulted at the `refine_bind` and primitive-operation sites, and NOT at
+    the postcondition's `violated` branch or at the call-precondition
+    violation the SMT layer drains.  That unevenness would matter if a
+    tracked placeholder could reach either as a counterexample.  Measured,
+    neither can, and for two different reasons — which is the thing worth
+    pinning, since "no cell fails" would otherwise be the only evidence:
+
+    * the postcondition path has its own opaque detection and demotes to
+      `tier3`/**E522** ("the function body binds an effect-operation value
+      the verifier models opaquely") before any refutation is attempted; and
+    * the arm's call precondition is never recorded at all, because
+      precondition obligations are a side effect of translating the call's
+      enclosing expression and `_translate_match` bails at an untranslatable
+      scrutinee — the [#1468](https://github.com/aallan/vera/issues/1468)
+      instance this file's monotonicity grid names.
+
+    If either verdict ever becomes `violated`, the gate is needed at that
+    site and the question is no longer local to this class.
+    """
+    result = _verify(_tree(tmp_path, {"p": source})["p"])
+    assert result["ok"] is True, result["diagnostics"]
+    hits = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == kind and o["status"] != "verified"
+    ]
+    assert hits == ([verdict] if verdict is not None else []), _triples(result)

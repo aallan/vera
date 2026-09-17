@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import TYPE_CHECKING
 
 from vera import ast, binders, narrowing, naming
@@ -3876,6 +3876,13 @@ class ContractVerifier:
         # on `Some(None) == None` / `!= None`.  Stateless (reads the live
         # `_instance_subst` per clone), so safe on the warm (shared) smt too.
         smt._recorded_type_hook = self._resolved_type_of
+        # J1: and let the SORT derivation ask whether a refinement's whole
+        # predicate can be stated, so a refinement it cannot state is not
+        # modelled rather than modelled without its meaning.  The chain walk
+        # and the predicate translation live here, so the question is
+        # answered here and asked once, by `SmtContext._refinement_statable`.
+        smt._refinement_statable_hook = partial(
+            self._refinement_predicate_statable, smt)
         # Register all known ADTs with the SMT context.  Idempotent on
         # the warm path (same AdtInfo re-registered into the persistent
         # registry); kept per-function so cold and warm stay identical.
@@ -9899,6 +9906,13 @@ class ContractVerifier:
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.
         smt._recorded_type_hook = self._resolved_type_of
+        # J1: and let the SORT derivation ask whether a refinement's whole
+        # predicate can be stated, so a refinement it cannot state is not
+        # modelled rather than modelled without its meaning.  The chain walk
+        # and the predicate translation live here, so the question is
+        # answered here and asked once, by `SmtContext._refinement_statable`.
+        smt._refinement_statable_hook = partial(
+            self._refinement_predicate_statable, smt)
         slot_env = SlotEnv()
         assumptions: list[object] = []
         for param_te in decl.params:
@@ -10247,11 +10261,25 @@ class ContractVerifier:
         (`_scope_fn_names`), so a top-level call is never answered by another
         function's helper — the mirror of the visibility test
         `_local_fn_names_in_scope` already applies to the manifest consult.
+
+        Stamps the REASON as the other two routes do.  The demotion's wording
+        turns on it, and a route that answers "yes, withheld" without one
+        falls back to the "disclosed" default — so the same refuted producer
+        read "could neither prove nor guard" when it was spelled as a `where`
+        helper and "proved FALSE" when it was spelled as a top-level
+        function.  `unestablished_reasons` already holds the helper's entry,
+        keyed by the same `disclosed_key` spelling this branch tests with;
+        the branch simply never read it (review of PR #1415, J2).
         """
         if name not in self._scope_fn_names:
             return False
-        return self._result_disclosed_key(
-            name, is_helper=True) in self._disclosed_fns
+        key = self._result_disclosed_key(name, is_helper=True)
+        if key not in self._disclosed_fns:
+            return False
+        reason = self._unestablished.get(key)
+        if reason is not None:
+            self._tainted_reasons.add(reason)
+        return True
 
     def _disclosed_call_for_value(
         self, call_node: ast.Expr,
@@ -12913,6 +12941,35 @@ class ContractVerifier:
         (#1226).  Delegates to the shared ``naming.predicate_binder_key`` so
         the verifier, codegen, and SMT refined-return paths can't drift."""
         return naming.predicate_binder_key(predicate, env)
+
+    def _refinement_predicate_statable(
+        self, smt: SmtContext, ty: Type,
+    ) -> bool:
+        """Whether *ty*'s whole refinement predicate translates.
+
+        The verifier's half of the question `strip_refinements` states the
+        rule for and `SmtContext._refinement_statable` asks: a refinement is
+        represented as its base only while its predicate can be STATED, or
+        the sort exists with nothing said about the value it carries.
+
+        Asked against a FRESH const of the chain's primitive base rather than
+        against any particular value, because it is a property of the type:
+        the same answer has to hold at every site that models one.  That base
+        is primitive by construction — :py:meth:`_refined_chain` walks to it
+        and :py:meth:`_base_slot_name` refuses anything else — so deriving
+        its sort cannot re-enter this question.
+        """
+        parts = self._refined_chain(ty)
+        if parts is None:
+            return False
+        base, _predicates = parts
+        if self._base_slot_name(base) is None:
+            return False
+        base_sort = smt._vera_type_to_z3_sort(base)
+        if base_sort is None:
+            return False
+        probe = z3.FreshConst(base_sort, "statable")
+        return self._translate_refined_predicate(smt, ty, probe) is not None
 
     @staticmethod
     def _translate_refined_predicate(
