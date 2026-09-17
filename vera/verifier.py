@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from functools import lru_cache, partial
 from typing import TYPE_CHECKING
 
-from vera import ast, binders, narrowing, naming
+from vera import ast, binders, carriers, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 from vera.monomorphize import (
     MonoContext,
@@ -3950,9 +3950,18 @@ class ContractVerifier:
             # uses.  Facts are assumed even when the walk reports itself
             # INCOMPLETE: each fact returned is true of the value, and a
             # partial set is a weaker assumption, never an over-assumption.
+            #
+            # Through the ONE gate every reader of a declared-type fact asks
+            # (#1363, #1406, #1413).  A parameter has no producer inside this
+            # function, so the gate answers "established" for every program
+            # measured — but it is asked rather than assumed, because the
+            # rule this file holds is that a reader of these facts is a call
+            # to the gate or it is a bug, and a term can acquire a disclosed
+            # site through cross-module widening.
             nested_facts, _ = self._nested_refinement_facts(
                 smt, param_ty, var)
-            refined_param_assumptions.extend(nested_facts)
+            refined_param_assumptions.extend(self._established_facts(
+                nested_facts, source=None, term=var, smt=smt))
 
         # 2. Declare result variable
         ret_type = self._resolve_type(decl.return_type)
@@ -9285,21 +9294,32 @@ class ContractVerifier:
         is not a full discharge, and the caller does not report it as one.
         """
         base = self._strip_refinements(ty)
+        # #1429: a NON-REGULAR declaration has no fixed point to walk to.
+        # Every level of `Nest<Option<T>>` instantiates a type key nothing has
+        # seen, so the `seen` sets below never close and the walk does not
+        # return — which is why the SMT layer declines to model such a type
+        # rather than bounding its descent.  This walk recurses through the
+        # same constructor fields, so it asks the same derivation and declines
+        # for the same reason.  Measured: `verify()` on a non-regular
+        # declaration did not come back, through `_contains_refinement` on the
+        # R1 parameter path.
+        if not smt.type_is_regular(base):
+            return [], False
         if not self._contains_refinement(base, frozenset()):
             return [], True
-        if (isinstance(base, AdtType) and base.name == "Array"
-                and len(base.type_args) == 1):
-            return self._array_element_facts(
-                smt, base.type_args[0], term, _seen)
+        element_positions = carriers.element_carriers(base)
+        if element_positions:
+            return self._carrier_element_facts(
+                smt, element_positions, term, _seen)
         if isinstance(base, AdtType) and self._type_key(base) in _seen:
             # #1430 stage 2: the walk has reached the type again.  Instead of
             # giving up, state the goal as the type's OWN predicate and let a
             # defining axiom relate it to one level of structure.
             return self._recursive_refinement_fact(smt, base, term, _seen)
         if not isinstance(base, AdtType):
-            # A carrier with no constructor decomposition (`Map` / `Set`, and
-            # any array whose term is not in an Array sort): the refinement is
-            # real and this walk cannot state it.
+            # Neither a carrier (handled above) nor a type with constructor
+            # decomposition: the refinement is real and this walk cannot
+            # state it.
             return [], False
         try:
             sort = term.sort()
@@ -9351,70 +9371,141 @@ class ContractVerifier:
         "Int", "Nat", "Float64", "Bool", "Byte",
     })
 
-    def _element_guard_emitted(self, ty: Type | None) -> bool:
+    #: Element-sequence projections the guard emitter can plant (#1430).  The
+    #: identity is an ``Array``, whose ``(ptr, len)`` pair already IS the
+    #: sequence the loop walks; a projected carrier needs the emitter to call
+    #: the projection's host import first, so a projection absent here is one
+    #: whose elements are honestly unguarded however scalar their base.
+    #: Mirrors the emitter's own table for the same reason the base set does,
+    #: and is held to it by the same differential.
+    _GUARDABLE_ELEMENT_PROJECTIONS: frozenset[str | None] = frozenset({None})
+
+    def _element_guard_emitted(
+        self, smt: SmtContext, ty: Type | None,
+    ) -> bool:
         """Whether codegen emits an element-wise boundary guard for *ty*.
 
-        True for an ``Array`` whose element is a refinement over a scalar base
-        codegen can load and check.  False for a pair-shaped element
+        True when EVERY element position of the carrier that carries a
+        refinement is one the emitter can check: a refinement over a scalar
+        base it can load.  False for a pair-shaped element
         (``Array<Array<T>>``, ``Array<String>``), which the emitter declines
         because its ptr half alone does not carry the value the predicate
         reads — a half-guard would be worse than an honest disclosure.
+
+        Every, not any, and that is the point at a two-position carrier: a
+        ``Map<NonEmpty, PosInt>`` has a guardable value position and an
+        unguardable key one, and claiming `guarded` for the obligation on the
+        strength of the value half would promise a check the keys never get.
 
         This is the verifier half of a cross-component invariant, so it is
         held by a differential against the emitter rather than by inspection:
         a `guarded` status that codegen does not back is exactly the defect
         #1430 stage 1 introduced, one level down.
         """
-        base = self._strip_refinements(ty)
-        if not (isinstance(base, AdtType) and base.name == "Array"
-                and len(base.type_args) == 1):
+        # #1429: through the same rule the fact walk asks, and for the same
+        # reason — `_contains_refinement` descends through constructor fields
+        # and a non-regular declaration gives it no fixed point.
+        if not smt.type_is_regular(ty):
             return False
-        element = base.type_args[0]
-        if not isinstance(element, RefinedType):
+        refined = [
+            carrier for carrier in carriers.element_carriers(ty)
+            if self._contains_refinement(carrier.element_type, frozenset())
+        ]
+        if not refined:
             return False
-        inner = self._strip_refinements(element)
-        name = getattr(inner, "name", None)
-        return name in self._GUARDABLE_ELEMENT_BASES
+        for carrier in refined:
+            if carrier.projection not in self._GUARDABLE_ELEMENT_PROJECTIONS:
+                return False
+            element = carrier.element_type
+            if not isinstance(element, RefinedType):
+                # The refinement is deeper than the element itself
+                # (`Array<Option<PosInt>>`): the emitter loads one scalar per
+                # element and cannot decompose a payload behind it.
+                return False
+            inner = self._strip_refinements(element)
+            name = getattr(inner, "name", None)
+            if name not in self._GUARDABLE_ELEMENT_BASES:
+                return False
+        return True
 
-    def _array_element_facts(
+    def _carrier_element_facts(
         self,
         smt: SmtContext,
-        element_ty: Type,
+        positions: tuple[carriers.ElementCarrier, ...],
         term: z3.ExprRef,
         _seen: frozenset[str],
     ) -> tuple[list[z3.ExprRef], bool]:
-        """``(facts, complete)`` for an ``Array<T>`` whose element type carries
-        a refinement (#1430, stage 1).
+        """``(facts, complete)`` over every element position of one carrier.
+
+        A ``Map`` has two — its keys and its values — and they are separate
+        goals over separate projections, so the conjunction is taken here and
+        each position states itself through the ONE lowering below.  A
+        position whose element type carries no refinement is skipped rather
+        than projected, which is what keeps the encoding lazy: a
+        ``Map<String, PosInt>`` mints `map_values` and never `map_keys`.
+        """
+        facts: list[z3.ExprRef] = []
+        complete = True
+        for carrier in positions:
+            if not self._contains_refinement(
+                    carrier.element_type, frozenset()):
+                continue
+            position_facts, position_complete = self._element_facts(
+                smt, carrier, term, _seen)
+            facts.extend(position_facts)
+            complete = complete and position_complete
+        return facts, complete
+
+    def _element_facts(
+        self,
+        smt: SmtContext,
+        carrier: carriers.ElementCarrier,
+        term: z3.ExprRef,
+        _seen: frozenset[str],
+    ) -> tuple[list[z3.ExprRef], bool]:
+        """``(facts, complete)`` for ONE element position whose element type
+        carries a refinement (#1430).
 
         The element goal is the bounded quantifier
 
-            forall i. 0 <= i < length(a)  =>  P(index(a, i))
+            forall i. 0 <= i < length(s)  =>  P(index(s, i))
 
-        stated over the SAME uninterpreted ``index_`` and ``length_`` observers
-        that array literals and ``arr[i]`` already use, so it is dischargeable
-        rather than decorative.  Measured against that encoding, it proves from
-        a parameter's assumed element fact and from a literal's per-index
-        axioms (where ``length == N`` makes the range finite), refutes a
-        literal with an offending element, and refutes when nothing is known —
-        which is the behaviour a decline could never produce.
+        over the element SEQUENCE ``s`` — the carrier itself for an ``Array``,
+        and ``map_keys`` / ``map_values`` / ``set_to_array`` of it otherwise
+        (:py:meth:`SmtContext.carrier_elements`).  One lowering serves every
+        carrier because the projection is the only thing they differ by; the
+        alternative, a membership relation per container with axioms of its
+        own, is the per-container shape #1430 is an instance of.
+
+        The observers are the SAME uninterpreted ``index_`` and ``length_``
+        symbols that array literals and ``arr[i]`` already use, so the goal is
+        dischargeable rather than decorative.  Measured against that
+        encoding: it proves from a parameter's assumed element fact and from a
+        literal's per-index axioms (where ``length == N`` makes the range
+        finite), refutes a literal with an offending element, and refutes when
+        nothing is known — which is the behaviour a decline could never
+        produce.
 
         The bound is load-bearing in both directions.  Without ``i <
-        length(a)`` the goal quantifies over indices past the end, where
+        length(s)`` the goal quantifies over indices past the end, where
         ``index`` is unconstrained, and nothing is ever provable; without ``0
-        <= i`` the same holds below it.  With it, the empty array satisfies the
-        goal vacuously, which is correct.
+        <= i`` the same holds below it.  With it, an empty sequence satisfies
+        the goal vacuously, which is correct — and as a GOAL that is no false
+        proof, since validity quantifies over the models with a longer one.
 
-        *complete* is False only when the element position itself cannot be
-        stated — an unmodelled predicate, a term with no array sort (the Int
-        fallback paths reach here), or a deeper carrier the walk cannot state.
+        *complete* is False only when the position itself cannot be stated —
+        an unmodelled predicate, a term in no carrier sort (the Int fallback
+        paths reach here), or a deeper carrier the walk cannot state.
         """
-        observers = smt.array_observers(term)
+        observers = smt.carrier_elements(
+            term, carrier.projection, carrier.element_type)
         if observers is None:
             return [], False
-        index_fn, length_fn, _element_sort = observers
+        sequence, index_fn, length_fn, _element_sort = observers
+        element_ty = carrier.element_type
         idx = z3.Const(self._fresh_quantifier_name("elt_idx"), z3.IntSort())
-        element_term = index_fn(term, idx)
-        in_range = z3.And(idx >= 0, idx < length_fn(term))
+        element_term = index_fn(sequence, idx)
+        in_range = z3.And(idx >= 0, idx < length_fn(sequence))
 
         body: list[z3.ExprRef] = []
         complete = True
@@ -9567,7 +9658,7 @@ class ContractVerifier:
         # together.  Stage 1 assumed the element fact without this, which let
         # a violating element laundered through an opaque producer reach a
         # Tier-1-clean callee and refute its postcondition at run time.
-        if (self._element_guard_emitted(formal_ty)
+        if (self._element_guard_emitted(smt, formal_ty)
                 and site in narrowing.REFINED_BIND_GUARDED_SITES):
             guarded = True
         val = smt.translate_expr(value_node, slot_env)
@@ -10152,9 +10243,12 @@ class ContractVerifier:
             # uses.  Facts are assumed even when the walk reports itself
             # INCOMPLETE: each fact returned is true of the value, and a
             # partial set is a weaker assumption, never an over-assumption.
+            # Through the same gate as the non-generic path above, so the two
+            # parameter-assumption sites cannot answer differently.
             nested_facts, _ = self._nested_refinement_facts(
                 smt, param_ty, var)
-            assumptions.extend(nested_facts)
+            assumptions.extend(self._established_facts(
+                nested_facts, source=None, term=var, smt=smt))
         # Assume translatable preconditions too — a `requires(...)` may imply
         # the return predicate.
         for contract in decl.contracts:

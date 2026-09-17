@@ -23,7 +23,7 @@ import z3
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
-from vera.regularity import RegularityIndex
+from vera.regularity import RegularityIndex, adt_names_in
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
     AdtType,
@@ -638,6 +638,10 @@ class SmtContext:
         # #1430 stage 2: minted `refines_<key>` predicates.  Axiom-free, so
         # no reset discipline: the cache is identity only.
         self._refines_fns: dict[str, z3.FuncDeclRef] = {}
+        # #1430: minted carrier projections (`map_values_<sort>` and its
+        # siblings), keyed by projection and carrier sort.  Cleared on reset
+        # beside `_index_fns`, whose Array sorts they range over.
+        self._projection_fns: dict[str, z3.FuncDeclRef] = {}
         # ctor-owner-exempt: declares the SMT ADT registry, which is
         # namespace-flat by design
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -754,36 +758,167 @@ class SmtContext:
             self._refines_fns[key] = fn
         return fn
 
-    def array_observers(
-        self, term: z3.ExprRef,
-    ) -> tuple[z3.FuncDeclRef, z3.FuncDeclRef, z3.SortRef] | None:
-        """``(index_fn, length_fn, element_sort)`` for an Array-sorted *term*.
+    # -----------------------------------------------------------------
+    # Carrier projections (#1430)
+    # -----------------------------------------------------------------
+    # Every container whose ELEMENTS can carry a refinement projects to an
+    # array of those elements (:py:mod:`vera.carriers`): an `Array` is the
+    # identity, and `Map` / `Set` project through `map_keys` / `map_values` /
+    # `set_to_array`, each a real built-in and, in the backend, a host import
+    # returning an array's `(ptr, len)` pair.  So one uninterpreted projection
+    # symbol per (carrier sort, projection) turns EVERY element-level goal
+    # into the bounded index quantifier this module already models for
+    # arrays, rather than giving each container a relation and axioms of its
+    # own — which is the shape #1430 is an instance of.
+    #
+    # The projections carry no axioms whatsoever.  An element goal over one
+    # is therefore provable only by congruence with a term whose facts were
+    # asserted — the forwarding case, where a parameter's assumed element
+    # fact and the argument's obligation name the same symbol — and
+    # unprovable otherwise.  That is the whole soundness argument, and it
+    # claims nothing about `Map` semantics: `map_values_M` is SOME function
+    # from maps to arrays, and nothing here concludes which one.
 
-        The observers this module already uses for array literals and for
-        ``arr[i]``, handed out so the verifier can state a UNIVERSAL fact about
-        a carrier's elements (#1430).  Returning the same ``index_`` symbol
-        that :py:meth:`_translate_index_expr` produces is the whole point: a
-        fact stated over it is one an ordinary indexing read can discharge,
-        not a symbol that only literals ever touch.
+    def type_is_regular(self, ty: Type | None) -> bool:
+        """Whether a walk through *ty*'s constructor fields has a fixed point.
 
-        None when *term* is not in an ``Array_<elt>`` sort — the fallback
-        paths that model an array as a plain Int reach here too, and there is
-        nothing to quantify over in one.
+        The same derivation :py:meth:`_collect_adt_group` asks before
+        modelling a datatype (#1429), exposed for the verifier's TYPE walks —
+        which recurse through the same fields and terminate on the same rule.
+
+        A walk keyed on the INSTANTIATED type (`Nest<Int>`, then
+        `Nest<Option<Int>>`, then `Nest<Option<Option<Int>>>`, …) has no fixed
+        point for a NON-REGULAR declaration: every level's key is new, so a
+        `seen` set never closes and the recursion does not return.  Keying on
+        the ADT's NAME instead would terminate and be wrong — `Option` occurs
+        at two depths in ordinary regular types, and stopping there would drop
+        facts silently.  So the walk declines by the RULE, exactly as the sort
+        construction does, rather than by a bound on how far it may go.
+
+        Every name mentioned anywhere in the type is asked, not just the head:
+        an `Array<Nest<Int>>` element descends into `Nest` all the same.  A
+        name this context has no declaration for is regular by default — it is
+        a built-in carrier or an import, and neither recurses through fields
+        here.
+        """
+        if ty is None:
+            return True
+        names: set[str] = set()
+        adt_names_in(strip_refinements(ty), names)
+        declared = [n for n in names if n in self._adt_registry]
+        if not declared:
+            return True
+        index = self._regularity_index()
+        return all(index.is_regular(n) for n in declared)
+
+    def carrier_elements(
+        self, term: z3.ExprRef, projection: str | None, element_ty: Type,
+    ) -> tuple[
+        z3.ExprRef, z3.FuncDeclRef, z3.FuncDeclRef, z3.SortRef,
+    ] | None:
+        """``(sequence, index_fn, length_fn, element_sort)`` for one element
+        position of *term* — THE seam every element-level fact goes through.
+
+        *projection* None means the term already IS the sequence (an
+        ``Array``); otherwise the named built-in's uninterpreted symbol is
+        applied first and the array observers are taken on its result.  Either
+        way the caller receives the same four things and states the same
+        quantifier, which is what makes an element fact over a ``Map`` value
+        identical in shape to one over an ``Array``.
+
+        The observers handed back are the ones this module already uses for
+        array literals and for ``arr[i]``.  Returning the same ``index_``
+        symbol that :py:meth:`_translate_index_expr` produces is the whole
+        point: a fact stated over it is one an ordinary indexing read can
+        discharge, not a symbol only literals ever touch.
+
+        None when the term is not in a carrier sort — the fallback paths that
+        model a container as a plain Int reach here too, and there is nothing
+        to project in one — or when the element type has no Z3 sort.
         """
         try:
             sort = term.sort()
         except (AttributeError, z3.Z3Exception):  # pragma: no cover
             return None
-        if not str(sort).startswith("Array_"):
-            return None
-        element_sort = self._get_element_sort_for_array(sort)
-        if element_sort is None:
-            return None
+        is_array_sorted = str(sort).startswith("Array_")
+        if projection is None:
+            if not is_array_sorted:
+                return None
+            sequence = term
+            element_sort = self._get_element_sort_for_array(sort)
+            if element_sort is None:
+                return None
+        else:
+            # A projection asked of an array-sorted term is a caller error,
+            # not a fact to invent: `map_values` of an array has no meaning.
+            if is_array_sorted:
+                return None
+            element_sort = self._vera_type_to_z3_sort(element_ty)
+            if element_sort is None:
+                return None
+            sequence = self._get_projection_fn(
+                sort, projection, element_sort)(term)
+        seq_sort = sequence.sort()
         return (
-            self._get_index_fn(sort, element_sort),
-            self._get_length_fn(sort),
+            sequence,
+            self._get_index_fn(seq_sort, element_sort),
+            self._get_length_fn(seq_sort),
             element_sort,
         )
+
+    def _get_projection_fn(
+        self, coll_sort: z3.SortRef, projection: str, element_sort: z3.SortRef,
+    ) -> z3.FuncDeclRef:
+        """Get-or-create ``<projection>_<coll_sort>(c) -> Array_<elt>``.
+
+        Keyed on the projection AND the carrier sort, so a map's keys and its
+        values stay different symbols even where their element sorts coincide
+        (``Map<String, String>``) — one symbol would conflate two sequences
+        and let a fact about the keys discharge a goal about the values.
+        """
+        key = f"{projection}_{coll_sort}"
+        fn = self._projection_fns.get(key)
+        if fn is None:
+            fn = z3.Function(
+                key, coll_sort, self._get_array_sort(element_sort))
+            self._projection_fns[key] = fn
+        return fn
+
+    def collection_sort_name(
+        self, kind: str, element_sorts: tuple[z3.SortRef, ...],
+    ) -> str:
+        """The carrier sort's name — ``Map_<k>_<v>`` / ``Set_<v>``.
+
+        Named from the element SORTS, exactly as ``Array_<elt>`` is, so a
+        refinement and its base share one carrier: the sort is the carrier set
+        and the predicate is discharged separately.
+        """
+        return "_".join([kind, *(str(s) for s in element_sorts)])
+
+    def _get_collection_sort(self, name: str) -> z3.SortRef:
+        """Get-or-create the uninterpreted carrier sort called *name*."""
+        cached = self._z3_sorts.get(name)
+        if cached is not None:
+            return cached
+        sort = z3.DeclareSort(name)
+        self._z3_sorts[name] = sort
+        return sort
+
+    def declare_collection_var(
+        self, name: str, kind: str, element_sorts: tuple[z3.SortRef, ...],
+    ) -> z3.ExprRef:
+        """Declare a ``Map``/``Set``-typed constant in its carrier sort.
+
+        Before this a ``Map`` or ``Set`` slot reached no sort branch at all
+        and fell through to :py:meth:`declare_int` — an unconstrained integer,
+        with no elements to quantify over, which is why an element refinement
+        on one could only ever be disclosed (#1430).
+        """
+        sort = self._get_collection_sort(
+            self.collection_sort_name(kind, element_sorts))
+        var = z3.Const(name, sort)
+        self._vars[name] = var
+        return var
 
     def declare_array_var(
         self, name: str, element_sort: z3.SortRef,
@@ -4097,6 +4232,9 @@ class SmtContext:
         # re-asserts the non-negativity axiom the base context just lost.
         self._length_axioms_asserted.clear()
         self._array_element_sorts.clear()
+        # #1430: the carrier projections range over the Array sorts cleared
+        # below, so they go with them.
+        self._projection_fns.clear()
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)
         self._z3_sorts.clear()

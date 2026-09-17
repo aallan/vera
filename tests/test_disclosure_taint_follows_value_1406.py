@@ -1084,8 +1084,13 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     #: spelled `let @T = mk(x); consume(@T.0)`.  This cell's whole claim is
     #: that convention does not survive a fourth reader; it did not, because
     #: the roster named the producers of the day rather than the kind.
+    #: `_carrier_element_facts` and `_element_facts` are the carrier ARM of
+    #: `_nested_refinement_facts` and mutually recursive with it (#1430), so
+    #: they build these facts rather than read them; classifying a producer
+    #: as a reader of itself would demand it gate its own output.
     producers = {"_term_source_fact", "_subpattern_source_facts_term",
-                 "_nested_refinement_facts"}
+                 "_nested_refinement_facts", "_carrier_element_facts",
+                 "_element_facts"}
 
     # Both modules (#1418 review F5).  Every producer lives in the verifier
     # today, so the SMT half of this walk currently finds none and is
@@ -1134,10 +1139,20 @@ def test_1413_every_reader_of_a_source_fact_consults_the_one_gate() -> None:
     # producer roster — the very omission that let the fourth reader in —
     # still satisfied it.  A new reader is a deliberate edit here, and so is
     # a deleted one.
+    # `_check_generic_refined_return` and `_verify_fn` are the two R1
+    # parameter-assumption sites (#1430): each states the refinements written
+    # INSIDE a parameter's type and assumes them, so each is a reader and
+    # each asks the gate.  A parameter has no producer inside its own
+    # function, so the gate answers "established" on every program measured —
+    # it is asked because the rule is that a reader is a call to the gate,
+    # and because a term can acquire a disclosed site through cross-module
+    # widening.
     assert readers == [
+        "verifier:_check_generic_refined_return",
         "verifier:_check_nested_refinement_obligation",
         "verifier:_check_refined_binding_obligation_term",
         "verifier:_subpattern_source_facts",
+        "verifier:_verify_fn",
         "verifier:_walk_for_nat_binding_obligations",
     ], (
         f"the set of functions reading a declared-type source fact changed: "

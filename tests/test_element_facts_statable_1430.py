@@ -745,3 +745,141 @@ def test_an_unguardable_element_still_discloses(tmp_path: Path) -> None:
         f"{statuses}"
     )
     assert statuses["tier3"] == 0, statuses
+
+
+# ---------------------------------------------------------------------------
+# The carrier registry (#1430): one enumeration, held to the built-ins
+# ---------------------------------------------------------------------------
+
+
+def test_every_carrier_projection_agrees_with_its_builtin() -> None:
+    """Each element position's projection is a built-in whose signature maps
+    THAT carrier to an array of THAT type argument.
+
+    The registry's whole value is that three lowerings read one table rather
+    than branching per container, so a projection naming nothing — a typo, a
+    built-in renamed out from under it — would make every one of them decline
+    for that carrier with nothing to say why.  Asserted against the live
+    signature rather than a hand-written list, and against the ARGUMENT INDEX
+    too: `map_keys : Map<K, V> -> Array<K>` pins the key position to index 0
+    and `map_values : Map<K, V> -> Array<V>` the value position to index 1, so
+    a registry with the two swapped would state a fact about the keys to
+    discharge a goal about the values, and this cell is what refuses it.
+    """
+    from vera.carriers import element_carriers
+    from vera.environment import TypeEnv
+    from vera.types import AdtType, PrimitiveType, TypeVar
+
+    functions = TypeEnv().functions
+    int_ty = PrimitiveType("Int")
+    string_ty = PrimitiveType("String")
+    seen: set[str] = set()
+    for shape in (AdtType("Array", (int_ty,)),
+                  AdtType("Map", (string_ty, int_ty)),
+                  AdtType("Set", (int_ty,))):
+        positions = element_carriers(shape)
+        assert positions, f"{shape.name} has no element position registered"
+        for carrier in positions:
+            if carrier.projection is None:
+                assert shape.name == "Array", (
+                    f"{carrier.kind} projects nothing, but only an `Array` is "
+                    f"its own element sequence"
+                )
+                continue
+            spec = functions.get(carrier.projection)
+            assert spec is not None, (
+                f"{carrier.kind} projects through `{carrier.projection}`, "
+                f"which is not a built-in — every lowering would decline for "
+                f"this carrier and nothing would say why"
+            )
+            seen.add(carrier.projection)
+            # Takes this carrier...
+            assert len(spec.param_types) == 1, spec
+            param = spec.param_types[0]
+            assert isinstance(param, AdtType) and param.name == shape.name, (
+                f"`{carrier.projection}` takes {param}, not a {shape.name}"
+            )
+            # ...and returns an array of the argument at this position.
+            ret = spec.return_type
+            assert isinstance(ret, AdtType) and ret.name == "Array", (
+                f"`{carrier.projection}` returns {ret}, not an array: the "
+                f"element goal quantifies over a sequence's indices, so a "
+                f"projection returning anything else has no elements"
+            )
+            returned = ret.type_args[0]
+            assert isinstance(returned, TypeVar), ret
+            index = param.type_args.index(returned)
+            assert shape.type_args[index] == carrier.element_type, (
+                f"`{carrier.projection}` projects type argument {index} of "
+                f"{shape.name}, but the registry gives {carrier.kind} the "
+                f"type {carrier.element_type} — the two disagree about WHICH "
+                f"position this projection reads"
+            )
+    assert seen == {"map_keys", "map_values", "set_to_array"}, seen
+
+
+def test_a_type_with_no_element_position_is_not_a_carrier() -> None:
+    """A type with constructor decomposition is NOT a carrier.
+
+    The distinction keeps the two mechanisms apart: `Option<PosInt>`'s payload
+    is reached by an accessor and stated EXACTLY by the structural walk, and
+    routing it through an element quantifier would replace that with a weaker
+    fact.  This cell is the boundary, in the direction a widened registry
+    would break.
+    """
+    from vera import ast as vera_ast
+    from vera.carriers import element_carriers, is_carrier
+    from vera.types import AdtType, PrimitiveType, RefinedType
+
+    int_ty = PrimitiveType("Int")
+    # Any predicate node will do: what is under test is the SHAPE of the
+    # type, and `element_carriers` never reads a predicate.
+    pos = RefinedType(int_ty, vera_ast.IntLit(0))
+    for shape in (AdtType("Option", (pos,)),
+                  AdtType("Result", (pos, int_ty)),
+                  AdtType("Tuple", (pos, int_ty)),
+                  AdtType("Chain", ()),
+                  int_ty,
+                  pos):
+        assert element_carriers(shape) == (), shape
+        assert not is_carrier(shape), shape
+
+
+def test_a_non_regular_declaration_does_not_hang_the_element_walk(
+    tmp_path: Path,
+) -> None:
+    """A NON-REGULAR declaration terminates the walk by the rule (#1429).
+
+    R1 states a parameter's nested refinements for EVERY parameter, which is a
+    walk through constructor fields keyed on the INSTANTIATED type — and a
+    non-regular declaration gives that key no fixed point: `Nest<Pos>`, then
+    `Nest<Option<Pos>>`, then `Nest<Option<Option<Pos>>>`, each new, so the
+    `seen` set never closes.  Measured on this branch before the fix:
+    `tests/test_nonregular_data_rejected_1429.py` did not complete in 600 s,
+    where it takes twelve.
+
+    The refinement is what makes this cell the element walk's own: the
+    upstream cell's program carries none, so it stops at the first
+    `_contains_refinement`; this one has facts to build at every level and
+    still must decline.  A TIME assertion rather than a status one, because
+    what failed was termination — and a generous bound, since what separates
+    pass from fail here is seconds against never.
+    """
+    import time
+
+    source = (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n"
+        "private data Nest<T> { N(Nest<Option<T>>), Z }\n\n"
+        "public fn f(@Nest<Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  match @Nest<Pos>.0 { N(@Nest<Option<Pos>>) -> 1, Z -> 0 }\n}\n"
+    )
+    started = time.monotonic()
+    envelope = _verify(tmp_path, source, "non-regular")
+    elapsed = time.monotonic() - started
+    assert elapsed < 60, f"the element walk did not decline promptly: {elapsed}s"
+    # The checker refuses the declaration (E129), which is the point: the
+    # walk must decline anyway, because `verify()` is a public entry point
+    # whose check-clean precondition is the caller's to keep.
+    assert any(d.get("error_code") == "E129"
+               for d in envelope.get("diagnostics", [])), envelope

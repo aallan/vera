@@ -1,0 +1,99 @@
+"""The one enumeration of the containers whose ELEMENTS can carry refinements.
+
+A refinement can be written one level inside a type — `Array<Pos>`,
+`Map<String, Pos>`, `Set<Pos>` — and then the predicate belongs to the
+container's elements rather than to the slot.  Three components have to agree
+about that: the verifier states the goal ("every element satisfies P"), code
+generation plants the boundary guard that checks it, and the narrowing walk
+decides whether there is anything to obligate at all.
+
+Before this module each container answered separately.  `Array` had an SMT
+carrier sort with `index_`/`length_` observers and an element-wise guard loop;
+`Map` and `Set` reached no sort branch at all and fell through to an
+unconstrained integer, so their element refinements could only be disclosed.
+"Add Map, then add Set" would have meant a third and a fourth lowering, which
+is the shape #1430 is an instance of rather than a fix for.
+
+What makes one lowering possible is that every container already projects to a
+SEQUENCE: `map_values`, `map_keys` and `set_to_array` are built-ins, and on the
+code-generation side each is a host import returning an array's `(ptr, len)`
+pair.  So a carrier is not "a sort with a membership relation" — it is a thing
+that projects to elements, and once the projection is named the element fact
+(a bounded quantifier over the sequence's indices) and the element guard (one
+loop over `ptr`/`len`) are each written once.  An `Array` is the carrier whose
+projection is the identity.
+
+The module holds no analysis.  It says WHICH element positions a type has, what
+each is called in a diagnostic, and which built-in projects it; whether a
+particular element's refinement can be stated, and whether its base can be
+lowered into a guard, stay with the components that can answer them.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from vera.types import AdtType, RefinedType, Type
+
+
+@dataclass(frozen=True)
+class ElementCarrier:
+    """One element position of one container type.
+
+    *projection* is the built-in that turns the container into an array of
+    these elements, or None when the container IS that array.  It is the only
+    thing the three lowerings differ by, which is why it is data here rather
+    than a branch in each of them.
+    """
+
+    #: The diagnostic site name — the same string the guard table and the
+    #: obligation stream use, so a reader sees which position was meant.
+    kind: str
+    #: The Vera type of one element, refinements intact.
+    element_type: Type
+    #: The built-in projecting the container to an `Array` of these elements,
+    #: or None for `Array` itself.
+    projection: str | None
+
+
+#: Container name -> its element positions, as (kind, type-argument index,
+#: projection).  A `Map` has TWO: a refinement can be written on either the
+#: key or the value, and they are separate goals with separate projections.
+_CARRIERS: dict[str, tuple[tuple[str, int, str | None], ...]] = {
+    "Array": (("array element", 0, None),),
+    "Map": (("map key", 0, "map_keys"), ("map value", 1, "map_values")),
+    "Set": (("set element", 0, "set_to_array"),),
+}
+
+
+def element_carriers(ty: Type | None) -> tuple[ElementCarrier, ...]:
+    """The element positions *ty* has, in declaration order.
+
+    Empty for anything that is not one of the three containers — an ADT with
+    constructor decomposition is not a carrier, because its fields are reached
+    by accessors and the structural walk already states them, and a recursive
+    ADT is not one either: there is nothing to enumerate and no boundary can
+    check it.
+    """
+    if isinstance(ty, RefinedType):
+        ty = ty.base
+    if not isinstance(ty, AdtType):
+        return ()
+    spec = _CARRIERS.get(ty.name)
+    if spec is None:
+        return ()
+    out: list[ElementCarrier] = []
+    for kind, arg_index, projection in spec:
+        if arg_index >= len(ty.type_args):
+            continue
+        out.append(ElementCarrier(
+            kind=kind,
+            element_type=ty.type_args[arg_index],
+            projection=projection,
+        ))
+    return tuple(out)
+
+
+def is_carrier(ty: Type | None) -> bool:
+    """Whether *ty* is one of the container types with element positions."""
+    return bool(element_carriers(ty))
