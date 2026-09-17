@@ -596,6 +596,7 @@ def element_sequence_loop(
     len_local: int,
     elem_local: int,
     load_wt: str,
+    load_op: str,
     stride: int,
     check: list[str],
 ) -> list[str]:
@@ -613,6 +614,13 @@ def element_sequence_loop(
     already in *elem_local*; they are indented into the loop body.  Labels
     carry the index local's number, so two element guards in one function — a
     parameter's and a return's — cannot collide.
+
+    *load_op* is the caller's, not derived from *load_wt*: a `Bool` or `Byte`
+    element is stored one byte wide and read into an `i32` local, so deriving
+    the opcode from the local's TYPE reads four bytes — the predicate would
+    see three adjacent elements, and the last iteration would read past the
+    sequence.  The width belongs with the stride, and both come from the same
+    resolved element base (CodeRabbit, PR #1447).
     """
     brk, lp = f"$brk_elem{idx_local}", f"$lp_elem{idx_local}"
     instrs = [
@@ -629,7 +637,7 @@ def element_sequence_loop(
         f"    i32.const {stride}",
         "    i32.mul",
         "    i32.add",
-        f"    {load_wt}.load offset=0",
+        f"    {load_op} offset=0",
         f"    local.set {elem_local}",
     ]
     instrs.extend(f"    {line}" for line in check)

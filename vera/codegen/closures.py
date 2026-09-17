@@ -548,11 +548,16 @@ class ClosureLiftingMixin:
         # the module and ran to completion on a violating element.  The len
         # half is `value_local + 1` by the pair convention `param_info`
         # records above.
-        element_param_checks: list[tuple[int, int, ast.TypeExpr]] = [
-            (value_local, value_local + 1, param_te)
+        element_param_checks: list[tuple[int, int | None, ast.TypeExpr]] = [
+            # A pair-shaped carrier walks its own `(ptr, len)`; a `Map` or
+            # `Set` formal is one i32 handle the guard projects first, which
+            # is what `None` means here (CodeRabbit, PR #1447).
+            (value_local,
+             value_local + 1
+             if self._type_expr_to_wasm_type(param_te) == "i32_pair" else None,
+             param_te)
             for _i, param_te, value_local in param_info
-            if (self._type_expr_to_wasm_type(param_te) == "i32_pair"
-                and self._element_guard_parts(param_te))
+            if self._element_guard_parts(param_te)
         ]
 
         # Compute capture layout (must match _translate_anon_fn).
@@ -838,11 +843,11 @@ class ClosureLiftingMixin:
             # #1430: element-wise entry guards, the named path's twin
             # (`_compile_fn`), so a lifted body reads no element its formal's
             # type forbids.
-            for ptr_local, len_local, param_te in element_param_checks:
+            for ptr_local, elem_len_local, param_te in element_param_checks:
                 refine_guard_instrs.extend(
                     self._emit_element_guards(
-                        ctx, closure_sig, param_te, ptr_local, len_local,
-                        env, "parameter"))
+                        ctx, closure_sig, param_te, ptr_local,
+                        elem_len_local, env, "parameter"))
             for value_local, parts in refined_param_checks:
                 predicate, base_name = parts
                 msg = (
@@ -914,6 +919,11 @@ class ClosureLiftingMixin:
                             ctx, predicate, base_name, ret_local, msg, env)
                         if guard is not None:
                             ret_guard.extend(guard)
+                    # #1430: a `Map` or `Set` result is one i32 handle, so
+                    # the pair branch above never sees it.
+                    ret_guard.extend(self._emit_element_guards(
+                        ctx, closure_sig, anon_fn.return_type, ret_local,
+                        None, env, "return value"))
                     if ret_guard:
                         body_instrs = [
                             *body_instrs,

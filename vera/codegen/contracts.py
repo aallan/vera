@@ -72,6 +72,10 @@ class _ElementGuardSite:
     #: `_refinement_guard_parts` returns it.
     base_name: str
     load_wt: str
+    #: The WASM load for ONE element.  Not derived from `load_wt`: a `Bool` or
+    #: `Byte` is stored one byte wide and read into an `i32` local, so the
+    #: local's type is the wrong width to read with.
+    load_op: str
     stride: int
     #: The element's RESOLVED base name, which is what names the host
     #: import's type tag for a projected carrier.
@@ -97,6 +101,13 @@ class ContractsMixin:
     #: pair-represented base is declined rather than half-checked.
     _ELEMENT_STRIDES: ClassVar[dict[str, int]] = {
         "Int": 8, "Nat": 8, "Float64": 8, "Bool": 1, "Byte": 1,
+    }
+
+    #: The load for one element of each base, paired with the stride above so
+    #: the two cannot disagree about a width.
+    _ELEMENT_LOADS: ClassVar[dict[str, str]] = {
+        "Int": "i64.load", "Nat": "i64.load", "Float64": "f64.load",
+        "Bool": "i32.load8_u", "Byte": "i32.load8_u",
     }
 
     def _refinement_guard_parts(
@@ -420,12 +431,13 @@ class ContractsMixin:
             # whose size is not one of these yields no guard rather than a guard
             # walking the wrong stride.
             stride = self._ELEMENT_STRIDES.get(resolved.name)
-            if stride is None:
+            load_op = self._ELEMENT_LOADS.get(resolved.name)
+            if stride is None or load_op is None:
                 return []
             sites.append(_ElementGuardSite(
                 kind=kind, projection=projection, predicate=predicate,
-                base_name=base_name, load_wt=load_wt, stride=stride,
-                element_base=resolved.name,
+                base_name=base_name, load_wt=load_wt, load_op=load_op,
+                stride=stride, element_base=resolved.name,
             ))
         return sites
 
@@ -496,8 +508,8 @@ class ContractsMixin:
             instrs.extend(prologue)
             instrs.extend(element_sequence_loop(
                 idx_local=idx, ptr_local=seq_ptr, len_local=seq_len,
-                elem_local=elem, load_wt=site.load_wt, stride=site.stride,
-                check=check,
+                elem_local=elem, load_wt=site.load_wt, load_op=site.load_op,
+                stride=site.stride, check=check,
             ))
         return instrs
 
@@ -1036,6 +1048,16 @@ class ContractsMixin:
             instrs.extend(self._emit_component_refinement_guards(
                 ctx, ast.format_fn_signature(decl), decl.return_type,
                 result_local, env, "return value"))
+
+            # #1430: a `Map` or `Set` return is ONE i32 handle, so it never
+            # reaches the `i32_pair` branch above — and `ret_elements` keeps
+            # this path alive for it, so without this the verifier could
+            # record a guarded return obligation that no emitted check backs
+            # (CodeRabbit, PR #1447).  `None` for the length is what tells
+            # the emitter to project the handle first.
+            instrs.extend(self._emit_element_guards(
+                ctx, ast.format_fn_signature(decl), decl.return_type,
+                result_local, None, env, "return value"))
 
             if refined_ret is not None:
                 predicate, base_name = refined_ret

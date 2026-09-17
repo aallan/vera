@@ -1314,3 +1314,42 @@ def test_the_element_arm_answers_what_the_scalar_arm_answers(
         f"case reports {element_worst} — one narrowing rule must hold at "
         f"every depth (scalar={dict(scalar)}, element={dict(element)})"
     )
+
+
+def test_the_element_load_width_matches_the_stride(tmp_path: Path) -> None:
+    """A one-byte element is read with a one-byte load.
+
+    `Bool` and `Byte` are stored one byte wide and read into an `i32` local,
+    so deriving the load from the LOCAL's type emits `i32.load` for a
+    one-byte stride: each predicate would see three adjacent elements, and
+    the last iteration would read past the sequence.  The width belongs with
+    the stride, and the cell reads the EMITTED module because that is where
+    the two can disagree (CodeRabbit, PR #1447).
+    """
+    source = (
+        "type Truthy = { @Bool | @Bool.0 };\n\n"
+        "private fn launder(@Bool -> @Array<Bool>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_append([true, true, true], @Bool.0)\n}\n\n"
+        "private fn consume(@Array<Truthy> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<Truthy>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(VALUE))\n}\n"
+    )
+    good = source.replace("VALUE", "true")
+    p = tmp_path / "byte-elem.vera"
+    p.write_text(good, encoding="utf-8")
+    wat = _cli("compile", "--wat", str(p)).stdout
+    loop_body = wat[wat.index("loop $lp_elem"):] if "loop $lp_elem" in wat else ""
+    assert "i32.load8_u" in loop_body, (
+        "a one-byte element is read with a wider load; the guard would see "
+        f"adjacent elements:\n{loop_body[:400]}"
+    )
+    assert _run(tmp_path, good, "byte-good").returncode == 0, (
+        "a satisfying one-byte array was refused at run time"
+    )
+    bad = _run(tmp_path, source.replace("VALUE", "false"), "byte-bad")
+    assert bad.returncode != 0, bad.stdout
+    assert "array element" in bad.stdout + bad.stderr, bad.stdout
