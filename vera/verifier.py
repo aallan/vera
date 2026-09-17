@@ -9648,18 +9648,25 @@ class ContractVerifier:
             return
         if self._all_leaves_construct(value_node, smt, slot_env):
             return
-        # #1430 stage 1b: an `Array<Refined>` boundary now carries an
-        # element-wise runtime guard, so an undecided element obligation at
-        # such a site is GUARDED — `tier3`, counting in `tier3_runtime` —
-        # rather than disclosed.  Claimed only where codegen actually emits
-        # one (`_element_guard_emitted` mirrors the emitter's own table) and
-        # only at a site the shared roster says is guarded, so the #1362
-        # invariant holds: a `guarded` status and an emitted check move
-        # together.  Stage 1 assumed the element fact without this, which let
-        # a violating element laundered through an opaque producer reach a
-        # Tier-1-clean callee and refute its postcondition at run time.
+        # #1430 stage 1b: a carrier boundary that carries an element-wise
+        # runtime guard makes an undecided element obligation GUARDED —
+        # `tier3`, counting in `tier3_runtime` — rather than disclosed.
+        # Claimed only where codegen actually emits one: the TYPE half is
+        # `_element_guard_emitted`, which mirrors the emitter's base and
+        # projection tables, and the SITE half is
+        # `carriers.ELEMENT_GUARD_SITES`, the roster of positions the element
+        # emitter is WIRED at.  That roster is deliberately not
+        # `narrowing.REFINED_BIND_GUARDED_SITES`: the scalar predicate and the
+        # element walk are different lowerings with different reach, and
+        # reading the scalar one for this question recorded `tier3` at a
+        # closure boundary whose module carried no element loop at all — a
+        # status promising a check nothing emitted, which is the #1362
+        # invariant one level in.  Stage 1 assumed the element fact with no
+        # guard anywhere, which let a violating element laundered through an
+        # opaque producer reach a Tier-1-clean callee and refute its
+        # postcondition at run time.
         if (self._element_guard_emitted(smt, formal_ty)
-                and site in narrowing.REFINED_BIND_GUARDED_SITES):
+                and site in carriers.ELEMENT_GUARD_SITES):
             guarded = True
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)

@@ -883,3 +883,163 @@ def test_a_non_regular_declaration_does_not_hang_the_element_walk(
     # whose check-clean precondition is the caller's to keep.
     assert any(d.get("error_code") == "E129"
                for d in envelope.get("diagnostics", [])), envelope
+
+
+# ---------------------------------------------------------------------------
+# The element guard is PRESENT where the status claims it (#1362, #1430)
+# ---------------------------------------------------------------------------
+#
+# Not an agreement between two tables — two tables agree while both are wrong,
+# and that is how a `tier3` came to be recorded at a closure boundary whose
+# module carried no element loop at all.  Each cell reads the EMITTED module:
+# a claimed guard means a loop at that boundary and a violating value refused
+# at run time; a disclosure means no loop and a clean run.
+
+_CLOSURE_ONLY = (
+    "type Pos = { @Int | @Int.0 > 0 };\n\n"
+    "private fn launder(@Array<Int> -> @Array<Int>)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  array_append(@Array<Int>.0, 0 - 5)\n}\n\n"
+    "public fn main(@Unit -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  apply_fn(fn(@Array<Pos> -> @Int) effects(pure) "
+    "{ array_length(@Array<Pos>.0) }, launder([1]))\n}\n"
+)
+
+
+def _element_loops(tmp_path: Path, source: str, name: str) -> dict[str, int]:
+    """Element guard loops in the emitted module, per WASM function."""
+    p = tmp_path / f"{name}.vera"
+    p.write_text(source, encoding="utf-8")
+    wat = _cli("compile", "--wat", str(p)).stdout
+    loops: dict[str, int] = {}
+    current = "?"
+    for line in wat.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(func $"):
+            current = stripped.split()[1]
+        elif stripped.startswith("loop $lp_elem"):
+            loops[current] = loops.get(current, 0) + 1
+    return loops
+
+
+def _run(tmp_path: Path, source: str, name: str,
+         eager_gc: bool = False) -> subprocess.CompletedProcess[str]:
+    p = tmp_path / f"{name}.vera"
+    p.write_text(source, encoding="utf-8")
+    env_key = "VERA_EAGER_GC"
+    previous = os.environ.get(env_key)
+    if eager_gc:
+        os.environ[env_key] = "1"
+    try:
+        return _cli("run", str(p))
+    finally:
+        if previous is None:
+            os.environ.pop(env_key, None)
+        else:  # pragma: no cover — restored only when it was already set
+            os.environ[env_key] = previous
+
+
+def test_a_guarded_closure_boundary_carries_the_loop_it_claims(
+    tmp_path: Path,
+) -> None:
+    """A `tier3` at a CLOSURE boundary means a loop in the lifted body.
+
+    The red-first cell, measured before the emitter was wired there: the
+    obligation read `tier3` — a claimed runtime check — while the whole module
+    contained ZERO element loops and `vera run` returned 2 on an array whose
+    last element is `-5`.  The status half read the scalar guard roster, which
+    answers a different lowering's question.
+    """
+    envelope = _verify(tmp_path, _CLOSURE_ONLY, "closure-only")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3"] >= 1, statuses
+
+    loops = _element_loops(tmp_path, _CLOSURE_ONLY, "closure-only")
+    lifted = {fn: n for fn, n in loops.items() if fn.startswith("$anon")}
+    assert lifted, (
+        f"the obligation claims a runtime check at the closure boundary and "
+        f"the module carries no element loop in any lifted body: {loops}"
+    )
+
+    result = _run(tmp_path, _CLOSURE_ONLY, "closure-only")
+    assert result.returncode != 0, (
+        f"a violating element crossed a boundary the status calls guarded "
+        f"and the program ran to completion: {result.stdout}"
+    )
+    assert "array element" in result.stdout + result.stderr, result.stdout
+
+
+def test_the_guarded_closure_boundary_holds_under_eager_gc(
+    tmp_path: Path,
+) -> None:
+    """The same, with a collection at every allocation.
+
+    The guard runs in the lifted body's prologue, where the shadow stack has
+    just been set up; `VERA_EAGER_GC=1` is what says the walk reads the array
+    it was handed rather than a swept one.
+    """
+    result = _run(tmp_path, _CLOSURE_ONLY, "closure-eager", eager_gc=True)
+    assert result.returncode != 0, result.stdout
+    assert "array element" in result.stdout + result.stderr, result.stdout
+
+
+def test_a_disclosed_element_boundary_carries_no_loop(tmp_path: Path) -> None:
+    """The complement: an unguardable element base emits nothing and says so.
+
+    A `String` element is pair-represented, so the loop's single scalar load
+    cannot read it — the emitter declines and the verifier discloses.  The
+    cell asserts BOTH halves, because a module that quietly emitted a
+    half-guard would satisfy the status half alone.
+    """
+    source = (
+        "type NonEmpty = { @String | string_length(@String.0) > 0 };\n\n"
+        "private fn consume(@Array<NonEmpty> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<NonEmpty>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        '{\n  consume([""])\n}\n'
+    )
+    envelope = _verify(tmp_path, source, "pair-base")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3_unguarded"] >= 1, statuses
+    assert statuses["tier3"] == 0, statuses
+    assert _element_loops(tmp_path, source, "pair-base") == {}, (
+        "a base the emitter declines still produced an element loop"
+    )
+    result = _run(tmp_path, source, "pair-base")
+    assert result.returncode == 0, result.stdout
+
+
+def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
+    """Every position in the roster names a file that WIRES the emitter, and
+    every file that wires it is named by a position.
+
+    The roster is what a `guarded` status is read from, so it may not be a
+    list someone keeps up to date: it is held to the emitter's call sites.
+    Adding a position without wiring an emitter reds here, and so does wiring
+    one without adding the position — which is the direction that would leave
+    a guard emitted and never claimed.
+    """
+    import re
+
+    from vera import carriers
+
+    root = Path(vera.__file__).resolve().parent
+    wired = {
+        rel for rel in (
+            "codegen/functions.py", "codegen/closures.py",
+            "codegen/contracts.py", "wasm/calls_handlers.py",
+        )
+        if re.search(r"self\._emit_array_element_guards\(",
+                     (root / rel).read_text(encoding="utf-8"))
+    }
+    # contracts.py DEFINES the emitter and calls it from no boundary of its
+    # own, so it is excluded by name rather than by accident.
+    wired.discard("codegen/contracts.py")
+    named = {v.split("vera/", 1)[1] for v in carriers.ELEMENT_GUARD_SITES.values()}
+    assert wired == named, (
+        f"the element-guard roster and the emitter's call sites disagree: "
+        f"wired={sorted(wired)} named={sorted(named)}"
+    )

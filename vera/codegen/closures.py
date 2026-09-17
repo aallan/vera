@@ -539,6 +539,21 @@ class ClosureLiftingMixin:
             for _i, param_te, value_local in param_info
             if self._resolve_tuple_type(param_te) is not None
         ]
+        # #1430: an `Array<Refined>` closure formal carries no top-level
+        # refinement and is not a tuple, so neither collection above reaches
+        # its ELEMENTS — while the verifier assumes them under R1 and records
+        # the `apply_fn` argument `tier3` on the strength of a guard at this
+        # boundary.  Measured before this: `apply_fn(fn(@Array<Pos> -> @Int)
+        # …, launder([1]))` reported `tier3` with NO element loop anywhere in
+        # the module and ran to completion on a violating element.  The len
+        # half is `value_local + 1` by the pair convention `param_info`
+        # records above.
+        element_param_checks: list[tuple[int, int, ast.TypeExpr]] = [
+            (value_local, value_local + 1, param_te)
+            for _i, param_te, value_local in param_info
+            if (self._type_expr_to_wasm_type(param_te) == "i32_pair"
+                and self._array_element_guard_parts(param_te) is not None)
+        ]
 
         # Compute capture layout (must match _translate_anon_fn).
         # Pair-type captures (#535) take 8 bytes: ptr (i32) + len (i32),
@@ -805,8 +820,12 @@ class ClosureLiftingMixin:
         ret_has_components = self._has_guardable_tuple_components(
             anon_fn.return_type)
         refine_guard_instrs: list[str] = []
+        ret_has_elements = (
+            self._array_element_guard_parts(anon_fn.return_type) is not None)
         if (refined_param_checks or component_param_checks
-                or ret_refined_parts is not None or ret_has_components):
+                or element_param_checks
+                or ret_refined_parts is not None or ret_has_components
+                or ret_has_elements):
             param_sig = ", ".join(
                 ast.format_type_expr(p) for p in anon_fn.params)
             ret_sig = ast.format_type_expr(anon_fn.return_type)
@@ -816,6 +835,14 @@ class ClosureLiftingMixin:
                     self._emit_component_refinement_guards(
                         ctx, closure_sig, param_te, value_local, env,
                         "parameter"))
+            # #1430: element-wise entry guards, the named path's twin
+            # (`_compile_fn`), so a lifted body reads no element its formal's
+            # type forbids.
+            for ptr_local, len_local, param_te in element_param_checks:
+                refine_guard_instrs.extend(
+                    self._emit_array_element_guards(
+                        ctx, closure_sig, param_te, ptr_local, len_local,
+                        env, "parameter"))
             for value_local, parts in refined_param_checks:
                 predicate, base_name = parts
                 msg = (
@@ -843,7 +870,8 @@ class ClosureLiftingMixin:
             # the verifier records it tier3_unguarded).  Appended to
             # `body_instrs` so the check runs before the GC epilogue re-roots
             # the (now-checked) value.
-            if ret_refined_parts is not None or ret_has_components:
+            if (ret_refined_parts is not None or ret_has_components
+                    or ret_has_elements):
                 msg = (
                     f"Refinement violation in {closure_sig}\n"
                     f"  return value: "
@@ -855,6 +883,11 @@ class ClosureLiftingMixin:
                     ret_guard = self._emit_component_refinement_guards(
                         ctx, closure_sig, anon_fn.return_type, ptr_l, env,
                         "return value")
+                    # #1430: the elements of an `Array<Refined>` result, over
+                    # the (ptr, len) pair already spilled here.
+                    ret_guard.extend(self._emit_array_element_guards(
+                        ctx, closure_sig, anon_fn.return_type, ptr_l, len_l,
+                        env, "return value"))
                     if ret_refined_parts is not None:
                         predicate, base_name = ret_refined_parts
                         guard = self._emit_refinement_check(

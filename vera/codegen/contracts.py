@@ -17,7 +17,7 @@ from vera.narrowing import (
 )
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import state_type_arg
+from vera.wasm.helpers import element_sequence_loop, state_type_arg
 from vera.wasm.inference import substitute_type_vars
 
 # Recursion bound for tuple-component boundary guards (#746).  A *finite* tuple
@@ -405,35 +405,10 @@ class ContractsMixin:
             ctx, predicate, base_name, elem, msg, env)
         if check is None:
             return []
-        brk, lp = f"$brk_elem{idx}", f"$lp_elem{idx}"
-        instrs = [
-            "i32.const 0",
-            f"local.set {idx}",
-            f"block {brk}",
-            f"  loop {lp}",
-            f"    local.get {idx}",
-            f"    local.get {len_local}",
-            "    i32.ge_s",
-            f"    br_if {brk}",
-            f"    local.get {ptr_local}",
-            f"    local.get {idx}",
-            f"    i32.const {elem_size}",
-            "    i32.mul",
-            "    i32.add",
-            f"    {load_wt}.load offset=0",
-            f"    local.set {elem}",
-        ]
-        instrs.extend(f"    {line}" for line in check)
-        instrs.extend([
-            f"    local.get {idx}",
-            "    i32.const 1",
-            "    i32.add",
-            f"    local.set {idx}",
-            f"    br {lp}",
-            "  end",
-            "end",
-        ])
-        return instrs
+        return element_sequence_loop(
+            idx_local=idx, ptr_local=ptr_local, len_local=len_local,
+            elem_local=elem, load_wt=load_wt, stride=elem_size, check=check,
+        )
 
     def _tuple_component_guard_sites(
         self, te: ast.TypeExpr, _depth: int = 0,

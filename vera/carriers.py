@@ -97,3 +97,27 @@ def element_carriers(ty: Type | None) -> tuple[ElementCarrier, ...]:
 def is_carrier(ty: Type | None) -> bool:
     """Whether *ty* is one of the container types with element positions."""
     return bool(element_carriers(ty))
+
+
+#: The binder positions where code generation plants an ELEMENT guard, and
+#: the emitter that plants it (#1430).
+#:
+#: A SEPARATE roster from `narrowing.REFINED_BIND_GUARDED_SITES`, which
+#: answers the question for the slot's own §2.6.5 predicate.  The element
+#: guard is a different lowering with a different reach — it walks a sequence
+#: — so a site in that roster is not automatically in this one, and reading
+#: the scalar roster for this question is what let a `tier3` be recorded at a
+#: closure boundary whose module carried no element loop at all.
+#:
+#: Each value names the emitter's wiring site, and
+#: `test_the_element_guard_roster_matches_where_it_is_wired` holds the two
+#: together: it scans those files for the emitter's call sites and asserts the
+#: FILES match this roster, so a position added here without an emitter, or an
+#: emitter wired without a position, reds instead of promising a check that is
+#: not there.
+ELEMENT_GUARD_SITES: dict[str, str] = {
+    "call argument": "vera/codegen/functions.py",
+    "return type": "vera/codegen/functions.py",
+    "closure argument": "vera/codegen/closures.py",
+    "closure return": "vera/codegen/closures.py",
+}

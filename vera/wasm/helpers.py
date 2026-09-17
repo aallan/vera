@@ -587,3 +587,59 @@ def state_type_arg(effect_ref: ast.EffectRefNode) -> ast.TypeExpr:
         raise CodegenInvariantError(  # pragma: no cover
             "State<T> must have exactly one type argument", effect_ref)
     return effect_ref.type_args[0]
+
+
+def element_sequence_loop(
+    *,
+    idx_local: int,
+    ptr_local: int,
+    len_local: int,
+    elem_local: int,
+    load_wt: str,
+    stride: int,
+    check: list[str],
+) -> list[str]:
+    """The ``for i in 0 .. len`` walk every ELEMENT guard emits (#1430).
+
+    One derivation of the walk, because the layers that plant these guards
+    cannot share a predicate-check primitive: a function or closure boundary
+    checks through ``ContractsMixin._emit_refinement_check``, a handler
+    clause binder through the WASM layer's ``_emit_bind_refine_guard``.  What
+    they DO share is the walk — the index local, the bounds test, the strided
+    load — and a second copy of that is how a stride or a bound goes stale in
+    one place and not the other.
+
+    *check* is the caller's per-element instructions, run with the element
+    already in *elem_local*; they are indented into the loop body.  Labels
+    carry the index local's number, so two element guards in one function — a
+    parameter's and a return's — cannot collide.
+    """
+    brk, lp = f"$brk_elem{idx_local}", f"$lp_elem{idx_local}"
+    instrs = [
+        "i32.const 0",
+        f"local.set {idx_local}",
+        f"block {brk}",
+        f"  loop {lp}",
+        f"    local.get {idx_local}",
+        f"    local.get {len_local}",
+        "    i32.ge_s",
+        f"    br_if {brk}",
+        f"    local.get {ptr_local}",
+        f"    local.get {idx_local}",
+        f"    i32.const {stride}",
+        "    i32.mul",
+        "    i32.add",
+        f"    {load_wt}.load offset=0",
+        f"    local.set {elem_local}",
+    ]
+    instrs.extend(f"    {line}" for line in check)
+    instrs.extend([
+        f"    local.get {idx_local}",
+        "    i32.const 1",
+        "    i32.add",
+        f"    local.set {idx_local}",
+        f"    br {lp}",
+        "  end",
+        "end",
+    ])
+    return instrs
