@@ -1831,6 +1831,7 @@ public fn f(@Int, @Int -> @Int)
 }
 """
 
+
 # The end-to-end leg of this property USED to live here, on a 60-case Pell
 # fixture verified through the CLI.  It is gone, and what removed it is a
 # measurement rather than a preference: `x * x == 2 * (y * y)` over
@@ -1898,17 +1899,27 @@ def test_1451_the_second_stage_refutes_on_the_quantifier_free_subset(
         # stage 1 does not decide, stage 2 must refute.
         vmod.ContractVerifier._full_premises_satisfiable = blind_stage1  # type: ignore[assignment]
         seen.clear()
-        # An explicit, generous budget for the same reason the end-to-end cell
-        # carries one: this refutation needs seconds of real search, and at
-        # the default 10 s it finishes with about 2.8 s to spare on a loaded
-        # host.  A cell that close to its budget measures the machine, and
-        # what it would report is `unknown` — the verdict this leg exists to
-        # rule out.  Stage 2's budget IS the discharge budget, so raising it
-        # is the whole remedy; it caps the query and does not lengthen it.
-        hard = _verify_in_process(
-            _write(tmp_path / "hard", _PELL_50), timeout_ms=120_000,
-        )
+        # TWO hard legs, and the pair is deliberate.  The first is a LINEAR
+        # contradiction: whatever stage 1 declines to answer, stage 2 must be
+        # asked and must refute what is refutable, and over a decidable
+        # contradiction that holds on every run, on any host, in
+        # milliseconds.  The second is the nonlinear one, which is what shows
+        # stage 2's DISCHARGE budget reaching a contradiction stage 1's 250 ms
+        # cannot — measured at about 7 s against this leg's 120 s, an
+        # eight-run spread of 6.76-7.57 s, so the margin is 17x rather than
+        # the 2.8-of-10 s the removed end-to-end cell was racing (#1457
+        # review, measured and retracted).  Neither leg alone says what the
+        # two do: the first cannot distinguish a stage 2 that only handles
+        # easy queries, and the second is the one whose scale has to be
+        # watched.
+        hard = _verify_in_process(_write(tmp_path / "hard", _UNSAT_REQUIRES))
         hard_seen = list(seen)
+
+        seen.clear()
+        nonlinear = _verify_in_process(
+            _write(tmp_path / "nonlinear", _PELL_50), timeout_ms=120_000,
+        )
+        nonlinear_seen = list(seen)
 
         # Unblinded, so the rank-axiom leg measures the real stage 1.
         vmod.ContractVerifier._full_premises_satisfiable = spy_full  # type: ignore[assignment]
@@ -1923,6 +1934,8 @@ def test_1451_the_second_stage_refutes_on_the_quantifier_free_subset(
     # fixtures are screened more than once and the verdicts are asserted as
     # OCCURRENCES rather than as a fixed sequence.
     assert ("stage2", "unsat") in hard_seen, hard_seen
+    assert ("stage2", "unsat") in nonlinear_seen, nonlinear_seen
+    assert nonlinear.summary.tier1_verified == 0, nonlinear.summary
     assert "E538" in [d.error_code for d in hard.diagnostics], hard_seen
     assert hard.summary.tier1_verified == 0, hard.summary
 
@@ -2403,6 +2416,577 @@ public fn caller(@Bool -> @Int)
     ))
     assert used["ok"] is False, (_codes(used), _triples(used))
     assert "E538" in _codes(used), _codes(used)
+
+
+# ---------------------------------------------------------------------------
+# MD-9 / R2: a Tier-1 proof needs its premises SHOWN satisfiable, where they
+# leave the decidable fragment
+# ---------------------------------------------------------------------------
+#
+# `Not(goal)` is unsatisfiable alongside a premise set with no model whatever
+# the goal is, so "the screen did not refute the premises" is not the same
+# claim as "the premises have a model" — and on a NONLINEAR premise the solver
+# can answer `unknown` to both questions.  Measured on this file's own Pell
+# fixture at the previous head: three runs in ten reported
+# `ensures(@Int.result == 42)` VERIFIED over a body returning `0`, under a
+# precondition with no model, exit 0, nothing in either stream.
+#
+# The rule is narrow on purpose.  Withdrawing Tier 1 from every undecided
+# screen would cost five ordinary recursive-ADT slices in this project's own
+# corpus on every run — `ch02_adt_recursive:sum`, `ch05_decreases_guard:weigh`,
+# `gc_pressure:sum`, `list_ops:sum`, `maximum_syntax:list_contains` — whose
+# premises are consistent by construction and whose `unknown` comes from the
+# rank axioms rather than from anything the author wrote.  So the demotion is
+# conditioned on the premises leaving the fragment §2.6.1 defines.
+
+
+def _z3_terms():
+    import z3
+
+    x, y = z3.Int("x"), z3.Int("y")
+    return z3, x, y
+
+
+def _fragment_term(family: str):
+    """One term per construct family, named by what the family is."""
+    import z3
+
+    x, y = z3.Int("x"), z3.Int("y")
+    r, q = z3.Real("r"), z3.Real("q")
+    fa, fb = z3.FP("a", z3.Float64()), z3.FP("b", z3.Float64())
+    bv1, bv2 = z3.BitVec("u", 32), z3.BitVec("v", 32)
+    uf = z3.Function("uf", z3.IntSort(), z3.IntSort())
+    rank = z3.Function("_rank_List", z3.IntSort(), z3.IntSort())
+    arr = z3.Array("arr", z3.IntSort(), z3.IntSort())
+    st = z3.String("s")
+    return {
+        # --- inside the fragment (§2.6.1, §6.3.1, §9.8)
+        "linear-int": x + y > 3,
+        "literal-multiplier": 2 * x > 3,
+        "subtraction-and-negation": -x - y > 0,
+        "comparison-and-boolean": z3.And(x > 0, z3.Or(y < 3, z3.Not(x == y))),
+        "conditional": z3.If(x > 0, x, y) > 0,
+        "uninterpreted-over-int": uf(x) == 3,
+        "array-select": arr[x] == 3,
+        "array-store": z3.Store(arr, x, y)[x] == y,
+        "string-length": z3.Length(st) == 3,
+        "string-concat-literal": z3.Length(z3.Concat(st, z3.StringVal("a"))) > 0,
+        "linear-real": r + q > 1,
+        "int-real-coercion": z3.ToReal(x) > 1.0,
+        "rank-axiom": z3.ForAll([x], rank(x) >= 0),
+        "division-by-a-literal": x / 2 == 2,
+        "modulus-by-a-literal": x % 2 == 0,
+        # --- outside it
+        "nonlinear-int": x * y == 12,
+        "nonlinear-real": r * q == 1,
+        "int-division-by-a-variable": x / y == 2,
+        "int-modulus-by-a-variable": x % y == 2,
+        "exponentiation": x ** 3 == 8,
+        "float-arithmetic": fa * fb == z3.FPVal(1.0, z3.Float64()),
+        "float-addition": fa + fb == z3.FPVal(1.0, z3.Float64()),
+        "float-division": fa / fb == z3.FPVal(1.0, z3.Float64()),
+        "float-comparison": fa > fb,
+        "float-equality": fa == fb,
+        "bitvector-addition": bv1 + bv2 == 0,
+        "bitvector-multiplication": bv1 * bv2 == 0,
+        "foreign-quantifier": z3.ForAll([x], uf(x) >= 0),
+        "unlisted-kind": z3.InRe(z3.StringVal("a"), z3.Re(z3.StringVal("a"))),
+        "nonlinear-under-an-uninterpreted-function": uf(x * y) == 3,
+        "nonlinear-under-an-array-index": arr[x * y] == 3,
+        "nonlinear-inside-a-rank-body": z3.ForAll([x], rank(x * y) >= 0),
+    }[family]
+
+
+_INSIDE_FRAGMENT = (
+    "linear-int", "literal-multiplier", "subtraction-and-negation",
+    "comparison-and-boolean", "conditional", "uninterpreted-over-int",
+    "array-select", "array-store", "string-length", "string-concat-literal",
+    "linear-real", "int-real-coercion", "rank-axiom",
+    "division-by-a-literal", "modulus-by-a-literal",
+)
+
+_OUTSIDE_FRAGMENT = (
+    "nonlinear-int", "nonlinear-real", "int-division-by-a-variable",
+    "int-modulus-by-a-variable", "exponentiation",
+    "float-arithmetic", "float-addition", "float-division",
+    "float-comparison", "float-equality",
+    "bitvector-addition", "bitvector-multiplication",
+    "foreign-quantifier", "unlisted-kind",
+    "nonlinear-under-an-uninterpreted-function",
+    "nonlinear-under-an-array-index", "nonlinear-inside-a-rank-body",
+)
+
+
+@pytest.mark.parametrize("family", _INSIDE_FRAGMENT)
+def test_1451_the_fragment_allowlist_admits(family: str) -> None:
+    """Every construct §2.6.1 and §6.3.1 admit stays INSIDE the fragment.
+
+    These are the rows a corpus demotion would show up in: the predicate is an
+    allowlist, so a construct nobody listed reads as outside, and an ordinary
+    program using it would lose its Tier 1 on an undecided screen.  The answer
+    to such a demotion is to add the construct here with its spec citation,
+    never to loosen the default — which is the trade an allowlist makes, and
+    why these rows are stated one family at a time instead of being implied.
+
+    `rank-axiom` is the load-bearing one: it is what spares the five
+    recursive-ADT slices in this corpus whose screens end undecided
+    (`ch02_adt_recursive:sum`, `ch05_decreases_guard:weigh`, `gc_pressure:sum`,
+    `list_ops:sum`, `maximum_syntax:list_contains`), and every other
+    quantifier is outside.
+    """
+    from vera.verifier import ContractVerifier
+
+    term = _fragment_term(family)
+    assert ContractVerifier._outside_decidable_fragment([term]) is False, (
+        family, term)
+
+
+@pytest.mark.parametrize("family", _OUTSIDE_FRAGMENT)
+def test_1451_the_fragment_allowlist_excludes(family: str) -> None:
+    """... and everything else is OUTSIDE, including what nobody listed.
+
+    The first shape of this predicate was a DENYLIST of the nonlinear integer
+    kinds, and it failed open: Vera models `@Float64` on Z3's FloatingPoint
+    sort, where multiplication is `Z3_OP_FPA_MUL` and not `Z3_OP_MUL`, so a
+    product of two `@Float64` slots read as linear and #1451's own repro
+    survived R2 in floats — `ok: true`, `tier1_verified: 2`, eight runs in
+    eight (#1457 review).  A classifier whose unlisted case is a false Tier 1
+    has to fail CLOSED, which is the whole of this change.
+
+    `float-comparison` and `float-equality` contain no product at all, so they
+    are the rows that separate an allowlist from a denylist with the missing
+    kinds added; `unlisted-kind` is an operation nobody considered, which must
+    be outside for the same reason; and the three `nonlinear-under-…` rows are
+    the regression guard on the rewrite, since an allowlist that stopped
+    descending once it recognised an application would lose every
+    nonlinearity hidden beneath one.
+    """
+    from vera.verifier import ContractVerifier
+
+    term = _fragment_term(family)
+    assert ContractVerifier._outside_decidable_fragment([term]) is True, (
+        family, term)
+
+
+def test_1451_the_rank_bearing_slices_keep_their_tier(tmp_path: Path) -> None:
+    """The five corpus slices the narrowing exists to spare.
+
+    Each of these ends its screen undecided on both stages — measured
+    identically across trials, because a rank-axiom context is stable where a
+    nonlinear one is not — so under a rule that demoted every undecided screen
+    all five would lose their Tier 1 on every run.  They are named rather than
+    counted, because "the corpus does not move" is a number that stops meaning
+    anything the moment the corpus does.
+    """
+    import vera
+
+    root = Path(vera.__file__).resolve().parents[1]
+    slices = [
+        root / "tests" / "conformance" / "ch02_adt_recursive.vera",
+        root / "tests" / "conformance" / "ch05_decreases_guard.vera",
+        root / "examples" / "gc_pressure.vera",
+        root / "examples" / "list_ops.vera",
+        root / "examples" / "maximum_syntax.vera",
+    ]
+    for path in slices:
+        result = _verify_in_process(path)
+        codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+        assert "E540" not in codes, (path.name, codes)
+        assert result.summary.tier1_verified > 0, (  # type: ignore[attr-defined]
+            path.name, result.summary)  # type: ignore[attr-defined]
+
+
+def test_1451_the_fragment_predicate_sees_a_derived_premise(
+    tmp_path: Path,
+) -> None:
+    """... and it reads the TERMS, so a derived nonlinear premise counts.
+
+    The route that escapes a syntactic test: the function under test contains
+    no product of two slot references anywhere in its own text, and the
+    nonlinearity arrives as a fact the verifier derived from a callee's
+    `ensures` (#1457 review).  A predicate reading source syntax would call
+    this premise set linear and leave the Tier 1 standing on it.
+
+    Asserted on the captured step-8c context — the premise set the screen
+    itself reads — with the absence of a product in the caller's source as the
+    premise beside it, so the cell cannot pass because the fixture smuggled
+    one in.
+    """
+    from vera import verifier as vmod
+
+    source = """\
+private fn h(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result * @Int.result == 2 * (@Int.0 * @Int.0) + 1)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn caller(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 60)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  let @Int = h(@Int.0);
+  @Int.0
+}
+"""
+    caller_body = source.split("public fn caller")[1]
+    assert "@Int.0 * @Int" not in caller_body, caller_body
+
+    captured: dict[str, bool] = {}
+    original = vmod.ContractVerifier._enforce_premise_consistency
+
+    def capture(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
+        if decl.name == "caller":
+            captured["outside"] = self._outside_decidable_fragment(
+                (*smt.solver.assertions(), *assumed),
+            )
+        return original(self, decl, smt, obl_start, contract, assumed)
+
+    vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
+    try:
+        _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
+
+    assert captured.get("outside") is True, captured
+
+
+def _blind_screen(verdict_one, verdict_two):
+    """Context manager injecting both screen verdicts, deterministically."""
+    import contextlib
+
+    from vera import verifier as vmod
+
+    @contextlib.contextmanager
+    def cm():
+        o_full = vmod.ContractVerifier._full_premises_satisfiable
+        o_qf = vmod.ContractVerifier._quantifier_free_premises_satisfiable
+        vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+            lambda self, smt, assumed: verdict_one)
+        vmod.ContractVerifier._quantifier_free_premises_satisfiable = (  # type: ignore[assignment]
+            lambda self, smt, assumed: verdict_two)
+        try:
+            yield
+        finally:
+            vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+            vmod.ContractVerifier._quantifier_free_premises_satisfiable = o_qf  # type: ignore[assignment]
+
+    return cm()
+
+
+_NONLINEAR_SAT = """\
+public fn f(@Int, @Int -> @Int)
+  requires(@Int.1 * @Int.1 == 2 * (@Int.0 * @Int.0) + 1 && @Int.1 > 1000000 && @Int.1 < 1000000000000 && @Int.0 > 0)
+  ensures(@Int.result > 1000000)
+  effects(pure)
+{
+  @Int.1
+}
+"""
+
+
+def test_1451_an_undecided_nonlinear_premise_withholds_tier_1(
+    tmp_path: Path,
+) -> None:
+    """The rule, and its PRICE, on one correct program.
+
+    This fixture is not a plant: its premise set HAS a model (`@Int.1` =
+    3880899, `@Int.0` = 2744210 is a Pell solution inside the bounds), and the
+    postcondition follows from the linear conjunct alone, so the Tier 1 it
+    loses is a real proof.  That is the stated cost of R2 and this cell exists
+    to pin it rather than to hide it: under a screen that could not establish
+    the premises, both obligations are disclosed and the reader is told why.
+
+    Driven by INJECTED verdicts, because the real thing is exactly what cannot
+    be relied on — the query is nonlinear, `unknown` is legitimate at any
+    budget, and a cell waiting for it would measure the solver's mood.  The
+    injection supplies the verdict; everything downstream of it is the code
+    under test.
+    """
+    path = _write(tmp_path, _NONLINEAR_SAT)
+    with _blind_screen(None, None):
+        result = _verify_in_process(path)
+
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E540" in codes, codes
+    assert "E538" not in codes and "E539" not in codes, codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+    demoted = [
+        o for o in result.obligations  # type: ignore[attr-defined]
+        if o.error_code == "E540"
+    ]
+    assert [o.kind for o in demoted] == ["requires", "ensures"], [
+        (o.kind, o.status, o.error_code) for o in result.obligations]  # type: ignore[attr-defined]
+    assert all(o.status == "tier3_unguarded" for o in demoted), demoted
+    # ... and nothing is `verified` any more, while the obligations that were
+    # never proved keep their own status and code: only a proof can have been
+    # manufactured here, which is the same carve-out the refutation paths make.
+    assert not [
+        o for o in result.obligations if o.status == "verified"  # type: ignore[attr-defined]
+    ], [(o.kind, o.status) for o in result.obligations]  # type: ignore[attr-defined]
+    # Nothing is REFUSED: the run declines to certify, it does not reject.
+    assert not [
+        d for d in result.diagnostics if d.severity == "error"  # type: ignore[attr-defined]
+    ], codes
+
+    # The control, and the whole reason the rule is narrow: the same undecided
+    # screen over IN-fragment premises keeps its Tier 1 and says nothing.
+    with _blind_screen(None, None):
+        healthy = _verify_in_process(_write(tmp_path / "ok", _HEALTHY))
+    assert not [
+        d for d in healthy.diagnostics  # type: ignore[attr-defined]
+        if d.error_code in ("E538", "E539", "E540")
+    ], [d.error_code for d in healthy.diagnostics]  # type: ignore[attr-defined]
+    assert healthy.summary.tier1_verified > 0, healthy.summary  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("kind_name", sorted(_KINDS))
+def test_1451_an_unestablished_screen_certifies_no_kind(
+    tmp_path: Path, kind_name: str,
+) -> None:
+    """The matrix's `unknown` column: no KIND of obligation survives it.
+
+    The vacuity matrix crosses every route to an unsatisfiable premise set
+    with every kind of obligation discharged against one.  A premise set that
+    was never SHOWN satisfiable is the same hazard reached by a different
+    road, so it gets the same treatment: the route's satisfiable fixture is
+    rendered, the screen's verdicts are injected as undecided, and the
+    fragment test is forced — the predicate has its own cells above, and
+    forcing it here is what isolates the RULE from the classification.
+
+    Every kind must come back not-`verified`, and the differential is the
+    same cell without the injection, where the obligation of that kind is
+    whatever the ordinary run makes it.
+    """
+    from vera import verifier as vmod
+
+    source = _render("requires_conjunction", kind_name, sat=True)
+    path = _write(tmp_path, source)
+
+    o_outside = vmod.ContractVerifier._outside_decidable_fragment
+    vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
+        lambda facts: True)
+    try:
+        with _blind_screen(None, None):
+            result = _verify_in_process(path)
+    finally:
+        vmod.ContractVerifier._outside_decidable_fragment = o_outside  # type: ignore[assignment]
+
+    assert "E540" in [d.error_code for d in result.diagnostics], [  # type: ignore[attr-defined]
+        d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert not [
+        o for o in result.obligations if o.status == "verified"  # type: ignore[attr-defined]
+    ], [(o.kind, o.status) for o in result.obligations]  # type: ignore[attr-defined]
+
+
+def test_1451_a_shared_symbol_denies_the_stage_two_licence() -> None:
+    """Stage 2's `sat` establishes a model only under symbol disjointness.
+
+    A model of the quantifier-free SUBSET extends to a model of the whole set
+    exactly when what was dropped constrains nothing the subset mentions.  For
+    refutation that condition is a completeness property; once a `sat` there
+    licenses a Tier-1 proof it becomes a SOUNDNESS precondition (#1457
+    review), so it is asked of this slice per run rather than taken from a
+    measurement over the corpus.
+
+    The four rows are the shapes a hidden sharing would live in: a symbol
+    under the rank application's ARGUMENT, one under a datatype accessor, an
+    accessor that is interpreted by the datatype declaration and therefore
+    shares nothing, and the bare control.
+    """
+    import z3
+
+    from vera.verifier import ContractVerifier
+
+    syms = ContractVerifier._uninterpreted_symbols
+    rank = z3.Function("rank", z3.IntSort(), z3.IntSort())
+    f = z3.Function("f", z3.IntSort(), z3.IntSort())
+    g = z3.Function("g", z3.IntSort(), z3.IntSort())
+    x = z3.Int("x")
+
+    assert syms(z3.ForAll([x], rank(f(x)) >= 0)) & syms(f(3) == 7) == {"f"}
+    assert syms(z3.ForAll([x], rank(x) >= 0)) & syms(rank(3) == 7) == {"rank"}
+    assert syms(z3.ForAll([x], g(x) >= 0)) & syms(g(5) == 1) == {"g"}
+    assert not (syms(z3.ForAll([x], x >= 0)) & syms(f(3) == 7))
+
+    # A datatype ACCESSOR shares nothing, and that is the row the paragraph
+    # above promises rather than one an ordinary uninterpreted function can
+    # stand in for (#1457 review, CodeRabbit): `head` is interpreted by the
+    # declaration, so two models never have to disagree about it and the
+    # extension argument holds without it.  If the decl-kind filter regressed,
+    # both halves would carry `head` and this would fail.
+    builder = z3.Datatype("Cell")
+    builder.declare("cons", ("head", z3.IntSort()), ("tail", z3.IntSort()))
+    cell = builder.create()
+    v, w = z3.Const("v", cell), z3.Const("w", cell)
+    assert not (
+        syms(z3.ForAll([v], cell.head(v) >= 0)) & syms(cell.head(w) == 5)
+    ), (syms(z3.ForAll([v], cell.head(v) >= 0)), syms(cell.head(w) == 5))
+    # ... while a symbol reached only THROUGH that accessor is still shared.
+    assert syms(z3.ForAll([v], cell.head(v) >= g(3))) & syms(g(5) == 1) == {
+        "g"}
+
+
+def test_1451_a_truncated_scan_denies_the_licence_too() -> None:
+    """A term too large to walk is not a term shown to share nothing.
+
+    `_uninterpreted_symbols` gives up after a node budget and reports a
+    sentinel.  Reading that sentinel through the set INTERSECTION does not
+    work and the sentinel looks like it does: it joins only the side the
+    truncated fact is on, and `_has_quantifier` reads a truncated term as
+    quantified, so the other side is normally sentinel-free, the intersection
+    stays empty, and the guard certifies a term nobody finished reading
+    (#1457 review, CodeRabbit).  It is read BY NAME instead.
+
+    Driven by shrinking the budget rather than by building a twenty-thousand
+    node term, which is the same code path at a size a test can afford.  The
+    control is the same term at the real budget, where the halves really are
+    disjoint and the licence stands — without it the cell would pass on a
+    guard that had started refusing everything.
+    """
+    from types import SimpleNamespace
+
+    import z3
+
+    from vera import verifier as vmod
+
+    x = z3.Int("x")
+    f = z3.Function("f", z3.IntSort(), z3.IntSort())
+    deep = f(f(f(f(x)))) > 0
+    verifier = object.__new__(vmod.ContractVerifier)
+    smt = SimpleNamespace(solver=z3.Solver())
+    smt.solver.add(deep)
+
+    original = vmod._QUANTIFIER_SCAN_NODES
+    vmod._QUANTIFIER_SCAN_NODES = 2
+    try:
+        truncated = verifier._uninterpreted_symbols(deep)
+        assert vmod._TRUNCATED_SCAN in truncated, truncated
+        assert verifier._premise_halves_disjoint(smt, []) is False
+        # BOTH directions, because the failure was symmetric: neither a
+        # truncated quantified fact nor a truncated quantifier-free one puts
+        # the sentinel on both sides, so an intersection answers "disjoint"
+        # either way (#1457 review).  Here the oversized term is the only
+        # QUANTIFIED fact and the guard must still refuse.
+        quantified = SimpleNamespace(solver=z3.Solver())
+        quantified.solver.add(z3.ForAll([x], f(f(f(f(x)))) >= 0))
+        quantified.solver.add(z3.Int("plain") > 0)
+        assert verifier._premise_halves_disjoint(quantified, []) is False
+    finally:
+        vmod._QUANTIFIER_SCAN_NODES = original
+
+    # ... and the same premise set, read to the end, licenses stage 2 again.
+    whole = verifier._uninterpreted_symbols(deep)
+    assert vmod._TRUNCATED_SCAN not in whole, whole
+    assert verifier._premise_halves_disjoint(smt, []) is True
+
+
+def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(
+    tmp_path: Path,
+) -> None:
+    """... and the screen actually consults it.
+
+    The rows above pin the predicate; this pins the WIRING, which is the half
+    a predicate test cannot reach: with stage 1 undecided and stage 2 `sat`,
+    the guard must be asked, and a `False` from it must leave the premises
+    unestablished rather than certified.
+    """
+    from vera import verifier as vmod
+
+    asked = {"n": 0}
+    original = vmod.ContractVerifier._premise_halves_disjoint
+
+    def deny(self, smt, assumed):  # type: ignore[no-untyped-def]
+        asked["n"] += 1
+        return False
+
+    vmod.ContractVerifier._premise_halves_disjoint = deny  # type: ignore[assignment]
+    o_outside = vmod.ContractVerifier._outside_decidable_fragment
+    vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
+        lambda facts: True)
+    try:
+        with _blind_screen(None, True):
+            denied = _verify_in_process(_write(tmp_path / "no", _HEALTHY))
+    finally:
+        vmod.ContractVerifier._premise_halves_disjoint = original  # type: ignore[assignment]
+        vmod.ContractVerifier._outside_decidable_fragment = o_outside  # type: ignore[assignment]
+
+    assert asked["n"] > 0, "a stage-2 `sat` was trusted without the guard"
+    assert "E540" in [d.error_code for d in denied.diagnostics], [  # type: ignore[attr-defined]
+        d.error_code for d in denied.diagnostics]  # type: ignore[attr-defined]
+
+    # ... and with the guard allowing it, the same run certifies.
+    with _blind_screen(None, True):
+        allowed = _verify_in_process(_write(tmp_path / "yes", _HEALTHY))
+    assert "E540" not in [d.error_code for d in allowed.diagnostics], [  # type: ignore[attr-defined]
+        d.error_code for d in allowed.diagnostics]  # type: ignore[attr-defined]
+    assert allowed.summary.tier1_verified > 0, allowed.summary  # type: ignore[attr-defined]
+
+
+def test_1451_the_withheld_tier_survives_the_generic_collapse(
+    tmp_path: Path,
+) -> None:
+    """E540 reaches the reader through a generic, like its two siblings.
+
+    The function-level re-emission is keyed on the codes the aggregated
+    obligations carry, so a third code has to travel it or the silent accept
+    is back under a new name (#1457 review).  Every other consumer keys on the
+    STATUS rather than the code — `vera test`, the LSP tier hint, the warm
+    session, both accounting identities — and E540 demotes to the same
+    `tier3_unguarded` the E539 path does, which is what the cells for those
+    consumers already pin.
+    """
+    from vera import verifier as vmod
+
+    source = """\
+private forall<T> fn callee(@T, @Int -> @Int)
+  requires(@Int.0 > 5)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  assume(@Int.0 != 777);
+  0
+}
+
+public fn caller(@Int, @Bool -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  callee(@Bool.0, @Int.0)
+}
+"""
+    o_outside = vmod.ContractVerifier._outside_decidable_fragment
+    vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
+        lambda facts: True)
+    try:
+        with _blind_screen(None, None):
+            result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._outside_decidable_fragment = o_outside  # type: ignore[assignment]
+
+    reported = {d.error_code for d in result.diagnostics}  # type: ignore[attr-defined]
+    assert "E540" in reported, (
+        reported, [(o.kind, o.status, o.error_code) for o in result.obligations])  # type: ignore[attr-defined]
+    # The cross-stream invariant, in process: no obligation names a code the
+    # run never reports.
+    assert not [
+        (o.kind, o.error_code) for o in result.obligations  # type: ignore[attr-defined]
+        if o.error_code and o.error_code not in reported
+    ], (reported, [(o.kind, o.error_code) for o in result.obligations])  # type: ignore[attr-defined]
+    demoted = [
+        o for o in result.obligations if o.error_code == "E540"  # type: ignore[attr-defined]
+    ]
+    assert demoted, [(o.kind, o.status, o.error_code) for o in result.obligations]  # type: ignore[attr-defined]
+    assert all(o.status == "tier3_unguarded" for o in demoted), demoted
+    # It came through the aggregation rather than from a direct emitter.
+    assert any(
+        "instantiated at" in d.description  # type: ignore[attr-defined]
+        for d in result.diagnostics if d.error_code == "E540"  # type: ignore[attr-defined]
+    ), [d.description[:80] for d in result.diagnostics]  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

@@ -17,12 +17,12 @@ import enum
 
 import z3
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast, binders, carriers, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
@@ -110,6 +110,17 @@ _PREMISE_CHECK_TIMEOUT_MS = 250
 #: the conservative direction, since a subset is only sound to refute on when
 #: everything in it really is a premise.
 _QUANTIFIER_SCAN_NODES = 20_000
+
+#: Reported by :py:meth:`_uninterpreted_symbols` when the scan above ran
+#: out of budget.  Not a legal Vera or SMT name, so it can never collide
+#: with a symbol a program introduces, and it is read by NAME rather than
+#: through a set intersection (#1457 review).
+_TRUNCATED_SCAN = "\x00truncated"
+
+#: How `SmtContext.get_rank_fn` names the function a `decreases` measure
+#: installs.  The fragment allowlist admits a quantifier only when every
+#: uninterpreted symbol under it carries this prefix.
+_RANK_SYMBOL_PREFIX = "_rank_"
 
 # i64 / u64 range bounds for the #798 integer-overflow obligation.  @Int is a
 # signed 64-bit machine integer, @Nat an unsigned one; `+`/`-`/`*` wrap at these
@@ -4818,6 +4829,313 @@ class ContractVerifier:
             return None
         return self._verdict(probe.check())
 
+    @staticmethod
+    def _uninterpreted_symbols(expr: object) -> set[str]:
+        """The uninterpreted function and constant NAMES occurring in *expr*.
+
+        Datatype constructors, accessors and recognizers are not collected:
+        they are interpreted by the datatype declaration, so two models never
+        have to disagree about them.  Their ARGUMENTS are, because a symbol
+        that occurs only under an accessor — or only as an argument to the
+        rank function, `rank(f(x))` — is shared just as much as one at the
+        top (#1457 review).  A quantifier's body is walked for the same
+        reason; its bound variables are `Var` nodes rather than applications
+        and contribute nothing.
+        """
+        out: set[str] = set()
+        stack: list[object] = [expr]
+        seen: set[int] = set()
+        budget = _QUANTIFIER_SCAN_NODES
+        while stack and budget > 0:
+            node = stack.pop()
+            budget -= 1
+            node_id = cast("z3.AstRef", node).get_id()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if z3.is_quantifier(node):
+                stack.append(cast("z3.QuantifierRef", node).body())
+                continue
+            if z3.is_app(node):
+                decl = cast("z3.ExprRef", node).decl()
+                if decl.kind() == z3.Z3_OP_UNINTERPRETED:
+                    out.add(decl.name())
+                stack.extend(cast("z3.ExprRef", node).children())
+        if stack:
+            # Scan budget exhausted.  Report a sentinel no program can spell,
+            # so a caller can tell an incomplete answer from an empty one.
+            # Testing it by INTERSECTION would not work: the sentinel joins
+            # only the side the truncated fact is on, and `_has_quantifier`
+            # reads a truncated term as quantified, so the other side is
+            # normally sentinel-free and the intersection stays empty —
+            # certifying a term that was never finished (#1457 review,
+            # CodeRabbit).  Callers test it BY NAME.
+            out.add(_TRUNCATED_SCAN)
+        return out
+
+    def _premise_halves_disjoint(
+        self, smt: SmtContext, assumed: list[object],
+    ) -> bool:
+        """Whether stage 2's `sat` establishes a model of the WHOLE set.
+
+        Stage 2 asks the quantifier-free SUBSET.  A model of a subset extends
+        to a model of the whole exactly when the dropped assertions constrain
+        nothing the kept ones mention — in practice, when the two halves share
+        no uninterpreted symbol, since the rank axioms a `decreases` measure
+        installs are satisfiable over any model of the datatype sort with
+        structural depth as the witness.
+
+        Asked PER RUN rather than assumed from the corpus (#1457 review): the
+        corpus differential shows the condition holds for every program in it,
+        which is a statement about those programs, and a `sat` that licenses a
+        Tier-1 proof must rest on this slice's own premises.
+        """
+        quantified: set[str] = set()
+        free: set[str] = set()
+        for fact in (*smt.solver.assertions(), *assumed):
+            symbols = self._uninterpreted_symbols(fact)
+            if _TRUNCATED_SCAN in symbols:
+                # Read by NAME, not by intersection: a scan that ran out of
+                # budget read part of one term, and "the part I read shares
+                # nothing" is not the question.  Answering False here costs a
+                # Tier 1 on a term too large to walk; answering True would
+                # grant one on a term nobody finished reading.
+                return False
+            side = quantified if self._has_quantifier(fact) else free
+            side.update(symbols)
+            if quantified & free:
+                return False
+        return not (quantified & free)
+
+    #: Op kinds that keep a premise INSIDE Tier 1's fragment, grouped by the
+    #: spec clause that admits them.  Looked up by NAME so a z3 build without
+    #: one of them drops the entry rather than failing to import.
+    _FRAGMENT_OP_NAMES: ClassVar[tuple[str, ...]] = (
+        # §2.6.1 "true, false", comparisons, boolean connectives, and the
+        # conditional §6.3.1 lists among contract predicates.
+        "Z3_OP_TRUE", "Z3_OP_FALSE", "Z3_OP_EQ", "Z3_OP_DISTINCT",
+        "Z3_OP_ITE", "Z3_OP_AND", "Z3_OP_OR", "Z3_OP_IFF", "Z3_OP_XOR",
+        "Z3_OP_NOT", "Z3_OP_IMPLIES",
+        "Z3_OP_LE", "Z3_OP_GE", "Z3_OP_LT", "Z3_OP_GT",
+        # §2.6.1 "Integer literals", and §6.3.1's Real coercions.
+        "Z3_OP_ANUM", "Z3_OP_AGNUM", "Z3_OP_TO_REAL", "Z3_OP_TO_INT",
+        "Z3_OP_IS_INT",
+        # §2.6.1 "Arithmetic: +, -, *" — the multiplicative kinds are
+        # admitted CONDITIONALLY below, since the clause is "where at least
+        # one operand of `*` is a literal".
+        "Z3_OP_ADD", "Z3_OP_SUB", "Z3_OP_UMINUS",
+        # §9.8 datatypes: constructors, accessors and recognizers are
+        # interpreted by the declaration itself.
+        "Z3_OP_DT_CONSTRUCTOR", "Z3_OP_DT_RECOGNISER", "Z3_OP_DT_IS",
+        "Z3_OP_DT_ACCESSOR", "Z3_OP_DT_UPDATE_FIELD",
+        # §2.6.1 "array_length", §6.3.1 array index expressions and literals.
+        "Z3_OP_STORE", "Z3_OP_SELECT", "Z3_OP_CONST_ARRAY",
+        # §2.6.1 "length(@String.n)" and §6.3.1's string operations.
+        "Z3_OP_SEQ_LENGTH", "Z3_OP_SEQ_CONCAT", "Z3_OP_SEQ_UNIT",
+        "Z3_OP_SEQ_EMPTY", "Z3_OP_SEQ_PREFIX", "Z3_OP_SEQ_SUFFIX",
+        "Z3_OP_SEQ_CONTAINS", "Z3_OP_SEQ_EXTRACT", "Z3_OP_SEQ_AT",
+        "Z3_OP_SEQ_NTH", "Z3_OP_SEQ_INDEX", "Z3_OP_SEQ_REPLACE",
+        "Z3_OP_STR_TO_INT", "Z3_OP_INT_TO_STR",
+        # The uninterpreted constants and functions the translation mints for
+        # slots, call results, projections and the `decreases` rank (§6.4.2).
+        "Z3_OP_UNINTERPRETED",
+    )
+
+    #: Sort kinds a premise may be written in.  Everything else — a
+    #: FloatingPoint sort, a RoundingMode, a bit-vector — is outside, which is
+    #: what makes the classifier fail CLOSED.
+    _FRAGMENT_SORT_NAMES: ClassVar[tuple[str, ...]] = (
+        "Z3_BOOL_SORT", "Z3_INT_SORT", "Z3_REAL_SORT", "Z3_DATATYPE_SORT",
+        "Z3_ARRAY_SORT", "Z3_SEQ_SORT", "Z3_UNINTERPRETED_SORT",
+    )
+
+    @classmethod
+    def _fragment_kinds(cls) -> frozenset[int]:
+        return frozenset(
+            getattr(z3, name) for name in cls._FRAGMENT_OP_NAMES
+            if hasattr(z3, name)
+        )
+
+    @classmethod
+    def _fragment_sorts(cls) -> frozenset[int]:
+        return frozenset(
+            getattr(z3, name) for name in cls._FRAGMENT_SORT_NAMES
+            if hasattr(z3, name)
+        )
+
+    @classmethod
+    def _sort_inside_fragment(cls, sort: object) -> bool:
+        """Whether a term of this sort can be part of a Tier-1 premise."""
+        kind = cast("z3.SortRef", sort).kind()
+        if kind not in cls._fragment_sorts():
+            return False
+        if kind == z3.Z3_ARRAY_SORT:
+            array = cast("z3.ArraySortRef", sort)
+            return cls._sort_inside_fragment(
+                array.domain(),
+            ) and cls._sort_inside_fragment(array.range())
+        return True
+
+    @classmethod
+    def _outside_decidable_fragment(cls, facts: Iterable[object]) -> bool:
+        """Whether any premise leaves Tier 1's decidable fragment (§2.6.1).
+
+        An ALLOWLIST, and the direction is the point.  The fragment is
+        quantifier-free LINEAR arithmetic over `Int` and `Real` plus the
+        uninterpreted length functions, the datatype operations and the
+        uninterpreted constants the translation mints, so this enumerates what
+        is INSIDE and answers "outside" for everything else — an operation
+        kind nobody listed, a sort nobody listed, a quantifier that is not the
+        verifier's own rank axiom.  A denylist of the nonlinear integer kinds
+        was the first shape and it failed OPEN: Vera models `@Float64` on Z3's
+        FloatingPoint sort, where multiplication is `Z3_OP_FPA_MUL` and not
+        `Z3_OP_MUL`, so a product of two `@Float64` slots read as linear and
+        #1451's own repro survived in floats, deterministically (#1457
+        review).  A classifier whose unlisted case is a false Tier 1 has to
+        fail closed.
+
+        Each group above cites the clause that admits it.  Where a corpus
+        program is demoted by this, the answer is to add the construct it uses
+        with its citation, never to loosen the default.
+
+        RANK-AXIOM quantifiers are inside; every other quantifier is not.
+        §2.6.1 lists quantifiers outside the fragment for a refinement
+        predicate, but the only quantified premises the verifier installs are
+        its own `_rank_` axioms, which the author neither wrote nor can
+        simplify — reading their `unknown` as "premises not established" would
+        withdraw Tier 1 from every recursive-ADT program in the corpus to
+        close a hole none of them has.
+
+        Approximate in both directions, and that costs nothing: `@Int.0 * (2 +
+        3)` reads as outside though it is linear, and a nonlinear term the
+        solver folds away reads as inside.  The question is only ever asked of
+        a premise set the screen ALREADY failed to decide, which no such
+        premise produces.
+        """
+        kinds = cls._fragment_kinds()
+        stack: list[tuple[object, bool]] = [(f, False) for f in facts]
+        seen: set[tuple[int, bool]] = set()
+        while stack:
+            node, under_rank = stack.pop()
+            key = (cast("z3.AstRef", node).get_id(), under_rank)
+            if key in seen:
+                continue
+            seen.add(key)
+            if z3.is_var(node):
+                if not cls._sort_inside_fragment(
+                    cast("z3.ExprRef", node).sort(),
+                ):
+                    return True
+                continue
+            if z3.is_quantifier(node):
+                quantifier = cast("z3.QuantifierRef", node)
+                if not cls._is_rank_axiom(quantifier):
+                    return True
+                stack.append((quantifier.body(), True))
+                continue
+            if not z3.is_app(node):
+                return True
+            expr = cast("z3.ExprRef", node)
+            if not cls._sort_inside_fragment(expr.sort()):
+                return True
+            decl = expr.decl()
+            kind = decl.kind()
+            args = expr.children()
+            if kind == z3.Z3_OP_MUL:
+                # §2.6.1: "* (where at least one operand of `*` is a literal)".
+                if sum(1 for a in args if not cls._numeral(a)) > 1:
+                    return True
+            elif kind in (
+                z3.Z3_OP_DIV, z3.Z3_OP_IDIV, z3.Z3_OP_MOD, z3.Z3_OP_REM,
+            ):
+                # Division and modulus stay linear only by a constant.
+                if len(args) != 2 or not cls._numeral(args[1]):
+                    return True
+            elif kind not in kinds and not z3.is_string_value(expr):
+                # A string LITERAL carries z3's internal kind rather than a
+                # sequence one (§2.6.1 admits string literals), and admitting
+                # that kind wholesale would admit everything z3 calls
+                # internal.  Recognised by value instead.
+                return True
+            if kind == z3.Z3_OP_UNINTERPRETED and not under_rank:
+                for i in range(decl.arity()):
+                    if not cls._sort_inside_fragment(decl.domain(i)):
+                        return True
+            stack.extend((a, under_rank) for a in args)
+        return False
+
+    @staticmethod
+    def _numeral(arg: object) -> bool:
+        """Whether *arg* is an arithmetic literal §2.6.1 admits."""
+        return bool(
+            z3.is_int_value(arg) or z3.is_rational_value(arg),
+        )
+
+    @staticmethod
+    def _is_rank_axiom(quantifier: object) -> bool:
+        """Whether this quantifier is one the `decreases` machinery installed.
+
+        Read off the symbol it constrains — `SmtContext.get_rank_fn` names it
+        `_rank_<sort>` — rather than off the shape, so a user-written
+        `forall` over an uninterpreted function is NOT admitted even when it
+        looks like one.
+        """
+        body = cast("z3.QuantifierRef", quantifier).body()
+        stack: list[object] = [body]
+        seen: set[int] = set()
+        found = False
+        while stack:
+            node = stack.pop()
+            node_id = cast("z3.AstRef", node).get_id()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if z3.is_quantifier(node):
+                stack.append(cast("z3.QuantifierRef", node).body())
+                continue
+            if not z3.is_app(node):
+                continue
+            expr = cast("z3.ExprRef", node)
+            if expr.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+                if not expr.decl().name().startswith(_RANK_SYMBOL_PREFIX):
+                    return False
+                found = True
+            stack.extend(expr.children())
+        return found
+
+    def _report_unestablished_premises(
+        self, decl: ast.FnDecl, assumed: list[object],
+    ) -> None:
+        """The E540 warning: Tier 1 withheld, nothing refuted."""
+        self._warning(
+            self._premise_site(decl, assumed=bool(assumed)),
+            f"The premises of '{decl.name}' could not be shown satisfiable "
+            f"within the solver budget, and they use arithmetic outside the "
+            f"decidable fragment, so nothing in this function is certified at "
+            f"Tier 1. Every obligation that would have been proved is "
+            f"reported as unverified.",
+            rationale=(
+                "A proof is worth no more than the premises it rests on: a "
+                "premise set with no model entails every goal, so an "
+                "obligation discharged against one is not a proof. Tier 1 "
+                "therefore requires the premises to have been SHOWN "
+                "satisfiable, not merely left unrefuted — and on a nonlinear "
+                "premise the solver may answer `unknown` to both the "
+                "satisfiability question and the refutation, so neither "
+                "verdict is available."
+            ),
+            fix=(
+                "Raise the budget with `--timeout-ms`, or simplify the "
+                "premise the solver cannot decide — a product or a division "
+                "of two slot references is the usual cause, and replacing it "
+                "with a linear bound brings the whole function back to "
+                "Tier 1."
+            ),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E540",
+            tier=3,
+        )
+
     def _contract_premises_satisfiable(
         self, contract: list[object], assumed: list[object], smt: SmtContext,
     ) -> bool | None:
@@ -5045,20 +5363,50 @@ class ContractVerifier:
         # short budget.  A contradiction that propagates is refuted here.
         stage1 = self._full_premises_satisfiable(smt, assumed)
         if stage1 is True:
-            # A model of the whole premise set is a model of every SUBSET of
-            # it, so stage 2 could only rediscover this one — and it would
-            # spend the full discharge budget doing it (#1457 review,
-            # CodeRabbit).  Nothing is given up by returning here: stage 2 is
-            # informative only where stage 1 decided nothing.
+            # A model, exhibited: the premises are ESTABLISHED, and stage 2
+            # could only rediscover the same one — at the full discharge
+            # budget, to learn what is known (#1457 review, CodeRabbit).
             return
-        if stage1 is None:
+        refuted = stage1 is False
+        if not refuted:
             # Stage 2: the quantifier-free SUBSET, at the discharge budget.
             # A refutation on a subset is a refutation on the whole, and
             # dropping the rank axioms is what makes that budget affordable.
-            if self._quantifier_free_premises_satisfiable(
+            stage2 = self._quantifier_free_premises_satisfiable(smt, assumed)
+            if stage2 is False:
+                refuted = True
+            elif stage2 is True and self._premise_halves_disjoint(
                 smt, assumed,
-            ) is not False:
+            ):
+                # A model of the subset, and nothing dropped constrains a
+                # symbol the subset mentions, so it extends to a model of the
+                # whole set: established.  The disjointness is asked of THIS
+                # slice, because a `sat` that licenses a Tier-1 proof cannot
+                # rest on a property measured over somebody else's programs.
                 return
+
+        if not refuted:
+            # Neither established nor refuted (#1457 review / MD-9).  A
+            # `verified` recorded here was discharged against a premise set
+            # nobody has shown has a model, and on a NONLINEAR premise that is
+            # not a slow answer but an undecidable one: measured over
+            # `@Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1)`, three runs in ten
+            # report `ensures(@Int.result == 42)` VERIFIED over a body
+            # returning `0`, under a precondition with no model.  So Tier 1 is
+            # withheld — the same demotion as a refutation, under a code that
+            # claims only that nothing was established.
+            #
+            # Only for premises OUTSIDE the decidable fragment.  Inside it an
+            # `unknown` is the budget rather than the logic, and withdrawing
+            # Tier 1 there would cost five ordinary recursive-ADT slices in
+            # this project's own corpus every run, to close a hole none of
+            # them has.
+            if self._outside_decidable_fragment(
+                (*smt.solver.assertions(), *assumed),
+            ):
+                self._report_unestablished_premises(decl, assumed)
+                self._demote_function_obligations(obl_start, "E540")
+            return
 
         author = self._contract_premises_satisfiable(contract, assumed, smt)
         if author is False:

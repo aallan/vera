@@ -5,7 +5,7 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
 - [SKILL.md](../SKILL.md) — language reference for LLM agents writing Vera code
-- [spec/](../spec/) — formal language specification (13 chapters, 0-12)
+- [spec/](../spec/) — formal language specification (14 chapters, 0-13)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
 ## Pipeline Overview
@@ -769,7 +769,7 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E5xx | Verification | `verifier.py` |
 | E6xx | Codegen | `codegen/` |
 
-The `ERROR_CODES` dict in `errors.py` maps every code to a short description (176 entries — 173 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (177 entries — 174 `E` codes and 3 `W` warning codes). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
