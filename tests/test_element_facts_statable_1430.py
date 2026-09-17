@@ -1210,3 +1210,107 @@ def test_the_guarded_carrier_holds_under_eager_gc(
                   eager_gc=True)
     assert result.returncode != 0, result.stdout
     assert _CARRIERS[carrier][2] in result.stdout + result.stderr, result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Depth x producer kind: the element arm answers what the SCALAR arm answers
+# ---------------------------------------------------------------------------
+#
+# Making the goal statable is a TIGHTENING, not a fix: where the element
+# position used to disclose because nothing could be said about it, it now
+# reports whatever the scalar rule reports for the same producer.  That is the
+# consistent modular answer — a callee declared `-> @Array<Int>` with
+# `ensures(true)` permits a violating result, exactly as a `-> @Int` one does —
+# and the rows below are what hold the two depths together, so the day the
+# scalar rule moves and the element arm does not follow, the disagreement is a
+# red cell rather than a discovery.
+#
+# Measured at `release/v0.2.0` and at this head: the scalar column is
+# IDENTICAL at both revisions (this PR does not touch it), the element column
+# was `tier3_unguarded` at the tip for every producer, and is now the scalar
+# answer for every producer.
+
+_PRODUCERS: dict[str, tuple[str, str]] = {
+    # name -> (scalar program, element program)
+    "callee-result": (
+        "private fn launder(@Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Int.0\n}\n\n"
+        "private fn consume(@Pos -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Pos.0\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(5))\n}\n",
+        "private fn launder(@Int -> @Array<Int>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_append([], @Int.0)\n}\n\n"
+        "private fn consume(@Array<Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<Pos>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(5))\n}\n",
+    ),
+    "free-parameter": (
+        "private fn consume(@Pos -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Pos.0\n}\n\n"
+        "public fn entry(@Int -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(@Int.0)\n}\n",
+        "private fn consume(@Array<Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<Pos>.0)\n}\n\n"
+        "public fn entry(@Array<Int> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(@Array<Int>.0)\n}\n",
+    ),
+    "effect-operation": (
+        "effect Source {\n  op fetch(Unit -> Int);\n}\n\n"
+        "private fn consume(@Pos -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  @Pos.0\n}\n\n"
+        "public fn entry(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(<Source>)\n"
+        "{\n  consume(Source.fetch(()))\n}\n",
+        "effect Source {\n  op fetch(Unit -> Array<Int>);\n}\n\n"
+        "private fn consume(@Array<Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<Pos>.0)\n}\n\n"
+        "public fn entry(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(<Source>)\n"
+        "{\n  consume(Source.fetch(()))\n}\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("producer", sorted(_PRODUCERS))
+def test_the_element_arm_answers_what_the_scalar_arm_answers(
+    producer: str, tmp_path: Path,
+) -> None:
+    """Same producer, two depths, one answer.
+
+    The cell compares the two STREAMS' distinguishing status rather than a
+    literal, so it holds the two arms together without pinning either to a
+    verdict a later rule change would have to edit in two places.  A literal
+    expectation here would go green for a compiler that had stopped deciding
+    anything, which is what TESTING.md § Class Instruments warns a status
+    assertion can do.
+    """
+    header = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+    scalar_src, element_src = _PRODUCERS[producer]
+    scalar = _refine_bind_statuses(
+        _verify(tmp_path, header + scalar_src, f"scalar-{producer}"))
+    element = _refine_bind_statuses(
+        _verify(tmp_path, header + element_src, f"element-{producer}"))
+    assert scalar, f"the scalar twin raised no refine_bind at all: {scalar}"
+    assert element, f"the element case raised no refine_bind at all: {element}"
+    worst = ["violated", "tier3_unguarded", "tier3", "verified"]
+    scalar_worst = next(s for s in worst if scalar.get(s))
+    element_worst = next(s for s in worst if element.get(s))
+    assert scalar_worst == element_worst, (
+        f"{producer}: the scalar twin reports {scalar_worst} and the element "
+        f"case reports {element_worst} — one narrowing rule must hold at "
+        f"every depth (scalar={dict(scalar)}, element={dict(element)})"
+    )

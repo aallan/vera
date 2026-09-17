@@ -58,7 +58,7 @@ from pathlib import Path
 import pytest
 
 import vera
-from vera import binders, narrowing
+from vera import binders, carriers, narrowing
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -569,18 +569,6 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, str], str] = {
 #: with the measurement.  Marked rather than removed: a class instrument
 #: trimmed until it is green measures the trimming.
 _KNOWN_RED: dict[tuple[str, str], str] = {
-    ("handler clause binder", "refined_array"):
-        "the refinement is on the array ELEMENT, not on the binder, so "
-        "`_refined_field_narrows` sees no RefinedType and the clause binder "
-        "raises nothing — `handle[Exn<Array<Int>>] { throw(@Array<Pos>) -> "
-        "… }` over `throw([0 - 5])` verifies clean and runs, returning 1.  "
-        "spec §11.17 already says a refinement written on an array element "
-        "takes no guard at any boundary, so the absent GUARD is documented; "
-        "what is not is the absent RECORD, since an uncovered site is "
-        "supposed to be disclosed rather than silent.  Same mechanism as "
-        "the nested-refinement family (#1410), a different one from the "
-        "positions this PR closes, and measured only once the cell stopped "
-        "using the binder's own type as the payload",
     ("tuple component", "refined_string"):
         "#1466, pre-existing on main 6dc41d40 and release/v0.2.0 8eca11c0: "
         "the "
@@ -703,9 +691,18 @@ def test_a_satisfying_value_passes(cell: tuple[str, int, str],
 def _lowerable(site: str, kind: str) -> tuple[bool, str]:
     """Can a guard be emitted for this cell's base at this position?"""
     if kind == "refined_array":
-        return (False, "the refinement is on the array ELEMENT, so the slot "
-                       "carries no predicate of its own for the lowering to "
-                       "emit — the nested-refinement family (#1410)")
+        # #1430: the element walk is a lowering of its own, wired at the two
+        # function boundaries and the two closure ones, and NOT at the other
+        # positions — so the answer is per position, read from the element
+        # guard's own roster rather than from the slot-predicate one.  Before
+        # that walk existed no position could emit anything for an element
+        # refinement, which is what this arm used to say.
+        if site in carriers.ELEMENT_GUARD_SITES:
+            return (True, "")
+        return (False, "the refinement is on the array ELEMENT, and the "
+                       "element walk is not wired at this position "
+                       "(`carriers.ELEMENT_GUARD_SITES`), so the slot's own "
+                       "lowering has no predicate to emit")
     base = _KINDS[kind][4]
     construction = {
         s for sites in binders.CONSTRUCTION_SITES.values() for s in sites
@@ -892,29 +889,29 @@ def test_1466_a_pair_represented_tuple_component_traps_on_a_value_it_admits(
     assert "Refinement violation" in r["run_output"], r["run_output"]
 
 
-def test_a_refined_element_type_at_a_clause_binder_is_not_yet_recorded(
+def test_a_refined_element_type_at_a_clause_binder_is_recorded(
     tmp_path: Path,
 ) -> None:
-    """The third pinned shape, asserted as what the compiler DOES.
+    """#1430's clause-binder instance: RECORDED, and honestly unguarded.
 
-    `handle[Exn<Array<Int>>] { throw(@Array<Pos>) -> … }` binds an
-    `Array<Int>` payload at an `Array<Pos>` binder.  The refinement is on the
-    ELEMENT rather than on the binder, so the narrowing test sees no
-    `RefinedType` and the clause raises nothing; `throw([0 - 5])` verifies
-    clean and the program runs.
+    Measured on `release/v0.2.0` and on `main`: `handle[Exn<Array<Int>>] {
+    throw(@Array<Pos>) -> … }` over `throw([0 - 5])` verified clean with NO
+    obligation at all, compiled to no guard, and ran — the refinement is on
+    the array ELEMENT, so the slot itself carries no predicate and the
+    narrowing test saw nothing to obligate.  The element question is now
+    asked at this position too, so the site is on the record.
 
-    spec §11.17 already says a refinement written on an array element takes
-    no guard at any boundary, so the missing GUARD is documented.  The
-    missing RECORD is not — an uncovered site is supposed to disclose itself
-    — but the mechanism is the nested-refinement family (#1410) rather than
-    the positions this PR closes, so it is recorded here rather than fixed.
+    It is `tier3_unguarded` rather than `tier3` deliberately: the element
+    walk is wired at the function and closure boundaries and not here, so
+    claiming a check would promise one nothing emits.  The cell asserts BOTH
+    — the record and the absence of a guard — because either alone is
+    satisfied by the state this replaces.
     """
     pre, slot, bad, _good, base = _KINDS["refined_array"]
-    r = _read(tmp_path, _t_handler_clause_binder(pre, slot, bad, base),
-              "clausearr.vera")
-    assert not r["obligations"], (
-        "the clause binder now records its element narrowing — remove this "
-        "cell and the ('handler clause binder', 'refined_array') entry from "
-        f"_KNOWN_RED: {r}"
+    r = _read(tmp_path, _TEMPLATES["handler clause binder"][0](
+        pre, slot, bad, base), "bad.vera")
+    assert r["obligations"], (
+        f"the clause binder raises nothing for an element refinement: {r}"
     )
-    assert not r["refused"], r["run_output"]
+    assert any(status == "tier3_unguarded"
+               for _k, status in r["obligations"]), r["obligations"]

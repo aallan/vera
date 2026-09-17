@@ -6412,8 +6412,37 @@ class ContractVerifier:
             return self._resolve_type(eff.type_args[0])
         return None
 
+    def _element_narrows(
+        self, payload: Type | None, binder: Type | None,
+    ) -> bool:
+        """Does binding a *payload*-typed value at *binder* narrow an ELEMENT?
+
+        The same question :func:`narrowing.narrows_into_refinement` answers
+        about a type's own chain, asked one level in — per element POSITION,
+        so a `Map` whose values narrow and whose keys do not still answers
+        yes, and a carrier the payload does not even share is not compared
+        position-wise against nothing.
+
+        This is what a slot-level test cannot see: `@Array<Pos>` carries no
+        predicate of its own, so a walk that reads only the slot's chain
+        finds an empty set and concludes that nothing narrows (#1430's
+        comment on the handler-clause binder).
+        """
+        positions = carriers.element_carriers(binder)
+        if not positions:
+            return False
+        source = {c.kind: c for c in carriers.element_carriers(payload)}
+        for carrier in positions:
+            other = source.get(carrier.kind)
+            if narrowing.narrows_into_refinement(
+                    self._refinement_chain_of(
+                        other.element_type if other is not None else None),
+                    self._refinement_chain_of(carrier.element_type)):
+                return True
+        return False
+
     def _obligate_clause_binder(
-        self, decl: ast.FnDecl, expr: ast.HandleExpr,
+        self, decl: ast.FnDecl, expr: ast.HandleExpr, smt: SmtContext,
     ) -> None:
         """Obligate a handler-clause binder declared NARROWER than the
         payload it receives (#1445, #1448).
@@ -6492,6 +6521,26 @@ class ContractVerifier:
                         "the bound value is the payload the operation "
                         "delivers, which no throw or put site pins, so "
                         "there is no term to test it against"
+                    ),
+                )
+            elif self._element_narrows(payload, binder):
+                # #1430: the refinement may be written one level IN — on an
+                # array element, a map value — and then the binder's own
+                # chain is EMPTY, so neither arm above sees anything to
+                # obligate and the position was silent.  Measured on
+                # `release/v0.2.0`: `handle[Exn<Array<Int>>] { throw(
+                # @Array<Pos>) -> … }` over `throw([0 - 5])` verified clean,
+                # compiled to no guard, and ran.  The element question is the
+                # same question one level in, so it is asked of the same
+                # registry the element fact and the element guard read.
+                self._record_refined_bind_tier3(
+                    decl, clause.body, site, refined_ty=binder,
+                    guarded=(site in carriers.ELEMENT_GUARD_SITES
+                             and self._element_guard_emitted(smt, binder)),
+                    reason=(
+                        "the bound value is the payload the operation "
+                        "delivers, which no throw or put site pins, so "
+                        "there is no term to test its elements against"
                     ),
                 )
 
@@ -7726,7 +7775,7 @@ class ContractVerifier:
             # #1445/#1448: the clause BINDERS, before anything else in
             # this arm — they are obligated whether or not the handler
             # declares state, and an `Exn` handler declares none.
-            self._obligate_clause_binder(decl, expr)
+            self._obligate_clause_binder(decl, expr, smt)
             # #779: state-init and BODY are enclosing-scope code; clause
             # bodies and state updates bind the operation's fresh
             # parameters (and the handler state slot), so they walk under
@@ -9804,6 +9853,19 @@ class ContractVerifier:
             f"Value passed as a {site} in '{decl.name}' may not satisfy the "
             f"refinement `{target}` writes on a component of its type."
         )
+        # #1430: name the PRODUCER whose contract leaves the component
+        # unestablished.  A counterexample over an element is a value of an
+        # uninterpreted carrier sort — `Array_Int!val!0` — which describes the
+        # absence of a constraint rather than a program, so on its own it
+        # tells the reader nothing they can act on.  Which call to go and
+        # annotate is the actionable half.
+        producer = node.name if isinstance(node, ast.FnCall) else None
+        if producer is not None:
+            description += (
+                f"\n  `{producer}` is the producer: its declared return type "
+                f"and its ensures() say nothing about this component, so "
+                f"nothing establishes the invariant `{target}` asks for."
+            )
         if ce_text:
             description += f"\n  {ce_text}"
         self._error(
