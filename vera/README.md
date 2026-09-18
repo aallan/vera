@@ -102,7 +102,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `carriers.py` | 162 | Verify / Compile | The ONE enumeration of the containers whose ELEMENTS can carry a refinement — an `Array`'s elements, a `Map`'s keys and its values, a `Set`'s elements — each with the built-in that projects the container to an array of them (`map_keys` / `map_values` / `set_to_array`; an `Array` is the identity).  That projection is the only thing the three lowerings differ by, so the element fact (a bounded quantifier over the sequence's indices), the boundary guard (one loop over `ptr`/`len`) and the narrowing question are each written once against it rather than per container (#1430) | `ElementCarrier`, `element_carriers()`, `is_carrier()` |
 | `wasm/` | 29,564 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 1,685 | | Composed WasmContext, expression dispatcher, block translation | |
-| ` ├ helpers.py` | 653 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping; also the ONE `0 .. len` element walk every boundary element guard emits (#1430), since the layers that plant them cannot share a predicate-check primitive but must not diverge on the stride or the bound | |
+| ` ├ helpers.py` | 790 | | WasmSlotEnv, StateClauseEntry, StringPool, type mapping; also the ONE `0 .. len` element walk every boundary element guard emits (#1430), since the layers that plant them cannot share a predicate-check primitive but must not diverge on the stride or the bound | |
 | ` ├ inference.py` | 2,868 | | Type inference, slot/type utilities, operator tables; the wasm arm of the resolution spine — `_declares_adt` plus every width and array-element-layout decider, all of them methods so each is asked in the namespace it is deciding for (#1321/#1331) | |
 | ` ├ operators.py` | 2,798 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
 | ` ├ calls.py` | 1,463 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
@@ -773,7 +773,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 15,084 tests across 220 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 15,689 tests across 221 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

@@ -79,19 +79,20 @@ MEMORY_EFFECTS = frozenset({"IO", "Http", "HttpServer", "Inference", "DB"})
 #:
 #: A construction store tees the value into one scalar local and compares it
 #: there, so the base has to have a scalar WASM representation.  A boundary
-#: guard over a value that is BOUND has no such limit — it runs where the
-#: whole value already is, and a `{ @String | … }` parameter IS guarded
-#: there — which is why this is a CONSTRUCTION-position rule and not a
-#: property of the refinement.
+#: guard over a value that is BOUND has no such limit — it binds the value's
+#: whole representation (`vera.wasm.helpers.bind_slot_value_from_field` and
+#: its operand-stack twin: one local for a scalar or a handle, two
+#: consecutive i32s for a `(ptr, len)` pair), so a `{ @String | … }` is
+#: guarded at a parameter, a return, a closure boundary and as a tuple
+#: COMPONENT alike.  That is why this is a CONSTRUCTION-position rule and not
+#: a property of the refinement.
 #:
-#: It is not a property of every boundary either, which this comment used to
-#: say and #1466 measured otherwise: the tuple DECOMPOSITION at a boundary
-#: tees a component the same scalar way a construction store does, so a
-#: pair-represented component (`@String`, `@Array<T>`) is compared against
-#: its pointer and a value that SATISFIES the refinement traps, on a program
-#: proved at Tier 1.  Four instances, both controls and the mechanism are on
-#: that issue; the fix is the guard-correctness matrix it asks for, not this
-#: roster, which is about construction.
+#: The component was the exception until #1466: the tuple decomposition bound
+#: one local for a pair, so the predicate read the pointer and a value that
+#: SATISFIES the refinement trapped, on a program proved at Tier 1.  The
+#: repair was the binding, not this roster — which stays about construction,
+#: where the store's own shape (a tee, a stride write, a host import) is what
+#: the limit is about.
 #:
 #: Read by codegen's `_refined_component_wasm_type` and by the verifier's
 #: construction arm, so a base the emitter cannot lower is not classified

@@ -1,0 +1,1165 @@
+"""The class instrument: every guarded position, every WASM representation.
+
+`vera/binders.py` says which positions code generation plants a §2.6.5
+refinement guard at.  The sibling generator
+(`test_binder_position_generator.py`) asks whether a VIOLATING value is ever
+silently accepted there.  This file asks the opposite question, the one #1466
+found nothing asking:
+
+    **does the guard accept the values it admits?**
+
+A guard materialises the guarded value by binding `@<base>.0` to a WASM local,
+and a base's representation is not one local for every base: `@String` and
+`@Array<T>` are `(ptr, len)` pairs, and the slot environment reads the length
+from the local AFTER the pointer.  A guard that binds one local for a pair base
+evaluates its predicate against the pointer and whatever local happens to
+follow it — so the artifact refuses a value that SATISFIES the refinement, on a
+program `vera verify` reports clean.  That is the class: a guard emitted and
+wrong, rather than a guard missing.
+
+The axes are the POSITIONS — from `binders.GUARD_SITES`, never a list written
+here — crossed with the REPRESENTATIONS (`_REPRS`: five scalar bases, the two
+pair bases, four heap/handle bases).  Each cell reads three things that must
+agree:
+
+1. *The record.*  What the obligation stream says about the position: a
+   `tier3` guarded claim, a `tier3_unguarded` disclosure, or a `verified`
+   static discharge.  Expected from a RULE over the cell
+   (:func:`_expected_record`) rather than from a lookup in the registry, so
+   dropping a registry entry reds a cell instead of moving the expectation
+   with it.
+2. *The satisfying value runs.*  #1466's own reading, and the one no
+   instrument in this family had: a guard may not refuse a value its
+   refinement admits.
+3. *The violating value is refused* — statically where the value is
+   refutable, by the artifact otherwise, and then under the ROLE this
+   position prints, so a guard cannot pass by trapping in another position's
+   name.
+
+Red at `origin/release/v0.2.0` 1cf5c6a9, before the fix in this PR.  Every red
+cell is a pair base at the one position whose guard binds a single local:
+
+| cell | reading at the base tip |
+|---|---|
+| tuple component [parameter] x `@String` | traps on `"x"`, whose `string_length` is 1 |
+| tuple component [parameter] x `@Array<Int>` | traps on `[1]` |
+| tuple component [return] x `@String` | traps on `"x"` |
+| tuple component [return] x `@Array<Int>` | traps on `[1]` |
+| tuple component [nested] x `@String` | traps on `"x"` |
+| tuple component [nested] x `@Array<Int>` | traps on `[1]` |
+
+The first four are the instances #1466 enumerates; the two depth-2 rows are
+the same decomposition one level down, found by this matrix.  Every other
+position binds a pair correctly — a bare parameter through its two consecutive
+WASM params, a pair return and a closure's through two consecutive spill
+locals — which is what makes the decomposition's single local the mechanism at
+fault rather than the convention it departs from.
+
+The `@Byte` row's value comes from a `@Byte`-returning helper rather than a
+literal: the checker coerces an int literal to `@Byte` at some positions and
+not others (measured at the base tip: E202 at a call argument, E213 at a
+declared constructor field, E170 at a `Map` value, E314 at a match binding,
+E121 at a tuple-component return), so a literal would have excluded five of
+its eleven cells for a reason that has nothing to do with the guard.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import vera
+from tests import guard_emitter_scan
+from vera import binders, carriers, narrowing
+
+_PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
+
+#: The obligation kind a refinement narrowing is recorded under.
+_NARROWING_KINDS = ("refine_bind",)
+
+
+def _cli(*args: str) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "vera.cli", *args],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+        env=env, cwd=_PKG_PARENT, timeout=300,
+    )
+
+
+def test_the_cli_under_test_is_this_checkout() -> None:
+    """The premise under every measurement below.
+
+    ``python -m`` puts the working directory AHEAD of ``PYTHONPATH``, so a
+    subprocess launched from another checkout measures that checkout's
+    compiler while reporting about this one.  No cell would notice, which is
+    why the canary is a test of its own.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _PKG_PARENT
+    got = subprocess.run(
+        [sys.executable, "-c", "import vera; print(vera.__file__)"],
+        capture_output=True, text=True, encoding="utf-8", check=True,
+        env=env, cwd=_PKG_PARENT, timeout=300,
+    ).stdout.strip()
+    assert got == str(Path(vera.__file__).resolve()), (
+        f"the CLI subprocess imports {got}, not the checkout under test "
+        f"({Path(vera.__file__).resolve()})"
+    )
+
+
+# =====================================================================
+# Axis 1: the representations
+# =====================================================================
+
+
+class _Instance:
+    """One representation at one value: the declarations, and the expression
+    under test."""
+
+    def __init__(self, pre: str, value: str, base: str, safe: str) -> None:
+        self.pre = pre
+        self.value = value
+        self.base = base
+        self.safe = safe
+
+
+class _Repr:
+    """One representation row of the matrix."""
+
+    def __init__(
+        self, *, decls: str, base: str, good: str, bad: str,
+        repr_class: str, safe: str, witness: str,
+        producer: str | None = None,
+    ) -> None:
+        #: Declarations every program of this row needs: the `type R = { … }`
+        #: and any helper its predicate calls.
+        self.decls = decls
+        #: The base's spelling, for a position that needs the UNREFINED type
+        #: (the payload a clause binder narrows, an enclosing `Option<…>`).
+        self.base = base
+        #: A value satisfying the refinement, and one violating it — either
+        #: written directly at the position, or fed to *producer*.
+        self.good = good
+        self.bad = bad
+        #: "scalar" (one local of the base's width), "pair" ((ptr, len) in two
+        #: consecutive locals), "handle" (one i32 that points at or indexes
+        #: the value).
+        self.repr_class = repr_class
+        #: A satisfying value of the BASE type, for a second binder a program
+        #: needs to be well-formed, so the value under test is in one place.
+        self.safe = safe
+        #: The predicate as a trap message RENDERS it, so a refusal can be
+        #: attributed to this refinement rather than to something incidental
+        #: the program also does.  A `@Nat` / `@Byte` base conjoins its
+        #: implicit range in front, so the witness is the written conjunct.
+        self.witness = witness
+        #: A declaration template producing the value from a call, for a base
+        #: whose literal the checker will not coerce at every position.
+        self.producer = producer
+
+    def instance(self, which: str) -> _Instance:
+        value = self.good if which == "good" else self.bad
+        if self.producer is None:
+            return _Instance(self.decls, value, self.base, self.safe)
+        return _Instance(
+            self.decls + self.producer.format(value=value), "produce(())",
+            self.base, self.safe,
+        )
+
+
+_R = "type R = { @%s | %s };\n"
+
+_BYTE_PRODUCER = """
+private fn produce(@Unit -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {value}
+}}
+"""
+
+_REPRS: dict[str, _Repr] = {
+    "int": _Repr(
+        decls=_R % ("Int", "@Int.0 > 0"), base="Int",
+        good="5", bad="0 - 5", repr_class="scalar", safe="5",
+        witness="@Int.0 > 0",
+    ),
+    "nat": _Repr(
+        decls=_R % ("Nat", "@Nat.0 > 0"), base="Nat",
+        good="5", bad="0", repr_class="scalar", safe="5",
+        witness="@Nat.0 > 0",
+    ),
+    "float64": _Repr(
+        decls=_R % ("Float64", "@Float64.0 > 0.0"), base="Float64",
+        good="1.0", bad="0.0", repr_class="scalar", safe="1.0",
+        witness="@Float64.0 > 0.0",
+    ),
+    "bool": _Repr(
+        decls=_R % ("Bool", "@Bool.0 == true"), base="Bool",
+        good="true", bad="false", repr_class="scalar", safe="true",
+        witness="@Bool.0 == true",
+    ),
+    "byte": _Repr(
+        decls=_R % ("Byte", "@Byte.0 < 10"), base="Byte",
+        good="3", bad="200", repr_class="scalar", safe="3",
+        witness="@Byte.0 < 10", producer=_BYTE_PRODUCER,
+    ),
+    "string": _Repr(
+        decls=_R % ("String", "string_length(@String.0) > 0"), base="String",
+        good='"x"', bad='""', repr_class="pair", safe='"x"',
+        witness="string_length(@String.0) > 0",
+    ),
+    "array": _Repr(
+        decls=_R % ("Array<Int>", "array_length(@Array<Int>.0) > 0"),
+        base="Array<Int>", good="[1]", bad="[]", repr_class="pair",
+        safe="[1]", witness="array_length(@Array<@Int>.0) > 0",
+    ),
+    "map": _Repr(
+        decls=_R % ("Map<String, Int>", "map_size(@Map<String, Int>.0) > 0"),
+        base="Map<String, Int>", good='map_insert(map_new(), "a", 1)',
+        bad="map_new()", repr_class="handle",
+        safe='map_insert(map_new(), "a", 1)',
+        witness="map_size(@Map<@String, @Int>.0) > 0",
+    ),
+    "set": _Repr(
+        decls=_R % ("Set<Int>", "set_size(@Set<Int>.0) > 0"),
+        base="Set<Int>", good="set_add(set_new(), 1)", bad="set_new()",
+        repr_class="handle", safe="set_add(set_new(), 1)",
+        witness="set_size(@Set<@Int>.0) > 0",
+    ),
+    # A `Tuple` value is not Eq-comparable (E243 at the base tip), so the
+    # predicate reads a component through a helper.  A vacuous `| true` would
+    # read as coverage, which TESTING.md § Class Instruments calls worse than
+    # an absent row.
+    "tuple": _Repr(
+        decls=(
+            "type R = { @Tuple<Int, Int> | fst(@Tuple<Int, Int>.0) > 0 };\n\n"
+            "private fn fst(@Tuple<Int, Int> -> @Int)\n"
+            "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+            "{\n  let Tuple<@Int, @Int> = @Tuple<Int, Int>.0;\n  @Int.1\n}\n"
+        ),
+        base="Tuple<Int, Int>", good="Tuple(1, 1)", bad="Tuple(0 - 1, 1)",
+        repr_class="handle", safe="Tuple(1, 1)",
+        witness="fst(@Tuple<@Int, @Int>.0) > 0",
+    ),
+    # The trap renders a constructor call in a predicate as `<expr>`, so the
+    # witness stops at the comparison rather than claiming text the message
+    # does not carry.
+    "option": _Repr(
+        decls=_R % ("Option<Int>", "@Option<Int>.0 == Some(1)"),
+        base="Option<Int>", good="Some(1)", bad="None",
+        repr_class="handle", safe="Some(1)",
+        witness="@Option<@Int>.0 == ",
+    ),
+}
+
+
+def test_every_representation_class_is_present() -> None:
+    """The axis covers all three shapes a guard has to bind.
+
+    A matrix that lost its pair rows would be green for exactly the defect
+    #1466 reports, so the axis asserts its own shape rather than trusting the
+    table above to keep them.
+    """
+    classes = {r.repr_class for r in _REPRS.values()}
+    assert classes == {"scalar", "pair", "handle"}, classes
+    for wanted in ("scalar", "pair", "handle"):
+        rows = [n for n, r in _REPRS.items() if r.repr_class == wanted]
+        assert len(rows) >= 2, (wanted, rows)
+
+
+# =====================================================================
+# Axis 2: the positions
+# =====================================================================
+#
+# Each template takes one representation at one value and returns a complete
+# program routing that value into the named position.  Where a position needs
+# a second binder filled to be well-formed, that one takes `x.safe`.
+
+def _t_call_argument(x: _Instance) -> str:
+    return x.pre + f"""
+private fn take(@R -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  take({x.value})
+}}
+"""
+
+
+def _t_call_argument_where(x: _Instance) -> str:
+    """The callee is a `where` helper — #1455's own spelling."""
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  h({x.value})
+}}
+where {{
+  fn h(@R -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {{
+    1
+  }}
+}}
+"""
+
+
+def _t_return_type(x: _Instance) -> str:
+    return x.pre + f"""
+private fn h(@Unit -> @R)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {x.value}
+}}
+
+public fn f(@Unit -> @R)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  h(())
+}}
+"""
+
+
+def _t_let_binding(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @R = {x.value};
+  1
+}}
+"""
+
+
+def _t_match_binding(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match {x.value} {{
+    @R -> @R.0
+  }}
+}}
+"""
+
+
+def _t_adt_subpattern(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @Option<{x.base}> = Some({x.value});
+  match @Option<{x.base}>.0 {{
+    Some(@R) -> @R.0,
+    None -> {x.safe}
+  }}
+}}
+"""
+
+
+def _t_tuple_destructure(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let Tuple<@Int, @R> = Tuple(1, {x.value});
+  @R.0
+}}
+"""
+
+
+def _t_constructor_field(x: _Instance) -> str:
+    return x.pre + f"""
+private data Box {{
+  MkBox(R)
+}}
+
+private fn build(@Unit -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  MkBox({x.value})
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  match build(()) {{
+    MkBox(@R) -> 1
+  }}
+}}
+"""
+
+
+def _t_tuple_component_param(x: _Instance) -> str:
+    """#1466's own spelling: the component crosses a PARAMETER boundary."""
+    return x.pre + f"""
+private fn take(@Tuple<R, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  take(Tuple({x.value}, 1))
+}}
+"""
+
+
+def _t_tuple_component_return(x: _Instance) -> str:
+    """The same decomposition, from the RETURN epilogue."""
+    return x.pre + f"""
+private fn mk(@Unit -> @Tuple<R, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  Tuple({x.value}, 1)
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @Tuple<R, Int> = mk(());
+  1
+}}
+"""
+
+
+def _t_tuple_component_nested(x: _Instance) -> str:
+    """One level deeper — the decomposition's own recursion rather than the
+    call into it."""
+    return x.pre + f"""
+private fn take(@Tuple<Tuple<R, Int>, Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  take(Tuple(Tuple({x.value}, 1), 1))
+}}
+"""
+
+
+def _t_array_element(x: _Instance) -> str:
+    return x.pre + f"""
+private fn take(@Array<R> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  take([{x.value}])
+}}
+"""
+
+
+def _t_map_value(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  let @Map<String, R> = map_insert(map_new(), "a", {x.value});
+  1
+}}
+"""
+
+
+def _t_closure_argument(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(fn(@R -> @Int) effects(pure) {{ 1 }}, {x.value})
+}}
+"""
+
+
+def _t_closure_return(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  apply_fn(fn(@Unit -> @R) effects(pure) {{ {x.value} }}, ())
+}}
+"""
+
+
+def _t_state_write(x: _Instance) -> str:
+    return x.pre + f"""
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  handle[State<R>](@R = {x.value}) {{
+    put(@R) -> {{ resume(()) }}
+  }} in {{
+    get(())
+  }}
+}}
+"""
+
+
+def _t_handler_clause_binder(x: _Instance) -> str:
+    """The clause binds the thrown payload at its own, narrower type."""
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  handle[Exn<{x.base}>] {{
+    throw(@R) -> {{ 1 }}
+  }} in {{
+    throw({x.value})
+  }}
+}}
+"""
+
+
+def _t_throw_payload(x: _Instance) -> str:
+    """#1268's position: the op-call argument, guarded by the emitter the
+    translation context is HANDED rather than by a code-generation method
+    holding both halves."""
+    return x.pre + f"""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  handle[Exn<R>] {{
+    throw(@R) -> {{ 1 }}
+  }} in {{
+    throw({x.value})
+  }}
+}}
+"""
+
+
+class _Route:
+    """One syntactic route to one position, and the role its trap prints."""
+
+    def __init__(self, name: str, build: object, role: str) -> None:
+        self.name = name
+        self.build = build
+        #: The ROLE word this position's refinement-violation message
+        #: carries, so a guard cannot pass by trapping under another
+        #: position's name.  The pattern-bind and construction sites all
+        #: print `<type> binding` under a `where` naming the site ("let
+        #: binding", "State cell init", "Tuple(…) construction", …); the two
+        #: boundaries print "parameter" / "return value"; the tuple
+        #: decomposition adds "(tuple component)" to those; the #1268 payload
+        #: prints "payload".
+        self.role = role
+
+
+#: Position -> the routes that reach it.  A position with several entries has
+#: several EMITTER call sites worth separating: the tuple decomposition is
+#: reached from the parameter prologue, from the return epilogue and from its
+#: own recursion, and #1466 was all three.
+_TEMPLATES: dict[str, tuple[_Route, ...]] = {
+    "call argument": (
+        _Route("top-level", _t_call_argument, "parameter"),
+        _Route("where-helper", _t_call_argument_where, "parameter"),
+    ),
+    "return type": (_Route("", _t_return_type, "return value"),),
+    "closure argument": (_Route("", _t_closure_argument, "parameter"),),
+    "closure return": (_Route("", _t_closure_return, "return value"),),
+    "let binding": (_Route("", _t_let_binding, "binding"),),
+    "match binding": (_Route("", _t_match_binding, "binding"),),
+    "tuple destructure": (_Route("", _t_tuple_destructure, "binding"),),
+    "ADT sub-pattern bind": (_Route("", _t_adt_subpattern, "binding"),),
+    "constructor field": (_Route("", _t_constructor_field, "binding"),),
+    "tuple component": (
+        _Route("parameter", _t_tuple_component_param, "tuple component"),
+        _Route("return", _t_tuple_component_return, "tuple component"),
+        _Route("nested", _t_tuple_component_nested, "tuple component"),
+    ),
+    "array element": (_Route("", _t_array_element, "binding"),),
+    "map value": (_Route("", _t_map_value, "binding"),),
+    "State write boundary": (_Route("", _t_state_write, "binding"),),
+    "handler clause binder": (
+        _Route("", _t_handler_clause_binder, "binding"),
+    ),
+}
+
+#: Positions the class reaches that `GUARD_SITES` cannot answer for, with the
+#: reason.  The registry deliberately holds no entry for an effect operation's
+#: argument — the answer is a property of the EFFECT, not of the position
+#: (#754, #1268) — and the #1268 emitter is nonetheless one of the emitters
+#: that binds a slot, so the class reaches it and the matrix measures it.
+_EXTRA_POSITIONS: dict[str, tuple[str, tuple[_Route, ...]]] = {
+    "throw payload": (
+        "the `throw` payload's guard is emitted through the bound emitter the "
+        "translation context is handed (#1268), whose answer is a property of "
+        "the effect rather than of the position — so `GUARD_SITES` holds no "
+        "entry for it while the class still reaches its binding",
+        (_Route("", _t_throw_payload, "payload"),),
+    ),
+}
+
+_ALL_ROUTES: dict[str, tuple[_Route, ...]] = {
+    **_TEMPLATES,
+    **{name: routes for name, (_why, routes) in _EXTRA_POSITIONS.items()},
+}
+
+
+def test_every_guarded_position_is_templated() -> None:
+    """The matrix's own completeness, against `binders.GUARD_SITES`.
+
+    A position registered as taking a refinement-predicate guard with no
+    program that reaches it fails HERE, rather than being a row nobody
+    noticed was missing — the hole the registry closes one level down,
+    closed again one level up.
+    """
+    registered = binders.guarded_sites("refinement_predicate")
+    missing = sorted(registered - set(_TEMPLATES))
+    assert not missing, (
+        f"{missing} take a refinement-predicate guard per "
+        f"`binders.GUARD_SITES`, and no template reaches them"
+    )
+    stale = sorted(set(_TEMPLATES) - registered)
+    assert not stale, (
+        f"{stale} are templated but no longer registered as guarded positions"
+    )
+
+
+def test_every_element_guard_boundary_is_templated() -> None:
+    """The element-guard roster's boundaries are measured here too.
+
+    `carriers.ELEMENT_GUARD_SITES` names the four boundaries an element loop
+    is planted at.  Their ELEMENT property is #1430's instrument
+    (`test_element_facts_statable_1430.py`) and is not repeated here — but a
+    boundary absent from this matrix would leave its SLOT guard unmeasured,
+    so the two rosters are held to cover each other rather than each
+    assuming the other does.
+    """
+    missing = sorted(set(carriers.ELEMENT_GUARD_SITES) - set(_TEMPLATES))
+    assert not missing, (
+        f"{missing} carry an element guard and are not templated here"
+    )
+
+
+def test_no_extra_position_is_unexplained() -> None:
+    assert all(reason.strip() for reason, _ in _EXTRA_POSITIONS.values())
+
+
+# =====================================================================
+# The roster: where the decomposition's emitter is actually wired
+# =====================================================================
+
+#: The call sites of `_emit_component_refinement_guards`, as
+#: `enclosing function/role`.  Held to the emitter by the shared scan, so a
+#: fifth wiring site cannot appear without this roster — and the matrix routes
+#: beside it — being updated.  `_emit_component_refinement_guards/?` is the
+#: decomposition's own recursion, whose role is the caller's variable rather
+#: than a literal; the `nested` route is its cell.
+_COMPONENT_GUARD_SITES: dict[str, str] = {
+    "tuple component [parameter]": "_compile_fn/parameter",
+    "tuple component [return]": "_compile_postconditions/return value",
+    "tuple component [closure parameter]": "_compile_lifted_closure/parameter",
+    "tuple component [closure return]":
+        "_compile_lifted_closure/return value",
+    "tuple component [nested]": "_emit_component_refinement_guards/?",
+}
+
+
+def _component_emitter_sites() -> set[str]:
+    return guard_emitter_scan.emitter_call_sites(
+        "_emit_component_refinement_guards", drop_self=False)
+
+
+def test_the_boundary_guard_roster_matches_where_it_is_wired() -> None:
+    """Every roster entry names a call site, and every call site is named.
+
+    The same shape #1430 gives its element roster, over the emitter this
+    matrix is about, and through the same scan — so "where guards are
+    emitted" is derived once for both.
+    """
+    assert _component_emitter_sites() == set(
+        _COMPONENT_GUARD_SITES.values()), (
+        f"the boundary-guard roster and the emitter's call sites disagree: "
+        f"wired={sorted(_component_emitter_sites())} "
+        f"named={sorted(set(_COMPONENT_GUARD_SITES.values()))}"
+    )
+
+
+def test_dropping_any_boundary_roster_entry_is_visible() -> None:
+    """EVERY entry, not one example.
+
+    A comparison of SETS is satisfied by a roster that still names each call
+    site through some other entry, so the comparison is driven once per entry
+    and each is load-bearing on its own.
+    """
+    wired = _component_emitter_sites()
+    for position, site in sorted(_COMPONENT_GUARD_SITES.items()):
+        without = {
+            s for p, s in _COMPONENT_GUARD_SITES.items() if p != position
+        }
+        assert without != wired, (
+            f"dropping `{position}` ({site}) leaves the comparison "
+            f"unchanged, so nothing holds that entry to an emitter"
+        )
+
+
+# =====================================================================
+# The cells
+# =====================================================================
+
+#: (position, route index, representation) -> a shape the backend refuses
+#: outright, in the compiler's own words.  Not a cell: a product refused
+#: before the guard layer exercises that refusal rather than the binding, and
+#: TESTING.md § Class Instruments is explicit that such a cell is worse than
+#: an absent one because it reads as coverage.
+_UNSUPPORTED_SHAPES: dict[tuple[str, int, str], str] = {
+    ("State write boundary", 0, "string"):
+        "Function 'f' uses State with unsupported type — skipped",
+    ("State write boundary", 0, "array"):
+        "Function 'f' uses State with unsupported type — skipped",
+    ("map value", 0, "array"):
+        "Map/Set with an Array-typed or zero-size key, value, or element is "
+        "not supported — function skipped",
+}
+
+#: (position, route index, representation) -> a defect this matrix finds that
+#: this PR does not fix, with the measurement and the issue it belongs to.
+#: Skipped here and pinned by a cell of its own at the end of the file, which
+#: asserts what the compiler does TODAY: the day the defect is fixed that cell
+#: fails, and both entries are meant to be deleted together.  A class
+#: instrument trimmed until it is green measures the trimming.
+_KNOWN_RED: dict[tuple[str, int, str], str] = {
+    ("State write boundary", 0, "tuple"):
+        "#1439, pre-existing at release/v0.2.0 1cf5c6a9: the `State` write "
+        "guard is declined for every base outside "
+        "`narrowing.REFINED_CONSTRUCTION_SCALAR_BASES` — including a HANDLE "
+        "base, whose value does fit the one local the store tees into — while "
+        "the verifier records the write `tier3`.  The emitted module carries "
+        "no `$vera.contract_fail` call at all, so a violating value is stored "
+        "and the program continues.  A record claiming a check nothing emits, "
+        "which is the opposite direction from this PR's class",
+    ("ADT sub-pattern bind", 0, "tuple"):
+        "#1424, pre-existing at release/v0.2.0 1cf5c6a9: an ADT sub-pattern "
+        "binder of `Tuple` type whose arm RETURNS the bound value, joined "
+        "with an arm that builds a fresh `Tuple`, kills `vera verify` with "
+        "`Z3Exception: sort mismatch` (E699).  No refinement is needed — the "
+        "unrefined twin crashes identically — so it is the sort-resolution "
+        "class of #1424/#1360 rather than a guard defect",
+}
+
+_CELLS = [
+    (position, index, repr_name)
+    for position, routes in sorted(_ALL_ROUTES.items())
+    for index in range(len(routes))
+    for repr_name in _REPRS
+]
+
+
+def _ids(cell: tuple[str, int, str]) -> str:
+    position, index, repr_name = cell
+    route = _ALL_ROUTES[position][index]
+    label = f"{position}[{route.name}]" if route.name else position
+    return f"{label.replace(' ', '-')}-{repr_name}"
+
+
+# =====================================================================
+# The measurement
+# =====================================================================
+
+_CACHE: dict[tuple[str, int, str], dict] = {}
+
+
+def _write(tmp_path: Path, source: str, name: str) -> Path:
+    p = tmp_path / name
+    p.write_text(source, encoding="utf-8")
+    return p
+
+
+def _envelope(proc: subprocess.CompletedProcess[str]) -> dict:
+    try:
+        parsed = json.loads(proc.stdout)
+    except json.JSONDecodeError:  # pragma: no cover — a crash, not a verdict
+        pytest.fail(
+            f"`vera verify --json` produced no envelope:\n"
+            f"{proc.stdout[-800:]}\n{proc.stderr[-800:]}"
+        )
+    if not isinstance(parsed, dict):  # pragma: no cover — defensive
+        pytest.fail(f"`vera verify --json` produced {type(parsed)}")
+    return parsed
+
+
+def _statuses(envelope: dict) -> set[str]:
+    return {
+        o["status"] for o in envelope.get("obligations", ())
+        if o["kind"] in _NARROWING_KINDS
+    }
+
+
+def _errors(envelope: dict) -> list[str]:
+    return [
+        d.get("error_code") for d in envelope.get("diagnostics", ())
+        if d.get("severity") == "error"
+    ]
+
+
+def _sources(cell: tuple[str, int, str]) -> tuple[str, str]:
+    position, index, repr_name = cell
+    r = _REPRS[repr_name]
+    build = _ALL_ROUTES[position][index].build
+    return (
+        build(r.instance("good")),  # type: ignore[operator]
+        build(r.instance("bad")),   # type: ignore[operator]
+    )
+
+
+def _measure(cell: tuple[str, int, str], tmp_path: Path) -> dict:
+    """Verify and run both twins of one cell, once per session.
+
+    Cached because three readings ask about one measurement, and the
+    measurement is CLI invocations — of which the last is skipped whenever
+    the artifact already refused the violating value.
+    """
+    cached = _CACHE.get(cell)
+    if cached is not None:
+        return cached
+    good_src, bad_src = _sources(cell)
+
+    good_path = _write(tmp_path, good_src, "good.vera")
+    good_env = _envelope(_cli("verify", "--json", str(good_path)))
+    good_run = _cli("run", str(good_path))
+
+    bad_path = _write(tmp_path, bad_src, "bad.vera")
+    bad_run = _cli("run", str(bad_path))
+    bad_errors: list[str] = []
+    if bad_run.returncode == 0:
+        # Only then does the STATIC answer matter: a value the artifact has
+        # already refused needs no second question, and asking it anyway
+        # would half again the matrix's wall time.
+        bad_errors = _errors(_envelope(_cli("verify", "--json", str(bad_path))))
+
+    out = dict(
+        good_source=good_src,
+        statuses=_statuses(good_env),
+        errors=_errors(good_env),
+        good_runs=good_run.returncode == 0,
+        good_output=(good_run.stdout + good_run.stderr)[-600:],
+        bad_refused_at_run=bad_run.returncode != 0,
+        bad_output=(bad_run.stdout + bad_run.stderr)[-600:],
+        bad_errors=bad_errors,
+    )
+    _CACHE[cell] = out
+    return out
+
+
+def _disposition(cell: tuple[str, int, str]) -> None:
+    """Apply this product's disposition, if it has one."""
+    unsupported = _UNSUPPORTED_SHAPES.get(cell)
+    if unsupported is not None:
+        pytest.skip(f"the backend refuses the shape: {unsupported}")
+    known_red = _KNOWN_RED.get(cell)
+    if known_red is not None:
+        pytest.skip(
+            f"pinned by its own cell at the end of this file: {known_red}")
+
+
+# =====================================================================
+# Reading 1: the satisfying value runs — #1466's own property
+# =====================================================================
+
+
+@pytest.mark.parametrize("cell", _CELLS, ids=_ids)
+def test_a_guard_never_refuses_a_value_it_admits(
+    cell: tuple[str, int, str], tmp_path: Path,
+) -> None:
+    """THE reading #1466 is about, and the one no sibling instrument has.
+
+    A guard exists to refuse what the refinement forbids.  One that refuses
+    what it ADMITS is worse than absent: the program is correct, `vera
+    verify` says so, and the artifact will not run it.
+    """
+    _disposition(cell)
+    m = _measure(cell, tmp_path)
+    assert not m["errors"], (
+        f"{_ids(cell)}: the SATISFYING program is refused statically "
+        f"({m['errors']}), so this cell measures that refusal rather than "
+        f"the guard's binding:\n{m['good_source']}"
+    )
+    assert m["good_runs"], (
+        f"{_ids(cell)}: the guard refuses a value its own refinement "
+        f"ADMITS:\n{m['good_output']}"
+    )
+
+
+# =====================================================================
+# Reading 2: the violating value is refused, under this position's name
+# =====================================================================
+
+
+@pytest.mark.parametrize("cell", _CELLS, ids=_ids)
+def test_a_violating_value_is_refused(
+    cell: tuple[str, int, str], tmp_path: Path,
+) -> None:
+    """The complement, without which reading 1 is satisfied by NO guard.
+
+    Refused statically where the value is refutable (a literal at a scalar
+    base is), and by the artifact otherwise — and when the artifact is what
+    refuses it, the trap is ATTRIBUTED: it names this refinement's predicate
+    and the role of the position that refused, so a guard cannot pass by
+    trapping over some other value or under another position's name.
+    """
+    _disposition(cell)
+    expected = _expected_record(cell)
+    if expected != _GUARDED:
+        pytest.skip(f"the record discloses this position for this base: "
+                    f"{expected}")
+    m = _measure(cell, tmp_path)
+    assert m["bad_refused_at_run"] or m["bad_errors"], (
+        f"{_ids(cell)}: the violating value is refused by nothing — not by "
+        f"verification, and not by the artifact:\n{m['bad_output']}"
+    )
+    if m["bad_refused_at_run"] and "Refinement violation" in m["bad_output"]:
+        witness = _REPRS[cell[2]].witness
+        assert witness in m["bad_output"], (
+            f"{_ids(cell)}: the trap does not name this refinement's "
+            f"predicate ({witness!r}), so it refuses something else:\n"
+            f"{m['bad_output']}"
+        )
+        role = _expected_role(cell)
+        assert role in m["bad_output"], (
+            f"{_ids(cell)}: the trap does not name the role of the position "
+            f"that must refuse it ({role!r}):\n{m['bad_output']}"
+        )
+
+
+# =====================================================================
+# Reading 3: the record says what the artifact does
+# =====================================================================
+#
+# The expectation is a RULE over the cell, deliberately not a lookup in the
+# registry: the point of this reading is that dropping a registry entry must
+# RED a cell, and a reading that consulted the registry to decide what to
+# expect would move with it (R-1465 review, Finding 3).
+
+_GUARDED = "guarded-or-proved"
+
+_CONSTRUCTION_POSITIONS = frozenset(
+    site for sites in binders.CONSTRUCTION_SITES.values() for site in sites
+)
+
+
+def _expected_record(cell: tuple[str, int, str]) -> str:
+    """What the obligation stream must say about this cell's position."""
+    position, _index, repr_name = cell
+    base = _REPRS[repr_name].base
+    if (position in _CONSTRUCTION_POSITIONS
+            and base not in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES):
+        return (
+            "disclosed: a construction store tees the value into one scalar "
+            "local, and this base has no scalar representation "
+            "(`narrowing.REFINED_CONSTRUCTION_SCALAR_BASES`)"
+        )
+    return _GUARDED
+
+
+def _expected_role(cell: tuple[str, int, str]) -> str:
+    """The role the trap must print when the ARTIFACT refuses this cell.
+
+    Derived rather than fixed per route, because a value crossing a
+    CONSTRUCTION position is refused by the store before it ever reaches the
+    position's own boundary guard — and the store prints its own `<type>
+    binding` role, under a `where` naming the store ("Tuple(…) construction").
+    So a tuple component over a base the store guards traps as a binding, and
+    the same component over a base the store DISCLOSES traps at the boundary
+    as "tuple component", which is the reading the pair rows rest on.
+    """
+    position, index, repr_name = cell
+    base = _REPRS[repr_name].base
+    if (position in _CONSTRUCTION_POSITIONS
+            and base in narrowing.REFINED_CONSTRUCTION_SCALAR_BASES):
+        return "binding"
+    return _ALL_ROUTES[position][index].role
+
+
+@pytest.mark.parametrize("cell", _CELLS, ids=_ids)
+def test_the_record_matches_the_rule(
+    cell: tuple[str, int, str], tmp_path: Path,
+) -> None:
+    """A position that can be guarded claims a check; one that cannot
+    discloses it.
+
+    Both directions matter.  A position quietly losing its guard keeps
+    reading 1 green — nothing refuses anything — and flips its status to
+    `tier3_unguarded`, so this is the reading that sees it; and a base the
+    store cannot lower must DISCLOSE rather than claim, which is the
+    over-claim this release exists to remove.
+
+    The assertion is membership rather than set equality, because one
+    program legitimately carries several narrowings at several positions: a
+    `Map` value bound by a `let` discloses the element position while the
+    store itself is proved, so a cell's own status is one of the set rather
+    than the whole of it.  "No position is left unbacked" over the whole
+    product is the sibling generator's reading, not this one's.
+    """
+    _disposition(cell)
+    m = _measure(cell, tmp_path)
+    expected = _expected_record(cell)
+    statuses = m["statuses"]
+    assert statuses, (
+        f"{_ids(cell)}: a refinement narrowing at this position is recorded "
+        f"NOWHERE — not verified, not tier3, not tier3_unguarded"
+    )
+    if expected == _GUARDED:
+        assert statuses & {"tier3", "verified"}, (
+            f"{_ids(cell)}: a guard can be emitted for this base at this "
+            f"position, and the stream says {sorted(statuses)}"
+        )
+    else:
+        assert "tier3_unguarded" in statuses, (
+            f"{_ids(cell)}: {expected}, and the stream says "
+            f"{sorted(statuses)}"
+        )
+
+
+def test_every_unsupported_shape_says_so_in_the_compilers_words(
+    tmp_path: Path,
+) -> None:
+    """An excluded product is excluded for a reason the COMPILER still gives.
+
+    Without this, an entry outlives the refusal it names and the cell stays
+    skipped after the shape becomes supported — an absent cell wearing a
+    reason, which is the failure mode the exclusion list exists to avoid.
+    """
+    for cell, message in sorted(_UNSUPPORTED_SHAPES.items()):
+        good_src, _bad = _sources(cell)
+        ran = _cli("run", str(_write(tmp_path, good_src, "u.vera")))
+        assert message in (ran.stdout + ran.stderr), (
+            f"{_ids(cell)} is excluded as unsupported, but the compiler no "
+            f"longer says so:\n{(ran.stdout + ran.stderr)[-500:]}"
+        )
+
+
+# =====================================================================
+# The two defects this matrix finds that this PR does not fix
+# =====================================================================
+#
+# Pinned as what the compiler DOES, not as what it should: each assertion
+# fails the day the defect is fixed, which is when the `_KNOWN_RED` entry and
+# the cell here are both meant to be deleted.
+
+def test_1439_a_state_write_over_a_handle_base_claims_a_guard_it_lacks(
+    tmp_path: Path,
+) -> None:
+    """#1439, pinned.  This asserts the DEFECT; see the issue for the class.
+
+    The `State` write guard reads `_refined_component_wasm_type`, which
+    answers None for every base outside the construction-scalar roster — a
+    HANDLE base included, though its value is the one i32 the store already
+    tees into.  The verifier's `State write boundary` arm does not intersect
+    that roster, so the obligation is recorded `tier3` while the module
+    carries no guard at all.
+    """
+    cell = ("State write boundary", 0, "tuple")
+    m = _measure(cell, tmp_path)
+    assert not m["errors"], m["errors"]
+    assert "tier3" in m["statuses"], (
+        f"#1439's record no longer claims a check: {sorted(m['statuses'])}"
+    )
+    assert not m["bad_refused_at_run"] and not m["bad_errors"], (
+        "#1439 appears to be FIXED — the violating value is now refused.  "
+        "Remove this cell and the ('State write boundary', 0, 'tuple') entry "
+        f"from _KNOWN_RED:\n{m['bad_output']}"
+    )
+    wat = _cli("compile", "--wat", str(_write(
+        tmp_path, _sources(cell)[1], "state.vera")))
+    assert "contract_fail" not in wat.stdout, (
+        "#1439 appears to be FIXED — the module now carries a guard"
+    )
+
+
+def test_1424_a_tuple_sub_pattern_returned_from_its_arm_crashes_verify(
+    tmp_path: Path,
+) -> None:
+    """#1424, pinned.  This asserts the DEFECT; see the issue for the class.
+
+    An ADT sub-pattern binder of `Tuple` type, returned from its own arm and
+    joined with an arm that builds a fresh `Tuple`, reaches the verifier's
+    sort resolution by two routes that disagree.  `vera check` is clean.
+    """
+    good_src, _bad = _sources(("ADT sub-pattern bind", 0, "tuple"))
+    path = _write(tmp_path, good_src, "sub.vera")
+    assert _cli("check", "--quiet", str(path)).returncode == 0
+    verified = _cli("verify", str(path))
+    assert verified.returncode != 0, (
+        "#1424 appears to be FIXED — verification no longer crashes.  Remove "
+        "this cell and the ('ADT sub-pattern bind', 0, 'tuple') entry from "
+        "_KNOWN_RED"
+    )
+    output = verified.stdout + verified.stderr
+    assert "E699" in output and "sort mismatch" in output, output[-400:]

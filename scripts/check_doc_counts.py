@@ -1244,8 +1244,13 @@ def check_bug_rows(known_issues_text: str) -> list[str]:
 _ROADMAP_BURNDOWN_SECTION = re.compile(
     r"^## The v[\d.]+ burndown[ \t]*$(.*?)(?=^## |\Z)", re.M | re.S
 )
+# The noun may be singular: a burndown with one row left reads "*One open
+# bug, driven to zero.*", which the plural-only spelling made unwritable in
+# English.  Only the NUMBER is checked against the row counts — the fixtures
+# in `tests/test_check_doc_counts.py` write "One open bugs" deliberately,
+# since what they are about is the count and not the grammar.
 _BURNDOWN_HEADER = re.compile(
-    r"^\*([A-Za-z-]+) open bugs, driven to zero\.\*[ \t]*$", re.M
+    r"^\*([A-Za-z-]+) open bugs?, driven to zero\.\*[ \t]*$", re.M
 )
 
 _ONES_WORDS = {

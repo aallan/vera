@@ -19,7 +19,10 @@ from vera.narrowing import (
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
+    bind_slot_value_from_field,
+    bind_slot_value_from_stack,
     element_sequence_loop,
+    field_layout,
     gc_shadow_push,
     state_type_arg,
 )
@@ -41,14 +44,21 @@ class _ComponentGuardSite:
     the ONE decomposition three consumers read: the guard EMITTER, the
     has-guardable predicate that decides whether the return epilogue runs at
     all, and the host-import PRE-SCAN.  Carrying the layout (*field_offset*,
-    *load_wt*) alongside the classification (*guard*, *nested*) is what lets
+    *wt*) alongside the classification (*guard*, *nested*) is what lets
     the emitter consume the same enumeration rather than re-deriving it: a
     component this record does not describe is one no guard is emitted for,
     and one the pre-scan therefore need not register.
     """
 
     field_offset: int
-    load_wt: str
+    #: The component's WASM REPRESENTATION, as `_type_expr_to_wasm_type`
+    #: reports it — not "the load to emit" (#1466).  A pair component is
+    #: ``i32_pair``: two words, of which one load reads half the value, so a
+    #: site saying ``i32`` here let the emitter bind a `@String` component's
+    #: pointer alone and evaluate the predicate against it.  What the
+    #: representation means in locals and loads is
+    #: :func:`vera.wasm.helpers.bind_slot_value_from_field`.
+    wt: str
     #: `(predicate, base slot-name)` — the pair `_refinement_guard_parts`
     #: returns, or the synthesized `@Nat.0 >= 0` for a bare-`@Nat` component.
     #: None when the component is guarded only through its inner components.
@@ -630,8 +640,6 @@ class ContractsMixin:
         if node is None:
             return
 
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after the tag (i32, 4 bytes) — as construction lays it out
         for comp_te in (node.type_args or ()):  # _resolve_tuple_type: non-empty
             wt = self._type_expr_to_wasm_type(comp_te)
@@ -640,10 +648,11 @@ class ContractsMixin:
                 # no value to guard and no offset advance (matching how
                 # construction / extraction skip a Unit field).
                 continue
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
-            field_offset = offset
-            offset += _sizes.get(wt, 8)
+            # Through the ONE layout (`vera.wasm.helpers.field_layout`), which
+            # is the rule `_translate_constructor_call` lays the object out by:
+            # a decomposition with its own copy of the sizes could read a
+            # component at an offset construction never wrote it to (#1466).
+            field_offset, offset = field_layout(offset, wt)
 
             parts = self._refinement_guard_parts(comp_te)
             resolved = self._resolve_type_alias(comp_te)
@@ -674,11 +683,15 @@ class ContractsMixin:
                 )
             yield _ComponentGuardSite(
                 field_offset=field_offset,
-                # A pair component (String / Array) loads its ptr half — the
-                # length is read from memory by the predicate, exactly as the
-                # i32_pair return guard does (a Vera string / array is
-                # self-describing from its pointer).
-                load_wt="i32" if wt == "i32_pair" else wt,
+                # The component's representation, WHOLE.  This used to yield
+                # the ptr half of a pair on the belief that "a Vera string /
+                # array is self-describing from its pointer"; it is not —
+                # `_translate_slot_ref` reads a pair's length from the local
+                # AFTER its pointer, so binding one local handed the
+                # predicate the pointer and whatever local came next, and
+                # `Tuple("x", 1)` into a `@Tuple<NonEmpty, Int>` trapped on a
+                # value its refinement admits (#1466).
+                wt=wt,
                 guard=guard,
                 nested=comp_te if is_nested else None,
             )
@@ -735,11 +748,15 @@ class ContractsMixin:
         decomposes is the one construction built."""
         instrs: list[str] = []
         for site in self._tuple_component_guard_sites(te, _depth):
-            # Load the component from the heap into a fresh local.
-            comp_local = ctx.alloc_local(site.load_wt)
-            instrs.append(f"local.get {value_local}")
-            instrs.append(f"{site.load_wt}.load offset={site.field_offset}")
-            instrs.append(f"local.set {comp_local}")
+            # Materialise the component's WHOLE representation into the
+            # local(s) its slot binds — one for a scalar or a handle, two
+            # consecutive i32s for a `(ptr, len)` pair (#1466).  The binding
+            # is derived from the type rather than from this emitter's own
+            # convention, which is what a guard reading a pair's pointer as
+            # if it were the value cost.
+            binding = bind_slot_value_from_field(
+                ctx.alloc_local, site.wt, value_local, site.field_offset)
+            instrs.extend(binding.load)
 
             # Guard the component's OWN predicate (a refined component) or the
             # bare-@Nat `>= 0`, THEN — if it also wraps a tuple — recurse into
@@ -753,12 +770,12 @@ class ContractsMixin:
                     f"{ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, comp_local, msg, env)
+                    ctx, predicate, base_name, binding.slot_local, msg, env)
                 if guard is not None:
                     instrs.extend(guard)
             if site.nested is not None:
                 instrs.extend(self._emit_component_refinement_guards(
-                    ctx, sig_text, site.nested, comp_local, env, role,
+                    ctx, sig_text, site.nested, binding.slot_local, env, role,
                     _depth + 1))
         return instrs
 
@@ -1011,19 +1028,19 @@ class ContractsMixin:
             return []
 
         # Pair returns (String/Array) don't support general ensures checks
-        # — can't bind `@T.result` to a two-value result.  A refinement guard,
-        # however, needs only the value's primary local (the ptr; the length
-        # is read from memory, as the param-guard path shows), so a refined
-        # String *or* Array return IS guarded by saving both halves around the
-        # check.  `_refinement_guard_parts` resolves the canonical base name
-        # for a collection base too, so a `@NonEmptyArray` return is guarded
-        # here despite being Tier-3 *statically* (#746) — see
-        # test_array_return_guard_traps_on_empty.
+        # — can't bind `@T.result` to a two-value result.  A refinement guard
+        # does work over one, because the value is spilled into the two
+        # CONSECUTIVE locals its slot binds — the pointer and, at `ptr + 1`,
+        # the length `_translate_slot_ref` reads — so a refined String *or*
+        # Array return IS guarded.  `_refinement_guard_parts` resolves the
+        # canonical base name for a collection base too, so a `@NonEmptyArray`
+        # return is guarded here despite being Tier-3 *statically* (#746) —
+        # see test_array_return_guard_traps_on_empty.
         if ret_wt == "i32_pair":
             if refined_ret is None and not ret_elements:
                 return []
-            ptr_l = ctx.alloc_local("i32")
-            len_l = ctx.alloc_local("i32")
+            spill = bind_slot_value_from_stack(ctx.alloc_local, "i32_pair")
+            ptr_l, len_l = spill.locals
             pair_guard: list[str] = []
             # #1430: elements FIRST.  A refinement over an array may read its
             # elements (`{ @Array<PosInt> | array_length(...) > 0 }` does not,
@@ -1046,13 +1063,7 @@ class ContractsMixin:
             if not pair_guard:
                 return []
             # Result is (ptr, len) with len on top of the stack.
-            return [
-                f"local.set {len_l}",
-                f"local.set {ptr_l}",
-                *pair_guard,
-                f"local.get {ptr_l}",
-                f"local.get {len_l}",
-            ]
+            return [*spill.load, *pair_guard, *spill.push]
 
         instrs: list[str] = []
 

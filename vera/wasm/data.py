@@ -8,7 +8,9 @@ from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
+    PAIR_LEN_FIELD_OFFSET,
     WasmSlotEnv,
+    field_layout,
     gc_shadow_push,
 )
 
@@ -420,17 +422,16 @@ class DataMixin:
             arg_instrs_list.append(arg_instrs)
             arg_wasm_types.append(arg_wt)
 
-        # Compute field offsets from concrete argument types.  A `"unit"`
-        # field is zero-size: it neither aligns nor advances the offset.
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
+        # Compute field offsets from concrete argument types, through the ONE
+        # layout rule (`helpers.field_layout`) every reader of a constructed
+        # object walks: the destructure, and the boundary guard's tuple
+        # decomposition.  A `"unit"` field is zero-size — it neither aligns
+        # nor advances the offset.
         offset = 4  # after tag (i32, 4 bytes)
         field_offsets: list[tuple[int, str]] = []
         for wt in arg_wasm_types:
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)  # align up
-            field_offsets.append((offset, wt))
-            offset += _sizes.get(wt, 8)
+            field_offset, offset = field_layout(offset, wt)
+            field_offsets.append((field_offset, wt))
         total_size = ((offset + 7) & ~7) if offset > 0 else 8  # 8-byte aligned
 
         self.needs_alloc = True
@@ -649,9 +650,9 @@ class DataMixin:
             else ()
         )
 
-        # Extract each field using the same offset algorithm as constructors
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
+        # Extract each field through the same layout rule construction lays
+        # the object out by (`helpers.field_layout`), rather than a second
+        # copy of its sizes and alignments.
         offset = 4  # skip past tag (i32, 4 bytes)
         new_env = env
 
@@ -670,15 +671,15 @@ class DataMixin:
                 continue
             # Pair types (String, Array<T>): two consecutive i32 locals
             if self._is_pair_type_name(type_name):
-                align = _aligns["i32"]
-                offset = (offset + align - 1) & ~(align - 1)
+                field_off, offset = field_layout(offset, "i32_pair")
                 ptr_local = self.alloc_local("i32")
                 len_local = self.alloc_local("i32")
                 instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={offset}")
+                instrs.append(f"i32.load offset={field_off}")
                 instrs.append(f"local.set {ptr_local}")
                 instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={offset + 4}")
+                instrs.append(
+                    f"i32.load offset={field_off + PAIR_LEN_FIELD_OFFSET}")
                 instrs.append(f"local.set {len_local}")
                 # PR #707 review: same pair-type rooting
                 # gap as ``_extract_constructor_fields`` — String
@@ -695,7 +696,6 @@ class DataMixin:
                     stmt, new_env,
                 ))
                 new_env = new_env.push(type_name, ptr_local)
-                offset += 8
                 continue
             wt = self._slot_name_to_wasm_type(type_name)
             if wt is None:
@@ -703,12 +703,11 @@ class DataMixin:
                     stmt,
                     f"let-destruct type {type_name!r} has no WASM representation",
                 )
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
+            field_off, offset = field_layout(offset, wt)
             local_idx = self.alloc_local(wt)
             load = [
                 f"local.get {scr_local}",
-                f"{wt}.load offset={offset}",
+                f"{wt}.load offset={field_off}",
             ]
             # #747: runtime-guard an @Int -> @Nat destructure component the
             # verifier could not discharge `>= 0` statically (Tier 3), or
@@ -762,7 +761,6 @@ class DataMixin:
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(local_idx))
             new_env = new_env.push(type_name, local_idx)
-            offset += _sizes.get(wt, 8)
 
         return (instrs, new_env)
 
