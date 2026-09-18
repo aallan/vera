@@ -118,11 +118,6 @@ _QUANTIFIER_SCAN_NODES = 20_000
 #: through a set intersection (#1457 review).
 _TRUNCATED_SCAN = "\x00truncated"
 
-#: How `SmtContext.get_rank_fn` names the function a `decreases` measure
-#: installs.  The fragment allowlist admits a quantifier only when every
-#: uninterpreted symbol under it carries this prefix.
-_RANK_SYMBOL_PREFIX = "_rank_"
-
 # i64 / u64 range bounds for the #798 integer-overflow obligation.  @Int is a
 # signed 64-bit machine integer, @Nat an unsigned one; `+`/`-`/`*` wrap at these
 # boundaries at runtime (and, per #798, now trap).
@@ -5150,38 +5145,6 @@ class ContractVerifier:
         return bool(
             z3.is_int_value(arg) or z3.is_rational_value(arg),
         )
-
-    @staticmethod
-    def _is_rank_axiom(quantifier: object) -> bool:
-        """Whether this quantifier is one the `decreases` machinery installed.
-
-        Read off the symbol it constrains — `SmtContext.get_rank_fn` names it
-        `_rank_<sort>` — rather than off the shape, so a user-written
-        `forall` over an uninterpreted function is NOT admitted even when it
-        looks like one.
-        """
-        body = cast("z3.QuantifierRef", quantifier).body()
-        stack: list[object] = [body]
-        seen: set[int] = set()
-        found = False
-        while stack:
-            node = stack.pop()
-            node_id = cast("z3.AstRef", node).get_id()
-            if node_id in seen:
-                continue
-            seen.add(node_id)
-            if z3.is_quantifier(node):
-                stack.append(cast("z3.QuantifierRef", node).body())
-                continue
-            if not z3.is_app(node):
-                continue
-            expr = cast("z3.ExprRef", node)
-            if expr.decl().kind() == z3.Z3_OP_UNINTERPRETED:
-                if not expr.decl().name().startswith(_RANK_SYMBOL_PREFIX):
-                    return False
-                found = True
-            stack.extend(expr.children())
-        return found
 
     def _report_unestablished_premises(
         self, decl: ast.FnDecl, assumed: list[object],

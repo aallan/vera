@@ -3214,13 +3214,21 @@ def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(
         asked["n"] += 1
         return False
 
-    vmod.ContractVerifier._premise_halves_disjoint = deny  # type: ignore[assignment]
+    # ONE stub varies across the two legs — the guard — and the classifier
+    # override is held over BOTH (#1457 review, CodeRabbit).  Restoring it
+    # between them would have changed two things at once, and a differential
+    # that moves two variables measures neither.
     o_outside = vmod.ContractVerifier._outside_decidable_fragment
     vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
         lambda facts, registered=None: True)
+    vmod.ContractVerifier._premise_halves_disjoint = deny  # type: ignore[assignment]
     try:
         with _blind_screen(None, True):
             denied = _verify_in_process(_write(tmp_path / "no", _HEALTHY))
+        # ... and with the guard ALLOWING it, everything else held fixed.
+        vmod.ContractVerifier._premise_halves_disjoint = original  # type: ignore[assignment]
+        with _blind_screen(None, True):
+            allowed = _verify_in_process(_write(tmp_path / "yes", _HEALTHY))
     finally:
         vmod.ContractVerifier._premise_halves_disjoint = original  # type: ignore[assignment]
         vmod.ContractVerifier._outside_decidable_fragment = o_outside  # type: ignore[assignment]
@@ -3228,10 +3236,6 @@ def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(
     assert asked["n"] > 0, "a stage-2 `sat` was trusted without the guard"
     assert "E540" in [d.error_code for d in denied.diagnostics], [  # type: ignore[attr-defined]
         d.error_code for d in denied.diagnostics]  # type: ignore[attr-defined]
-
-    # ... and with the guard allowing it, the same run certifies.
-    with _blind_screen(None, True):
-        allowed = _verify_in_process(_write(tmp_path / "yes", _HEALTHY))
     assert "E540" not in [d.error_code for d in allowed.diagnostics], [  # type: ignore[attr-defined]
         d.error_code for d in allowed.diagnostics]  # type: ignore[attr-defined]
     assert allowed.summary.tier1_verified > 0, allowed.summary  # type: ignore[attr-defined]
