@@ -10,6 +10,7 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 from __future__ import annotations
 
 import dataclasses
+import enum
 import hashlib
 
 import contextlib
@@ -17,7 +18,7 @@ import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 import z3
 
@@ -200,6 +201,52 @@ class CallDemotion:
     callee_name: str
     call_node: ast.FnCall | ast.ModuleCall
     precondition: ast.Requires
+
+
+class AxiomKind(enum.Enum):
+    """Which regime the premise screen may handle a quantified axiom under.
+
+    The screen asks a satisfiability question about a function's premise set
+    (#1451), and stage 2 of it asks about the QUANTIFIER-FREE part.  What it
+    may do with a quantified premise depends on the SHAPE of the axiom, so the
+    shape is recorded where the axiom is installed rather than inferred from
+    its symbol's name downstream (#1457 review): a name test is a guess about
+    a convention, and the direction it fails in is a false Tier 1.
+
+    An axiom with NO tag is foreign to the screen, which is the fail-closed
+    answer: the slice's premises are then outside Tier 1's decidable fragment
+    and nothing in it is certified on a stage-2 `sat`.
+    """
+
+    RANK = "rank"
+    """Relates one function's value at DIFFERENT points, so no finite set of
+    ground instances captures it.
+
+    `rank(accessor(x)) < rank(x)` is the shape.  Stage 2 drops these, and the
+    screen gates any `sat` it gets on the two halves of the premise set
+    sharing no uninterpreted symbol — the condition that makes a model of the
+    quantifier-free part extend to the whole.
+    """
+
+    TOTALITY = "totality"
+    """Constrains ONE application's value, pointwise: `length(x) >= 0`.
+
+    A model of the quantifier-free premises together with this axiom's ground
+    instances on the `f(t)` terms those premises mention extends to a model of
+    the axiom itself, by choosing `f`'s value freely everywhere else.  Stage 2
+    therefore CARRIES the instances instead of dropping the axiom, and keeps
+    its refutation-completeness for the slice without needing disjointness.
+    """
+
+
+@dataclass(frozen=True)
+class QuantifiedAxiom:
+    """One installed quantified axiom, and the regime it may be handled under."""
+
+    kind: AxiomKind
+    #: The uninterpreted symbol the axiom constrains — what the instantiation
+    #: collects ground applications of.
+    symbol: str
 
 
 @dataclass(frozen=True)
@@ -636,6 +683,13 @@ class SmtContext:
         # base context.  Not derivable from `_length_fns` membership, which
         # `reset()` re-seeds rather than clears.
         self._length_axioms_asserted: set[str] = set()
+        # #1457: every quantified axiom asserted into the CURRENT base
+        # context, keyed by the quantifier's AST id, with the regime the
+        # premise screen may handle it under.  Written only by
+        # `register_axiom`, the one assembly point for asserting a quantified
+        # axiom, so an axiom reaching the solver without a tag is a bug the
+        # roster cell catches rather than a silently foreign premise.
+        self._quantified_axioms: dict[int, QuantifiedAxiom] = {}
         # #1430 stage 2: minted `refines_<key>` predicates.  Axiom-free, so
         # no reset discipline: the cache is identity only.
         self._refines_fns: dict[str, z3.FuncDeclRef] = {}
@@ -1464,8 +1518,36 @@ class SmtContext:
         if key not in self._length_axioms_asserted:
             self._length_axioms_asserted.add(key)
             some = z3.Const(f"_len_arg_{len(self._length_axioms_asserted)}", sort)
-            self.solver.add(z3.ForAll([some], fn(some) >= 0))
+            # TOTALITY: one application's value, pointwise, so stage 2 carries
+            # its ground instances rather than dropping it (#1457).
+            self.register_axiom(
+                z3.ForAll([some], fn(some) >= 0),
+                AxiomKind.TOTALITY, fn.name(),
+            )
         return fn
+
+    def register_axiom(
+        self, axiom: z3.BoolRef, kind: AxiomKind, symbol: str,
+    ) -> None:
+        """Assert a quantified axiom AND record the regime it belongs to.
+
+        The one place a quantified axiom enters the base context, so the tag
+        cannot be forgotten by a site that remembered only to assert (#1457
+        review).  The premise screen reads the tag; an untagged quantified
+        premise is foreign to it, which is the fail-closed answer rather than
+        the convenient one.
+        """
+        self.solver.add(axiom)
+        self._quantified_axioms[axiom.get_id()] = QuantifiedAxiom(
+            kind=kind, symbol=symbol,
+        )
+
+    def registered_axiom(self, fact: object) -> QuantifiedAxiom | None:
+        """The axiom record for *fact*, or ``None`` if this context did not
+        install it as a tagged quantified axiom."""
+        return self._quantified_axioms.get(
+            cast("z3.AstRef", fact).get_id(),
+        )
 
     def get_rank_fn(self, sort: z3.SortRef) -> z3.FuncDeclRef | None:
         """Get or create a rank function for structural ordering on an ADT.
@@ -1484,7 +1566,13 @@ class SmtContext:
         self._length_fns[key] = rank
         # Add axioms via a universally-quantified variable
         x = z3.Const("_rank_x", sort)
-        self.solver.add(z3.ForAll([x], rank(x) >= 0))
+        # RANK, not TOTALITY, although this one axiom IS pointwise: it shares
+        # its symbol with the structural-decrease axiom below, which relates
+        # `rank` at two points and no finite instantiation captures.  One
+        # symbol is handled under one regime, and the weaker one governs.
+        self.register_axiom(
+            z3.ForAll([x], rank(x) >= 0), AxiomKind.RANK, key,
+        )
         # For each constructor, add structural decrease axioms
         for i in range(sort.num_constructors()):
             ctor = sort.constructor(i)
@@ -1493,13 +1581,19 @@ class SmtContext:
                 accessor = sort.accessor(i, j)
                 if accessor.range() == sort:
                     # Recursive field: rank(field) < rank(parent)
-                    self.solver.add(z3.ForAll(
-                        [x],
-                        z3.Implies(
-                            recognizer(x),
-                            rank(accessor(x)) < rank(x),
+                    # RANK: relates `rank` at `x` and at `accessor(x)`, so
+                    # it is not pointwise-extensible and must not be
+                    # instantiated (#1457).
+                    self.register_axiom(
+                        z3.ForAll(
+                            [x],
+                            z3.Implies(
+                                recognizer(x),
+                                rank(accessor(x)) < rank(x),
+                            ),
                         ),
-                    ))
+                        AxiomKind.RANK, key,
+                    )
         return rank
 
     # -----------------------------------------------------------------
@@ -4280,6 +4374,8 @@ class SmtContext:
         # #1430: cleared, so the first `_get_length_fn` after a reset
         # re-asserts the non-negativity axiom the base context just lost.
         self._length_axioms_asserted.clear()
+        # ... and the tags go with the assertions they describe.
+        self._quantified_axioms.clear()
         self._array_element_sorts.clear()
         # #1430: the carrier projections range over the Array sorts cleared
         # below, so they go with them, and so does the record of which sorts

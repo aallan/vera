@@ -62,6 +62,7 @@ from vera.obligations.core import (
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
+    AxiomKind,
     CalleeScope,
     CallDemotion,
     SlotEnv,
@@ -4819,15 +4820,77 @@ class ContractVerifier:
         """
         probe = z3.Solver()
         probe.set("timeout", smt._timeout_ms)
-        added = False
+        kept: list[object] = []
+        totality: list[tuple[object, str]] = []
         for fact in (*smt.solver.assertions(), *assumed):
-            if self._has_quantifier(fact):
+            if not self._has_quantifier(fact):
+                kept.append(fact)
                 continue
-            probe.add(fact)
-            added = True
-        if not added:
+            record = smt.registered_axiom(fact)
+            if record is not None and record.kind is AxiomKind.TOTALITY:
+                totality.append((fact, record.symbol))
+        if not kept:
             return None
+        for fact in kept:
+            probe.add(fact)
+        # A TOTALITY axiom is not dropped: it is INSTANTIATED on the ground
+        # applications the kept premises mention (#1457 review, ruling C).
+        # `length(x) >= 0` constrains one application's value, so a model of
+        # the kept premises plus those instances extends to the axiom by
+        # choosing the symbol's value freely everywhere else — which is what
+        # keeps stage 2 refutation-complete for the slice without needing the
+        # two halves to share no symbol.  Dropping it instead was sound but
+        # incomplete, and the incompleteness was reachable: a premise forcing
+        # `length(a) == -1` is satisfiable with `length` uninterpreted.
+        for instance in self._totality_instances(totality, kept):
+            probe.add(instance)
         return self._verdict(probe.check())
+
+    @staticmethod
+    def _totality_instances(
+        axioms: list[tuple[object, str]], ground: list[object],
+    ) -> list[object]:
+        """Ground instances of each TOTALITY axiom on the terms *ground* uses.
+
+        For `forall x. P(f(x))` and every ground application `f(t)` occurring
+        in the kept premises, `P(f(t))`.  Finitely many, because the premises
+        are finite; and enough, because the axiom says nothing about `f` at
+        any other point.
+        """
+        if not axioms:
+            return []
+        wanted = {symbol for _q, symbol in axioms}
+        args: dict[str, dict[int, tuple[object, ...]]] = {
+            symbol: {} for symbol in wanted
+        }
+        stack: list[object] = list(ground)
+        seen: set[int] = set()
+        while stack:
+            node = stack.pop()
+            node_id = cast("z3.AstRef", node).get_id()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if z3.is_quantifier(node):
+                stack.append(cast("z3.QuantifierRef", node).body())
+                continue
+            if not z3.is_app(node):
+                continue
+            expr = cast("z3.ExprRef", node)
+            children = expr.children()
+            name = expr.decl().name()
+            if name in wanted and children:
+                key = tuple(children)
+                args[name][
+                    sum(cast("z3.AstRef", c).get_id() for c in key)
+                ] = key
+            stack.extend(children)
+        out: list[object] = []
+        for quantifier, symbol in axioms:
+            body = cast("z3.QuantifierRef", quantifier).body()
+            for terms in args[symbol].values():
+                out.append(z3.substitute_vars(body, *terms))
+        return out
 
     @staticmethod
     def _uninterpreted_symbols(expr: object) -> set[str]:
@@ -4893,6 +4956,11 @@ class ContractVerifier:
         quantified: set[str] = set()
         free: set[str] = set()
         for fact in (*smt.solver.assertions(), *assumed):
+            record = smt.registered_axiom(fact)
+            if record is not None and record.kind is AxiomKind.TOTALITY:
+                # Instantiated rather than dropped, so nothing about it has to
+                # be disjoint from the kept half (#1457 review, ruling C).
+                continue
             symbols = self._uninterpreted_symbols(fact)
             if _TRUNCATED_SCAN in symbols:
                 # Read by NAME, not by intersection: a scan that ran out of
@@ -4977,7 +5045,11 @@ class ContractVerifier:
         return True
 
     @classmethod
-    def _outside_decidable_fragment(cls, facts: Iterable[object]) -> bool:
+    def _outside_decidable_fragment(
+        cls,
+        facts: Iterable[object],
+        registered: Callable[[object], object] | None = None,
+    ) -> bool:
         """Whether any premise leaves Tier 1's decidable fragment (§2.6.1).
 
         An ALLOWLIST, and the direction is the point.  The fragment is
@@ -4998,13 +5070,17 @@ class ContractVerifier:
         program is demoted by this, the answer is to add the construct it uses
         with its citation, never to loosen the default.
 
-        RANK-AXIOM quantifiers are inside; every other quantifier is not.
-        §2.6.1 lists quantifiers outside the fragment for a refinement
-        predicate, but the only quantified premises the verifier installs are
-        its own `_rank_` axioms, which the author neither wrote nor can
-        simplify — reading their `unknown` as "premises not established" would
-        withdraw Tier 1 from every recursive-ADT program in the corpus to
-        close a hole none of them has.
+        A quantified premise is inside the fragment exactly when the screen
+        installed it with a REGIME — `AxiomKind.RANK`, dropped by stage 2 and
+        gated on symbol disjointness, or `AxiomKind.TOTALITY`, instantiated by
+        stage 2 on the ground terms the kept premises mention.  Either way the
+        screen can answer about it.  An UNTAGGED quantifier is foreign and
+        puts the premises outside: §2.6.1 lists quantifiers outside the
+        fragment for a refinement predicate, and a premise the screen has no
+        regime for is one it cannot certify against.  The regime is read from
+        the registry `SmtContext.register_axiom` writes, never from the
+        symbol's name, because a name test is a guess about a convention whose
+        failure direction is a false Tier 1 (#1457 review, ruling C).
 
         Approximate in both directions, and that costs nothing: `@Int.0 * (2 +
         3)` reads as outside though it is linear, and a nonlinear term the
@@ -5029,7 +5105,11 @@ class ContractVerifier:
                 continue
             if z3.is_quantifier(node):
                 quantifier = cast("z3.QuantifierRef", node)
-                if not cls._is_rank_axiom(quantifier):
+                record = registered(node) if registered is not None else None
+                if record is None:
+                    # Foreign to the screen: no tag, so neither regime applies
+                    # and stage 2 can claim nothing about it.  Outside, which
+                    # is the fail-closed answer (#1457 review, ruling C).
                     return True
                 stack.append((quantifier.body(), True))
                 continue
@@ -5402,7 +5482,7 @@ class ContractVerifier:
             # this project's own corpus every run, to close a hole none of
             # them has.
             if self._outside_decidable_fragment(
-                (*smt.solver.assertions(), *assumed),
+                (*smt.solver.assertions(), *assumed), smt.registered_axiom,
             ):
                 self._report_unestablished_premises(decl, assumed)
                 self._demote_function_obligations(obl_start, "E540")

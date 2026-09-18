@@ -2419,6 +2419,237 @@ public fn caller(@Bool -> @Int)
 
 
 # ---------------------------------------------------------------------------
+# The two regimes a quantified premise may be handled under (MD-8, ruling C)
+# ---------------------------------------------------------------------------
+#
+# Stage 2 asks about the quantifier-free part of a premise set, so what it may
+# do with a quantified premise depends on the axiom's SHAPE:
+#
+#   RANK      `rank(accessor(x)) < rank(x)` relates one symbol's value at two
+#             points, which no finite instantiation captures.  Dropped, and
+#             any `sat` gated on the two halves sharing no uninterpreted
+#             symbol.
+#   TOTALITY  `length(x) >= 0` constrains one application's value, pointwise.
+#             CARRIED as ground instances on the terms the kept premises
+#             mention, which keeps stage 2 refutation-complete for the slice
+#             without needing disjointness at all.
+#   untagged  foreign: the screen has no regime for it, so the premises are
+#             outside the fragment and nothing is certified on a stage-2 `sat`.
+#
+# The regime is read from the registry `SmtContext.register_axiom` writes at
+# INSTALLATION, never from the symbol's name — a name test is a guess about a
+# convention whose failure direction is a false Tier 1.
+
+
+def test_1451_every_installed_axiom_carries_a_regime() -> None:
+    """The roster: no quantified axiom reaches the solver untagged.
+
+    `register_axiom` is the one assembly point, so the check is that no site
+    bypasses it: a bare `solver.add(z3.ForAll(...))` anywhere in `vera/smt.py`
+    would install a premise the screen then treats as foreign, which silently
+    moves whole slices outside the fragment.  Asserted against the SOURCE
+    rather than against a run, because a run only covers the axioms its
+    programs happen to install.
+
+    The classification of each family is recorded here with its argument, so
+    a new axiom has to state which regime it belongs to and why:
+
+    * `length_<sort>(x) >= 0` — TOTALITY, one application's value.
+    * `_rank_<sort>(x) >= 0` — RANK, although pointwise on its own: it shares
+      its symbol with the structural-decrease axiom, and one symbol is handled
+      under one regime, the weaker one governing.
+    * `_rank_<sort>(accessor(x)) < rank(x)` — RANK, relates two points.
+    """
+    import re
+
+    import vera
+    from vera.smt import AxiomKind
+
+    source = (Path(vera.__file__).resolve().parent / "smt.py").read_text(
+        encoding="utf-8")
+    assert "solver.add(z3.ForAll" not in source.replace(" ", ""), (
+        "a quantified axiom is asserted without a regime; route it through "
+        "`register_axiom`"
+    )
+    registered = re.findall(r"register_axiom\(", source)
+    assert len(registered) >= 4, len(registered)
+    for kind in (AxiomKind.RANK, AxiomKind.TOTALITY):
+        assert f"AxiomKind.{kind.name}" in source, kind
+
+
+def test_1451_a_totality_axiom_is_instantiated_not_dropped() -> None:
+    """Stage 2 carries a TOTALITY axiom's ground instances.
+
+    RED with the instances dropped, and the mechanism is the whole of it: a
+    premise set of `length(a) == -1` plus `forall x. length(x) >= 0` is
+    UNSATISFIABLE, but its quantifier-free part alone is satisfiable, because
+    `length` is uninterpreted and nothing stops it being negative at `a`.  A
+    stage 2 that drops the axiom answers `sat` and — once a `sat` there
+    licenses a Tier-1 proof — certifies a function whose premises contradict.
+
+    Driven at the mechanism rather than through a program, because the
+    verifier also asserts a GROUND `length(t) >= 0` beside every length term
+    it builds, so no program reaches this shape today (the cell below records
+    that).  What is under test is that stage 2 does not depend on another code
+    path continuing to do that.
+    """
+    import z3
+
+    from vera.verifier import ContractVerifier
+
+    sort = z3.DeclareSort("Arr")
+    length = z3.Function("length_Arr", sort, z3.IntSort())
+    a = z3.Const("a", sort)
+    x = z3.Const("x", sort)
+    axiom = z3.ForAll([x], length(x) >= 0)
+    kept = [length(a) == -1]
+
+    instances = ContractVerifier._totality_instances(
+        [(axiom, "length_Arr")], kept)
+    assert instances, "no ground instance was produced for the term used"
+
+    without = z3.Solver()
+    for fact in kept:
+        without.add(fact)
+    assert without.check() == z3.sat, "the premise below is not the one claimed"
+
+    with_instances = z3.Solver()
+    for fact in (*kept, *instances):
+        with_instances.add(fact)
+    assert with_instances.check() == z3.unsat, (
+        "the ground instances do not refute the contradiction they exist for")
+
+
+def test_1451_a_premise_contradicting_a_totality_axiom_is_refused(
+    tmp_path: Path,
+) -> None:
+    """... and end to end, such a program is never `verified`.
+
+    A recursive-ADT function — so rank axioms are in the context — whose
+    precondition forces an array length negative.  It must be refused, and it
+    is, three times over: stage 1 refutes the contradiction by propagation
+    even under the rank axioms, the author layer refutes it independently, and
+    stage 2 would refute it too, because the verifier asserts a GROUND
+    `length(t) >= 0` beside every length term.
+
+    That last one is asserted explicitly, because it is the reason this cell
+    cannot be made red by dropping the instantiation — and a cell whose
+    premise is "the hole is unreachable" has to say which mechanism makes it
+    so, or the next change to that mechanism reopens it silently.
+    """
+    from vera import verifier as vmod
+
+    source = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+public fn f(@List<Int>, @Array<Int> -> @Nat)
+  requires(array_length(@Array<Int>.0) == 0 - 1)
+  ensures(@Nat.result == 42)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> f(@List<Int>.1, @Array<Int>.0)
+  }
+}
+"""
+    ground_seen: list[bool] = []
+    original = vmod.ContractVerifier._enforce_premise_consistency
+
+    def capture(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
+        facts = (*smt.solver.assertions(), *assumed)
+        quantifier_free = [f for f in facts if not self._has_quantifier(f)]
+        ground_seen.append(any(
+            ">= 0" in str(f) and "length" in str(f)
+            for f in quantifier_free
+        ))
+        return original(self, decl, smt, obl_start, contract, assumed)
+
+    vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
+    try:
+        # In process, because the capture above has to see the premise set the
+        # screen read; the CLI helper is a subprocess and a monkeypatch here
+        # would never reach it.
+        result = _verify_in_process(_write(tmp_path, source))
+    finally:
+        vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
+
+    codes = [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert "E538" in codes, codes
+    assert [d.severity for d in result.diagnostics if d.error_code == "E538"] == [  # type: ignore[attr-defined]
+        "error"], codes
+    assert result.summary.tier1_verified == 0, result.summary  # type: ignore[attr-defined]
+    assert not [
+        o for o in result.obligations if o.status == "verified"  # type: ignore[attr-defined]
+    ], [(o.kind, o.status) for o in result.obligations]  # type: ignore[attr-defined]
+    # The invariant that makes the hole unreachable, named rather than assumed.
+    assert any(ground_seen), (
+        "no ground `length(t) >= 0` reached the quantifier-free half, so the "
+        "instantiation above is now the only thing closing this — check the "
+        "cell that pins it"
+    )
+
+
+def test_1451_a_totality_slice_still_certifies_on_stage_two(
+    tmp_path: Path,
+) -> None:
+    """An array slice whose premises are consistent keeps its Tier 1.
+
+    The other direction of the same regime: a TOTALITY axiom is instantiated,
+    not treated as foreign, so a slice carrying one is INSIDE the fragment and
+    a stage-2 `sat` establishes its premises.  Stage 1 is forced undecided so
+    the verdict has to come from stage 2 — without that the cell would pass on
+    a stage-1 `sat` and say nothing about the regime.
+
+    Without the TOTALITY regime this slice reads as foreign-quantified and
+    outside the fragment, and an undecided screen withholds its tier: that is
+    the 31 ordinary array and string slices #1447's carrier seam brought into
+    the screen's view.
+    """
+    from vera import verifier as vmod
+
+    source = """\
+public fn f(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 2)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  array_length(@Array<Int>.0)
+}
+"""
+    path = _write(tmp_path, source)
+    outside: list[bool] = []
+    original = vmod.ContractVerifier._enforce_premise_consistency
+
+    def capture(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
+        outside.append(self._outside_decidable_fragment(
+            (*smt.solver.assertions(), *assumed), smt.registered_axiom))
+        return original(self, decl, smt, obl_start, contract, assumed)
+
+    vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
+    o_full = vmod.ContractVerifier._full_premises_satisfiable
+    vmod.ContractVerifier._full_premises_satisfiable = (  # type: ignore[assignment]
+        lambda self, smt, assumed: None)
+    try:
+        result = _verify_in_process(path)
+    finally:
+        vmod.ContractVerifier._full_premises_satisfiable = o_full  # type: ignore[assignment]
+        vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
+
+    assert outside and not any(outside), (
+        "a slice carrying only a TOTALITY axiom must be INSIDE the fragment")
+    assert not [
+        d for d in result.diagnostics  # type: ignore[attr-defined]
+        if d.error_code in ("E538", "E539", "E540")
+    ], [d.error_code for d in result.diagnostics]  # type: ignore[attr-defined]
+    assert result.summary.tier1_verified > 0, result.summary  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
 # MD-9 / R2: a Tier-1 proof needs its premises SHOWN satisfiable, where they
 # leave the decidable fragment
 # ---------------------------------------------------------------------------
@@ -2517,6 +2748,43 @@ _OUTSIDE_FRAGMENT = (
 )
 
 
+def _regime_stub(term: object) -> object:
+    """A registry lookup for the hand-built rows.
+
+    The classifier reads the regime from what `SmtContext.register_axiom`
+    recorded, not from the symbol's name, so a hand-built quantifier has to
+    say which regime it would have been installed under.  `_rank_*` stands in
+    for RANK and `length_*` for TOTALITY, which is what smt.py tags them; any
+    other quantifier is untagged, which is what makes it foreign.
+    """
+    import z3
+
+    from vera.smt import AxiomKind, QuantifiedAxiom
+
+    if not z3.is_quantifier(term):
+        return None
+    body = term.body()  # type: ignore[attr-defined]
+    stack, seen, names = [body], set(), set()
+    while stack:
+        node = stack.pop()
+        if node.get_id() in seen:
+            continue
+        seen.add(node.get_id())
+        if z3.is_quantifier(node):
+            stack.append(node.body())
+            continue
+        if not z3.is_app(node):
+            continue
+        if node.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+            names.add(node.decl().name())
+        stack.extend(node.children())
+    if names and all(n.startswith("_rank_") for n in names):
+        return QuantifiedAxiom(AxiomKind.RANK, sorted(names)[0])
+    if names and all(n.startswith("length") for n in names):
+        return QuantifiedAxiom(AxiomKind.TOTALITY, sorted(names)[0])
+    return None
+
+
 @pytest.mark.parametrize("family", _INSIDE_FRAGMENT)
 def test_1451_the_fragment_allowlist_admits(family: str) -> None:
     """Every construct §2.6.1 and §6.3.1 admit stays INSIDE the fragment.
@@ -2537,8 +2805,9 @@ def test_1451_the_fragment_allowlist_admits(family: str) -> None:
     from vera.verifier import ContractVerifier
 
     term = _fragment_term(family)
-    assert ContractVerifier._outside_decidable_fragment([term]) is False, (
-        family, term)
+    assert ContractVerifier._outside_decidable_fragment(
+        [term], _regime_stub,
+    ) is False, (family, term)
 
 
 @pytest.mark.parametrize("family", _OUTSIDE_FRAGMENT)
@@ -2564,8 +2833,9 @@ def test_1451_the_fragment_allowlist_excludes(family: str) -> None:
     from vera.verifier import ContractVerifier
 
     term = _fragment_term(family)
-    assert ContractVerifier._outside_decidable_fragment([term]) is True, (
-        family, term)
+    assert ContractVerifier._outside_decidable_fragment(
+        [term], _regime_stub,
+    ) is True, (family, term)
 
 
 def test_1451_the_rank_bearing_slices_keep_their_tier(tmp_path: Path) -> None:
@@ -2768,7 +3038,7 @@ def test_1451_an_unestablished_screen_certifies_no_kind(
 
     o_outside = vmod.ContractVerifier._outside_decidable_fragment
     vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
-        lambda facts: True)
+        lambda facts, registered=None: True)
     try:
         with _blind_screen(None, None):
             result = _verify_in_process(path)
@@ -2857,7 +3127,7 @@ def test_1451_a_truncated_scan_denies_the_licence_too() -> None:
     f = z3.Function("f", z3.IntSort(), z3.IntSort())
     deep = f(f(f(f(x)))) > 0
     verifier = object.__new__(vmod.ContractVerifier)
-    smt = SimpleNamespace(solver=z3.Solver())
+    smt = SimpleNamespace(solver=z3.Solver(), registered_axiom=lambda f: None)
     smt.solver.add(deep)
 
     original = vmod._QUANTIFIER_SCAN_NODES
@@ -2871,7 +3141,8 @@ def test_1451_a_truncated_scan_denies_the_licence_too() -> None:
         # the sentinel on both sides, so an intersection answers "disjoint"
         # either way (#1457 review).  Here the oversized term is the only
         # QUANTIFIED fact and the guard must still refuse.
-        quantified = SimpleNamespace(solver=z3.Solver())
+        quantified = SimpleNamespace(
+            solver=z3.Solver(), registered_axiom=lambda f: None)
         quantified.solver.add(z3.ForAll([x], f(f(f(f(x)))) >= 0))
         quantified.solver.add(z3.Int("plain") > 0)
         assert verifier._premise_halves_disjoint(quantified, []) is False
@@ -2906,7 +3177,7 @@ def test_1451_the_guard_is_asked_before_a_stage_two_sat_is_trusted(
     vmod.ContractVerifier._premise_halves_disjoint = deny  # type: ignore[assignment]
     o_outside = vmod.ContractVerifier._outside_decidable_fragment
     vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
-        lambda facts: True)
+        lambda facts, registered=None: True)
     try:
         with _blind_screen(None, True):
             denied = _verify_in_process(_write(tmp_path / "no", _HEALTHY))
@@ -2961,7 +3232,7 @@ public fn caller(@Int, @Bool -> @Int)
 """
     o_outside = vmod.ContractVerifier._outside_decidable_fragment
     vmod.ContractVerifier._outside_decidable_fragment = staticmethod(  # type: ignore[assignment]
-        lambda facts: True)
+        lambda facts, registered=None: True)
     try:
         with _blind_screen(None, None):
             result = _verify_in_process(_write(tmp_path, source))
@@ -3103,83 +3374,94 @@ def test_1451_the_instrument_sees_a_shared_symbol() -> None:
     assert ok_q == {"rank_list"} and ok_free == {"y"}, (ok_q, ok_free)
 
 
-def test_1451_no_corpus_premise_set_shares_a_symbol_across_the_split() -> None:
-    """Stage 2 is refutation-COMPLETE on every corpus program that has ranks.
+def test_1451_every_corpus_quantified_premise_has_a_regime() -> None:
+    """Stage 2 answers about every quantified premise, or the slice is outside.
 
-    The context step 8c screens is captured as the check sees it — the
-    solver's base assertions plus the top-level `assume` facts folded in by
-    `check_valid` — split into the two halves stage 2 splits it into, and the
-    uninterpreted symbols of each collected.  An empty intersection is the
-    hypothesis of the extension argument in spec §6.8.2; a shared symbol is a
-    soundness finding about the SCREEN, not about the program.
+    The load-bearing property, and it is a DISJUNCTION rather than the single
+    condition this cell used to assert (#1457 review, ruling C).  For every
+    premise set the screen reads, each quantified premise must be
 
-    Over every corpus program carrying a `decreases` measure, which is where
-    quantified premises come from today.  Two counts are asserted beside the
-    disjointness: the programs really were screened, and at least one context
-    really had a quantified half — without which every intersection is empty
-    because one side is.
+    * RANK-tagged and its symbols disjoint from the quantifier-free half — the
+      hypothesis that makes a model of that half extend to the whole; or
+    * TOTALITY-tagged, in which case stage 2 carries its ground instances and
+      no disjointness is needed; or
+    * untagged, in which case the slice is OUTSIDE the fragment and nothing in
+      it is certified on a stage-2 `sat`.
+
+    The version that asserted "no corpus premise set shares a symbol across
+    the split" was a proxy, and #1447 showed it is not a durable one: its
+    carrier seam brought `length` into 31 more premise sets, where the
+    `length` totality axiom shares its symbol with the quantifier-free half by
+    construction.  A real shared symbol, and not a soundness problem, because
+    that axiom is instantiated rather than dropped — which is the distinction
+    the old assertion could not make.
+
+    Over EVERY corpus program, not only those carrying a `decreases` measure,
+    since totality axioms arrive with arrays and strings rather than with
+    ranks.  Both branches are counted beside the property so neither can hold
+    vacuously.
     """
     import vera
     from vera import verifier as vmod
+    from vera.smt import AxiomKind
 
     root = Path(vera.__file__).resolve().parents[1]
-    programs = sorted(
-        p for p in (
-            *(root / "tests" / "conformance").glob("*.vera"),
-            *(root / "examples").glob("*.vera"),
-        )
-        if "decreases(" in p.read_text(encoding="utf-8")
-    )
-    assert len(programs) >= 10, [p.name for p in programs]
-
-    captured: list[tuple[str, str, list[object]]] = []
+    programs = sorted((
+        *(root / "tests" / "conformance").glob("*.vera"),
+        *(root / "examples").glob("*.vera"),
+    ))
+    captured: list[tuple[str, str, list[object], object, bool]] = []
     original = vmod.ContractVerifier._enforce_premise_consistency
 
     def capture(self, decl, smt, obl_start, contract, assumed):  # type: ignore[no-untyped-def]
-        captured.append(
-            (self._current_file, decl.name,
-             [*smt.solver.assertions(), *assumed]),
-        )
+        facts = [*smt.solver.assertions(), *assumed]
+        captured.append((
+            self._current_file, decl.name, facts, smt.registered_axiom,
+            self._outside_decidable_fragment(facts, smt.registered_axiom),
+        ))
         return original(self, decl, smt, obl_start, contract, assumed)
 
     vmod.ContractVerifier._enforce_premise_consistency = capture  # type: ignore[assignment]
     try:
-        screened = 0
         for path in programs:
             try:
                 _verify_in_process(path)
             except Exception:  # noqa: BLE001 — a negative fixture, skipped
                 continue
-            screened += 1
     finally:
         vmod.ContractVerifier._enforce_premise_consistency = original  # type: ignore[assignment]
 
-    assert screened >= 10, screened
-    assert captured, "no premise set was screened at all"
+    assert len(captured) > 500, len(captured)
+    seen_rank = seen_totality = 0
+    violations: list[tuple[str, str, str]] = []
+    for file, fn_name, facts, registered, outside in captured:
+        rank_syms: set[str] = set()
+        free_syms: set[str] = set()
+        untagged = False
+        for fact in facts:
+            symbols = vmod.ContractVerifier._uninterpreted_symbols(fact)
+            if not vmod.ContractVerifier._has_quantifier(fact):
+                free_syms |= symbols
+                continue
+            record = registered(fact)
+            if record is None:
+                untagged = True
+            elif record.kind is AxiomKind.RANK:
+                seen_rank += 1
+                rank_syms |= symbols
+            else:
+                seen_totality += 1
+        if untagged:
+            if not outside:
+                violations.append(
+                    (Path(file).name, fn_name, "untagged premise read as inside"))
+            continue
+        overlap = rank_syms & free_syms
+        if overlap and not outside:
+            violations.append(
+                (Path(file).name, fn_name, f"RANK symbol shared: {overlap}"))
 
-    both_halves = 0
-    shared: list[tuple[str, str, set[str]]] = []
-    for file, fn_name, facts in captured:
-        quantified, free = _symbol_halves(facts)
-        if quantified and free:
-            both_halves += 1
-        overlap = quantified & free
-        if overlap:
-            shared.append((Path(file).name, fn_name, overlap))
-
-    # BOTH halves, not just the quantified one (#1457 review, Low 2): an
-    # intersection is empty whenever EITHER side is, so counting contexts that
-    # have a quantified half still leaves the assertion satisfiable by a
-    # corpus whose quantifier-free halves all came back empty.  Only a context
-    # with symbols on both sides can exhibit a violation, so only those count
-    # as coverage.
-    assert both_halves > 0, (
-        f"no captured premise set had symbols in BOTH halves, so the "
-        f"disjointness below holds for the wrong reason — {len(captured)} "
-        f"contexts"
-    )
-    assert not shared, (
-        f"a quantifier-free premise mentions a symbol only the quantified "
-        f"premises constrain, so stage 2's `sat` no longer implies the whole "
-        f"set has a model (spec §6.8.2) — {shared}"
-    )
+    assert seen_rank > 0, "no RANK axiom screened; that branch is vacuous"
+    assert seen_totality > 0, (
+        "no TOTALITY axiom screened; the instantiation branch is vacuous")
+    assert not violations, violations[:8]
