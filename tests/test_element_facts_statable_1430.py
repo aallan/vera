@@ -330,8 +330,10 @@ def test_a_bad_array_cannot_be_laundered_through_a_refined_return(
         if o["kind"] == "refine_bind" and o["status"] == "violated"
     ]
     assert violated, envelope["obligations"]
-    # Refused where the value is BUILT, not merely at the call.
-    assert any("5" in o["description"] for o in violated), violated
+    # Refused where the value is BUILT, not merely at the call: the whole
+    # construction, since a lone digit can appear in another site's rendered
+    # expression (CodeRabbit, PR #1447).
+    assert any(o["description"] == "0 - 5" for o in violated), violated
 
 
 def test_the_assumed_element_fact_does_not_prove_a_false_postcondition(
@@ -383,13 +385,20 @@ def test_the_element_fact_is_used_not_merely_matched(tmp_path: Path) -> None:
     pins both halves — that the fact means something, and that it does not
     mean too much.
     """
+    # A DIFFERENT program from #1449's cell, deliberately: that one indexes a
+    # literal 0, so both could be discharged by the same instantiation and
+    # neither proved on its own that the quantifier's content does the work
+    # (CodeRabbit, PR #1447).  Here the index is a PARAMETER the contract
+    # only bounds, so the solver must instantiate the quantifier at a term it
+    # cannot evaluate — an identity match is unavailable twice over.
     positive = (
         _HDR +
-        "public fn head_is_positive(@Array<PosInt> -> @Int)\n"
-        "  requires(array_length(@Array<PosInt>.0) > 0)\n"
+        "public fn any_is_positive(@Array<PosInt>, @Int -> @Int)\n"
+        "  requires(@Int.0 >= 0 && "
+        "@Int.0 < array_length(@Array<PosInt>.0))\n"
         "  ensures(@Int.result > 0)\n"
         "  effects(pure)\n"
-        "{\n  @Array<PosInt>.0[0]\n}\n"
+        "{\n  @Array<PosInt>.0[@Int.0]\n}\n"
     )
     envelope = _verify(tmp_path, positive, "content-used")
     ensures = [
@@ -1061,18 +1070,25 @@ _CARRIERS: dict[str, tuple[str, str, str]] = {
     "array": ("@Array<Pos>", "array_append([], @Int.0)", "array element"),
     "map": ("@Map<String, Pos>", 'map_insert(map_new(), "a", @Int.0)',
             "map value"),
+    # The KEY position, which is a different projection (`map_keys`) and a
+    # different guard: every other map fixture puts the refinement in the
+    # value, so a defect in the key half would pass the matrix unseen
+    # (CodeRabbit, PR #1447).
+    "map-key": ("@Map<Pos, String>", 'map_insert(map_new(), @Int.0, "a")',
+                "map key"),
     "set": ("@Set<Pos>", "set_add(set_new(), @Int.0)", "set element"),
 }
 
 #: The same three, with the element type left UNREFINED — what an opaque
 #: producer hands over, so the consumer's parameter is a real narrowing.
 _PLAIN = {"array": "@Array<Int>", "map": "@Map<String, Int>",
-          "set": "@Set<Int>"}
+          "map-key": "@Map<Int, String>", "set": "@Set<Int>"}
 
 #: What the consumer does with the carrier.  Two consumers, because a fact
 #: that reaches one and not the other is the drift this class is made of.
 _CONSUMERS = {
-    "size": {"array": "array_length", "map": "map_size", "set": "set_size"},
+    "size": {"array": "array_length", "map": "map_size",
+             "map-key": "map_size", "set": "set_size"},
 }
 
 
@@ -1131,11 +1147,20 @@ def test_forwarding_proves_at_tier_1_for_every_carrier(
     """
     envelope = _verify(tmp_path, _forwarding(carrier), f"fwd-{carrier}")
     statuses = _refine_bind_statuses(envelope)
+    assert envelope["ok"] is True, envelope.get("diagnostics")
     assert statuses["verified"] >= 1, (
         f"{carrier}: forwarding a refined carrier did not discharge: "
         f"{statuses}"
     )
-    assert statuses["tier3_unguarded"] == 0, statuses
+    # EVERY `refine_bind` is accounted for, not just the presence of one: a
+    # stream holding a `verified` beside a `violated` or a disclosure would
+    # satisfy a floor while the carrier had stopped discharging what it used
+    # to (CodeRabbit, PR #1447).  `tier3` is admitted and `violated` and
+    # `tier3_unguarded` are not, because the program's OUTERMOST site hands a
+    # freshly constructed carrier to a refined parameter — a boundary with a
+    # guard, honestly Tier 3 — while the forwarding site under test is the
+    # one that must discharge.
+    assert set(statuses) <= {"verified", "tier3"}, statuses
 
 
 def test_every_carrier_answers_the_same_way() -> None:
@@ -1202,14 +1227,24 @@ def test_the_guarded_carrier_holds_under_eager_gc(
     collection at every allocation.
 
     `Map` and `Set` reach their elements through a host import that builds a
-    fresh array; the array carrier does not allocate at all.  Both are run
-    here, because what the cell holds to account is that the walk reads the
-    sequence it was handed rather than a swept one.
+    fresh array; the array carrier does not allocate at all.  BOTH directions
+    are run, and the satisfying one is the load-bearing half: a violating
+    value must trap anyway, so corruption during the projection could produce
+    another invalid value and pass (CodeRabbit, PR #1447).  A SATISFYING
+    value completing is what says the walk read the sequence it was handed
+    rather than a swept one.
     """
-    result = _run(tmp_path, _laundered(carrier, "0 - 5"), f"eager-{carrier}",
-                  eager_gc=True)
-    assert result.returncode != 0, result.stdout
-    assert _CARRIERS[carrier][2] in result.stdout + result.stderr, result.stdout
+    good = _run(tmp_path, _laundered(carrier, "5"), f"eager-good-{carrier}",
+                eager_gc=True)
+    assert good.returncode == 0, (
+        f"{carrier}: a satisfying element was refused under eager GC — the "
+        f"walk read something other than the sequence it was handed: "
+        f"{good.stdout}{good.stderr}"
+    )
+    bad = _run(tmp_path, _laundered(carrier, "0 - 5"), f"eager-bad-{carrier}",
+               eager_gc=True)
+    assert bad.returncode != 0, bad.stdout
+    assert _CARRIERS[carrier][2] in bad.stdout + bad.stderr, bad.stdout
 
 
 # ---------------------------------------------------------------------------

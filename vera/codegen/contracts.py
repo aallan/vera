@@ -481,19 +481,15 @@ class ContractsMixin:
         sites = self._element_guard_parts(te)
         if not sites:
             return []
-        instrs: list[str] = []
+        # Every position's PREDICATE is lowered before anything is
+        # registered: `_project_element_sequence` adds a host import, marks
+        # the op used and sets `needs_alloc`, and a later position declining
+        # would leave the module carrying an import and an allocator nothing
+        # calls (CodeRabbit, PR #1447).  The checks are compiled against
+        # locals that belong to the guard either way, so a declined site
+        # costs two unused locals and no module-level state.
+        prepared: list[tuple[_ElementGuardSite, int, int, list[str]]] = []
         for site in sites:
-            if site.projection is None:
-                if len_local is None:  # pragma: no cover — caller invariant
-                    return []
-                prologue: list[str] = []
-                seq_ptr, seq_len = ptr_local, len_local
-            else:
-                projected = self._project_element_sequence(
-                    ctx, site, ptr_local)
-                if projected is None:
-                    return []
-                seq_ptr, seq_len, prologue = projected
             idx = ctx.alloc_local("i32")
             elem = ctx.alloc_local(site.load_wt)
             msg = (
@@ -505,6 +501,20 @@ class ContractsMixin:
                 ctx, site.predicate, site.base_name, elem, msg, env)
             if check is None:
                 return []
+            prepared.append((site, idx, elem, check))
+        instrs: list[str] = []
+        for site, idx, elem, check in prepared:
+            if site.projection is None:
+                if len_local is None:  # pragma: no cover — caller invariant
+                    return []
+                prologue: list[str] = []
+                seq_ptr, seq_len = ptr_local, len_local
+            else:
+                projected = self._project_element_sequence(
+                    ctx, site, ptr_local)
+                if projected is None:
+                    return []
+                seq_ptr, seq_len, prologue = projected
             instrs.extend(prologue)
             instrs.extend(element_sequence_loop(
                 idx_local=idx, ptr_local=seq_ptr, len_local=seq_len,

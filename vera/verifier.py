@@ -9725,7 +9725,8 @@ class ContractVerifier:
         # guard anywhere, which let a violating element laundered through an
         # opaque producer reach a Tier-1-clean callee and refute its
         # postcondition at run time.
-        if (self._element_guard_emitted(smt, formal_ty)
+        if (guarded is None
+                and self._element_guard_emitted(smt, formal_ty)
                 and site in carriers.ELEMENT_GUARD_SITES):
             guarded = True
         val = smt.translate_expr(value_node, slot_env)
