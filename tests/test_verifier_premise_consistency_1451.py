@@ -2725,7 +2725,41 @@ def _fragment_term(family: str):
         "nonlinear-under-an-uninterpreted-function": uf(x * y) == 3,
         "nonlinear-under-an-array-index": arr[x * y] == 3,
         "nonlinear-inside-a-rank-body": z3.ForAll([x], rank(x * y) >= 0),
+        # --- rows the adversarial reviewer wrote AFTER reading the allowlist,
+        # rather than from the shapes it had probed before it (#1457 review).
+        # The Float64-by-sort rows are the ones that show the sort recursion
+        # is real: the arithmetic is nowhere in them.
+        "real-division-by-a-literal": r / 2 > 1,
+        "real-division-by-a-variable": r / q > 1,
+        "empty-string-literal": z3.Length(st) == z3.Length(z3.StringVal("")),
+        "non-ascii-string-literal": st == z3.StringVal("\u00e9\u00e8"),
+        "const-array-select": z3.K(z3.IntSort(), z3.IntVal(0))[x] == 0,
+        "bool-ranged-array": z3.Array("flags", z3.IntSort(), z3.BoolSort())[x],
+        "substring": z3.Length(z3.SubString(st, 0, 2)) == 2,
+        "string-to-int": z3.StrToInt(st) >= 0,
+        "regex-membership": z3.InRe(st, z3.Re(z3.StringVal("a"))),
+        "regex-star": z3.InRe(st, z3.Star(z3.Re(z3.StringVal("a")))),
+        "float-ranged-array": z3.Array(
+            "fs", z3.IntSort(), z3.Float64())[x] == z3.FPVal(1.0, z3.Float64()),
+        "float-domained-function": z3.Function(
+            "ff", z3.Float64(), z3.IntSort())(fa) == 1,
+        "datatype-with-a-float-field-accessed": _float_field(z3)[1],
+        "datatype-with-a-float-field-untouched": _float_field(z3)[0],
     }[family]
+
+
+def _float_field(z3):
+    """A datatype carrying a `Float64` field: recognised, and accessed.
+
+    The pair is the reviewer's point that a sort leaves the fragment through
+    the TERM that mentions it, not through the declaration: a value of the
+    datatype is fine until something reads the float out of it.
+    """
+    builder = z3.Datatype("WithFloat")
+    builder.declare("mk", ("f", z3.Float64()), ("n", z3.IntSort()))
+    dt = builder.create()
+    v = z3.Const("wf", dt)
+    return dt.n(v) == 1, dt.f(v) == z3.FPVal(1.0, z3.Float64())
 
 
 _INSIDE_FRAGMENT = (
@@ -2734,6 +2768,9 @@ _INSIDE_FRAGMENT = (
     "array-select", "array-store", "string-length", "string-concat-literal",
     "linear-real", "int-real-coercion", "rank-axiom",
     "division-by-a-literal", "modulus-by-a-literal",
+    "real-division-by-a-literal", "empty-string-literal",
+    "non-ascii-string-literal", "const-array-select", "bool-ranged-array",
+    "datatype-with-a-float-field-untouched", "substring", "string-to-int",
 )
 
 _OUTSIDE_FRAGMENT = (
@@ -2745,6 +2782,9 @@ _OUTSIDE_FRAGMENT = (
     "foreign-quantifier", "unlisted-kind",
     "nonlinear-under-an-uninterpreted-function",
     "nonlinear-under-an-array-index", "nonlinear-inside-a-rank-body",
+    "real-division-by-a-variable",
+    "regex-membership", "regex-star", "float-ranged-array",
+    "float-domained-function", "datatype-with-a-float-field-accessed",
 )
 
 
