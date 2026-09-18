@@ -73,12 +73,23 @@ _PROGRAMS = {
 }
 
 
-def _cli(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def _cli(*args: str, timeout: int = 120,
+         env_overrides: dict[str, str] | None = None,
+         ) -> subprocess.CompletedProcess[str]:
+    """Run the CLI with a DERIVED environment, never the ambient one.
+
+    `VERA_EAGER_GC` is popped from the copy before the overrides are applied,
+    so a cell that does not ask for eager GC does not silently get it from
+    whoever ran the suite — the two directions of every guarded cell would
+    otherwise be the same direction (CodeRabbit, PR #1447).
+    """
     env = dict(os.environ)
+    env.pop("VERA_EAGER_GC", None)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (
         f"{_PKG_PARENT}{os.pathsep}{existing}" if existing else _PKG_PARENT
     )
+    env.update(env_overrides or {})
     return subprocess.run(
         [sys.executable, "-m", "vera.cli", *args],
         capture_output=True, text=True, encoding="utf-8", check=False,
@@ -90,6 +101,13 @@ def _verify(tmp_path: Path, source: str, name: str) -> dict:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
     proc = _cli("verify", "--json", str(p))
+    # An empty or malformed envelope is a CLI failure wearing a cell's
+    # clothes; say so here rather than letting a KeyError further down read
+    # as the property being tested (CodeRabbit, PR #1447).
+    assert proc.stdout.strip(), (
+        f"`vera verify --json` produced no envelope (rc={proc.returncode}): "
+        f"{proc.stderr[-500:]}"
+    )
     return json.loads(proc.stdout)
 
 
@@ -920,7 +938,15 @@ def _element_loops(tmp_path: Path, source: str, name: str) -> dict[str, int]:
     """Element guard loops in the emitted module, per WASM function."""
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    wat = _cli("compile", "--wat", str(p)).stdout
+    proc = _cli("compile", "--wat", str(p))
+    # A compile FAILURE yields no WAT, which parses as "zero element loops"
+    # and passes every disclosure cell for the wrong reason (CodeRabbit,
+    # PR #1447).  The exit code is the only thing that separates the two.
+    assert proc.returncode == 0, (
+        f"`vera compile --wat` failed (rc={proc.returncode}), so the WAT this "
+        f"cell reads is empty rather than loop-free: {proc.stderr[-500:]}"
+    )
+    wat = proc.stdout
     loops: dict[str, int] = {}
     current = "?"
     for line in wat.splitlines():
@@ -936,17 +962,11 @@ def _run(tmp_path: Path, source: str, name: str,
          eager_gc: bool = False) -> subprocess.CompletedProcess[str]:
     p = tmp_path / f"{name}.vera"
     p.write_text(source, encoding="utf-8")
-    env_key = "VERA_EAGER_GC"
-    previous = os.environ.get(env_key)
-    if eager_gc:
-        os.environ[env_key] = "1"
-    try:
-        return _cli("run", str(p))
-    finally:
-        if previous is None:
-            os.environ.pop(env_key, None)
-        else:  # pragma: no cover — restored only when it was already set
-            os.environ[env_key] = previous
+    # Passed through rather than set on `os.environ`: mutating the process
+    # environment leaks into every other cell running beside this one, and
+    # restoring it in a `finally` only narrows the window.
+    return _cli("run", str(p),
+                env_overrides={"VERA_EAGER_GC": "1"} if eager_gc else None)
 
 
 def test_a_guarded_closure_boundary_carries_the_loop_it_claims(
@@ -1426,7 +1446,12 @@ def test_the_element_load_width_matches_the_stride(tmp_path: Path) -> None:
     good = source.replace("VALUE", "true")
     p = tmp_path / "byte-elem.vera"
     p.write_text(good, encoding="utf-8")
-    wat = _cli("compile", "--wat", str(p)).stdout
+    proc = _cli("compile", "--wat", str(p))
+    assert proc.returncode == 0, (
+        f"`vera compile --wat` failed (rc={proc.returncode}): "
+        f"{proc.stderr[-500:]}"
+    )
+    wat = proc.stdout
     loop_body = wat[wat.index("loop $lp_elem"):] if "loop $lp_elem" in wat else ""
     assert "i32.load8_u" in loop_body, (
         "a one-byte element is read with a wider load; the guard would see "
@@ -1640,3 +1665,314 @@ def test_the_builtin_answer_is_the_one_the_nat_arm_gives(
         f"the `@Nat` arm claims a guard at a built-in call the element arm "
         f"declines: {nat_guarded}"
     )
+
+
+def _allocating_predicate_program(elements: int = 16) -> str:
+    """A `Map` carrier whose element predicate ALLOCATES, per element.
+
+    The projected array is handed back by `map_values` and reachable from
+    nothing else, so an allocation inside the walk is what could collect it.
+    """
+    inserts = "map_new()"
+    for i in range(elements):
+        inserts = f'map_insert({inserts}, "k{i}", {i + 1})'
+    return (
+        "private fn tag(@Int -> @String)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        '{\n  string_concat(string_concat("value-", int_to_string(@Int.0)), '
+        '"-padding-padding-padding")\n}\n\n'
+        "type Tagged = { @Int | string_length(tag(@Int.0)) > 1 };\n\n"
+        "private fn launder(@Int -> @Map<String, Int>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        f"{{\n  {inserts}\n}}\n\n"
+        "private fn consume(@Map<String, Tagged> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  map_size(@Map<String, Tagged>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(7))\n}\n"
+    )
+
+
+def test_the_projected_sequence_is_rooted_before_the_walk(
+    tmp_path: Path,
+) -> None:
+    """The array a projection returns is on the SHADOW STACK before the walk.
+
+    `map_values` allocates the array it hands back, and nothing else
+    references it: a WASM local is not a GC root, so a per-element predicate
+    that allocates could collect it mid-loop and the walk would read swept
+    memory — the #593 / #1379 rule, at a pointer this PR introduced
+    (CodeRabbit, PR #1447).
+
+    Asserted STRUCTURALLY, and the reason is worth recording rather than
+    dressing up: with the push removed, the allocating-predicate program
+    below still runs to completion under `VERA_EAGER_GC=1` — over 16
+    elements, with a per-element string built from two concatenations — so
+    no program measured here observes the difference.  The collector does
+    not hand the swept block back inside the walk's lifetime.  That makes
+    the behavioural cell a weak instrument and the emitted-code one the
+    honest instrument: the push is required by the invariant, not by a
+    failure anyone has produced, and a cell that passed either way would
+    read as coverage of something it does not cover.
+    """
+    source = _allocating_predicate_program()
+    p = tmp_path / "alloc-pred.vera"
+    p.write_text(source, encoding="utf-8")
+    proc = _cli("compile", "--wat", str(p))
+    assert proc.returncode == 0, proc.stderr[-500:]
+    wat = proc.stdout
+    call = wat.index("call $vera.map_values")
+    loop = wat.index("loop $lp_elem", call)
+    between = wat[call:loop]
+    assert "$gc_sp" in between, (
+        "the projected array is walked without being rooted: nothing between "
+        f"the projection call and the loop touches the shadow stack:\n"
+        f"{between[:400]}"
+    )
+
+
+def test_an_allocating_element_predicate_completes_under_eager_gc(
+    tmp_path: Path,
+) -> None:
+    """And the walk itself survives a collection at every allocation.
+
+    The behavioural half of the cell above: the predicate allocates twice per
+    element, `VERA_EAGER_GC=1` collects at each one, and the program must
+    still complete.  It passes with the root removed as well, which is why
+    the cell above asserts the emitted code rather than this outcome.
+    """
+    source = _allocating_predicate_program()
+    result = _run(tmp_path, source, "alloc-pred-eager", eager_gc=True)
+    assert result.returncode == 0, (
+        f"an allocating element predicate did not survive eager GC: "
+        f"{result.stdout}{result.stderr}"
+    )
+    assert result.stdout.strip().endswith("16"), result.stdout
+
+
+def test_the_carrier_sort_name_is_injective() -> None:
+    """Two different carriers never share a sort name.
+
+    An underscore is a character a Vera identifier may contain, so joining
+    the element sorts on one is not injective: with a user `data A_B` and a
+    user `data B_C` in scope, `Map<A_B, C>` and `Map<A, B_C>` both rendered
+    `Map_A_B_C`, and two different carriers sharing one sort is a fact about
+    either meeting a goal about the other (CodeRabbit, PR #1447).
+
+    Asserted over a GENERATED product rather than the one pair that exposed
+    it: every arrangement of names that can collide under a separator an
+    identifier may contain is in the set, so a future separator change is
+    tested against the property rather than against this example.
+    """
+    import itertools
+
+    import z3
+
+    from vera.smt import SmtContext
+
+    smt = SmtContext()
+    names = ["A", "C", "A_B", "B_C", "A_B_C", "Map", "Set"]
+    sorts = {name: z3.DeclareSort(name) for name in names}
+    rendered: dict[str, tuple[str, ...]] = {}
+    for kind in ("Map", "Set"):
+        arity = 2 if kind == "Map" else 1
+        for combo in itertools.product(names, repeat=arity):
+            key = smt.collection_sort_name(
+                kind, tuple(sorts[n] for n in combo))
+            assert key not in rendered, (
+                f"{kind}{combo} and {kind}{rendered[key]} both render "
+                f"`{key}`, so two carriers would share one sort"
+            )
+            rendered[key] = combo
+    assert len(rendered) == len(names) ** 2 + len(names), len(rendered)
+
+
+def test_two_colliding_carrier_types_verify_side_by_side(
+    tmp_path: Path,
+) -> None:
+    """And the program the collision is reachable from verifies.
+
+    A user ADT may be called `A_B`, so this is a program someone can write,
+    not a property of the renderer alone: both maps' element facts stay
+    usable and the forwarding one still discharges.
+    """
+    source = (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n"
+        "private data A_B { MkAB(Int) }\n\n"
+        "private data B_C { MkBC(Int) }\n\n"
+        "private fn left(@Map<A_B, Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  map_size(@Map<A_B, Pos>.0)\n}\n\n"
+        "private fn right(@Map<Pos, B_C> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  map_size(@Map<Pos, B_C>.0)\n}\n\n"
+        "private fn fwd_left(@Map<A_B, Pos> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  left(@Map<A_B, Pos>.0)\n}\n\n"
+        "private fn fwd_right(@Map<Pos, B_C> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  right(@Map<Pos, B_C>.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  0\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "colliding-carriers")
+    assert envelope["ok"] is True, envelope.get("diagnostics")
+    statuses = _refine_bind_statuses(envelope)
+    assert set(statuses) == {"verified"}, statuses
+
+
+# ---------------------------------------------------------------------------
+# A binder that narrows BOTH ways at once (#1430; PR #1447 review)
+# ---------------------------------------------------------------------------
+
+_NESTED_BINDER = "type NonEmptyPos = { @Array<Pos> | array_length(@Array<Pos>.0) > 0 };\n\n"
+
+
+def test_a_nested_refinement_at_a_clause_binder_does_not_overclaim(
+    tmp_path: Path,
+) -> None:
+    """`{ @Array<Pos> | array_length(…) > 0 }` narrows twice, and the guard
+    planted at a clause binder lowers the OUTER predicate only.
+
+    Measured before this: the record read `tier3` — a claimed runtime check —
+    while `[0 - 5]` satisfies the outer predicate (its length is 1), reaches
+    the clause body at a type that forbids it, and the program runs to
+    completion.  The check that existed covered half of what the record
+    claimed, which is the guard-claim class one level in.
+
+    The record now discloses, and the reason says which half is uncovered.
+    Two controls bound it: the same binder at a PARAMETER is refused, and a
+    plain refined clause binder with no element half keeps its `tier3`.
+    """
+    source = (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n" + _NESTED_BINDER +
+        "public fn f(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  handle[Exn<Array<Int>>] {\n"
+        "    throw(@NonEmptyPos) -> { 1 }\n"
+        "  } in {\n    throw([0 - 5])\n  }\n}\n"
+    )
+    statuses = _refine_bind_statuses(_verify(tmp_path, source, "clause-nested"))
+    assert statuses["tier3"] == 0, (
+        f"the clause binder claims a runtime check that covers the outer "
+        f"predicate only: {statuses}"
+    )
+    assert statuses["tier3_unguarded"] >= 1, statuses
+    assert _element_loops(tmp_path, source, "clause-nested") == {}, (
+        "no element walk is wired at this position, so any loop here is "
+        "something else"
+    )
+
+
+def test_a_plain_refined_clause_binder_keeps_its_guard(
+    tmp_path: Path,
+) -> None:
+    """The control for the cell above: no element half, no disclosure.
+
+    `handle[Exn<Int>] { throw(@Pos) -> … }` is #1445/#1448's own shape — the
+    binder's predicate IS lowered here — so it must still read `tier3` and
+    still trap.  Without this, disclosing the nested shape could be achieved
+    by disclosing every clause binder.
+    """
+    source = (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n"
+        "public fn f(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  handle[Exn<Int>] {\n    throw(@Pos) -> { 1 }\n"
+        "  } in {\n    throw(0 - 5)\n  }\n}\n"
+    )
+    statuses = _refine_bind_statuses(_verify(tmp_path, source, "clause-plain"))
+    assert statuses["tier3"] >= 1, statuses
+    result = _run(tmp_path, source, "clause-plain")
+    assert result.returncode != 0, (
+        f"the clause binder's own predicate is claimed and not checked: "
+        f"{result.stdout}"
+    )
+
+
+def test_the_same_nested_binder_is_refused_at_a_boundary(
+    tmp_path: Path,
+) -> None:
+    """And at a position the element walk IS wired at, it is refused.
+
+    The nested shape is not inherently unguardable — it is unguarded at a
+    clause binder — so the boundary twin is what says the disclosure above is
+    about the position rather than about the type.
+    """
+    source = (
+        "type Pos = { @Int | @Int.0 > 0 };\n\n" + _NESTED_BINDER +
+        "private fn consume(@NonEmptyPos -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@NonEmptyPos.0)\n}\n\n"
+        "private fn launder(@Int -> @Array<Int>)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_append([], @Int.0)\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  consume(launder(0 - 5))\n}\n"
+    )
+    envelope = _verify(tmp_path, source, "param-nested")
+    assert envelope["ok"] is False, envelope
+    result = _run(tmp_path, source, "param-nested")
+    assert result.returncode != 0, result.stdout
+
+
+_TWO_MAP_RESULTS = (
+    "type Pos = { @Int | @Int.0 > 0 };\n\n"
+    "type NonEmpty = { @String | string_length(@String.0) > 0 };\n\n"
+    "private fn make(@Unit -> @Map<String, Pos>)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    '{\n  map_insert(map_new(), "a", 5)\n}\n\n'
+    "private fn make2(@Unit -> @Map<String, NonEmpty>)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    '{\n  map_insert(map_new(), "a", "x")\n}\n\n'
+    "private fn consume(@Map<String, Pos> -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  map_size(@Map<String, Pos>.0)\n}\n\n"
+    "private fn consume2(@Map<String, NonEmpty> -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  map_size(@Map<String, NonEmpty>.0)\n}\n\n"
+    "public fn main(@Unit -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  consume(make(())) + consume2(make2(()))\n}\n"
+)
+
+
+def test_a_carrier_returning_callee_hands_back_a_usable_element_fact(
+    tmp_path: Path,
+) -> None:
+    """A `Map`-returning call is declared in its CARRIER sort.
+
+    `_get_or_create_adt_sort` has no entry for the built-in containers, so
+    such a result fell through `declare_adt` to `declare_int` — an
+    unconstrained integer, which the projection declines — and a callee's
+    element facts were unusable at its call site (CodeRabbit, PR #1447).
+    Declared through the carrier seam, the fact crosses the call.
+    """
+    envelope = _verify(tmp_path, _TWO_MAP_RESULTS, "map-result")
+    assert envelope["ok"] is True, envelope.get("diagnostics")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["verified"] >= 1, (
+        f"no element fact survived a carrier-returning call: {statuses}"
+    )
+    assert statuses["violated"] == 0, statuses
+
+
+def test_two_carrier_returning_callees_do_not_share_a_sort(
+    tmp_path: Path,
+) -> None:
+    """Two `Map<String, …>` results with DIFFERENT element types, one module.
+
+    The cache key for a projection includes the element sort, so the second
+    callee cannot be handed the first's symbol — a sort error waiting for
+    whichever program declared two such callees.  The cell runs the program
+    as well, because a Z3 sort mismatch surfaces as a crash rather than as a
+    status.
+    """
+    envelope = _verify(tmp_path, _TWO_MAP_RESULTS, "two-results")
+    assert not envelope.get("diagnostics"), envelope["diagnostics"]
+    result = _run(tmp_path, _TWO_MAP_RESULTS, "two-results-run")
+    assert result.returncode == 0, f"{result.stdout}{result.stderr}"
+    assert result.stdout.strip().endswith("2"), result.stdout

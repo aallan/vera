@@ -6445,10 +6445,21 @@ class ContractVerifier:
         finds an empty set and concludes that nothing narrows (#1430's
         comment on the handler-clause binder).
         """
-        positions = carriers.element_carriers(binder)
+        # Through the ONE strip helper, which walks a refinement CHAIN: a
+        # binder typed `{ @Array<Pos> | array_length(…) > 0 }` is a
+        # refinement over a carrier, and asking `element_carriers` for the
+        # unstripped type came back empty — so the element narrowing was
+        # never recorded and only the outer predicate was (CodeRabbit,
+        # PR #1447).  `element_carriers` unwraps one level of its own; a
+        # chain needs this one.
+        positions = carriers.element_carriers(self._strip_refinements(binder))
         if not positions:
             return False
-        source = {c.kind: c for c in carriers.element_carriers(payload)}
+        source = {
+            c.kind: c
+            for c in carriers.element_carriers(
+                self._strip_refinements(payload))
+        }
         for carrier in positions:
             other = source.get(carrier.kind)
             if narrowing.narrows_into_refinement(
@@ -6521,14 +6532,43 @@ class ContractVerifier:
                     and narrowing.narrows_into_refinement(
                         self._refinement_chain_of(payload),
                         self._refinement_chain_of(binder))):
-                self._record_refined_bind_tier3(
-                    decl, clause.body, site, refined_ty=binder,
-                    reason=(
-                        "the bound value is the payload the operation "
-                        "delivers, which no throw or put site pins, so "
-                        "there is no term to test it against"
-                    ),
-                )
+                # #1430: a binder can narrow BOTH ways at once —
+                # `{ @Array<Pos> | array_length(…) > 0 }` adds a predicate of
+                # its own AND element refinements one level in — and the
+                # guard planted here lowers the outer predicate only.  So the
+                # record may not claim more than that check covers: with an
+                # element narrowing present at a position the element walk is
+                # not wired at, it discloses.  Measured before this: the
+                # record read `tier3` while `[0 - 5]` satisfied the outer
+                # predicate, reached the clause body and ran (CodeRabbit,
+                # PR #1447).
+                if self._element_narrows(payload, binder):
+                    # Both halves narrow and only the outer one is lowered
+                    # here, so the record may not claim the element half.
+                    # The reason is an inline literal per branch, which is
+                    # what `test_no_demotion_site_hardcodes_a_solver_reason`
+                    # requires of every Tier-3 recorder: a composed string is
+                    # unclassifiable to it, and that gate exists so a
+                    # SOLVER-outcome reason cannot be fixed at a call site.
+                    self._record_refined_bind_tier3(
+                        decl, clause.body, site, refined_ty=binder,
+                        guarded=False,
+                        reason=(
+                            "the bound value is the payload the operation "
+                            "delivers, which no throw or put site pins, and "
+                            "the refinements its elements carry are checked "
+                            "at no boundary this position reaches"
+                        ),
+                    )
+                else:
+                    self._record_refined_bind_tier3(
+                        decl, clause.body, site, refined_ty=binder,
+                        reason=(
+                            "the bound value is the payload the operation "
+                            "delivers, which no throw or put site pins, so "
+                            "there is no term to test it against"
+                        ),
+                    )
             elif (self._is_nat_type(binder)
                     and not self._is_nat_type(payload)):
                 self._record_nat_bind_tier3(

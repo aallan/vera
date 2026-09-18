@@ -18,7 +18,11 @@ from vera.narrowing import (
 )
 from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import element_sequence_loop, state_type_arg
+from vera.wasm.helpers import (
+    element_sequence_loop,
+    gc_shadow_push,
+    state_type_arg,
+)
 from vera.wasm.inference import substitute_type_vars
 
 # Recursion bound for tuple-component boundary guards (#746).  A *finite* tuple
@@ -564,6 +568,14 @@ class ContractsMixin:
             f"call {wasm_name}",
             f"local.set {seq_len}",
             f"local.set {seq_ptr}",
+            # ROOTED before the walk.  The projection allocates the array it
+            # returns, and that array is reachable from nothing else: a
+            # per-element predicate that allocates — a `where` helper building
+            # a string, a concatenation — can collect it mid-loop and the walk
+            # then reads swept memory (CodeRabbit, PR #1447).  A WASM local is
+            # not a GC root; the shadow stack is, and the function's epilogue
+            # restores it from the prologue's saved `$gc_sp`.
+            *gc_shadow_push(seq_ptr),
         ]
 
     def _tuple_component_guard_sites(

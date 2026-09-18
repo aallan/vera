@@ -23,6 +23,7 @@ import z3
 
 from vera import ast, naming
 from vera.monomorphize import mangle_type_name, unmangle_type_name
+from vera import carriers
 from vera.regularity import RegularityIndex, adt_names_in
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv
 from vera.types import (
@@ -887,7 +888,12 @@ class SmtContext:
         (``Map<String, String>``) — one symbol would conflate two sequences
         and let a fact about the keys discharge a goal about the values.
         """
-        key = f"{projection}_{coll_sort}"
+        # Keyed on the element sort as well as the projection and the
+        # carrier: one carrier sort can be asked for two different element
+        # sorts through an alias or a refinement chain, and a cached symbol
+        # of the wrong range is a sort error waiting for the second caller
+        # (CodeRabbit, PR #1447).
+        key = f"{projection}_{coll_sort}->{element_sort}"
         fn = self._projection_fns.get(key)
         if fn is None:
             fn = z3.Function(
@@ -898,13 +904,25 @@ class SmtContext:
     def collection_sort_name(
         self, kind: str, element_sorts: tuple[z3.SortRef, ...],
     ) -> str:
-        """The carrier sort's name — ``Map_<k>_<v>`` / ``Set_<v>``.
+        """The carrier sort's name — ``Map<k,v>`` / ``Set<v>``.
 
         Named from the element SORTS, exactly as ``Array_<elt>`` is, so a
         refinement and its base share one carrier: the sort is the carrier set
         and the predicate is discharged separately.
+
+        Written the way the TYPE is written, with angle brackets and a comma,
+        because an underscore is a character a Vera identifier may contain and
+        joining on one is not injective: ``Map<A_B, C>`` and ``Map<A, B_C>``
+        both render ``Map_A_B_C``, so two different carriers would share one
+        sort and a fact about either could meet a goal about the other.  A
+        user ADT may be called ``A_B``, so this is reachable rather than
+        theoretical (CodeRabbit, PR #1447).  Neither ``<``, ``>`` nor ``,``
+        can occur in an identifier, so the rendering is injective over the
+        sorts this layer mints.
         """
-        return "_".join([kind, *(str(s) for s in element_sorts)])
+        if len(element_sorts) == 1:
+            return f"{kind}<{element_sorts[0]}>"
+        return f"{kind}<{','.join(str(s) for s in element_sorts)}>"
 
     def _get_collection_sort(self, name: str) -> z3.SortRef:
         """Get-or-create the uninterpreted carrier sort called *name*."""
@@ -2869,6 +2887,25 @@ class SmtContext:
                 # written to close.
                 return None
             ret_var = self.declare_array_var(fresh, element_sort)
+        elif (isinstance(base_ret, AdtType)
+                and carriers.projected_carrier_name(base_ret) is not None):
+            # #1430: a `Map` or `Set` RESULT, through the carrier seam.
+            # `_get_or_create_adt_sort` has no entry for the built-in
+            # containers, so this used to fall through `declare_adt` to
+            # `declare_int` — an unconstrained integer, which the projection
+            # declines, so a callee's element facts were unusable at its call
+            # site (CodeRabbit, PR #1447).  Declining the whole call when an
+            # element type has no Z3 sort is the same choice the `Array` arm
+            # above makes, and for the same reason: a wrong-typed result
+            # variable lets the caller's postcondition translate against it.
+            element_sorts: list[z3.SortRef] = []
+            for arg in base_ret.type_args:
+                arg_sort = self._vera_type_to_z3_sort(arg)
+                if arg_sort is None:
+                    return None
+                element_sorts.append(arg_sort)
+            ret_var = self.declare_collection_var(
+                fresh, base_ret.name, tuple(element_sorts))
         elif isinstance(base_ret, AdtType):
             adt_var = self.declare_adt(fresh, base_ret)
             ret_var = adt_var if adt_var is not None else self.declare_int(fresh)
