@@ -962,7 +962,16 @@ def test_a_guarded_closure_boundary_carries_the_loop_it_claims(
     """
     envelope = _verify(tmp_path, _CLOSURE_ONLY, "closure-only")
     statuses = _refine_bind_statuses(envelope)
-    assert statuses["tier3"] >= 1, statuses
+    # ON THE RECORD, not at a pinned status.  The `apply_fn` argument's own
+    # status follows the modular rule — `launder` is declared
+    # `-> @Array<Int>`, so its result is refuted like any other unestablished
+    # narrowing — and the claim under test is the BOUNDARY's, which is that a
+    # loop exists and the value is refused.  Pinning `tier3` here would have
+    # been pinning the F1 defect: before that fix, the `array_length` call
+    # inside the closure body read `tier3` for a built-in that carries no
+    # prologue.
+    assert statuses, "the closure boundary is silent"
+    assert statuses["tier3_unguarded"] + statuses["violated"] >= 1, statuses
 
     loops = _element_loops(tmp_path, _CLOSURE_ONLY, "closure-only")
     lifted = {fn: n for fn, n in loops.items() if fn.startswith("$anon")}
@@ -1021,37 +1030,78 @@ def test_a_disclosed_element_boundary_carries_no_loop(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
 
 
-def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
-    """Every position in the roster names a file that WIRES the emitter, and
-    every file that wires it is named by a position.
-
-    The roster is what a `guarded` status is read from, so it may not be a
-    list someone keeps up to date: it is held to the emitter's call sites.
-    Adding a position without wiring an emitter reds here, and so does wiring
-    one without adding the position — which is the direction that would leave
-    a guard emitted and never claimed.
-    """
+def _emitter_call_sites() -> set[str]:
+    """The FUNCTIONS that call the element-guard emitter, read from source."""
     import re
 
+    root = Path(vera.__file__).resolve().parent
+    found: set[str] = set()
+    for rel in ("codegen/functions.py", "codegen/closures.py",
+                "codegen/contracts.py", "wasm/calls_handlers.py"):
+        path = root / rel
+        if not path.exists():  # pragma: no cover — defensive
+            continue
+        enclosing = "?"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for n, line in enumerate(lines):
+            match = re.match(r"    def (\w+)\(", line)
+            if match:
+                enclosing = match.group(1)
+                continue
+            if not re.search(r"self\._emit_element_guards\(", line):
+                continue
+            # The ROLE is the emitter's own last argument, and it is what
+            # separates two positions that share an emitting function.
+            window = "\n".join(lines[n:n + 6])
+            role = re.search(r'"(parameter|return value)"', window)
+            found.add(f"{enclosing}/{role.group(1) if role else '?'}")
+    # The emitter's own definition is not a call site.
+    found = {f for f in found if not f.startswith("_emit_element_guards/")}
+    return found
+
+
+def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
+    """Every roster position names a FUNCTION that wires the emitter, and
+    every function that wires it is named by a position.
+
+    The roster is what a `guarded` status is read from, so it may not be a
+    list someone keeps up to date: it is held to the emitter's call sites,
+    resolved to the enclosing function rather than to the file.  File
+    granularity is what let the `return type` entry name `functions.py` —
+    which wires the PARAMETER loop — while the return boundary is emitted in
+    `contracts.py`, with nothing to notice (PR #1447 review, F3).
+    """
     from vera import carriers
 
-    root = Path(vera.__file__).resolve().parent
-    wired = {
-        rel for rel in (
-            "codegen/functions.py", "codegen/closures.py",
-            "codegen/contracts.py", "wasm/calls_handlers.py",
-        )
-        if re.search(r"self\._emit_element_guards\(",
-                     (root / rel).read_text(encoding="utf-8"))
-    }
-    # contracts.py DEFINES the emitter and calls it from no boundary of its
-    # own, so it is excluded by name rather than by accident.
-    wired.discard("codegen/contracts.py")
-    named = {v.split("vera/", 1)[1] for v in carriers.ELEMENT_GUARD_SITES.values()}
+    wired = _emitter_call_sites()
+    named = set(carriers.ELEMENT_GUARD_SITES.values())
     assert wired == named, (
         f"the element-guard roster and the emitter's call sites disagree: "
         f"wired={sorted(wired)} named={sorted(named)}"
     )
+
+
+def test_dropping_any_roster_entry_is_visible() -> None:
+    """EVERY entry, not one example.
+
+    A scan that compares SETS is satisfied by a roster that still names each
+    file through some other entry, which is exactly how `closure return`
+    could be deleted with the suite staying green.  This drives the
+    comparison the scan makes once per entry, so each one is load-bearing on
+    its own.
+    """
+    from vera import carriers
+
+    wired = _emitter_call_sites()
+    for position in sorted(carriers.ELEMENT_GUARD_SITES):
+        without = {
+            fn for site, fn in carriers.ELEMENT_GUARD_SITES.items()
+            if site != position
+        }
+        assert without != wired, (
+            f"deleting `{position}` from the roster leaves the comparison "
+            f"unchanged, so nothing holds that entry to an emitter"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1459,4 +1509,134 @@ def test_the_guard_pre_scan_sees_the_element_predicate(
     assert any("@Int.0 > 0" in r for r in rendered), (
         f"the element predicate the guard lowers is not in the pre-scan's "
         f"enumeration: {rendered}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A site name is not a guarantee that the CALLEE carries the guard (F1)
+# ---------------------------------------------------------------------------
+#
+# `ELEMENT_GUARD_SITES["call argument"]` names the emitter in
+# `vera/codegen/functions.py` — the CALLEE's prologue.  A built-in has none,
+# so at `array_length(a[0])` the element record read `tier3`, a promised
+# runtime check, while the module carried no element loop anywhere and a `-5`
+# ran through (PR #1447 review, F1).  Each cell reads the record, the EMITTED
+# module and the run, because two agreeing tables is what this PR says it
+# will not rely on.
+
+_NESTED_HEADER = "type Pos = { @Int | @Int.0 > 0 };\n\n"
+_HIDE = (
+    "private fn hide(@Int -> @Array<Array<Pos>>)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  array_append([], [@Int.0])\n}\n\n"
+)
+_MAIN = (
+    "public fn main(@Unit -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  peek(hide(0 - 5))\n}\n"
+)
+_BUILTIN_CALLEE = _NESTED_HEADER + (
+    "private fn peek(@Array<Array<Pos>> -> @Int)\n"
+    "  requires(array_length(@Array<Array<Pos>>.0) > 0)\n"
+    "  ensures(true)\n  effects(pure)\n"
+    "{\n  array_length(@Array<Array<Pos>>.0[0])\n}\n\n"
+) + _HIDE + _MAIN
+_BUILTIN_MAP = _NESTED_HEADER + (
+    "public fn entry(@Array<Map<Int, Pos>> -> @Int)\n"
+    "  requires(array_length(@Array<Map<Int, Pos>>.0) > 0)\n"
+    "  ensures(true)\n  effects(pure)\n"
+    "{\n  map_size(@Array<Map<Int, Pos>>.0[0])\n}\n"
+)
+_USER_CALLEE = _NESTED_HEADER + (
+    "private fn consume(@Array<Pos> -> @Int)\n"
+    "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+    "{\n  array_length(@Array<Pos>.0)\n}\n\n"
+    "private fn peek(@Array<Array<Pos>> -> @Int)\n"
+    "  requires(array_length(@Array<Array<Pos>>.0) > 0)\n"
+    "  ensures(true)\n  effects(pure)\n"
+    "{\n  consume(@Array<Array<Pos>>.0[0])\n}\n\n"
+) + _HIDE + _MAIN
+
+
+@pytest.mark.parametrize("name,source", [
+    ("array", _BUILTIN_CALLEE), ("map", _BUILTIN_MAP),
+])
+def test_a_builtin_callee_discloses_rather_than_claiming_a_guard(
+    name: str, source: str, tmp_path: Path,
+) -> None:
+    """A built-in callee has no prologue, so the element record must disclose.
+
+    Measured at the release tip: `tier3_unguarded`.  Measured here before the
+    fix: `tier3` — a claimed runtime check — with ZERO element loops in the
+    whole module and `vera run` returning 1 with a `-5` inside.  The cell
+    holds all three together, because the record alone was already wrong
+    while the other two looked fine.
+    """
+    envelope = _verify(tmp_path, source, f"builtin-{name}")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3"] == 0, (
+        f"a built-in callee claims a runtime check it cannot carry: "
+        f"{statuses}"
+    )
+    assert statuses["tier3_unguarded"] >= 1, statuses
+    assert _element_loops(tmp_path, source, f"builtin-{name}") == {}, (
+        "no element guard can be emitted for a built-in callee, so any loop "
+        "here belongs to something else"
+    )
+
+
+def test_a_user_callee_keeps_the_guard_the_record_claims(
+    tmp_path: Path,
+) -> None:
+    """The isolating control: the same program through a USER callee.
+
+    Swapping `array_length(a[0])` for a call to `consume(@Array<Pos> -> @Int)`
+    changes nothing but the callee, and the callee is where the prologue is.
+    A `tier3` here is backed by a loop in that function.
+    """
+    envelope = _verify(tmp_path, _USER_CALLEE, "user-callee")
+    statuses = _refine_bind_statuses(envelope)
+    assert statuses["tier3"] >= 1, (
+        f"a user callee's element boundary lost its guarded record: "
+        f"{statuses}"
+    )
+    loops = _element_loops(tmp_path, _USER_CALLEE, "user-callee")
+    assert loops, (
+        f"the record claims a runtime check and the module carries no "
+        f"element loop: {loops}"
+    )
+
+
+def test_the_builtin_answer_is_the_one_the_nat_arm_gives(
+    tmp_path: Path,
+) -> None:
+    """Depth x producer, one row further: a BUILT-IN callee.
+
+    The `@Nat` arm has known since #1362 that a built-in bypasses the
+    callee-prologue guard; the element arm learned it here, by asking the
+    same predicate rather than by growing a builtin test of its own.  The
+    cell compares the two arms on the same callee, so a future divergence is
+    a red cell rather than a second discovery.
+    """
+    nat_source = (
+        "private fn peek(@Array<Nat> -> @Int)\n"
+        "  requires(array_length(@Array<Nat>.0) > 0)\n"
+        "  ensures(true)\n  effects(pure)\n"
+        "{\n  nat_to_int(@Array<Nat>.0[0])\n}\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  peek([1])\n}\n"
+    )
+    nat = _verify(tmp_path, nat_source, "nat-builtin")
+    nat_guarded = {
+        o["status"] for o in nat.get("obligations", [])
+        if o["kind"] == "nat_bind"
+    }
+    element = _refine_bind_statuses(
+        _verify(tmp_path, _BUILTIN_CALLEE, "element-builtin"))
+    # Neither arm may claim a guarded Tier 3 at a built-in call argument.
+    assert "tier3" not in element, element
+    assert nat_guarded <= {"verified", "tier3_unguarded"}, (
+        f"the `@Nat` arm claims a guard at a built-in call the element arm "
+        f"declines: {nat_guarded}"
     )

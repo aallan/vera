@@ -136,15 +136,27 @@ def projected_carrier_name(ty: Type | None) -> str | None:
 #: the scalar roster for this question is what let a `tier3` be recorded at a
 #: closure boundary whose module carried no element loop at all.
 #:
-#: Each value names the emitter's wiring site, and
+#: Each value names the FUNCTION that emits for that position, and
 #: `test_the_element_guard_roster_matches_where_it_is_wired` holds the two
-#: together: it scans those files for the emitter's call sites and asserts the
-#: FILES match this roster, so a position added here without an emitter, or an
-#: emitter wired without a position, reds instead of promising a check that is
-#: not there.
+#: together: it scans the code-generation layer for the emitter's call sites,
+#: resolves each to its enclosing function, and asserts the two sets match.
+#: Each value is the emitting function and the ROLE it emits under, because
+#: neither alone separates the four: file granularity let the `return type`
+#: entry point at `functions.py` — which wires the PARAMETER loop — while the
+#: return boundary is emitted in `contracts.py`, and function granularity
+#: collapses the two closure positions onto `_compile_lifted_closure`, so
+#: deleting one left the comparison unchanged (PR #1447 review, F3).  The
+#: role is the emitter's own argument, the word its trap message prints, so
+#: the key is data the call site already carries.  Deleting ANY single entry
+#: reds the test, and a cell drives that once per entry rather than once.
+#:
+#: Membership is necessary and not sufficient.  The TYPE half is
+#: `ContractVerifier._element_guard_emitted`, and at a `call argument` there
+#: is a third question — whether the CALLEE has a prologue at all, which a
+#: built-in does not (`_element_callee_guards`).
 ELEMENT_GUARD_SITES: dict[str, str] = {
-    "call argument": "vera/codegen/functions.py",
-    "return type": "vera/codegen/functions.py",
-    "closure argument": "vera/codegen/closures.py",
-    "closure return": "vera/codegen/closures.py",
+    "call argument": "_compile_fn/parameter",
+    "return type": "_compile_postconditions/return value",
+    "closure argument": "_compile_lifted_closure/parameter",
+    "closure return": "_compile_lifted_closure/return value",
 }

@@ -295,6 +295,23 @@ _STATE_WRITE_SITE = "State write boundary"
 
 _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 
+#: Built-ins whose ARGUMENT still crosses a prologue — the lifted closure's,
+#: not the built-in's (#1430; PR #1447 review F1).
+#:
+#: `apply_fn` applies a closure whose parameters are compiled by
+#: `_compile_lifted_closure`, and that prologue plants the same guards
+#: `_compile_fn`'s does, the element walk included.  So the general rule — a
+#: built-in has no prologue to guard in — has exactly this exception, and it
+#: is measured rather than reasoned: for `apply_fn(fn(@Array<Pos> -> @Int) …,
+#: launder([1]))` the element loop lands in `$anon_0` and a violating element
+#: traps there, naming the closure's signature.
+#:
+#: Kept out of `_callee_guards_in_its_prologue` deliberately: that predicate
+#: answers whether the CALLEE has a prologue, which is the question the sign
+#: guard asks too, and `apply_fn` does not.  This names where the guard
+#: actually is for the positions whose emitter follows the closure.
+_ARG_GUARDED_BY_LIFTED_CLOSURE: frozenset[str] = frozenset({"apply_fn"})
+
 
 @lru_cache(maxsize=1)
 def _builtin_fn_names() -> frozenset[str]:
@@ -6696,6 +6713,9 @@ class ContractVerifier:
                         decl, arg,
                         self._nested_refinement_formal(arg, None),
                         smt, slot_env, assumptions, site="call argument",
+                        # The desugared call is the same call, so it inherits
+                        # the same guard question the `@Nat` arm asks above.
+                        callee=right.name,
                     )
                 self._walk_for_nat_binding_obligations(
                     decl, expr.left, smt, slot_env, assumptions,
@@ -7029,6 +7049,7 @@ class ContractVerifier:
                         decl, arg,
                         self._nested_refinement_formal(arg, formal),
                         smt, slot_env, assumptions, site="call argument",
+                        callee=expr.name,
                     )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -8476,6 +8497,50 @@ class ContractVerifier:
             return cur
         return env
 
+    def _element_callee_guards(self, site: str, callee: str | None) -> bool:
+        """Whether the callee at *site* carries the element guard the roster
+        promises (#1430; PR #1447 review F1).
+
+        `carriers.ELEMENT_GUARD_SITES` names, for a `call argument`, the
+        emitter in `vera/codegen/functions.py` — the CALLEE's prologue.  A
+        built-in has none, so the site name alone is not the guarantee: at
+        `array_length(a[0])` over an `Array<Array<Pos>>` the element record
+        read `tier3` — a promised runtime check — while the module carried no
+        element loop anywhere and a `-5` ran through.
+
+        Asked through the SAME predicate the `@Nat` arm asks at a call
+        argument, so the two cannot answer differently about one callee.  A
+        site that is not a call is unaffected: a return epilogue, a closure
+        boundary and a construction position are all in the compiling
+        function itself.
+        """
+        if site != "call argument":
+            return True
+        if callee is None:
+            # The caller did not name a callee, so nothing establishes that
+            # a prologue exists.  Fail closed: an unclaimed guard discloses,
+            # where a claimed one that is absent is the defect.
+            return False
+        return (self._callee_guards_in_its_prologue(callee)
+                or callee in _ARG_GUARDED_BY_LIFTED_CLOSURE)
+
+    @staticmethod
+    def _callee_guards_in_its_prologue(callee: str) -> bool:
+        """Whether *callee* has a prologue a boundary guard can live in.
+
+        A user function is compiled by `_compile_fn`, whose prologue plants
+        the parameter guards — the `@Nat` sign check, the §2.6.5 predicate,
+        the element walk.  A BUILT-IN has no such prologue: its translator
+        emits the operation, and whatever it checks it checks for its own
+        reasons.  So "is this call argument guarded?" turns on this question
+        first, whatever KIND of guard is being claimed, and both callers ask
+        it here rather than each spelling out a builtin test of its own —
+        which is how the element arm came to claim a `tier3` for
+        `array_length(a[0])` while the module carried no element loop at all
+        (#1362, #1430; PR #1447 review F1).
+        """
+        return callee not in _builtin_fn_names()
+
     def _call_arg_nat_guarded(self, callee: str, arg: ast.Expr) -> bool:
         """Whether codegen plants a ``>= 0`` guard for this argument (#1362).
 
@@ -8505,7 +8570,7 @@ class ContractVerifier:
         """
         if callee in _NAT_ARG_UNGUARDED_BUILTINS:
             return False
-        if callee not in _builtin_fn_names():
+        if self._callee_guards_in_its_prologue(callee):
             return True
         return narrowing.narrows_into_nat(
             arg,
@@ -9658,6 +9723,7 @@ class ContractVerifier:
         *,
         site: str,
         guarded: bool | None = None,
+        callee: str | None = None,
     ) -> None:
         """Obligate a value against the refinements written INSIDE its target
         type — the argument-position twin of the construction-site rule (#1410).
@@ -9727,7 +9793,8 @@ class ContractVerifier:
         # postcondition at run time.
         if (guarded is None
                 and self._element_guard_emitted(smt, formal_ty)
-                and site in carriers.ELEMENT_GUARD_SITES):
+                and site in carriers.ELEMENT_GUARD_SITES
+                and self._element_callee_guards(site, callee)):
             guarded = True
         val = smt.translate_expr(value_node, slot_env)
         source_ty = self._resolved_type_of(value_node)
