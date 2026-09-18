@@ -16,10 +16,17 @@ the carrier set, and is enforced separately" — so `Option<{ @Int | P }>` and
 `Option<Int>` are one sort and the two routes agree by construction.  What was
 missing was ONE implementation of it.
 
-The unwrap is ONE LEVEL and a chain is left unmodelled by design: the
-predicate half of that rule stops at a primitive base, so stripping a chain
-would supply a sort without the predicates and turn valid code into a false
-E526.  See `strip_refinements`.
+The unwrap runs to the END of a chain, and the rule has a second condition
+that says why that is safe: a refinement is represented as its base only
+while its whole predicate can be STATED.  Unwrapping is what makes the sort;
+the predicate is what gives it meaning, and a level outside the decidable
+fragment (spec §2.6.4 cause 3) would leave a sort with nothing said about the
+value it carries — which is worse than no sort, since a counterexample may
+then name a value the type forbids.  So `SmtContext._refinement_statable`
+asks that question once and the sort derivation reads it; an unstatable
+refinement keeps `?` and `None`.  The predicate half became able to read a
+whole chain in #1434, which is what made the unwrap safe for chains at all.
+See `strip_refinements` for the rule in full.
 
 Same family as #884 (two Vera types colliding on one sort NAME) and #1360 (two
 routes deriving different sorts for a nested constructor).  #1360 made the
@@ -355,17 +362,22 @@ def test_1421_a_refinement_keys_to_its_base() -> None:
         "Option", (AdtType("Tuple", (pos, INT)),),
     ) == "Option<Tuple<Int, Int>>"
 
-    # A CHAIN keys `?`, and that asserts a REFUSAL rather than a capability.
-    # `_translate_refined_predicate` reads `{ @Base | P }` with a primitive
-    # base, so neither predicate of `{ { @Int | P } | Q }` is translated;
-    # naming the sort `Option<Int>` would model the value as an unconstrained
-    # `Int` and report `violated`/E526 on code the chain proves safe (review
-    # of PR #1431, F1 — measured, and the program cell below is the witness).
-    assert _adt_sort_key("Option", (chain,)) == "Option<?>"
-    assert smt._vera_type_to_z3_sort(chain) is None
-    # Both routes refuse TOGETHER, which is the agreement being bought here —
-    # the single-refinement case is where they must both succeed.
+    # A CHAIN keys to the same base, on both routes.  It used to key `?` and
+    # lower to no sort at all, which was a refusal rather than a capability:
+    # `_translate_refined_predicate` read one level, so neither predicate of
+    # `{ { @Int | P } | Q }` was translated and naming the sort `Option<Int>`
+    # would have modelled the value as an unconstrained `Int` — a
+    # `violated`/E526 on code the chain proves safe (review of PR #1431, F1).
+    # #1434 conjoined the chain's predicates and #1403 made them reach an
+    # obligation inside a `match` arm, so the sort is now backed by the
+    # constraint that gives it meaning; the program cells below measure both
+    # directions of that.
+    assert _adt_sort_key("Option", (chain,)) == "Option<Int>"
+    assert smt._vera_type_to_z3_sort(chain) is not None
+    # Both routes succeed TOGETHER, which is the agreement being bought here.
     assert smt._vera_type_to_z3_sort(pos) is not None
+    assert (smt._vera_type_to_z3_sort(chain)
+            == smt._vera_type_to_z3_sort(INT))
 
     # A type variable is un-nameable for its own reason and stays so.
     assert "?" in _adt_sort_key("Option", (TypeVar("T"),))
@@ -389,7 +401,8 @@ def test_1421_an_unnameable_key_is_still_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The chain is refused on BOTH routes, and that refusal is load-bearing
+# A chain is MODELLED on both routes, and its predicates are what make that
+# safe
 # ---------------------------------------------------------------------------
 
 #: `Small` refines `Pos` refines `Int` — a refinement over a refinement, as a
@@ -419,29 +432,42 @@ public fn f(@Int -> @Int)
 """
 
 
-def test_1421_a_refinement_chain_stays_unmodelled(tmp_path: Path) -> None:
-    """Stripping the WHOLE chain would be a false E526 — this is the witness.
+#: The same chain, but one whose predicates do NOT exclude zero: `0 <= x`
+#: refined by `x < 10`.  The division is genuinely unsafe and must stay
+#: refused however well the sort is modelled.
+_TUPLE_CHAIN_ZERO = _TUPLE_CHAIN.replace(
+    "type Pos = { @Int | @Int.0 > 0 };", "type Pos = { @Int | @Int.0 >= 0 };",
+).replace("@Int.0 > 0 &&", "@Int.0 >= 0 &&")
 
-    The obvious reading of "a refinement contributes its base" is to strip the
-    chain, and it is wrong.  The predicate half of the rule stops at a
-    primitive base — `_translate_refined_predicate` reads `{ @Base | P }` with
-    `@Base` primitive — so for `{ { @Int | P } | Q }` neither predicate is
-    translated.  Strip the chain and the SORT succeeds while the predicates
-    stay absent: the payload becomes an unconstrained `Int` and
-    `100 / @Small.0` is reported `violated`/**E526** although `Small` proves
-    the divisor lies in `(0, 10)`.  A false positive on valid code, which is
-    the #854/#884 class this project treats as a defect.
 
-    So both routes refuse a chain together, and this program is the
-    discriminator: it reads `div_zero`/`tier3` on `release/v0.2.0` and on this
-    branch, and flips to E526 the moment `strip_refinements` loops.  That is
-    the mutation this cell exists to kill (review of PR #1431, F1/F4).
+def test_1421_a_refinement_chain_is_modelled_through_its_predicates(
+    tmp_path: Path,
+) -> None:
+    """A chain contributes its primitive base, and its predicates come too.
 
-    #1434 conjoined the chain's predicates, which decides the chain's own
-    BINDING.  It did NOT make the whole-chain strip safe: measured on this
-    program, looping the helper still yields a false `violated`/E526,
-    because the division reads no facts from its arm until #1415 lands.
-    The strip stays one level and this discriminator keeps its job.
+    "A refinement contributes its base" was implemented one level at a time,
+    which left a chain with no sort at all: `{ { @Int | P } | Q }` could not
+    be lowered, so `100 / @Small.0` fell to an honest `div_zero`/`tier3`
+    even though `Small` proves the divisor lies in `(0, 10)`.  Unwrapping
+    the whole chain was a false `violated`/**E526** at the time, because the
+    SORT succeeded while the predicates stayed absent and the payload became
+    an unconstrained `Int` — the #854/#884 class this project treats as a
+    defect (review of PR #1431, F1/F4).
+
+    Two changes removed that objection, in this order:
+
+    * #1434 made `_translate_refined_predicate` read the whole chain and
+      CONJOIN its levels, so the membership predicate is `P && Q` rather
+      than neither; and
+    * #1403 made every obligation inside a `match` arm read the facts the
+      arm establishes, which is how that conjoined predicate reaches a
+      division over a bound payload.  The measurement that kept the strip at
+      one level was taken with the arm's facts absent.
+
+    So the chain is modelled and the division is **verified** — from the
+    chain's own predicates, which is the whole point.  The cell below is the
+    discriminator that keeps this honest: the same program over a chain that
+    PERMITS zero must still be refused.
     """
     result = _verify(_tree(tmp_path, {"p": _TUPLE_CHAIN})["p"])
     assert result["ok"] is True, result["diagnostics"]
@@ -449,12 +475,35 @@ def test_1421_a_refinement_chain_stays_unmodelled(tmp_path: Path) -> None:
         (o["status"], o.get("error_code")) for o in result["obligations"]
         if o["kind"] == "div_zero"
     ]
-    assert div == [("tier3", None)], (
-        f"a refinement chain stopped being refused — an E526 here is the "
-        f"unconstrained-Int false positive: {_kinds(result)}"
+    assert div == [("verified", None)], (
+        f"a refinement chain stopped being modelled, or its predicates "
+        f"stopped reaching the division: {_kinds(result)}"
     )
-    # #1434 changed the other half of this cell: the chain's own binding
-    # is now DECIDED, because the predicates are conjoined rather than
-    # the outer level alone being read.  It was `tier3_unguarded`/E506 —
-    # the honest answer for a type nothing modelled.
+    # The chain's own binding is decided too, because the predicates are
+    # conjoined rather than the outer level alone being read (#1434).
     assert ("refine_bind", "verified", None) in _kinds(result), _kinds(result)
+
+
+def test_1421_a_chain_that_permits_zero_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """The proof above comes from the PREDICATES, not from the sort.
+
+    Modelling a chain is safe only while its predicates constrain the value,
+    so the discriminator is a chain that states `0 <= x < 10` instead of
+    `0 < x < 10`.  If the predicates were being dropped — the failure the
+    one-level strip existed to avoid — this program would read the same
+    `verified` as its sibling, because the two differ in nothing else.  It
+    must read `violated`/**E526**.
+    """
+    result = _verify(_tree(tmp_path, {"p": _TUPLE_CHAIN_ZERO})["p"])
+    assert _TUPLE_CHAIN_ZERO != _TUPLE_CHAIN, "the variant must differ"
+    div = [
+        (o["status"], o.get("error_code")) for o in result["obligations"]
+        if o["kind"] == "div_zero"
+    ]
+    assert div == [("violated", "E526")], (
+        f"a chain that permits a zero divisor was accepted — the chain's "
+        f"predicates are not reaching the goal: {_kinds(result)}"
+    )
+    assert result["ok"] is False, _kinds(result)

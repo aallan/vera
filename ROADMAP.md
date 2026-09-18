@@ -12,17 +12,18 @@ Ordering derives from the design principles ([DESIGN.md](DESIGN.md)): verificati
 
 ## Where we are
 
-14,755 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
+14,807 tests, 253 conformance programs, 43 examples, 14 spec chapters.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) tracks the open bugs (burndown material rather than stage work), plus the *limitations* the stages below retire.
 
 ## The v0.2.0 burndown
 
-*One open bugs, driven to zero.*
+*Two open bugs, driven to zero.*
 
 A bug class outranks stage work, so the next release takes the open `bug`-labelled set as its queue.  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) carries each row's full account and stays the one place the detail lives; this table is the order of attack.
 
 | Issue | What |
 |---|---|
 | [#1466](https://github.com/aallan/vera/issues/1466) | A boundary guard decomposes a refined tuple component as a scalar, so a pair-represented base (`@String`, `@Array<T>`) is checked against its pointer and a value that satisfies the refinement traps — on a program proved at Tier 1. |
+| [#1470](https://github.com/aallan/vera/issues/1470) | A refutation can rest on a value whose refinement the solver cannot state: the sort is built, the predicate is not, and the counterexample names a value the type forbids. |
 
 ## Stage 19 — The verification completeness sprint
 
@@ -33,7 +34,6 @@ Verification-completeness gaps — an obligation not emitted, a guard not plante
 | Issue | What |
 |---|---|
 | [#909](https://github.com/aallan/vera/issues/909) | A value's postcondition / refinement is forgotten through an ADT field (box then unbox loses the fact), degrading provable programs to Tier 3. |
-| [#1403](https://github.com/aallan/vera/issues/1403) | A `match` arm's `assert` is discharged without the arm's sub-pattern facts, so an assertion that follows from a bound payload's declared type can never prove and always falls to a runtime check (E535). |
 
 ## Stage 20 — The single-source sprint
 
