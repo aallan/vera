@@ -677,26 +677,36 @@ _ARRAY_UNESTABLISHED = _ARRAY_ESTABLISHED.replace(
 
 
 @pytest.mark.parametrize(
-    "source", [_ARRAY_ESTABLISHED, _ARRAY_UNESTABLISHED],
+    "source,expected",
+    [(_ARRAY_ESTABLISHED, [("verified", "")]),
+     (_ARRAY_UNESTABLISHED, [("violated", "E505")])],
     ids=["source-carries-it", "source-does-not"])
-def test_array_element_refinement_always_discloses_unguarded(
-    source: str,
+def test_array_element_refinement_is_discharged_not_disclosed(
+    source: str, expected: list[tuple[str, str]],
 ) -> None:
-    """An array ELEMENT predicate needs a quantifier over indices, so this run
-    can neither state nor discharge it — and both spellings say so.
+    """An array ELEMENT predicate is now STATED and answered (#1430 stage 1).
 
-    The two differ only in whether the producer's declared type carries the
-    same refinement, and that is deliberately NOT a difference here.  An
-    earlier draft answered `verified` for the matching one on a type
-    comparison alone; PR #1420's review (F4) showed that certifies a declared
-    type nothing obligates, so the comparison is gone and a `verified` only
-    ever comes from a discharged obligation.  Where nothing can be discharged,
-    both disclose — and unguarded, because codegen decomposes tuples at a
-    boundary and nothing else, so `tier3` would promise a check that does not
-    exist.
+    Both spellings disclosed `tier3_unguarded`/E506 when this cell was
+    written, because the goal — "every element satisfies P" — needs a
+    quantifier over indices and nothing stated one.  #1430 states it as
+    `forall i. 0 <= i < length(a) => P(index(a, i))` over the same
+    uninterpreted `index_` / `length_` observers array literals and `arr[i]`
+    already use, so the two spellings now legitimately DIFFER:
+
+    * the producer whose declared return carries the refinement discharges it
+      from the element fact its own return position was obligated to
+      establish, and reports `verified`;
+    * the producer typed `Array<Int>` establishes nothing, so the goal is
+      REFUTED — `violated`/E505 with a counterexample, not a shrug.
+
+    PR #1420's F4 ruling is preserved rather than weakened, and that is the
+    point of keeping this cell: the `verified` comes from a discharged
+    obligation — a solver query over a stated goal — and never from comparing
+    one declared type against another.  The difference between the two
+    spellings is now EARNED, where the draft F4 rejected asserted it.
     """
     binds = _refine_binds(source, "f")
-    assert _statuses(binds) == [("tier3_unguarded", "E506")], _statuses(binds)
+    assert _statuses(binds) == expected, _statuses(binds)
 
 
 def test_unguarded_disclosure_names_the_right_boundary(tmp_path: Path) -> None:
@@ -919,18 +929,36 @@ public fn f(@Int -> @Int)
 """
 
 
-def test_partially_statable_goal_never_reports_tier_one() -> None:
-    """A goal missing one of its positions is not a discharge of the whole.
+_OPAQUE_BAD_LINK = _PARTIALLY_STATABLE.replace(
+    "  ensures(@Chain<Int>.result == End)\n", "  ensures(true)\n").replace(
+    "{\n  End\n}", "{\n  Link(0 - 9, End)\n}")
 
-    ``Chain<PosInt>`` refines the head of every ``Link`` — including the links
-    inside links, which the walk has to stop at (a recursive type cannot be
-    unrolled into a finite conjunction).  The part it CAN state proves here,
-    from ``mk``'s contract pinning the result to ``End``.  Recording
-    ``verified`` on the strength of that half would claim the tail's links were
-    established too: the exact overstatement this issue is about.
+
+def test_a_recursive_tail_is_stated_and_still_refuses_an_unestablished_one(
+) -> None:
+    """The tail position is STATED now, and that is not an overstatement.
+
+    When this cell was written the walk had to stop at the cycle — a recursive
+    type has no finite unrolling — so the tail could not be stated at all, and
+    recording `verified` on the strength of the half that proved would have
+    claimed the tail's links were established too.  #1430 stage 2 states it as
+    an opaque `refines_K(tail)` carried identically on both sides, so the
+    question becomes whether the source can DISCHARGE it, and the two halves
+    of this cell are the answer.
+
+    With `mk` pinned to `End` the goal is genuinely true — `End` has no links,
+    so "every link's head is positive" holds vacuously — and `verified` is
+    correct rather than generous.  Change `mk` to return `Link(0 - 9, End)`
+    with no refinement on its declared type and the same goal is REFUTED with
+    E505: nothing licenses the fact, so nothing discharges it.  The
+    overstatement this cell was written to catch is still caught; what changed
+    is that the vacuous case is now recognised as vacuous.
     """
     binds = _refine_binds(_PARTIALLY_STATABLE, "f")
-    assert _statuses(binds) == [("tier3_unguarded", "E506")], _statuses(binds)
+    assert _statuses(binds) == [("verified", "")], _statuses(binds)
+
+    bad = _refine_binds(_OPAQUE_BAD_LINK, "f")
+    assert _statuses(bad) == [("violated", "E505")], _statuses(bad)
 
 
 _LET_BOUND_CONSTRUCTION = _PRELUDE + """
