@@ -524,15 +524,14 @@ class TestIssueColumnScoping:
         # rows #1437, #1453 and #1456 retired, which is how the set reached
         # empty.
         #
-        # An empty set would make the two assertions below vacuous, so the
-        # cell asserts the LIVE fact instead: the file currently carries no
-        # prose-only citation at all, i.e. the two scan widths agree.  That
-        # fails the moment a row cites an issue in its prose without the
-        # Issue column naming it — which is when a real example is back in
-        # the loop and the pin should name it.  The scoping behaviour
-        # itself stays pinned on the synthetic tables above, which is why
-        # this cell can afford to track the document rather than fix a set.
-        prose_only: set[int] = set()
+        # The set emptied when those rows retired, and #1468's row put a real
+        # example back in the loop: it cites #1459 to say why it is a
+        # DIFFERENT class from the duplicate-record fault in the same call
+        # path, and #1451 to say what surfaced it.  Neither is the row's own
+        # issue, so the narrow scan must not see them and the wide one must.
+        # That is the scoping property this cell exists to keep honest on a
+        # real document rather than only on the synthetic tables above.
+        prose_only: set[int] = {1451, 1459}
         narrow: set[int] = set()
         wide: set[int] = set()
         for header in ("## Limitations", "## Bugs"):

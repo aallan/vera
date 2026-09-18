@@ -650,10 +650,17 @@ def _classify_functions(
     # the code list it replaces: ObligationKind is a closed vocabulary, so a
     # new Tier-3 *code* on an existing kind (E534 was exactly that) is picked
     # up by construction.
+    # #1451: `tier3_unguarded` belongs here for the same reason `tier3` does —
+    # the contract was NOT proved, so reporting the function "VERIFIED (Tier
+    # 1)" and skipping its trials states the opposite of what the run
+    # established.  A premise set with no model demotes a whole slice to it,
+    # and `vera test` was still calling such a function Tier 1 (#1457 review,
+    # Medium 2).
     tier3_fns: set[str] = {
         o.fn_name
         for o in obligations
-        if o.status in ("tier3", "timeout") and o.kind in _CONTRACT_KINDS
+        if o.status in ("tier3", "timeout", "tier3_unguarded")
+        and o.kind in _CONTRACT_KINDS
     }
     failed_fns: dict[str, str] = {}
     for diag in verify_diagnostics:

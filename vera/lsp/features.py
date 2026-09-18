@@ -173,7 +173,18 @@ def _tier_hints(analysis: Analysis) -> list[lsp.Diagnostic]:
         if any(o.status == "violated" for o in obs):
             continue
         runtime = sum(1 for o in obs if o.status in ("tier3", "timeout"))
-        if runtime == 0:
+        # #1451: an obligation discharged in no tier is not a proof, and a
+        # function whose premises have no model has a whole slice of them.
+        # `runtime == 0` alone called that "all contracts proven by Z3" — the
+        # editor's own copy of the false Tier 1 the premise check exists to
+        # stop (#1457 review, Medium 2).
+        unproved = sum(1 for o in obs if o.status == "tier3_unguarded")
+        if unproved:
+            message = (
+                f"{fn_name}: not verified — {unproved} of {len(obs)} "
+                f"obligation(s) were neither proved nor guarded"
+            )
+        elif runtime == 0:
             message = f"{fn_name}: Tier 1 — all contracts proven by Z3"
         else:
             message = (

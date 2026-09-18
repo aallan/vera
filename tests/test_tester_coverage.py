@@ -420,11 +420,18 @@ public fn unsat_closure(@Int -> @Int)
 """
         path = _write_vera(tmp_path, source)
         rc = cmd_test(path, as_json=True, trials=5)
-        assert rc == 0
+        # Non-zero since #1451's premise check made an unsatisfiable premise
+        # set an ERROR (E538): the contract admits no argument, so the
+        # declaration is refused, and `vera test` agrees with `vera verify`
+        # about the program rather than reporting a skip and exiting clean.
+        assert rc == 1
         data = json.loads(capsys.readouterr().out)
         funcs = data["functions"]
-        # May be skipped due to unsatisfiable precondition
+        # Still skipped rather than tested — there is no input to generate.
         assert len(funcs) > 0
+        assert any(
+            f.get("category") == "skipped" for f in funcs
+        ), funcs
 
     def test_tier3_json_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],

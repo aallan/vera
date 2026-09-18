@@ -17,12 +17,12 @@ import enum
 
 import z3
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as ast_fields
 from collections.abc import Sequence
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from vera import ast, binders, carriers, narrowing, naming
 from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
@@ -62,6 +62,7 @@ from vera.obligations.core import (
 from vera.naming import EMPTY_ALIAS_ENV, AliasEnv, alias_env_from_environment
 from vera.slots import effect_op_result_names, fn_slot_scope, slot_table
 from vera.smt import (
+    AxiomKind,
     CalleeScope,
     CallDemotion,
     SlotEnv,
@@ -94,9 +95,34 @@ from vera.types import (
 )
 
 
+#: Budget for #1451's FIRST premise-consistency stage, in milliseconds,
+#: capped by the run's own query budget so `--timeout-ms 100` is not silently
+#: widened.  Stage 1 asks the whole premise set, quantified facts included,
+#: and a contradiction that propagates is refuted here in single-digit
+#: milliseconds even under `decreases` rank axioms.  What it must NOT do is
+#: spend the discharge budget confirming SATISFIABILITY under those axioms:
+#: that needs MBQI, answers `unknown` whatever it is given, and measured
+#: +90.5 s over the corpus with 10 s of it per recursive-ADT function.  Stage
+#: 2 is where the budget goes instead.
+_PREMISE_CHECK_TIMEOUT_MS = 250
+
+#: Node budget for the quantifier scan of one premise.  A term too large to
+#: scan is treated as quantified, which keeps it out of stage 2's subset --
+#: the conservative direction, since a subset is only sound to refute on when
+#: everything in it really is a premise.
+_QUANTIFIER_SCAN_NODES = 20_000
+
+#: Reported by :py:meth:`_uninterpreted_symbols` when the scan above ran
+#: out of budget.  Not a legal Vera or SMT name, so it can never collide
+#: with a symbol a program introduces, and it is read by NAME rather than
+#: through a set intersection (#1457 review).
+_TRUNCATED_SCAN = "\x00truncated"
+
 # i64 / u64 range bounds for the #798 integer-overflow obligation.  @Int is a
 # signed 64-bit machine integer, @Nat an unsigned one; `+`/`-`/`*` wrap at these
 # boundaries at runtime (and, per #798, now trap).
+
+
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
 _U64_MAX = 2**64 - 1
@@ -825,6 +851,10 @@ class ContractVerifier:
         # ... and the REASONS the facts withheld from THIS function were
         # unestablished.  Same lifetime as the sites.
         self._tainted_reasons: set[str] = set()
+        # #1451/#1457 F1: the first top-level `assume` of the function under
+        # verification, so a premise contradiction can be reported at the line
+        # that contributed it rather than at a blameless `requires`.
+        self._first_assume_node: ast.Node | None = None
         # #680 review: fresh consts pushed to shadow a stale outer slot when an
         # untranslatable let/destructure rebinds it.  A div/sub operand that IS
         # one falls to Tier-3 (the shadowed value is unknown).  Reset per fn.
@@ -1160,10 +1190,18 @@ class ContractVerifier:
         *,
         rationale: str = "",
         spec_ref: str = "",
+        fix: str = "",
         error_code: str = "",
         tier: int | None = None,
     ) -> None:
-        """Record a verification warning (Tier 3 fallback)."""
+        """Record a verification warning (Tier 3 fallback).
+
+        *fix* is optional here where it is mandatory on an error: a Tier-3
+        fallback usually has no corrected form to show, because the program is
+        not wrong.  Where there IS one — an unsatisfiable precondition has
+        exactly one, weaken it (#1451) — carrying it costs nothing and
+        `check_diagnostic_fields` accepts it on a warning.
+        """
         loc = SourceLocation(file=self._current_file)
         if node.span:
             loc.line = node.span.line
@@ -1173,6 +1211,7 @@ class ContractVerifier:
             location=loc,
             source_line=self._get_source_line(loc.line),
             rationale=rationale,
+            fix=fix,
             spec_ref=spec_ref,
             severity="warning",
             error_code=error_code,
@@ -3613,6 +3652,7 @@ class ContractVerifier:
                     order.append(key)
                 groups[key].append((concrete, ob))
 
+        agg_start, err_start = len(self.obligations), len(self.errors)
         for key in order:
             members = groups[key]
             met = self._meet_status([ob.status for _, ob in members])
@@ -3629,13 +3669,81 @@ class ContractVerifier:
             # still re-surfaces its representative diagnostic: `tier3` re-emits
             # the Tier-3 warning (E506 etc.) so an instantiated generic warns
             # like the non-generic path, and `violated` / `tier3_unguarded`
-            # re-emit their error / warning (PR #767 review).  `verified` is
+            # re-emit theirs at whatever severity the emitter chose — an error
+            # for `violated` and for E538, a warning for E504/E506/E531
+            # (PR #767 review; #1451 for the severity).  `verified` is
             # silent.  Informational tier3 diagnostics are not synthesized if
             # the instance emitted none.
             if met != "verified":
                 self._emit_aggregated_diagnostic(
                     decl, members, rep_concrete, rep_ob, errs_by_instance,
                 )
+
+        # A FUNCTION-level diagnostic sits at no obligation's span, so the
+        # per-site re-emission above cannot reach it whatever its severity:
+        # #1451's premise reports land on the `assume` or the `requires` that
+        # is at fault, while the obligations they demote are on their own
+        # lines.  The no-synthesis fallback then drops it and the aggregated
+        # obligation names a code no diagnostic in the run carries — the same
+        # silent accept the per-instance path exists to prevent, and this PR's
+        # own class in the one path that RE-EMITS rather than emits (#1457
+        # review, High 1).  The severity axis was closed first and was only
+        # half of it; the span axis is this.
+        #
+        # Tied to the OBLIGATION STREAM rather than swept blind: only a code
+        # that an aggregated, non-`verified` obligation actually carries is
+        # re-emitted, so an informational warning the aggregation deliberately
+        # declines to synthesize stays declined, and the corpus does not move.
+        # Once per SITE and not once per instantiation, like the W003 sweep
+        # above, because the source clause is one clause however many times its
+        # generic is instantiated.
+        # Minus what the per-site path has already surfaced for this
+        # aggregation, including a SYNTHESIZED one: a `violated` obligation
+        # whose diagnostic sits elsewhere is synthesised into an error above,
+        # and re-emitting the instance's own copy beside it would report one
+        # finding twice, at two severities.
+        already = {
+            d.error_code for d in self.errors[err_start:] if d.error_code
+        }
+        wanted = {
+            o.error_code for o in self.obligations[agg_start:]
+            if o.status != "verified" and o.error_code
+        } - already
+        if wanted:
+            obligation_spans = {
+                (ob.line, ob.column)
+                for _c, obls, _e in per_instance for ob in obls
+            }
+            by_site: dict[tuple[str, int, int, str], list[tuple[str, ...]]] = {}
+            site_diag: dict[tuple[str, int, int, str], Diagnostic] = {}
+            for concrete, _obls, errs in per_instance:
+                for diag in errs:
+                    if diag.error_code not in wanted:
+                        continue
+                    loc = diag.location
+                    line = getattr(loc, "line", 0)
+                    column = getattr(loc, "column", 0)
+                    if (line, column) in obligation_spans:
+                        continue  # the per-site path already answered for it
+                    site = (diag.error_code, line, column, diag.description)
+                    if site in seen_obligation_free:
+                        continue
+                    by_site.setdefault(site, []).append(concrete)
+                    site_diag.setdefault(site, diag)
+            for site, concretes in by_site.items():
+                seen_obligation_free.add(site)
+                labels = sorted(
+                    f"{decl.name}<{', '.join(c)}>" for c in concretes)
+                shown = ", ".join(labels[:3])
+                more = "" if len(labels) <= 3 else f" (+{len(labels) - 3} more)"
+                diag = site_diag[site]
+                self.errors.append(replace(
+                    diag,
+                    description=(
+                        f"In generic function '{decl.name}' instantiated at "
+                        f"{shown}{more}: {diag.description}"
+                    ),
+                ))
 
     def _emit_aggregated_diagnostic(
         self,
@@ -3648,14 +3756,17 @@ class ContractVerifier:
         """Re-emit the representative instance's diagnostic, prefixed with the
         instantiation(s) that exhibit the failing/unguarded outcome.
 
-        The match is by (severity, span) — NOT error code — because an
+        The match is by (span, error code) where the obligation carries a
+        code, and by (span, severity) where it does not — because an
         obligation's ``error_code`` does not always equal its diagnostic's: a
         violated ``ensures`` records the obligation with no code but the
-        diagnostic carries ``E500``.  When the obligation *does* carry a code we
-        additionally require it, to disambiguate co-located diagnostics.  If no
-        diagnostic matches, the outcome is still surfaced (synthesized from the
-        obligation) — a violation must NEVER be silently dropped, which would be
-        a false Tier-1.
+        diagnostic carries ``E500``.  The severity is deliberately NOT part of
+        the match once a code is in hand: a status does not determine a
+        severity (**E538** is an error on a ``tier3_unguarded`` obligation),
+        and inferring one dropped the diagnostic whose severity disagreed.  If
+        no diagnostic matches, the outcome is still surfaced (synthesized from
+        the obligation) — a violation must NEVER be silently dropped, which
+        would be a false Tier-1.
         """
         severity = "error" if rep_ob.status == "violated" else "warning"
         # Group instantiation labels by the same equivalence `_meet_status`
@@ -3675,14 +3786,26 @@ class ContractVerifier:
             f"In generic function '{decl.name}' instantiated at "
             f"{shown}{more}: "
         )
+        # Matched by (span, CODE) at either severity where the obligation
+        # carries a code, and by (span, severity) only where it does not.  A
+        # severity derived from the STATUS was true of every code until E538
+        # became an error on a `tier3_unguarded` obligation (#1451, MD-7):
+        # the lookup then missed, the no-synthesis fallback below declined,
+        # and the refusal was dropped — the obligation said E538 and neither
+        # diagnostic stream said anything, which is this PR's own class in the
+        # one path that RE-EMITS a diagnostic instead of emitting it.  A code
+        # plus an exact span identifies the diagnostic; what severity it
+        # carries is the emitter's to choose, not this function's to infer.
         src = next(
             (
                 d for d in errs_by_instance.get(rep_concrete, [])
-                if d.severity == severity
-                and d.location.line == rep_ob.line
+                if d.location.line == rep_ob.line
                 and d.location.column == rep_ob.column
-                and (not rep_ob.error_code
-                     or d.error_code == rep_ob.error_code)
+                and (
+                    d.error_code == rep_ob.error_code
+                    if rep_ob.error_code
+                    else d.severity == severity
+                )
             ),
             None,
         )
@@ -4010,6 +4133,13 @@ class ContractVerifier:
             result_var = smt.declare_int("@result")
         smt.set_result_var(result_var)
 
+        # #1451: the index this function's own obligations start at, so the
+        # premise-consistency check below can demote exactly them.  A slice
+        # rather than a `fn_name` filter: a `where` helper shares no name with
+        # its parent but IS verified by a nested call at step 9, which happens
+        # after the slice is closed, and a generic's clones reuse one name.
+        obl_start = len(self.obligations)
+
         # 3. Collect precondition assumptions
         # Seed with the refined-param predicates (#746) so they are both
         # asserted into the solver (step 4) and available to every binding-site
@@ -4070,6 +4200,17 @@ class ContractVerifier:
         #    can see them during body translation.
         for a in assumptions:
             smt.solver.add(a)
+
+        # 4b. #1451: SNAPSHOT the author's premises.  The solver now holds
+        #     exactly what the author wrote — the parameters' type constraints
+        #     (`declare_nat`'s implicit `>= 0`, an ADT's datatype sort), each
+        #     refined parameter's predicate, and every translatable `requires`
+        #     — and nothing the verifier derived, since the body is translated
+        #     at step 5.  Taken here because after the body runs the two are
+        #     no longer separable; only a LIST COPY, no query, because the
+        #     attribution is needed at most once and only when the full set
+        #     has already failed (#1457 review, F2).
+        contract_premises: list[object] = list(smt.solver.assertions())
 
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
@@ -4141,9 +4282,17 @@ class ContractVerifier:
         #       above already saw them positionally via the per-block threading;
         #       this carries the top-level ones forward to the post-body checks.)
         tlf_depth = len(smt._path_conditions)
+        assumed_premises: list[object] = []
         if decl.body is not None:
+            # #1457 review F1: the `assume` half of those facts is a PREMISE —
+            # taken on trust, folded into every `check_valid` query, and
+            # dropped again below before #1451's check could ever see it.  It
+            # is partitioned out of the SAME walk rather than re-derived by a
+            # second one: translating a predicate mints call constants, so a
+            # second walk answers about different terms than the obligations
+            # were discharged under (#1457 review, High 1).
             for fact in self._collect_top_level_assert_facts(
-                decl.body, smt, slot_env,
+                decl.body, smt, slot_env, assume_sink=assumed_premises,
             ):
                 smt._path_conditions.append(fact)
 
@@ -4542,6 +4691,17 @@ class ContractVerifier:
         #     step-7 translation is reported once, never double-counted.
         self._report_call_demotions(decl, smt)
 
+        # 8c. #1451: the premise set is complete now — layer 1 plus every fact
+        #     the body translation, the refined-return assumption and the
+        #     call-fact injection added to the base context.  One
+        #     `solver.check()`, and if it is UNSAT nothing this function
+        #     reported means anything, so the whole slice is demoted.  Runs
+        #     before step 9 so a `where` helper's own obligations are outside
+        #     the slice and get their own verdict.
+        self._enforce_premise_consistency(
+            decl, smt, obl_start, contract_premises, assumed_premises,
+        )
+
         # 9. Verify where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:
@@ -4549,6 +4709,833 @@ class ContractVerifier:
                     wfn, parent_where_group=decl,
                     enclosing=(*enclosing, decl),
                 )
+
+    # -----------------------------------------------------------------
+    # Premise consistency (#1451)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _verdict(result: object) -> bool | None:
+        """sat / unsat / unknown as ``True`` / ``False`` / ``None``.
+
+        ``unknown`` is NOT a contradiction.  A budget that ran out has decided
+        nothing, and demoting a whole function on it would turn a slow solver
+        into a wrong verdict — the same distinction the disclosure reasons draw
+        between "could not decide" and "decided against".
+        """
+        if result == z3.unsat:
+            return False
+        if result == z3.sat:
+            return True
+        return None
+
+    def _full_premises_satisfiable(
+        self, smt: SmtContext, assumed: list[object],
+    ) -> bool | None:
+        """Whether the WHOLE premise set has a model — one query.
+
+        The solver's base context is the premise set as far as the discharges
+        saw it: ``check_valid`` asserts a goal's negation inside a ``push`` /
+        ``pop`` pair, so nothing a discharge added survives to be read here.
+        *assumed* carries what the base context does NOT hold — the top-level
+        ``assume`` predicates, which live in ``_path_conditions`` (#804) and
+        are folded into every query by ``check_valid`` rather than asserted,
+        and which step 8's restore point has already dropped by the time this
+        runs (#1457 review, F1).  They are premises every obligation was
+        discharged under, so a check that skipped them would answer about a
+        set no obligation was actually proved against.
+
+        This is STAGE 1 of two, and it runs under the short screening budget
+        (:data:`_PREMISE_CHECK_TIMEOUT_MS`).  What it is for is the
+        contradiction that PROPAGATES — refuted in single-digit milliseconds
+        whatever else is in the context, quantified rank axioms included.
+        What it must not do is spend the discharge budget confirming
+        satisfiability under those axioms, which needs MBQI and answers
+        `unknown` however long it is given; stage 2 covers what this cannot
+        see.  The budget is set and restored around the query because the
+        solver is shared with every obligation still to be discharged.
+        """
+        smt.solver.push()
+        try:
+            for fact in assumed:
+                smt.solver.add(fact)
+            smt.solver.set(
+                "timeout", min(_PREMISE_CHECK_TIMEOUT_MS, smt._timeout_ms),
+            )
+            try:
+                return self._verdict(smt.solver.check())
+            finally:
+                smt.solver.set("timeout", smt._timeout_ms)
+        finally:
+            smt.solver.pop()
+
+    @staticmethod
+    def _has_quantifier(expr: object) -> bool:
+        """Whether *expr* contains a quantifier anywhere inside it."""
+        stack: list[z3.AstRef] = [cast("z3.AstRef", expr)]
+        budget = _QUANTIFIER_SCAN_NODES
+        while stack and budget > 0:
+            node = stack.pop()
+            budget -= 1
+            if z3.is_quantifier(node):
+                return True
+            children = getattr(node, "children", None)
+            if children is not None:
+                stack.extend(children())
+        # Anything left on the stack means the scan ran out of budget.  Such a
+        # term is treated as quantified, which keeps it OUT of the subset
+        # below — the conservative direction, since a smaller subset is still
+        # sound to refute on.
+        return bool(stack)
+
+    def _quantifier_free_premises_satisfiable(
+        self, smt: SmtContext, assumed: list[object],
+    ) -> bool | None:
+        """Stage 2: the quantifier-free SUBSET, at the discharge budget.
+
+        A refutation on a SUBSET of the premises is a refutation on the whole
+        set, so `unsat` here demotes soundly.  Dropping the quantified
+        assertions — in practice the rank axioms a `decreases` measure
+        installs — is what makes the discharge budget affordable: those are
+        what send Z3 to MBQI, and without them the query answers in
+        milliseconds.  That is how the screen ends up able to refute
+        `@Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1)` over `0 < @Int.0, @Int.1 <
+        60`, which needs about a second and so is invisible to stage 1, while
+        a recursive-ADT measure still costs only stage 1's 250 ms.
+
+        The residual is a contradiction that can be refuted ONLY through a
+        quantified fact and does not propagate inside stage 1's budget.  It is
+        disclosed in spec §6.8.2 rather than papered over; no program is known
+        that reaches it.
+
+        Reached only on an UNDECIDED stage 1 — a `sat` there already exhibits
+        a model of this subset, so asking again would spend the discharge
+        budget to be told so.  The gate lives in
+        :py:meth:`_enforce_premise_consistency`.
+        """
+        probe = z3.Solver()
+        probe.set("timeout", smt._timeout_ms)
+        kept: list[object] = []
+        totality: list[tuple[object, str]] = []
+        for fact in (*smt.solver.assertions(), *assumed):
+            if not self._has_quantifier(fact):
+                kept.append(fact)
+                continue
+            record = smt.registered_axiom(fact)
+            if record is not None and record.kind is AxiomKind.TOTALITY:
+                totality.append((fact, record.symbol))
+        if not kept:
+            return None
+        for fact in kept:
+            probe.add(fact)
+        # A TOTALITY axiom is not dropped: it is INSTANTIATED on the ground
+        # applications the kept premises mention (#1457 review, ruling C).
+        # `length(x) >= 0` constrains one application's value, so a model of
+        # the kept premises plus those instances extends to the axiom by
+        # choosing the symbol's value freely everywhere else — which is what
+        # keeps stage 2 refutation-complete for the slice without needing the
+        # two halves to share no symbol.  Dropping it instead was sound but
+        # incomplete, and the incompleteness was reachable: a premise forcing
+        # `length(a) == -1` is satisfiable with `length` uninterpreted.
+        for instance in self._totality_instances(totality, kept):
+            probe.add(instance)
+        return self._verdict(probe.check())
+
+    @staticmethod
+    def _totality_instances(
+        axioms: list[tuple[object, str]], ground: list[object],
+    ) -> list[object]:
+        """Ground instances of each TOTALITY axiom on the terms *ground* uses.
+
+        For `forall x. P(f(x))` and every ground application `f(t)` occurring
+        in the kept premises, `P(f(t))`.  Finitely many, because the premises
+        are finite; and enough, because the axiom says nothing about `f` at
+        any other point.
+        """
+        if not axioms:
+            return []
+        wanted = {symbol for _q, symbol in axioms}
+        args: dict[str, dict[int, tuple[object, ...]]] = {
+            symbol: {} for symbol in wanted
+        }
+        stack: list[object] = list(ground)
+        seen: set[int] = set()
+        while stack:
+            node = stack.pop()
+            node_id = cast("z3.AstRef", node).get_id()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if z3.is_quantifier(node):
+                stack.append(cast("z3.QuantifierRef", node).body())
+                continue
+            if not z3.is_app(node):
+                continue
+            expr = cast("z3.ExprRef", node)
+            children = expr.children()
+            name = expr.decl().name()
+            if name in wanted and children:
+                key = tuple(children)
+                args[name][
+                    sum(cast("z3.AstRef", c).get_id() for c in key)
+                ] = key
+            stack.extend(children)
+        out: list[object] = []
+        for quantifier, symbol in axioms:
+            body = cast("z3.QuantifierRef", quantifier).body()
+            for terms in args[symbol].values():
+                out.append(z3.substitute_vars(body, *terms))
+        return out
+
+    @staticmethod
+    def _uninterpreted_symbols(expr: object) -> set[str]:
+        """The uninterpreted function and constant NAMES occurring in *expr*.
+
+        Datatype constructors, accessors and recognizers are not collected:
+        they are interpreted by the datatype declaration, so two models never
+        have to disagree about them.  Their ARGUMENTS are, because a symbol
+        that occurs only under an accessor — or only as an argument to the
+        rank function, `rank(f(x))` — is shared just as much as one at the
+        top (#1457 review).  A quantifier's body is walked for the same
+        reason; its bound variables are `Var` nodes rather than applications
+        and contribute nothing.
+        """
+        out: set[str] = set()
+        stack: list[object] = [expr]
+        seen: set[int] = set()
+        budget = _QUANTIFIER_SCAN_NODES
+        while stack and budget > 0:
+            node = stack.pop()
+            budget -= 1
+            node_id = cast("z3.AstRef", node).get_id()
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            if z3.is_quantifier(node):
+                stack.append(cast("z3.QuantifierRef", node).body())
+                continue
+            if z3.is_app(node):
+                decl = cast("z3.ExprRef", node).decl()
+                if decl.kind() == z3.Z3_OP_UNINTERPRETED:
+                    out.add(decl.name())
+                stack.extend(cast("z3.ExprRef", node).children())
+        if stack:
+            # Scan budget exhausted.  Report a sentinel no program can spell,
+            # so a caller can tell an incomplete answer from an empty one.
+            # Testing it by INTERSECTION would not work: the sentinel joins
+            # only the side the truncated fact is on, and `_has_quantifier`
+            # reads a truncated term as quantified, so the other side is
+            # normally sentinel-free and the intersection stays empty —
+            # certifying a term that was never finished (#1457 review,
+            # CodeRabbit).  Callers test it BY NAME.
+            out.add(_TRUNCATED_SCAN)
+        return out
+
+    def _premise_halves_disjoint(
+        self, smt: SmtContext, assumed: list[object],
+    ) -> bool:
+        """Whether stage 2's `sat` establishes a model of the WHOLE set.
+
+        Stage 2 asks the quantifier-free SUBSET.  A model of a subset extends
+        to a model of the whole exactly when the dropped assertions constrain
+        nothing the kept ones mention — in practice, when the two halves share
+        no uninterpreted symbol, since the rank axioms a `decreases` measure
+        installs are satisfiable over any model of the datatype sort with
+        structural depth as the witness.
+
+        Asked PER RUN rather than assumed from the corpus (#1457 review): the
+        corpus differential shows the condition holds for every program in it,
+        which is a statement about those programs, and a `sat` that licenses a
+        Tier-1 proof must rest on this slice's own premises.
+        """
+        quantified: set[str] = set()
+        free: set[str] = set()
+        for fact in (*smt.solver.assertions(), *assumed):
+            record = smt.registered_axiom(fact)
+            if record is not None and record.kind is AxiomKind.TOTALITY:
+                # Instantiated rather than dropped, so nothing about it has to
+                # be disjoint from the kept half (#1457 review, ruling C).
+                continue
+            symbols = self._uninterpreted_symbols(fact)
+            if _TRUNCATED_SCAN in symbols:
+                # Read by NAME, not by intersection: a scan that ran out of
+                # budget read part of one term, and "the part I read shares
+                # nothing" is not the question.  Answering False here costs a
+                # Tier 1 on a term too large to walk; answering True would
+                # grant one on a term nobody finished reading.
+                return False
+            side = quantified if self._has_quantifier(fact) else free
+            side.update(symbols)
+            if quantified & free:
+                return False
+        return not (quantified & free)
+
+    #: Op kinds that keep a premise INSIDE Tier 1's fragment, grouped by the
+    #: spec clause that admits them.  Looked up by NAME so a z3 build without
+    #: one of them drops the entry rather than failing to import.
+    _FRAGMENT_OP_NAMES: ClassVar[tuple[str, ...]] = (
+        # §2.6.1 "true, false", comparisons, boolean connectives, and the
+        # conditional §6.3.1 lists among contract predicates.
+        "Z3_OP_TRUE", "Z3_OP_FALSE", "Z3_OP_EQ", "Z3_OP_DISTINCT",
+        "Z3_OP_ITE", "Z3_OP_AND", "Z3_OP_OR", "Z3_OP_IFF", "Z3_OP_XOR",
+        "Z3_OP_NOT", "Z3_OP_IMPLIES",
+        "Z3_OP_LE", "Z3_OP_GE", "Z3_OP_LT", "Z3_OP_GT",
+        # §2.6.1 "Integer literals", and §6.3.1's Real coercions.
+        "Z3_OP_ANUM", "Z3_OP_AGNUM", "Z3_OP_TO_REAL", "Z3_OP_TO_INT",
+        "Z3_OP_IS_INT",
+        # §2.6.1 "Arithmetic: +, -, *" — the multiplicative kinds are
+        # admitted CONDITIONALLY below, since the clause is "where at least
+        # one operand of `*` is a literal".
+        "Z3_OP_ADD", "Z3_OP_SUB", "Z3_OP_UMINUS",
+        # §9.8 datatypes: constructors, accessors and recognizers are
+        # interpreted by the declaration itself.
+        "Z3_OP_DT_CONSTRUCTOR", "Z3_OP_DT_RECOGNISER", "Z3_OP_DT_IS",
+        "Z3_OP_DT_ACCESSOR", "Z3_OP_DT_UPDATE_FIELD",
+        # §2.6.1 "array_length", §6.3.1 array index expressions and literals.
+        "Z3_OP_STORE", "Z3_OP_SELECT", "Z3_OP_CONST_ARRAY",
+        # §2.6.1 "length(@String.n)" and §6.3.1's string operations.
+        "Z3_OP_SEQ_LENGTH", "Z3_OP_SEQ_CONCAT", "Z3_OP_SEQ_UNIT",
+        "Z3_OP_SEQ_EMPTY", "Z3_OP_SEQ_PREFIX", "Z3_OP_SEQ_SUFFIX",
+        "Z3_OP_SEQ_CONTAINS", "Z3_OP_SEQ_EXTRACT", "Z3_OP_SEQ_AT",
+        "Z3_OP_SEQ_NTH", "Z3_OP_SEQ_INDEX", "Z3_OP_SEQ_REPLACE",
+        "Z3_OP_STR_TO_INT", "Z3_OP_INT_TO_STR",
+        # The uninterpreted constants and functions the translation mints for
+        # slots, call results, projections and the `decreases` rank (§6.4.2).
+        "Z3_OP_UNINTERPRETED",
+    )
+
+    #: Sort kinds a premise may be written in.  Everything else — a
+    #: FloatingPoint sort, a RoundingMode, a bit-vector — is outside, which is
+    #: what makes the classifier fail CLOSED.
+    _FRAGMENT_SORT_NAMES: ClassVar[tuple[str, ...]] = (
+        "Z3_BOOL_SORT", "Z3_INT_SORT", "Z3_REAL_SORT", "Z3_DATATYPE_SORT",
+        "Z3_ARRAY_SORT", "Z3_SEQ_SORT", "Z3_UNINTERPRETED_SORT",
+    )
+
+    @classmethod
+    def _fragment_kinds(cls) -> frozenset[int]:
+        return frozenset(
+            getattr(z3, name) for name in cls._FRAGMENT_OP_NAMES
+            if hasattr(z3, name)
+        )
+
+    @classmethod
+    def _fragment_sorts(cls) -> frozenset[int]:
+        return frozenset(
+            getattr(z3, name) for name in cls._FRAGMENT_SORT_NAMES
+            if hasattr(z3, name)
+        )
+
+    @classmethod
+    def _sort_inside_fragment(cls, sort: object) -> bool:
+        """Whether a term of this sort can be part of a Tier-1 premise."""
+        kind = cast("z3.SortRef", sort).kind()
+        if kind not in cls._fragment_sorts():
+            return False
+        if kind == z3.Z3_ARRAY_SORT:
+            array = cast("z3.ArraySortRef", sort)
+            return cls._sort_inside_fragment(
+                array.domain(),
+            ) and cls._sort_inside_fragment(array.range())
+        return True
+
+    @classmethod
+    def _outside_decidable_fragment(
+        cls,
+        facts: Iterable[object],
+        registered: Callable[[object], object] | None = None,
+    ) -> bool:
+        """Whether any premise leaves Tier 1's decidable fragment (§2.6.1).
+
+        An ALLOWLIST, and the direction is the point.  The fragment is
+        quantifier-free LINEAR arithmetic over `Int` and `Real` plus the
+        uninterpreted length functions, the datatype operations and the
+        uninterpreted constants the translation mints, so this enumerates what
+        is INSIDE and answers "outside" for everything else — an operation
+        kind nobody listed, a sort nobody listed, a quantifier that is not the
+        verifier's own rank axiom.  A denylist of the nonlinear integer kinds
+        was the first shape and it failed OPEN: Vera models `@Float64` on Z3's
+        FloatingPoint sort, where multiplication is `Z3_OP_FPA_MUL` and not
+        `Z3_OP_MUL`, so a product of two `@Float64` slots read as linear and
+        #1451's own repro survived in floats, deterministically (#1457
+        review).  A classifier whose unlisted case is a false Tier 1 has to
+        fail closed.
+
+        Each group above cites the clause that admits it.  Where a corpus
+        program is demoted by this, the answer is to add the construct it uses
+        with its citation, never to loosen the default.
+
+        A quantified premise is inside the fragment exactly when the screen
+        installed it with a REGIME — `AxiomKind.RANK`, dropped by stage 2 and
+        gated on symbol disjointness, or `AxiomKind.TOTALITY`, instantiated by
+        stage 2 on the ground terms the kept premises mention.  Either way the
+        screen can answer about it.  An UNTAGGED quantifier is foreign and
+        puts the premises outside: §2.6.1 lists quantifiers outside the
+        fragment for a refinement predicate, and a premise the screen has no
+        regime for is one it cannot certify against.  The regime is read from
+        the registry `SmtContext.register_axiom` writes, never from the
+        symbol's name, because a name test is a guess about a convention whose
+        failure direction is a false Tier 1 (#1457 review, ruling C).
+
+        Approximate in both directions, and that costs nothing: `@Int.0 * (2 +
+        3)` reads as outside though it is linear, and a nonlinear term the
+        solver folds away reads as inside.  The question is only ever asked of
+        a premise set the screen ALREADY failed to decide, which no such
+        premise produces.
+        """
+        kinds = cls._fragment_kinds()
+        stack: list[tuple[object, bool]] = [(f, False) for f in facts]
+        seen: set[tuple[int, bool]] = set()
+        while stack:
+            node, under_rank = stack.pop()
+            key = (cast("z3.AstRef", node).get_id(), under_rank)
+            if key in seen:
+                continue
+            seen.add(key)
+            if z3.is_var(node):
+                if not cls._sort_inside_fragment(
+                    cast("z3.ExprRef", node).sort(),
+                ):
+                    return True
+                continue
+            if z3.is_quantifier(node):
+                quantifier = cast("z3.QuantifierRef", node)
+                record = registered(node) if registered is not None else None
+                if record is None:
+                    # Foreign to the screen: no tag, so neither regime applies
+                    # and stage 2 can claim nothing about it.  Outside, which
+                    # is the fail-closed answer (#1457 review, ruling C).
+                    return True
+                stack.append((quantifier.body(), True))
+                continue
+            if not z3.is_app(node):
+                return True
+            expr = cast("z3.ExprRef", node)
+            if not cls._sort_inside_fragment(expr.sort()):
+                return True
+            decl = expr.decl()
+            kind = decl.kind()
+            args = expr.children()
+            if kind == z3.Z3_OP_MUL:
+                # §2.6.1: "* (where at least one operand of `*` is a literal)".
+                if sum(1 for a in args if not cls._numeral(a)) > 1:
+                    return True
+            elif kind in (
+                z3.Z3_OP_DIV, z3.Z3_OP_IDIV, z3.Z3_OP_MOD, z3.Z3_OP_REM,
+            ):
+                # Division and modulus stay linear only by a constant.
+                if len(args) != 2 or not cls._numeral(args[1]):
+                    return True
+            elif kind not in kinds and not z3.is_string_value(expr):
+                # A string LITERAL carries z3's internal kind rather than a
+                # sequence one (§2.6.1 admits string literals), and admitting
+                # that kind wholesale would admit everything z3 calls
+                # internal.  Recognised by value instead.
+                return True
+            if kind == z3.Z3_OP_UNINTERPRETED and not under_rank:
+                for i in range(decl.arity()):
+                    if not cls._sort_inside_fragment(decl.domain(i)):
+                        return True
+            stack.extend((a, under_rank) for a in args)
+        return False
+
+    @staticmethod
+    def _numeral(arg: object) -> bool:
+        """Whether *arg* is an arithmetic literal §2.6.1 admits."""
+        return bool(
+            z3.is_int_value(arg) or z3.is_rational_value(arg),
+        )
+
+    def _report_unestablished_premises(
+        self, decl: ast.FnDecl, assumed: list[object],
+    ) -> None:
+        """The E540 warning: Tier 1 withheld, nothing refuted."""
+        self._warning(
+            self._premise_site(decl, assumed=bool(assumed)),
+            f"The premises of '{decl.name}' could not be shown satisfiable "
+            f"within the solver budget, and they use arithmetic outside the "
+            f"decidable fragment, so nothing in this function is certified at "
+            f"Tier 1. Every obligation that would have been proved is "
+            f"reported as unverified.",
+            rationale=(
+                "A proof is worth no more than the premises it rests on: a "
+                "premise set with no model entails every goal, so an "
+                "obligation discharged against one is not a proof. Tier 1 "
+                "therefore requires the premises to have been SHOWN "
+                "satisfiable, not merely left unrefuted — and on a nonlinear "
+                "premise the solver may answer `unknown` to both the "
+                "satisfiability question and the refutation, so neither "
+                "verdict is available."
+            ),
+            fix=(
+                "Raise the budget with `--timeout-ms`, or simplify the "
+                "premise the solver cannot decide — a product or a division "
+                "of two slot references is the usual cause, and replacing it "
+                "with a linear bound brings the whole function back to "
+                "Tier 1."
+            ),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E540",
+            tier=3,
+        )
+
+    def _contract_premises_satisfiable(
+        self, contract: list[object], assumed: list[object], smt: SmtContext,
+    ) -> bool | None:
+        """The same question of the AUTHOR's premises alone, on a scratch solver.
+
+        *contract* is the base context as it stood before the body was
+        translated — the parameters' type constraints, their refinement
+        predicates and every translatable ``requires`` — and *assumed* the
+        top-level ``assume`` predicates.  Both are the author's; a
+        contradictory ``assume`` is the same garbage-in as
+        ``requires(x > 5 && x < 3)``, and the ruling on #1457 F1 is that they
+        belong in one layer rather than two.
+
+        A scratch solver rather than the shared one, because by the time this
+        is asked the shared context has the body's derived facts in it and
+        there is no way to take them back out.  Under the RUN's budget, not
+        the screening one: this context is tiny and quantifier-free, it is
+        only ever reached when the full set already failed, and its answer
+        decides which of two very different things the reader is told.
+        """
+        probe = z3.Solver()
+        probe.set("timeout", smt._timeout_ms)
+        for fact in (*contract, *assumed):
+            probe.add(fact)
+        return self._verdict(probe.check())
+
+    def _premise_site(
+        self, decl: ast.FnDecl, *, assumed: bool = False,
+    ) -> ast.Node:
+        """Where to point the demotion.
+
+        A top-level ``assume`` wins when there is one (#1457 review, F1): it
+        is the premise a reader is least expecting to be load-bearing, and
+        pointing at a `requires` that may be perfectly satisfiable would send
+        them to the wrong line.  Otherwise the first non-trivial ``requires``,
+        which is what the author reads as the precondition and the half they
+        can edit; and a contradiction that comes entirely from a refined
+        parameter's own predicate has neither, so the declaration is the site.
+        """
+        if assumed and self._first_assume_node is not None:
+            return self._first_assume_node
+        for contract in decl.contracts:
+            if isinstance(contract, ast.Requires) and not self._is_trivial(
+                contract,
+            ):
+                return contract
+        return decl.contracts[0] if decl.contracts else decl
+
+    def _demote_function_obligations(
+        self, obl_start: int, error_code: str,
+    ) -> None:
+        """Move this function's obligations out of every counted tier.
+
+        A ``verified`` recorded against contradictory premises is not a proof
+        — ``Not(goal)`` is unsatisfiable alongside them whatever the goal is —
+        so it becomes ``tier3_unguarded``, which the summary counts in no
+        tier.  The diagnostic beside it is a warning for E539 and an ERROR for
+        E538, which refuses the program; the status says the same thing either
+        way, because what was established is nothing in both cases.
+
+        A ``violated`` is left alone.  It is the one verdict a contradiction
+        cannot manufacture: an UNSAT context discharges everything, so a
+        refutation on record was reached against a consistent PREFIX of the
+        premises (a `requires`-clause walk runs before step 4 asserts them) and
+        is a real one.  Erasing it would trade a false proof for a lost error.
+
+        That argument is not special to `violated`, and the carve-out is the
+        general form of it (#1457 review, Medium 1): only a `verified`
+        obligation is demoted, because only a `verified` one can have been
+        manufactured here.  Under a premise set with no model `check_valid`
+        answers `unsat` for EVERY goal, so an obligation that came back
+        anything else — `violated`, `tier3`, `timeout`, `tier3_unguarded` —
+        reached that verdict for a reason the contradiction did not supply:
+        untranslatability, an unmodelled base, an expired budget.  Each
+        already carries the code of that reason and a warning at its own line,
+        so rewriting it left the obligation array and the diagnostic stream
+        naming different codes for one site.  A guarded `tier3` in particular
+        would be relabelled "neither proved nor guarded" (§6.8) while codegen,
+        which consults no verdict, still emits its guard.
+        """
+        for obligation in self.obligations[obl_start:]:
+            if obligation.status != "verified":
+                continue
+            obligation.status = "tier3_unguarded"
+            obligation.error_code = error_code
+
+    def _report_unsatisfiable_contract(
+        self, decl: ast.FnDecl, assumed: list[object],
+    ) -> None:
+        """The E538 error: the author's own premises were REFUTED.
+
+        Reached only on a refutation of that layer, never on an undecided
+        one.  The undecided case shares the demotion but not the code: it is
+        reported as the warning E539, because a refusal names the clause to
+        weaken and `unknown` names nothing — and because refusing there would
+        make the same program refused at one `--timeout-ms` and accepted at a
+        larger one, where the layer comes back `sat`.
+
+        An ERROR, and the program is refused at the definition.  Contracts are
+        the source of truth here (DESIGN.md), and a premise set with no model
+        is a contract that says nothing about any call: there is no argument
+        it admits, so there is no behaviour it constrains.  Reporting it as a
+        tier would leave the language accepting a declaration whose meaning is
+        empty, and leave the author to notice the tier; the signal belongs at
+        the definition, where the clause that is wrong is.  Its sibling E539 —
+        the author's premises satisfiable, the FULL set contradictory — stays
+        a warning, because the fact at fault there can be one the author does
+        not directly control.
+        """
+        self._error(
+            self._premise_site(decl, assumed=bool(assumed)),
+            f"The premises of '{decl.name}' are unsatisfiable, so no call "
+            f"can reach the body under them and nothing in it was "
+            f"verified against a reachable state. Every obligation in "
+            f"this function is reported as unverified.",
+            rationale=(
+                "A contradictory premise set entails every goal, so each "
+                "obligation would discharge without the body having been "
+                "checked at all. The declared parameter types, their "
+                "refinement predicates, the precondition and any "
+                "top-level `assume` have no common model — an `assume` "
+                "is taken on trust, so a contradictory one is as "
+                "load-bearing here as a contradictory `requires`."
+            ),
+            fix=(
+                "Weaken whichever of them is wrong — the precondition, a "
+                "parameter's refinement, or an `assume` — until some "
+                "argument satisfies them together, or delete the "
+                "function if no call can be intended."
+            ),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E538",
+        )
+
+    def _enforce_premise_consistency(
+        self,
+        decl: ast.FnDecl,
+        smt: SmtContext,
+        obl_start: int,
+        contract: list[object],
+        assumed: list[object],
+    ) -> None:
+        """Refuse to certify a function whose premises contradict (#1451).
+
+        An UNSAT premise set discharges every obligation VACUOUSLY and the run
+        reports Tier 1 with no diagnostic: `requires(@Int.0 > 5 && @Int.0 < 3)`
+        proved `ensures(@Int.result == 42)` over a body returning `0`.  Nothing
+        downstream ever contradicts it, because at run time the precondition
+        guard traps before the body executes — which is exactly why the false
+        claim was invisible.
+
+        Two layers, because the two causes ask the reader for different things:
+
+        * the AUTHOR's premises — the parameters' types and refinements, the
+          ``requires`` clauses, and the top-level ``assume`` predicates — where
+          the answer is to weaken one of them, and where the program is
+          refused (**E538**, an error);
+        * the FULL premise set, which adds what the verifier derived, where the
+          answer is usually still to weaken a premise the program itself
+          states — and only where none is at fault is it a bug report, which
+          is why that half stays a warning.  ``vera/smt.py`` documents two
+          producers it
+          defends against by hand — the unmodelled-base refined return, and
+          #953's path-guarded call facts — and the point of a general check is
+          that the next premise source does not have to be foreseen.
+
+        ONE query for a function whose premises have a model, and the order is
+        what makes that true (#1457 review, F2).  The author's premises are a
+        SUBSET of the full set, so a model of the full set is a model of
+        theirs: asking the full set first settles both layers when it answers
+        sat, and the second query is reached only when the first failed to
+        find one.  Measured over the corpus, that is one query for all but a
+        handful of functions, where asking layer 1 first was unconditionally
+        two.
+
+        The same subset argument gates stage 2, and for the same reason: a
+        model of the whole premise set is a model of its quantifier-free
+        part, so once stage 1 answers `sat` the only answer stage 2 can give
+        is `sat` — at the full discharge budget, to learn what is already
+        known.  Stage 2 runs on an UNDECIDED stage 1 and nowhere else, which
+        loses no detection, because an unsatisfiable quantifier-free subset
+        is still reached whenever stage 1 failed to decide.
+
+        Branch path conditions are deliberately NOT part of either layer.  An
+        arm whose guard cannot hold is unreachable rather than contradictory,
+        and its obligations are discharged under that guard by construction —
+        demoting the function for it would report a vacuity that is the
+        program's shape, not a defect (#1457 review, F1).
+
+        ``unknown`` on the full set is NOT a contradiction, and the difference
+        matters here more than anywhere else in this file: a `decreases`
+        measure over a recursive ADT installs quantified rank axioms that send
+        Z3 to MBQI, so the full set reliably runs out of the screening budget
+        on exactly the programs that are hardest to reason about.  Reading
+        that as unsat reported a false **E539** — "the verifier's own premises
+        are contradictory" — over `length`, `append` and their kin, and
+        demoted every obligation in them.  Only a REFUTATION demotes, and
+        nothing is given up by that: a contradictory premise set is refuted by
+        propagation before a single quantifier is instantiated — measured at
+        under a millisecond in the very context that leaves a consistent one
+        undecided at 250 ms — so the contradictions this exists to catch are
+        the ones the query answers fastest.
+
+        An undecided full set still costs the author's layer one question.
+        That layer is the PRE-BODY snapshot — no rank axiom, no derived fact,
+        the author's own premises and nothing else — so it answers in about a
+        millisecond where the full set gave up, and a contradiction the
+        author wrote is the half a reader can act on.  Skipping it would make
+        the whole check conditional on the verifier's own derived facts being
+        decidable, which is exactly backwards.
+        """
+        # Nothing to protect: a contradiction can only manufacture a
+        # `verified`, so a function that discharged none is one this check
+        # cannot change the verdict of.  Cheap, sound, and it is the only
+        # narrowing taken — the screen's budget is the discharge budget
+        # everywhere else, because a screen that skips what it cannot afford
+        # certifies exactly the contradictions worth hiding behind (#1457
+        # review, High 2).
+        if not any(
+            o.status == "verified" for o in self.obligations[obl_start:]
+        ):
+            return
+
+        # Stage 1: the whole premise set, quantified facts included, at the
+        # short budget.  A contradiction that propagates is refuted here.
+        stage1 = self._full_premises_satisfiable(smt, assumed)
+        if stage1 is True:
+            # A model, exhibited: the premises are ESTABLISHED, and stage 2
+            # could only rediscover the same one — at the full discharge
+            # budget, to learn what is known (#1457 review, CodeRabbit).
+            return
+        refuted = stage1 is False
+        if not refuted:
+            # Stage 2: the quantifier-free SUBSET, at the discharge budget.
+            # A refutation on a subset is a refutation on the whole, and
+            # dropping the rank axioms is what makes that budget affordable.
+            stage2 = self._quantifier_free_premises_satisfiable(smt, assumed)
+            if stage2 is False:
+                refuted = True
+            elif stage2 is True and self._premise_halves_disjoint(
+                smt, assumed,
+            ):
+                # A model of the subset, and nothing dropped constrains a
+                # symbol the subset mentions, so it extends to a model of the
+                # whole set: established.  The disjointness is asked of THIS
+                # slice, because a `sat` that licenses a Tier-1 proof cannot
+                # rest on a property measured over somebody else's programs.
+                return
+
+        if not refuted:
+            # Neither established nor refuted (#1457 review / MD-9).  A
+            # `verified` recorded here was discharged against a premise set
+            # nobody has shown has a model, and on a NONLINEAR premise that is
+            # not a slow answer but an undecidable one: measured over
+            # `@Int.0 * @Int.0 == 2 * (@Int.1 * @Int.1)`, three runs in ten
+            # report `ensures(@Int.result == 42)` VERIFIED over a body
+            # returning `0`, under a precondition with no model.  So Tier 1 is
+            # withheld — the same demotion as a refutation, under a code that
+            # claims only that nothing was established.
+            #
+            # Only for premises OUTSIDE the decidable fragment.  Inside it an
+            # `unknown` is the budget rather than the logic, and withdrawing
+            # Tier 1 there would cost five ordinary recursive-ADT slices in
+            # this project's own corpus every run, to close a hole none of
+            # them has.
+            if self._outside_decidable_fragment(
+                (*smt.solver.assertions(), *assumed), smt.registered_axiom,
+            ):
+                self._report_unestablished_premises(decl, assumed)
+                self._demote_function_obligations(obl_start, "E540")
+            return
+
+        author = self._contract_premises_satisfiable(contract, assumed, smt)
+        if author is False:
+            self._report_unsatisfiable_contract(decl, assumed)
+            self._demote_function_obligations(obl_start, "E538")
+            return
+
+        if author is not True:
+            # The full set failed and the author's own premises could not be
+            # decided, so there is nothing to attribute the contradiction to.
+            # Saying "internal" would blame the compiler for something that
+            # may be the contract; saying nothing keeps a vacuous proof.
+            # Demote without attributing, under the code that claims least.
+            #
+            # A WARNING, not the E538 error, and the difference is what makes
+            # the refusal checkable.  E538 blames the author's premises, and
+            # the only thing that establishes that blame is a REFUTATION of
+            # them; `unknown` establishes nothing, exactly as everywhere else
+            # in this file.  Refusing here would make acceptance depend on
+            # solver speed in the wrong direction: the same program refused at
+            # one `--timeout-ms` and ACCEPTED at a larger one, where the
+            # author's layer comes back `sat` and the report is the warning
+            # E539.  Measured on the `x * x == 2 * (y * y)` fixture, whose
+            # author-layer query answers `unsat` in about 2 s on one pass and
+            # `unknown` in about 2 s on the next.  So the undecided case joins
+            # the `sat` case under E539: the run declines to certify, which is
+            # the honest claim, and a larger budget can only move it to the
+            # attributed refusal.
+            self._demote_function_obligations(obl_start, "E539")
+            self._warning(
+                self._premise_site(decl, assumed=bool(assumed)),
+                f"The premises of '{decl.name}' are unsatisfiable, so nothing "
+                f"in it was verified against a reachable state. Every "
+                f"obligation in this function is reported as unverified. "
+                f"Which premise is at fault could not be determined within "
+                f"the solver budget.",
+                rationale=(
+                    "A contradictory premise set entails every goal. The "
+                    "contract layer alone was neither proved satisfiable nor "
+                    "refuted, so the contradiction cannot be attributed to "
+                    "the author's premises or to the verifier's derived ones. "
+                    "The program is not refused on an undecided attribution: "
+                    "a refusal names the clause to weaken, and E538 names one "
+                    "only where the author's own premises were refuted."
+                ),
+                fix=(
+                    "Re-run with a larger budget (`--timeout-ms`) to find out "
+                    "which. A larger budget can only ADD an attribution, so "
+                    "it may name a premise of yours and refuse the program "
+                    "(E538) — it will not turn this into a clean run."
+                ),
+                spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+                error_code="E539",
+                tier=3,
+            )
+            return
+
+        self._warning(
+            self._premise_site(decl, assumed=bool(assumed)),
+            f"The premises of '{decl.name}' contradict a fact derived from "
+            f"the program, so every obligation in it would discharge "
+            f"vacuously. Every obligation in this function is reported as "
+            f"unverified.",
+            rationale=(
+                "The declared types, the precondition and any `assume` have a "
+                "model between them, so the contradiction needs at least one "
+                "fact the verifier derived — an assumed callee postcondition, "
+                "a refined return, or another declared-type fact. That is "
+                "either the program disagreeing with itself (an `assume` or a "
+                "`requires` that no callee's contract permits) or a derived "
+                "fact of the compiler's going over-strong; the verifier "
+                "cannot tell which, so it certifies neither."
+            ),
+            fix=(
+                "Check whether a fact the program itself implies — a callee's "
+                "postcondition, a refined return, a declared-type fact — "
+                "contradicts a `requires` or an `assume` written here, and "
+                "weaken whichever is wrong. If none does, the derived premise "
+                "is the compiler's: please report the program on the issue "
+                "tracker."
+            ),
+            spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
+            error_code="E539",
+            tier=3,
+        )
+        self._demote_function_obligations(obl_start, "E539")
 
     # -----------------------------------------------------------------
     # Decreases verification (termination)
@@ -5675,6 +6662,7 @@ class ContractVerifier:
 
     def _collect_top_level_assert_facts(
         self, body: ast.Expr, smt: SmtContext, slot_env: SlotEnv,
+        *, assume_sink: list[object] | None = None,
     ) -> list[object]:
         """#804: predicates of UNCONDITIONAL top-level assert/assume statements.
 
@@ -5688,7 +6676,33 @@ class ContractVerifier:
         ``let`` / any destructure (the env is then uncertain — a later assert
         could read a stale shadow) and never descends into ``if`` / ``match``
         (those asserts are conditional, not guaranteed at return).
+
+        *assume_sink*, when given, receives the ``assume`` half of the SAME
+        facts — the identical term objects, not a re-derivation — for #1451's
+        author-premise layer.  An ``assume`` is taken on trust and is
+        therefore a premise, while an ``assert`` is an obligation the verifier
+        discharges and reports on its own (a contradictory one is already the
+        E507 the assert rule gives it).
+
+        Partitioning one walk rather than walking twice is load-bearing, and a
+        second walk was measured getting it wrong (#1457 review, High 1).
+        Translating a predicate has EFFECTS: a call inside it mints a fresh
+        call constant, constrained only by the guarded implication the walk
+        adds to the base context at the same time.  So a second walk over
+        `assume(g(@Int.0) < 0)` produced a fact about `_call_g_5` while every
+        obligation had been discharged under the first walk's `_call_g_4`, and
+        the consistency check answered `sat` about a premise set no obligation
+        ran under — leaving `ensures(@Int.result == 42)` VERIFIED over a body
+        returning `0`, the very shape #1451 exists to stop.  The same applies
+        to every preceding top-level ``let``, whose RHS the second walk also
+        re-translated.
+
+        The walk also records the first ``assume`` statement in
+        ``_first_assume_node``, so the demotion can point at the line the
+        contradiction came from rather than at a `requires` that may be
+        blameless.
         """
+        self._first_assume_node = None
         facts: list[object] = []
         if not isinstance(body, ast.Block):
             return facts
@@ -5705,9 +6719,19 @@ class ContractVerifier:
             elif isinstance(stmt, ast.LetDestruct):
                 break  # don't track destructure env here — conservative
             else:
+                is_assume = isinstance(stmt, ast.ExprStmt) and isinstance(
+                    stmt.expr, ast.AssumeExpr,
+                )
                 fact = self._assumed_block_fact(stmt, smt, cur_env)
                 if fact is not None:
                     facts.append(fact)
+                    if is_assume:
+                        if assume_sink is not None:
+                            assume_sink.append(fact)
+                        if self._first_assume_node is None:
+                            self._first_assume_node = cast(
+                                "ast.ExprStmt", stmt,
+                            ).expr
         return facts
 
     def _walk_for_primitive_op_obligations(

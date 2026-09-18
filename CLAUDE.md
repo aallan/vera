@@ -176,7 +176,7 @@ The summary is *derived* from that array, by `status`. A consumer reproduces the
 | `verified` | `tier1_verified` | — |
 | `tier3`, `timeout` | `tier3_runtime` | an informational warning, for the kinds that carry one |
 | `violated` | *nothing* | an error diagnostic (E500, E501, E502, E505, …) |
-| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E531) |
+| `tier3_unguarded` | *nothing* | a warning diagnostic (E504, E506, E531, E539, E540), or the E538 **error** |
 
 So `total == tier1_verified + tier3_runtime`, and the array — which is the complete stream — is a *superset* of what the counts cover: `violated` and `tier3_unguarded` discharged to no tier, so they are counted nowhere and appear only as diagnostics. The full accounting is `len(obligations) == total + violated + tier3_unguarded`. A program with one refuted contract therefore reports (say) `total: 2` beside a three-entry array; that is the partition, not a disagreement.
 
@@ -185,7 +185,7 @@ So `total == tier1_verified + tier3_runtime`, and the array — which is the com
 
 ### Error codes
 
-Every diagnostic has a stable code — errors `E001`–`E702`, warnings `W001`/`W002`. Codes are grouped by compiler phase:
+Every diagnostic has a stable code — `E001`–`E702` and `W001`–`W003`. The prefix is the **namespace**, not the severity: the `W` codes are all warnings, but a number of `E` codes are warning-severity too (`E504`, `E506`, `E531`, `E539`, `E540` are the ones the partition table above names). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
