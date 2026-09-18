@@ -642,6 +642,11 @@ class SmtContext:
         # siblings), keyed by projection and carrier sort.  Cleared on reset
         # beside `_index_fns`, whose Array sorts they range over.
         self._projection_fns: dict[str, z3.FuncDeclRef] = {}
+        #: Carrier sorts this context minted for a `Map` or `Set`.  A
+        #: projection is taken only of a term in one of these: the fallback
+        #: `declare_int` shape is not a carrier, and projecting it would mint
+        #: a symbol with nothing behind it.
+        self._collection_sorts: set[str] = set()
         # ctor-owner-exempt: declares the SMT ADT registry, which is
         # namespace-flat by design
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -849,9 +854,15 @@ class SmtContext:
             if element_sort is None:
                 return None
         else:
-            # A projection asked of an array-sorted term is a caller error,
-            # not a fact to invent: `map_values` of an array has no meaning.
-            if is_array_sorted:
+            # A projection is taken only of a term in a carrier sort THIS
+            # context minted.  A `Map` or `Set` that fell through to
+            # `declare_int` is an unconstrained integer, and projecting one
+            # would mint `map_values_Int` — a symbol with no carrier behind
+            # it, shared by every such fallback whose element sorts happen to
+            # agree, so a fact about one map's values could meet a goal about
+            # another's (CodeRabbit, PR #1447).  Declining leaves the
+            # obligation honestly unstated.
+            if str(sort) not in self._collection_sorts:
                 return None
             element_sort = self._vera_type_to_z3_sort(element_ty)
             if element_sort is None:
@@ -916,6 +927,7 @@ class SmtContext:
         """
         sort = self._get_collection_sort(
             self.collection_sort_name(kind, element_sorts))
+        self._collection_sorts.add(str(sort))
         var = z3.Const(name, sort)
         self._vars[name] = var
         return var
@@ -4233,8 +4245,10 @@ class SmtContext:
         self._length_axioms_asserted.clear()
         self._array_element_sorts.clear()
         # #1430: the carrier projections range over the Array sorts cleared
-        # below, so they go with them.
+        # below, so they go with them, and so does the record of which sorts
+        # were minted as carriers — `_z3_sorts` is cleared too.
         self._projection_fns.clear()
+        self._collection_sorts.clear()
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)
         self._z3_sorts.clear()

@@ -829,6 +829,17 @@ class ContractsMixin:
             parts = self._refinement_guard_parts(te)
             if parts is not None:
                 yield parts[0]
+            # #1430: and each ELEMENT predicate, through the emitter's own
+            # classification, for the same reason the components are here —
+            # a predicate reached only by the element walk is invisible to
+            # the structural scan of the body, so an import or a handler it
+            # needs would be lowered against nothing the module declares
+            # (CodeRabbit, PR #1447).  All-or-nothing in the emitter means
+            # all-or-nothing here: `_element_guard_parts` returns the empty
+            # list for a carrier no guard is emitted for, so registration
+            # equals what is emitted rather than exceeding it.
+            for site in self._element_guard_parts(te):
+                yield site.predicate
             yield from self._component_guard_predicates(te)
 
     def _component_guard_predicates(

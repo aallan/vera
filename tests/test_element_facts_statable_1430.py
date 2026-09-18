@@ -1388,3 +1388,75 @@ def test_the_element_load_width_matches_the_stride(tmp_path: Path) -> None:
     bad = _run(tmp_path, source.replace("VALUE", "false"), "byte-bad")
     assert bad.returncode != 0, bad.stdout
     assert "array element" in bad.stdout + bad.stderr, bad.stdout
+
+
+def test_a_projection_needs_a_minted_carrier_sort() -> None:
+    """`carrier_elements` declines a term that is not in a carrier sort.
+
+    A `Map` or `Set` the verifier could not give a carrier sort to falls
+    through to `declare_int`, and projecting THAT would mint `map_values_Int`
+    — a symbol with no carrier behind it, shared by every such fallback whose
+    element sorts agree, so a fact about one map's values could meet a goal
+    about another's (CodeRabbit, PR #1447).  Asserted at the seam rather than
+    through a program, because what must not happen is the minting.
+    """
+    import z3
+
+    from vera.smt import SmtContext
+    from vera.types import PrimitiveType
+
+    smt = SmtContext()
+    int_ty = PrimitiveType("Int")
+    fallback = smt.declare_int("m")
+    assert smt.carrier_elements(fallback, "map_values", int_ty) is None, (
+        "an Int-modelled container was projected; the symbol that mints has "
+        "no carrier behind it"
+    )
+    minted = smt.declare_collection_var(
+        "m2", "Map", (z3.StringSort(), z3.IntSort()))
+    observers = smt.carrier_elements(minted, "map_values", int_ty)
+    assert observers is not None, "a minted carrier sort was declined"
+    sequence, _index_fn, _length_fn, _elt = observers
+    assert str(sequence.sort()).startswith("Array_"), sequence
+
+
+def test_the_guard_pre_scan_sees_the_element_predicate(
+    tmp_path: Path,
+) -> None:
+    """Every predicate the guard LOWERS is in the pre-scan's enumeration.
+
+    The pre-scan registers the host imports and handler families a boundary
+    guard's predicate needs; a predicate reached only by the element walk is
+    invisible to the structural scan of the body, so an import it needs would
+    be lowered against nothing the module declares — the #808 fan-in, one
+    lowering further out (CodeRabbit, PR #1447).
+
+    Driven through the real compile path so the alias table and the registry
+    are the ones a program gets, and asserted over the ENUMERATION rather
+    than over a module that happens to need an import: the cell then fails
+    when the walk is extended and the pre-scan is not.
+    """
+    from vera import ast
+    from vera.codegen.core import CodeGenerator
+    from vera.parser import parse_to_ast
+
+    source = (
+        "type PosInt = { @Int | @Int.0 > 0 };\n\n"
+        "public fn f(@Array<PosInt> -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  array_length(@Array<PosInt>.0)\n}\n"
+    )
+    program = parse_to_ast(source)
+    gen = CodeGenerator(source)
+    gen.compile_program(program)
+    decl = next(
+        d for d in (getattr(x, "decl", x) for x in program.declarations)
+        if isinstance(d, ast.FnDecl) and d.name == "f"
+    )
+    rendered = [
+        ast.format_expr(p) for p in gen._signature_refinement_predicates(decl)
+    ]
+    assert any("@Int.0 > 0" in r for r in rendered), (
+        f"the element predicate the guard lowers is not in the pre-scan's "
+        f"enumeration: {rendered}"
+    )
