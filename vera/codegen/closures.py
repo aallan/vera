@@ -13,7 +13,11 @@ from vera import ast
 from vera.codegen.memory import _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import gc_shadow_push, is_gc_pointer_base
+from vera.wasm.helpers import (
+    bind_slot_value_from_stack,
+    gc_shadow_push,
+    is_gc_pointer_base,
+)
 
 
 class ClosureLiftingMixin:
@@ -883,8 +887,12 @@ class ClosureLiftingMixin:
                     f"{ast.format_expr(ret_refined_parts[0])} failed"
                 ) if ret_refined_parts is not None else ""
                 if ret_wt == "i32_pair":
-                    ptr_l = ctx.alloc_local("i32")
-                    len_l = ctx.alloc_local("i32")
+                    # Spilled into the two CONSECUTIVE locals a pair's slot
+                    # binds — the pointer, and the length at `ptr + 1` that
+                    # `_translate_slot_ref` reads (#1466).
+                    spill = bind_slot_value_from_stack(
+                        ctx.alloc_local, "i32_pair")
+                    ptr_l, len_l = spill.locals
                     ret_guard = self._emit_component_refinement_guards(
                         ctx, closure_sig, anon_fn.return_type, ptr_l, env,
                         "return value")
@@ -901,12 +909,8 @@ class ClosureLiftingMixin:
                             ret_guard.extend(guard)
                     if ret_guard:
                         body_instrs = [
-                            *body_instrs,
-                            f"local.set {len_l}",
-                            f"local.set {ptr_l}",
-                            *ret_guard,
-                            f"local.get {ptr_l}",
-                            f"local.get {len_l}",
+                            *body_instrs, *spill.load, *ret_guard,
+                            *spill.push,
                         ]
                 elif ret_wt:
                     ret_local = ctx.alloc_local(ret_wt)

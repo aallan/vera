@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 import vera
+from tests import guard_emitter_scan
 
 _PKG_PARENT = str(Path(vera.__file__).resolve().parents[1])
 
@@ -1051,33 +1052,42 @@ def test_a_disclosed_element_boundary_carries_no_loop(tmp_path: Path) -> None:
 
 
 def _emitter_call_sites() -> set[str]:
-    """The FUNCTIONS that call the element-guard emitter, read from source."""
-    import re
+    """The FUNCTIONS that call the element-guard emitter, read from source.
 
-    root = Path(vera.__file__).resolve().parent
-    found: set[str] = set()
-    for rel in ("codegen/functions.py", "codegen/closures.py",
-                "codegen/contracts.py", "wasm/calls_handlers.py"):
-        path = root / rel
-        if not path.exists():  # pragma: no cover — defensive
-            continue
-        enclosing = "?"
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for n, line in enumerate(lines):
-            match = re.match(r"    def (\w+)\(", line)
-            if match:
-                enclosing = match.group(1)
-                continue
-            if not re.search(r"self\._emit_element_guards\(", line):
-                continue
-            # The ROLE is the emitter's own last argument, and it is what
-            # separates two positions that share an emitting function.
-            window = "\n".join(lines[n:n + 6])
-            role = re.search(r'"(parameter|return value)"', window)
-            found.add(f"{enclosing}/{role.group(1) if role else '?'}")
-    # The emitter's own definition is not a call site.
-    found = {f for f in found if not f.startswith("_emit_element_guards/")}
-    return found
+    Through `tests/guard_emitter_scan.py`, which ENUMERATES the
+    code-generation layer.  This scan used to name four files, so an emitter
+    wired in a fifth was its blind spot — the comparison would have gone on
+    agreeing while a whole position went unheld (PR #1447 review, 65d90c4e).
+    The scan is shared with the boundary-guard roster
+    (`test_boundary_guard_correctness_1466.py`), so "where guards are
+    emitted" is derived once rather than once per roster.
+    """
+    return guard_emitter_scan.emitter_call_sites("_emit_element_guards")
+
+
+def test_the_emitter_scan_enumerates_the_codegen_layer() -> None:
+    """The scan's own premise: the four files it used to name are INSIDE the
+    enumeration, rather than being it.
+
+    A roster is worth what holds it to the emitter, and the scan is what does
+    the holding — so the scan's reach is asserted rather than assumed.
+    """
+    enumerated = {
+        str(p).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
+        for p in guard_emitter_scan.codegen_sources()
+    }
+    missing = [
+        f for f in guard_emitter_scan.KNOWN_EMITTER_FILES
+        if f not in enumerated
+    ]
+    assert not missing, (
+        f"{missing} wire a guard emitter and are outside the enumerated "
+        f"code-generation layer {sorted(guard_emitter_scan.EMITTER_PACKAGES)}"
+    )
+    assert len(enumerated) > len(guard_emitter_scan.KNOWN_EMITTER_FILES), (
+        "the enumeration is no larger than the list it replaced, so it is "
+        "still a list"
+    )
 
 
 def test_the_element_guard_roster_matches_where_it_is_wired() -> None:
