@@ -1132,6 +1132,88 @@ def test_the_layout_scan_would_see_a_hand_copy() -> None:
         )
 
 
+def test_no_guard_binds_a_pair_on_adjacency() -> None:
+    """Every guarded value's local comes from the helper, a parameter, or a
+    width that is one word — never from two `alloc_local` calls in a row.
+
+    This is the completeness question the PR's own reviews kept answering
+    better than the previous check did.  Reading the ARGUMENT at each
+    emitter call site sees a plain name and stops there, so a pair allocated
+    eighteen lines up inside an `if is_pair:` branch is invisible — which is
+    how three sites survived two rounds (PR #1478 review, F9 and F10).  The
+    scan traces each emitter's value argument back to the assignments that
+    produce it within the enclosing FUNCTION, following a list an allocation
+    is appended to and a comprehension that unpacks it, and classifies what
+    it finds.
+
+    Two classifications are findings.  `FROM_ADJACENT_PAIR` is a pair bound
+    on the adjacency of two calls, which is the convention this PR replaces.
+    `FROM_UNKNOWN` is a site the walk cannot account for — not a defect, but
+    not a thing anyone has looked at either, and a scan that shrugs at what
+    it cannot classify reports whatever it happens to understand.
+    """
+    provenance = guard_emitter_scan.slot_binding_provenance()
+    assert provenance, "the scan found no guard emitter call sites at all"
+    findings = {
+        site: kind for site, kind in provenance.items()
+        if kind in (guard_emitter_scan.FROM_ADJACENT_PAIR,
+                    guard_emitter_scan.FROM_UNKNOWN)
+    }
+    assert not findings, (
+        "a guarded value's local is bound by adjacency or by a route this "
+        "scan cannot follow: "
+        + "; ".join(f"{s} -> {k}" for s, k in sorted(findings.items()))
+    )
+
+
+def test_the_provenance_scan_would_see_a_hand_bound_pair() -> None:
+    """And it can FAIL, on the shape that got past two reviews.
+
+    Driven from a scratch module rather than the tree, so the cell says what
+    the WALK does rather than what today's source happens to contain: an
+    allocation in a branch, assigned to a name, handed to the emitter many
+    lines later — which is `_translate_handle_exn`'s shape (F10) — and the
+    same function with the helper instead, which must come back clean.
+    """
+    import ast as _ast
+    import textwrap
+
+    def provenance(source: str) -> set[str]:
+        tree = _ast.parse(textwrap.dedent(source))
+        fn = next(n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.FunctionDef))
+        adjacent = guard_emitter_scan._adjacent_pair_names(fn)
+        return adjacent
+
+    hand_bound = """
+        def translate(self, clause, env):
+            if is_pair:
+                thrown_local = self.alloc_local("i32")
+                _len_local = self.alloc_local("i32")
+            else:
+                thrown_local = self.alloc_local(thrown_wt)
+            more = "lines"
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, base, te, where, clause, env)
+    """
+    through_helper = """
+        def translate(self, clause, env):
+            thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+            more = "lines"
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown.slot_local, base, te, where,
+                clause, env)
+    """
+    assert "thrown_local" in provenance(hand_bound), (
+        "the walk misses a pair allocated in a branch, which is the shape "
+        "it exists to find"
+    )
+    assert not provenance(through_helper), (
+        "the walk reports the helper form, so a clean tree would be a "
+        "coincidence"
+    )
+
+
 def test_the_scan_sees_an_emitter_wired_through_a_partial() -> None:
     """A roster is only as good as the wiring the scan can see.
 

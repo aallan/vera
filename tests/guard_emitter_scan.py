@@ -139,6 +139,249 @@ def local_layout_tables() -> dict[str, list[str]]:
     return found
 
 
+#: The emitters that take a guarded value's LOCAL as their second positional
+#: argument.  Each one binds `@<base>.0` to whatever local it is handed, so
+#: every one of them is a place the representation question is asked.
+#: Each one binds `@<base>.0` to the local at the given POSITION in its
+#: argument list — `_emit_refinement_check` takes its value fourth, after the
+#: context, the predicate and the base name — so the position is data here
+#: rather than an assumption that they all agree.
+SLOT_BINDING_EMITTERS: dict[str, int] = {
+    "_emit_bind_refine_guard": 1,
+    "_emit_refinement_check": 3,
+    "_emit_clause_binder_guard": 1,
+}
+
+#: How a guarded value's local may legitimately come to be, as
+#: :func:`slot_binding_provenance` classifies it.
+FROM_HELPER = "helper"
+FROM_PARAMETER = "parameter"
+FROM_ONE_LOCAL = "alloc_local(one word)"
+FROM_COMPUTED_WIDTH = "alloc_local(computed width)"
+FROM_WASM_PARAM = "alloc_param (the WASM signature)"
+FROM_ADJACENT_PAIR = "alloc_local x2 (adjacency)"
+FROM_UNKNOWN = "unknown"
+
+_ONE_WORD = frozenset({"i32", "i64", "f64"})
+
+
+class _Unpack:
+    """`x, y = <expr>` — element *index* of whatever *value* holds.
+
+    Not an AST node: a note to the classifier that the provenance continues
+    one level down, which is how a local appended to a list and unpacked
+    from it by a later `for` is followed to its allocation.
+    """
+
+    def __init__(self, value: ast.AST, index: int) -> None:
+        self.value = value
+        self.index = index
+
+
+def _alloc_wt(node: ast.AST) -> str | None:
+    """The width an `alloc_local(...)` call asks for, if *node* is one."""
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "alloc_local" and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)):
+        value = node.args[0].value
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _resolve(
+    value: object, assigned: dict[str, list[object]], depth: int = 0,
+) -> list[object]:
+    """Follow a name or an unpack to the expressions that can produce it."""
+    if depth > 4:                       # pragma: no cover — cycle guard
+        return [value]
+    if isinstance(value, _Unpack):
+        out: list[object] = []
+        for inner in _resolve(value.value, assigned, depth + 1):
+            if (isinstance(inner, (ast.Tuple, ast.List))
+                    and value.index < len(inner.elts)):
+                out.extend(_resolve(inner.elts[value.index], assigned,
+                                    depth + 1))
+            else:
+                out.append(inner)
+        return out or [value]
+    if isinstance(value, ast.Name) and value.id in assigned:
+        out = []
+        for inner in assigned[value.id]:
+            out.extend(_resolve(inner, assigned, depth + 1))
+        return out or [value]
+    return [value]
+
+
+def _adjacent_pair_names(fn: ast.AST) -> set[str]:
+    """Names assigned by an ``alloc_local("i32")`` whose very next statement
+    allocates another one.
+
+    "Two calls in a row" read literally, from the BLOCK rather than from the
+    function: counting `alloc_local("i32")` calls anywhere in the enclosing
+    function calls every i32 local in a function that also spills a pair an
+    adjacent pair, which is not what the phrase means and would report a
+    finding for a site that has none.
+    """
+    names: set[str] = set()
+    for node in ast.walk(fn):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for first, second in zip(block, block[1:]):
+                if not (isinstance(first, ast.Assign)
+                        and isinstance(second, ast.Assign)
+                        and _alloc_wt(first.value) == "i32"
+                        and _alloc_wt(second.value) == "i32"):
+                    continue
+                for target in first.targets:
+                    if isinstance(target, ast.Name):
+                        names.add(target.id)
+    return names
+
+
+def _classify(value: object, adjacent: set[str]) -> str:
+    """How the expression *value* produces a guarded value's local."""
+    if isinstance(value, _Unpack):      # pragma: no cover — resolved first
+        return FROM_UNKNOWN
+    if (isinstance(value, ast.Attribute)
+            and value.attr in ("slot_local", "locals")):
+        return FROM_HELPER
+    if isinstance(value, ast.Subscript):          # binding.locals[0]
+        return FROM_HELPER
+    if (isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "alloc_param"):
+        # The WASM SIGNATURE's own adjacency: a pair parameter is two
+        # consecutive params because that is the calling convention, not
+        # because two calls happen to sit side by side.  A different
+        # mechanism from the spills this scan is about, and the matrix's
+        # `call argument` rows are what hold it.
+        return FROM_WASM_PARAM
+    if (isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "alloc_local"
+            and _alloc_wt(value) is None):
+        # A width computed rather than written: one local, necessarily.
+        # `alloc_local("i32_pair")` would put the internal pseudo-type into
+        # the locals declaration, which is not a WAT value type and fails to
+        # assemble (`vera/wasm/data.py`, the #1305 note), so every pair
+        # allocation is two calls with a literal "i32" and is classified
+        # above.
+        return FROM_COMPUTED_WIDTH
+    if _alloc_wt(value) in _ONE_WORD:
+        # One word is one local whatever the base, so the binding cannot be
+        # wrong.  Only a PAIR needs two, and a pair allocated by hand — two
+        # `alloc_local("i32")` calls in a row — is what this scan exists to
+        # find; the caller has already resolved which names those are.
+        return FROM_ONE_LOCAL
+    return FROM_UNKNOWN
+
+
+def slot_binding_provenance() -> dict[str, str]:
+    """Where every guard emitter's bound local comes from, by call site.
+
+    Checking the ARGUMENT at the call site is not enough and the difference
+    is not academic: `_translate_handle_exn` allocates its pair eighteen
+    lines above the emitter call, inside an `if is_pair:` branch, so the call
+    site reads a plain name and the hand-bound pair is invisible (PR #1478
+    review, F10 — found this way, after two rounds of call-site reading
+    missed it).  So each module is parsed, every call to one of
+    :data:`SLOT_BINDING_EMITTERS` is taken, and its second positional
+    argument is traced back to the assignments that produce it WITHIN the
+    enclosing function.
+
+    Keyed by ``module:function:line``, valued by one of the ``FROM_*``
+    constants.  `FROM_ADJACENT_PAIR` is the finding: a pair whose two locals
+    are allocated side by side, correct only while nothing comes between
+    them, which is the convention this PR replaces with
+    `helpers.slot_value_locals`.
+    """
+    out: dict[str, str] = {}
+    for path in codegen_sources():
+        rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Every assignment in this function, by target name.
+            assigned: dict[str, list[ast.AST]] = {}
+
+            def _record(target: ast.AST, value: ast.AST) -> None:
+                if isinstance(target, ast.Name):
+                    assigned.setdefault(target.id, []).append(value)
+                elif isinstance(target, (ast.Tuple, ast.List)):
+                    # `ptr, length = a, b` pairs element-wise; anything else
+                    # (a helper's `.locals`, a call) binds every name to the
+                    # one value, which is what the classification needs.
+                    if (isinstance(value, (ast.Tuple, ast.List))
+                            and len(value.elts) == len(target.elts)):
+                        for t, v in zip(target.elts, value.elts):
+                            _record(t, v)
+                    else:
+                        for position, t in enumerate(target.elts):
+                            _record(t, _Unpack(value, position))
+
+            for node in ast.walk(fn):
+                if isinstance(node, (ast.ListComp, ast.SetComp,
+                                     ast.GeneratorExp)):
+                    # A comprehension binds its own targets, and the list it
+                    # builds holds its element expression — the closure
+                    # prologue collects its refined formals that way.
+                    for gen in node.generators:
+                        _record(gen.target, gen.iter)
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        value = node.value
+                        if isinstance(value, (ast.ListComp, ast.SetComp)):
+                            value = value.elt
+                        _record(target, value)
+                elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                    value = node.value
+                    if isinstance(value, (ast.ListComp, ast.SetComp)):
+                        value = value.elt
+                    _record(node.target, value)
+                elif isinstance(node, (ast.For, ast.AsyncFor)):
+                    _record(node.target, node.iter)
+                elif (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "append"
+                        and isinstance(node.func.value, ast.Name)
+                        and len(node.args) == 1):
+                    # A local collected into a list and unpacked from it by a
+                    # later `for` is the shape the two boundary prologues use
+                    # (`refined_param_checks.append((ptr_idx, param_te))`), so
+                    # the append IS the assignment as far as provenance goes.
+                    assigned.setdefault(node.func.value.id, []).append(
+                        node.args[0])
+            params = {a.arg for a in fn.args.args} | {
+                a.arg for a in fn.args.kwonlyargs}
+            adjacent = _adjacent_pair_names(fn)
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in SLOT_BINDING_EMITTERS):
+                    continue
+                index = SLOT_BINDING_EMITTERS[node.func.attr]
+                if len(node.args) <= index:
+                    continue
+                arg = node.args[index]
+                key = f"{rel}:{fn.name}:{node.lineno}"
+                if isinstance(arg, ast.Name) and arg.id in params:
+                    out[key] = FROM_PARAMETER
+                    continue
+                if isinstance(arg, ast.Name) and arg.id in adjacent:
+                    out[key] = FROM_ADJACENT_PAIR
+                    continue
+                kinds = {
+                    _classify(v, adjacent) for v in _resolve(arg, assigned)
+                }
+                out[key] = (FROM_ADJACENT_PAIR
+                            if FROM_ADJACENT_PAIR in kinds
+                            else sorted(kinds)[0])
+    return out
+
+
 def emitter_call_sites(
     emitter: str, *, role_pattern: str = ROLE_PATTERN, window: int = 6,
     drop_self: bool = True,

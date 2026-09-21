@@ -2666,16 +2666,17 @@ class CallsHandlersMixin:
             )
         clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
 
-        # Allocate locals for the caught exception value.
-        # Pair types (String, Array<T>) use two consecutive i32 locals
-        # (ptr at thrown_local, len at thrown_local + 1) matching the
-        # convention used by _translate_slot_ref for pair types.
-        if is_pair:
-            thrown_local = self.alloc_local("i32")  # ptr
-            _len_local = self.alloc_local("i32")    # len (consecutive: thrown_local + 1)
-        else:
-            thrown_wt = self._type_name_to_wasm(family_base)
-            thrown_local = self.alloc_local(thrown_wt)
+        # The locals the caught exception value occupies, from the ONE
+        # representation-derived binding (#1466): two consecutive i32s for a
+        # pair (ptr at `thrown_local`, len at `thrown_local + 1`, which is
+        # what `_translate_slot_ref` reads and what the clause binder's guard
+        # below is handed), one local of its own width otherwise.  Written
+        # out here, the adjacency was a property of two `alloc_local` calls
+        # eighteen lines above the guard rather than of the type.
+        thrown_wt = ("i32_pair" if is_pair
+                     else self._type_name_to_wasm(family_base))
+        thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+        thrown_local = thrown.slot_local
 
         # Push caught value into slot env for handler body, under the
         # clause PATTERN's own slot name in the checker's canonical form
@@ -2740,13 +2741,13 @@ class CallsHandlersMixin:
         instructions.append("    end")
         instructions.append(f"    br {done_label}")
         instructions.append("  end")
-        # Caught value(s) are on the stack — store into local(s).
-        # Pair types: catch pushes (ptr, len); set len first (LIFO), then ptr.
-        if is_pair:
-            instructions.append(f"  local.set {_len_local}")
-            instructions.append(f"  local.set {thrown_local}")
-        else:
-            instructions.append(f"  local.set {thrown_local}")
+        # Caught value(s) are on the stack — stored into the local(s) the
+        # binding above allocated, by the same helper that allocated them:
+        # a pair arrives as (ptr, len) and is filled in reverse, a scalar is
+        # one store.  Emitting the order here was a second statement of the
+        # representation, in a branch that had to agree with the allocation
+        # eighty lines up (#1466).
+        instructions.extend(f"  {i}" for i in thrown.load)
         instructions.extend(f"  {i}" for i in handler_instrs)
         instructions.append("end")
         if diverges:  # #1276 — see the `diverges` derivation above
