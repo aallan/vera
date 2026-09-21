@@ -89,7 +89,7 @@
 		"vscode-languageclient": "^10.1.1"
 	},
 	"devDependencies": {
-		"@vscode/vsce": "3.9.2",
+		"@vscode/vsce": "4.0.0",
 		"esbuild": "0.28.2"
 	}
 }
