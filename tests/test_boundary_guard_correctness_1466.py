@@ -57,10 +57,11 @@ fault rather than the convention it departs from.
 
 The `@Byte` row's value comes from a `@Byte`-returning helper rather than a
 literal: the checker coerces an int literal to `@Byte` at some positions and
-not others (measured at the base tip: E202 at a call argument, E213 at a
-declared constructor field, E170 at a `Map` value, E314 at a match binding,
-E121 at a tuple-component return), so a literal would have excluded five of
-its eleven cells for a reason that has nothing to do with the guard.
+not others (measured at the base tip: E202 at an array element and at a tuple
+component, E213 at a declared constructor field, E170 at a `Map` value, E314
+at a match binding, E121 at a tuple-component return), so a literal would
+have excluded seven of its eighteen route-cells for a reason that has nothing
+to do with the guard.
 """
 from __future__ import annotations
 
@@ -495,6 +496,51 @@ public fn f(@Unit -> @Int)
 """
 
 
+def _t_tuple_component_after_pair(x: _Instance) -> str:
+    """The guarded component is NOT the first one, and the component before it
+    is a PAIR.
+
+    Every other tuple route puts the refined component first, where its
+    offset is 4 whatever the layout rule says, so no cell of theirs can see a
+    disagreement about how wide a pair is.  Here the guarded component sits
+    BEHIND one, so its offset IS the pair's size and the decomposition has to
+    reach it where the constructor put it.
+
+    Measured, with the emitter advancing by a rule of its own (`offset -= 4`
+    for a pair, the shape this position had before the layout became one
+    table): the three HANDLE rows of this route red — `map`, `set`, `option`,
+    whose i32 component is read four bytes early — and the other three tuple
+    routes stay green.  The scalar rows stay green too, and for a reason
+    worth knowing: an i64 component re-aligns to 8 from either 8 or 12, so
+    alignment masks the shift for exactly the bases whose width exceeds it.
+
+    Mutating the shared `helpers.FIELD_SIZES` instead moves the constructor
+    and every reader TOGETHER, so it is not a disagreement and no cell here
+    sees it; what catches that is a round trip through a value,
+    `tests/test_codegen_data_types.py::TestAdtStringFields` (measured: its
+    `test_pair_two_strings` and `test_five_string_fields` red).  The layout
+    is construction's contract with its readers; this matrix is about the
+    BINDING.
+    """
+    return x.pre + f"""
+private fn take(@Tuple<String, R> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  1
+}}
+
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  take(Tuple("a", {x.value}))
+}}
+"""
+
+
 def _t_array_element(x: _Instance) -> str:
     return x.pre + f"""
 private fn take(@Array<R> -> @Int)
@@ -642,6 +688,7 @@ _TEMPLATES: dict[str, tuple[_Route, ...]] = {
         _Route("parameter", _t_tuple_component_param, "tuple component"),
         _Route("return", _t_tuple_component_return, "tuple component"),
         _Route("nested", _t_tuple_component_nested, "tuple component"),
+        _Route("after-pair", _t_tuple_component_after_pair, "tuple component"),
     ),
     "array element": (_Route("", _t_array_element, "binding"),),
     "map value": (_Route("", _t_map_value, "binding"),),
