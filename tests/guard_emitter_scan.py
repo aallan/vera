@@ -26,6 +26,7 @@ carries.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -57,6 +58,54 @@ def codegen_sources() -> list[Path]:
     found: list[Path] = []
     for package in EMITTER_PACKAGES:
         found.extend(sorted((root / package).glob("*.py")))
+    return found
+
+
+#: A literal heap-field size or alignment table, as a hand copy spells one: a
+#: dict whose FIRST key is a WAT type string mapped to a byte count,
+#: `{"i32": 4, "i64": 8, ...}`.  The SHAPE is what makes it recognisable,
+#: never the variable name — the copies this repo carried used four spellings
+#: — and keying on the shape is also what keeps the scan off tables that map
+#: VERA type names to sizes (`{"Int": 8, …}`, the array-element stride, where
+#: a `Bool` is one byte rather than four): a different fact that belongs to
+#: its own reader.
+_LAYOUT_TABLE = re.compile(
+    r'\{\s*"(?:i32|i64|f64|i32_pair)"\s*:\s*\d+', re.S)
+
+#: The one module allowed to state it.
+LAYOUT_OWNER = "wasm/helpers.py"
+
+
+def local_layout_tables() -> dict[str, list[str]]:
+    """Every module of the code-generation layer that declares a heap-field
+    size or alignment table of its own, as ``{module: [line, ...]}``.
+
+    The layout is construction's contract with every reader of a constructed
+    object — the destructure, the match extraction, the nested tag walk, the
+    structural-eq field walk, the boundary guard's tuple decomposition — and
+    it was five hand copies that happened to agree.  Unifying them is worth
+    exactly as much as the property that they STAY unified, so this reads the
+    modules rather than trusting a comment: a sixth copy, under whatever
+    name, is a row here.
+
+    Matched over the whole text rather than line by line, so a table written
+    across several lines cannot slip through; the reported line is where the
+    dict opens.  :data:`LAYOUT_OWNER` is excluded, being the one module the
+    tables belong to.
+    """
+    found: dict[str, list[str]] = {}
+    for path in codegen_sources():
+        rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
+        if rel == LAYOUT_OWNER:
+            continue
+        text = path.read_text(encoding="utf-8")
+        hits = [
+            f"line {text.count(chr(10), 0, m.start()) + 1}: "
+            f"{text[m.start():m.start() + 60].splitlines()[0]}"
+            for m in _LAYOUT_TABLE.finditer(text)
+        ]
+        if hits:
+            found[rel] = hits
     return found
 
 

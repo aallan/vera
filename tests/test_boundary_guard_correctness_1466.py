@@ -856,6 +856,55 @@ def test_the_boundary_guard_roster_matches_where_it_is_wired() -> None:
     )
 
 
+def test_no_module_states_the_heap_field_layout_twice() -> None:
+    """The layout is stated ONCE, and that stays true.
+
+    Construction lays a constructed object out by one rule, and four walks
+    read it back — the destructure, the match extraction, the nested tag
+    walk, and this matrix's own tuple decomposition.  They were four hand
+    copies of the same two dicts that happened to agree; a change to one
+    would have moved construction and left a reader on the old widths, which
+    is the defect class this file is about, one layer down.
+
+    So the unification is worth what keeps it: this reads the modules rather
+    than a comment, and a fifth copy under any name is a row.  The single
+    permitted home is `vera/wasm/helpers.py`.
+    """
+    copies = guard_emitter_scan.local_layout_tables()
+    assert not copies, (
+        f"a heap-field size/alignment table is declared outside "
+        f"`{guard_emitter_scan.LAYOUT_OWNER}`: "
+        + "; ".join(f"{mod}: {lines}" for mod, lines in sorted(copies.items()))
+    )
+
+
+def test_the_layout_scan_would_see_a_hand_copy() -> None:
+    """And the scan can FAIL, which is the half a clean result cannot show.
+
+    A regex over source is exactly the kind of check that goes quietly
+    vacuous — a reworded table, a renamed variable — so the pattern is
+    driven against the shape the copies this repo actually carried, from a
+    string rather than from a file, and against the owner's own tables,
+    which it must NOT report (they live where they belong).
+    """
+    scan = guard_emitter_scan._LAYOUT_TABLE
+    for spelling in (
+        '        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}',
+        '        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}',
+        '    SIZES = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}',
+        '    widths = {"i32": 4, "i32_pair": 8}',
+    ):
+        assert scan.search(spelling), f"the scan misses {spelling.strip()!r}"
+    for innocent in (
+        '        wt = self._type_expr_to_wasm_type(comp_te)',
+        '        tags = {"Int": 1, "Nat": 2}',
+    ):
+        assert not scan.search(innocent), (
+            f"the scan reports {innocent.strip()!r}, which is not a layout "
+            f"table"
+        )
+
+
 def test_dropping_any_boundary_roster_entry_is_visible() -> None:
     """EVERY entry, not one example.
 
