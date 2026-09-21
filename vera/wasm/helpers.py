@@ -333,6 +333,10 @@ class SlotValueBinding:
     locals: tuple[int, ...]
     #: Instructions that fill those locals from the value's source.
     load: tuple[str, ...]
+    #: What to emit AFTER the checks when the value was teed rather than
+    #: consumed (:func:`bind_slot_value_from_stack` with *keep_on_stack*):
+    #: the halves the tee could not leave behind.  Empty otherwise.
+    tail: tuple[str, ...] = ()
 
     @property
     def push(self) -> list[str]:
@@ -392,17 +396,35 @@ def bind_slot_value_from_field(
 
 
 def bind_slot_value_from_stack(
-    alloc_local: Callable[[str], int], wt: str,
+    alloc_local: Callable[[str], int], wt: str, *,
+    keep_on_stack: bool = False,
 ) -> SlotValueBinding:
     """Spill a value from the OPERAND STACK into the locals its slot binds.
 
     The value is on top of the stack, a pair as ``(ptr, len)`` with the
     length uppermost, so the locals are filled in reverse.  The caller pushes
     it back with :attr:`SlotValueBinding.push` once the guard has run.
+
+    *keep_on_stack* is for a guard that sits IN THE MIDDLE of an expression —
+    a `State` write on its way to the cell (#1439) — where the value has to
+    survive the check: every half but the first is spilled, the first is
+    ``local.tee``-d, and :attr:`SlotValueBinding.tail` pushes the rest back
+    afterwards.  For a one-local representation that is the single
+    ``local.tee`` such a site has always emitted; the pair form is what
+    stops the shape from being a convention again.
     """
     locals_ = slot_value_locals(alloc_local, wt)
-    load = [f"local.set {idx}" for idx in reversed(locals_)]
-    return SlotValueBinding(locals_[0], locals_, tuple(load))
+    if not keep_on_stack:
+        return SlotValueBinding(
+            locals_[0], locals_,
+            tuple(f"local.set {idx}" for idx in reversed(locals_)),
+        )
+    load = [f"local.set {idx}" for idx in reversed(locals_[1:])]
+    load.append(f"local.tee {locals_[0]}")
+    return SlotValueBinding(
+        locals_[0], locals_, tuple(load),
+        tuple(f"local.get {idx}" for idx in locals_[1:]),
+    )
 
 
 # =====================================================================

@@ -14,8 +14,17 @@ and a base's representation is not one local for every base: `@String` and
 from the local AFTER the pointer.  A guard that binds one local for a pair base
 evaluates its predicate against the pointer and whatever local happens to
 follow it — so the artifact refuses a value that SATISFIES the refinement, on a
-program `vera verify` reports clean.  That is the class: a guard emitted and
-wrong, rather than a guard missing.
+program `vera verify` reports clean.  That is the class: a guard whose value
+binding is CONVENTION rather than a property of the type.
+
+It has a second face, which this matrix found and #1439 names.  Where the
+convention was a roster rather than an offset — the `State` write guard asked
+which bases a CONSTRUCTION store can tee into a scalar local — a base whose
+value is exactly the one local the store tees was declined anyway, while the
+verifier went on recording the write `tier3`.  Same disease, opposite
+symptom: there the artifact refuses what it admits, here it admits what it
+should refuse, and both end at a value binding that was not derived from the
+representation.
 
 The axes are the POSITIONS — from `binders.GUARD_SITES`, never a list written
 here — crossed with the REPRESENTATIONS (`_REPRS`: five scalar bases, the two
@@ -47,6 +56,17 @@ cell is a pair base at the one position whose guard binds a single local:
 | tuple component [return] x `@Array<Int>` | traps on `[1]` |
 | tuple component [nested] x `@String` | traps on `"x"` |
 | tuple component [nested] x `@Array<Int>` | traps on `[1]` |
+
+and, for the #1439 half, at `7f9a9d85` with the `State write boundary
+[opaque]` route in place and the fix not yet applied — every one a HANDLE
+base, admitted by a write the record calls `tier3`:
+
+| cell | reading at the base tip |
+|---|---|
+| State write boundary [opaque] x `@Map<String, Int>` | violating value stored, module carries no check |
+| State write boundary [opaque] x `@Set<Int>` | as above |
+| State write boundary [opaque] x `@Tuple<Int, Int>` | as above |
+| State write boundary [opaque] x `@Option<Int>` | as above |
 
 The first four are the instances #1466 enumerates; the two depth-2 rows are
 the same decomposition one level down, found by this matrix.  Every other
@@ -614,6 +634,40 @@ public fn f(@Unit -> @{x.base})
 """
 
 
+def _t_state_write_opaque(x: _Instance) -> str:
+    """The same write, with the value produced by a CALL.
+
+    The literal route above is refused by the CHECKER for four of the bases
+    — `map_new()` where a `{ @Map<…> | … }` is expected is not a subtype —
+    so its violating twin never reaches the artifact and the cell cannot
+    tell a guard from its absence.  Routing the value through a producer
+    leaves the checker nothing to refuse and the guard everything: this is
+    the route that measured #1439's remaining half, where the write was
+    recorded `tier3` and the module carried no check at all.
+    """
+    return x.pre + f"""
+private fn produce_state(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  {x.value}
+}}
+
+public fn f(@Unit -> @{x.base})
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  handle[State<R>](@R = produce_state(())) {{
+    put(@R) -> {{ resume(()) }}
+  }} in {{
+    get(())
+  }}
+}}
+"""
+
+
 def _t_handler_clause_binder(x: _Instance) -> str:
     """The clause binds the thrown payload at its own, narrower type."""
     return x.pre + f"""
@@ -692,7 +746,10 @@ _TEMPLATES: dict[str, tuple[_Route, ...]] = {
     ),
     "array element": (_Route("", _t_array_element, "binding"),),
     "map value": (_Route("", _t_map_value, "binding"),),
-    "State write boundary": (_Route("", _t_state_write, "binding"),),
+    "State write boundary": (
+        _Route("literal", _t_state_write, "binding"),
+        _Route("opaque", _t_state_write_opaque, "binding"),
+    ),
     "handler clause binder": (
         _Route("", _t_handler_clause_binder, "binding"),
     ),
@@ -831,9 +888,37 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, int, str], str] = {
         "Function 'f' uses State with unsupported type — skipped",
     ("State write boundary", 0, "array"):
         "Function 'f' uses State with unsupported type — skipped",
+    ("State write boundary", 1, "string"):
+        "Function 'f' uses State with unsupported type — skipped",
+    ("State write boundary", 1, "array"):
+        "Function 'f' uses State with unsupported type — skipped",
     ("map value", 0, "array"):
         "Map/Set with an Array-typed or zero-size key, value, or element is "
         "not supported — function skipped",
+}
+
+#: (position, route index, representation) -> a product whose SATISFYING twin
+#: `vera verify` REFUSES, with the reason, because the producer its route
+#: routes the value through does not establish the refinement.
+#:
+#: Not a cell, and not a defect either: a callee declared `-> @Int` with
+#: `ensures(true)` PERMITS a violating result, so narrowing its result into a
+#: `{ @Int | @Int.0 > 0 }` cell is refuted (E505) — the modular rule Vera
+#: applies everywhere.  It bites exactly the bases whose predicate the solver
+#: can STATE, which is why the opaque route's live cells are the handle ones,
+#: and those are the cells #1439 was about.  Held to the live compiler by
+#: `test_every_modular_refusal_is_still_refused`, so an entry cannot outlive
+#: the refusal it names.
+_MODULAR_REFUSALS: dict[tuple[str, int, str], str] = {
+    ("State write boundary", 1, repr_name):
+        "the producer's `ensures(true)` establishes nothing, and this base's "
+        "predicate IS statable, so the write is refuted at verification "
+        "rather than reaching the guard"
+    # Measured: `byte` is NOT among them.  Its predicate carries the base's
+    # implicit `0 <= @Byte.0 <= 255` range, and the producer's unconstrained
+    # result leaves the solver unable to refute `< 10` outright — so that
+    # product stays a live cell and its guard is what answers.
+    for repr_name in ("int", "nat", "float64", "bool")
 }
 
 #: (position, route index, representation) -> a defect this matrix finds that
@@ -843,15 +928,6 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, int, str], str] = {
 #: fails, and both entries are meant to be deleted together.  A class
 #: instrument trimmed until it is green measures the trimming.
 _KNOWN_RED: dict[tuple[str, int, str], str] = {
-    ("State write boundary", 0, "tuple"):
-        "#1439, pre-existing at release/v0.2.0 1cf5c6a9: the `State` write "
-        "guard is declined for every base outside "
-        "`narrowing.REFINED_CONSTRUCTION_SCALAR_BASES` — including a HANDLE "
-        "base, whose value does fit the one local the store tees into — while "
-        "the verifier records the write `tier3`.  The emitted module carries "
-        "no `$vera.contract_fail` call at all, so a violating value is stored "
-        "and the program continues.  A record claiming a check nothing emits, "
-        "which is the opposite direction from this PR's class",
     ("ADT sub-pattern bind", 0, "tuple"):
         "#1424, pre-existing at release/v0.2.0 1cf5c6a9: an ADT sub-pattern "
         "binder of `Tuple` type whose arm RETURNS the bound value, joined "
@@ -970,6 +1046,9 @@ def _disposition(cell: tuple[str, int, str]) -> None:
     unsupported = _UNSUPPORTED_SHAPES.get(cell)
     if unsupported is not None:
         pytest.skip(f"the backend refuses the shape: {unsupported}")
+    modular = _MODULAR_REFUSALS.get(cell)
+    if modular is not None:
+        pytest.skip(f"verification refuses the satisfying twin: {modular}")
     known_red = _KNOWN_RED.get(cell)
     if known_red is not None:
         pytest.skip(
@@ -1134,6 +1213,25 @@ def test_the_record_matches_the_rule(
         )
 
 
+def test_every_modular_refusal_is_still_refused(tmp_path: Path) -> None:
+    """A product excluded as refuted is still refuted, and by E505.
+
+    The complement of the unsupported-shape check: an entry that outlives
+    its refusal is an absent cell wearing a reason.  The SATISFYING twin is
+    what must be refused here — that is what makes the product unmeasurable
+    — and the code must be the narrowing refutation rather than any other
+    refusal that happens to be fatal.
+    """
+    for cell in sorted(_MODULAR_REFUSALS):
+        good_src, _bad = _sources(cell)
+        envelope = _envelope(_cli(
+            "verify", "--json", str(_write(tmp_path, good_src, "m.vera"))))
+        assert "E505" in _errors(envelope), (
+            f"{_ids(cell)} is excluded as refuted at verification, and "
+            f"verification now says {_errors(envelope)}"
+        )
+
+
 def test_every_unsupported_shape_says_so_in_the_compilers_words(
     tmp_path: Path,
 ) -> None:
@@ -1160,34 +1258,83 @@ def test_every_unsupported_shape_says_so_in_the_compilers_words(
 # fails the day the defect is fixed, which is when the `_KNOWN_RED` entry and
 # the cell here are both meant to be deleted.
 
-def test_1439_a_state_write_over_a_handle_base_claims_a_guard_it_lacks(
+#: The representations a `State` cell can be declared at, with the
+#: dispositions above applied — the live rows of the write position.
+_STATE_WRITE_REPRS = [
+    name for name in _REPRS
+    if ("State write boundary", 1, name) not in _UNSUPPORTED_SHAPES
+]
+
+
+@pytest.mark.parametrize("repr_name", _STATE_WRITE_REPRS)
+def test_a_state_write_claims_exactly_the_guard_it_emits(
+    repr_name: str, tmp_path: Path,
+) -> None:
+    """The record and the ARTIFACT, differentially, at the write boundary.
+
+    Two components answer one question here — the verifier records the write
+    `tier3` or `tier3_unguarded`, and code generation either emits the check
+    or does not — and a status is a claim about the other component, so a
+    disagreement is invisible from inside either.  It was: the write guard
+    asked which bases a CONSTRUCTION store can tee into a scalar local, so a
+    `Map`, `Set`, `Tuple` or ADT cell was declined while the record said
+    `tier3`, and the module carried no `$vera.contract_fail` call at all
+    (#1439).
+
+    A unit test on either side would have stayed green through that, which
+    is why this reads BOTH and compares them, once per representation the
+    cell can be declared at.  `verified` is not a claim about codegen — the
+    obligation was discharged statically — so it says nothing either way,
+    and the guard is emitted ungated regardless.
+    """
+    cell = ("State write boundary", 1, repr_name)
+    modular = _MODULAR_REFUSALS.get(cell)
+    source = _sources(cell)[0 if modular else 1]
+    envelope = _envelope(_cli(
+        "verify", "--json", str(_write(tmp_path, source, "s.vera"))))
+    statuses = _statuses(envelope)
+    wat = _cli("compile", "--wat", str(_write(tmp_path, source, "s.vera")))
+    emitted = "contract_fail" in wat.stdout
+    assert statuses, "the write raises no narrowing obligation at all"
+    if "tier3" in statuses:
+        assert emitted, (
+            f"State write x {repr_name}: the record claims a runtime check "
+            f"({sorted(statuses)}) and the module carries none"
+        )
+    elif "tier3_unguarded" in statuses:
+        assert not emitted, (
+            f"State write x {repr_name}: the record discloses the write as "
+            f"unguarded ({sorted(statuses)}) and the module guards it, so a "
+            f"reader is told to add a bound the artifact already enforces"
+        )
+
+
+def test_1439_a_state_write_over_a_handle_base_carries_its_guard(
     tmp_path: Path,
 ) -> None:
-    """#1439, pinned.  This asserts the DEFECT; see the issue for the class.
+    """#1439's remaining half: the write is checked, not merely claimed.
 
-    The `State` write guard reads `_refined_component_wasm_type`, which
-    answers None for every base outside the construction-scalar roster — a
-    HANDLE base included, though its value is the one i32 the store already
-    tees into.  The verifier's `State write boundary` arm does not intersect
-    that roster, so the obligation is recorded `tier3` while the module
-    carries no guard at all.
+    The `State` write guard used to ask `_refined_component_wasm_type`,
+    which answers None for every base outside the construction-scalar
+    roster — a HANDLE base included, though its value is the one i32 the
+    store already tees into — while the verifier's `State write boundary`
+    arm recorded the write `tier3`.  The module carried no
+    `$vera.contract_fail` call at all and a violating value was stored.
+
+    The cells above read the statuses and the two verdicts; this one reads
+    the ARTIFACT, because a record and a run can agree for a reason other
+    than a guard, and what was missing was the guard.
     """
-    cell = ("State write boundary", 0, "tuple")
+    cell = ("State write boundary", 1, "tuple")
     m = _measure(cell, tmp_path)
     assert not m["errors"], m["errors"]
-    assert "tier3" in m["statuses"], (
-        f"#1439's record no longer claims a check: {sorted(m['statuses'])}"
-    )
-    assert not m["bad_refused_at_run"] and not m["bad_errors"], (
-        "#1439 appears to be FIXED — the violating value is now refused.  "
-        "Remove this cell and the ('State write boundary', 0, 'tuple') entry "
-        f"from _KNOWN_RED:\n{m['bad_output']}"
-    )
+    assert "tier3" in m["statuses"], sorted(m["statuses"])
     wat = _cli("compile", "--wat", str(_write(
         tmp_path, _sources(cell)[1], "state.vera")))
-    assert "contract_fail" not in wat.stdout, (
-        "#1439 appears to be FIXED — the module now carries a guard"
+    assert "contract_fail" in wat.stdout, (
+        "the record claims a runtime check and the module carries none"
     )
+    assert m["bad_refused_at_run"], m["bad_output"]
 
 
 def test_1424_a_tuple_sub_pattern_returned_from_its_arm_crashes_verify(

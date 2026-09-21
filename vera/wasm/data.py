@@ -255,6 +255,39 @@ class DataMixin:
             return value
         return self._emit_nat_bind_guard(value)
 
+    def _refined_slot_wasm_type(self, te: ast.TypeExpr) -> str | None:
+        """The WASM REPRESENTATION of a refined slot's value, or None when no
+        guard can bind one (#1439, #1466).
+
+        Asked of the base the refinement is written over, through the same
+        table every other width decision reads: one local for a scalar or a
+        handle, a `(ptr, len)` pair for a `String` / `Array<T>`.
+
+        Its sibling :meth:`_refined_component_wasm_type` answers a NARROWER
+        question — which bases a CONSTRUCTION store can tee into one scalar
+        local — and the two stay separate on purpose: a construction store's
+        shape differs per position (a field write, a stride write, a host
+        import), while a WRITE BOUNDARY binds the value where it already is
+        and so has no reason to care about anything but the representation.
+        Reading the narrow one at a write boundary is what made the `State`
+        write decline for a handle base whose value IS the one local the
+        store tees — while the verifier recorded the write `tier3` (#1439).
+
+        None for the shapes no guard is emitted for at all: an unrefined
+        type, an erased base, and a base that is itself a refinement (which
+        the boundary emitter refuses outright rather than half-checking).
+        """
+        parts = naming.refinement_binder_parts(te, self._alias_env)
+        if parts is None or parts.base_is_refinement:
+            return None
+        name = naming.slot_name_or_none(parts.base, self._alias_env)
+        if name is None:
+            return None
+        wt = self._slot_name_to_wasm_type(name)
+        if wt is None or wt == "unsupported":
+            return None
+        return wt
+
     @staticmethod
     def _refined_component_wasm_type(
         te: ast.TypeExpr, alias_env: naming.AliasEnv,

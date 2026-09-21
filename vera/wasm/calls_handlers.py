@@ -21,6 +21,7 @@ from vera.wasm.helpers import (
     StateClauseEntry,
     WasmSlotEnv,
     _is_host_handle_type,
+    bind_slot_value_from_stack,
     gc_shadow_push,
 )
 
@@ -2203,21 +2204,41 @@ class CallsHandlersMixin:
 
         Reads the cell's DECLARED type expression rather than
         `family_base`, which strips the refinement by design.  Returns
-        *value* untouched for an unrefined cell, or one whose base the
-        lowering cannot emit for.
+        *value* untouched for an unrefined cell, or one whose base no guard
+        can be emitted for at all.
+
+        The value is bound by its REPRESENTATION (#1439).  This site used to
+        ask `_refined_component_wasm_type`, which answers only for the five
+        bases a CONSTRUCTION store can tee into a scalar local — so a cell
+        over a `Map`, a `Set`, a `Tuple` or an ADT was declined although its
+        value is exactly the one i32 the store already tees, while the
+        verifier went on recording the write `tier3`: a claim with no check
+        behind it, and the artifact admitted a value the cell's own type
+        forbids.  The roster is about construction stores; a write boundary
+        binds the value where it already is, so the only question here is
+        how many locals it occupies.
+
+        A cell whose representation is a `(ptr, len)` pair never reaches
+        this site — `_register_state_cell` refuses one with E607 before any
+        body compiles — so the binding below is a single `local.tee` in
+        every reachable case.  It goes through the shared helper anyway,
+        because "one local" is a property of the type rather than of this
+        emitter, and that is the whole defect.
         """
         if te is None:
             return value
         if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value
-        wasm_ty = self._refined_component_wasm_type(te, self._alias_env)
+        wasm_ty = self._refined_slot_wasm_type(te)
         if wasm_ty is None:
             return value
-        tmp = self.alloc_local(wasm_ty)
-        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env)
+        binding = bind_slot_value_from_stack(
+            self.alloc_local, wasm_ty, keep_on_stack=True)
+        guard = self._emit_bind_refine_guard(
+            te, binding.slot_local, where, arg, env)
         if not guard:
             return value
-        return [*value, f"local.tee {tmp}", *guard]
+        return [*value, *binding.load, *guard, *binding.tail]
 
     def _emit_clause_binder_guard(
         self,
