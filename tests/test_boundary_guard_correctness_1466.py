@@ -1098,29 +1098,37 @@ def test_no_module_states_the_heap_field_layout_twice() -> None:
 
 
 def test_the_layout_scan_would_see_a_hand_copy() -> None:
-    """And the scan can FAIL, which is the half a clean result cannot show.
+    """And the scan can FAIL, in every spelling of the same table.
 
-    A regex over source is exactly the kind of check that goes quietly
-    vacuous — a reworded table, a renamed variable — so the pattern is
-    driven against the shape the copies this repo actually carried, from a
-    string rather than from a file, and against the owner's own tables,
-    which it must NOT report (they live where they belong).
+    A source-pattern scan recognises one SPELLING, and a hand copy need not
+    use it: single-quoted keys, `"unit"` written first, a `dict(...)` call
+    (CodeRabbit on PR #1478).  Reading the AST makes the shape the test —
+    WAT type names mapped to byte counts — so these are driven from strings
+    rather than from a file, beside the forms that are NOT layout tables and
+    must stay unreported.
     """
-    scan = guard_emitter_scan._LAYOUT_TABLE
+    import ast as _ast
+
+    def sees(source: str) -> bool:
+        return any(guard_emitter_scan._is_layout_table(node)
+                   for node in _ast.walk(_ast.parse(source)))
+
     for spelling in (
-        '        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}',
-        '        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}',
-        '    SIZES = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}',
-        '    widths = {"i32": 4, "i32_pair": 8}',
+        '_sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}',
+        "_aligns = {'i32': 4, 'i64': 8, 'f64': 8, 'i32_pair': 4}",
+        'SIZES = {"unit": 0, "i32": 4, "i64": 8}',
+        'widths = dict(i32=4, i32_pair=8)',
+        'X = {"i32_pair": 8}',
     ):
-        assert scan.search(spelling), f"the scan misses {spelling.strip()!r}"
+        assert sees(spelling), f"the scan misses {spelling!r}"
     for innocent in (
-        '        wt = self._type_expr_to_wasm_type(comp_te)',
-        '        tags = {"Int": 1, "Nat": 2}',
+        'strides = {"Int": 8, "Nat": 8, "Bool": 1, "Byte": 1}',
+        'loads = {"i32": "i32.load", "i64": "i64.load"}',
+        'wt = self._type_expr_to_wasm_type(comp_te)',
+        'flags = {"i32": True}',
     ):
-        assert not scan.search(innocent), (
-            f"the scan reports {innocent.strip()!r}, which is not a layout "
-            f"table"
+        assert not sees(innocent), (
+            f"the scan reports {innocent!r}, which is not a layout table"
         )
 
 

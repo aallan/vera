@@ -2501,22 +2501,16 @@ class CallsHandlersMixin:
             "  payload"
         )
         if self._is_pair_type_name(cell.base):
-            # A `String`-based payload is (ptr, len) in two CONSECUTIVE
-            # locals, checked over the ptr — the same shape the lifted
-            # closure's i32_pair return guard uses.
-            ptr_local = self.alloc_local("i32")
-            len_local = self.alloc_local("i32")
-            guard = emitter(payload_te, ptr_local, head, env)
+            # A `String`-based payload is a pair, spilled through the shared
+            # binding (#1466) — the same call the named and closure return
+            # guards make, rather than the six instructions it returns
+            # written out again here.
+            binding = bind_slot_value_from_stack(
+                self.alloc_local, "i32_pair")
+            guard = emitter(payload_te, binding.slot_local, head, env)
             if guard is None:
                 return value
-            return [
-                *value,
-                f"local.set {len_local}",
-                f"local.set {ptr_local}",
-                *guard,
-                f"local.get {ptr_local}",
-                f"local.get {len_local}",
-            ]
+            return [*value, *binding.load, *guard, *binding.push]
         value_local = self.alloc_local(self._type_name_to_wasm(cell.base))
         guard = emitter(payload_te, value_local, head, env)
         if guard is None:

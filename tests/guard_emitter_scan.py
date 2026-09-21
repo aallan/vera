@@ -26,6 +26,7 @@ carries.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 from pathlib import Path
@@ -61,48 +62,77 @@ def codegen_sources() -> list[Path]:
     return found
 
 
-#: A literal heap-field size or alignment table, as a hand copy spells one: a
-#: dict whose FIRST key is a WAT type string mapped to a byte count,
-#: `{"i32": 4, "i64": 8, ...}`.  The SHAPE is what makes it recognisable,
-#: never the variable name — the copies this repo carried used four spellings
-#: — and keying on the shape is also what keeps the scan off tables that map
-#: VERA type names to sizes (`{"Int": 8, …}`, the array-element stride, where
-#: a `Bool` is one byte rather than four): a different fact that belongs to
-#: its own reader.
-_LAYOUT_TABLE = re.compile(
-    r'\{\s*"(?:i32|i64|f64|i32_pair)"\s*:\s*\d+', re.S)
+#: The WAT type names a heap-field layout table is keyed by.  A table that
+#: mentions any of them and maps every key to a byte count IS one, whatever
+#: it is called and however it is written.
+_WAT_TYPE_KEYS = frozenset({"i32", "i64", "f64", "i32_pair", "unit"})
 
-#: The one module allowed to state it.
+#: The one module allowed to state the layout.
 LAYOUT_OWNER = "wasm/helpers.py"
+
+
+def _is_layout_table(node: ast.AST) -> bool:
+    """Whether *node* builds a heap-field size or alignment table.
+
+    Read from the AST rather than from the source text, because a source
+    pattern recognises one SPELLING of a table and a hand copy need not use
+    it: single-quoted keys, `"unit"` written first, or `dict(i32=4, …)` are
+    the same table and were invisible to the regex this replaces (CodeRabbit
+    on PR #1478).  The shape is what identifies it — WAT type names mapped to
+    byte counts — so a table keyed by VERA type names (`{"Int": 8, …}`, the
+    array-element stride, where a `Bool` is one byte rather than four) is a
+    different fact and is not reported, and neither is a dict whose values
+    are anything but integers.
+    """
+    if isinstance(node, ast.Dict):
+        keys, values = node.keys, node.values
+        names = {
+            k.value for k in keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
+    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "dict" and not node.args):
+        names = {kw.arg for kw in node.keywords if kw.arg is not None}
+        values = [kw.value for kw in node.keywords]
+    else:
+        return False
+    if not names & _WAT_TYPE_KEYS:
+        return False
+    return bool(values) and all(
+        isinstance(v, ast.Constant) and isinstance(v.value, int)
+        and not isinstance(v.value, bool)
+        for v in values
+    )
 
 
 def local_layout_tables() -> dict[str, list[str]]:
     """Every module of the code-generation layer that declares a heap-field
-    size or alignment table of its own, as ``{module: [line, ...]}``.
+    size or alignment table of its own, as ``{module: ["line N: …"]}``.
 
     The layout is construction's contract with every reader of a constructed
     object — the destructure, the match extraction, the nested tag walk, the
-    structural-eq field walk, the boundary guard's tuple decomposition — and
+    structural-eq field walk, the closure env block, the registered
+    `ConstructorLayout`, and the boundary guard's tuple decomposition — and
     it was five hand copies that happened to agree.  Unifying them is worth
     exactly as much as the property that they STAY unified, so this reads the
-    modules rather than trusting a comment: a sixth copy, under whatever
-    name, is a row here.
+    modules rather than trusting a comment: a sixth copy, under whatever name
+    and in whatever spelling, is a row here.
 
-    Matched over the whole text rather than line by line, so a table written
-    across several lines cannot slip through; the reported line is where the
-    dict opens.  :data:`LAYOUT_OWNER` is excluded, being the one module the
-    tables belong to.
+    A TRIPWIRE, not the proof.  What proves the walks agree is widening the
+    one table and watching every round trip follow
+    (`tests/test_field_layout_one_source_1466.py`); this says no second table
+    exists to diverge from it.  :data:`LAYOUT_OWNER` is excluded, being the
+    one module the tables belong to.
     """
     found: dict[str, list[str]] = {}
     for path in codegen_sources():
         rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
         if rel == LAYOUT_OWNER:
             continue
-        text = path.read_text(encoding="utf-8")
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         hits = [
-            f"line {text.count(chr(10), 0, m.start()) + 1}: "
-            f"{text[m.start():m.start() + 60].splitlines()[0]}"
-            for m in _LAYOUT_TABLE.finditer(text)
+            f"line {node.lineno}: {ast.unparse(node)[:70]}"
+            for node in ast.walk(tree) if _is_layout_table(node)
         ]
         if hits:
             found[rel] = hits
