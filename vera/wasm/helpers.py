@@ -13,16 +13,8 @@ from dataclasses import dataclass, field
 from vera import ast
 from vera.skip import CodegenInvariantError
 from vera.types import (
-    BOOL,
-    FLOAT64,
-    FunctionType,
-    INT,
-    NAT,
-    STRING,
-    UNIT,
-    PrimitiveType,
     Type,
-    base_type,
+    wasm_representation,
 )
 
 # #705: Vera type names that compile to ``i32`` WASM type but are
@@ -395,6 +387,28 @@ def bind_slot_value_from_field(
     return SlotValueBinding(locals_[0], locals_, tuple(load))
 
 
+def bind_slot_value_from_locals(
+    alloc_local: Callable[[str], int], wt: str, source_local: int,
+) -> SlotValueBinding:
+    """Copy a value out of the locals it ALREADY occupies into the locals its
+    slot binds.
+
+    The third source, beside a heap field and the operand stack: a match
+    scrutinee arrives in locals of its own, and a guard over it needs the
+    whole value under one slot binding.  A pair's halves are read from
+    *source_local* and *source_local* + :data:`PAIR_LEN_LOCAL_OFFSET`, the
+    same adjacency the slot environment reads them by.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    load: list[str] = []
+    for index, local_idx in enumerate(locals_):
+        load.extend([
+            f"local.get {source_local + index}",
+            f"local.set {local_idx}",
+        ])
+    return SlotValueBinding(locals_[0], locals_, tuple(load))
+
+
 def bind_slot_value_from_stack(
     alloc_local: Callable[[str], int], wt: str, *,
     keep_on_stack: bool = False,
@@ -536,36 +550,12 @@ def emit_is_ascii_whitespace(byte_local: int, indent: str = "") -> list[str]:
 def wasm_type(t: Type) -> str | None:
     """Map a Vera Type to a WAT value type string.
 
-    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool/Byte/ADT,
-    "i32_pair" for String, None for Unit, or "unsupported" for others.
+    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool, "i32_pair"
+    for String, None for Unit, and "unsupported" for everything else — an
+    ADT included, which is why a caller that needs an ADT's width asks
+    codegen's `_type_expr_to_wasm_type` instead.
     """
-    if isinstance(t, PrimitiveType):
-        if t is INT or t is NAT:
-            return "i64"
-        if t is FLOAT64:
-            return "f64"
-        if t is BOOL:
-            return "i32"
-        if t is STRING:
-            return "i32_pair"
-        if t is UNIT:
-            return None
-    # Byte type
-    bt = base_type(t)
-    if isinstance(bt, PrimitiveType):
-        if bt is INT or bt is NAT:
-            return "i64"
-        if bt is FLOAT64:
-            return "f64"
-        if bt is BOOL:
-            return "i32"
-        if bt is STRING:
-            return "i32_pair"
-        if bt is UNIT:
-            return None
-    if isinstance(t, FunctionType):
-        return "i32"  # closure pointer
-    return "unsupported"
+    return wasm_representation(t)
 
 
 def wasm_type_or_none(t: Type) -> str | None:

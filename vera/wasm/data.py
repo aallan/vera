@@ -8,8 +8,9 @@ from vera import ast, naming, narrowing
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
-    PAIR_LEN_FIELD_OFFSET,
     WasmSlotEnv,
+    bind_slot_value_from_field,
+    bind_slot_value_from_locals,
     field_layout,
     gc_shadow_push,
 )
@@ -705,15 +706,15 @@ class DataMixin:
             # Pair types (String, Array<T>): two consecutive i32 locals
             if self._is_pair_type_name(type_name):
                 field_off, offset = field_layout(offset, "i32_pair")
-                ptr_local = self.alloc_local("i32")
-                len_local = self.alloc_local("i32")
-                instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={field_off}")
-                instrs.append(f"local.set {ptr_local}")
-                instrs.append(f"local.get {scr_local}")
-                instrs.append(
-                    f"i32.load offset={field_off + PAIR_LEN_FIELD_OFFSET}")
-                instrs.append(f"local.set {len_local}")
+                # The whole representation, from the layout construction
+                # wrote: the guard below reads the length through the local
+                # after the pointer, and that adjacency is a property of the
+                # type rather than of two `alloc_local` calls in a row
+                # (#1466).
+                binding = bind_slot_value_from_field(
+                    self.alloc_local, "i32_pair", scr_local, field_off)
+                ptr_local = binding.slot_local
+                instrs.extend(binding.load)
                 # PR #707 review: same pair-type rooting
                 # gap as ``_extract_constructor_fields`` — String
                 # buffer / Array<T> backing ptr needs shadow-push.
@@ -1403,14 +1404,10 @@ class DataMixin:
                 # (``scr_local`` = ptr, ``scr_local + 1`` = len), so the
                 # binding takes two of its own.  Copying only the pointer
                 # would bind a length-free String and read garbage.
-                ptr_local = self.alloc_local("i32")
-                len_local = self.alloc_local("i32")  # consecutive: ptr + 1
-                instrs = [
-                    f"local.get {scr_local}",
-                    f"local.set {ptr_local}",
-                    f"local.get {scr_local + 1}",
-                    f"local.set {len_local}",
-                ]
+                binding = bind_slot_value_from_locals(
+                    self.alloc_local, "i32_pair", scr_local)
+                ptr_local = binding.slot_local
+                instrs = list(binding.load)
                 # NOT rooted (#1322), for the same reason the scrutinee copy
                 # in ``_translate_match`` is not: this local receives the
                 # scrutinee's address verbatim, and the shadow stack roots
@@ -1532,15 +1529,12 @@ class DataMixin:
                 # Pair types (String, Array<T>): two consecutive i32 locals
                 if self._is_pair_type_name(type_name):
                     field_off, offset = field_layout(offset, "i32_pair")
-                    ptr_local = self.alloc_local("i32")
-                    len_local = self.alloc_local("i32")
-                    instrs.append(f"local.get {scr_local}")
-                    instrs.append(f"i32.load offset={field_off}")
-                    instrs.append(f"local.set {ptr_local}")
-                    instrs.append(f"local.get {scr_local}")
-                    instrs.append(
-                        f"i32.load offset={field_off + PAIR_LEN_FIELD_OFFSET}")
-                    instrs.append(f"local.set {len_local}")
+                    # As the destructure above: the whole representation,
+                    # bound from the layout construction wrote (#1466).
+                    binding = bind_slot_value_from_field(
+                        self.alloc_local, "i32_pair", scr_local, field_off)
+                    ptr_local = binding.slot_local
+                    instrs.extend(binding.load)
                     # PR #707 review: pair-type field
                     # extraction in match arms — the ``ptr_local``
                     # holds a heap pointer (the String buffer or the

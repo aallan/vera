@@ -72,6 +72,8 @@ from vera.smt import (
 )
 from vera.types import (
     erases_to_unit,
+    is_pair_represented,
+    state_cell_lowerable,
     BOOL,
     FLOAT64,
     INT,
@@ -318,6 +320,14 @@ class ArmContext:
 #: them is the answer about codegen, so a drop-mutation on the table entry
 #: moves all three statuses with all three guards.
 _STATE_WRITE_SITE = "State write boundary"
+
+#: The three names the `State` writes carry in a DIAGNOSTIC, which is what
+#: `_check_refined_binding_obligation` is handed — the guard key above is what
+#: they ask the table with, and the two are deliberately different (#1439).
+_STATE_WRITE_SITES = frozenset({
+    _STATE_WRITE_SITE, "handler state init", "handler state update",
+    "State-op argument",
+})
 
 _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 
@@ -10092,6 +10102,7 @@ class ContractVerifier:
         eff_guarded = (
             guarded
             and self._refined_boundary_codegen_guardable(refined_ty)
+            and self._state_write_cell_lowerable(site, refined_ty)
         )
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
@@ -14225,6 +14236,30 @@ class ContractVerifier:
         nothing for a base codegen cannot check.
         """
         return site in narrowing.REFINED_BIND_GUARDED_SITES
+
+    def _state_write_cell_lowerable(self, site: str, ty: Type) -> bool:
+        """Whether a `State` write at *site* is inside a cell code generation
+        registers at all (#1439).
+
+        The THIRD clause of the type half, beside the erased base and the
+        nested refinement, and it belongs only to the `State` writes: their
+        value crosses host imports carrying one word, so a `(ptr, len)` cell
+        is refused at registration (E607) and the enclosing function is
+        dropped.  A guarded Tier-3 there would promise a check inside a
+        function the module does not contain — #1268's lesson at the write
+        boundary — so the obligation discloses instead.
+
+        The rule is :func:`vera.types.state_cell_lowerable`, which
+        `_register_state_cell` reads with its own oracle, so the record
+        cannot claim a cell the backend declines.  Every other site answers
+        True: the question is about a `State` cell, not about the value.
+        """
+        if site not in _STATE_WRITE_SITES:
+            return True
+        return state_cell_lowerable(
+            representable=not erases_to_unit(ty),
+            pair=is_pair_represented(ty),
+        )
 
     @staticmethod
     def _refined_boundary_codegen_guardable(ty: Type) -> bool:

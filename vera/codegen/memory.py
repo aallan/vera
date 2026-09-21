@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from vera.wasm.helpers import FIELD_ALIGNS, FIELD_SIZES
+
 
 @dataclass
 class ConstructorLayout:
@@ -102,32 +104,28 @@ class ConstructorLayout:
 
 
 def _wasm_type_size(wt: str) -> int:
-    """Byte size of a WASM value type."""
-    if wt == "i32":
-        return 4
-    if wt in ("i64", "f64"):
-        return 8
-    if wt == "i32_pair":
-        return 8
-    # #1043: an erases-to-Unit field is zero-size — it occupies no bytes and
-    # does not advance the layout offset, exactly as construction lays it out.
-    if wt == "unit":
-        return 0
-    raise ValueError(f"Unknown WASM type: {wt}")
+    """Byte size of a WASM value type, from the ONE layout table.
+
+    A reader of :data:`vera.wasm.helpers.FIELD_SIZES` rather than a second
+    statement of it: these were a function-shaped copy of the same widths —
+    including `"unit"`, the zero-size erases-to-Unit field that neither
+    aligns nor advances the offset (#1043) — and a copy is what the layout
+    fold removes.  Unlike the table's `.get`, an unknown type RAISES here,
+    which is the property registration wants: a field whose width nobody
+    knows must not be laid out at a guessed one.
+    """
+    try:
+        return FIELD_SIZES[wt]
+    except KeyError:
+        raise ValueError(f"Unknown WASM type: {wt}") from None
 
 
 def _wasm_type_align(wt: str) -> int:
-    """Natural alignment of a WASM value type."""
-    if wt == "i32":
-        return 4
-    if wt in ("i64", "f64"):
-        return 8
-    if wt == "i32_pair":
-        return 4
-    # #1043: a zero-size Unit field imposes no alignment constraint.
-    if wt == "unit":
-        return 1
-    raise ValueError(f"Unknown WASM type: {wt}")
+    """Natural alignment of a WASM value type, from the ONE layout table."""
+    try:
+        return FIELD_ALIGNS[wt]
+    except KeyError:
+        raise ValueError(f"Unknown WASM type: {wt}") from None
 
 
 def _align_up(offset: int, align: int) -> int:

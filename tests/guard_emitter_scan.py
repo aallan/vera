@@ -124,10 +124,17 @@ def emitter_call_sites(
 
     An emitter INSTALLED as a bound callable rather than called by name — the
     #1268 `throw`-payload guard, handed to the translation context through
-    `set_refinement_guard_emitter` — is not a call site this scan can see; the
-    matrix's own cell for that position is what holds it.
+    `set_refinement_guard_emitter` — IS seen: the name is matched on a word
+    boundary rather than on an opening paren, so `functools.partial(self.
+    <emitter>, ctx)` is a wiring site like any other.  Its role is then `?`,
+    which a roster entry has to name.
     """
-    pattern = re.compile(rf"self\.{re.escape(emitter)}\(")
+    # `self.<emitter>` followed by a call OR by anything else: an emitter
+    # handed to `functools.partial` is wired just as hard as one called by
+    # name, and a paren-only pattern left that form invisible — live in the
+    # tree at `functions.py:544` and `closures.py:424`, which wire the
+    # boundary emitter exactly that way (PR #1478 review, F5).
+    pattern = re.compile(rf"self\.{re.escape(emitter)}\b")
     role = re.compile(role_pattern)
     found: set[str] = set()
     for path in codegen_sources():

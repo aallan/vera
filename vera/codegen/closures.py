@@ -10,11 +10,11 @@ import functools
 from collections import deque
 
 from vera import ast
-from vera.codegen.memory import _align_up
 from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     bind_slot_value_from_stack,
+    field_layout,
     gc_shadow_push,
     is_gc_pointer_base,
 )
@@ -564,27 +564,17 @@ class ClosureLiftingMixin:
             if self._element_guard_parts(param_te)
         ]
 
-        # Compute capture layout (must match _translate_anon_fn).
-        # Pair-type captures (#535) take 8 bytes: ptr (i32) + len (i32),
-        # two consecutive 4-byte fields.  The matching emit in
-        # `_translate_anon_fn` writes both halves; we read both halves
-        # here into two consecutive i32 locals so the closure body can
-        # resolve the pair as if it were a parameter or let-binding.
+        # The capture layout, by the SAME rule `_translate_anon_fn` writes it
+        # with (`helpers.field_layout`) rather than a second copy of the
+        # widths.  A pair capture (#535) is ptr (i32) + len (i32), two
+        # consecutive fields, read below into two consecutive i32 locals so
+        # the closure body resolves the pair as a parameter or let-binding
+        # would.
         cap_offsets: list[tuple[int, str]] = []
         offset = 4  # skip func_table_idx
         for _tname, _cidx, cap_wt in captures:
-            if cap_wt == "i32_pair":
-                offset = _align_up(offset, 4)
-                cap_offsets.append((offset, cap_wt))
-                offset += 8
-            elif cap_wt in ("i64", "f64"):
-                offset = _align_up(offset, 8)
-                cap_offsets.append((offset, cap_wt))
-                offset += 8
-            else:  # i32
-                offset = _align_up(offset, 4)
-                cap_offsets.append((offset, cap_wt))
-                offset += 4
+            field_off, offset = field_layout(offset, cap_wt)
+            cap_offsets.append((field_off, cap_wt))
 
         # Load captured values from env into locals (allocated AFTER params)
         cap_locals: list[tuple[str, int]] = []  # (type_name, ptr_or_only_local)

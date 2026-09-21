@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 
 from vera import ast
+from vera.types import state_cell_lowerable
 from vera.narrowing import COMPILABLE_EFFECTS, MEMORY_EFFECTS
 from vera.monomorphize import mangle_type_name
 from vera.wasm.helpers import CellNames
@@ -285,7 +286,15 @@ class CompilabilityMixin:
         derives; resolving both keeps them one.
         """
         wt = self._type_expr_to_wasm_type(type_arg)
-        if wt is None or wt in ("unsupported", "i32_pair"):
+        if not state_cell_lowerable(
+                representable=wt is not None and wt != "unsupported",
+                pair=wt == "i32_pair"):
+            # THE rule (`vera.types.state_cell_lowerable`), read by the
+            # verifier too: a cell's value crosses host imports that carry
+            # one word, so a `(ptr, len)` pair has no way through whatever
+            # the write guard could bind.  Sharing it is what stops the
+            # obligation stream recording a runtime check for a write inside
+            # a function this refusal drops (#1439).
             return UNSUPPORTED_CELL_TYPE
         cell = CellNames(
             family=self._family_name_te(type_arg),

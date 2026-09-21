@@ -7,7 +7,8 @@ aliases so forward references resolve during compilation.
 from __future__ import annotations
 
 from vera import ast
-from vera.codegen.memory import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
+from vera.codegen.memory import ConstructorLayout, _align_up, _wasm_type_align
+from vera.wasm.helpers import field_layout
 from vera.wasm.inference import substitute_type_vars
 
 
@@ -398,10 +399,14 @@ class RegistrationMixin:
         if ctor.fields is not None:
             for field_te in ctor.fields:
                 wt = self._resolve_field_wasm_type(field_te, decl)
-                align = _wasm_type_align(wt)
-                offset = _align_up(offset, align)
-                field_offsets.append((offset, wt))
-                offset += _wasm_type_size(wt)
+                # Through the ONE layout rule, so the registered offsets and
+                # the ones construction emits cannot be computed differently
+                # (#1466).  `_wasm_type_align` below still guards the width
+                # question itself: an unknown type raises there rather than
+                # being laid out at a guessed width.
+                _wasm_type_align(wt)
+                field_off, offset = field_layout(offset, wt)
+                field_offsets.append((field_off, wt))
                 # #747: a concrete @Nat field receives the runtime
                 # narrowing guard at construction.  A generic field
                 # (type param) instantiated to @Nat is erased to i64
