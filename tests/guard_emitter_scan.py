@@ -263,21 +263,73 @@ def _adjacent_pair_names(fn: ast.AST) -> set[str]:
                 ]
                 if not allocated:
                     continue          # allocates nothing; separates nothing
-                targets = [
-                    t.id for t in getattr(stmt, "targets", [])
-                    if isinstance(t, ast.Name)
-                ]
-                if (isinstance(stmt, ast.Assign) and len(allocated) == 1
-                        and _alloc_wt(stmt.value) == "i32" and targets):
+                bound = _i32_names_bound_by(stmt, allocated)
+                if bound is None:
+                    # Some other allocation, or one whose name this walk
+                    # cannot read: whatever came before it is no longer
+                    # beside what comes after.
+                    pending = []
+                elif len(bound) > 1:
+                    # Both halves in ONE statement — a tuple assignment is
+                    # as adjacent as two lines can be.
+                    names.update(bound)
+                    pending = bound[-1:]
+                else:
                     if pending:
                         names.update(pending)
-                        names.update(targets)
-                    pending = targets
-                else:
-                    # Some other allocation: whatever came before it is no
-                    # longer beside what comes after.
-                    pending = []
+                        names.update(bound)
+                    pending = bound
     return names
+
+
+def _i32_names_bound_by(
+    stmt: ast.stmt, allocated: list[ast.AST],
+) -> list[str] | None:
+    """The names *stmt* binds to an ``alloc_local("i32")``, in source order,
+    or None when it allocates anything else or binds an allocation to
+    something this walk cannot name.
+
+    Python binds a value to a name in more ways than one, and reading only
+    `ast.Assign.targets` reads only one of them: `ast.AnnAssign` keeps its
+    binding in `target` (SINGULAR, because the annotated form binds exactly
+    one), a tuple assignment holds the two halves of a pair in a single
+    statement, and a walrus binds inside an expression.  Each of the three
+    fell through to "some other allocation" and CLEARED the adjacency
+    window, so a hand-bound pair written any of those ways was a silence
+    rather than a finding — the blindness that call-site reading had, one
+    level down (CodeRabbit on PR #1478).
+
+    Only simple statements are read: a compound statement's own blocks are
+    visited in their own right by the caller's walk, so reading its
+    bindings here would report the same pair twice and, worse, call two
+    allocations in DIFFERENT branches adjacent.
+    """
+    if not isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.Expr)):
+        return None
+    bound: dict[int, str] = {}
+    for node in ast.walk(stmt):
+        pairs: list[tuple[ast.expr, ast.expr]] = []
+        if isinstance(node, ast.Assign):
+            if (len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Tuple)
+                    and isinstance(node.value, ast.Tuple)
+                    and len(node.targets[0].elts) == len(node.value.elts)):
+                pairs = list(zip(node.targets[0].elts, node.value.elts))
+            else:
+                pairs = [(t, node.value) for t in node.targets]
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            pairs = [(node.target, node.value)]
+        elif isinstance(node, ast.NamedExpr):
+            pairs = [(node.target, node.value)]
+        for target, value in pairs:
+            if isinstance(target, ast.Name) and _alloc_wt(value) is not None:
+                bound[id(value)] = target.id
+    if len(bound) != len(allocated):
+        return None                   # an allocation this walk cannot name
+    if any(_alloc_wt(a) != "i32" for a in allocated):
+        return None                   # not the pair-half width
+    ordered = [bound[id(a)] for a in allocated]
+    return ordered or None
 
 
 def _classify(value: object, adjacent: set[str]) -> str:

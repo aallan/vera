@@ -1331,6 +1331,78 @@ def test_the_provenance_scan_would_see_a_hand_bound_pair() -> None:
     assert set(unreadable.values()) == {
         guard_emitter_scan.FROM_UNKNOWN}, unreadable
 
+    # The same verdict by the OTHER road.  The shape above never reaches
+    # `_classify` at all — the walk cannot find the argument, so the
+    # fallback that turns an unrecognised expression into the scan's second
+    # declared finding was pinned by nothing, and one line changing it to
+    # `FROM_HELPER` left every cell green (PR #1478 review, F13).  Here the
+    # argument IS found and is simply not a shape the classifier knows.
+    unclassifiable = classify("""
+        def translate(self, clause, env):
+            return self._emit_bind_refine_guard(te, self._pick_ptr())
+    """)
+    assert set(unclassifiable.values()) == {
+        guard_emitter_scan.FROM_UNKNOWN}, unclassifiable
+
+
+#: The ways Python binds an `alloc_local` result to a name.  A scan that
+#: reads only ONE of them is silent on a hand-bound pair written in any
+#: other, which is the same blindness the call-site reading had — an
+#: `ast.AnnAssign` keeps its binding in `target`, not `targets`, so an
+#: annotated spill cleared the adjacency window instead of filling it
+#: (CodeRabbit on PR #1478).
+_PAIR_SPELLINGS: dict[str, str] = {
+    "plain": """
+        def translate(self, clause, env):
+            thrown_local = self.alloc_local("i32")
+            _len_local = self.alloc_local("i32")
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, base, te, where, clause, env)
+    """,
+    "annotated": """
+        def translate(self, clause, env):
+            thrown_local: int = self.alloc_local("i32")
+            _len_local: int = self.alloc_local("i32")
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, base, te, where, clause, env)
+    """,
+    "one statement, tuple": """
+        def translate(self, clause, env):
+            thrown_local, _len_local = (
+                self.alloc_local("i32"), self.alloc_local("i32"))
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, base, te, where, clause, env)
+    """,
+    "walrus": """
+        def translate(self, clause, env):
+            self.emit_local(thrown_local := self.alloc_local("i32"))
+            self.emit_local(_len_local := self.alloc_local("i32"))
+            return self._emit_clause_binder_guard(
+                clause.params[0], thrown_local, base, te, where, clause, env)
+    """,
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_PAIR_SPELLINGS))
+def test_the_adjacency_scan_reads_every_binding_form(spelling: str) -> None:
+    """The same hand-bound pair, in each way Python can write it.
+
+    The scan's job is that a pair bound on adjacency is a FINDING rather
+    than a silence, so a spelling it cannot read is not a gap in coverage
+    but a hole in the answer: the guard would be handed half a `(ptr, len)`
+    value and nothing would say so.  Measured before the fix: `annotated`,
+    `one statement, tuple` and `walrus` all classified as a single local.
+    """
+    import ast as _ast
+    import textwrap
+
+    found = guard_emitter_scan.slot_binding_provenance_for_tree(
+        _ast.parse(textwrap.dedent(_PAIR_SPELLINGS[spelling])), "fixture.py")
+    assert set(found.values()) == {guard_emitter_scan.FROM_ADJACENT_PAIR}, (
+        f"a pair spelled `{spelling}` reads as {sorted(set(found.values()))}, "
+        f"so a hand spill written that way is a silence"
+    )
+
 
 def test_the_scan_sees_an_emitter_wired_through_a_partial() -> None:
     """A roster is only as good as the wiring the scan can see.
@@ -1973,21 +2045,38 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     )
 
 
+#: An initialiser no `ensures` describes, for the cells that have no
+#: constructible value at all.
+_NO_VALUE = "unreachable_value()"
+
 #: Cell types whose REPRESENTATION decides whether code generation
-#: registers a `State` cell at all, with what the record must say.  `Never`
-#: and `Future<Never>` have no representation — not zero-size like `@Unit`,
-#: simply no values — and registration refuses all three with E607, so a
-#: guarded Tier-3 for any of them promises a check inside a function the
-#: module does not contain (CodeRabbit on PR #1478).
-_CELL_REPRESENTATIONS: dict[str, bool] = {
-    "Int": True,
-    "Float64": True,
-    "Option<Int>": True,
-    "String": False,          # a pair: no way through a one-word import
-    "Array<Int>": False,
-    "Unit": False,            # zero-size
-    "Never": False,           # no representation at all
-    "Future<Never>": False,   # transparently the same
+#: registers a `State<T>` cell, each with the value written into it.  The
+#: initialiser is load-bearing, not decoration: `unreachable_value()` is
+#: UNDECLARED, so code generation drops the whole function before
+#: `_register_state_cell` is reached, and the registered rows then compared
+#: a `tier3` claim against a module containing no `$f` at all — the #1268
+#: shape inside the cell that exists to detect it, and a cell that cannot
+#: fail reading as coverage (PR #1478 review, F12).  So a row the backend
+#: REGISTERS carries a real literal and the cell asserts the artifact
+#: exists.  `Never` and its transparent wrappers have no value to write, so
+#: the opaque spelling is the only one there — and those rows are refused
+#: before any artifact is due, which is what they are here to say.
+#:
+#: `Future<Future<Never>>` and an ALIAS to `Never` are listed because the
+#: shared rule answers for them too and nothing said so: both recorded
+#: `tier3` at `8557dc24` beside `Never` itself (PR #1478 review).
+_CELL_REPRESENTATIONS: dict[str, tuple[bool, str, str]] = {
+    # cell type: (registered, initial value, extra declarations)
+    "Int": (True, "5", ""),
+    "Float64": (True, "1.0", ""),
+    "Option<Int>": (True, "Some(1)", ""),
+    "String": (False, _NO_VALUE, ""),      # a pair: no way through a
+    "Array<Int>": (False, _NO_VALUE, ""),  #   one-word import
+    "Unit": (False, _NO_VALUE, ""),        # zero-size
+    "Never": (False, _NO_VALUE, ""),       # no representation at all
+    "Future<Never>": (False, _NO_VALUE, ""),          # transparently same
+    "Future<Future<Never>>": (False, _NO_VALUE, ""),  # and again
+    "NeverAlias": (False, _NO_VALUE, "type NeverAlias = Never;\n\n"),
 }
 
 
@@ -2009,12 +2098,13 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     `State<Future<Never>>` recorded `tier3` while registration dropped the
     function with E607, because the verifier asked only about erasure.
     """
+    expected, init, prelude = _CELL_REPRESENTATIONS[cell_type]
     source = (
-        f"type R = {{ @{cell_type} | true }};\n\n"
+        f"{prelude}type R = {{ @{cell_type} | true }};\n\n"
         "public fn f(@Unit -> @Int)\n"
         "  requires(true)\n  ensures(true)\n  effects(pure)\n"
         "{\n"
-        "  handle[State<R>](@R = unreachable_value()) {\n"
+        f"  handle[State<R>](@R = {init}) {{\n"
         "    put(@R) -> { resume(()) }\n"
         "  } in {\n    1\n  }\n}\n"
     )
@@ -2025,14 +2115,39 @@ def test_the_record_and_registration_agree_about_a_state_cell(
     ran = _cli("run", str(path))
     registered = "uses State with unsupported type" not in (
         ran.stdout + ran.stderr)
+    wat = _cli("compile", "--wat", str(path)).stdout
 
-    assert registered == _CELL_REPRESENTATIONS[cell_type], (
+    assert registered == expected, (
         f"`State<{cell_type}>` registration changed: the backend "
         f"{'registers' if registered else 'refuses'} it"
     )
     if registered:
-        assert "tier3" in statuses, sorted(statuses)
+        # What the row is FOR: a record read against an artifact that
+        # exists.  Without this the whole positive arm passes for a module
+        # the compiler dropped.
+        assert "$f" in wat, (
+            f"`State<{cell_type}>` is registered and the module carries no "
+            f"`$f`, so the record is being compared against nothing"
+        )
+        assert "tier3_unguarded" not in statuses, (
+            f"`State<{cell_type}>` is registered and the record discloses "
+            f"the write as unguarded: {sorted(statuses)}"
+        )
+        if "tier3" in statuses:
+            assert "contract_fail" in wat, (
+                f"`State<{cell_type}>`: the record claims a runtime check "
+                f"and the module carries none"
+            )
+        else:
+            # `@Int` and `@Float64` discharge statically against `true`;
+            # a claim of neither kind would mean the write raised no
+            # obligation at all.
+            assert "verified" in statuses, sorted(statuses)
     else:
+        assert "$f" not in wat, (
+            f"`State<{cell_type}>` is refused at registration and the "
+            f"module carries `$f` anyway"
+        )
         assert "tier3_unguarded" in statuses and "tier3" not in statuses, (
             f"`State<{cell_type}>` is refused at registration and the record "
             f"says {sorted(statuses)}"
