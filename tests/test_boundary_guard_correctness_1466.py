@@ -77,13 +77,17 @@ fault rather than the convention it departs from.
 
 The `@Byte` row's value comes from a `@Byte`-returning helper rather than a
 literal, because the checker coerces an int literal to `@Byte` at some
-positions and not others.  Measured across every route of this file, not
-remembered: THIRTEEN of the twenty-seven refuse the literal — E202 at an
-array element and at five of the six tuple-component routes, E121 at the
-sixth (the return), E213 at a declared constructor field and at both ADT
-sub-pattern routes, E170 at a `Map` value, E314 at a match binding.  A
-literal would have excluded all thirteen for a reason that has nothing to do
-with the guard.
+positions and not others.  Measured across every route of this file rather
+than remembered — and recomputed by
+`test_the_byte_literal_tally_is_what_the_routes_measure`, since a tally
+written out by hand stops being a measurement the moment the axis grows
+(CodeRabbit on PR #1478 caught this one two routes stale): THIRTEEN of the
+twenty-seven refuse the literal.  Seven E202 (an array element, and six of
+the seven tuple-component routes), one E121 (the seventh, the return),
+three E213 (a declared constructor field and both ADT sub-pattern routes),
+one E170 (a `Map` value) and one E314 (a match binding).  A literal would
+have excluded all thirteen for a reason that has nothing to do with the
+guard.
 """
 from __future__ import annotations
 
@@ -1276,23 +1280,25 @@ def test_the_adjacency_window_is_not_one_statement() -> None:
 def test_the_provenance_scan_would_see_a_hand_bound_pair() -> None:
     """And it can FAIL, on the shape that got past two reviews.
 
-    Driven from a scratch module rather than the tree, so the cell says what
-    the WALK does rather than what today's source happens to contain: an
-    allocation in a branch, assigned to a name, handed to the emitter many
-    lines later — which is `_translate_handle_exn`'s shape (F10) — and the
-    same function with the helper instead, which must come back clean.
+    Driven through `slot_binding_provenance_for_tree`, the seam that runs
+    the WHOLE classification on one parsed module: a cell that reached only
+    `_adjacent_pair_names` would stay green if the emitter lookup or the
+    reporting were deleted, which is coverage of a part rather than of the
+    answer (CodeRabbit on PR #1478).  The fixtures are strings, so the cell
+    says what the walk does rather than what today's source contains: an
+    allocation in a branch handed to the emitter lines later — which is
+    `_translate_handle_exn`'s shape (F10) — the same function written
+    through the helper, and a call whose value argument the walk cannot
+    read.
     """
     import ast as _ast
     import textwrap
 
-    def provenance(source: str) -> set[str]:
-        tree = _ast.parse(textwrap.dedent(source))
-        fn = next(n for n in _ast.walk(tree)
-                  if isinstance(n, _ast.FunctionDef))
-        adjacent = guard_emitter_scan._adjacent_pair_names(fn)
-        return adjacent
+    def classify(source: str) -> dict[str, str]:
+        return guard_emitter_scan.slot_binding_provenance_for_tree(
+            _ast.parse(textwrap.dedent(source)), "fixture.py")
 
-    hand_bound = """
+    hand_bound = classify("""
         def translate(self, clause, env):
             if is_pair:
                 thrown_local = self.alloc_local("i32")
@@ -1302,23 +1308,28 @@ def test_the_provenance_scan_would_see_a_hand_bound_pair() -> None:
             more = "lines"
             return self._emit_clause_binder_guard(
                 clause.params[0], thrown_local, base, te, where, clause, env)
-    """
-    through_helper = """
+    """)
+    assert set(hand_bound.values()) == {
+        guard_emitter_scan.FROM_ADJACENT_PAIR}, hand_bound
+
+    through_helper = classify("""
         def translate(self, clause, env):
             thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
             more = "lines"
             return self._emit_clause_binder_guard(
                 clause.params[0], thrown.slot_local, base, te, where,
                 clause, env)
-    """
-    assert "thrown_local" in provenance(hand_bound), (
-        "the walk misses a pair allocated in a branch, which is the shape "
-        "it exists to find"
-    )
-    assert not provenance(through_helper), (
-        "the walk reports the helper form, so a clean tree would be a "
-        "coincidence"
-    )
+    """)
+    assert set(through_helper.values()) == {
+        guard_emitter_scan.FROM_HELPER}, through_helper
+
+    unreadable = classify("""
+        def translate(self, clause, env):
+            thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+            return self._emit_bind_refine_guard(te, elsewhere=thrown)
+    """)
+    assert set(unreadable.values()) == {
+        guard_emitter_scan.FROM_UNKNOWN}, unreadable
 
 
 def test_the_scan_sees_an_emitter_wired_through_a_partial() -> None:
@@ -1959,6 +1970,153 @@ def test_a_pair_state_cell_is_refused_and_says_so(
     assert "uses State with unsupported type" in (ran.stdout + ran.stderr), (
         f"the compiler no longer names the refusal:\n"
         f"{(ran.stdout + ran.stderr)[-400:]}"
+    )
+
+
+#: Cell types whose REPRESENTATION decides whether code generation
+#: registers a `State` cell at all, with what the record must say.  `Never`
+#: and `Future<Never>` have no representation — not zero-size like `@Unit`,
+#: simply no values — and registration refuses all three with E607, so a
+#: guarded Tier-3 for any of them promises a check inside a function the
+#: module does not contain (CodeRabbit on PR #1478).
+_CELL_REPRESENTATIONS: dict[str, bool] = {
+    "Int": True,
+    "Float64": True,
+    "Option<Int>": True,
+    "String": False,          # a pair: no way through a one-word import
+    "Array<Int>": False,
+    "Unit": False,            # zero-size
+    "Never": False,           # no representation at all
+    "Future<Never>": False,   # transparently the same
+}
+
+
+@pytest.mark.parametrize("cell_type", sorted(_CELL_REPRESENTATIONS))
+def test_the_record_and_registration_agree_about_a_state_cell(
+    cell_type: str, tmp_path: Path,
+) -> None:
+    """One rule, two oracles, and a differential rather than a promise.
+
+    `vera.types.state_cell_lowerable` is asked by `_register_state_cell`
+    from the cell's TYPE EXPRESSION and by the verifier from the checker's
+    semantic type.  Two oracles is exactly the shape that drifts invisibly —
+    the verifier's answer is a claim about the backend's — so this drives
+    both over the representations that decide the question and asserts they
+    agree: a cell the backend registers may be recorded `tier3`, and one it
+    refuses must be disclosed.
+
+    Measured before the fix: a refined `State<Never>` and
+    `State<Future<Never>>` recorded `tier3` while registration dropped the
+    function with E607, because the verifier asked only about erasure.
+    """
+    source = (
+        f"type R = {{ @{cell_type} | true }};\n\n"
+        "public fn f(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n"
+        "  handle[State<R>](@R = unreachable_value()) {\n"
+        "    put(@R) -> { resume(()) }\n"
+        "  } in {\n    1\n  }\n}\n"
+    )
+    path = _write(tmp_path, source, "cell.vera")
+    envelope = _envelope(_cli("verify", "--json", str(path)))
+    assert not _errors(envelope), _errors(envelope)
+    statuses = _statuses(envelope)
+    ran = _cli("run", str(path))
+    registered = "uses State with unsupported type" not in (
+        ran.stdout + ran.stderr)
+
+    assert registered == _CELL_REPRESENTATIONS[cell_type], (
+        f"`State<{cell_type}>` registration changed: the backend "
+        f"{'registers' if registered else 'refuses'} it"
+    )
+    if registered:
+        assert "tier3" in statuses, sorted(statuses)
+    else:
+        assert "tier3_unguarded" in statuses and "tier3" not in statuses, (
+            f"`State<{cell_type}>` is refused at registration and the record "
+            f"says {sorted(statuses)}"
+        )
+
+
+#: What the module docstring says the `@Byte` literal tally is, as
+#: `{error code: routes}` with the totals beside it.  A hand-written tally
+#: is a measurement that stops being one: this read "seven of eighteen" and
+#: then "five of the six tuple routes" while the file grew to twenty-seven
+#: routes (CodeRabbit on PR #1478).
+_BYTE_LITERAL_TALLY = {"E202": 7, "E121": 1, "E213": 3, "E170": 1, "E314": 1}
+_BYTE_LITERAL_TOTALS = (13, 27)
+
+
+def test_the_byte_literal_tally_is_what_the_routes_measure(
+    tmp_path: Path,
+) -> None:
+    """The docstring's `@Byte` count, recomputed from the routes.
+
+    The row uses a helper because a literal is refused at some positions;
+    saying WHICH is a measurement, and a measurement written into prose
+    drifts the moment the axis grows.  So it is taken again here, per route,
+    from the compiler.
+    """
+    import re as _re
+
+    literal = _Repr(
+        decls=_REPRS["byte"].decls, base="Byte", good="3", bad="200",
+        repr_class="scalar", safe="3", witness="@Byte.0 < 10",
+    )
+    refused: dict[str, int] = {}
+    routes = 0
+    for _position, entries in sorted(_ALL_ROUTES.items()):
+        for route in entries:
+            routes += 1
+            source = route.build(literal.instance("good"))  # type: ignore[operator]
+            checked = _cli(
+                "check", str(_write(tmp_path, source, "byte.vera")))
+            if checked.returncode == 0:
+                continue
+            found = _re.search(
+                r"\[(E\d+)\]", checked.stdout + checked.stderr)
+            code = found.group(1) if found else "?"
+            refused[code] = refused.get(code, 0) + 1
+    assert (sum(refused.values()), routes) == _BYTE_LITERAL_TOTALS, (
+        f"the docstring says {_BYTE_LITERAL_TOTALS[0]} of "
+        f"{_BYTE_LITERAL_TOTALS[1]} routes refuse a `@Byte` literal; the "
+        f"compiler refuses {sum(refused.values())} of {routes}"
+    )
+    assert refused == _BYTE_LITERAL_TALLY, (
+        f"the docstring's per-code tally is {_BYTE_LITERAL_TALLY} and the "
+        f"measurement is {refused}"
+    )
+    text = __doc__ or ""
+    assert "THIRTEEN of the" in text and "Seven E202" in text, (
+        "the docstring no longer states the tally this cell recomputes"
+    )
+
+
+def test_a_refined_function_type_has_the_closure_representation() -> None:
+    """A refinement over a function type is a closure pointer, like the bare
+    spelling.
+
+    `wasm_representation` tested the WRAPPED type in its function-type
+    branch where every branch above it tests the unwrapped base, so a
+    `{ fn(…) | … }` answered "unsupported" and anything keyed on that read
+    it as having no representation (CodeRabbit on PR #1478).
+    """
+    from vera import ast as vera_ast
+    from vera.types import (
+        BOOL,
+        FunctionType,
+        RefinedType,
+        wasm_representation,
+    )
+
+    bare = FunctionType((BOOL,), BOOL, frozenset())
+    refined = RefinedType(bare, vera_ast.BoolLit(value=True))
+    assert wasm_representation(bare) == "i32"
+    assert wasm_representation(refined) == "i32", (
+        "a refinement over a function type answers "
+        f"{wasm_representation(refined)!r}, so the branch is reading the "
+        f"wrapper rather than the base"
     )
 
 

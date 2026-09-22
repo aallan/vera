@@ -72,6 +72,7 @@ from vera.smt import (
 )
 from vera.types import (
     erases_to_unit,
+    has_no_wasm_representation,
     is_pair_represented,
     state_cell_lowerable,
     BOOL,
@@ -14257,7 +14258,7 @@ class ContractVerifier:
         if site not in _STATE_WRITE_SITES:
             return True
         return state_cell_lowerable(
-            representable=not erases_to_unit(ty),
+            representable=not has_no_wasm_representation(ty),
             pair=is_pair_represented(ty),
         )
 

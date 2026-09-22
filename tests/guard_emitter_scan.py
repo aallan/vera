@@ -341,108 +341,123 @@ def slot_binding_provenance() -> dict[str, str]:
     for path in codegen_sources():
         rel = str(path).split(f"{os.sep}vera{os.sep}")[-1].replace(os.sep, "/")
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            # Every assignment in this function, by target name.
-            assigned: dict[str, list[ast.AST]] = {}
+        out.update(slot_binding_provenance_for_tree(tree, rel))
+    return out
 
-            def _record(target: ast.AST, value: ast.AST) -> None:
-                if isinstance(target, ast.Name):
-                    assigned.setdefault(target.id, []).append(value)
-                elif isinstance(target, (ast.Tuple, ast.List)):
-                    # `ptr, length = a, b` pairs element-wise; anything else
-                    # (a helper's `.locals`, a call) binds every name to the
-                    # one value, which is what the classification needs.
-                    if (isinstance(value, (ast.Tuple, ast.List))
-                            and len(value.elts) == len(target.elts)):
-                        for t, v in zip(target.elts, value.elts):
-                            _record(t, v)
-                    else:
-                        for position, t in enumerate(target.elts):
-                            _record(t, _Unpack(value, position))
 
-            for node in ast.walk(fn):
-                if isinstance(node, (ast.ListComp, ast.SetComp,
-                                     ast.GeneratorExp)):
-                    # A comprehension binds its own targets, and the list it
-                    # builds holds its element expression — the closure
-                    # prologue collects its refined formals that way.
-                    for gen in node.generators:
-                        _record(gen.target, gen.iter)
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        value = node.value
-                        if isinstance(value, (ast.ListComp, ast.SetComp)):
-                            value = value.elt
-                        _record(target, value)
-                elif isinstance(node, ast.AnnAssign) and node.value is not None:
+def slot_binding_provenance_for_tree(
+    tree: ast.AST, rel: str,
+) -> dict[str, str]:
+    """:func:`slot_binding_provenance` for ONE parsed module.
+
+    The seam a fixture can drive: a cell that reaches only
+    :func:`_adjacent_pair_names` stays green if the emitter lookup or the
+    reporting is deleted, so the classification has to be callable on a
+    scratch module rather than only on the tree (CodeRabbit on PR #1478).
+    """
+    out: dict[str, str] = {}
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # Every assignment in this function, by target name.
+        assigned: dict[str, list[ast.AST]] = {}
+
+        def _record(target: ast.AST, value: ast.AST) -> None:
+            if isinstance(target, ast.Name):
+                assigned.setdefault(target.id, []).append(value)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                # `ptr, length = a, b` pairs element-wise; anything else
+                # (a helper's `.locals`, a call) binds every name to the
+                # one value, which is what the classification needs.
+                if (isinstance(value, (ast.Tuple, ast.List))
+                        and len(value.elts) == len(target.elts)):
+                    for t, v in zip(target.elts, value.elts):
+                        _record(t, v)
+                else:
+                    for position, t in enumerate(target.elts):
+                        _record(t, _Unpack(value, position))
+
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.ListComp, ast.SetComp,
+                                 ast.GeneratorExp)):
+                # A comprehension binds its own targets, and the list it
+                # builds holds its element expression — the closure
+                # prologue collects its refined formals that way.
+                for gen in node.generators:
+                    _record(gen.target, gen.iter)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
                     value = node.value
                     if isinstance(value, (ast.ListComp, ast.SetComp)):
                         value = value.elt
-                    _record(node.target, value)
-                elif isinstance(node, (ast.For, ast.AsyncFor)):
-                    _record(node.target, node.iter)
-                elif (isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
-                        and node.func.attr == "append"
-                        and isinstance(node.func.value, ast.Name)
-                        and len(node.args) == 1):
-                    # A local collected into a list and unpacked from it by a
-                    # later `for` is the shape the two boundary prologues use
-                    # (`refined_param_checks.append((ptr_idx, param_te))`), so
-                    # the append IS the assignment as far as provenance goes.
-                    assigned.setdefault(node.func.value.id, []).append(
-                        node.args[0])
-            params = {a.arg for a in fn.args.args} | {
-                a.arg for a in fn.args.kwonlyargs}
-            adjacent = _adjacent_pair_names(fn)
-            # The local a BOUND emitter is called under, derived from its
-            # assignment in this function rather than guessed by name.
-            bound_emitters = {
-                name for name, values in assigned.items()
-                if any(isinstance(v, ast.Attribute)
-                       and v.attr == BOUND_EMITTER_ATTRIBUTE for v in values)
+                    _record(target, value)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                value = node.value
+                if isinstance(value, (ast.ListComp, ast.SetComp)):
+                    value = value.elt
+                _record(node.target, value)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                _record(node.target, node.iter)
+            elif (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append"
+                    and isinstance(node.func.value, ast.Name)
+                    and len(node.args) == 1):
+                # A local collected into a list and unpacked from it by a
+                # later `for` is the shape the two boundary prologues use
+                # (`refined_param_checks.append((ptr_idx, param_te))`), so
+                # the append IS the assignment as far as provenance goes.
+                assigned.setdefault(node.func.value.id, []).append(
+                    node.args[0])
+        params = {a.arg for a in fn.args.args} | {
+            a.arg for a in fn.args.kwonlyargs}
+        adjacent = _adjacent_pair_names(fn)
+        # The local a BOUND emitter is called under, derived from its
+        # assignment in this function rather than guessed by name.
+        bound_emitters = {
+            name for name, values in assigned.items()
+            if any(isinstance(v, ast.Attribute)
+                   and v.attr == BOUND_EMITTER_ATTRIBUTE for v in values)
+        }
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if (isinstance(node.func, ast.Attribute)
+                    and node.func.attr in SLOT_BINDING_EMITTERS):
+                index, keyword = SLOT_BINDING_EMITTERS[node.func.attr]
+            elif (isinstance(node.func, ast.Name)
+                    and node.func.id in bound_emitters):
+                index, keyword = BOUND_EMITTER_POSITION
+            else:
+                continue
+            key = f"{rel}:{fn.name}:{node.lineno}"
+            arg: object
+            if len(node.args) > index:
+                arg = node.args[index]
+            else:
+                by_keyword = [k.value for k in node.keywords
+                              if k.arg == keyword]
+                if not by_keyword:
+                    # A call whose value argument this walk cannot read
+                    # is a site nobody has classified, which is the
+                    # shrug `FROM_UNKNOWN` exists to refuse; skipping it
+                    # dropped a keyword call silently (PR #1478 review,
+                    # F11).
+                    out[key] = FROM_UNKNOWN
+                    continue
+                arg = by_keyword[0]
+            if isinstance(arg, ast.Name) and arg.id in params:
+                out[key] = FROM_PARAMETER
+                continue
+            if isinstance(arg, ast.Name) and arg.id in adjacent:
+                out[key] = FROM_ADJACENT_PAIR
+                continue
+            kinds = {
+                _classify(v, adjacent) for v in _resolve(arg, assigned)
             }
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                if (isinstance(node.func, ast.Attribute)
-                        and node.func.attr in SLOT_BINDING_EMITTERS):
-                    index, keyword = SLOT_BINDING_EMITTERS[node.func.attr]
-                elif (isinstance(node.func, ast.Name)
-                        and node.func.id in bound_emitters):
-                    index, keyword = BOUND_EMITTER_POSITION
-                else:
-                    continue
-                key = f"{rel}:{fn.name}:{node.lineno}"
-                arg: object
-                if len(node.args) > index:
-                    arg = node.args[index]
-                else:
-                    by_keyword = [k.value for k in node.keywords
-                                  if k.arg == keyword]
-                    if not by_keyword:
-                        # A call whose value argument this walk cannot read
-                        # is a site nobody has classified, which is the
-                        # shrug `FROM_UNKNOWN` exists to refuse; skipping it
-                        # dropped a keyword call silently (PR #1478 review,
-                        # F11).
-                        out[key] = FROM_UNKNOWN
-                        continue
-                    arg = by_keyword[0]
-                if isinstance(arg, ast.Name) and arg.id in params:
-                    out[key] = FROM_PARAMETER
-                    continue
-                if isinstance(arg, ast.Name) and arg.id in adjacent:
-                    out[key] = FROM_ADJACENT_PAIR
-                    continue
-                kinds = {
-                    _classify(v, adjacent) for v in _resolve(arg, assigned)
-                }
-                out[key] = (FROM_ADJACENT_PAIR
-                            if FROM_ADJACENT_PAIR in kinds
-                            else sorted(kinds)[0])
+            out[key] = (FROM_ADJACENT_PAIR
+                        if FROM_ADJACENT_PAIR in kinds
+                        else sorted(kinds)[0])
     return out
 
 

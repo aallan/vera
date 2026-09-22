@@ -507,7 +507,11 @@ def wasm_representation(t: Type) -> str | None:
             return "i32_pair"
         if bt is UNIT:
             return None
-    if isinstance(t, FunctionType):
+    if isinstance(bt, FunctionType):
+        # The UNWRAPPED base, like every branch above it: a refinement over a
+        # function type is a closure pointer exactly as the bare spelling is,
+        # and testing `t` here answered "unsupported" for the refined one
+        # (CodeRabbit on PR #1478).
         return "i32"  # closure pointer
     return "unsupported"
 
@@ -538,6 +542,27 @@ def is_pair_represented(ty: Type) -> bool:
             return is_pair_represented(base.type_args[0])
         return base.name == "Array"
     return False
+
+
+def has_no_wasm_representation(ty: Type) -> bool:
+    """True if code generation has NO width for *ty* at all.
+
+    Wider than :func:`erases_to_unit`, which answers "zero-size": a `Never`
+    has no values and therefore no representation either, and neither has a
+    `Future<Never>`, which is representation-transparent (#841).  Code
+    generation answers the same way through its own walk —
+    `_type_expr_to_wasm_type` returns `"unsupported"` for both — so a
+    consumer that asks only about erasure believes a cell is lowerable that
+    registration refuses with E607 (CodeRabbit on PR #1478: a refined
+    `State<Never>` recorded a guarded Tier-3 for a function the backend
+    drops).
+    """
+    if erases_to_unit(ty):
+        return True
+    base = base_type(ty)
+    if isinstance(base, AdtType) and base.name == "Future" and base.type_args:
+        return has_no_wasm_representation(base.type_args[0])
+    return base is NEVER
 
 
 def state_cell_lowerable(*, representable: bool, pair: bool) -> bool:
