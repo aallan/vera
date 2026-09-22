@@ -141,16 +141,39 @@ def local_layout_tables() -> dict[str, list[str]]:
 
 #: The emitters that take a guarded value's LOCAL as their second positional
 #: argument.  Each one binds `@<base>.0` to whatever local it is handed, so
-#: every one of them is a place the representation question is asked.
-#: Each one binds `@<base>.0` to the local at the given POSITION in its
-#: argument list — `_emit_refinement_check` takes its value fourth, after the
-#: context, the predicate and the base name — so the position is data here
-#: rather than an assumption that they all agree.
-SLOT_BINDING_EMITTERS: dict[str, int] = {
-    "_emit_bind_refine_guard": 1,
-    "_emit_refinement_check": 3,
-    "_emit_clause_binder_guard": 1,
+#: every one of them is a place the representation question is asked — and
+#: each takes it at its OWN position, `_emit_refinement_check` fourth after
+#: the context, the predicate and the base name, so the position and the
+#: keyword are data here rather than an assumption that they agree.
+#: `test_the_slot_binding_roster_matches_the_emitters` holds every entry to
+#: the signature it names.
+SLOT_BINDING_EMITTERS: dict[str, tuple[int, str]] = {
+    "_emit_bind_refine_guard": (1, "value_local"),
+    "_emit_refinement_check": (3, "value_local"),
+    "_emit_clause_binder_guard": (1, "value_local"),
+    "_emit_boundary_refinement_guard": (2, "value_local"),
+    # Not a slot binding of its own: its `value_local` is the TUPLE's
+    # pointer, and the guarded component's locals are derived inside it
+    # through `bind_slot_value_from_field`.  Rostered anyway, because the
+    # cell that holds this roster reads every signature carrying a
+    # `value_local` and an unexplained absence is what let
+    # `_emit_boundary_refinement_guard` sit outside it.
+    "_emit_component_refinement_guards": (3, "value_local"),
 }
+
+#: The attribute a BOUND emitter is taken from before being called under a
+#: local name — `emitter = self._refinement_guard_emitter`, then
+#: `emitter(te, local, head, env)` (#1268).  That call is an `ast.Name`, so a
+#: scan matching attribute calls alone sees nothing at the one position whose
+#: emitter is INSTALLED rather than called by name, and that position binds a
+#: pair (PR #1478 review, F11).  The local's name is derived per function
+#: from this assignment rather than guessed.
+BOUND_EMITTER_ATTRIBUTE = "_refinement_guard_emitter"
+
+#: Where a bound emitter takes its value local: the callable is
+#: `_emit_boundary_refinement_guard` with `ctx` already bound, so its third
+#: parameter arrives second.
+BOUND_EMITTER_POSITION = (1, "value_local")
 
 #: How a guarded value's local may legitimately come to be, as
 #: :func:`slot_binding_provenance` classifies it.
@@ -213,14 +236,19 @@ def _resolve(
 
 
 def _adjacent_pair_names(fn: ast.AST) -> set[str]:
-    """Names assigned by an ``alloc_local("i32")`` whose very next statement
-    allocates another one.
+    """Names assigned by an ``alloc_local("i32")`` with another one beside
+    it — two halves of a hand-bound pair.
 
-    "Two calls in a row" read literally, from the BLOCK rather than from the
-    function: counting `alloc_local("i32")` calls anywhere in the enclosing
-    function calls every i32 local in a function that also spills a pair an
-    adjacent pair, which is not what the phrase means and would report a
+    Read from the BLOCK rather than from the enclosing function: counting
+    `alloc_local("i32")` calls anywhere in a function that also spills a
+    pair calls every i32 local in it an adjacent pair, which reported a
     finding for a site that has none.
+
+    "Beside it" means no OTHER allocation lands between them, not that the
+    two lines touch: a `msg = head` written in the middle separates nothing,
+    and a window of exactly one statement let that hide a pair (PR #1478
+    review, F11).  Both names are reported, since either may be the one the
+    guard is handed.
     """
     names: set[str] = set()
     for node in ast.walk(fn):
@@ -228,15 +256,27 @@ def _adjacent_pair_names(fn: ast.AST) -> set[str]:
             block = getattr(node, field, None)
             if not isinstance(block, list):
                 continue
-            for first, second in zip(block, block[1:]):
-                if not (isinstance(first, ast.Assign)
-                        and isinstance(second, ast.Assign)
-                        and _alloc_wt(first.value) == "i32"
-                        and _alloc_wt(second.value) == "i32"):
-                    continue
-                for target in first.targets:
-                    if isinstance(target, ast.Name):
-                        names.add(target.id)
+            pending: list[str] = []
+            for stmt in block:
+                allocated = [
+                    n for n in ast.walk(stmt) if _alloc_wt(n) is not None
+                ]
+                if not allocated:
+                    continue          # allocates nothing; separates nothing
+                targets = [
+                    t.id for t in getattr(stmt, "targets", [])
+                    if isinstance(t, ast.Name)
+                ]
+                if (isinstance(stmt, ast.Assign) and len(allocated) == 1
+                        and _alloc_wt(stmt.value) == "i32" and targets):
+                    if pending:
+                        names.update(pending)
+                        names.update(targets)
+                    pending = targets
+                else:
+                    # Some other allocation: whatever came before it is no
+                    # longer beside what comes after.
+                    pending = []
     return names
 
 
@@ -357,16 +397,40 @@ def slot_binding_provenance() -> dict[str, str]:
             params = {a.arg for a in fn.args.args} | {
                 a.arg for a in fn.args.kwonlyargs}
             adjacent = _adjacent_pair_names(fn)
+            # The local a BOUND emitter is called under, derived from its
+            # assignment in this function rather than guessed by name.
+            bound_emitters = {
+                name for name, values in assigned.items()
+                if any(isinstance(v, ast.Attribute)
+                       and v.attr == BOUND_EMITTER_ATTRIBUTE for v in values)
+            }
             for node in ast.walk(fn):
-                if not (isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Attribute)
+                if not isinstance(node, ast.Call):
+                    continue
+                if (isinstance(node.func, ast.Attribute)
                         and node.func.attr in SLOT_BINDING_EMITTERS):
+                    index, keyword = SLOT_BINDING_EMITTERS[node.func.attr]
+                elif (isinstance(node.func, ast.Name)
+                        and node.func.id in bound_emitters):
+                    index, keyword = BOUND_EMITTER_POSITION
+                else:
                     continue
-                index = SLOT_BINDING_EMITTERS[node.func.attr]
-                if len(node.args) <= index:
-                    continue
-                arg = node.args[index]
                 key = f"{rel}:{fn.name}:{node.lineno}"
+                arg: object
+                if len(node.args) > index:
+                    arg = node.args[index]
+                else:
+                    by_keyword = [k.value for k in node.keywords
+                                  if k.arg == keyword]
+                    if not by_keyword:
+                        # A call whose value argument this walk cannot read
+                        # is a site nobody has classified, which is the
+                        # shrug `FROM_UNKNOWN` exists to refuse; skipping it
+                        # dropped a keyword call silently (PR #1478 review,
+                        # F11).
+                        out[key] = FROM_UNKNOWN
+                        continue
+                    arg = by_keyword[0]
                 if isinstance(arg, ast.Name) and arg.id in params:
                     out[key] = FROM_PARAMETER
                     continue

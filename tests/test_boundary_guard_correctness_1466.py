@@ -1166,6 +1166,113 @@ def test_no_guard_binds_a_pair_on_adjacency() -> None:
     )
 
 
+def test_the_slot_binding_roster_matches_the_emitters() -> None:
+    """Every rostered emitter exists and takes its value where the roster
+    says, and every emitter that takes one is rostered.
+
+    The family's other two rosters are held to the tree; this one was read
+    by nothing, so `_emit_boundary_refinement_guard` could sit outside it
+    with nobody the wiser (PR #1478 review, F11).  Held both ways here: each
+    entry's function is found in `vera/` and its parameter at the recorded
+    index carries the recorded name, and any method whose signature has a
+    `value_local` parameter must be in the roster.
+    """
+    import ast as _ast
+
+    found: dict[str, list[str]] = {}
+    for path in guard_emitter_scan.codegen_sources():
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.FunctionDef):
+                found[node.name] = [a.arg for a in node.args.args]
+
+    for name, (index, keyword) in sorted(
+            guard_emitter_scan.SLOT_BINDING_EMITTERS.items()):
+        assert name in found, f"{name} is rostered and does not exist"
+        args = found[name]
+        # `self` is argument zero; the roster counts the CALL's arguments.
+        position = index + 1
+        assert position < len(args) and args[position] == keyword, (
+            f"{name} takes {keyword!r} at call position {index}, and its "
+            f"signature reads {args}"
+        )
+
+    unrostered = sorted(
+        name for name, args in found.items()
+        if "value_local" in args
+        and name not in guard_emitter_scan.SLOT_BINDING_EMITTERS
+        and not name.startswith("bind_slot_value")
+    )
+    assert not unrostered, (
+        f"{unrostered} take a guarded value's local and are not in "
+        f"`SLOT_BINDING_EMITTERS`, so the provenance scan does not read them"
+    )
+
+
+def test_the_provenance_scan_reaches_the_bound_emitter() -> None:
+    """The #1268 position is INSTALLED rather than called by name, and it
+    binds a pair.
+
+    `emitter = self._refinement_guard_emitter` then `emitter(te, local, …)`
+    is an `ast.Name` call, invisible to a scan matching attribute calls —
+    so that one position contributed no provenance key at all and a hand
+    spill there was green (PR #1478 review, F11).  The local's name is
+    derived from the assignment rather than guessed, and the cell asserts
+    the site is now classified.
+    """
+    provenance = guard_emitter_scan.slot_binding_provenance()
+    payload_sites = [
+        site for site in provenance
+        if "_emit_exn_payload_refine_guard" in site
+    ]
+    assert payload_sites, (
+        "the `throw` payload's bound emitter contributes no provenance, so "
+        "the one position whose emitter is installed is unread"
+    )
+    # Both branches of that site are read: the pair takes the helper, the
+    # scalar one local of its own width.  What matters is that neither is a
+    # finding, which is what the site being invisible used to guarantee.
+    assert all(
+        provenance[s] in (guard_emitter_scan.FROM_HELPER,
+                          guard_emitter_scan.FROM_ONE_LOCAL,
+                          guard_emitter_scan.FROM_COMPUTED_WIDTH)
+        for s in payload_sites
+    ), {s: provenance[s] for s in payload_sites}
+
+
+def test_the_adjacency_window_is_not_one_statement() -> None:
+    """A statement between the two allocations does not separate them.
+
+    What makes a pair a pair is that no OTHER allocation lands between its
+    halves, not that the two lines touch — a window of exactly one statement
+    hid a pair behind a `msg = head` (PR #1478 review, F11).  Driven from
+    strings, over the shapes that must be found and the ones that must not.
+    """
+    import ast as _ast
+
+    def names(*body: str) -> list[str]:
+        src = ("def f(self):\n    if pair:\n"
+               + "".join(f"        {line}\n" for line in body)
+               + "    return 1\n")
+        fn = next(n for n in _ast.walk(_ast.parse(src))
+                  if isinstance(n, _ast.FunctionDef))
+        return sorted(guard_emitter_scan._adjacent_pair_names(fn))
+
+    touching = names('ptr = self.alloc_local("i32")',
+                     'ln = self.alloc_local("i32")')
+    assert touching == ["ln", "ptr"], touching
+    spaced = names('ptr = self.alloc_local("i32")', "msg = head",
+                   "other = 1", 'ln = self.alloc_local("i32")')
+    assert spaced == ["ln", "ptr"], spaced
+    assert not names('b = bind_slot_value_from_stack(self.alloc_local, "p")')
+    assert not names('ptr = self.alloc_local("i32")', "msg = head")
+    # An allocation of another width between them means the two i32s are not
+    # consecutive locals at all, so they cannot be a working pair.
+    assert not names('ptr = self.alloc_local("i32")',
+                     'x = self.alloc_local("i64")',
+                     'ln = self.alloc_local("i32")')
+
+
 def test_the_provenance_scan_would_see_a_hand_bound_pair() -> None:
     """And it can FAIL, on the shape that got past two reviews.
 
