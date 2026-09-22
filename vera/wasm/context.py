@@ -39,6 +39,7 @@ from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
     StateClauseEntry,
     StringPool,
     WasmSlotEnv,
+    bind_slot_value_from_stack,
     contains_shadow_push,
     gc_shadow_push,
     is_gc_pointer_base,
@@ -1497,11 +1498,16 @@ class WasmContext(
                     return None
                 # Pair bindings (String, Array<T>) need two locals: (ptr, len)
                 if self._is_pair_type_name(type_name):
-                    ptr_idx = self.alloc_local("i32")
-                    len_idx = self.alloc_local("i32")
+                    # The whole representation, through the shared binding
+                    # (#1466): a pair is two consecutive locals and the slot
+                    # env reads the length from the one after the pointer, so
+                    # the adjacency is a property of the type rather than of
+                    # two `alloc_local` calls written in a row.
+                    binding = bind_slot_value_from_stack(
+                        self.alloc_local, "i32_pair")
+                    ptr_idx = binding.slot_local
                     stmt_instrs.extend(val_instrs)
-                    stmt_instrs.append(f"local.set {len_idx}")
-                    stmt_instrs.append(f"local.set {ptr_idx}")
+                    stmt_instrs.extend(binding.load)
                     # #846: a host-import pair (``IO.args`` → Array<String>,
                     # ``IO.read_line`` → String) is rooted only host-side
                     # during construction, so without a root here the next

@@ -8,7 +8,7 @@ from vera import ast, narrowing, naming
 from vera.monomorphize import pipe_desugared_call, resolve_type_alias
 from vera.types import TO_STRING_BUILTINS
 from vera.skip import AdtEqNotDerivableError, CodegenInvariantError
-from vera.wasm.helpers import WasmSlotEnv, state_type_arg
+from vera.wasm.helpers import WasmSlotEnv, field_layout, state_type_arg
 
 
 class OperatorsMixin:
@@ -1022,19 +1022,17 @@ class OperatorsMixin:
         Mirrors the construction site (``_translate_constructor_call``): tag at
         offset 0 (4 bytes), then each field aligned to its natural alignment.
         """
-        # #1043: `"unit"` (a zero-size Unit field) is size 0 / align 1, so it
-        # neither aligns nor advances the offset — the same convention
-        # construction (`_translate_constructor_call`) uses.
-        sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
+        # Through `helpers.field_layout`, the ONE rule construction lays an
+        # object out by, rather than a copy of its widths: `"unit"` (a
+        # zero-size Unit field) is size 0 / align 1 there, so it neither
+        # aligns nor advances the offset, which is the convention
+        # `_translate_constructor_call` uses (#1043).
         offset = 4
         out: list[tuple[int, str]] = []
         for ftype in field_type_names:
             wt = self._eq_field_wasm_type(ftype)
-            align = aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
-            out.append((offset, wt))
-            offset += sizes.get(wt, 8)
+            field_off, offset = field_layout(offset, wt)
+            out.append((field_off, wt))
         return out
 
     def _eq_field_wasm_type(self, ftype: str) -> str:

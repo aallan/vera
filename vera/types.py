@@ -470,6 +470,115 @@ def base_type(ty: Type) -> Type:
     return ty
 
 
+def wasm_representation(t: Type) -> str | None:
+    """Map a Vera Type to its WAT value type string.
+
+    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool/Byte/ADT,
+    "i32_pair" for String and Array, None for Unit, or "unsupported" for a
+    type with no runtime representation.
+
+    Here rather than in the backend because BOTH sides ask it: code
+    generation for every width decision it makes, and the verifier for the
+    one question a status depends on — whether a `State` cell of this
+    representation is registered at all (#1439).  `vera/wasm/helpers.py`
+    keeps the name `wasm_type` its callers know and delegates here, the way
+    :func:`erases_to_unit` below already mirrors codegen's erasure.
+    """
+    if isinstance(t, PrimitiveType):
+        if t is INT or t is NAT:
+            return "i64"
+        if t is FLOAT64:
+            return "f64"
+        if t is BOOL:
+            return "i32"
+        if t is STRING:
+            return "i32_pair"
+        if t is UNIT:
+            return None
+    bt = base_type(t)
+    if isinstance(bt, PrimitiveType):
+        if bt is INT or bt is NAT:
+            return "i64"
+        if bt is FLOAT64:
+            return "f64"
+        if bt is BOOL:
+            return "i32"
+        if bt is STRING:
+            return "i32_pair"
+        if bt is UNIT:
+            return None
+    if isinstance(bt, FunctionType):
+        # The UNWRAPPED base, like every branch above it: a refinement over a
+        # function type is a closure pointer exactly as the bare spelling is,
+        # and testing `t` here answered "unsupported" for the refined one
+        # (CodeRabbit on PR #1478).
+        return "i32"  # closure pointer
+    return "unsupported"
+
+
+#: A `State<T>` cell's value crosses four host imports — `state_get_X (result W)`,
+#: `state_put_X (param W)` and the two scope markers — whose signatures carry
+#: ONE word.  So a `(ptr, len)` pair cannot be a cell however well the write
+#: guard could bind it: the value has no way through the import, which is a
+#: property of the cell's ABI rather than of the guard.  `vera/codegen`
+#: refuses one at registration and this is the rule both sides read, so the
+#: obligation stream cannot record a runtime check for a write in a function
+#: code generation never emits.  The rule is :func:`state_cell_lowerable`.
+
+
+def is_pair_represented(ty: Type) -> bool:
+    """True if a value of *ty* occupies TWO WASM locals — a `(ptr, len)`
+    pair.
+
+    `String` and `Array<T>`, through the transparent wrappers: a refinement
+    over one is one, and `Future<T>` has its payload's representation (#841),
+    exactly as :func:`erases_to_unit` reads them.
+    """
+    base = base_type(ty)
+    if isinstance(base, PrimitiveType):
+        return base is STRING
+    if isinstance(base, AdtType):
+        if base.name == "Future" and len(base.type_args) == 1:
+            return is_pair_represented(base.type_args[0])
+        return base.name == "Array"
+    return False
+
+
+def has_no_wasm_representation(ty: Type) -> bool:
+    """True if code generation has NO width for *ty* at all.
+
+    Wider than :func:`erases_to_unit`, which answers "zero-size": a `Never`
+    has no values and therefore no representation either, and neither has a
+    `Future<Never>`, which is representation-transparent (#841).  Code
+    generation answers the same way through its own walk —
+    `_type_expr_to_wasm_type` returns `"unsupported"` for both — so a
+    consumer that asks only about erasure believes a cell is lowerable that
+    registration refuses with E607 (CodeRabbit on PR #1478: a refined
+    `State<Never>` recorded a guarded Tier-3 for a function the backend
+    drops).
+    """
+    if erases_to_unit(ty):
+        return True
+    base = base_type(ty)
+    if isinstance(base, AdtType) and base.name == "Future" and base.type_args:
+        return has_no_wasm_representation(base.type_args[0])
+    return base is NEVER
+
+
+def state_cell_lowerable(*, representable: bool, pair: bool) -> bool:
+    """Whether code generation registers a `State<T>` cell whose value is
+    *representable* at all and is or is not a *pair* (#1439).
+
+    THE rule, once, for two components that answer its inputs with different
+    oracles — `_register_state_cell` from the cell's TYPE EXPRESSION through
+    `_type_expr_to_wasm_type`, the verifier from the checker's semantic type
+    through :func:`erases_to_unit` and :func:`is_pair_represented`.  What
+    legitimately differs is the oracle; what must not is the answer, because
+    the verifier's answer is a claim about the backend's.
+    """
+    return representable and not pair
+
+
 def erases_to_unit(ty: Type) -> bool:
     """True if ``ty`` has NO WASM representation — it erases to no runtime local.
 

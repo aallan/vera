@@ -21,6 +21,7 @@ from vera.wasm.helpers import (
     StateClauseEntry,
     WasmSlotEnv,
     _is_host_handle_type,
+    bind_slot_value_from_stack,
     gc_shadow_push,
 )
 
@@ -2203,21 +2204,41 @@ class CallsHandlersMixin:
 
         Reads the cell's DECLARED type expression rather than
         `family_base`, which strips the refinement by design.  Returns
-        *value* untouched for an unrefined cell, or one whose base the
-        lowering cannot emit for.
+        *value* untouched for an unrefined cell, or one whose base no guard
+        can be emitted for at all.
+
+        The value is bound by its REPRESENTATION (#1439).  This site used to
+        ask `_refined_component_wasm_type`, which answers only for the five
+        bases a CONSTRUCTION store can tee into a scalar local — so a cell
+        over a `Map`, a `Set`, a `Tuple` or an ADT was declined although its
+        value is exactly the one i32 the store already tees, while the
+        verifier went on recording the write `tier3`: a claim with no check
+        behind it, and the artifact admitted a value the cell's own type
+        forbids.  The roster is about construction stores; a write boundary
+        binds the value where it already is, so the only question here is
+        how many locals it occupies.
+
+        A cell whose representation is a `(ptr, len)` pair never reaches
+        this site — `_register_state_cell` refuses one with E607 before any
+        body compiles — so the binding below is a single `local.tee` in
+        every reachable case.  It goes through the shared helper anyway,
+        because "one local" is a property of the type rather than of this
+        emitter, and that is the whole defect.
         """
         if te is None:
             return value
         if "State write boundary" not in narrowing.REFINED_BIND_GUARDED_SITES:
             return value
-        wasm_ty = self._refined_component_wasm_type(te, self._alias_env)
+        wasm_ty = self._refined_slot_wasm_type(te)
         if wasm_ty is None:
             return value
-        tmp = self.alloc_local(wasm_ty)
-        guard = self._emit_bind_refine_guard(te, tmp, where, arg, env)
+        binding = bind_slot_value_from_stack(
+            self.alloc_local, wasm_ty, keep_on_stack=True)
+        guard = self._emit_bind_refine_guard(
+            te, binding.slot_local, where, arg, env)
         if not guard:
             return value
-        return [*value, f"local.tee {tmp}", *guard]
+        return [*value, *binding.load, *guard, *binding.tail]
 
     def _emit_clause_binder_guard(
         self,
@@ -2480,22 +2501,16 @@ class CallsHandlersMixin:
             "  payload"
         )
         if self._is_pair_type_name(cell.base):
-            # A `String`-based payload is (ptr, len) in two CONSECUTIVE
-            # locals, checked over the ptr — the same shape the lifted
-            # closure's i32_pair return guard uses.
-            ptr_local = self.alloc_local("i32")
-            len_local = self.alloc_local("i32")
-            guard = emitter(payload_te, ptr_local, head, env)
+            # A `String`-based payload is a pair, spilled through the shared
+            # binding (#1466) — the same call the named and closure return
+            # guards make, rather than the six instructions it returns
+            # written out again here.
+            binding = bind_slot_value_from_stack(
+                self.alloc_local, "i32_pair")
+            guard = emitter(payload_te, binding.slot_local, head, env)
             if guard is None:
                 return value
-            return [
-                *value,
-                f"local.set {len_local}",
-                f"local.set {ptr_local}",
-                *guard,
-                f"local.get {ptr_local}",
-                f"local.get {len_local}",
-            ]
+            return [*value, *binding.load, *guard, *binding.push]
         value_local = self.alloc_local(self._type_name_to_wasm(cell.base))
         guard = emitter(payload_te, value_local, head, env)
         if guard is None:
@@ -2651,16 +2666,17 @@ class CallsHandlersMixin:
             )
         clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
 
-        # Allocate locals for the caught exception value.
-        # Pair types (String, Array<T>) use two consecutive i32 locals
-        # (ptr at thrown_local, len at thrown_local + 1) matching the
-        # convention used by _translate_slot_ref for pair types.
-        if is_pair:
-            thrown_local = self.alloc_local("i32")  # ptr
-            _len_local = self.alloc_local("i32")    # len (consecutive: thrown_local + 1)
-        else:
-            thrown_wt = self._type_name_to_wasm(family_base)
-            thrown_local = self.alloc_local(thrown_wt)
+        # The locals the caught exception value occupies, from the ONE
+        # representation-derived binding (#1466): two consecutive i32s for a
+        # pair (ptr at `thrown_local`, len at `thrown_local + 1`, which is
+        # what `_translate_slot_ref` reads and what the clause binder's guard
+        # below is handed), one local of its own width otherwise.  Written
+        # out here, the adjacency was a property of two `alloc_local` calls
+        # eighteen lines above the guard rather than of the type.
+        thrown_wt = ("i32_pair" if is_pair
+                     else self._type_name_to_wasm(family_base))
+        thrown = bind_slot_value_from_stack(self.alloc_local, thrown_wt)
+        thrown_local = thrown.slot_local
 
         # Push caught value into slot env for handler body, under the
         # clause PATTERN's own slot name in the checker's canonical form
@@ -2725,13 +2741,13 @@ class CallsHandlersMixin:
         instructions.append("    end")
         instructions.append(f"    br {done_label}")
         instructions.append("  end")
-        # Caught value(s) are on the stack — store into local(s).
-        # Pair types: catch pushes (ptr, len); set len first (LIFO), then ptr.
-        if is_pair:
-            instructions.append(f"  local.set {_len_local}")
-            instructions.append(f"  local.set {thrown_local}")
-        else:
-            instructions.append(f"  local.set {thrown_local}")
+        # Caught value(s) are on the stack — stored into the local(s) the
+        # binding above allocated, by the same helper that allocated them:
+        # a pair arrives as (ptr, len) and is filled in reverse, a scalar is
+        # one store.  Emitting the order here was a second statement of the
+        # representation, in a branch that had to agree with the allocation
+        # eighty lines up (#1466).
+        instructions.extend(f"  {i}" for i in thrown.load)
         instructions.extend(f"  {i}" for i in handler_instrs)
         instructions.append("end")
         if diverges:  # #1276 — see the `diverges` derivation above

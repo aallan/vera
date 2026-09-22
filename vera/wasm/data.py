@@ -9,6 +9,9 @@ from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     _INLINE_I32_TYPES,
     WasmSlotEnv,
+    bind_slot_value_from_field,
+    bind_slot_value_from_locals,
+    field_layout,
     gc_shadow_push,
 )
 
@@ -253,6 +256,39 @@ class DataMixin:
             return value
         return self._emit_nat_bind_guard(value)
 
+    def _refined_slot_wasm_type(self, te: ast.TypeExpr) -> str | None:
+        """The WASM REPRESENTATION of a refined slot's value, or None when no
+        guard can bind one (#1439, #1466).
+
+        Asked of the base the refinement is written over, through the same
+        table every other width decision reads: one local for a scalar or a
+        handle, a `(ptr, len)` pair for a `String` / `Array<T>`.
+
+        Its sibling :meth:`_refined_component_wasm_type` answers a NARROWER
+        question — which bases a CONSTRUCTION store can tee into one scalar
+        local — and the two stay separate on purpose: a construction store's
+        shape differs per position (a field write, a stride write, a host
+        import), while a WRITE BOUNDARY binds the value where it already is
+        and so has no reason to care about anything but the representation.
+        Reading the narrow one at a write boundary is what made the `State`
+        write decline for a handle base whose value IS the one local the
+        store tees — while the verifier recorded the write `tier3` (#1439).
+
+        None for the shapes no guard is emitted for at all: an unrefined
+        type, an erased base, and a base that is itself a refinement (which
+        the boundary emitter refuses outright rather than half-checking).
+        """
+        parts = naming.refinement_binder_parts(te, self._alias_env)
+        if parts is None or parts.base_is_refinement:
+            return None
+        name = naming.slot_name_or_none(parts.base, self._alias_env)
+        if name is None:
+            return None
+        wt = self._slot_name_to_wasm_type(name)
+        if wt is None or wt == "unsupported":
+            return None
+        return wt
+
     @staticmethod
     def _refined_component_wasm_type(
         te: ast.TypeExpr, alias_env: naming.AliasEnv,
@@ -420,17 +456,16 @@ class DataMixin:
             arg_instrs_list.append(arg_instrs)
             arg_wasm_types.append(arg_wt)
 
-        # Compute field offsets from concrete argument types.  A `"unit"`
-        # field is zero-size: it neither aligns nor advances the offset.
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
+        # Compute field offsets from concrete argument types, through the ONE
+        # layout rule (`helpers.field_layout`) every reader of a constructed
+        # object walks: the destructure, and the boundary guard's tuple
+        # decomposition.  A `"unit"` field is zero-size — it neither aligns
+        # nor advances the offset.
         offset = 4  # after tag (i32, 4 bytes)
         field_offsets: list[tuple[int, str]] = []
         for wt in arg_wasm_types:
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)  # align up
-            field_offsets.append((offset, wt))
-            offset += _sizes.get(wt, 8)
+            field_offset, offset = field_layout(offset, wt)
+            field_offsets.append((field_offset, wt))
         total_size = ((offset + 7) & ~7) if offset > 0 else 8  # 8-byte aligned
 
         self.needs_alloc = True
@@ -649,9 +684,9 @@ class DataMixin:
             else ()
         )
 
-        # Extract each field using the same offset algorithm as constructors
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
+        # Extract each field through the same layout rule construction lays
+        # the object out by (`helpers.field_layout`), rather than a second
+        # copy of its sizes and alignments.
         offset = 4  # skip past tag (i32, 4 bytes)
         new_env = env
 
@@ -670,16 +705,16 @@ class DataMixin:
                 continue
             # Pair types (String, Array<T>): two consecutive i32 locals
             if self._is_pair_type_name(type_name):
-                align = _aligns["i32"]
-                offset = (offset + align - 1) & ~(align - 1)
-                ptr_local = self.alloc_local("i32")
-                len_local = self.alloc_local("i32")
-                instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={offset}")
-                instrs.append(f"local.set {ptr_local}")
-                instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={offset + 4}")
-                instrs.append(f"local.set {len_local}")
+                field_off, offset = field_layout(offset, "i32_pair")
+                # The whole representation, from the layout construction
+                # wrote: the guard below reads the length through the local
+                # after the pointer, and that adjacency is a property of the
+                # type rather than of two `alloc_local` calls in a row
+                # (#1466).
+                binding = bind_slot_value_from_field(
+                    self.alloc_local, "i32_pair", scr_local, field_off)
+                ptr_local = binding.slot_local
+                instrs.extend(binding.load)
                 # PR #707 review: same pair-type rooting
                 # gap as ``_extract_constructor_fields`` — String
                 # buffer / Array<T> backing ptr needs shadow-push.
@@ -695,7 +730,6 @@ class DataMixin:
                     stmt, new_env,
                 ))
                 new_env = new_env.push(type_name, ptr_local)
-                offset += 8
                 continue
             wt = self._slot_name_to_wasm_type(type_name)
             if wt is None:
@@ -703,12 +737,11 @@ class DataMixin:
                     stmt,
                     f"let-destruct type {type_name!r} has no WASM representation",
                 )
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
+            field_off, offset = field_layout(offset, wt)
             local_idx = self.alloc_local(wt)
             load = [
                 f"local.get {scr_local}",
-                f"{wt}.load offset={offset}",
+                f"{wt}.load offset={field_off}",
             ]
             # #747: runtime-guard an @Int -> @Nat destructure component the
             # verifier could not discharge `>= 0` statically (Tier 3), or
@@ -762,7 +795,6 @@ class DataMixin:
                 self.needs_alloc = True
                 instrs.extend(gc_shadow_push(local_idx))
             new_env = new_env.push(type_name, local_idx)
-            offset += _sizes.get(wt, 8)
 
         return (instrs, new_env)
 
@@ -1372,14 +1404,10 @@ class DataMixin:
                 # (``scr_local`` = ptr, ``scr_local + 1`` = len), so the
                 # binding takes two of its own.  Copying only the pointer
                 # would bind a length-free String and read garbage.
-                ptr_local = self.alloc_local("i32")
-                len_local = self.alloc_local("i32")  # consecutive: ptr + 1
-                instrs = [
-                    f"local.get {scr_local}",
-                    f"local.set {ptr_local}",
-                    f"local.get {scr_local + 1}",
-                    f"local.set {len_local}",
-                ]
+                binding = bind_slot_value_from_locals(
+                    self.alloc_local, "i32_pair", scr_local)
+                ptr_local = binding.slot_local
+                instrs = list(binding.load)
                 # NOT rooted (#1322), for the same reason the scrutinee copy
                 # in ``_translate_match`` is not: this local receives the
                 # scrutinee's address verbatim, and the shadow stack roots
@@ -1473,13 +1501,13 @@ class DataMixin:
         nested constructor sub-pattern recurses with the field's own resolved
         concrete type so deeper type-parameter wildcards stay correct too.
         """
-        # #1043: `"unit"` (a zero-size erases-to-Unit field) is size 0 / align 1
-        # — a WILDCARD over such a field reads `"unit"` from the (now
-        # erasure-aware) registered `field_offsets` and must advance the offset
-        # by nothing, matching construction.  A `"unit"` BINDING is handled by
-        # the `type_name == "Unit"` skip above and never reaches these maps.
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
+        # Every advance below goes through `helpers.field_layout`, the ONE
+        # layout rule construction lays an object out by.  `"unit"` (a
+        # zero-size erases-to-Unit field) is size 0 / align 1 there — a
+        # WILDCARD over such a field reads `"unit"` from the (erasure-aware)
+        # registered `field_offsets` and must advance by nothing, matching
+        # construction.  A `"unit"` BINDING is handled by the
+        # `type_name == "Unit"` skip above and never reaches the table.
         offset = 4  # after tag (i32, 4 bytes)
         instrs: list[str] = []
         new_env = env
@@ -1500,16 +1528,13 @@ class DataMixin:
                     continue
                 # Pair types (String, Array<T>): two consecutive i32 locals
                 if self._is_pair_type_name(type_name):
-                    align = _aligns.get("i32", 4)
-                    offset = (offset + align - 1) & ~(align - 1)
-                    ptr_local = self.alloc_local("i32")
-                    len_local = self.alloc_local("i32")
-                    instrs.append(f"local.get {scr_local}")
-                    instrs.append(f"i32.load offset={offset}")
-                    instrs.append(f"local.set {ptr_local}")
-                    instrs.append(f"local.get {scr_local}")
-                    instrs.append(f"i32.load offset={offset + 4}")
-                    instrs.append(f"local.set {len_local}")
+                    field_off, offset = field_layout(offset, "i32_pair")
+                    # As the destructure above: the whole representation,
+                    # bound from the layout construction wrote (#1466).
+                    binding = bind_slot_value_from_field(
+                        self.alloc_local, "i32_pair", scr_local, field_off)
+                    ptr_local = binding.slot_local
+                    instrs.extend(binding.load)
                     # PR #707 review: pair-type field
                     # extraction in match arms — the ``ptr_local``
                     # holds a heap pointer (the String buffer or the
@@ -1533,7 +1558,6 @@ class DataMixin:
                         sub_pat, new_env,
                     ))
                     new_env = new_env.push(type_name, ptr_local)
-                    offset += 8  # two i32s
                     continue
                 wt = self._slot_name_to_wasm_type(type_name)
                 if wt is None:
@@ -1541,14 +1565,13 @@ class DataMixin:
                         sub_pat,
                         f"constructor field type {type_name!r} has no WASM type",
                     )
-                # Compute aligned offset for this field
-                align = _aligns.get(wt, 8)
-                offset = (offset + align - 1) & ~(align - 1)
+                # Where this field sits, and where the next one starts
+                field_off, next_off = field_layout(offset, wt)
                 # Load field from scrutinee pointer
                 local_idx = self.alloc_local(wt)
                 load = [
                     f"local.get {scr_local}",
-                    f"{wt}.load offset={offset}",
+                    f"{wt}.load offset={field_off}",
                 ]
                 # #747: runtime-guard an @Int -> @Nat ADT sub-pattern bind
                 # (`match opt { Some(@Nat.0) -> }` on `Option<Int>`).  The
@@ -1611,7 +1634,7 @@ class DataMixin:
                     self.needs_alloc = True
                     instrs.extend(gc_shadow_push(local_idx))
                 new_env = new_env.push(type_name, local_idx)
-                offset += _sizes.get(wt, 8)
+                offset = next_off
 
             elif isinstance(sub_pat, ast.WildcardPattern):
                 # Skip this field but advance the offset by its width.  #1060:
@@ -1628,15 +1651,12 @@ class DataMixin:
                         pattern.name, i, generic_wt, scrutinee_type, sub_pat,
                         self._later_sub_pattern_reads(pattern.sub_patterns, i),
                     )
-                    align = _aligns.get(wt, 8)
-                    offset = (offset + align - 1) & ~(align - 1)
-                    offset += _sizes.get(wt, 8)
+                    _, offset = field_layout(offset, wt)
 
             elif isinstance(sub_pat, ast.ConstructorPattern):
                 # Nested constructor: load the field pointer (i32),
                 # look up its layout, and recurse to extract its fields.
-                align = _aligns.get("i32", 4)
-                offset = (offset + align - 1) & ~(align - 1)
+                field_off, offset = field_layout(offset, "i32")
                 # ctor-owner-exempt: a parsed pattern, resolved in the
                 # compiling namespace's scoped projection (#1436)
                 sub_layout = self._ctor_layouts.get(sub_pat.name)
@@ -1647,7 +1667,7 @@ class DataMixin:
                     )
                 sub_local = self.alloc_local("i32")
                 instrs.append(f"local.get {scr_local}")
-                instrs.append(f"i32.load offset={offset}")
+                instrs.append(f"i32.load offset={field_off}")
                 instrs.append(f"local.set {sub_local}")
                 # Recurse into the nested constructor's sub-patterns, resolving
                 # this field's concrete type against the outer instantiation
@@ -1663,14 +1683,11 @@ class DataMixin:
                     return None
                 nested_instrs, new_env = nested
                 instrs.extend(nested_instrs)
-                offset += _sizes.get("i32", 4)
 
             elif isinstance(sub_pat, ast.NullaryPattern):
                 # Nullary: tag was already checked in the condition phase.
-                # Just advance offset by i32 size (ADT pointer).
-                align = _aligns.get("i32", 4)
-                offset = (offset + align - 1) & ~(align - 1)
-                offset += _sizes.get("i32", 4)
+                # Just advance the offset past the field (an ADT pointer).
+                _, offset = field_layout(offset, "i32")
 
             else:
                 # Unknown sub-pattern type
@@ -1886,8 +1903,6 @@ class DataMixin:
         # and for a type-PARAMETER field instantiated to Unit via the
         # scrutinee-threaded recomputation (#1060) — so the zero-width rule
         # covers both sub-pattern arms.
-        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1}
         offset = 4  # after tag
 
         checks: list[list[str]] = []
@@ -1902,8 +1917,7 @@ class DataMixin:
                     sub_pat,
                     "nested pattern field has no WASM type",
                 )
-            align = _aligns.get(wt, 8)
-            offset = (offset + align - 1) & ~(align - 1)
+            field_off, next_off = field_layout(offset, wt)
 
             if isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
                 name = sub_pat.name
@@ -1920,7 +1934,7 @@ class DataMixin:
                 tmp = self.alloc_local("i32")
                 check: list[str] = [
                     f"local.get {scr_local}",
-                    f"i32.load offset={offset}",
+                    f"i32.load offset={field_off}",
                     f"local.tee {tmp}",
                     "i32.load",
                     f"i32.const {sub_layout.tag}",
@@ -1943,7 +1957,7 @@ class DataMixin:
                         return None
                     checks.extend(deeper)
 
-            offset += _sizes.get(wt, 8)
+            offset = next_off
 
         return checks
 

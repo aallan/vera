@@ -37,15 +37,15 @@ Red at `origin/release/v0.2.0` 8eca11c0, before the fixes in this PR:
 | handler clause binder x refined `@String` | silent, no guard |
 | call argument (`where` helper) x all four | silent (#1455; fixed in the first commit of this PR) |
 
-Three defects the generator finds are RECORDED rather than trimmed away.  Two
-of them this PR closes; the third is `_KNOWN_RED` below, whose products are
-skipped in the matrix and pinned by a cell of their own at the end of the
-file, asserting what the compiler does today.  Nothing here is `xfail`ed: no
-test in this suite is, and `scripts/check_doc_counts.py` gates TESTING.md's
-breakdown as `passed + stress-deselected + skipped == collected`, which has no
-term for one.  A pinning assertion has the property that matters — it fails
-the day the defect is fixed — without making every future PR write a fourth
-number.
+Defects the generator finds are RECORDED rather than trimmed away: a product
+this suite does not fix is skipped in the matrix and pinned by a cell of its
+own at the end of the file, asserting what the compiler does today.
+`_KNOWN_RED` is empty — #1466's pair-represented tuple component was its last
+entry and is a cell again.  Nothing here is `xfail`ed: no test in this suite
+is, and `scripts/check_doc_counts.py` gates TESTING.md's breakdown as
+`passed + stress-deselected + skipped == collected`, which has no term for
+one.  A pinning assertion has the property that matters — it fails the day the
+defect is fixed — without making every future PR write a fourth number.
 """
 from __future__ import annotations
 
@@ -565,23 +565,14 @@ _UNSUPPORTED_SHAPES: dict[tuple[str, str], str] = {
         "not supported — function skipped",
 }
 
-#: (site, kind) -> a defect the generator finds that this PR does not fix,
+#: (site, kind) -> a defect the generator finds that its own PR does not fix,
 #: with the measurement.  Marked rather than removed: a class instrument
 #: trimmed until it is green measures the trimming.
-_KNOWN_RED: dict[tuple[str, str], str] = {
-    ("tuple component", "refined_string"):
-        "#1466, pre-existing on main 6dc41d40 and release/v0.2.0 8eca11c0: "
-        "the "
-        "BOUNDARY guard's tuple decomposition tees a component into a scalar "
-        "local, which is right for Int/Nat/Bool/Byte/Float64 and wrong for a "
-        "String's (ptr, len) pair — so `take(Tuple(\"x\", 1))` against "
-        "`@Tuple<NonEmpty, Int>` verifies at Tier 1 and TRAPS, though "
-        "string_length(\"x\") is 1.  Two controls bound it: a bare "
-        "`{ @String | … }` parameter runs, and the same tuple shape over an "
-        "Int-based refinement runs.  The opposite failure from this PR's "
-        "class — a guard emitted and wrong, rather than a position "
-        "unrecorded — so it is filed rather than folded in",
-}
+#:
+#: Empty since #1466 landed: the `tuple component` x `refined_string` entry
+#: was the boundary guard's tuple decomposition binding one local for a
+#: pair-represented component, and that product is a cell of the matrix again.
+_KNOWN_RED: dict[tuple[str, str], str] = {}
 
 _CELLS = [
     (site, index, kind)
@@ -855,38 +846,34 @@ def test_the_inline_constructor_scrutinee_is_on_the_record(
 
 
 # =====================================================================
-# The two defects the generator finds that this PR does not fix
+# One defect the generator finds that its own PR does not fix
 # =====================================================================
 #
-# Pinned as what the compiler DOES, not as what it should: each assertion
+# Pinned as what the compiler DOES, not as what it should: the assertion
 # fails the day the defect is fixed, which is when the `_KNOWN_RED` entry
 # above and the cell here are both meant to be deleted.
 
-def test_1466_a_pair_represented_tuple_component_traps_on_a_value_it_admits(
+def test_a_pair_represented_tuple_component_admits_what_it_should(
     tmp_path: Path,
 ) -> None:
-    """#1466, pinned. This asserts the DEFECT; see the issue for the class.
+    """The #1466 product, now a cell rather than a pin.
 
-    A `@String`-based refinement as a tuple component at a boundary is
-    guarded by a check that tees the component into one scalar local, so the
-    predicate is evaluated against the `(ptr, len)` pair's pointer.
-    `vera verify` proves it at Tier 1 and the artifact refuses `"x"`, whose
-    `string_length` is 1.
-
-    Measured identical at `main` 6dc41d40 and `release/v0.2.0` 8eca11c0.
-    When #1466 lands this cell fails: replace it with the assertion that the
-    satisfying value RUNS, and delete the `_KNOWN_RED` entry so the matrix
-    covers the product again.
+    A `@String`-based refinement as a tuple component at a boundary was
+    guarded by a check that bound ONE local for a `(ptr, len)` value, so the
+    predicate ran against the pointer and the artifact refused `"x"`, whose
+    `string_length` is 1, on a program proved at Tier 1.  The guard binds the
+    component's whole representation now, so the satisfying value runs —
+    which is the reading the guard-correctness matrix
+    (`test_boundary_guard_correctness_1466.py`) makes over every position and
+    every representation.
     """
     pre, slot, _bad, good, base = _KINDS["refined_string"]
     r = _read(tmp_path, _t_tuple_component(pre, slot, good, base), "b.vera")
     assert not r["errors"], r["errors"]
-    assert r["refused"], (
-        "#1466 appears to be FIXED — the satisfying value now runs.  Remove "
-        "this cell, remove the ('tuple component', 'refined_string') entry "
-        f"from _KNOWN_RED, and close the issue:\n{r['run_output']}"
+    assert not r["refused"], (
+        f"a satisfying `@String` tuple component is refused:\n"
+        f"{r['run_output']}"
     )
-    assert "Refinement violation" in r["run_output"], r["run_output"]
 
 
 def test_a_refined_element_type_at_a_clause_binder_is_recorded(

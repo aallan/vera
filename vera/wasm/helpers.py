@@ -7,22 +7,14 @@ imports between context.py and the mixin modules.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from vera import ast
 from vera.skip import CodegenInvariantError
 from vera.types import (
-    BOOL,
-    FLOAT64,
-    FunctionType,
-    INT,
-    NAT,
-    STRING,
-    UNIT,
-    PrimitiveType,
     Type,
-    base_type,
+    wasm_representation,
 )
 
 # #705: Vera type names that compile to ``i32`` WASM type but are
@@ -269,6 +261,187 @@ def _align_up(offset: int, align: int) -> int:
 
 
 # =====================================================================
+# The heap-field layout, and the locals one value occupies (#1466)
+# =====================================================================
+
+#: Bytes one value of each WASM representation occupies in a heap field, and
+#: the alignment it is stored at.  THE layout: `_translate_constructor_call`
+#: builds it, the destructure and the boundary-guard decomposition walk it,
+#: and each used to carry its own copy of these two dicts — three statements
+#: of one fact, which is the shape of defect this module exists to remove.
+#:
+#: A ``"unit"`` field is zero-size: it neither aligns nor advances the offset,
+#: which is how construction, extraction and the guard decomposition all skip
+#: an erased component.
+FIELD_SIZES: dict[str, int] = {
+    "i32": 4, "i64": 8, "f64": 8, "i32_pair": 8, "unit": 0,
+}
+FIELD_ALIGNS: dict[str, int] = {
+    "i32": 4, "i64": 8, "f64": 8, "i32_pair": 4, "unit": 1,
+}
+
+#: Where a pair's LENGTH sits, relative to its pointer — in a heap field, and
+#: (as a local INDEX offset) in the slot environment.  The two are the same
+#: number by coincidence of width, and they are different facts; naming it
+#: once keeps the guard's load and the slot's read in step.
+PAIR_LEN_FIELD_OFFSET = 4
+PAIR_LEN_LOCAL_OFFSET = 1
+
+
+def field_layout(offset: int, wt: str) -> tuple[int, int]:
+    """``(this field's offset, the next field's running offset)`` for *wt*.
+
+    The one statement of the constructor layout's advance rule: align up,
+    take the slot, advance by the representation's size.  An unrecognised
+    representation is given the widest size and alignment, exactly as the
+    three hand-written copies did, so an unknown component cannot silently
+    share a slot with its neighbour.
+    """
+    aligned = _align_up(offset, FIELD_ALIGNS.get(wt, 8))
+    return aligned, aligned + FIELD_SIZES.get(wt, 8)
+
+
+@dataclass(frozen=True)
+class SlotValueBinding:
+    """The locals ONE value occupies, and the local its slot binds (#1466).
+
+    A value's WASM representation is not one local for every base.  A scalar
+    is one local of its own width; a `String` or an `Array<T>` is a
+    ``(ptr, len)`` PAIR in two CONSECUTIVE i32 locals, of which the slot
+    environment holds only the pointer — `_translate_slot_ref` reads the
+    length from ``ptr + 1`` — and a `Map`, `Set`, ADT or `Tuple` handle is a
+    single i32.
+
+    Everything that materialises a value for a slot to bind states that
+    layout, and before #1466 each stated it separately: the boundary guard's
+    tuple decomposition allocated ONE local for a pair component and bound
+    it, so the predicate read the pointer and whatever local followed it, and
+    a `{ @String | string_length(@String.0) > 0 }` component refused `"x"`.
+    """
+
+    #: The local the slot environment binds — the value's first local.
+    slot_local: int
+    #: Every local the value occupies, in representation order.
+    locals: tuple[int, ...]
+    #: Instructions that fill those locals from the value's source.
+    load: tuple[str, ...]
+    #: What to emit AFTER the checks when the value was teed rather than
+    #: consumed (:func:`bind_slot_value_from_stack` with *keep_on_stack*):
+    #: the halves the tee could not leave behind.  Empty otherwise.
+    tail: tuple[str, ...] = ()
+
+    @property
+    def push(self) -> list[str]:
+        """Instructions putting the value back on the operand stack."""
+        return [f"local.get {idx}" for idx in self.locals]
+
+
+def slot_value_locals(alloc_local: Callable[[str], int], wt: str) -> tuple[int, ...]:
+    """The local(s) one value of representation *wt* occupies.
+
+    A pair's two locals MUST be consecutive, because that adjacency is what
+    the slot environment reads a length through.  Both allocations come from
+    the one monotonic counter, so they are — and the check is an explicit
+    ``raise`` rather than an ``assert`` so it survives ``python -O``
+    (ruff S101).
+    """
+    if wt == "i32_pair":
+        ptr = alloc_local("i32")
+        length = alloc_local("i32")
+        if length != ptr + PAIR_LEN_LOCAL_OFFSET:  # pragma: no cover
+            raise CodegenInvariantError(
+                f"a pair's locals must be consecutive: ptr={ptr} "
+                f"len={length}", None,
+            )
+        return (ptr, length)
+    return (alloc_local(wt),)
+
+
+def bind_slot_value_from_field(
+    alloc_local: Callable[[str], int], wt: str, base_local: int, offset: int,
+) -> SlotValueBinding:
+    """Materialise a HEAP FIELD's value into the locals its slot binds.
+
+    *base_local* holds the pointer to the object, *offset* the field's own
+    offset within it — the layout :func:`field_layout` computes and
+    ``_translate_constructor_call`` builds.  A pair field is two i32 words,
+    the pointer at *offset* and the length at
+    *offset* + :data:`PAIR_LEN_FIELD_OFFSET`; every other representation is
+    one load at its own width.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    load: list[str] = []
+    if wt == "i32_pair":
+        for index, local_idx in enumerate(locals_):
+            load.extend([
+                f"local.get {base_local}",
+                f"i32.load offset={offset + index * PAIR_LEN_FIELD_OFFSET}",
+                f"local.set {local_idx}",
+            ])
+    else:
+        load.extend([
+            f"local.get {base_local}",
+            f"{wt}.load offset={offset}",
+            f"local.set {locals_[0]}",
+        ])
+    return SlotValueBinding(locals_[0], locals_, tuple(load))
+
+
+def bind_slot_value_from_locals(
+    alloc_local: Callable[[str], int], wt: str, source_local: int,
+) -> SlotValueBinding:
+    """Copy a value out of the locals it ALREADY occupies into the locals its
+    slot binds.
+
+    The third source, beside a heap field and the operand stack: a match
+    scrutinee arrives in locals of its own, and a guard over it needs the
+    whole value under one slot binding.  A pair's halves are read from
+    *source_local* and *source_local* + :data:`PAIR_LEN_LOCAL_OFFSET`, the
+    same adjacency the slot environment reads them by.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    load: list[str] = []
+    for index, local_idx in enumerate(locals_):
+        load.extend([
+            f"local.get {source_local + index}",
+            f"local.set {local_idx}",
+        ])
+    return SlotValueBinding(locals_[0], locals_, tuple(load))
+
+
+def bind_slot_value_from_stack(
+    alloc_local: Callable[[str], int], wt: str, *,
+    keep_on_stack: bool = False,
+) -> SlotValueBinding:
+    """Spill a value from the OPERAND STACK into the locals its slot binds.
+
+    The value is on top of the stack, a pair as ``(ptr, len)`` with the
+    length uppermost, so the locals are filled in reverse.  The caller pushes
+    it back with :attr:`SlotValueBinding.push` once the guard has run.
+
+    *keep_on_stack* is for a guard that sits IN THE MIDDLE of an expression —
+    a `State` write on its way to the cell (#1439) — where the value has to
+    survive the check: every half but the first is spilled, the first is
+    ``local.tee``-d, and :attr:`SlotValueBinding.tail` pushes the rest back
+    afterwards.  For a one-local representation that is the single
+    ``local.tee`` such a site has always emitted; the pair form is what
+    stops the shape from being a convention again.
+    """
+    locals_ = slot_value_locals(alloc_local, wt)
+    if not keep_on_stack:
+        return SlotValueBinding(
+            locals_[0], locals_,
+            tuple(f"local.set {idx}" for idx in reversed(locals_)),
+        )
+    load = [f"local.set {idx}" for idx in reversed(locals_[1:])]
+    load.append(f"local.tee {locals_[0]}")
+    return SlotValueBinding(
+        locals_[0], locals_, tuple(load),
+        tuple(f"local.get {idx}" for idx in locals_[1:]),
+    )
+
+
+# =====================================================================
 # GC shadow stack helper
 # =====================================================================
 
@@ -377,36 +550,12 @@ def emit_is_ascii_whitespace(byte_local: int, indent: str = "") -> list[str]:
 def wasm_type(t: Type) -> str | None:
     """Map a Vera Type to a WAT value type string.
 
-    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool/Byte/ADT,
-    "i32_pair" for String, None for Unit, or "unsupported" for others.
+    Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool, "i32_pair"
+    for String, None for Unit, and "unsupported" for everything else — an
+    ADT included, which is why a caller that needs an ADT's width asks
+    codegen's `_type_expr_to_wasm_type` instead.
     """
-    if isinstance(t, PrimitiveType):
-        if t is INT or t is NAT:
-            return "i64"
-        if t is FLOAT64:
-            return "f64"
-        if t is BOOL:
-            return "i32"
-        if t is STRING:
-            return "i32_pair"
-        if t is UNIT:
-            return None
-    # Byte type
-    bt = base_type(t)
-    if isinstance(bt, PrimitiveType):
-        if bt is INT or bt is NAT:
-            return "i64"
-        if bt is FLOAT64:
-            return "f64"
-        if bt is BOOL:
-            return "i32"
-        if bt is STRING:
-            return "i32_pair"
-        if bt is UNIT:
-            return None
-    if isinstance(t, FunctionType):
-        return "i32"  # closure pointer
-    return "unsupported"
+    return wasm_representation(t)
 
 
 def wasm_type_or_none(t: Type) -> str | None:
