@@ -224,8 +224,8 @@ _PREDICATE_FIX = (
     "operation only where it is defined, inside an `if` in the predicate — "
     "`{ @Nat | if @Nat.0 >= 5 then { @Nat.0 - 5 > 1 } else { false } }` — "
     "or rewrite the predicate without it (`@Nat.0 > 6`).  A condition "
-    "written beside the operation with `&&` or `||` does not protect it: "
-    "the compiled guard evaluates both operands."
+    "written beside the operation with `&&` or `||` does not protect it "
+    "yet: the reference compiler currently evaluates both operands (#1501)."
 )
 
 
@@ -283,7 +283,8 @@ class BlockBindingPolicy(enum.Enum):
     """
 
     OPAQUE_SHADOW = "opaque_shadow"
-    """Replace a shadowed stale outer with a TRACKED fresh const of its sort.
+    """Bind a TRACKED fresh const: of the stale outer's sort when the binding
+    shadows one, else of the declared type's.
 
     For readers that record obligations against the value (the primitive-op
     walker, the construction descent, and the recursive-call walk whose
@@ -461,6 +462,19 @@ def _calls_in(node: object) -> Iterator[ast.Node]:
             yield item
         for f in ast_fields(item):
             stack.append(getattr(item, f.name))
+
+
+def _desugar_pipe(expr: ast.BinaryExpr) -> ast.FnCall | ast.ModuleCall | None:
+    """`left |> f(a, …)` as the call `f(left, a, …)`, spelled as the SMT
+    layer desugars it — the pipe's span, so the site key is one (#727)."""
+    right = expr.right
+    if isinstance(right, ast.FnCall):
+        return ast.FnCall(name=right.name, args=(expr.left, *right.args),
+                          span=expr.span)
+    if isinstance(right, ast.ModuleCall):
+        return ast.ModuleCall(path=right.path, name=right.name,
+                              args=(expr.left, *right.args), span=expr.span)
+    return None
 
 
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
@@ -2176,6 +2190,9 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
+        # #1480 review: and let a call-site precondition check tell a value
+        # the walk could not know from a real counterexample.
+        smt.opaque_term = self._contains_opaque_shadow
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -6302,6 +6319,13 @@ class ContractVerifier:
                 stale = env.resolve(type_name, 0)
                 if stale is not None:
                     val = z3.FreshConst(stale.sort(), "shadow")
+                else:
+                    # No outer to shadow, but the slot still names a value
+                    # later code reads — a call's argument, an `assume`'s
+                    # subject — so it is bound to an unknown value of its
+                    # declared type rather than left unbound (#1480 review).
+                    val = self._fresh_slot_var(smt, stmt.type_expr)
+                if val is not None:
                     self._opaque_shadows.append(val)
         if val is not None and type_name is not None:
             return env.push(type_name, val)
@@ -6365,10 +6389,20 @@ class ContractVerifier:
                 self._fresh_pattern_env(pattern, env, smt, track=True),
                 None, (),
             )
-        arm_env = env
         bound = smt._bind_pattern(scrutinee_z3, pattern, env)
-        if bound is not None:
-            arm_env = bound
+        if bound is None:
+            # The scrutinee translated but the pattern cannot be bound to
+            # it: its ADT has no SMT sort (a `Map` field, say), so the value
+            # was declared an `Int` and has no constructor to project.
+            # That is an untranslatable scrutinee by another name, and the
+            # arm's binders are as unknown (#1480 review): kept as the
+            # enclosing env, a binder resolved to a same-typed PARAMETER,
+            # and `decreases` was proved over it.
+            return ArmContext(
+                self._fresh_pattern_env(pattern, env, smt, track=True),
+                None, (),
+            )
+        arm_env = bound
         facts: tuple[object, ...] = ()
         if isinstance(pattern, ast.ConstructorPattern):
             facts = tuple(self._subpattern_source_facts(
@@ -7533,6 +7567,29 @@ class ContractVerifier:
                             ).expr
         return facts
 
+    def _obligate_call_site(
+        self,
+        call: ast.FnCall | ast.ModuleCall,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Obligate *call*'s precondition under the walk's facts (#1480
+        review).
+
+        The walk's assumptions are pushed as path conditions for the check,
+        because the SMT layer's call-site check reads its facts from the
+        solver and `_path_conditions`: at a `requires` clause they are the
+        prefix, which is on neither otherwise.  The outcome is pending until
+        the position's drain, `_record_call_obligations`, records it.
+        """
+        depth = len(smt._path_conditions)
+        smt._path_conditions.extend(assumptions)
+        try:
+            smt.check_call_site(call, slot_env)
+        finally:
+            del smt._path_conditions[depth:]
+
     def _walk_for_primitive_op_obligations(
         self,
         decl: ast.FnDecl,
@@ -7576,8 +7633,9 @@ class ContractVerifier:
         #   IfExpr             → recurse cond / then / else
         #   Block              → recurse let RHSes, statements, trailing expr
         #   MatchExpr          → recurse scrutinee + arm bodies
-        #   FnCall             → recurse args
-        #   ModuleCall         → recurse args
+        #   FnCall             → recurse args; the call's precondition
+        #                        (#1480 review)
+        #   ModuleCall         → recurse args; the call's precondition
         #   ConstructorCall    → recurse args
         #   QualifiedCall      → recurse args (effect operation)
         #   InterpolatedString → recurse interpolated parts
@@ -7614,6 +7672,10 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
+            # #1480 review: the call's own precondition — a user callee's
+            # `requires` or a built-in's declared domain — obligated HERE,
+            # where the walk reaches it, not only where translation does.
+            self._obligate_call_site(expr, smt, slot_env, assumptions)
             # #807: float_to_int(x) compiles to `i64.trunc_f64_s`, which traps on
             # NaN / ±Inf / out-of-i64-range — a partial op, so it carries a
             # domain obligation just like div-by-zero (#801) and overflow (#798).
@@ -7637,6 +7699,7 @@ class ContractVerifier:
                 self._walk_for_primitive_op_obligations(
                     decl, arg, smt, slot_env, assumptions,
                 )
+            self._obligate_call_site(expr, smt, slot_env, assumptions)
             return
 
         if isinstance(expr, ast.ConstructorCall):
@@ -7820,6 +7883,16 @@ class ContractVerifier:
             self._walk_for_primitive_op_obligations(
                 decl, expr.right, smt, slot_env, assumptions,
             )
+            if expr.op == ast.BinOp.PIPE:
+                # `left |> f(a)` is the call `f(left, a)`: its precondition
+                # is obligated on that call, spelled as the SMT layer
+                # desugars it (the span keys the site, #727).  The partial
+                # `f(a)` the walk just visited has one argument too few and
+                # obligates nothing.
+                piped = _desugar_pipe(expr)
+                if piped is not None:
+                    self._obligate_call_site(
+                        piped, smt, slot_env, assumptions)
             if (expr.op == ast.BinOp.SUB
                     and self._is_nat_typed(expr.left)
                     and self._is_nat_typed(expr.right)
@@ -12299,6 +12372,9 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
+        # #1480 review: and let a call-site precondition check tell a value
+        # the walk could not know from a real counterexample.
+        smt.opaque_term = self._contains_opaque_shadow
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.

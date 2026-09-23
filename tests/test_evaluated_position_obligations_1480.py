@@ -792,6 +792,222 @@ def test_an_opaque_tail_argument_leaves_the_measure_to_its_guard() -> None:
     assert _not_the_callers_precondition(ran), ran
 
 
+# A `Map` field gives an ADT no SMT sort, so its value is declared an `Int`
+# and a constructor pattern has nothing to project: the scrutinee translates
+# and the pattern does not bind.  Read against the enclosing env, the arm's
+# `@Nat.0` was the PARAMETER, the termination proof held over it, and the
+# arm's own subtraction was proved from the parameter's path.
+ARM_OF_AN_UNSORTED_ADT = """\
+private data Box {
+  MkBox(Map<Int, Int>, Nat)
+}
+
+public fn f(@Box, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    match @Box.0 {
+      MkBox(@Map<Int, Int>, @Nat) -> f(@Box.0, @Nat.0 - 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(MkBox(map_new(), 100), 5)
+}
+
+public fn main0(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  f(MkBox(map_new(), 0), 5)
+}
+"""
+
+
+def test_an_arm_of_an_unsorted_adt_reads_its_own_binders() -> None:
+    v = _verify(ARM_OF_AN_UNSORTED_ADT)
+    assert _records(v, "nat_sub", _at(ARM_OF_AN_UNSORTED_ADT,
+                                      "@Nat.0 - 1)")) == ["tier3"]
+    ran = _run(ARM_OF_AN_UNSORTED_ADT, "main0", [])
+    assert ran.trap_kind is not None, ran
+    assert "failed to decrease" not in ran.trap_message, ran
+
+
+# #1222's other half: a call inside a measure, nested where no translation
+# reaches it, so its precondition was never obligated and the loop was
+# verify-clean while its measure trapped in `need_pos`.
+MEASURE_CALL_NESTED = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn loop(@Int, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0, string_length(show(need_pos(@Int.0))))
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { loop(@Int.0, @Nat.0 - 1) }
+}
+"""
+
+
+def test_a_call_nested_in_a_measure_is_obligated() -> None:
+    v = _verify(MEASURE_CALL_NESTED)
+    call = _at(MEASURE_CALL_NESTED, "need_pos(@Int.0)")
+    assert _records(v, "call_pre", call) == ["violated/E501"]
+    assert ("E501", *call) in v.errors
+    assert "need_pos" in _run(MEASURE_CALL_NESTED, "loop", [-3, 2]).trap_message
+
+
+# A piped call is the call its desugaring makes, located at the pipe.
+PIPED_CALL = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_length(show(@Int.0 |> need_pos()))
+}
+"""
+
+
+def test_a_piped_call_is_obligated() -> None:
+    v = _verify(PIPED_CALL)
+    pipe = _at(PIPED_CALL, "@Int.0 |> need_pos()")
+    assert _records(v, "call_pre", pipe) == ["violated/E501"]
+    assert "need_pos" in _run(PIPED_CALL, "f", [-3]).trap_message
+
+
+# The built-in's domain in an interpolated part, over a `let`-bound string:
+# an interpolated expression cannot hold the literal, and a string's byte
+# length is modelled only for a literal (#802), so the domain cannot be
+# stated here and the call is recorded Tier 3, with the built-in's own check
+# behind it.
+INTERPOLATED_BUILT_IN = """\
+public fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = "abc";
+  string_length("v=\\(string_char_code(@String.0, @Int.0))")
+}
+"""
+
+
+def test_a_built_in_domain_in_an_interpolated_part() -> None:
+    v = _verify(INTERPOLATED_BUILT_IN)
+    call = _at(INTERPOLATED_BUILT_IN, "string_char_code(@String.0, @Int.0)")
+    assert _records(v, "call_pre", call) == ["tier3/E532"]
+    assert _run(INTERPOLATED_BUILT_IN, "f", [7]).trap_kind is not None
+    assert _run(INTERPOLATED_BUILT_IN, "f", [1]).trap_kind is None
+
+
+# A call over a value the walk cannot know — an arm's binder under a
+# scrutinee that does not translate — is a check the run cannot make, never
+# a refutation: Tier 3 (E532), with the callee's own check behind it.
+OPAQUE_ARGUMENT = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> need_pos(@Int.0),
+    None -> 1
+  }
+}
+
+public fn g(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match map_get(map_insert(map_new(), 1, @Int.0), 1) {
+    Some(@Int) -> string_char_code("abc", @Int.0),
+    None -> 1
+  }
+}
+"""
+
+
+@pytest.mark.parametrize(("fn", "call", "bad", "good"), [
+    ("f", "need_pos(@Int.0)", -5, 5),
+    ("g", 'string_char_code("abc", @Int.0)', 7, 1),
+])
+def test_a_call_over_an_unknown_value_is_tier3(
+        fn: str, call: str, bad: int, good: int) -> None:
+    v = _verify(OPAQUE_ARGUMENT)
+    assert _records(v, "call_pre", _at(OPAQUE_ARGUMENT, call)) == [
+        "tier3/E532"]
+    assert v.ok, v.errors
+    assert _run(OPAQUE_ARGUMENT, fn, [bad]).trap_kind is not None
+    assert _run(OPAQUE_ARGUMENT, fn, [good]).trap_kind is None
+
+
+# #1199's repair: the value an effect operation returns is unknown, and an
+# `assume` about it is how an author vouches for it.  The walk binds that
+# unknown value in its slot even where no outer binding shadows it, so the
+# `assume`'s fact reaches the call's check and discharges it.
+ASSUMED_LET = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  assume(@Int.0 > 0);
+  need_pos(@Int.0)
+}
+"""
+
+
+def test_an_assumed_let_value_discharges_the_call() -> None:
+    v = _verify(ASSUMED_LET)
+    assert _records(v, "call_pre", _at(ASSUMED_LET, "need_pos(@Int.0)")) == []
+    assert v.ok, v.errors
+
+
 # The termination proof reads the same walk, so every binder it crossed
 # wrongly was a `decreases` proved over the wrong value.  Each program below
 # was reported `decreases`/verified while its runtime measure guard trapped
@@ -968,9 +1184,9 @@ public fn main(@Unit -> @Nat)
 @pytest.mark.parametrize("source", [
     UNTRANSLATABLE_LET_BEFORE_CALL, CALL_IN_A_DESTRUCTURE,
     CALL_IN_A_CLOSURE, CALL_IN_A_HANDLER_CLAUSE, CALL_IN_A_CONDITION,
-    CALL_IN_A_QUANTIFIER,
+    CALL_IN_A_QUANTIFIER, ARM_OF_AN_UNSORTED_ADT,
 ], ids=["untranslatable-let", "destructure", "closure", "handler-clause",
-        "if-condition", "quantifier"])
+        "if-condition", "quantifier", "arm-of-an-unsorted-adt"])
 def test_the_termination_proof_sees_every_call_in_its_scope(
         source: str) -> None:
     v = _verify(source)
@@ -1317,6 +1533,9 @@ class Cell:
     also: tuple[tuple[str, str | None, str], ...] = ()
     #: See `Op.records_discharge`.
     absent_when_discharged: bool = False
+    #: The code a `tier3` record carries, where it carries one: a call-site
+    #: precondition the run cannot check is E532.
+    tier3_code: str = ""
 
 
 def _slot(op: Op, position: str) -> str:
@@ -1502,6 +1721,8 @@ def _check_cell(cell: Cell) -> Verified:
     line, col = _at(cell.source, cell.at, cell.at_occurrence)
     where = (line, col + cell.at_offset)
     want = (f"{cell.status}/{cell.code}" if cell.status == "violated"
+            else f"tier3/{cell.tier3_code}"
+            if cell.status == "tier3" and cell.tier3_code
             else cell.status)
     expected = [] if cell.absent_when_discharged and want == "verified" \
         else [want]
@@ -1537,6 +1758,169 @@ def test_plain_position_cell(position: str, op: Op, status: str) -> None:
     cell = build(op, status)  # type: ignore[operator]
     _check_cell(replace(cell,
                         absent_when_discharged=not op.records_discharge))
+
+
+# ---------------------------------------------------------------------
+# The sub-position axis: a call's precondition wherever the call sits
+# ---------------------------------------------------------------------
+#
+# The cells above put the operation at the top of its position.  A call's
+# precondition, a user callee's `requires` or `string_char_code`'s declared
+# domain, is the operation whose obligation depended on WHERE in the
+# position it sits: it was obligated as a side effect of the SMT
+# translation, and translation stops early.  It does not translate the
+# arguments of a built-in it does not model, stops at an argument that does
+# not translate, stops at a `let` or a pattern it cannot bind, and never
+# enters a closure, an interpolated part, a `handle` body or a quantifier.
+# The walk that obligates a call reaches every evaluated expression, and
+# this axis holds it there: the two call-precondition operations nested in
+# each of those sub-positions, at a body, a measure and a predicate.
+
+_PICK = """
+private fn pick(@Map<Int, Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+@dataclass(frozen=True)
+class SubPosition:
+    """Where a call sits inside the expression its position evaluates."""
+
+    name: str
+    #: A `@Bool` expression with the call ``{c}`` nested in it.
+    wrap: str
+    #: Whether the walk reads the enclosing slots there.  A closure body and
+    #: a quantifier's predicate are fresh scopes, which the walk enters with
+    #: an empty env: a call over an enclosing slot is recorded Tier 3
+    #: (E532), with the callee's own check behind it.
+    reads_enclosing: bool = True
+    helpers: str = ""
+
+
+_SUB_POSITIONS: tuple[SubPosition, ...] = (
+    SubPosition("top", "{c} >= 0 || true"),
+    SubPosition("argument of an unmodelled built-in",
+                "string_length(show({c})) >= 0 || true"),
+    SubPosition("interpolated part",
+                'string_length("v=\\({c})") >= 0 || true'),
+    SubPosition("argument after one that does not translate",
+                "pick(map_insert(map_new(), 1, 2), {c}) >= 0 || true",
+                helpers=_PICK),
+    SubPosition("after a let that does not translate",
+                "if true then {{ let @Map<Int, Int> = "
+                "map_insert(map_new(), 1, 2); {c} >= 0 || true }} "
+                "else {{ false }}"),
+    SubPosition("arm under a scrutinee that does not translate",
+                "match map_get(map_insert(map_new(), 1, true), 1) {{ "
+                "Some(@Bool) -> {c} >= 0 || @Bool.0, None -> true }}"),
+    SubPosition("handle body",
+                "handle[State<Bool>](@Bool = true) {{ "
+                "get(@Unit) -> {{ resume(@Bool.0) }}, "
+                "put(@Bool) -> {{ resume(()) }} }} in {{ {c} >= 0 || true }}"),
+    SubPosition("effect operation's argument",
+                "handle[State<Int>](@Int = 0) {{ "
+                "get(@Unit) -> {{ resume(@Int.0) }}, "
+                "put(@Int) -> {{ resume(()) }} }} in {{ put({c}); true }}"),
+    SubPosition("closure body",
+                "apply_fn(fn(@Int -> @Int) effects(pure) {{ {c} }}, @Int.0) "
+                ">= 0 || true",
+                reads_enclosing=False),
+    SubPosition("quantifier predicate",
+                "forall(@Nat, 1, fn(@Nat -> @Bool) effects(pure) {{ "
+                "{c} >= 0 || true }})",
+                reads_enclosing=False),
+)
+
+_CALL_OPS: tuple[Op, ...] = tuple(
+    op for op in _OPS if op.name in ("call_pre", "string_char_code"))
+
+_SUB_AT = ("body", "measure at entry", "refinement predicate")
+
+
+def _sub_position_cell(sub: SubPosition, op: Op, position: str,
+                       status: str) -> Cell:
+    premise, value, _lit, arg = _variant(op, status)
+    call = value.format(v="@Int.0")
+    expr = sub.wrap.format(c=call)
+    helpers = op.helpers + sub.helpers
+    fn, args = "f", (arg,)
+    if position == "body":
+        src = helpers + f"""
+public fn f(@Int -> @Bool)
+  requires({premise.format(v="@Int.0")})
+  ensures(true)
+  effects(pure)
+{{
+  {expr}
+}}
+"""
+    elif position == "measure at entry":
+        src = helpers + f"""
+public fn f(@Int, @Nat -> @Nat)
+  requires({premise.format(v="@Int.0")})
+  ensures(true)
+  decreases(@Nat.0, if {expr} then {{ @Nat.0 }} else {{ @Nat.0 }})
+  effects(pure)
+{{
+  if @Nat.0 == 0 then {{ 0 }} else {{ f(@Int.0, @Nat.0 - 1) }}
+}}
+"""
+        args = (arg, 0)
+    else:
+        # A predicate has no `requires`: the domain is the condition of an
+        # `if` around the call, the one guard a predicate has.
+        if status == "verified":
+            expr = (f"if {op.domain.format(v='@Int.0')} then {{ {expr} }} "
+                    f"else {{ false }}")
+        src = helpers + f"""
+type T = {{ @Int | {expr} }};
+
+public fn take(@T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  0
+}}
+"""
+        fn = "take"
+    return Cell(src, op.kind, status, op.code, at=call, pre_text=op.pre_text,
+                fn=fn, args=args,
+                trap=None if status == "verified" else _any_trap,
+                absent_when_discharged=not op.records_discharge,
+                tier3_code="E532")
+
+
+def _sub_position_cells() -> list[object]:
+    cells = []
+    for position in _SUB_AT:
+        for sub in _SUB_POSITIONS:
+            statuses = (("verified", "violated") if sub.reads_enclosing
+                        else ("tier3",))
+            for op in _CALL_OPS:
+                if sub.name == "interpolated part" and '"' in op.value:
+                    # An interpolated expression cannot hold a string
+                    # literal (a parse error), and `string_char_code`'s
+                    # domain is statable only over one (#802): its cell is
+                    # `test_a_built_in_domain_in_an_interpolated_part`.
+                    continue
+                for status in statuses:
+                    cells.append(pytest.param(
+                        sub, op, position, status,
+                        id=f"{position}|{sub.name}|{op.name}|{status}"))
+    return cells
+
+
+@pytest.mark.parametrize(("sub", "op", "position", "status"),
+                         _sub_position_cells())
+def test_sub_position_cell(sub: SubPosition, op: Op, position: str,
+                           status: str) -> None:
+    _check_cell(_sub_position_cell(sub, op, position, status))
 
 
 # ---------------------------------------------------------------------
@@ -1649,12 +2033,20 @@ _MEASURE_CALLERS: dict[str, str] = {
 }
 
 
-def _codegen_calls(method: str, receiver: str) -> set[tuple[str, str, str]]:
-    """``(file, enclosing function, first argument)`` of every call to
-    ``<receiver>.<method>`` in the code-generation layer, enumerated as
-    `guard_emitter_scan` enumerates it."""
+def _codegen_calls(method: str) -> set[tuple[str, str, str]]:
+    """``(file, enclosing function, first argument)`` of every call to a
+    method named *method*, on any receiver, in the code-generation DRIVER
+    (`vera/codegen/`), enumerated as `guard_emitter_scan` enumerates it.
+
+    The receiver is not read: a root is a call that hands a source
+    expression to the translator, whatever the variable holding the
+    translator is called.  The translator's own recursion, in `vera/wasm/`,
+    descends from those roots and is not one.
+    """
     found: set[tuple[str, str, str]] = set()
     for path in guard_emitter_scan.codegen_sources():
+        if path.parent.name != "codegen":
+            continue
         tree = _pyast.parse(path.read_text(encoding="utf-8"))
         for fn in _pyast.walk(tree):
             if not isinstance(fn, (_pyast.FunctionDef,
@@ -1663,9 +2055,7 @@ def _codegen_calls(method: str, receiver: str) -> set[tuple[str, str, str]]:
             for node in _pyast.walk(fn):
                 if (isinstance(node, _pyast.Call)
                         and isinstance(node.func, _pyast.Attribute)
-                        and node.func.attr == method
-                        and isinstance(node.func.value, _pyast.Name)
-                        and node.func.value.id == receiver):
+                        and node.func.attr == method):
                     first = (_pyast.unparse(node.args[0])
                              if node.args else "")
                     found.add((path.name, fn.name, first))
@@ -1678,13 +2068,13 @@ def test_every_evaluation_root_is_a_position() -> None:
     A root added to code generation without a position here reddens this
     cell, and so does a roster entry whose root is gone.
     """
-    found = (_codegen_calls("translate_expr", "ctx")
-             | _codegen_calls("translate_block", "ctx"))
+    found = (_codegen_calls("translate_expr")
+             | _codegen_calls("translate_block"))
     assert found == set(_ROOTS), (
         f"unrostered roots: {sorted(found - set(_ROOTS))}; "
         f"stale entries: {sorted(set(_ROOTS) - found)}")
     callers = {fn for _f, fn, _a in _codegen_calls(
-        "_dec_translate_measure", "self")}
+        "_dec_translate_measure")}
     assert callers == set(_MEASURE_CALLERS), callers
 
 

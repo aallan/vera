@@ -642,6 +642,13 @@ class SmtContext:
         # #1480: discharged checks for a callee whose check sits at the call
         # site (a built-in's declared domain) — see `CallDischarge`.
         self._call_discharges: list[CallDischarge] = []
+        # #1480 review: whether a term is, or is built from, a value the
+        # verifier's walks could not know (an opaque shadow).  A call-site
+        # precondition that fails only over such a value is a check this
+        # run cannot make, not a refutation: it demotes (E532) rather than
+        # reporting E501 on an unconstrained const's countermodel.  Set by
+        # the verifier; None means no value is opaque.
+        self.opaque_term: Callable[[z3.ExprRef], bool] | None = None
         self._fresh_counter: int = 0
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
@@ -2663,6 +2670,90 @@ class SmtContext:
             callee_info, call.name, call.args, call, env,
         )
 
+    def _is_opaque(self, term: z3.ExprRef) -> bool:
+        """Whether *term* depends on a value the verifier's walk could not
+        know — see `opaque_term`."""
+        return self.opaque_term is not None and self.opaque_term(term)
+
+    def check_call_site(
+        self, call: ast.FnCall | ast.ModuleCall, env: SlotEnv,
+    ) -> None:
+        """Obligate *call*'s precondition at this site, in *env* (#1480 review).
+
+        The verifier's primitive-operation walk calls this at every call it
+        reaches, and it reaches every evaluated expression: an argument of a
+        built-in the SMT layer does not model, a closure or quantifier body, an
+        interpolated part, a `handle` body, an effect operation's argument, the
+        statements after a `let` whose value does not translate, an arm under
+        a scrutinee that does not.  Translation checks a call's precondition
+        too, as a side effect of translating the call, but translation stops
+        early at each of those, so it cannot be what obligates a call.
+
+        The outcome goes to the three lists every call-site precondition uses,
+        with their dedup, so a call both reach is one record: a built-in's
+        declared domain (`_check_builtin_domain`), or a user callee's
+        `requires` (`_check_callee_precondition`).  A call with neither — any
+        other built-in, an effect operation — obligates nothing here; its
+        arguments are the walk's to reach.
+        """
+        info: Any
+        if isinstance(call, ast.FnCall):
+            if self._resolves_to_builtin(call.name):
+                if call.name in BUILTIN_DOMAIN_NAMES:
+                    self._check_builtin_domain(call, env)
+                return
+            if self._fn_lookup is None:  # pragma: no cover — resolved above
+                return
+            info = self._fn_lookup(call.name)
+        else:
+            if self._module_fn_lookup is None:
+                return
+            info = self._module_fn_lookup(tuple(call.path), call.name)
+        if info is None:
+            return
+        self._check_callee_precondition(info, call.name, call.args, call, env)
+
+    def _check_callee_precondition(
+        self,
+        callee_info: Any,
+        callee_name: str,
+        args: tuple[ast.Expr, ...],
+        call_node: ast.FnCall | ast.ModuleCall,
+        env: SlotEnv,
+    ) -> None:
+        """The precondition half of `_translate_call_with_info`, for a call
+        the walk reaches whether or not translation does.
+
+        The same gates, in the same order, with the same records: a callee
+        with only `requires(true)` obligates nothing; a generic callee, and
+        an argument that does not translate even with the callee's ADT sorts
+        forced (#882), demote (E532); otherwise each precondition is checked
+        against the translated arguments.
+        """
+        has_nontrivial_pre = any(
+            isinstance(c, ast.Requires)
+            and not (isinstance(c.expr, ast.BoolLit) and c.expr.value)
+            for c in callee_info.contracts
+        )
+        if not has_nontrivial_pre:
+            return
+        if callee_info.forall_vars:
+            self._record_call_demotion(callee_info, callee_name, call_node)
+            return
+        if len(args) != len(callee_info.param_type_exprs):
+            return
+        zero_size = self._zero_size_params(callee_info)
+        z3_args = self._translate_call_args(args, env, zero_size)
+        if z3_args is None:
+            self._ensure_call_arg_sorts(callee_info.param_type_exprs)
+            z3_args = self._translate_call_args(args, env, zero_size)
+        if z3_args is None:
+            self._record_call_demotion(callee_info, callee_name, call_node)
+            return
+        self._check_call_preconditions(
+            callee_info, callee_name, z3_args, call_node, zero_size,
+        )
+
     def _check_builtin_domain(self, call: ast.FnCall, env: SlotEnv) -> None:
         """Obligate *call*'s declared domain at this call site (#1480).
 
@@ -2698,10 +2789,11 @@ class SmtContext:
                     precondition=contract.requires,
                 ))
             return
-        if result.status == "disclosed":
-            # Holds only from a disclosed fact: a demotion, never a proof
-            # and never a violation (the #1363 rule `_check_call_preconditions`
-            # applies to a user callee).
+        if result.status == "disclosed" or self._is_opaque(goal):
+            # Holds only from a disclosed fact, or fails only over a value
+            # the walk could not know: a demotion, never a proof and never a
+            # violation (the rules `_check_call_preconditions` applies to a
+            # user callee).
             self._record_call_demotion_for(
                 call.name, call, contract.requires)
             return
@@ -2927,6 +3019,13 @@ class SmtContext:
                 # misattribution from claiming Tier 1, and equally wrong.  It
                 # takes the same Tier-3 E532 demotion an untranslatable
                 # precondition takes, so the call keeps its runtime guard.
+                self._record_call_demotion_for(
+                    callee_name, call_node, contract,
+                )
+                return False
+            if result.status != "verified" and self._is_opaque(z3_pre):
+                # #1480 review: refuted only over a value the walk could not
+                # know — "cannot check", never "does not hold".
                 self._record_call_demotion_for(
                     callee_name, call_node, contract,
                 )

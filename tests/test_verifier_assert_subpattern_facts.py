@@ -1556,7 +1556,7 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
             ("store", (True, [("verified", None),
                               ("tier3_unguarded", "E506"),
                               ("tier3_unguarded", "E506")])),
-            ("call_pre", (True, [])),
+            ("call_pre", (True, [("tier3", "E532")])),
         )
     },
     ("narrowing", "assert"): (True, [("tier3", "E535")]),
@@ -1564,7 +1564,7 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
         True, [("verified", None), ("tier3", "E522")]),
     ("narrowing", "store"): (
         True, [("tier3", "E506"), ("tier3_unguarded", "E506")]),
-    ("narrowing", "call_pre"): (True, []),
+    ("narrowing", "call_pre"): (True, [("tier3", "E532")]),
 }
 
 
@@ -1602,15 +1602,13 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
        `violated`/E505 to `tier3_unguarded`/E506, which is a disclosure
        rather than silence.
 
-    The one exception is `call_pre`, which records NOTHING under an
-    untranslatable scrutinee where its twin records `violated`/E501:
-    precondition obligations are a side effect of translating the call's
-    enclosing expression, and `_translate_match` bails at the scrutinee, so
-    they vanish.  The runtime guard is still emitted — the compiled module
-    carries it and a violating run traps — so this is the record's
-    existence and not an unguarded hole.  It is an instance of
-    [#1468](https://github.com/aallan/vera/issues/1468) and is named here so
-    the row reds the day it is fixed rather than passing quietly.
+    `call_pre` is the second kind: where its twin records `violated`/E501,
+    it records `tier3`/E532.  The walk reaches the call in the arm whatever
+    the scrutinee (#1480), and a precondition over the arm's placeholder is
+    a check the run cannot make, never a refutation, so the call-site check
+    demotes it (`SmtContext.opaque_term`).  Before #1480 it recorded
+    nothing, because the obligation was a side effect of translating the
+    enclosing expression and `_translate_match` bails at the scrutinee.
     """
     measured = {
         (shape, consumer): _matrix_cell(
@@ -1629,17 +1627,13 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
         if expected.get(k) != v
     )
 
-    #: `call_pre` under an untranslatable scrutinee: #1468's instance.
-    known_exceptions = {(shape, "call_pre") for shape in _MATRIX_SHAPES}
-
     verified_here = {
         k for k, (_ok, obls) in measured.items()
         if _payload_entry(obls) == ("verified", None)
     }
     refutation_lost = {
         k for k, (_ok, obls) in measured.items()
-        if k not in known_exceptions
-        and (_MATRIX_EXPECTED[k][1][-1:] or [("", "")])[0][0] == "violated"
+        if (_MATRIX_EXPECTED[k][1][-1:] or [("", "")])[0][0] == "violated"
         and _payload_entry(obls) is None
     }
     assert (verified_here, refutation_lost) == (set(), set()), (
@@ -1647,12 +1641,6 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
         f"  verified: {sorted(verified_here)}\n"
         f"  refutation lost with no record: {sorted(refutation_lost)}\n"
         f"  measured: {measured}"
-    )
-    # ... and the known exception is still exactly that, so this row is not
-    # quietly describing a state of affairs that has changed.
-    assert measured[("narrowing", "call_pre")][1] == [], (
-        f"#1468's instance changed — rewrite this row: "
-        f"{measured[('narrowing', 'call_pre')]}"
     )
 
 
@@ -2201,7 +2189,10 @@ _UNSTATABLE_CASES = {
     "div": ("@Int", "true", "100 / @L2.0", "0", "div_zero", ("tier3", None)),
     "ensures": ("@Int", "@Int.result > 0", "@L2.0", "1", "ensures",
                 ("tier3", "E522")),
-    "call_pre": ("@Int", "true", "needs_pos(@L2.0)", "0", "call_pre", None),
+    # The arm's payload is a value the walk cannot know, so its call's
+    # precondition is a check the run cannot make: Tier 3, never refuted.
+    "call_pre": ("@Int", "true", "needs_pos(@L2.0)", "0", "call_pre",
+                 ("tier3", "E532")),
     # Two records here, and both are the tip's: the PRODUCER's own
     # construction (unguarded, E506) and the arm's store.
     "store": ("@Option<L1>", "true", "Some(@L2.0)", "None", "refine_bind",
@@ -2444,7 +2435,7 @@ public fn probe(@Unit -> @Int)
     [
         pytest.param(_PLACEHOLDER_ENSURES, "ensures", ("tier3", "E522"),
                      id="postcondition-demotes-first"),
-        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", None,
+        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", ("tier3", "E532"),
                      id="call-precondition-is-never-reached"),
     ],
 )
@@ -2464,11 +2455,10 @@ def test_1403_a_placeholder_never_becomes_a_counterexample(
     * the postcondition path has its own opaque detection and demotes to
       `tier3`/**E522** ("the function body binds an effect-operation value
       the verifier models opaquely") before any refutation is attempted; and
-    * the arm's call precondition is never recorded at all, because
-      precondition obligations are a side effect of translating the call's
-      enclosing expression and `_translate_match` bails at an untranslatable
-      scrutinee — the [#1468](https://github.com/aallan/vera/issues/1468)
-      instance this file's monotonicity grid names.
+    * the arm's call precondition is recorded `tier3`/**E532**: the walk
+      reaches the call (#1480), and the call-site check demotes a
+      precondition over a value the walk cannot know rather than refuting
+      it (`SmtContext.opaque_term`) — the gate at that site.
 
     If either verdict ever becomes `violated`, the gate is needed at that
     site and the question is no longer local to this class.
