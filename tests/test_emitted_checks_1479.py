@@ -545,15 +545,20 @@ def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
     ("@Int.0 / (0 - 1)", "@Int", ["divide_by_zero", "overflow"]),
     ("@Int.0 / 5", "@Int", ["divide_by_zero"]),
     ("@Int.1 % @Int.0", "@Int, @Int", ["divide_by_zero"]),
-    ("@Nat.1 / @Nat.0", "@Nat, @Nat", ["divide_by_zero"]),
-], ids=["int-by-int", "by-a-computed-minus-one", "by-five", "remainder", "nat"])
+    ("@Nat.1 / @Nat.0", "@Nat, @Nat", ["divide_by_zero", "overflow"]),
+    ("@Nat.0 / 18446744073709551615", "@Nat",
+     ["divide_by_zero", "overflow"]),
+    ("@Nat.0 / 7", "@Nat", ["divide_by_zero"]),
+], ids=["int-by-int", "by-a-computed-minus-one", "by-five", "remainder",
+        "nat-by-nat", "nat-by-the-bits-of-minus-one", "nat-by-seven"])
 def test_a_division_lists_its_overflow_condition_where_it_can_occur(
     body: str, params: str, kinds: list[str],
 ) -> None:
-    """`i64.div_s` traps on a zero divisor and on `INT_MIN / -1`: an `@Int`
-    division whose divisor can be -1 is two checks on one instruction.  A
-    remainder cannot overflow, a `@Nat` divisor cannot be -1, and a literal
-    divisor other than -1 cannot meet it."""
+    """`i64.div_s` traps on a zero divisor and on `INT_MIN / -1`: a division
+    lowered to it whose divisor can hold -1's bits is two checks on one
+    instruction.  A `@Nat` division is `i64.div_s` today and meets the pair
+    at 2^63 / (2^64 - 1) (#1504); a remainder cannot overflow, and a literal
+    divisor whose bits are not -1's cannot meet it."""
     result = _compile(
         f"public fn f({params} -> @Int)\n" + _HEAD + "{\n  " + body + "\n}\n")
     division = {"wasm/operators.py:_translate_binary",

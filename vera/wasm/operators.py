@@ -169,13 +169,17 @@ class OperatorsMixin:
             if op in (ast.BinOp.DIV, ast.BinOp.MOD):
                 # `i64.div_s` / `i64.rem_s` trap by themselves on a zero
                 # divisor, so the instruction IS the check, and carries its
-                # record entry's marker (#1479); a division that can meet
-                # `INT_MIN / -1` carries its overflow condition's too.
+                # record entry's marker (#1479).  A signed division also
+                # traps on `INT_MIN / -1`, so it carries that condition's
+                # marker too — keyed on the instruction emitted, not on the
+                # operands' type: a `@Nat` division is `i64.div_s` today as
+                # well, and reads 2^63 and 2^64 - 1 as those two (#1504).
+                instruction = self._ARITH_OPS[op]
                 markers = self._record_check(
                     "wasm/operators.py:_translate_binary", expr)
-                if op == ast.BinOp.DIV and ovf == "Int":
+                if instruction.endswith(".div_s"):
                     markers += self._note_quotient_overflow(expr)
-                return left + right + [self._ARITH_OPS[op] + markers]
+                return left + right + [instruction + markers]
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -2202,15 +2206,18 @@ class OperatorsMixin:
     def _note_quotient_overflow(self, expr: ast.BinaryExpr) -> str:
         """The record entry for a signed division's second trap condition,
         ``INT_MIN / -1``, whose quotient leaves the i64 range (#1479); its
-        marker goes on the same ``i64.div_s``.  Returns ``""`` for a divisor
-        that is an integer literal other than -1, which cannot meet it."""
+        marker goes on the same ``i64.div_s``.  Returns ``""`` for a literal
+        divisor whose i64 bits are not -1's — -1 itself, or the `@Nat`
+        literal 2^64 - 1, can meet it; any other literal cannot."""
         divisor = expr.right
-        if isinstance(divisor, ast.IntLit) and divisor.value != -1:
+        minus_one = (1 << 64) - 1
+        if (isinstance(divisor, ast.IntLit)
+                and divisor.value % (1 << 64) != minus_one):
             return ""
         if (isinstance(divisor, ast.UnaryExpr)
                 and divisor.op == ast.UnaryOp.NEG
                 and isinstance(divisor.operand, ast.IntLit)
-                and divisor.operand.value != 1):
+                and divisor.operand.value % (1 << 64) != 1):
             return ""
         return self._record_check(
             "wasm/operators.py:_note_quotient_overflow", expr)

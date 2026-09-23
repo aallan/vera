@@ -411,7 +411,8 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     ),
     # The same `i64.div_s` also traps on the one quotient that leaves the
     # i64 range, `INT_MIN / -1` — a second condition of one instruction, so
-    # a second entry on it wherever the divisor can be -1.
+    # a second entry on it wherever the divisor can hold -1's bits (a `@Nat`
+    # division is `i64.div_s` too, reading 2^63 and 2^64 - 1 as the pair).
     TrapEmitter(
         "wasm/operators.py:_note_quotient_overflow", "overflow",
         ("int_overflow",), "native:i64.div_s", _OPERATION,
