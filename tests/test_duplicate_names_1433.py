@@ -44,13 +44,16 @@ import dataclasses
 import re
 import types
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from vera import ast
+import vera.checker as vera_checker_pkg
 from vera.checker import typecheck
+from vera.checker.core import TypeChecker
 from vera.codegen import compile as codegen_compile
 from vera.codegen.assembly import AssemblyMixin
 from vera.environment import TypeEnv
@@ -58,6 +61,7 @@ from vera.errors import Diagnostic, VeraError
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
+from vera.verifier import verify
 from tests.module_fixture_helpers import build_multi_module, module_value
 
 # ---------------------------------------------------------------------------
@@ -98,7 +102,8 @@ _GET = "    get(@Unit) -> { resume(@Int.0) }"
 _GET_PLUS_ONE = "    get(@Unit) -> { resume(@Int.0 + 1) }"
 _PUT = "    put(@Int) -> { resume(()) }"
 
-_LIBF = _module("libf", _fn("f", body="@Int.0 + 100"))
+_LIBF = _module("libf", _fn("f", body="@Int.0 + 100"),
+                _fn("g", body="@Int.0 + 200"))
 _LIBG = _module("libg", _fn("f", body="@Int.0 + 200"))
 
 
@@ -116,48 +121,108 @@ class Namespace:
 
 NAMESPACES: dict[str, Namespace] = {
     "function": Namespace(
-        frozenset({"TypeEnv.functions", "FnDecl"}), "file"),
+        frozenset({"TypeEnv.functions", "FnDecl", "FnDecl.name",
+                   "Program.declarations", "TypeChecker._ns_first_decls",
+                   "TypeChecker._top_level_fn_infos",
+                   "TypeChecker._module_functions",
+                   "TypeChecker._module_all_functions"}), "file"),
     "where_helper": Namespace(
-        frozenset({"FnDecl.where_fns"}), "`where` block"),
+        frozenset({"FnDecl.where_fns", "FnDecl.name",
+                   "TypeChecker._where_helper_parents"}), "`where` block"),
     "type": Namespace(
         frozenset({"TypeEnv.data_types", "TypeEnv.type_aliases",
-                   "DataDecl", "TypeAliasDecl"}), "file"),
+                   "DataDecl", "TypeAliasDecl", "DataDecl.name",
+                   "TypeAliasDecl.name", "Program.declarations",
+                   "TypeChecker._ns_first_decls",
+                   "TypeChecker._module_data_types",
+                   "TypeChecker._module_all_data_types"}), "file"),
     "constructor": Namespace(
         frozenset({"TypeEnv.constructors", "AdtInfo.constructors",
-                   "DataDecl.constructors"}), "file"),
+                   "DataDecl.constructors", "Constructor.name",
+                   "TypeChecker._ns_ctor_owners",
+                   "TypeChecker._module_constructors"}), "file"),
     "effect": Namespace(
-        frozenset({"TypeEnv.effects", "EffectDecl"}), "file"),
+        frozenset({"TypeEnv.effects", "EffectDecl", "EffectDecl.name",
+                   "Program.declarations",
+                   "TypeChecker._ns_first_decls"}), "file"),
     "effect_operation": Namespace(
-        frozenset({"EffectInfo.operations", "EffectDecl.operations"}),
-        "effect"),
+        frozenset({"EffectInfo.operations", "EffectDecl.operations",
+                   "OpDecl.name"}), "effect"),
     "ability": Namespace(
-        frozenset({"TypeEnv.abilities", "AbilityDecl"}), "file"),
+        frozenset({"TypeEnv.abilities", "AbilityDecl", "AbilityDecl.name",
+                   "Program.declarations",
+                   "TypeChecker._ns_first_decls"}), "file"),
     "ability_operation": Namespace(
-        frozenset({"AbilityInfo.operations", "AbilityDecl.operations"}),
-        "ability"),
+        frozenset({"AbilityInfo.operations", "AbilityDecl.operations",
+                   "OpDecl.name", "TypeChecker._ns_ability_ops"}),
+        "every ability in scope, the built-in ones included"),
     "handler_clause": Namespace(
-        frozenset({"HandleExpr.clauses"}), "`handle` expression"),
+        frozenset({"HandleExpr.clauses", "HandlerClause.op_name"}),
+        "`handle` expression"),
     "type_parameter": Namespace(
         frozenset({"TypeEnv.type_params", "FnDecl.forall_vars",
                    "DataDecl.type_params", "TypeAliasDecl.type_params",
                    "EffectDecl.type_params", "AbilityDecl.type_params"}),
-        "declaration, with the enclosing functions' `forall` lists"),
+        "type-parameter list"),
     "import": Namespace(
-        frozenset({"ImportDecl.names"}), "(admits declarations, declares "
-                                         "none)"),
+        frozenset({"ImportDecl.names", "Program.imports",
+                   "TypeChecker._import_names"}),
+        "module path (the lists of one path are unioned)"),
 }
 
-#: Enumerated by the wiring cell, and not namespaces a declaration puts a
+#: Enumerated by the wiring cell, and not a namespace a declaration puts a
 #: name in.  Each carries why.
 NOT_NAMESPACES: dict[str, str] = {
+    # -- names that REFER to a declaration made elsewhere --------------------
+    "AbilityConstraint.ability_name": "a constraint refers to an ability",
+    "AbilityConstraint.type_var": "a constraint refers to a type parameter",
+    "FnDecl.forall_constraints": (
+        "constraints refer to abilities and to the function's type "
+        "parameters; they declare neither"),
+    "ConstructorCall.name": "a construction refers to a constructor",
+    "ConstructorPattern.name": "a pattern refers to a constructor",
+    "NullaryConstructor.name": "a construction refers to a constructor",
+    "NullaryConstructor.owner": "the resolved owner of a referenced constructor",
+    "NullaryPattern.name": "a pattern refers to a constructor",
+    "LetDestruct.constructor": "a destructuring `let` refers to a constructor",
+    "EffectRef.name": "an effect row refers to an effect",
+    "QualifiedEffectRef.module": "a qualified effect refers to a module",
+    "QualifiedEffectRef.name": "a qualified effect refers to an effect",
+    "FnCall.name": "a call refers to a function",
+    "QualifiedCall.qualifier": "a qualified call refers to an effect or ability",
+    "QualifiedCall.name": "a qualified call refers to an operation",
+    "ModuleCall.name": "a module-qualified call refers to a function",
+    "NamedType.name": "a type expression refers to a type",
+    # -- module paths ------------------------------------------------------
     "ImportDecl.path": (
-        "a module path names a FILE for the resolver (§8.6.1); it declares "
-        "nothing"),
+        "a module path names a FILE for the resolver (§8.6.1); what an "
+        "import admits from it is `ImportDecl.names`, unioned per path"),
     "ModuleDecl.path": (
         "a file declares its own path once — the grammar admits one "
         "`module` declaration"),
     "ModuleCall.path": "a module-qualified call REFERENCES a path",
+    "Program.module": "the file's own `module` declaration, one per file",
+    # -- not names at all ---------------------------------------------------
+    "SlotRef.type_name": "a slot reference names a TYPE and an index (§3)",
+    "ResultRef.type_name": "a result reference names a TYPE (§6)",
+    "StringLit.value": "literal text",
+    "StringPattern.value": "literal text",
+    "InterpolatedString.parts": "literal text and the expressions between it",
+    "FnDecl.param_annotations": "annotation-comment labels (§1.3), not names",
+    "FnDecl.return_annotation": "an annotation-comment label (§1.3)",
+    "TopLevelDecl.visibility": "the `public` / `private` keyword",
+    # -- checker tables not keyed by a declared name --------------------------
+    "TypeChecker._scoped_fn_info_cache": (
+        "keyed by a declaration's IDENTITY, a memo of `_fn_info_for_decl`"),
+    "TypeChecker._literal_range_verdict": (
+        "keyed by a literal's source span, a memo of the range check"),
+    "TypeChecker.expr_types": "keyed by source span, the LSP's side table",
+    "TypeChecker.expr_semantic_types": "keyed by source span, for the verifier",
+    "TypeChecker.expr_target_types": "keyed by source span, for codegen",
 }
+
+_MAPPING_ORIGINS = ("dict", "Dict", "Mapping", "MutableMapping",
+                    "defaultdict", "OrderedDict", "ChainMap", "Counter")
 
 
 def _all_subclasses(cls: type) -> set[type]:
@@ -173,8 +238,8 @@ def _all_subclasses(cls: type) -> set[type]:
 
 def _hints(cls: type) -> dict[str, typing.Any]:
     """``typing.get_type_hints``, tolerating a name the module binds only
-    under ``TYPE_CHECKING`` (stood in for by ``object``: no name-keyed table
-    is typed by one)."""
+    under ``TYPE_CHECKING`` (stood in for by ``object``: no table is typed by
+    one)."""
     stand_ins: dict[str, typing.Any] = {}
     while True:
         try:
@@ -184,74 +249,176 @@ def _hints(cls: type) -> dict[str, typing.Any]:
             stand_ins[exc.name] = object
 
 
-def _name_keyed(tp: object) -> bool:
-    return typing.get_origin(tp) is dict and typing.get_args(tp)[0] is str
-
-
-def _tuple_element(tp: object) -> object | None:
-    """``X`` for ``tuple[X, ...]``, or for ``tuple[X, ...] | None``."""
+def _is_mapping_type(tp: object) -> bool:
+    """Any mapping origin, through ``X | None``: ``dict``, ``Mapping``,
+    ``defaultdict`` and the rest are one kind of table to a duplicate."""
     union = typing.get_origin(tp) in (typing.Union, types.UnionType)
     for option in typing.get_args(tp) if union else (tp,):
-        if typing.get_origin(option) is tuple:
-            args = typing.get_args(option)
-            if len(args) == 2 and args[1] is Ellipsis:
-                return args[0]
-    return None
+        origin = typing.get_origin(option) or option
+        if isinstance(origin, type) and issubclass(origin, Mapping):
+            return True
+    return False
 
 
-def _declares_a_name(cls: object) -> bool:
-    if not (isinstance(cls, type) and dataclasses.is_dataclass(cls)):
+def _holds_str(tp: object) -> bool:
+    """Whether a value of annotation *tp* can hold a ``str``, at any depth
+    of ``X | None``, ``tuple[...]``, ``list[...]`` or a union."""
+    if tp is str:
+        return True
+    return any(_holds_str(a) for a in typing.get_args(tp) if a is not Ellipsis)
+
+
+def _node_elements(tp: object) -> list[type]:
+    """The AST node classes a container annotation holds."""
+    out: list[type] = []
+    for a in typing.get_args(tp):
+        if a is Ellipsis:
+            continue
+        if isinstance(a, type) and issubclass(a, ast.Node):
+            out.append(a)
+        else:
+            out.extend(_node_elements(a))
+    return out
+
+
+def _declares_a_name(cls: type) -> bool:
+    """Whether a node class carries a string field, whatever it is called."""
+    if not dataclasses.is_dataclass(cls):
         return False
-    names = {f.name for f in dataclasses.fields(cls)}
-    return bool(names & {"name", "op_name"})
+    hints = _hints(cls)
+    return any(f.name != "span" and _holds_str(hints[f.name])
+               for f in dataclasses.fields(cls))
 
 
-def enumerated_registrations() -> set[str]:
-    """Every name-keyed registration the checker's code can hold.
+_WIRING_FIXTURE = {
+    "libw.vera": (
+        "module libw;\n\npublic data Box { Bx(Int) }\n\n"
+        "public fn lf(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  @Int.0\n}\n"),
+    "main.vera": (
+        "import libw(lf, Box);\nimport libw;\n\ntype Cnt = Int;\n\n"
+        "effect Ping {\n  op ping(Unit -> Int);\n}\n\n"
+        "ability Sz<T> {\n  op size(T -> Int);\n}\n\n"
+        "public data Pair { Pr(Int, Int) }\n\n"
+        "public forall<T> fn f(@T -> @Int)\n  requires(true)\n"
+        "  ensures(true)\n  effects(pure)\n{\n  h(1)\n}\nwhere {\n"
+        "  fn h(@Int -> @Int)\n    requires(true)\n    ensures(true)\n"
+        "    effects(pure)\n  {\n    @Int.0\n  }\n}\n\n"
+        "public fn g(@Unit -> @Int)\n  requires(true)\n  ensures(true)\n"
+        "  effects(pure)\n{\n  handle[State<Int>](@Int = 0) {\n"
+        "    get(@Unit) -> { resume(@Int.0) },\n"
+        "    put(@Int) -> { resume(()) }\n  } in {\n"
+        "    get(()) + lf(1) + libw::lf(2)\n  }\n}\n"),
+}
 
-    Read from the code, never listed: ``TypeEnv``'s tables keyed by a
-    declared name; the name-keyed tables inside the records those hold; the
-    AST's declaration classes; and every AST field that holds declarations
-    carrying a name, or a list of names.
+
+def _checker_after_a_check(tmp_path: Path) -> TypeChecker:
+    """A checker that has checked a program exercising every registration
+    path — modules, both import forms, helpers, an alias, an effect, an
+    ability, a handler — so its tables hold what they hold in use."""
+    main_path = _write(tmp_path, _WIRING_FIXTURE)
+    source = _WIRING_FIXTURE["main.vera"]
+    program = parse_to_ast(source)
+    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+        program, main_path)
+    checker = TypeChecker(source=source, file=str(main_path),
+                          resolved_modules=resolved)
+    checker.check_program(program)
+    assert not checker.errors, [e.description for e in checker.errors]
+    return checker
+
+
+def _annotated_checker_tables() -> set[str]:
+    """``self.X`` attributes the checker's own source ANNOTATES as a mapping,
+    or assigns a mapping literal — so a table that holds ``None`` until some
+    path fills it is enumerated even when the fixture leaves it empty."""
+    import ast as pyast
+    found: set[str] = set()
+    for path in sorted(Path(vera_checker_pkg.__file__).parent.glob("*.py")):
+        tree = pyast.parse(path.read_text(encoding="utf-8"))
+        for node in pyast.walk(tree):
+            target, annotation, value = None, None, None
+            if isinstance(node, pyast.AnnAssign):
+                target, annotation, value = node.target, node.annotation, node.value
+            elif isinstance(node, pyast.Assign) and len(node.targets) == 1:
+                target, value = node.targets[0], node.value
+            if not (isinstance(target, pyast.Attribute)
+                    and isinstance(target.value, pyast.Name)
+                    and target.value.id == "self"):
+                continue
+            text = pyast.unparse(annotation) if annotation is not None else ""
+            literal = isinstance(value, pyast.Dict) or (
+                isinstance(value, pyast.Call)
+                and isinstance(value.func, pyast.Name)
+                and value.func.id in _MAPPING_ORIGINS)
+            if literal or any(o in text for o in _MAPPING_ORIGINS):
+                found.add(f"TypeChecker.{target.attr}")
+    return found
+
+
+def enumerated_registrations(tmp_path: Path) -> set[str]:
+    """Every table a declared name could be registered in, and every AST
+    field that could hold one — read from the code, never listed.
+
+    * the checker's and ``TypeEnv``'s attributes whose VALUE is a mapping
+      after a check, plus the ones their source or dataclass annotation
+      types as a mapping (through ``X | None``), so an ``Optional`` table
+      the fixture leaves ``None`` still counts;
+    * the mapping fields of the records ``TypeEnv``'s tables hold, by
+      annotation and by value;
+    * the AST's declaration classes, every AST field that can hold a
+      ``str`` whatever it is called, and every AST field holding nodes that
+      carry one.
     """
     found: set[str] = set()
+    checker = _checker_after_a_check(tmp_path)
+    for attr, value in vars(checker).items():
+        if isinstance(value, Mapping):
+            found.add(f"TypeChecker.{attr}")
+    found |= _annotated_checker_tables()
+    env = checker.env
     env_hints = _hints(TypeEnv)
+    records: set[type] = set()
     for f in dataclasses.fields(TypeEnv):
-        tp = env_hints[f.name]
-        if not _name_keyed(tp):
-            continue
-        found.add(f"TypeEnv.{f.name}")
-        record = typing.get_args(tp)[1]
-        if isinstance(record, type) and dataclasses.is_dataclass(record):
-            record_hints = _hints(record)
-            for g in dataclasses.fields(record):
-                if _name_keyed(record_hints[g.name]):
-                    found.add(f"{record.__name__}.{g.name}")
+        value = getattr(env, f.name)
+        if isinstance(value, Mapping) or _is_mapping_type(env_hints[f.name]):
+            found.add(f"TypeEnv.{f.name}")
+        if isinstance(value, Mapping):
+            records |= {type(v) for v in value.values()
+                        if dataclasses.is_dataclass(v)}
+    for record in sorted(records, key=lambda c: c.__name__):
+        record_hints = _hints(record)
+        for g in dataclasses.fields(record):
+            if _is_mapping_type(record_hints[g.name]):
+                found.add(f"{record.__name__}.{g.name}")
     found.update(c.__name__ for c in _all_subclasses(ast.Decl))
     for cls in _all_subclasses(ast.Node):
         if not dataclasses.is_dataclass(cls):
             continue
         hints = _hints(cls)
         for f in dataclasses.fields(cls):
-            element = _tuple_element(hints[f.name])
-            if element is str or _declares_a_name(element):
+            if f.name == "span":
+                continue
+            tp = hints[f.name]
+            if _holds_str(tp) or any(
+                    _declares_a_name(e) for e in _node_elements(tp)):
                 found.add(f"{cls.__name__}.{f.name}")
     return found
 
 
-def test_every_registration_the_code_holds_is_claimed() -> None:
+def test_every_registration_the_code_holds_is_claimed(tmp_path: Path) -> None:
     """The wiring cell: the matrix's rows ARE the namespaces in the code.
 
-    Both directions.  An enumerated registration no row claims is a namespace
-    that could accept a duplicate unmeasured; a claim nothing enumerates is a
-    row describing a namespace that no longer exists.
+    Both directions.  An enumerated table or name field no row claims is a
+    namespace that could accept a duplicate unmeasured; a claim nothing
+    enumerates is a row describing a namespace that no longer exists.
     """
     claimed: set[str] = set(NOT_NAMESPACES)
     for ns in NAMESPACES.values():
-        overlap = claimed & ns.claims
-        assert not overlap, f"claimed twice: {sorted(overlap)}"
         claimed |= ns.claims
-    enumerated = enumerated_registrations()
+    assert not set(NOT_NAMESPACES) & set().union(
+        *(ns.claims for ns in NAMESPACES.values())), "claimed and excused"
+    enumerated = enumerated_registrations(tmp_path)
     assert enumerated - claimed == set(), (
         f"registrations no namespace row claims — add a row (and its matrix "
         f"cells) or a NOT_NAMESPACES reason: {sorted(enumerated - claimed)}"
@@ -266,7 +433,7 @@ def test_every_registration_the_code_holds_is_claimed() -> None:
 # The matrix
 # ---------------------------------------------------------------------------
 
-SPELLINGS = ("same_scope", "nested_scope", "across_modules")
+SPELLINGS = ("same_scope", "nested_scope", "across_modules", "builtin")
 
 
 @dataclass(frozen=True)
@@ -281,6 +448,13 @@ class Cell:
     With ``one_line`` — a type parameter repeated in one list — the pattern
     matches the declaration's one line, which holds both binders: every
     diagnostic sits there, and no rationale can name a separate line.
+    ``pinned`` marks a legal cell that holds a KNOWN defect at today's
+    value, naming the issue and the correct value: the day the issue is
+    fixed the value changes and the cell fails, and it is flipped to the
+    correct one.  A pin rather than an ``xfail`` because
+    ``check_doc_counts.py`` gates TESTING.md's breakdown as passed +
+    stress-deselected + skipped, with no term for an xfailed test — the
+    convention ``test_binder_position_generator.py`` states.
     """
 
     id: str
@@ -292,6 +466,7 @@ class Cell:
     count: int = 1
     surplus: tuple[str, str] | None = None
     one_line: bool = False
+    pinned: str | None = None
 
 
 def _c(id: str, namespace: str, spelling: str, main: str, expect: str,
@@ -359,14 +534,29 @@ CELLS: list[Cell] = [
     _c("fn/two-imports-supply-one-name", "function", "across_modules",
        "import libf;\nimport libg;\n\n" + _main("f(1)"),
        "E155", modules={"libf": _LIBF, "libg": _LIBG}),
-    _c("fn/shadows-prelude-combinator", "function", "prelude",
+    _c("fn/shadows-prelude-combinator", "function", "builtin",
        _fn("option_unwrap_or", sig="@Option<Int>, @Int -> @Int", body="99")
        + "\n" + _main("option_unwrap_or(None, 5)"),
        "legal", value=99),
-    _c("fn/redefines-built-in", "function", "prelude",
+    _c("fn/redefines-built-in", "function", "builtin",
        _fn("string_length", sig="@String -> @Int", body="1") + "\n"
        + _main('string_length("ab")'),
        "E151"),
+    # A prelude BODY calls the user's override: `json_get_string` reaches
+    # this `json_get`, so the program returns 0 where the prelude's own
+    # `json_get` gives 2.  Pinned at 0 until owner-qualified prelude
+    # symbols (#1495) make it 2.
+    _c("fn/prelude-body-calls-an-override", "function", "builtin",
+       _fn("json_get", sig="@Json, @String -> @Option<Json>", body="None",
+           vis="private ") + "\n"
+       + _main('match json_parse("{\\"a\\": \\"bc\\"}") {\n'
+               '    Ok(@Json) -> match json_get_string(@Json.0, "a") {\n'
+               '      Some(@String) -> string_length(@String.0),\n'
+               '      None -> 0\n    },\n'
+               '    Err(@String) -> 0 - 1\n  }'),
+       "legal", value=0,
+       pinned="#1495: a prelude body binds to the program's override of a "
+              "prelude function; the correct value is 2"),
 
     # -- where helpers -----------------------------------------------------
     _c("where/twice", "where_helper", "same_scope",
@@ -410,6 +600,20 @@ CELLS: list[Cell] = [
                          + _helper("k", body="@Int.0 + 2")))
        + "\n" + _main("f(1)"),
        "E184", surplus=("main.vera", r"^  fn k\(")),
+    _c("where/helper-named-like-a-built-in", "where_helper", "builtin",
+       _fn("f", body="string_length(\"ab\")",
+           where=_helper("string_length", sig="@String -> @Int", body="1"))
+       + "\n" + _main("f(1)"),
+       "E151"),
+    # Refused as E151 already, so neither holds the name for the other to
+    # repeat: two E151s and no E184.
+    _c("where/two-helpers-named-like-a-built-in", "where_helper", "builtin",
+       _fn("f", body="1",
+           where=_helper("string_length", sig="@String -> @Int", body="1")
+           + "\n" + _helper("string_length", sig="@String -> @Int",
+                             body="2"))
+       + "\n" + _main("f(1)"),
+       "E151", count=2),
     _c("where/two-parents", "where_helper", "sibling_scope",
        _fn("f", body="h(@Int.0)", where=_helper("h", body="@Int.0 + 1"))
        + "\n"
@@ -480,7 +684,18 @@ CELLS: list[Cell] = [
        modules={"libt": _module("libt", "type Foo = Int;\n",
                                 _fn("z", sig="@Foo -> @Int",
                                     body="@Foo.0"))}),
-    _c("type/entry-restates-prelude-type", "type", "prelude",
+    # #1497: a primitive's name resolves before any declaration, so these
+    # could never be named.
+    _c("type/data-named-after-a-primitive", "type", "builtin",
+       "public data Int { I(Bool) }\n\n" + _main("1"),
+       "E158"),
+    _c("type/alias-named-after-a-primitive", "type", "builtin",
+       "type Bool = Int;\n\n" + _main("1"),
+       "E158"),
+    _c("type/data-named-Tuple", "type", "builtin",
+       "public data Tuple { T1(Int) }\n\n" + _main("1"),
+       "E158"),
+    _c("type/entry-restates-prelude-type", "type", "builtin",
        "public data Option<T> { None, Some(T) }\n\n"
        + _main("match Some(4) { Some(@Int) -> @Int.0, None -> 0 }"),
        "legal", value=4),
@@ -514,7 +729,10 @@ CELLS: list[Cell] = [
                 "liby": _module("liby", "public data Bar { Q }\n")}),
     # Only the entry's two-field `Some` can build `Some(5, 6)` — the
     # prelude's has one field.
-    _c("ctor/shadows-prelude-constructor", "constructor", "prelude",
+    _c("ctor/named-Tuple", "constructor", "builtin",
+       "public data Box { Tuple(Bool) }\n\n" + _main("1"),
+       "E158"),
+    _c("ctor/shadows-prelude-constructor", "constructor", "builtin",
        "public data Pair { Some(Int, Int) }\n\n"
        + _main("match Some(5, 6) { Some(@Int, @Int) -> @Int.0 }"),
        "legal", value=6),
@@ -540,7 +758,7 @@ CELLS: list[Cell] = [
        "import libe;\n\n" + _E_B + "\n" + _main("z(1)"),
        "legal", value=1,
        modules={"libe": _module("libe", _E_A, _fn("z"))}),
-    _c("effect/redeclares-built-in", "effect", "prelude",
+    _c("effect/redeclares-built-in", "effect", "builtin",
        "effect IO {\n  op print(String -> Unit);\n}\n\n" + _main("1"),
        "E152"),
     _c("effect/effect-and-data-share-a-name", "effect", "other_namespace",
@@ -567,6 +785,15 @@ CELLS: list[Cell] = [
        "effect E1 {\n  op a(Unit -> Int);\n}\n\n"
        "effect E2 {\n  op a(Unit -> Int);\n}\n\n" + _main("3"),
        "legal", value=3),
+    # A declared effect's `get` and `State`'s `get` are two effects'
+    # operation lists; the handled body's bare `get` is `State`'s (§7.4).
+    _c("op/shares-a-built-in-effects-op-name", "effect_operation",
+       "builtin",
+       "effect Counter {\n  op get(Unit -> Int);\n}\n\n"
+       + _fn("g", sig="@Unit -> @Int",
+             body=_handle_state(_GET + ",\n" + _PUT, body="get(())"))
+       + "\n" + _main("g(()) + 7"),
+       "legal", value=7),
     _c("op/module-effect-twice", "effect_operation", "across_modules",
        "import libop;\n\n" + _main("1"),
        "E184", surplus=("libop.vera", r"^  op a\("),
@@ -582,6 +809,22 @@ CELLS: list[Cell] = [
        "import liba2;\n\n" + _main("1"),
        "E184", surplus=("liba2.vera", r"^ability Sz\b"),
        modules={"liba2": _module("liba2", _SZ_SIZE, _SZ_LEN, _fn("z"))}),
+    # E185: the built-in stays canonical; code generation compiles `eq`
+    # against it whatever a declaration says.
+    _c("ability/redeclares-a-built-in", "ability", "builtin",
+       "ability Eq<T> {\n  op eq(T, T -> Bool);\n}\n\n"
+       + _main("if eq(1, 2) then { 1 } else { 0 }"),
+       "E185"),
+    # The name alone is the refusal: `render` is not a built-in operation.
+    _c("ability/redeclares-a-built-in-with-its-own-op", "ability", "builtin",
+       "ability Show<T> {\n  op render(T -> String);\n}\n\n" + _main("1"),
+       "E185"),
+    _c("ability/module-redeclares-a-built-in", "ability", "across_modules",
+       "import libab;\n\n" + _main("z(1)"),
+       "E185",
+       modules={"libab": _module(
+           "libab", "ability Hash<T> {\n  op hash(T -> Int);\n}\n",
+           _fn("z"))}),
     # Abilities are not importable: the module's `Sz` never meets the
     # entry's.
     _c("ability/in-module-and-entry", "ability", "across_modules",
@@ -596,20 +839,30 @@ CELLS: list[Cell] = [
 
     # -- ability operations --------------------------------------------------
     _c("aop/twice", "ability_operation", "same_scope",
-       "ability Sz {\n  op size(Int -> Int);\n  op size(Int -> Bool);\n}\n\n"
-       + _main("1"),
+       "ability Sz<T> {\n  op size(T -> Int);\n  op size(T -> Bool);\n}"
+       "\n\n" + _main("size(1)"),
        "E184", surplus=("main.vera", r"^  op size\(")),
+    # One namespace across abilities: a bare `size(1)` bound to whichever
+    # ability came first in the file (#1488 review, finding 2).
     _c("aop/two-abilities-share-a-name", "ability_operation",
        "sibling_scope",
-       "ability Sz {\n  op size(Int -> Int);\n}\n\n"
-       "ability Len {\n  op size(Int -> Int);\n}\n\n" + _main("5"),
-       "legal", value=5),
+       "ability Sz<T> {\n  op size(T -> Int);\n}\n\n"
+       "ability Len<T> {\n  op size(T -> Bool);\n}\n\n"
+       + _main("size(1)"),
+       "E184", surplus=("main.vera", r"^  op size\(")),
+    # ...and the built-in abilities are in it: `eq(1, 1)` reached `Eq.eq`,
+    # so `MyEq`'s operation could never be called.
+    _c("aop/named-like-a-built-in-op", "ability_operation", "builtin",
+       "ability MyEq<T> {\n  op eq(T, T -> Int);\n}\n\n"
+       + _main("if eq(1, 1) then { 1 } else { 0 }"),
+       "E185"),
     _c("aop/module-ability-twice", "ability_operation", "across_modules",
-       "import libaop;\n\n" + _main("1"),
+       "import libaop;\n\n" + _main("z(1)"),
        "E184", surplus=("libaop.vera", r"^  op size\("),
        modules={"libaop": _module(
-           "libaop", "ability Sz {\n  op size(Int -> Int);\n"
-                     "  op size(Int -> Int);\n}\n", _fn("z"))}),
+           "libaop", "ability Sz<T> {\n  op size(T -> Int);\n"
+                     "  op size(T -> Int);\n}\n",
+           _fn("z", body="size(@Int.0)"))}),
 
     # -- handler clauses -----------------------------------------------------
     # At the base this RAN, and ran the later clause: `main` returned 1.
@@ -666,15 +919,42 @@ CELLS: list[Cell] = [
        "ability Sz<T, T> {\n  op size(T -> Int);\n}\n\n" + _main("1"),
        "E184", surplus=("main.vera", r"^ability Sz\b"),
        one_line=True),
-    # At the base: check- and verify-clean, then `f$Bool` failed to load as
-    # WebAssembly — the parent's T is Bool and the helper's is Int.
-    _c("tparam/helper-rebinds-parent-parameter", "type_parameter",
+    # A helper's own `forall<T>` shadows its parent's inside the helper.
+    # At the base the substitution for the parent reached through it, so a
+    # parent at `Bool` cloned the helper at `Bool` whatever it was called
+    # at: `h(7)` called an i32 clone with an i64 and `f$Bool` failed to load.
+    _c("tparam/helper-rebinds-parent-parameter-other-type", "type_parameter",
        "nested_scope",
        _fn("f", sig="@T -> @Int", body="h(7)", forall="forall<T> ",
            where=_helper("h", sig="@T -> @Int", body="41",
                          forall="forall<T> "))
        + "\n" + _main("f(true)"),
-       "E184", surplus=("main.vera", r"fn (f|h)\(")),
+       "legal", value=41),
+    _c("tparam/helper-rebinds-parent-parameter-same-type", "type_parameter",
+       "nested_scope",
+       _fn("f", sig="@T -> @T", body="h(@T.0)", forall="forall<T> ",
+           where=_helper("h", sig="@T -> @T", body="@T.0",
+                         forall="forall<T> "))
+       + "\n" + _main("f(41) + 1"),
+       "legal", value=42),
+    # The parent at `Int` collapses the helper's `@A` into `@Int` unless the
+    # substitution stops at the helper's binder — and then `@Int.0` is
+    # re-indexed to a binding the helper does not have.
+    _c("tparam/helper-rebinds-parent-parameter-reindexed", "type_parameter",
+       "nested_scope",
+       _fn("f", sig="@A -> @Int", body="h(5, true)", forall="forall<A> ",
+           where=_helper("h", sig="@Int, @A -> @Int", body="@Int.0",
+                         forall="forall<A> "))
+       + "\n" + _main("f(1)"),
+       "legal", value=5),
+    _c("tparam/helper-rebinds-parent-parameter-both-types", "type_parameter",
+       "nested_scope",
+       _fn("f", sig="@T -> @Int", body="h(@T.0) + h(7)",
+           forall="forall<T> ",
+           where=_helper("h", sig="@T -> @Int", body="20",
+                         forall="forall<T> "))
+       + "\n" + _main("f(true) + f(5) * 100"),
+       "legal", value=4040),
     _c("tparam/helper-own-parameter", "type_parameter", "nested_scope",
        _fn("f", sig="@T -> @Int", body="h(7)", forall="forall<T> ",
            where=_helper("h", sig="@U -> @Int", body="41",
@@ -701,6 +981,11 @@ CELLS: list[Cell] = [
              forall="forall<T> ")
        + "\n" + _main("pick(Some(5), Some(true))"),
        "legal", value=5),
+    # A binder named after a primitive shadows it inside its function.
+    _c("tparam/named-like-a-built-in-type", "type_parameter", "builtin",
+       _fn("f", sig="@Int -> @Int", body="@Int.0", forall="forall<Int> ")
+       + "\n" + _main('string_length(f("abc"))'),
+       "legal", value=3),
     _c("tparam/module-forall-twice", "type_parameter", "across_modules",
        "import libtp;\n\n" + _main("1"),
        "E184", surplus=("libtp.vera", r"^public forall<T, T> fn idf\("),
@@ -715,6 +1000,29 @@ CELLS: list[Cell] = [
     _c("import/module-imported-twice", "import", "same_scope",
        "import libf;\nimport libf;\n\n" + _main("f(1)"),
        "legal", value=101, modules={"libf": _LIBF}),
+    # Two lists for one module admit their union (§8.5.5).  At the base the
+    # checker, the verifier and codegen each kept the LAST list: the bare
+    # calls ran and `libf::f` was refused with E231.
+    _c("import/two-lists-qualified", "import", "same_scope",
+       "import libf(f);\nimport libf(g);\n\n"
+       + _main("libf::f(1) * 1000 + libf::g(1)"),
+       "legal", value=101201, modules={"libf": _LIBF}),
+    _c("import/two-lists-bare", "import", "same_scope",
+       "import libf(f);\nimport libf(g);\n\n"
+       + _main("f(1) * 1000 + g(1)"),
+       "legal", value=101201, modules={"libf": _LIBF}),
+    _c("import/two-lists-generic-bare", "import", "same_scope",
+       "import libgen(gid);\nimport libgen(g);\n\n"
+       + _main("gid(5) + g(1)"),
+       "legal", value=6,
+       modules={"libgen": _module(
+           "libgen", _fn("g"),
+           _fn("gid", sig="@T -> @T", body="@T.0", forall="forall<T> "))}),
+    # A whole-module import subsumes a selective one, in either order.
+    _c("import/whole-then-selective", "import", "same_scope",
+       "import libf;\nimport libf(f);\n\n"
+       + _main("libf::g(1) * 1000 + g(2)"),
+       "legal", value=201202, modules={"libf": _LIBF}),
 ]
 
 #: (namespace, spelling) pairs the grammar cannot express, and why.  Where a
@@ -742,6 +1050,15 @@ NOT_SPELLABLE: dict[tuple[str, str], tuple[str, str | None]] = {
     ("import", "nested_scope"): (
         "imports are file-level, before every declaration",
         _fn("f") + "where {\n  import libf;\n}\n"),
+    ("handler_clause", "builtin"): (
+        "a clause names an operation of the effect its handler handles, "
+        "built-in or declared; clauses of different handlers never share a "
+        "namespace, so there is no built-in clause to collide with",
+        None),
+    ("import", "builtin"): (
+        "the built-ins and the prelude are in scope without an import "
+        "(§8.4.1); no import list can name or repeat them",
+        None),
     ("import", "across_modules"): (
         "an import list belongs to one file; what two files' imports "
         "supplying one name means is the function, type and constructor "
@@ -863,7 +1180,37 @@ def test_a_legal_spelling_verifies_compiles_and_runs(
     )
     assert verify_errors == [], (cell.id, verify_errors)
     assert cg_errors == [], (cell.id, cg_errors)
-    assert module_value(result) == ("ok", cell.value), cell.id
+    assert module_value(result) == ("ok", cell.value), (
+        cell.id if cell.pinned is None else
+        f"{cell.id} is pinned at a known defect — {cell.pinned}.  If the "
+        f"value moved to the correct one, the issue is fixed: flip the cell")
+
+
+def test_the_verifier_obligates_a_call_the_first_list_admits(
+    tmp_path: Path,
+) -> None:
+    """Two lists for one module, and a call only the FIRST admits that
+    violates its callee's precondition.  At the base the verifier kept the
+    last list, never injected `f`, and so never obligated the call:
+    `verify` passed a program that breaks `f`'s contract.  The one
+    derivation gives the verifier the same union the checker reads."""
+    files = {
+        "libp.vera": _module("libp", _fn("f", body="@Int.0").replace(
+            "  requires(true)\n", "  requires(@Int.0 > 0)\n", 1),
+            _fn("g")),
+        "main.vera": "import libp(f);\nimport libp(g);\n\n"
+                     + _main("f(0) + g(1)"),
+    }
+    assert _check(tmp_path, files) == []
+    main_path = tmp_path / "main.vera"
+    program = parse_to_ast(files["main.vera"])
+    resolved = ModuleResolver(_root=tmp_path).resolve_imports(
+        program, main_path)
+    result = verify(program, files["main.vera"], file=str(main_path),
+                    resolved_modules=resolved)
+    codes = [d.error_code for d in result.diagnostics
+             if d.severity == "error"]
+    assert codes == ["E501"], codes
 
 
 # ---------------------------------------------------------------------------
@@ -918,19 +1265,6 @@ def test_a_repeated_type_parameter_names_its_place_in_the_list(
     assert first.rationale.startswith(
         "'T' is already declared in function 'idf' (position 1)."
     )
-
-
-def test_a_helper_rebinding_a_parent_parameter_names_the_parent(
-    tmp_path: Path,
-) -> None:
-    """The enclosing ``forall`` is where the first binding is, so the
-    rationale says so rather than pointing inside the helper."""
-    cell = next(c for c in CELLS
-                if c.id == "tparam/helper-rebinds-parent-parameter")
-    (diag,) = _check(tmp_path, cell.files)
-    assert diag.description == "Duplicate type parameter 'T' in function 'h'."
-    assert "already declared in function 'f' at line 1" in diag.rationale
-    assert "stay in scope in its 'where' helpers" in diag.rationale
 
 
 # ---------------------------------------------------------------------------

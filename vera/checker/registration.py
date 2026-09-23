@@ -16,7 +16,7 @@ from vera.environment import (
     OpInfo,
     TypeAliasInfo,
 )
-from vera.types import TypeVar
+from vera.types import PRIMITIVES, TypeVar
 
 # #1191: the prelude's generated-declaration namespace — "Vera" + an
 # uppercase letter or digit ("VeraOptionMapFn", "VeraA").  Anchored, so
@@ -67,6 +67,32 @@ def builtin_effect_names() -> frozenset[str]:
     from vera.introspect import builtin_effect_names as _registry_names
 
     return _registry_names()
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_ability_ops() -> dict[str, str]:
+    """Each built-in ability's operations, as ``{operation: ability}`` (E185).
+
+    Read from the abilities ``TypeEnv`` registers itself, never a hand-list,
+    so a future built-in ability is gated the moment it is registered.
+    Cached: the registry is static.  The keys of the value are the built-in
+    ABILITY names as well, via :func:`builtin_ability_names`.
+    """
+    from vera.environment import TypeEnv
+
+    return {
+        op: ability
+        for ability, info in TypeEnv().abilities.items()
+        for op in info.operations
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def builtin_ability_names() -> frozenset[str]:
+    """Built-in ability names a user ``ability`` must not redeclare (E185)."""
+    from vera.environment import TypeEnv
+
+    return frozenset(TypeEnv().abilities)
 
 
 # Identifiers unavailable as function names (E153).  For pieces 1 and 2 the
@@ -251,6 +277,10 @@ class RegistrationMixin:
         # already holds the prelude's and the imports' entries, and
         # shadowing those stays legal (§8.4.1, §8.5.2).
         self._ns_first_decls: dict[tuple[str, str], ast.Decl] = {}
+        # #1433: the ability operations this pass declares, with the ability
+        # declaring each — one namespace across every ability in scope, the
+        # built-in ones included (spec §9.8).
+        self._ns_ability_ops: dict[str, tuple[str, ast.OpDecl]] = {}
         for tld in program.declarations:
             # C7c: require explicit visibility on fn/data declarations
             if (tld.visibility is None
@@ -295,6 +325,13 @@ class RegistrationMixin:
             # cascading arity errors from the invalid declaration.
             if (isinstance(tld.decl, ast.EffectDecl)
                     and self._check_builtin_effect_redeclaration(tld.decl)):
+                continue
+            # #1433: and for abilities (E185).  The built-in stays canonical:
+            # code generation compiles `eq`, `compare`, `hash` and `show`
+            # against the built-in whatever a declaration says.
+            if (isinstance(tld.decl, ast.AbilityDecl)
+                    and self._check_builtin_ability_redeclaration(tld.decl)):
+                self._refused_decl_ids.add(id(tld.decl))
                 continue
             # #1433: a name this file has already declared in the same
             # namespace.  After the two built-in gates, so a declaration
@@ -746,11 +783,7 @@ class RegistrationMixin:
         self._refused_decl_ids.add(id(decl))
         return True
 
-    def _check_duplicate_names_in_fn(
-        self,
-        decl: ast.FnDecl,
-        enclosing: dict[str, ast.FnDecl] | None = None,
-    ) -> None:
+    def _check_duplicate_names_in_fn(self, decl: ast.FnDecl) -> None:
         """E184 inside the namespaces ``decl`` opens: its ``where`` block and
         its ``forall`` list, and — recursively — its helpers' own.
 
@@ -764,16 +797,19 @@ class RegistrationMixin:
         block and ``forall`` list are not inspected, since its body will not
         be checked either.
 
-        ``enclosing`` maps each type parameter an enclosing function binds to
-        the nearest one binding it: those stay in scope in the helper (§5.6.2),
-        so a helper's own ``forall`` is the same namespace as theirs.
+        A helper's own ``forall`` list is a namespace of its own: a binder
+        there shadows an enclosing function's parameter of the same name
+        inside the helper (§5.6.2), so only a repeat WITHIN one list is a
+        duplicate.
         """
-        enclosing = enclosing or {}
-        self._check_duplicate_type_params(
-            decl, f"function '{decl.name}'", enclosing,
-        )
+        self._check_duplicate_type_params(decl, f"function '{decl.name}'")
         seen: dict[str, ast.FnDecl] = {}
         for wfn in decl.where_fns or ():
+            # A helper refused already — redefining a built-in (E151) — is
+            # not registered, so it holds no name for a later one to repeat,
+            # the posture `_register_all` takes for a top-level declaration.
+            if id(wfn) in self._refused_decl_ids:
+                continue
             first = seen.get(wfn.name)
             if first is None:
                 seen[wfn.name] = wfn
@@ -783,19 +819,17 @@ class RegistrationMixin:
                 scope=f"the 'where' block of '{decl.name}'", first=first,
             )
             self._refused_decl_ids.add(id(wfn))
-        in_scope = {**enclosing, **{tv: decl for tv in decl.forall_vars or ()}}
         for wfn in decl.where_fns or ():
             if id(wfn) not in self._refused_decl_ids:
-                self._check_duplicate_names_in_fn(wfn, in_scope)
+                self._check_duplicate_names_in_fn(wfn)
 
     def _check_duplicate_type_params(
         self,
         decl: (ast.FnDecl | ast.DataDecl | ast.TypeAliasDecl
                | ast.EffectDecl | ast.AbilityDecl),
         owner: str,
-        enclosing: dict[str, ast.FnDecl] | None = None,
     ) -> None:
-        """E184 for a type parameter bound twice in one scope.
+        """E184 for a type parameter bound twice in one list.
 
         Twice in one list — ``forall<T, T>`` — binds one name twice into
         ``env.type_params``, so every ``@T`` names both and the list's arity
@@ -804,46 +838,19 @@ class RegistrationMixin:
         place in the list: two identical reports would be one after the
         checker's exact-duplicate dedup, and ``forall<T, T, T>`` has two
         surplus binders to remove.
-
-        Once in a ``where`` helper's list and once in an ENCLOSING function's
-        (``enclosing``) is the same namespace, because the enclosing
-        parameters stay in scope in the helper (§5.6.2).  The checker let the
-        helper's binder replace the parent's in ``env.type_params`` while code
-        generation kept the parent's substitution, so a parent instantiated
-        at ``Bool`` calling the helper at ``Int`` was check- and verify-clean
-        and then failed to load as WebAssembly.
         """
         binders = (
             decl.forall_vars if isinstance(decl, ast.FnDecl)
             else decl.type_params
         ) or ()
-        enclosing = enclosing or {}
         first_at: dict[str, int] = {}
         for at, tv in enumerate(binders, start=1):
-            outer = enclosing.get(tv)
             if tv in first_at:
                 self._report_duplicate_name(
                     decl, noun="type parameter", name=tv,
                     scope=f"{owner} (position {at} of its list)",
                     first=None,
                     first_scope=f"{owner} (position {first_at[tv]})",
-                )
-            elif outer is not None:
-                self._report_duplicate_name(
-                    decl, noun="type parameter", name=tv, scope=owner,
-                    first=outer, first_scope=f"function '{outer.name}'",
-                    why=(
-                        f"The type parameters of '{outer.name}' stay in "
-                        f"scope in its 'where' helpers, so this list and "
-                        f"that one are one namespace, and every '@{tv}' "
-                        f"inside {owner} could name either binding."
-                    ),
-                    fix=(
-                        f"Rename this type parameter to a name no enclosing "
-                        f"function binds, and update the '@{tv}' that mean "
-                        f"it; or delete it, and write {owner} over the "
-                        f"enclosing '{tv}'."
-                    ),
                 )
             first_at.setdefault(tv, at)
 
@@ -870,6 +877,101 @@ class RegistrationMixin:
             distinct.append(op)
         return distinct
 
+    def _check_builtin_ability_redeclaration(
+        self, decl: ast.AbilityDecl,
+    ) -> bool:
+        """E185 when ``decl`` redeclares a built-in ability (#1433).
+
+        Returns ``True`` when refused, so the caller does not register it
+        over the built-in in ``env.abilities``.  Name-keyed and
+        unconditional, like E152 for effects: code generation compiles every
+        ``eq``, ``compare``, ``hash`` and ``show`` against the built-in and
+        never reads the declaration, so a changed signature was checked
+        against the declaration and run against the built-in — a ``@Nat``
+        result held -7 — and a faithful copy is a second spelling of the
+        built-in, which spec §0.2.3 forbids.
+        """
+        if decl.name not in builtin_ability_names():
+            return False
+        self._report_builtin_ability(
+            decl, what=f"Ability '{decl.name}' redeclares",
+            builtin=decl.name,
+            fix=(
+                f"Delete this 'ability {decl.name}' declaration: the built-in "
+                f"'{decl.name}' is always in scope, in constraints such as "
+                f"'forall<T where {decl.name}<T>>'. If you mean a different "
+                f"ability, give it a distinct name."
+            ),
+        )
+        return True
+
+    def _claim_ability_op(
+        self, decl: ast.AbilityDecl, op: ast.OpDecl,
+    ) -> bool:
+        """Register ``op``'s name in the one ability-operation namespace.
+
+        A bare call names an ability operation without its ability, and
+        ``lookup_ability_op`` answered it with the FIRST ability declaring
+        the name — the built-ins first — so a second declaration was
+        unreachable and the binding was chosen by declaration order.  An
+        operation named after a built-in ability's is E185; one another
+        ability in this file already declares is E184.  Returns ``False``
+        for a refused operation, which is not registered.
+        """
+        builtin = builtin_ability_ops().get(op.name)
+        if builtin is not None:
+            self._report_builtin_ability(
+                op, what=f"Operation '{op.name}' of ability '{decl.name}' "
+                         f"redeclares an operation of",
+                builtin=builtin,
+                fix=(
+                    f"Rename the operation: '{op.name}' is the built-in "
+                    f"ability '{builtin}'s, and a bare call "
+                    f"'{op.name}(...)' always reaches the built-in."
+                ),
+            )
+            return False
+        prior = self._ns_ability_ops.get(op.name)
+        if prior is not None:
+            owner, first = prior
+            self._report_duplicate_name(
+                op, noun="ability operation", name=op.name,
+                scope=f"ability '{decl.name}'", first=first,
+                first_scope=f"ability '{owner}'",
+                why=(
+                    f"Ability operations share one namespace across every "
+                    f"ability in scope: a bare call '{op.name}(...)' names "
+                    f"the operation and not its ability, so it could reach "
+                    f"only one of the two — chosen by declaration order, "
+                    f"which the program does not state — and the other "
+                    f"could never be called."
+                ),
+            )
+            return False
+        self._ns_ability_ops[op.name] = (decl.name, op)
+        return True
+
+    def _report_builtin_ability(
+        self, node: ast.Node, *, what: str, builtin: str, fix: str,
+    ) -> None:
+        """The one E185 site: a declaration takes a built-in ability's name,
+        or one of its operations'."""
+        self._error(
+            node,
+            f"{what} the built-in ability '{builtin}'.",
+            rationale=(
+                f"'{builtin}' is a built-in ability (spec §9.8.1), always in "
+                f"scope. Code generation compiles its operations against the "
+                f"built-in and never reads a declaration, so a declaration "
+                f"that changes a signature is checked against one meaning "
+                f"and run against another, and one that repeats it is a "
+                f"second spelling of the built-in."
+            ),
+            fix=fix,
+            spec_ref='Chapter 9, Section 9.8.1 "Built-in Abilities"',
+            error_code="E185",
+        )
+
     def _report_duplicate_name(
         self,
         node: ast.Node,
@@ -891,9 +993,9 @@ class RegistrationMixin:
         resolves against.  ``first`` is ``None`` for a type parameter
         repeated in one list, whose binders share a line and carry no
         position of their own.  ``first_scope`` names where the first
-        declaration is when that is not ``scope`` itself — an enclosing
-        function's type parameters — and ``why`` then says why the two are
-        one namespace.
+        declaration is when that is not ``scope`` itself — another ability's
+        operation list, or another place in one type-parameter list — and
+        ``why``, when given, says why the two are one namespace.
         """
         line = first.span.line if first is not None and first.span else 0
         at = f" at line {line}" if line else ""
@@ -1200,10 +1302,27 @@ class RegistrationMixin:
           ``@Nat`` above ``i64.MAX`` stored and read back negative, no trap),
           while the verifier stopped obligating it because
           ``_lookup_constructor_info`` found the user's constructor.
+
+        A PRIMITIVE type name (#1497) is refused as a ``data`` type and as a
+        ``type`` alias alike: ``_resolve_named_type`` answers ``Int``,
+        ``Bool``, ``String`` and the rest from :data:`~vera.types.PRIMITIVES`
+        before it consults any declaration, so ``type Int = Bool;`` or
+        ``data Int { I(Bool) }`` was accepted and could never be named — every
+        ``@Int`` still meant the primitive.
         """
-        if name not in self._SPECIAL_CASED_BUILTIN_ADTS:
+        primitive = name in PRIMITIVES and kind in ("data type", "type alias")
+        if primitive:
+            subject = f"declared as a {kind}"
+            rationale = (
+                f"'{name}' is a primitive type. Every type position resolves "
+                f"'{name}' to the primitive before it consults any "
+                f"declaration, so this {kind} could never be named: each "
+                f"'@{name}' in the program would still mean the primitive."
+            )
+        elif (name not in self._SPECIAL_CASED_BUILTIN_ADTS
+                or kind == "type alias"):
             return
-        if kind == "data type":
+        elif kind == "data type":
             subject = "redeclared as a data type"
             rationale = (
                 f"Unlike the prelude's data types, which a program may "
@@ -1363,6 +1482,7 @@ class RegistrationMixin:
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""
+        self._check_special_cased_builtin_adt(decl, decl.name, "type alias")
         self._check_reserved_type_name(decl)
         self._check_reserved_type_params(decl)
         self._check_duplicate_type_params(decl, f"type alias '{decl.name}'")
@@ -1428,6 +1548,8 @@ class RegistrationMixin:
 
         ops: dict[str, OpInfo] = {}
         for op in self._distinct_ops(decl, "ability"):
+            if not self._claim_ability_op(decl, op):
+                continue
             param_types = tuple(
                 self._resolve_type(p) for p in op.param_types)
             ret_type = self._resolve_type(op.return_type)

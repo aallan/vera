@@ -2652,9 +2652,11 @@ Key design points:
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
 
+Ability **operation** names form one namespace across every ability in scope, the built-in abilities included: a bare call `size(x)` names the operation and not its ability. A second declaration of an operation name, in the same ability or another, is refused (**E184**, §8.5.5). A user ability named after a built-in ability, or an operation named after a built-in ability's operation, is refused as well (**E185**): code generation compiles `eq`, `compare`, `hash` and `show` against the built-in whatever a declaration says.
+
 ### 9.8.1 Built-in Abilities
 
-Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types.
+Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types. The declarations below show their interfaces; the abilities are in scope in every program, and a program that declares one of them is refused (**E185**).
 
 **Eq\<T\>** — Equality comparison.
 

@@ -339,6 +339,21 @@ def canonicalize_type_aliases(
     return te
 
 
+def _unshadowed(
+    mapping: dict[str, str], binders: tuple[str, ...] | None,
+) -> dict[str, str]:
+    """*mapping* without the type variables *binders* rebind (#1433).
+
+    A ``where`` helper's own ``forall`` binders shadow its enclosing
+    function's inside the helper (spec §5.6.2), so a substitution for the
+    enclosing function stops at them.  Returns *mapping* itself when nothing
+    is shadowed, so the common case allocates nothing.
+    """
+    if not binders or not any(b in mapping for b in binders):
+        return mapping
+    return {k: v for k, v in mapping.items() if k not in binders}
+
+
 def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
     """Substitute type-parameter NAMES inside a type-name *string* (#773).
 
@@ -3981,11 +3996,17 @@ class Monomorphizer:
         # — `monomorphize_fn` clears them — so the consumers rebuild its scope
         # from the bare env, and so does the post side.
         post_scope = env
+        # #1433: the substitution in force at the point being walked.  A
+        # `where` helper's own `forall` binders shadow the enclosing
+        # function's (spec §5.6.2), so inside the helper the mapping loses
+        # them — the same narrowing `_substitute_in_ast` applies to the clone
+        # this walk counts for, or the two would mint different names.
+        active = mapping
 
         def push(te: ast.TypeExpr) -> None:
             stack.append((
                 naming.slot_name_or_none(te, scope),
-                self._substituted_slot_name(te, mapping, post_scope),
+                self._substituted_slot_name(te, active, post_scope),
             ))
 
         def resolve(ref: ast.SlotRef) -> None:
@@ -4092,7 +4113,7 @@ class Monomorphizer:
                     walk(item)
 
         def walk_fn_scope(fn_decl: ast.FnDecl) -> None:
-            nonlocal scope, post_scope
+            nonlocal scope, post_scope, active
             del stack[:]
             for param_te in fn_decl.params:
                 push(param_te)
@@ -4104,7 +4125,7 @@ class Monomorphizer:
             # collect_calls_in_node walk (PR #972 review; a depth-1 walk left
             # nested helpers' collapsed indices stale).
             for nested in fn_decl.where_fns or ():
-                saved = (scope, post_scope)
+                saved = (scope, post_scope, active)
                 scope = fn_slot_scope(scope, nested.forall_vars)
                 # AS DECLARED on both sides.  Substitution clears only the
                 # cloned function's own variables, so the helper carries its
@@ -4117,10 +4138,11 @@ class Monomorphizer:
                 # minted `Option<Int>` through the alias where the consumers
                 # rebuild `Option<T>` (PR #1224 round-3).
                 post_scope = fn_slot_scope(post_scope, nested.forall_vars)
+                active = _unshadowed(active, nested.forall_vars)
                 try:
                     walk_fn_scope(nested)
                 finally:
-                    scope, post_scope = saved
+                    scope, post_scope, active = saved
 
         walk_fn_scope(decl)
         return out
@@ -4227,7 +4249,23 @@ class Monomorphizer:
             if f.name == "span":
                 continue
             val = getattr(node, f.name)
-            new_val = self._substitute_value(val, mapping, reindex)
+            if f.name == "where_fns" and isinstance(node, ast.FnDecl) and val:
+                # #1433: a helper's own `forall` binders shadow the enclosing
+                # function's (spec §5.6.2).  Substituting through them cloned
+                # `forall<T> fn h` under a parent instantiated at `Bool` at
+                # `Bool`, whatever `h` was called at — `h(7)` then called an
+                # i32 clone with an i64 and the module failed to load.
+                new_val = tuple(
+                    self._substitute_in_ast(
+                        helper, _unshadowed(mapping, helper.forall_vars),
+                        reindex,
+                    )
+                    for helper in val
+                )
+                if all(n is o for n, o in zip(new_val, val)):
+                    new_val = val
+            else:
+                new_val = self._substitute_value(val, mapping, reindex)
             if new_val is not val:
                 changes[f.name] = new_val
 

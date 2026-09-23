@@ -275,7 +275,7 @@ Type aliases can capture commonly used refinements:
 type PosInt = { @Int | @Int.0 > 0 };
 type NonEmptyArray<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
-type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
+type Octet = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
 ```
 
 Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @Int.0 > 0 }` are the same type for subtyping purposes.
