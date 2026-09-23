@@ -169,10 +169,13 @@ class OperatorsMixin:
             if op in (ast.BinOp.DIV, ast.BinOp.MOD):
                 # `i64.div_s` / `i64.rem_s` trap by themselves on a zero
                 # divisor, so the instruction IS the check, and carries its
-                # record entry's marker (#1479).
-                return left + right + [
-                    self._ARITH_OPS[op] + self._record_check(
-                        "wasm/operators.py:_translate_binary", expr)]
+                # record entry's marker (#1479); a division that can meet
+                # `INT_MIN / -1` carries its overflow condition's too.
+                markers = self._record_check(
+                    "wasm/operators.py:_translate_binary", expr)
+                if op == ast.BinOp.DIV and ovf == "Int":
+                    markers += self._note_quotient_overflow(expr)
+                return left + right + [self._ARITH_OPS[op] + markers]
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -2195,6 +2198,22 @@ class OperatorsMixin:
             f"local.get {rhs_tmp}",
             "i64.sub",
         ]
+
+    def _note_quotient_overflow(self, expr: ast.BinaryExpr) -> str:
+        """The record entry for a signed division's second trap condition,
+        ``INT_MIN / -1``, whose quotient leaves the i64 range (#1479); its
+        marker goes on the same ``i64.div_s``.  Returns ``""`` for a divisor
+        that is an integer literal other than -1, which cannot meet it."""
+        divisor = expr.right
+        if isinstance(divisor, ast.IntLit) and divisor.value != -1:
+            return ""
+        if (isinstance(divisor, ast.UnaryExpr)
+                and divisor.op == ast.UnaryOp.NEG
+                and isinstance(divisor.operand, ast.IntLit)
+                and divisor.operand.value != 1):
+            return ""
+        return self._record_check(
+            "wasm/operators.py:_note_quotient_overflow", expr)
 
     @staticmethod
     def _at_line(at: ast.Node | None) -> str:

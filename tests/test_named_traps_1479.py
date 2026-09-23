@@ -804,6 +804,30 @@ def test_a_nan_truncation_is_named_from_its_reason_alone() -> None:
     assert fix == TRAP_KINDS["float_conversion"].fix
 
 
+def test_a_trap_wrapped_in_another_error_still_names_its_instruction() -> None:
+    """Some call paths raise an error whose cause is the `Trap` holding the
+    frames; the instruction is read through that chain, as the backtrace
+    is, so a truncation inside it is not taken for `INT_MIN / -1`."""
+    import wasmtime
+    from vera.runtime.traps import _classify_trap, trapping_instruction
+    cell = native_trap_conditions("i64.trunc_f64_s")[2]
+    binary = bytes(wasmtime.wat2wasm(_cell_module(cell)))
+    store = wasmtime.Store()
+    instance = wasmtime.Instance(store, wasmtime.Module(store.engine, binary), [])
+    with pytest.raises(wasmtime.Trap) as info:
+        instance.exports(store)["t"](store)
+
+    class _Wrapped(Exception):
+        pass
+
+    wrapped = _Wrapped("wasm trap: integer overflow")
+    wrapped.__cause__ = info.value
+    instruction = trapping_instruction(wrapped, binary)
+    assert instruction == "i64.trunc_f64_s"
+    assert _classify_trap(wrapped, [], instruction=instruction)[0] == (
+        "float_conversion")
+
+
 #: A trapping instruction no emitter uses today, planted as a new site.
 _PLANTED_SITE = pyast.parse(
     'def emit_planted():\n'

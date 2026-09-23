@@ -418,11 +418,14 @@ def trapping_instruction(
     The innermost frame's offset into the module is the trapping
     instruction's, so the opcode there says which instruction it was
     (#1479) — needed because wasmtime gives a truncation past its range and
-    ``INT_MIN / -1`` the same reason, "integer overflow"."""
+    ``INT_MIN / -1`` the same reason, "integer overflow".  The frames are
+    found through the exception chain, as the backtrace's are: some call
+    paths raise a ``WasmtimeError`` whose cause is the ``Trap`` holding
+    them."""
     try:
-        frames = getattr(exc, "frames", None)
-        offset = frames[0].module_offset if frames else None
-    except (AttributeError, IndexError, ValueError):
+        frames = _find_frames_in_exception_chain(exc)
+        offset = frames[0].module_offset if frames else None  # type: ignore[index]
+    except (AttributeError, IndexError, TypeError, ValueError):
         return None
     if offset is None or not 0 <= offset < len(wasm_bytes):
         return None

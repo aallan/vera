@@ -84,6 +84,9 @@ FIXTURES: dict[str, tuple[str, int]] = {
     "wasm/operators.py:_translate_binary": (
         "public fn f(@Int, @Int -> @Int)\n" + _HEAD
         + "{\n  @Int.1 / @Int.0\n}\n", 4),
+    "wasm/operators.py:_note_quotient_overflow": (
+        "public fn f(@Int, @Int -> @Int)\n" + _HEAD
+        + "{\n  @Int.1 / @Int.0\n}\n", 4),
     "wasm/operators.py:_emit_nat_bind_guard": (
         "public fn f(@Int -> @Nat)\n" + _HEAD
         + "{\n  let @Nat = @Int.0;\n  @Nat.0\n}\n", 4),
@@ -339,10 +342,14 @@ def _record_mismatches(
     result: CompileResult, function: str,
 ) -> dict[str, tuple[int, int]]:
     """``kind -> (recorded, emitted)`` for every signalled kind on which the
-    record and *function*'s body in the module disagree."""
+    record and *function*'s body in the module disagree.  A native check (a
+    division's `overflow` condition among them) has no signal to count, so
+    only signalling entries are compared."""
     body = wat_fn_body(result.wat, function)
-    recorded = Counter(c.kind for c in result.emitted_checks
-                       if c.function == function)
+    recorded = Counter(
+        c.kind for c in result.emitted_checks
+        if c.function == function
+        and not TRAP_EMITTERS[c.emitter].via.startswith("native:"))
     out: dict[str, tuple[int, int]] = {}
     for kind, row in TRAP_KINDS.items():
         if not row.code and kind != "contract_violation":
@@ -531,6 +538,28 @@ def test_a_marker_outside_every_function_is_an_invariant_error() -> None:
         generator._assemble_emitted_checks(
             "(module\n  (global $g i32 (i32.const 0)) (;vera-check:424243;)\n"
             + _marked("    nop")[len("(module\n"):])
+
+
+@pytest.mark.parametrize(("body", "params", "kinds"), [
+    ("@Int.1 / @Int.0", "@Int, @Int", ["divide_by_zero", "overflow"]),
+    ("@Int.0 / (0 - 1)", "@Int", ["divide_by_zero", "overflow"]),
+    ("@Int.0 / 5", "@Int", ["divide_by_zero"]),
+    ("@Int.1 % @Int.0", "@Int, @Int", ["divide_by_zero"]),
+    ("@Nat.1 / @Nat.0", "@Nat, @Nat", ["divide_by_zero"]),
+], ids=["int-by-int", "by-a-computed-minus-one", "by-five", "remainder", "nat"])
+def test_a_division_lists_its_overflow_condition_where_it_can_occur(
+    body: str, params: str, kinds: list[str],
+) -> None:
+    """`i64.div_s` traps on a zero divisor and on `INT_MIN / -1`: an `@Int`
+    division whose divisor can be -1 is two checks on one instruction.  A
+    remainder cannot overflow, a `@Nat` divisor cannot be -1, and a literal
+    divisor other than -1 cannot meet it."""
+    result = _compile(
+        f"public fn f({params} -> @Int)\n" + _HEAD + "{\n  " + body + "\n}\n")
+    division = {"wasm/operators.py:_translate_binary",
+                "wasm/operators.py:_note_quotient_overflow"}
+    assert sorted(c.kind for c in result.emitted_checks
+                  if c.function == "f" and c.emitter in division) == kinds
 
 
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:

@@ -409,6 +409,13 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         "wasm/operators.py:_translate_binary", "divide_by_zero",
         ("div_zero",), "native:i64.div_s i64.rem_s", _OPERATION,
     ),
+    # The same `i64.div_s` also traps on the one quotient that leaves the
+    # i64 range, `INT_MIN / -1` — a second condition of one instruction, so
+    # a second entry on it wherever the divisor can be -1.
+    TrapEmitter(
+        "wasm/operators.py:_note_quotient_overflow", "overflow",
+        ("int_overflow",), "native:i64.div_s", _OPERATION,
+    ),
     # --- the @Int / @Nat boundary -------------------------------------
     TrapEmitter(
         "wasm/operators.py:_emit_nat_bind_guard", "nat_guard",
