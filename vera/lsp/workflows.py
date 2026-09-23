@@ -563,12 +563,13 @@ async def strengthen_contract(
     """Run the full strengthenContract workflow against *server* state.
 
     Splices against the canonical analysis (read under the lock), then
-    delegates to :func:`apply_propose_edit` with the spliced text as
-    *base_text* — which re-verifies the *candidate* from scratch, sends
-    it only if that text is still the open document's, and guards it
-    with the document's version, so a ``didChange`` that lands after it
-    makes the client refuse the edit rather than lose the newer text to
-    a candidate built without it.
+    delegates to :func:`apply_propose_edit` with the spliced candidate
+    as *text* and the analysed text it was spliced FROM as *base_text* —
+    which re-verifies the candidate from scratch, sends it only if
+    *base_text* is still the open document's, and guards it with the
+    document's version, so a ``didChange`` that lands after it makes the
+    client refuse the edit rather than lose the newer text to a
+    candidate built without it.
 
     Raises ``ValueError`` for requests that cannot name a splice
     target (no analysis for the URI, an analysis that does not describe
@@ -846,12 +847,13 @@ async def add_effect(
     """Run the full addEffect workflow against *server* state.
 
     Same locking and version-guarding model as
-    :func:`strengthen_contract`: the candidate is rewritten from the
-    canonical text, which goes to :func:`apply_propose_edit` as
-    *base_text*, and the edit names that text's version.  Raises
-    ``ValueError`` when the request cannot name a target (no analysis,
-    an analysis that does not describe the open document, unparseable
-    document, unknown top-level function).
+    :func:`strengthen_contract`: the candidate, rewritten from the
+    canonical analysis's text, goes to :func:`apply_propose_edit` as
+    *text*, and the text it was rewritten FROM as *base_text*, so the
+    edit is sent only while that text is the open document's, under its
+    version.  Raises ``ValueError`` when the request cannot name a
+    target (no analysis, an analysis that does not describe the open
+    document, unparseable document, unknown top-level function).
     """
     with server.analysis_lock:
         analysis = server.current_analysis(uri)
