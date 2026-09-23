@@ -106,12 +106,13 @@ included) and publishes:
   each with its type.
 
 If the pipeline itself fails on a text (an internal compiler error,
-which is a bug), the server publishes one `E699` diagnostic naming the
-failure in place of that text's diagnostics, and keeps no analysis of
-it: hover, go-to-definition and completion answer nothing, a proof
-delta has no baseline, and the edit methods refuse, until a change the
-server can analyse. None of them answers from the previous text's
-analysis, because the buffer no longer holds that text.
+which is a bug), the server publishes whatever diagnostics the failing
+step had already recorded, then one `E699` naming the failure, in place
+of that text's diagnostics, and keeps no analysis of it: hover,
+go-to-definition and completion answer nothing, and the proof delta and
+the edit methods refuse, until a change the server can analyse. None of
+them answers from the previous text's analysis, because the buffer no
+longer holds that text.
 
 ## What no generic language server can do
 
@@ -136,13 +137,17 @@ JSON-RPC `InvalidParams` rather than opaque errors.
 #### `vera/speculativeEdit` — "would this edit break my proofs?"
 
 ```json
-{"uri": "file:///main.vera", "text": "<full proposed source>"}
+{"uri": "file:///main.vera", "text": "<full proposed source>", "version": 7}
 ```
 
 Verifies the proposed text *in memory* — the canonical document, its
 published diagnostics, and the editor's view are untouched — and
 returns a **proof delta** against the document's current obligation
-set:
+set. A delta is only as good as its baseline, so the request is
+refused with `InvalidParams`, as `vera/proposeEdit` is, when there is
+no baseline to measure against — the document is not open, or the
+server has no analysis of its current text — or when the optional
+`"version"` names a version the document is no longer at:
 
 ```json
 {
@@ -266,18 +271,21 @@ replayed from the warm cache. On refuse, nothing is sent and nothing
 changes, and the response says why:
 
 ```json
-{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0, "client": null}
+{"applied": false, "ok": true, "proof_delta": {...}, "diagnostics": 0,
+ "client": null, "client_reason": null}
 ```
 
 `applied` is `true` only when the client applied the edit. `client`
-says what became of it:
+says what became of it, and `client_reason` says why when there is a
+why — the client's `failureReason`, the error it answered with, or what
+arrived in place of an answer:
 
 | `client` | What happened | What to do |
 |----------|---------------|------------|
 | `null` | The gate refused; nothing was sent. | Read the proof delta and the diagnostics count. |
 | `"applied"` | The client applied the edit. | Nothing: its `didChange` brings the server's state along. |
 | `"declined"` | The client answered `applied: false` — most often because its buffer is no longer at the version the edit was verified against. | Re-read the document and propose again. |
-| `"failed"` | The request failed: the client answered with an error, or the request could not be sent. | Propose again. |
+| `"failed"` | The request failed: the client answered with an error, or with something other than a boolean `applied`; the request could not be sent; or no answer arrived within 60 seconds, the bound on the wait, so that no proposal is left pending. | Propose again. |
 | `"cancelled"` | The request was cancelled before the client answered. | Propose again. |
 | `"unsupported"` | The client does not advertise `workspace.applyEdit` and `workspace.workspaceEdit.documentChanges`, so no version-guarded edit could be sent, and none was. | Advertise both capabilities. |
 
@@ -291,6 +299,12 @@ from, and judged against, the text at that version, so all three edit
 methods refuse with `InvalidParams`, and say why, rather than act on a
 text the client no longer has:
 
+- **The document is not open.** An edit is sent only for a document
+  the client has open, because only then is there a version to guard it
+  with — the protocol's `null` version means "the file on disk is the
+  master", which a client applies to whatever its buffer holds when the
+  edit lands — and an analysis to judge it against. Open the document
+  first.
 - **The server has no analysis of the open text** — the change it last
   received could not be analysed (see [Standard
   features](#standard-features)). `force` does not waive this: it

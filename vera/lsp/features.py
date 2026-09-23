@@ -28,7 +28,6 @@ Feature scope (per the #222 plan):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from lsprotocol import types as lsp
@@ -40,6 +39,7 @@ from vera.errors import (
     ParseError,
     SourceLocation,
     TransformError,
+    partial_diagnostics,
 )
 from vera.lsp.convert import (
     LineIndex,
@@ -47,7 +47,7 @@ from vera.lsp.convert import (
     span_to_range,
     uri_to_path,
 )
-from vera.lsp.documents import DocumentStore
+from vera.lsp.documents import Document
 from vera.obligations.cache import walk_nodes
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
@@ -214,21 +214,19 @@ def _tier_hints(analysis: Analysis) -> list[lsp.Diagnostic]:
 
 
 def current_analysis(
-    store: DocumentStore, analyses: Mapping[str, Analysis], uri: str,
+    doc: Document | None, analysis: Analysis | None,
 ) -> Analysis | None:
-    """The analysis of the text the client's buffer holds for *uri*, or
-    ``None`` if there is none.
+    """*analysis* if it is an analysis of the open document *doc*'s
+    text, else ``None``.
 
-    The one reader of the per-URI analysis table (#1444).  Hover,
+    The currency check behind the one reader of the per-URI analysis
+    table, ``VeraLanguageServer.current_analysis`` (#1444).  Hover,
     definition, completion, the proof delta and the edit workflows all
-    read through here, so none of them answers from an analysis of a
-    text the buffer has left.  ``analyze_and_publish`` keeps the table
-    that way -- an analysis that raises removes the entry instead of
-    leaving the previous text's -- and this checks it again at the read:
-    an entry whose text is not the open document's is not returned.
+    read through it, so none of them answers from an analysis of a text
+    the buffer has left.  ``analyze_and_publish`` keeps the table that
+    way -- an analysis that raises removes the entry instead of leaving
+    the previous text's -- and this checks it again at the read.
     """
-    analysis = analyses.get(uri)
-    doc = store.get(uri)
     if analysis is None or doc is None or analysis.text != doc.text:
         return None
     return analysis
@@ -266,15 +264,20 @@ def to_lsp_diagnostics(analysis: Analysis) -> list[lsp.Diagnostic]:
 def analysis_failure(
     uri: str, text: str, exc: BaseException,
 ) -> list[lsp.Diagnostic]:
-    """What is published for *uri* when analysing *text* raised: one
-    ``E699``, naming the failure and what it stops.
+    """What is published for *uri* when analysing *text* raised: the
+    diagnostics the failing pass had already recorded, then one
+    ``E699`` naming the failure and what it stops.
 
-    The same diagnostic the CLI's backstop builds for an exception that
-    escapes a command, so the client learns there was a compiler bug
-    rather than seeing the previous text's diagnostics stay up, or none.
+    The same report the CLI's backstop makes for an exception that
+    escapes a command (#1429 there: what the pass recorded comes first,
+    because it is what the user can act on), so the client learns there
+    was a compiler bug rather than seeing the previous text's
+    diagnostics stay up, or none.
     """
     path = uri_to_path(uri)
-    return [_to_lsp(Diagnostic(
+    index = LineIndex(text)
+    recorded = [_to_lsp(d, index) for d in partial_diagnostics(exc)]
+    return recorded + [_to_lsp(Diagnostic(
         description=(
             f"Internal compiler error while analysing '{path}': "
             f"{type(exc).__name__}: {exc}"
@@ -295,7 +298,7 @@ def analysis_failure(
         spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
         severity="error",
         error_code="E699",
-    ), LineIndex(text))]
+    ), index)]
 
 
 def _span_contains(

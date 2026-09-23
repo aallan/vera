@@ -22,6 +22,7 @@ Response (plain JSON)::
       "proof_delta": {...},      # Phase E shape; null if not compiled
       "diagnostics": <count of error diagnostics in the proposed state>,
       "client": "applied",       # the client's side: see below
+      "client_reason": null,     # why, when the client side says why
     }
 
 The gate: apply iff the proof delta has no ``proof_regressions`` (no
@@ -67,7 +68,11 @@ the request is:
 * **Awaited.**  The workflows are coroutines: the server waits for the
   client's answer, and ``analysis_lock`` is not held while it does, so
   the notifications that arrive meanwhile are analysed as they come.
-  Z3 work stays serialised; waiting on an editor does not.
+  Z3 work stays serialised; waiting on an editor does not.  The wait is
+  bounded (:data:`APPLY_EDIT_TIMEOUT_S`), and only a boolean ``applied``
+  counts as an answer (:func:`read_answer`), so no proposal is left
+  pending and none is reported applied on an answer the server cannot
+  read.
 * **Reconciled by the client.**  An applied edit reaches the server as
   the client's own ``didChange``: at the client's actual version, and
   analysed and published like any other change — replayed from the warm
@@ -80,10 +85,14 @@ the request is:
 ``client`` says what became of it on the client's side: ``null`` (the
 gate refused; nothing was sent), ``"applied"``, ``"declined"`` (the
 client answered ``applied: false`` — typically because its buffer is no
-longer at the verified version), ``"failed"`` (an error answer, or the
-request could not be sent), ``"cancelled"`` (the request was cancelled
-unanswered), or ``"unsupported"`` (the client cannot take a
-version-guarded edit, so none was sent).  If the proposal request
+longer at the verified version), ``"failed"`` (an error answer, an
+answer whose ``applied`` is not a boolean, no answer within the bound,
+or a request that could not be sent), ``"cancelled"`` (the request was
+cancelled unanswered), or ``"unsupported"`` (the client cannot take a
+version-guarded edit, so none was sent), with ``client_reason`` saying
+why when the client side says why.  A document the client has not
+opened is refused before any of this, with ``InvalidParams``: it has no
+version to guard an edit with.  If the proposal request
 itself is cancelled while the edit is pending, it ends as cancelled —
 an error response, never ``applied`` — and the edit request is left for
 the client to answer.  Whatever the answer, the workflow itself writes
@@ -244,21 +253,11 @@ def propose_edit(
     }
 
 
-def full_document_range(doc: Document | None) -> lsp.Range:
-    """The whole-document replacement range for a full-text edit.
-
-    With an open document the end position is computed exactly (last
-    line, UTF-16 end column, via the document's cached line index).
-    Without one — ``proposeEdit`` on a URI the client never opened —
-    fall back to the maximum LSP line number; the spec requires clients
-    to clamp out-of-range positions to the document end, which makes
-    the sentinel a correct whole-file range over unknown content.
-    """
-    if doc is None:
-        return lsp.Range(
-            start=lsp.Position(line=0, character=0),
-            end=lsp.Position(line=2**31 - 1, character=0),
-        )
+def full_document_range(doc: Document) -> lsp.Range:
+    """The whole-document replacement range for a full-text edit of the
+    open document *doc*: from the start to its end, computed exactly
+    (last line, UTF-16 end column, via the document's cached line
+    index)."""
     end_line0 = doc.text.count("\n")
     last_segment = doc.text.rsplit("\n", 1)[-1]
     return lsp.Range(
@@ -293,24 +292,23 @@ def supports_versioned_edits(
 
 
 def versioned_edit(
-    uri: str, doc: Document | None, text: str,
+    uri: str, doc: Document, text: str,
 ) -> lsp.ApplyWorkspaceEditParams:
     """The request replacing *uri*'s whole text with *text*, guarded by
-    the version of the text it replaces.
+    *doc*'s version: a client whose buffer has moved past it must refuse
+    the edit (LSP 3.17, ``TextDocumentEdit``).
 
-    With the document open, that is *doc*'s version, and a client whose
-    buffer has moved past it must refuse the edit (LSP 3.17,
-    ``TextDocumentEdit``).  Unopened, the version is ``null``, the
-    protocol's spelling for "the file on disk is the master", over the
-    clamp-sentinel range :func:`full_document_range` gives.
+    Only ever built for an OPEN document (:func:`require_current`
+    refuses the rest), so the version is always a number: an unopened
+    document would be ``null`` -- "the file on disk is the master" --
+    which guards nothing.
     """
     return lsp.ApplyWorkspaceEditParams(
         edit=lsp.WorkspaceEdit(
             document_changes=[
                 lsp.TextDocumentEdit(
                     text_document=lsp.OptionalVersionedTextDocumentIdentifier(
-                        uri=uri,
-                        version=doc.version if doc is not None else None,
+                        uri=uri, version=doc.version,
                     ),
                     edits=[
                         lsp.TextEdit(
@@ -335,15 +333,60 @@ def _retrieve(answer: asyncio.Future[Any]) -> None:
         answer.exception()
 
 
+_ABSENT = object()
+
+#: How long an edit workflow waits for the client's answer to its
+#: ``workspace/applyEdit`` before reporting it ``"failed"``.  An answer
+#: can fail to arrive without anything cancelling the request -- a write
+#: error pygls swallows, or a client that never answers -- and a request
+#: must not hang forever.  A server's ``apply_edit_timeout_s`` overrides it.
+APPLY_EDIT_TIMEOUT_S = 60.0
+
+
+def read_answer(result: Any) -> tuple[str, str | None]:
+    """``(outcome, reason)`` from the client's answer to an edit request.
+
+    Read strictly: only a boolean ``applied`` is an answer.  The server's
+    protocol hands the answer over unstructured
+    (:class:`~vera.lsp.server.VeraProtocol`) -- pygls' plain object for
+    the JSON, with its values as sent -- because pygls' own reading turns
+    ``"applied": "false"`` into ``True`` and drops ``null`` or ``{}`` in
+    its reader.  Anything but a boolean is a failure, with the reason
+    saying what arrived.  A declining client's ``failureReason`` is
+    passed on.
+    """
+    if isinstance(result, lsp.ApplyWorkspaceEditResult):
+        applied: Any = result.applied
+        reason: Any = result.failure_reason
+    elif isinstance(result, dict):
+        applied = result.get("applied", _ABSENT)
+        reason = result.get("failureReason")
+    elif result is None:
+        return "failed", "the client answered null"
+    else:
+        applied = getattr(result, "applied", _ABSENT)
+        reason = getattr(result, "failureReason", None)
+    if applied is True:
+        return "applied", None
+    if applied is False:
+        return "declined", reason if isinstance(reason, str) else None
+    if applied is _ABSENT:
+        return "failed", f"the client's answer {result!r} has no `applied`"
+    return "failed", f"the client's `applied` is {applied!r}, not a boolean"
+
+
 async def client_outcome(
     server: VeraLanguageServer, request: lsp.ApplyWorkspaceEditParams,
-) -> str:
+) -> tuple[str, str | None]:
     """Send *request* as ``workspace/applyEdit`` and wait for the answer.
 
-    Returns ``"applied"``, ``"declined"``, ``"failed"`` or
-    ``"cancelled"``.  The caller must hold no lock: the answer, and every
-    notification the client sends before it, arrive through the same
-    event loop this coroutine is suspended on.
+    Returns ``(outcome, reason)``: ``"applied"``, ``"declined"``,
+    ``"failed"`` or ``"cancelled"``, with what the client or the
+    transport said about it.  The caller must hold no lock: the answer,
+    and every notification the client sends before it, arrive through
+    the same event loop this coroutine is suspended on.  The wait is
+    bounded (:data:`APPLY_EDIT_TIMEOUT_S`), and an answer that does not
+    arrive within it is ``"failed"``.
 
     The wait is SHIELDED.  Cancelling this coroutine — the client
     cancelling the proposal request — must not cancel the edit request
@@ -353,22 +396,25 @@ async def client_outcome(
     cancellation (pygls cancels every outstanding request at shutdown) is
     an outcome, reported like any other.
     """
+    timeout = getattr(server, "apply_edit_timeout_s", APPLY_EDIT_TIMEOUT_S)
     try:
         pending = server.workspace_apply_edit(request)
-    except Exception:  # noqa: BLE001 — any failure to SEND is "not applied", which is the one thing this reports
-        return "failed"
+    except Exception as exc:  # noqa: BLE001 — any failure to SEND is "not applied", which is the one thing this reports
+        return "failed", f"the request could not be sent: {exc!r}"
     answer = asyncio.wrap_future(pending)
     answer.add_done_callback(_retrieve)
     try:
-        result = await asyncio.shield(answer)
+        result = await asyncio.wait_for(asyncio.shield(answer), timeout)
     except asyncio.CancelledError:
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise
-        return "cancelled"
-    except Exception:  # noqa: BLE001 — an error answer, of whatever type, is an edit the client did not apply
-        return "failed"
-    return "applied" if getattr(result, "applied", None) is True else "declined"
+        return "cancelled", "the request was cancelled before the client answered"
+    except TimeoutError:
+        return "failed", f"the client did not answer within {timeout:g} s"
+    except Exception as exc:  # noqa: BLE001 — an error answer, of whatever type, is an edit the client did not apply
+        return "failed", f"the client answered with an error: {exc}"
+    return read_answer(result)
 
 
 def require_current(
@@ -377,8 +423,9 @@ def require_current(
     analysis: Analysis | None,
     base_text: str | None,
     base_version: int | None,
-) -> None:
-    """Refuse unless the edit's inputs describe the open document.
+) -> tuple[Document, Analysis]:
+    """Refuse unless the request's inputs describe the open document,
+    and return that document and its analysis.
 
     Every input an edit is made from, or judged against, must be the
     open buffer's text, because the edit is guarded by the open
@@ -402,29 +449,24 @@ def require_current(
       proposal made from an older text would otherwise replace newer
       text the server has already seen.
 
-    A document the client never opened has no buffer to be stale
-    against, and no analysis either; it is refused only when the edit
-    claims a text or a version of it, which then are not the client's.
+    A document the client has not opened is refused outright: it has no
+    version to guard an edit with -- the protocol's ``null`` means "the
+    file on disk is the master", which a client applies to whatever its
+    buffer holds by the time the edit lands -- and no analysis to judge
+    one against.
     """
-    if base_version is not None and (
-        doc is None or doc.version != base_version
-    ):
-        where = (
-            "is not open" if doc is None
-            else f"is at version {doc.version}"
+    if doc is None:
+        raise StaleDocumentError(
+            f"{uri!r} is not open, so there is no version to guard an "
+            "edit with and no analysis to judge one against; open the "
+            "document first",
         )
+    if base_version is not None and doc.version != base_version:
         raise StaleDocumentError(
             f"the request was made from version {base_version} of "
-            f"{uri!r}, but the open document {where}; read the current "
-            "text, then make the request again",
+            f"{uri!r}, but the open document is at version {doc.version}; "
+            "read the current text, then make the request again",
         )
-    if doc is None:
-        if base_text is not None:
-            raise StaleDocumentError(
-                f"{uri!r} is not open, so an edit built from its text "
-                "has no buffer to apply to; open the document, then retry",
-            )
-        return
     if analysis is None:
         raise StaleDocumentError(
             f"the server's analysis of {uri!r} does not describe the open "
@@ -438,6 +480,7 @@ def require_current(
             f"the open document (version {doc.version}); build it again "
             "from the current text",
         )
+    return doc, analysis
 
 
 async def apply_propose_edit(
@@ -469,19 +512,16 @@ async def apply_propose_edit(
     with server.analysis_lock:
         # Read together, with no await between them for a notification
         # to land in: the version below is the one the check vouches for.
-        doc = server.store.get(uri)
-        baseline_analysis = server.current_analysis(uri)
-        require_current(uri, doc, baseline_analysis, base_text, version)
-        baseline = (
-            baseline_analysis.obligations
-            if baseline_analysis is not None
-            else []
+        doc, baseline_analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            base_text, version,
         )
         should_apply, response = propose_edit(
-            server.session, baseline, uri, text, force,
+            server.session, baseline_analysis.obligations, uri, text, force,
         )
         request = versioned_edit(uri, doc, text) if should_apply else None
     response["client"] = None
+    response["client_reason"] = None
     if request is None:
         return response
     if not supports_versioned_edits(
@@ -489,10 +529,15 @@ async def apply_propose_edit(
     ):
         response["applied"] = False
         response["client"] = "unsupported"
+        response["client_reason"] = (
+            "the client does not advertise workspace.applyEdit and "
+            "workspace.workspaceEdit.documentChanges"
+        )
         return response
-    outcome = await client_outcome(server, request)
+    outcome, reason = await client_outcome(server, request)
     response["applied"] = outcome == "applied"
     response["client"] = outcome
+    response["client_reason"] = reason
     return response
 
 
@@ -577,14 +622,12 @@ async def strengthen_contract(
     function); the handler maps these to JSON-RPC InvalidParams.
     """
     with server.analysis_lock:
-        analysis = server.current_analysis(uri)
         # Before anything is read off the analysis -- the splice target,
         # or the answer that there is none -- it has to be the open
         # document's, at the version the client asked about.
-        require_current(uri, server.store.get(uri), analysis, None, version)
-    if analysis is None:
-        raise ValueError(
-            f"no analysis for {uri!r} — open the document first",
+        _, analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            None, version,
         )
     if analysis.program is None:
         raise ValueError(
@@ -856,14 +899,12 @@ async def add_effect(
     document, unparseable document, unknown top-level function).
     """
     with server.analysis_lock:
-        analysis = server.current_analysis(uri)
         # Before anything is read off the analysis -- the rows to
         # rewrite, or the answer that there are none -- it has to be the
         # open document's, at the version the client asked about.
-        require_current(uri, server.store.get(uri), analysis, None, version)
-    if analysis is None:
-        raise ValueError(
-            f"no analysis for {uri!r} — open the document first",
+        _, analysis = require_current(
+            uri, server.store.get(uri), server.current_analysis(uri),
+            None, version,
         )
     if analysis.program is None:
         raise ValueError(
@@ -891,6 +932,7 @@ async def add_effect(
             "proof_delta": None,
             "diagnostics": 0,
             "client": None,
+            "client_reason": None,
             "rewritten": [],
         }
 

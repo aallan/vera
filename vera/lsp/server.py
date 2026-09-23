@@ -37,6 +37,7 @@ an analysis of the open text.
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 
@@ -45,6 +46,7 @@ from typing import Any
 from lsprotocol import types as lsp
 from pygls.exceptions import JsonRpcInvalidParams
 from pygls.lsp.server import LanguageServer
+from pygls.protocol import LanguageServerProtocol
 
 from vera import __version__
 from vera.lsp.documents import DocumentStore
@@ -60,9 +62,11 @@ from vera.lsp.features import (
     to_lsp_diagnostics,
 )
 from vera.lsp.workflows import (
+    APPLY_EDIT_TIMEOUT_S,
     StaleDocumentError,
     add_effect,
     apply_propose_edit,
+    require_current,
     strengthen_contract,
 )
 from vera.obligations.session import VerificationSession
@@ -141,6 +145,25 @@ def _force_param(params: Any) -> bool:
     return _param(params, "force") is True
 
 
+class VeraProtocol(LanguageServerProtocol):
+    """pygls' protocol, handing over the client's answer to
+    ``workspace/applyEdit`` UNSTRUCTURED.
+
+    pygls structures that answer into ``ApplyWorkspaceEditResult``, which
+    turns ``"applied": "false"`` into ``True`` and raises in the reader on
+    ``null`` or ``{}`` -- dropping the answer, so the edit request never
+    completes.  The edit workflows read the raw answer themselves and
+    accept only a strict boolean (:func:`vera.lsp.workflows.read_answer`,
+    #1444).
+    """
+
+    @functools.lru_cache  # the shape pygls declares, so the override matches
+    def get_result_type(self, method: str) -> type[Any] | None:
+        if method == lsp.WORKSPACE_APPLY_EDIT:
+            return None
+        return super().get_result_type(method)
+
+
 class VeraLanguageServer(LanguageServer):
     """LanguageServer carrying document, session, and analysis state."""
 
@@ -149,7 +172,10 @@ class VeraLanguageServer(LanguageServer):
             name="vera-lsp",
             version=__version__,
             text_document_sync_kind=lsp.TextDocumentSyncKind.Full,
+            protocol_cls=VeraProtocol,
         )
+        #: How long an edit workflow waits for an applyEdit answer.
+        self.apply_edit_timeout_s = APPLY_EDIT_TIMEOUT_S
         self.store = DocumentStore()
         self.session = VerificationSession()
         self.analysis_lock = threading.Lock()
@@ -169,6 +195,10 @@ class VeraLanguageServer(LanguageServer):
         with self.analysis_lock:
             try:
                 analysis = analyze(self.session, uri, text)
+                # Inside the `try`: an analysis is kept only once what is
+                # published for it has been built, so a conversion that
+                # raises is reported like any other failure on this text.
+                diagnostics = to_lsp_diagnostics(analysis)
             except Exception as exc:
                 # Any exception is a compiler bug on this text; it goes to
                 # the log with its traceback and to the client as E699.
@@ -177,15 +207,15 @@ class VeraLanguageServer(LanguageServer):
                 diagnostics = analysis_failure(uri, text, exc)
             else:
                 self.analyses[uri] = analysis
-                diagnostics = to_lsp_diagnostics(analysis)
         self.text_document_publish_diagnostics(
             lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics),
         )
 
     def current_analysis(self, uri: str) -> Analysis | None:
-        """The analysis of *uri*'s open text, or ``None``
-        (:func:`vera.lsp.features.current_analysis`)."""
-        return current_analysis(self.store, self.analyses, uri)
+        """The analysis of *uri*'s open text, or ``None``: the one reader
+        of the analysis table (:func:`vera.lsp.features.current_analysis`
+        checks the entry against the open document)."""
+        return current_analysis(self.store.get(uri), self.analyses.get(uri))
 
 
 def create_server() -> VeraLanguageServer:
@@ -269,19 +299,27 @@ def create_server() -> VeraLanguageServer:
         The speculative verify shares the warm session (and its
         discharge cache — pre-warming, by design) under the same lock,
         but never touches the per-URI analysis table or published
-        diagnostics: the canonical editor state is unchanged.  With no
-        analysis of the open text, the baseline is empty, as it is for
-        a document the client never opened.
+        diagnostics: the canonical editor state is unchanged.  The delta
+        is only as good as its baseline, so the request is refused on
+        the terms ``vera/proposeEdit`` is refused on: no open document,
+        no analysis of its current text, or an optional ``version`` it
+        is no longer at.  An empty baseline would read as "every proof
+        kept" about a text nothing was measured against.
         """
         uri = _require_str(params, "uri")
         text = _require_str(params, "text")
+        version = _version_param(params)
         with server.analysis_lock:
-            baseline_analysis = server.current_analysis(uri)
-            baseline = (
-                baseline_analysis.obligations
-                if baseline_analysis is not None else []
+            try:
+                _, baseline_analysis = require_current(
+                    uri, server.store.get(uri), server.current_analysis(uri),
+                    None, version,
+                )
+            except StaleDocumentError as exc:
+                raise JsonRpcInvalidParams(message=str(exc)) from exc
+            return speculative_edit(
+                server.session, baseline_analysis.obligations, uri, text,
             )
-            return speculative_edit(server.session, baseline, uri, text)
 
     @server.feature("vera/proposeEdit")
     async def vera_propose_edit(ls: Any, params: Any) -> dict[str, Any]:
