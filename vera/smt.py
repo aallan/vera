@@ -642,13 +642,6 @@ class SmtContext:
         # #1480: discharged checks for a callee whose check sits at the call
         # site (a built-in's declared domain) — see `CallDischarge`.
         self._call_discharges: list[CallDischarge] = []
-        # #1480 review: whether a term is, or is built from, a value the
-        # verifier's walks could not know (an opaque shadow).  A call-site
-        # precondition that fails only over such a value is a check this
-        # run cannot make, not a refutation: it demotes (E532) rather than
-        # reporting E501 on an unconstrained const's countermodel.  Set by
-        # the verifier; None means no value is opaque.
-        self.opaque_term: Callable[[z3.ExprRef], bool] | None = None
         self._fresh_counter: int = 0
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
@@ -2670,11 +2663,6 @@ class SmtContext:
             callee_info, call.name, call.args, call, env,
         )
 
-    def _is_opaque(self, term: z3.ExprRef) -> bool:
-        """Whether *term* depends on a value the verifier's walk could not
-        know — see `opaque_term`."""
-        return self.opaque_term is not None and self.opaque_term(term)
-
     def check_call_site(
         self, call: ast.FnCall | ast.ModuleCall, env: SlotEnv,
     ) -> None:
@@ -2695,6 +2683,15 @@ class SmtContext:
         `requires` (`_check_callee_precondition`).  A call with neither — any
         other built-in, an effect operation — obligates nothing here; its
         arguments are the walk's to reach.
+
+        The verdict does not depend on how deeply the call is nested
+        (§6.4.2).  Over a value the verifier cannot know but an `assume`
+        can reach — an effect operation's result, a `let` whose value does
+        not translate, an arm's binder under a scrutinee that does not — a
+        precondition that cannot be proved is E501, the caller's to
+        establish.  E532 is left to an argument the walk cannot read at
+        all: a binder of a closure, a quantifier's predicate or a handler
+        clause, whose scope the walk enters without its values.
         """
         info: Any
         if isinstance(call, ast.FnCall):
@@ -2789,11 +2786,13 @@ class SmtContext:
                     precondition=contract.requires,
                 ))
             return
-        if result.status == "disclosed" or self._is_opaque(goal):
-            # Holds only from a disclosed fact, or fails only over a value
-            # the walk could not know: a demotion, never a proof and never a
-            # violation (the rules `_check_call_preconditions` applies to a
-            # user callee).
+        if result.status == "disclosed":
+            # Holds only from a disclosed fact: a demotion, never a proof
+            # and never a violation (the #1363 rule `_check_call_preconditions`
+            # applies to a user callee).  A goal over a value the walk could
+            # not know is NOT demoted: a precondition is the caller's to
+            # establish, and an `assume` about the value is the repair
+            # (§6.4.2, as for a user callee).
             self._record_call_demotion_for(
                 call.name, call, contract.requires)
             return
@@ -3019,13 +3018,6 @@ class SmtContext:
                 # misattribution from claiming Tier 1, and equally wrong.  It
                 # takes the same Tier-3 E532 demotion an untranslatable
                 # precondition takes, so the call keeps its runtime guard.
-                self._record_call_demotion_for(
-                    callee_name, call_node, contract,
-                )
-                return False
-            if result.status != "verified" and self._is_opaque(z3_pre):
-                # #1480 review: refuted only over a value the walk could not
-                # know — "cannot check", never "does not hold".
                 self._record_call_demotion_for(
                     callee_name, call_node, contract,
                 )

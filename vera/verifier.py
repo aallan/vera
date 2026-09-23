@@ -2177,9 +2177,6 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
-        # #1480 review: and let a call-site precondition check tell a value
-        # the walk could not know from a real counterexample.
-        smt.opaque_term = self._contains_opaque_shadow
         # #994 F1: let the SMT nullary-ctor translation resolve a bare tag's
         # exact instantiation from the checker's recorded (instance-substituted)
         # semantic type, instead of the ambiguous base-name scan that crashed Z3
@@ -12369,9 +12366,6 @@ class ContractVerifier:
         # per-function state, which `SmtContext.reset()` clears — so the warm
         # (shared) smt is safe for the same reason `_tainted_facts` is.
         smt._disclosed_call_hook = self._disclosed_call_for_value
-        # #1480 review: and let a call-site precondition check tell a value
-        # the walk could not know from a real counterexample.
-        smt.opaque_term = self._contains_opaque_shadow
         # #994 F1: same recorded-type hint as the main path — a bare nullary
         # ctor in this generic body's refined return must resolve its sort from
         # the recorded type, not the ambiguous base-name scan.

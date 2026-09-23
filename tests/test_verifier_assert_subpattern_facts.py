@@ -1556,15 +1556,19 @@ _MATRIX_EXPECTED_UNTRANSLATABLE: dict[tuple[str, str], tuple[bool, list]] = {
             ("store", (True, [("verified", None),
                               ("tier3_unguarded", "E506"),
                               ("tier3_unguarded", "E506")])),
-            ("call_pre", (True, [("tier3", "E532")])),
+            ("call_pre", (False, [("violated", "E501")])),
         )
     },
+    # A chain-typed binder is one the walk cannot represent: the call's
+    # argument does not translate, which is #882's E532, and no `assume`
+    # over it translates either.
+    ("chain", "call_pre"): (True, [("tier3", "E532")]),
     ("narrowing", "assert"): (True, [("tier3", "E535")]),
     ("narrowing", "ensures"): (
         True, [("verified", None), ("tier3", "E522")]),
     ("narrowing", "store"): (
         True, [("tier3", "E506"), ("tier3_unguarded", "E506")]),
-    ("narrowing", "call_pre"): (True, [("tier3", "E532")]),
+    ("narrowing", "call_pre"): (False, [("violated", "E501")]),
 }
 
 
@@ -1602,13 +1606,17 @@ def test_1403_an_untranslatable_scrutinee_is_never_more_permissive(
        `violated`/E505 to `tier3_unguarded`/E506, which is a disclosure
        rather than silence.
 
-    `call_pre` is the second kind: where its twin records `violated`/E501,
-    it records `tier3`/E532.  The walk reaches the call in the arm whatever
-    the scrutinee (#1480), and a precondition over the arm's placeholder is
-    a check the run cannot make, never a refutation, so the call-site check
-    demotes it (`SmtContext.opaque_term`).  Before #1480 it recorded
-    nothing, because the obligation was a side effect of translating the
-    enclosing expression and `_translate_match` bails at the scrutinee.
+    `call_pre` is recorded `violated`/E501 here.  The walk reaches the call
+    in the arm whatever the scrutinee (#1480), and a precondition over the
+    arm's placeholder is the caller's to establish (§6.4.2): an `assume`
+    about the binder is the repair.  That is the twin's verdict where the
+    twin refutes, and worse where the binder's refinement discharges the
+    twin's, never better.  A `chain` binder, which the walk cannot represent
+    at all, is an argument that does not translate: `tier3`/E532, as #882
+    has it, since no `assume` over it translates either.  Before #1480 it
+    recorded nothing, because the
+    obligation was a side effect of translating the enclosing expression and
+    `_translate_match` bails at the scrutinee.
     """
     measured = {
         (shape, consumer): _matrix_cell(
@@ -2189,8 +2197,9 @@ _UNSTATABLE_CASES = {
     "div": ("@Int", "true", "100 / @L2.0", "0", "div_zero", ("tier3", None)),
     "ensures": ("@Int", "@Int.result > 0", "@L2.0", "1", "ensures",
                 ("tier3", "E522")),
-    # The arm's payload is a value the walk cannot know, so its call's
-    # precondition is a check the run cannot make: Tier 3, never refuted.
+    # The arm's payload is a refinement chain the walk cannot represent, so
+    # the call's argument does not translate: #882's E532, and no `assume`
+    # over the payload translates either.
     "call_pre": ("@Int", "true", "needs_pos(@L2.0)", "0", "call_pre",
                  ("tier3", "E532")),
     # Two records here, and both are the tip's: the PRODUCER's own
@@ -2435,8 +2444,8 @@ public fn probe(@Unit -> @Int)
     [
         pytest.param(_PLACEHOLDER_ENSURES, "ensures", ("tier3", "E522"),
                      id="postcondition-demotes-first"),
-        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", ("tier3", "E532"),
-                     id="call-precondition-is-never-reached"),
+        pytest.param(_PLACEHOLDER_CALL_PRE, "call_pre", ("violated", "E501"),
+                     id="call-precondition-is-the-callers"),
     ],
 )
 def test_1403_a_placeholder_never_becomes_a_counterexample(
@@ -2455,16 +2464,19 @@ def test_1403_a_placeholder_never_becomes_a_counterexample(
     * the postcondition path has its own opaque detection and demotes to
       `tier3`/**E522** ("the function body binds an effect-operation value
       the verifier models opaquely") before any refutation is attempted; and
-    * the arm's call precondition is recorded `tier3`/**E532**: the walk
-      reaches the call (#1480), and the call-site check demotes a
-      precondition over a value the walk cannot know rather than refuting
-      it (`SmtContext.opaque_term`) — the gate at that site.
+    * the arm's call precondition is recorded `violated`/**E501**, and that
+      is not a counterexample claim: the walk reaches the call (#1480), and
+      a precondition over a value the walk cannot know is the caller's to
+      establish (§6.4.2) — "may violate", repaired by an `assume`.
 
     If either verdict ever becomes `violated`, the gate is needed at that
     site and the question is no longer local to this class.
     """
     result = _verify(_tree(tmp_path, {"p": source})["p"])
-    assert result["ok"] is True, result["diagnostics"]
+    # Accepted, except where the verdict is the call precondition's strict
+    # E501 (§6.4.2), which refuses until an `assume` establishes it.
+    assert result["ok"] is (verdict != ("violated", "E501")), (
+        result["diagnostics"])
     hits = [
         (o["status"], o.get("error_code")) for o in result["obligations"]
         if o["kind"] == kind and o["status"] != "verified"

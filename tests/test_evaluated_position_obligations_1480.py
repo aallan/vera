@@ -928,8 +928,8 @@ def test_a_built_in_domain_in_an_interpolated_part() -> None:
 
 
 # A call over a value the walk cannot know — an arm's binder under a
-# scrutinee that does not translate — is a check the run cannot make, never
-# a refutation: Tier 3 (E532), with the callee's own check behind it.
+# scrutinee that does not translate — is the caller's to establish (§6.4.2):
+# E501 until an `assume` about the binder says otherwise.
 OPAQUE_ARGUMENT = """\
 private fn need_pos(@Int -> @Int)
   requires(@Int.0 > 0)
@@ -963,18 +963,25 @@ public fn g(@Int -> @Nat)
 """
 
 
-@pytest.mark.parametrize(("fn", "call", "bad", "good"), [
-    ("f", "need_pos(@Int.0)", -5, 5),
-    ("g", 'string_char_code("abc", @Int.0)', 7, 1),
+@pytest.mark.parametrize(("fn", "call", "dom", "bad", "good"), [
+    ("f", "need_pos(@Int.0)", "@Int.0 > 0", -5, 5),
+    ("g", 'string_char_code("abc", @Int.0)', "@Int.0 >= 0 && @Int.0 < 3",
+     7, 1),
 ])
-def test_a_call_over_an_unknown_value_is_tier3(
-        fn: str, call: str, bad: int, good: int) -> None:
+def test_a_call_over_an_unknown_arm_binder_is_the_callers(
+        fn: str, call: str, dom: str, bad: int, good: int) -> None:
     v = _verify(OPAQUE_ARGUMENT)
-    assert _records(v, "call_pre", _at(OPAQUE_ARGUMENT, call)) == [
-        "tier3/E532"]
-    assert v.ok, v.errors
+    where = _at(OPAQUE_ARGUMENT, call)
+    assert _records(v, "call_pre", where) == ["violated/E501"]
+    assert ("E501", *where) in v.errors
     assert _run(OPAQUE_ARGUMENT, fn, [bad]).trap_kind is not None
-    assert _run(OPAQUE_ARGUMENT, fn, [good]).trap_kind is None
+    assumed = OPAQUE_ARGUMENT.replace(
+        f"Some(@Int) -> {call},", f"Some(@Int) -> {{ assume({dom}); {call} }},")
+    assert assumed != OPAQUE_ARGUMENT
+    av = _verify(assumed)
+    assert _records(av, "call_pre", _at(assumed, call)) == (
+        ["verified"] if fn == "g" else [])
+    assert _run(assumed, fn, [good]).trap_kind is None
 
 
 # #1199's repair: the value an effect operation returns is unknown, and an
@@ -1011,10 +1018,8 @@ def test_an_assumed_let_value_discharges_the_call() -> None:
 def test_an_unassumed_let_value_leaves_the_call_refuted() -> None:
     """The twin that makes the cell above non-vacuous: without the `assume`
     the call is reached and its precondition is NOT established.  It is
-    E501, not E532: translation binds #1199's opaque stand-in for the
-    effect operation's result, and a precondition over that stand-in is
-    the caller's to establish — the posture the `assume` is the repair
-    for."""
+    E501: a precondition over a value an `assume` can reach is the caller's
+    to establish (§6.4.2), the posture the `assume` is the repair for."""
     src = ASSUMED_LET.replace("  assume(@Int.0 > 0);\n", "")
     assert "assume" not in src
     v = _verify(src)
@@ -1054,11 +1059,11 @@ def test_an_assumed_array_let_discharges_the_call() -> None:
     twin = ASSUMED_ARRAY_LET.replace(
         "  assume(array_length(@Array<Int>.0) > 0);\n", "")
     assert "assume" not in twin
-    # Without it the call is reached and left to its callee's check: there
-    # is no #1199 stand-in for an array, so no refutation either.
+    # Without it the call is reached, over a value an `assume` can reach,
+    # and so is the caller's to establish (§6.4.2).
     tv = _verify(twin)
     assert _records(tv, "call_pre", _at(twin, "need_len(@Array<Int>.0)")) \
-        == ["tier3/E532"]
+        == ["violated/E501"]
 
 
 # The termination proof reads the same walk, so every binder it crossed
@@ -1974,6 +1979,254 @@ def _sub_position_cells() -> list[object]:
 def test_sub_position_cell(sub: SubPosition, op: Op, position: str,
                            status: str) -> None:
     _check_cell(_sub_position_cell(sub, op, position, status))
+
+
+# ---------------------------------------------------------------------
+# Where an `assume` can reach the value, the precondition stays strict
+# ---------------------------------------------------------------------
+#
+# Spec §6.4.2: a call's precondition over a value the verifier cannot know,
+# but an `assume` can reach, is the caller's to establish.  It is E501 until
+# it is established, and an `assume` about the value is the repair.  That
+# holds however deeply the call is nested: the value here is an effect
+# operation's result, and the call sits at the top of the `let`'s body, in an
+# argument of a built-in the SMT layer does not model, in an interpolated
+# part, in a pipe, or in an arm whose binder is the unknown value.  E532 is
+# left to the one place no `assume` can reach: a binder of a closure, of a
+# quantifier's predicate or of a handler clause, whose scope the walk enters
+# without its values.
+
+_UNKNOWN_PRELUDE = """\
+private fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn f(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+"""
+
+_UNKNOWN_MAIN = """
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = {state}) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    f(())
+  }
+}
+"""
+
+#: The two call-precondition operations, over the unknown `@Int.0`: the
+#: call, its piped spelling, the domain an `assume` states, and a value of
+#: the state inside that domain and one outside it.
+_UNKNOWN_OPS = {
+    "call_pre": ("need_pos(@Int.0)", "@Int.0 |> need_pos()",
+                 "@Int.0 > 0", 2, -5),
+    "string_char_code": ('string_char_code("abc", @Int.0)',
+                         '"abc" |> string_char_code(@Int.0)',
+                         "@Int.0 >= 0 && @Int.0 < 3", 1, 7),
+}
+
+#: position -> (the body after the `let`, over ``{c}``; whether it holds the
+#: piped spelling; whether the `assume` goes inside the arm).
+_UNKNOWN_POSITIONS = {
+    "top of the let's body": ("{c} >= 0 || true", False, False),
+    "argument of an unmodelled built-in":
+        ("string_length(show({c})) >= 0 || true", False, False),
+    "interpolated part": ('string_length("v=\\({c})") >= 0 || true',
+                          False, False),
+    "piped call": ("string_length(show({c})) >= 0 || true", True, False),
+    "arm whose binder is the unknown value":
+        ("match map_get(map_insert(map_new(), 1, @Int.0), 1) {{\n"
+         "    Some(@Int) -> {arm},\n    None -> true\n  }}", False, True),
+}
+
+
+def _unknown_program(position: str, op: str, assumed: bool,
+                     state: int) -> tuple[str, str]:
+    """The program, and the text its call's record is located at."""
+    call, piped, dom, _good, _bad = _UNKNOWN_OPS[op]
+    body, is_piped, in_arm = _UNKNOWN_POSITIONS[position]
+    c = piped if is_piped else call
+    if in_arm:
+        arm = (f"{{ assume({dom}); {c} >= 0 || true }}" if assumed
+               else f"{c} >= 0 || true")
+        text = body.format(arm=arm)
+        stmt = ""
+    else:
+        text = body.format(c=c)
+        stmt = f"  assume({dom});\n" if assumed else ""
+    src = (_UNKNOWN_PRELUDE + stmt + f"  {text}\n}}\n"
+           + _UNKNOWN_MAIN.replace("{state}", str(state)))
+    return src, c
+
+
+def _unknown_cells() -> list[object]:
+    cells = []
+    for position in _UNKNOWN_POSITIONS:
+        for op in _UNKNOWN_OPS:
+            if position == "interpolated part" and op == "string_char_code":
+                # An interpolated expression cannot hold a string literal.
+                continue
+            cells.append(pytest.param(position, op,
+                                      id=f"{position}|{op}"))
+    return cells
+
+
+@pytest.mark.parametrize(("position", "op"), _unknown_cells())
+def test_an_unknown_value_an_assume_can_reach_is_the_callers(
+        position: str, op: str) -> None:
+    _call, _piped, _dom, good, bad = _UNKNOWN_OPS[op]
+    src, at = _unknown_program(position, op, assumed=False, state=bad)
+    v = _verify(src)
+    where = _at(src, at)
+    assert _records(v, "call_pre", where) == ["violated/E501"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations], src)
+    assert ("E501", *where) in v.errors
+    assert _run(src, "main", []).trap_kind is not None
+    # ... and the `assume` about the value discharges it, wherever it sits.
+    src, at = _unknown_program(position, op, assumed=True, state=good)
+    v = _verify(src)
+    assert _records(v, "call_pre", _at(src, at)) == (
+        ["verified"] if op == "string_char_code" else [])
+    assert v.ok, v.errors
+    assert _run(src, "main", []).trap_kind is None
+
+
+#: A call over a binder the walk reads without its value: E532, with the
+#: callee's own check behind it.
+_BINDER_POSITIONS = {
+    "closure binder": """\
+public fn f(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Int) effects(pure) { need_pos(@Int.0) }, @Int.0)
+    >= 0 || true
+}
+""",
+    "quantifier binder": """\
+public fn f(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  forall(@Nat, 3, fn(@Nat -> @Bool) effects(pure) {
+    need_pos(nat_to_int(@Nat.0)) >= 0 || true
+  })
+}
+""",
+    "handler clause binder": """\
+public fn f(@Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = handle[Exn<Int>] {
+    throw(@Int) -> { need_pos(@Int.0) }
+  } in {
+    throw(-5)
+  };
+  @Int.0 >= 0 || true
+}
+""",
+}
+
+
+@pytest.mark.parametrize("position", sorted(_BINDER_POSITIONS))
+def test_a_binder_no_assume_can_reach_is_tier3(position: str) -> None:
+    src = _NEED_POS + _BINDER_POSITIONS[position]
+    v = _verify(src)
+    call = _at(src, "need_pos(", 1)
+    assert _records(v, "call_pre", call) == ["tier3/E532"], (
+        [(o.kind, o.status, o.error_code, o.line, o.column)
+         for o in v.obligations], src)
+    assert v.ok, v.errors
+    assert "need_pos" in _run(src, "f", [-3]).trap_message
+
+
+# A module-qualified call is obligated by the same walk: an imported
+# callee's precondition, in an argument of a built-in the SMT layer does not
+# model (E501), and in a closure (E532).
+_LIB = """\
+public fn need_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+_MODULE_CALLER = """\
+import lib;
+
+public fn nested(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_length(show(lib::need_pos(@Int.0)))
+}
+
+public fn in_closure(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(fn(@Int -> @Int) effects(pure) { lib::need_pos(@Int.0) }, @Int.0)
+}
+"""
+
+
+def _cli_json(*args: str) -> tuple[dict, str]:
+    import json
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    proc = subprocess.run(
+        [sys.executable, "-m", "vera.cli", *args], capture_output=True,
+        text=True, encoding="utf-8", check=False, env=env, timeout=600)
+    out = json.loads(proc.stdout) if args[0] == "verify" else {}
+    return out, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(("fn", "occurrence", "status"), [
+    ("nested", 0, "violated/E501"),
+    ("in_closure", 1, "tier3/E532"),
+])
+def test_a_module_call_is_obligated(tmp_path, fn: str, occurrence: int,
+                                    status: str) -> None:
+    (tmp_path / "lib.vera").write_text(_LIB, encoding="utf-8")
+    main = tmp_path / "main.vera"
+    main.write_text(_MODULE_CALLER, encoding="utf-8")
+    out, _raw = _cli_json("verify", "--json", str(main))
+    line, col = _at(_MODULE_CALLER, "lib::need_pos(@Int.0)", occurrence)
+    got = sorted(
+        f"{o['status']}/{o['error_code']}" if o.get("error_code")
+        else o["status"]
+        for o in out["obligations"]
+        if o["kind"] == "call_pre"
+        and (o["location"]["line"], o["location"]["column"]) == (line, col))
+    assert got == [status], out["obligations"]
+    _out, ran = _cli_json("run", str(main), "--fn", fn, "--", "-3")
+    assert "need_pos" in ran, ran
 
 
 # ---------------------------------------------------------------------
