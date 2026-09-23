@@ -990,9 +990,11 @@ KNOWN_MULTI_SITE_ERROR_CODES: dict[str, frozenset[tuple[str, str]]] = {
     # not tied to one spec section (some sites carry none at all, a
     # STRUCTURAL_EXEMPTIONS case above).  The language server reports
     # an analysis that raised the same way the CLI reports a command
-    # that did (#1444).
+    # that did (#1444), and `_compile_program` reports the #1433
+    # backstop: a module binding one function identifier twice.
     "E699": frozenset({
         ("vera/cli.py", "_internal_error_envelope"),
+        ("vera/codegen/core.py", "CodeGenerator._compile_program"),
         ("vera/codegen/functions.py", "FunctionCompilationMixin._compile_fn"),
         ("vera/codegen/functions.py",
          "FunctionCompilationMixin._lift_closures_or_drop"),

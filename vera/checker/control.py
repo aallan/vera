@@ -756,7 +756,25 @@ class ControlFlowMixin:
         self._handler_body_state_tnames = []
 
         # Check handler clauses
+        first_clauses: dict[str, ast.HandlerClause] = {}
         for clause in expr.clauses:
+            # #1433: a handler is a namespace of clauses, one per operation.
+            # Two clauses for one operation compiled to a handler that ran
+            # the LATER one whenever the body performed it — a choice made by
+            # clause order, which the program does not state.  The surplus
+            # is refused, and its body not checked.
+            first_clause = first_clauses.setdefault(clause.op_name, clause)
+            if first_clause is not clause:
+                self._report_duplicate_name(
+                    clause, noun="handler clause", name=clause.op_name,
+                    scope="this handler", first=first_clause,
+                    fix=(
+                        f"Delete this clause, or merge the two into the one "
+                        f"clause for '{clause.op_name}': each operation has "
+                        f"exactly one clause in a handler."
+                    ),
+                )
+                continue
             op_info = eff_info.operations.get(clause.op_name)
             if op_info is None:
                 self._error(

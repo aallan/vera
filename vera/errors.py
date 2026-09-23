@@ -962,6 +962,7 @@ ERROR_CODES: dict[str, str] = {
     "E181": "Constraint references undeclared type variable",
     "E182": "Slot reference to a zero-size type",
     "E183": "Let binding of a zero-size type",
+    "E184": "Name declared twice in one namespace",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",

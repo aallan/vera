@@ -41,6 +41,7 @@ from vera.prelude import (
     prelude_adt_names,
     prelude_data_decls,
 )
+from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
@@ -3031,13 +3032,41 @@ class CodeGenerator(
 
         # Convert WAT to WASM binary
         try:
+            # #1433: the backstop — the module binds each function identifier
+            # once, or the compile ends in an E699 naming it, never in
+            # wasm-tools' `duplicate func identifier` against a symbol the
+            # author never wrote.
+            self._assert_unique_func_names(wat)
             wasm_bytes = wasmtime.wat2wasm(wat)
         except Exception as exc:  # noqa: BLE001 — a backend failure becomes a codegen diagnostic
-            self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
-                description=f"WAT compilation failed: {exc}",
-                location=SourceLocation(file=self.file),
-                severity="error",
-            ))
+            if isinstance(exc, CodegenInvariantError):
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        f"Internal compiler error while assembling the "
+                        f"module: {exc.msg}"
+                    ),
+                    location=SourceLocation(file=self.file),
+                    rationale=(
+                        "Code generation produced a module WebAssembly "
+                        "cannot load. That is a bug in the compiler, not "
+                        "something to change in the program: a program the "
+                        "checker should have refused was not, or a valid "
+                        "one was compiled under a clashing name."
+                    ),
+                    fix=(
+                        "Please file a bug report with the offending "
+                        "program at https://github.com/aallan/vera/issues"
+                    ),
+                    spec_ref='Chapter 0, Section 0.5.1 "Diagnostic Structure"',
+                    severity="error",
+                    error_code="E699",
+                ))
+            else:
+                self.diagnostics.append(Diagnostic(  # diag-fields-exempt: internal wat2wasm backend failure; a code-generation bug, not a user error, so no source-level fix or spec section applies.
+                    description=f"WAT compilation failed: {exc}",
+                    location=SourceLocation(file=self.file),
+                    severity="error",
+                ))
             return CompileResult(
                 wat=wat,
                 wasm_bytes=b"",

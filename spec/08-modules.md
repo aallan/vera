@@ -383,6 +383,61 @@ supply the bare name, §8.5.2.2's ambiguity refusal applies first and
 independently of the layouts, so identical declarations are still E156 /
 E157 at check time.
 
+### 8.5.5 One Declaration per Name
+
+A namespace holds one declaration of each name. A second declaration of a
+name in the same namespace is rejected at check time (**E184**), located on
+the surplus declaration with the first one's line in its rationale, and one
+error is reported for each surplus declaration. The first declaration stays
+the one every use of the name resolves against. Two declarations of one name
+have no distinguishing spelling, so a use could reach only one of them,
+chosen by declaration order, which the program does not state (§0.2.2); the
+other could never be used.
+
+| Namespace | One declaration of a name per | Rule |
+|-----------|-------------------------------|------|
+| Functions | file | E184 |
+| `where` helpers | `where` block (§5.6.2) | E184 |
+| Types: `data` declarations and `type` aliases share one | file | E184 |
+| Constructors | file | E159 across two `data` declarations (§8.5.2.2); E184 within one |
+| Effects | file | E184 |
+| Effect operations | effect | E184 |
+| Abilities | file | E184 |
+| Ability operations | ability | E184 |
+| Handler clauses | `handle` expression | E184 |
+| Type parameters | declaration: a `data`, `type`, `effect` or `ability` parameter list, or a `forall` list together with the `forall` lists of the functions enclosing it | E184 |
+
+A `where` helper's `forall` list is in one namespace with its enclosing
+functions' because their type parameters stay in scope in the helper (§5.6.2):
+a helper declaring `forall<T>` inside a `forall<T>` function binds `T` a
+second time, and every `@T` in the helper could name either binding. A helper
+that needs a type parameter of its own gives it a name no enclosing function
+binds.
+
+A file is the entry program or one module, and the rule holds in every file a
+program reaches. The same name in a *different* namespace is not a duplicate:
+
+- **A nested scope.** A `where` block nested in a helper is its own namespace,
+  so its helpers may reuse names from the enclosing block. A helper may share
+  a top-level function's name, and inside its parent the helper is the one a
+  bare call reaches. A `handle` expression nested inside another handler for
+  the same effect has its own clauses.
+- **A sibling scope.** Two functions' `where` blocks, two effects' or two
+  abilities' operation lists, and two declarations' type-parameter lists are
+  different namespaces.
+- **Another file.** A local declaration shadows an imported one (§8.5.2).
+  Aliases, effects and abilities are not importable (§8.4.1), so a module's
+  declaration of one never meets the importer's. Two imports supplying one
+  name are §8.5.2.2's rule (E155, E156, E157).
+- **The prelude.** A declaration in the entry file shadows the prelude's
+  (§8.4.1). A built-in function or effect cannot be redeclared (E151, E152),
+  and `Future` and `Tuple` are reserved (E158).
+
+An import names declarations rather than declaring one. A name listed twice
+in one import list, or a module imported twice, admits the same declaration
+twice and leaves the namespace holding one declaration of that name, so it is
+not a duplicate.
+
 ## 8.6 Module Resolution Algorithm
 
 The resolver maps an import path to a source file on disk using a simple file-system-based algorithm.
