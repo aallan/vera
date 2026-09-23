@@ -105,6 +105,14 @@ included) and publishes:
   completion lists the in-scope bindings that fit, innermost first,
   each with its type.
 
+If the pipeline itself fails on a text (an internal compiler error,
+which is a bug), the server publishes one `E699` diagnostic naming the
+failure in place of that text's diagnostics, and keeps no analysis of
+it: hover, go-to-definition and completion answer nothing, a proof
+delta has no baseline, and the edit methods refuse, until a change the
+server can analyse. None of them answers from the previous text's
+analysis, because the buffer no longer holds that text.
+
 ## What no generic language server can do
 
 ### The warm verification core
@@ -222,7 +230,8 @@ obligation to the gate.
 #### `vera/proposeEdit` — the enforced edit workflow
 
 ```json
-{"uri": "file:///main.vera", "text": "<full proposed source>", "force": false}
+{"uri": "file:///main.vera", "text": "<full proposed source>", "force": false,
+ "version": 7}
 ```
 
 The whole edit → verify → apply sequence as one method, so the
@@ -278,14 +287,24 @@ never `applied` — and the edit request stays open for the client to
 answer.
 
 The version guard protects the newer text only if the edit was made
-from, and judged against, the text at that version. The server analyses
-each change after storing it, so a change whose analysis fails (an
-internal error in the pipeline) leaves the server's analysis describing
-the text before it. While that is so, all three edit methods refuse
-with `InvalidParams` and say why, rather than verify an edit against,
-or build one from, a text the client no longer has — `force` included,
-since it overrides the gate's verdict, not the question of which text
-the edit is about. The next change the server can analyse clears it.
+from, and judged against, the text at that version, so all three edit
+methods refuse with `InvalidParams`, and say why, rather than act on a
+text the client no longer has:
+
+- **The server has no analysis of the open text** — the change it last
+  received could not be analysed (see [Standard
+  features](#standard-features)). `force` does not waive this: it
+  overrides the gate's verdict, not the question of which text the edit
+  is about. The next change the server can analyse clears it.
+- **The request was made from an older version.** The optional
+  `"version"` names the document version the request was made from —
+  for `vera/proposeEdit`, the version the proposed text was written
+  against. When the open document is at any other version, the server
+  has seen changes the request did not, and refuses. Without
+  `"version"` the server cannot tell: a proposal written against an
+  older text replaces whatever the buffer holds, including typing the
+  server had already seen. A client that cannot send it accepts that
+  risk.
 
 `"force": true` (strictly boolean — anything else fails closed)
 overrides the gate for the cases where breaking a proof is the point,
@@ -297,7 +316,7 @@ easy thing.
 
 ```json
 {"uri": "file:///main.vera", "fn": "callee",
- "kind": "requires", "expr": "@Nat.0 >= 1"}
+ "kind": "requires", "expr": "@Nat.0 >= 1", "version": 7}
 ```
 
 Splices the new expression over the first `requires`/`ensures` clause
@@ -308,11 +327,15 @@ precondition some caller no longer satisfies surfaces as
 sites**, and the gate refuses. There is no `force` here — an agent
 that wants to push through a breaking contract change must construct
 the full text and call `vera/proposeEdit` with `force` explicitly.
+The splice is made from the server's current text, so the optional
+`"version"` here guards the agent's choice of function and clause
+rather than a text it wrote; it is refused on the same terms as
+`vera/proposeEdit`'s, and so is `vera/addEffect`'s.
 
 #### `vera/addEffect` — effect propagation through the call graph
 
 ```json
-{"uri": "file:///main.vera", "fn": "target", "effect": "Async"}
+{"uri": "file:///main.vera", "fn": "target", "effect": "Async", "version": 7}
 ```
 
 The genuinely multi-site one. Adding an effect to a function

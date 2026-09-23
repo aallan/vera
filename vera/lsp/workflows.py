@@ -11,7 +11,7 @@ mandatory-contracts philosophy applied to tooling.
 ``vera/proposeEdit`` (Phase F1) — request params (plain JSON)::
 
     {"uri": "<document uri>", "text": "<full proposed source>",
-     "force": false}
+     "force": false, "version": <optional: the version it was made from>}
 
 Response (plain JSON)::
 
@@ -58,7 +58,12 @@ the request is:
   checks that the analysis it reads is the open document's (an analysis
   that raises leaves the table behind the store) and, for a candidate
   built from the document, that its source text still is — and refuses
-  with ``InvalidParams`` otherwise (:func:`require_current`).
+  with ``InvalidParams`` otherwise (:func:`require_current`).  The
+  optional ``version`` param, on all three methods, lets the client say
+  which version it made the request from; any other open version is
+  refused the same way.  Without it, a proposal written against an
+  older text replaces newer text the server has seen -- the risk a
+  client that cannot send it accepts.
 * **Awaited.**  The workflows are coroutines: the server waits for the
   client's answer, and ``analysis_lock`` is not held while it does, so
   the notifications that arrive meanwhile are analysed as they come.
@@ -371,29 +376,48 @@ def require_current(
     doc: Document | None,
     analysis: Analysis | None,
     base_text: str | None,
+    base_version: int | None,
 ) -> None:
     """Refuse unless the edit's inputs describe the open document.
 
-    Two inputs, and each must be the open buffer's text: the ANALYSIS
-    the gate judges the edit against, and -- for a candidate built from
-    the document, as ``vera/strengthenContract`` and ``vera/addEffect``
-    build theirs -- the text it was built from (*base_text*).  The edit
-    is guarded by the open document's version; that guard protects the
-    client's newer text only if the edit was made from, and judged
-    against, the text AT that version.
+    Every input an edit is made from, or judged against, must be the
+    open buffer's text, because the edit is guarded by the open
+    document's version and that guard protects the client's newer text
+    only if the edit is about the text AT that version:
 
-    They can differ.  ``didChange`` writes the store and then analyses
-    the new text, so an analysis that raises leaves the table describing
-    the text before the buffer's current one.  A candidate spliced from
-    it would pass the client's version check and overwrite the newer
-    text; a proposal gated against it would be judged against a text the
-    client no longer has.  ``force`` changes neither: it overrides the
-    gate's verdict, not the question of which text the edit is about.
+    * the ANALYSIS the gate judges the edit against -- *analysis* comes
+      from :func:`~vera.lsp.features.current_analysis`, so it is
+      ``None`` exactly when the open document has no analysis of its
+      current text (its latest analysis raised).  A candidate spliced
+      from an older analysis would pass the client's version check and
+      overwrite the newer text; a proposal gated against one would be
+      judged against a text the client no longer has.  ``force`` changes
+      neither: it overrides the gate's verdict, not the question of
+      which text the edit is about;
+    * for a candidate built from the document, as
+      ``vera/strengthenContract`` and ``vera/addEffect`` build theirs,
+      the text it was built from (*base_text*);
+    * when the CLIENT says which version it made the request from
+      (*base_version*, the optional ``version`` param), that version: a
+      proposal made from an older text would otherwise replace newer
+      text the server has already seen.
 
     A document the client never opened has no buffer to be stale
     against, and no analysis either; it is refused only when the edit
-    was built from a text, which then is not the client's.
+    claims a text or a version of it, which then are not the client's.
     """
+    if base_version is not None and (
+        doc is None or doc.version != base_version
+    ):
+        where = (
+            "is not open" if doc is None
+            else f"is at version {doc.version}"
+        )
+        raise StaleDocumentError(
+            f"the request was made from version {base_version} of "
+            f"{uri!r}, but the open document {where}; read the current "
+            "text, then make the request again",
+        )
     if doc is None:
         if base_text is not None:
             raise StaleDocumentError(
@@ -401,7 +425,7 @@ def require_current(
                 "has no buffer to apply to; open the document, then retry",
             )
         return
-    if analysis is None or analysis.text != doc.text:
+    if analysis is None:
         raise StaleDocumentError(
             f"the server's analysis of {uri!r} does not describe the open "
             f"document (version {doc.version}): its latest text could not "
@@ -422,6 +446,7 @@ async def apply_propose_edit(
     text: str,
     force: bool = False,
     base_text: str | None = None,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full proposeEdit workflow against *server* state.
 
@@ -429,23 +454,24 @@ async def apply_propose_edit(
     serialised), and the edit it passes goes to the client guarded by
     the version of the open document (:func:`versioned_edit`) -- once
     :func:`require_current` has established that the analysis the gate
-    reads, and *base_text* when a caller built *text* from the document,
-    are that version's text.  The lock is released before the wait for
+    reads, *base_text* when a caller built *text* from the document, and
+    *version* when the client said which version it proposed from, are
+    all that version's.  The lock is released before the wait for
     the client's answer (:func:`client_outcome`), and nothing here
     writes the document store, the analysis table or the published
     diagnostics: the client owns the buffer, so an applied edit reaches
     the server as the client's own ``didChange``, at the client's own
     version (#1444).
 
-    Raises :class:`StaleDocumentError` when the analysis or *base_text*
-    is not the open document's text.
+    Raises :class:`StaleDocumentError` when the analysis, *base_text* or
+    *version* is not the open document's.
     """
     with server.analysis_lock:
         # Read together, with no await between them for a notification
         # to land in: the version below is the one the check vouches for.
         doc = server.store.get(uri)
-        baseline_analysis = server.analyses.get(uri)
-        require_current(uri, doc, baseline_analysis, base_text)
+        baseline_analysis = server.current_analysis(uri)
+        require_current(uri, doc, baseline_analysis, base_text, version)
         baseline = (
             baseline_analysis.obligations
             if baseline_analysis is not None
@@ -532,6 +558,7 @@ async def strengthen_contract(
     fn_name: str,
     kind: str,
     expr: str,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full strengthenContract workflow against *server* state.
 
@@ -549,11 +576,11 @@ async def strengthen_contract(
     function); the handler maps these to JSON-RPC InvalidParams.
     """
     with server.analysis_lock:
-        analysis = server.analyses.get(uri)
+        analysis = server.current_analysis(uri)
         # Before anything is read off the analysis -- the splice target,
         # or the answer that there is none -- it has to be the open
-        # document's.
-        require_current(uri, server.store.get(uri), analysis, None)
+        # document's, at the version the client asked about.
+        require_current(uri, server.store.get(uri), analysis, None, version)
     if analysis is None:
         raise ValueError(
             f"no analysis for {uri!r} — open the document first",
@@ -572,6 +599,7 @@ async def strengthen_contract(
         )
     return await apply_propose_edit(
         server, uri, candidate, force=False, base_text=analysis.text,
+        version=version,
     )
 
 
@@ -813,6 +841,7 @@ async def add_effect(
     uri: str,
     fn_name: str,
     effect: str,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run the full addEffect workflow against *server* state.
 
@@ -825,11 +854,11 @@ async def add_effect(
     document, unknown top-level function).
     """
     with server.analysis_lock:
-        analysis = server.analyses.get(uri)
+        analysis = server.current_analysis(uri)
         # Before anything is read off the analysis -- the rows to
         # rewrite, or the answer that there are none -- it has to be the
-        # open document's.
-        require_current(uri, server.store.get(uri), analysis, None)
+        # open document's, at the version the client asked about.
+        require_current(uri, server.store.get(uri), analysis, None, version)
     if analysis is None:
         raise ValueError(
             f"no analysis for {uri!r} — open the document first",
@@ -868,6 +897,7 @@ async def add_effect(
         candidate = candidate[:start] + replacement + candidate[end:]
     response = await apply_propose_edit(
         server, uri, candidate, force=False, base_text=analysis.text,
+        version=version,
     )
     response["rewritten"] = rewritten
     return response

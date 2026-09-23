@@ -28,11 +28,16 @@ Document state: the store, the per-URI analysis table and the published
 diagnostics describe the client's open buffer, so they are written only
 from the client's own ``didOpen`` / ``didChange`` / ``didClose``
 (#1444).  An edit the server proposes reaches them as the client's
-``didChange`` if the client applies it, and not at all otherwise.
+``didChange`` if the client applies it, and not at all otherwise.  An
+analysis that raises leaves no entry for the text it failed on, and an
+``E699`` is published in its place; every reader of the table goes
+through :func:`~vera.lsp.features.current_analysis`, which returns only
+an analysis of the open text.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 
 from typing import Any
@@ -46,8 +51,10 @@ from vera.lsp.documents import DocumentStore
 from vera.lsp.extensions import speculative_edit
 from vera.lsp.features import (
     Analysis,
+    analysis_failure,
     analyze,
     completion_at,
+    current_analysis,
     definition_at,
     hover_at,
     to_lsp_diagnostics,
@@ -62,6 +69,8 @@ from vera.obligations.session import VerificationSession
 
 
 _MISSING = object()
+
+logger = logging.getLogger(__name__)
 
 
 def _param(params: Any, key: str) -> Any:
@@ -97,6 +106,28 @@ def _require_str(params: Any, key: str) -> str:
     return value
 
 
+def _version_param(params: Any) -> int | None:
+    """The optional ``version``: the document version a request was made
+    from, or ``None`` when the client did not say.
+
+    A JSON integer, or absent (``null`` counts as absent, as it does for
+    an LSP ``OptionalVersionedTextDocumentIdentifier``).  Anything else
+    fails closed: a version the server cannot compare is not permission
+    to skip the comparison.  ``bool`` is refused explicitly, because
+    Python counts it as an ``int``.
+    """
+    value = _param(params, "version")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise JsonRpcInvalidParams(
+            message=(
+                f"'version' must be an integer, got {type(value).__name__}"
+            ),
+        )
+    return value
+
+
 def _force_param(params: Any) -> bool:
     """The ``force`` flag, failing closed: only JSON ``true`` engages.
 
@@ -125,16 +156,36 @@ class VeraLanguageServer(LanguageServer):
         self.analyses: dict[str, Analysis] = {}
 
     def analyze_and_publish(self, uri: str, text: str) -> None:
-        """Run the pipeline for *uri* and publish its diagnostics."""
+        """Run the pipeline for *uri* and publish its diagnostics.
+
+        Called with the text the handler has just stored, so the entry
+        this writes describes the client's buffer.  If the pipeline
+        RAISES, the entry is removed rather than left describing the
+        text before this one, and the diagnostic published in place of
+        the analysis names the failure (#1444): every reader then
+        answers as it does for a document with no analysis, and the
+        client can see why.
+        """
         with self.analysis_lock:
-            analysis = analyze(self.session, uri, text)
-            self.analyses[uri] = analysis
+            try:
+                analysis = analyze(self.session, uri, text)
+            except Exception as exc:
+                # Any exception is a compiler bug on this text; it goes to
+                # the log with its traceback and to the client as E699.
+                logger.exception("analysis of %s raised", uri)
+                self.analyses.pop(uri, None)
+                diagnostics = analysis_failure(uri, text, exc)
+            else:
+                self.analyses[uri] = analysis
+                diagnostics = to_lsp_diagnostics(analysis)
         self.text_document_publish_diagnostics(
-            lsp.PublishDiagnosticsParams(
-                uri=uri,
-                diagnostics=to_lsp_diagnostics(analysis),
-            ),
+            lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics),
         )
+
+    def current_analysis(self, uri: str) -> Analysis | None:
+        """The analysis of *uri*'s open text, or ``None``
+        (:func:`vera.lsp.features.current_analysis`)."""
+        return current_analysis(self.store, self.analyses, uri)
 
 
 def create_server() -> VeraLanguageServer:
@@ -185,7 +236,7 @@ def create_server() -> VeraLanguageServer:
     def hover(
         ls: Any, params: lsp.HoverParams,
     ) -> lsp.Hover | None:
-        analysis = server.analyses.get(params.text_document.uri)
+        analysis = server.current_analysis(params.text_document.uri)
         if analysis is None:
             return None
         return hover_at(analysis, params.position)
@@ -194,7 +245,7 @@ def create_server() -> VeraLanguageServer:
     def definition(
         ls: Any, params: lsp.DefinitionParams,
     ) -> lsp.Location | None:
-        analysis = server.analyses.get(params.text_document.uri)
+        analysis = server.current_analysis(params.text_document.uri)
         if analysis is None:
             return None
         return definition_at(analysis, params.position)
@@ -206,7 +257,7 @@ def create_server() -> VeraLanguageServer:
     def completion(
         ls: Any, params: lsp.CompletionParams,
     ) -> lsp.CompletionList | None:
-        analysis = server.analyses.get(params.text_document.uri)
+        analysis = server.current_analysis(params.text_document.uri)
         if analysis is None:
             return None
         return completion_at(analysis, params.position)
@@ -218,16 +269,18 @@ def create_server() -> VeraLanguageServer:
         The speculative verify shares the warm session (and its
         discharge cache — pre-warming, by design) under the same lock,
         but never touches the per-URI analysis table or published
-        diagnostics: the canonical editor state is unchanged.
+        diagnostics: the canonical editor state is unchanged.  With no
+        analysis of the open text, the baseline is empty, as it is for
+        a document the client never opened.
         """
         uri = _require_str(params, "uri")
         text = _require_str(params, "text")
-        baseline_analysis = server.analyses.get(uri)
-        baseline = (
-            baseline_analysis.obligations
-            if baseline_analysis is not None else []
-        )
         with server.analysis_lock:
+            baseline_analysis = server.current_analysis(uri)
+            baseline = (
+                baseline_analysis.obligations
+                if baseline_analysis is not None else []
+            )
             return speculative_edit(server.session, baseline, uri, text)
 
     @server.feature("vera/proposeEdit")
@@ -247,9 +300,10 @@ def create_server() -> VeraLanguageServer:
         """
         uri = _require_str(params, "uri")
         text = _require_str(params, "text")
+        version = _version_param(params)
         try:
             return await apply_propose_edit(
-                server, uri, text, _force_param(params),
+                server, uri, text, _force_param(params), version=version,
             )
         except StaleDocumentError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
@@ -274,9 +328,10 @@ def create_server() -> VeraLanguageServer:
                 message=f"'kind' must be 'requires' or 'ensures', "
                 f"got {kind!r}",
             )
+        version = _version_param(params)
         try:
             return await strengthen_contract(
-                server, uri, fn_name, kind, expr,
+                server, uri, fn_name, kind, expr, version=version,
             )
         except ValueError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
@@ -296,8 +351,11 @@ def create_server() -> VeraLanguageServer:
             raise JsonRpcInvalidParams(
                 message="'effect' must be a non-empty effect reference",
             )
+        version = _version_param(params)
         try:
-            return await add_effect(server, uri, fn_name, effect)
+            return await add_effect(
+                server, uri, fn_name, effect, version=version,
+            )
         except ValueError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
 

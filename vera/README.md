@@ -126,13 +126,13 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | 236 | | ProofObligation record: identity (content_key) + discharge outcome | |
 | `  cache.py` | 386 | | Invalidation keys (structural/callee/context hashes), DischargeCache; `FnCacheEntry` also carries `result_disclosed`, the one datum a replay cannot recover from the cached diagnostics and obligations (#1407) | |
 | `  session.py` | 429 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order; clears the disclosed set per program and re-enters `_verify_source_fixpoint` for one program's fixpoint (#1363) | |
-| `lsp/` | 2,146 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
+| `lsp/` | 2,301 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
 | `  convert.py` | 218 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
-| `  features.py` | 374 | | Diagnostics + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
+| `  features.py` | 452 | | Diagnostics + tier hints, hover, slot goto (keyed through `naming.slot_ref_key`, so parameterised and alias-spelled references resolve, and a `where` helper resolves in its own accumulated scope), hole completion | |
 | `  extensions.py` | 283 | | vera/speculativeEdit proof-delta | |
-| `  server.py` | 309 | | pygls wiring, single-session serialisation, coroutine edit handlers | |
-| `  workflows.py` | 873 | | Skill-layer workflows: enforced edit sequences, applied only through the client (#222 F, #1444) | |
+| `  server.py` | 367 | | pygls wiring, single-session serialisation, coroutine edit handlers | |
+| `  workflows.py` | 903 | | Skill-layer workflows: enforced edit sequences, applied only through the client (#222 F, #1444) | |
 | `codegen/` | 22,139 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 1,491 | | Public API, dataclasses, `compile()`/`execute()` orchestration, core IO host bindings (#421) | |
 | `  memory.py` | 135 | | Compile-time ADT layout helpers (`ConstructorLayout`, alignment) (#421) | |
@@ -773,7 +773,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,338 tests across 224 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 16,359 tests across 224 files: compiler-internals unit tests plus a **conformance suite** (253 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
