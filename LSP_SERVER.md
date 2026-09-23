@@ -277,6 +277,16 @@ edit is pending, that request ends with a `RequestCancelled` error —
 never `applied` — and the edit request stays open for the client to
 answer.
 
+The version guard protects the newer text only if the edit was made
+from, and judged against, the text at that version. The server analyses
+each change after storing it, so a change whose analysis fails (an
+internal error in the pipeline) leaves the server's analysis describing
+the text before it. While that is so, all three edit methods refuse
+with `InvalidParams` and say why, rather than verify an edit against,
+or build one from, a text the client no longer has — `force` included,
+since it overrides the gate's verdict, not the question of which text
+the edit is about. The next change the server can analyse clears it.
+
 `"force": true` (strictly boolean — anything else fails closed)
 overrides the gate for the cases where breaking a proof is the point,
 but it must be said out loud. This is the same philosophy as Vera's

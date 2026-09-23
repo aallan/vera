@@ -53,6 +53,7 @@ from vera.lsp.features import (
     to_lsp_diagnostics,
 )
 from vera.lsp.workflows import (
+    StaleDocumentError,
     add_effect,
     apply_propose_edit,
     strengthen_contract,
@@ -239,13 +240,19 @@ def create_server() -> VeraLanguageServer:
         :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
         wire glue only.  It is a coroutine so that pygls runs it as a
         task and goes on reading messages — the client's answer among
-        them — while it waits.
+        them — while it waits.  A proposal against an analysis that
+        does not describe the open document refuses with InvalidParams,
+        as the other two edit methods refuse requests they cannot serve
+        against the document as it stands.
         """
         uri = _require_str(params, "uri")
         text = _require_str(params, "text")
-        return await apply_propose_edit(
-            server, uri, text, _force_param(params),
-        )
+        try:
+            return await apply_propose_edit(
+                server, uri, text, _force_param(params),
+            )
+        except StaleDocumentError as exc:
+            raise JsonRpcInvalidParams(message=str(exc)) from exc
 
     @server.feature("vera/strengthenContract")
     async def vera_strengthen_contract(

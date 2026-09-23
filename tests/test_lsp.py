@@ -1604,6 +1604,9 @@ class _FakeServer:
         self.analysis_lock = _OneThreadLock()
         self.analyses: dict[str, Any] = {}
         self.published: list[str] = []
+        #: Texts whose analysis raises, as an internal compiler error in
+        #: the pipeline would: the handler has written the store by then.
+        self.unanalysable: set[str] = set()
         # Client side.
         self.client_capabilities = VERSIONED_EDITS
         self.policy = policy
@@ -1631,6 +1634,8 @@ class _FakeServer:
 
     def analyze_and_publish(self, uri: str, text: str) -> None:
         with self.analysis_lock:
+            if text in self.unanalysable:
+                raise RuntimeError(f"analysis of {uri} failed")
             self.analyses[uri] = analyze(self.session, uri, text)
         self.published.append(uri)
 
@@ -2986,6 +2991,46 @@ class TestProposeEditOverTheWire:
 
         _on_the_wire(scenario)
 
+    def test_a_proposal_on_a_stale_analysis_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The handler's half of the stale-analysis refusal: a
+        ``didChange`` whose analysis raises leaves the table behind the
+        store, and a proposal gated against it comes back as
+        ``InvalidParams`` naming why -- with no edit request sent."""
+        import vera.lsp.server as server_module
+
+        analyze_for_real = server_module.analyze
+
+        def analyze_or_fail(
+            session: VerificationSession, uri: str, text: str,
+        ) -> Any:
+            if text == TYPED_BASE:
+                raise RuntimeError("an internal error in the pipeline")
+            return analyze_for_real(session, uri, text)
+
+        monkeypatch.setattr(server_module, "analyze", analyze_or_fail)
+
+        async def scenario(client: _WireClient) -> None:
+            client.start(WIRE_VERSIONED_EDITS, SPEC_BASE)
+            client.did_change(TYPED_BASE, 2)  # the store moves; analysis fails
+            client.propose("p", SHIFTED_BASE)
+            first = await client.receive(
+                lambda m: m.get("id") == "p"
+                or m.get("method") == "workspace/applyEdit",
+            )
+            assert first.get("method") != "workspace/applyEdit", (
+                "an edit was sent against a stale analysis"
+            )
+            assert first["error"]["code"] == lsp.ErrorCodes.InvalidParams
+            assert "does not describe the open document" in (
+                first["error"]["message"]
+            )
+            doc = client.server.store.get(URI)
+            assert (doc.text, doc.version) == (TYPED_BASE, 2)
+
+        _on_the_wire(scenario)
+
     def test_a_client_without_versioned_edits_is_told_so(self) -> None:
         async def scenario(client: _WireClient) -> None:
             client.start({}, SPEC_BASE)
@@ -3040,17 +3085,26 @@ def _document_state_writes(source: str, path: str) -> list[_Write]:
     client's buffer -- found by its shape, not by a list of callers:
 
     * ``store`` -- ``open`` / ``change`` / ``close`` called on the
-      document store: a name ``store``, an attribute ``.store``, or a
-      local bound to one of those or to ``DocumentStore(...)``;
+      document store: a name ``store``, an attribute ``.store``, a call
+      ``DocumentStore(...)``, or an alias of one of those;
     * ``document`` -- any use of ``_docs``, and (under ``vera/lsp/``)
       any assignment to a document's ``text`` / ``version`` /
       ``_index``;
-    * ``analyses`` -- a mutation of the per-URI analysis table: an item
-      assigned or deleted, or a mutating method called;
+    * ``analyses`` -- a mutation of the per-URI analysis table (an
+      attribute ``.analyses``, a name ``analyses``, or an alias): an
+      item assigned or deleted, an augmented assignment, or a mutating
+      method called;
     * ``publish`` -- a call to ``analyze_and_publish`` or
       ``text_document_publish_diagnostics``, which put an analysis in
       front of the client;
     * ``state`` -- ``.store`` or ``.analyses`` rebound wholesale.
+
+    An ALIAS is a name bound to one of those by any binding form that
+    takes a value -- plain, annotated or walrus assignment, and
+    element-wise unpacking of a tuple or list -- or a parameter
+    annotated ``DocumentStore``, which is how a store is handed to a
+    helper under the strict typing ``vera/`` is checked with.  Aliases of
+    aliases are followed to a fixpoint.
 
     Each is attributed to its innermost enclosing ``def``, keyed by name
     and first line (decorators included, which is what a code object's
@@ -3060,24 +3114,23 @@ def _document_state_writes(source: str, path: str) -> list[_Write]:
     in_lsp = path.startswith("vera/lsp/")
     store_names = {"store"}
     table_names = {"analyses"}
+    for node in pyast.walk(tree):
+        if isinstance(node, pyast.arg) and _names_store_type(node.annotation):
+            store_names.add(node.arg)
     changed = True
     while changed:  # aliases of aliases
         changed = False
-        for node in pyast.walk(tree):
-            if not isinstance(node, pyast.Assign):
+        for target, value in _bindings(tree):
+            if not isinstance(target, pyast.Name):
                 continue
-            value = node.value
             for names, is_it in (
                 (store_names, _is_store), (table_names, _is_table),
             ):
-                if is_it(value, store_names, table_names):
-                    for target in node.targets:
-                        if (
-                            isinstance(target, pyast.Name)
-                            and target.id not in names
-                        ):
-                            names.add(target.id)
-                            changed = True
+                if target.id not in names and is_it(
+                    value, store_names, table_names,
+                ):
+                    names.add(target.id)
+                    changed = True
 
     writes: list[_Write] = []
 
@@ -3120,6 +3173,12 @@ def _document_state_writes(source: str, path: str) -> list[_Write]:
                 target.value, store_names, table_names,
             ):
                 record(target, "analyses", scope)
+            elif (
+                isinstance(node, pyast.AugAssign)
+                and isinstance(target, pyast.Name)
+                and target.id in table_names
+            ):
+                record(node, "analyses", scope)  # `table |= {...}`
             elif isinstance(target, pyast.Attribute):
                 if target.attr in ("store", "analyses"):
                     record(target, "state", scope)
@@ -3132,9 +3191,53 @@ def _document_state_writes(source: str, path: str) -> list[_Write]:
     return writes
 
 
+def _bindings(tree: pyast.AST) -> list[tuple[pyast.AST, pyast.AST]]:
+    """Every ``(target, value)`` pair a binding in *tree* makes: plain,
+    annotated (with a value) and walrus assignment, with a tuple or list
+    of targets unpacked element-wise against a value of the same
+    shape."""
+    pairs: list[tuple[pyast.AST, pyast.AST]] = []
+    for node in pyast.walk(tree):
+        if isinstance(node, pyast.Assign):
+            pairs += [(target, node.value) for target in node.targets]
+        elif isinstance(node, pyast.AnnAssign) and node.value is not None:
+            pairs.append((node.target, node.value))
+        elif isinstance(node, pyast.NamedExpr):
+            pairs.append((node.target, node.value))
+    unpacked: list[tuple[pyast.AST, pyast.AST]] = []
+    while pairs:
+        target, value = pairs.pop()
+        if (
+            isinstance(target, (pyast.Tuple, pyast.List))
+            and isinstance(value, (pyast.Tuple, pyast.List))
+            and len(target.elts) == len(value.elts)
+        ):
+            pairs += list(zip(target.elts, value.elts))
+        else:
+            unpacked.append((target, value))
+    return unpacked
+
+
+def _names_store_type(annotation: pyast.AST | None) -> bool:
+    """Whether *annotation* spells ``DocumentStore``, bare, qualified or
+    as a string."""
+    if isinstance(annotation, pyast.Constant) and isinstance(
+        annotation.value, str,
+    ):
+        return annotation.value.rsplit(".", 1)[-1] == "DocumentStore"
+    return (
+        isinstance(annotation, pyast.Name) and annotation.id == "DocumentStore"
+    ) or (
+        isinstance(annotation, pyast.Attribute)
+        and annotation.attr == "DocumentStore"
+    )
+
+
 def _is_store(
     node: pyast.AST, store_names: set[str], table_names: set[str],
 ) -> bool:
+    if isinstance(node, pyast.NamedExpr):  # `(s := server.store).change`
+        return _is_store(node.value, store_names, table_names)
     return (
         (isinstance(node, pyast.Name) and node.id in store_names)
         or (isinstance(node, pyast.Attribute) and node.attr == "store")
@@ -3149,6 +3252,8 @@ def _is_store(
 def _is_table(
     node: pyast.AST, store_names: set[str], table_names: set[str],
 ) -> bool:
+    if isinstance(node, pyast.NamedExpr):  # `(t := server.analyses)[k] = v`
+        return _is_table(node.value, store_names, table_names)
     return (
         (isinstance(node, pyast.Name) and node.id in table_names)
         or (isinstance(node, pyast.Attribute) and node.attr == "analyses")
@@ -3272,7 +3377,9 @@ class TestDocumentStateWriters:
     ) -> None:
         """The instrument can fail: every write in a planted
         reconciliation that never heard from the client is reported,
-        aliased or not, and none is attributed to a handler."""
+        whichever way its alias was bound -- plain, annotated, walrus,
+        unpacked, or handed over as a ``DocumentStore`` parameter -- and
+        none is attributed to a handler."""
         planted = (
             "def reconcile(server, uri, text):\n"
             "    server.store.change(uri, text, version=2)\n"
@@ -3284,11 +3391,28 @@ class TestDocumentStateWriters:
             "    doc = s.get(uri)\n"
             "    doc.text = text\n"
             "    server.store = None\n"
+            "    typed: DocumentStore = server.store\n"
+            "    typed.change(uri, text, 3)\n"
+            "    annotated: dict[str, object] = server.analyses\n"
+            "    annotated.pop(uri)\n"
+            "    (walrus := server.analyses)[uri] = None\n"
+            "    walrus.clear()\n"
+            "    (held := server.store).close(uri)\n"
+            "    held.open(uri, text, 4)\n"
+            "    first, second = server.store, server.analyses\n"
+            "    first.change(uri, text, 5)\n"
+            "    second.update({})\n"
+            "    table |= {}\n"
+            "def hand_off(docs: DocumentStore, uri, text):\n"
+            "    docs.change(uri, text, 6)\n"
         )
         writes = _document_state_writes(planted, "vera/lsp/planted.py")
         assert [(w.line, w.kind) for w in writes] == [
             (2, "store"), (4, "store"), (6, "analyses"), (7, "publish"),
             (9, "document"), (10, "state"),
+            (12, "store"), (14, "analyses"), (15, "analyses"),
+            (16, "analyses"), (17, "store"), (18, "store"), (20, "store"),
+            (21, "analyses"), (22, "analyses"), (24, "store"),
         ]
         handlers, publisher, constructor = self._live_scopes()
         assert not any(
@@ -4098,6 +4222,159 @@ class TestAddEffect:
         server = _FakeServer()
         with pytest.raises(ValueError, match="open the document"):
             _settle(server, lambda: add_effect(server, URI, "f", "Async"))
+
+
+# =====================================================================
+# #1444 — no edit is verified against, or derived from, a stale analysis
+# =====================================================================
+
+def _refusal(server: _FakeServer, script: Callable[[], Any]) -> str:
+    """The message of the ``ValueError`` *script* is refused with, or
+    ``""`` if it is not refused -- read after the fact, so a cell states
+    what happened to the buffer before it states why."""
+    try:
+        _settle(server, script)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def _stale_after_typing(server: _FakeServer, typed: str) -> None:
+    """The user types *typed* and its analysis raises: the handler has
+    already written the store, so the store holds *typed* at the next
+    version while the analysis table still describes the text before."""
+    server.unanalysable.add(typed)
+    with pytest.raises(RuntimeError, match="analysis of"):
+        server.type(URI, typed)
+    doc = server.store.get(URI)
+    assert doc is not None and doc.text == typed
+    assert server.analyses[URI].text != typed
+
+
+#: Each edit workflow, as (the document it runs on, the call).  The two
+#: derived ones build their candidate FROM the canonical analysis's text;
+#: proposeEdit takes its text whole but is gated against that analysis.
+STALE_CASES = {
+    "strengthenContract": (CALL_BASE, lambda s: strengthen_contract(
+        s, URI, "callee", "ensures", "@Nat.0 >= 0",
+    )),
+    "addEffect": (DIAMOND, lambda s: add_effect(s, URI, "target", "Async")),
+    "proposeEdit": (SPEC_BASE, lambda s: apply_propose_edit(
+        s, URI, SHIFTED_BASE,
+    )),
+    "proposeEdit, forced": (SPEC_BASE, lambda s: apply_propose_edit(
+        s, URI, SHIFTED_BASE, force=True,
+    )),
+}
+
+
+class TestNoEditFromAnAnalysisTheBufferHasLeft:
+    """#1444 review: the store and the analysis table are written one
+    after the other by the same ``didChange`` handler, so an analysis
+    that RAISES leaves the table describing the text before the buffer's
+    current one.  An edit built from that analysis -- a contract spliced
+    into it, effect rows rewritten in it -- and guarded by the store's
+    version passes the client's version check and overwrites the newer
+    text.  An edit gated against it is judged against a text the client
+    no longer has.  So every workflow refuses, and sends nothing, unless
+    the analysis it reads describes the open document's text."""
+
+    @pytest.mark.parametrize("case", list(STALE_CASES))
+    def test_an_edit_on_a_stale_analysis_is_refused(self, case: str) -> None:
+        source, call = STALE_CASES[case]
+        server = _FakeServer("accept")
+        server.open(URI, source, version=1)
+        typed = "-- the user's newest line\n" + source
+        _stale_after_typing(server, typed)
+        refusal = _refusal(server, lambda: call(server))
+        assert server.buffers[URI] == (typed, 11)  # the newest line stands
+        assert server.requests == []
+        assert _doc_state(server) == (typed, 11)
+        assert "does not describe the open document" in refusal
+
+    def test_a_no_op_verdict_is_not_read_off_a_stale_analysis(self) -> None:
+        """addEffect answers "nothing to do" without building an edit,
+        and that answer is read off the analysis too: here the user has
+        just taken the row away, and the stale analysis still shows it.
+        The workflow refuses before it reads anything, rather than tell
+        the agent the row is already there."""
+        source = _fn("f", "@Nat.0", effects="<Async>")
+        server = _FakeServer("accept")
+        server.open(URI, source, version=1)
+        typed = source.replace("effects(<Async>)", "effects(pure)")
+        _stale_after_typing(server, typed)
+        refusal = _refusal(
+            server, lambda: add_effect(server, URI, "f", "Async"),
+        )
+        assert "does not describe the open document" in refusal
+        assert server.requests == []
+
+    def test_an_open_document_never_analysed_is_refused(self) -> None:
+        """The first analysis raised: the document is open and has no
+        analysis at all, so there is no baseline to gate against -- not
+        an empty one, which would judge every obligation as new."""
+        server = _FakeServer("accept")
+        server.unanalysable.add(SPEC_BASE)
+        with pytest.raises(RuntimeError, match="analysis of"):
+            server.open(URI, SPEC_BASE, version=1)
+        assert URI not in server.analyses
+        refusal = _refusal(
+            server, lambda: apply_propose_edit(server, URI, SHIFTED_BASE),
+        )
+        assert server.requests == []
+        assert server.buffers[URI] == (SPEC_BASE, 1)
+        assert "does not describe the open document" in refusal
+
+    def test_a_candidate_derived_from_another_text_is_refused(self) -> None:
+        """The derivation is pinned on its own: a candidate built from a
+        text that is not the open document's is refused even when the
+        analysis in the table is current -- the case a workflow that
+        awaited between its splice and its request would create."""
+        server = _FakeServer("accept")
+        server.open(URI, SPEC_BASE, version=1)
+        refusal = _refusal(server, lambda: apply_propose_edit(
+            server, URI, SHIFTED_BASE, base_text=TYPED_BASE,
+        ))
+        assert server.requests == []
+        assert _doc_state(server) == (SPEC_BASE, 1)
+        assert "no longer the open document" in refusal
+
+    @pytest.mark.parametrize("case", ["strengthenContract", "addEffect"])
+    def test_a_candidate_is_refused_once_the_document_moves_past_it(
+        self, case: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The two derived workflows pass the text they built from, so
+        the derivation is checked where the edit is sent, not only where
+        it was built.  Modelled by a ``didChange`` -- one that analyses
+        cleanly, leaving nothing stale in the table -- landing between
+        the build and the request: the candidate is then made from a text
+        the buffer has left, and must not go out under the new version."""
+        import vera.lsp.workflows as workflows
+
+        source, call = STALE_CASES[case]
+        server = _FakeServer("accept")
+        server.open(URI, source, version=1)
+        typed = "-- the user's newest line\n" + source
+        send_for_real = workflows.apply_propose_edit
+
+        def moved_first(*args: Any, **kwargs: Any) -> Any:
+            server.type(URI, typed)  # analyses cleanly: nothing is stale
+            return send_for_real(*args, **kwargs)
+
+        monkeypatch.setattr(workflows, "apply_propose_edit", moved_first)
+        refusal = _refusal(server, lambda: call(server))
+        assert server.buffers[URI] == (typed, 11)
+        assert server.requests == []
+        assert "no longer the open document" in refusal
+
+    def test_a_current_analysis_is_not_refused(self) -> None:
+        """Premise: the same calls on a document whose analysis is
+        current go through, so the refusals above are about staleness."""
+        for case, (source, call) in STALE_CASES.items():
+            server = _FakeServer("accept")
+            server.open(URI, source, version=1)
+            out = _settle(server, lambda: call(server))
+            assert out["client"] == "applied", (case, out)
 
 
 # =====================================================================
