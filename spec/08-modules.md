@@ -402,7 +402,7 @@ Two `where` helpers named `h` in one block are the shape the rule refuses. The
 second is reported (E184) at its own declaration, naming the first's line, and
 the call in `f` resolves to the first:
 
-<!-- vera:skip-check category="WRONG" reason="two where helpers of one name in one block: E184 at the second" -->
+<!-- vera:skip-check category="WRONG" code="E184" reason="two where helpers of one name in one block: E184 at the second" -->
 ```
 private fn f(@Int -> @Int)
   requires(true)

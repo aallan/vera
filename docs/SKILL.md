@@ -1852,7 +1852,7 @@ private forall<T> fn identity(@T -> @T)
 
 ## Abilities (Type Constraints)
 
-Abilities constrain type variables in generic functions. An ability declares operations that a type must support:
+Abilities constrain type variables in generic functions. An ability declares operations that a type must support. `Eq` is one of the four built-in abilities, so the block below only shows its interface: a program never declares it, and declaring a built-in ability is an error (E185).
 
 ```vera
 ability Eq<T> {

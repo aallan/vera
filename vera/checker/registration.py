@@ -325,6 +325,7 @@ class RegistrationMixin:
             # cascading arity errors from the invalid declaration.
             if (isinstance(tld.decl, ast.EffectDecl)
                     and self._check_builtin_effect_redeclaration(tld.decl)):
+                self._refused_decl_ids.add(id(tld.decl))
                 continue
             # #1433: and for abilities (E185).  The built-in stays canonical:
             # code generation compiles `eq`, `compare`, `hash` and `show`
@@ -876,6 +877,7 @@ class RegistrationMixin:
                     op, noun="operation", name=op.name,
                     scope=f"{kind} '{decl.name}'", first=first,
                 )
+                self._refused_decl_ids.add(id(op))
                 continue
             distinct.append(op)
         return distinct
@@ -933,6 +935,7 @@ class RegistrationMixin:
                     f"'{op.name}(...)' always reaches the built-in."
                 ),
             )
+            self._refused_decl_ids.add(id(op))
             return False
         prior = self._ns_ability_ops.get(op.name)
         if prior is not None:
@@ -950,6 +953,7 @@ class RegistrationMixin:
                     f"could never be called."
                 ),
             )
+            self._refused_decl_ids.add(id(op))
             return False
         self._ns_ability_ops[op.name] = (decl.name, op)
         return True
@@ -1445,6 +1449,7 @@ class RegistrationMixin:
                     ctor, noun="constructor", name=ctor.name,
                     scope=f"data type '{decl.name}'", first=first_ctor,
                 )
+                self._refused_decl_ids.add(id(ctor))
                 continue
             self._check_reserved_decl_name(
                 ctor, ctor.name, "constructor", prelude_occupies=False,
@@ -1459,6 +1464,7 @@ class RegistrationMixin:
                 # not land in `env.constructors` — nothing downstream should
                 # be able to resolve a name the checker has just rejected
                 # (PR #1404 review).
+                self._refused_decl_ids.add(id(ctor))
                 continue
             field_types = None
             if ctor.fields is not None:

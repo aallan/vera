@@ -427,12 +427,15 @@ class TypeChecker(
         # the hint).  Parent TYPE params stay in scope through the loop.
         self._where_helper_outer_tnames: list[frozenset[str]] = []
         # ids of declarations registration refused: a FnDecl redefining a
-        # built-in (E151, #815), an ability redeclaring a built-in one
-        # (E185), and the surplus declaration of a name its namespace
-        # already holds (E184, #1433).  None is registered — the built-in,
-        # or the first declaration, stays the one every use resolves to — so
-        # none holds a name, and the check phase skips them too: re-checking
-        # would resolve their own bodies against that entry and emit bogus
+        # built-in (E151, #815), an effect or ability redeclaring a built-in
+        # one (E152, E185), the surplus declaration of a name its namespace
+        # already holds (E184, #1433), and a refused MEMBER of a declaration
+        # (a surplus operation or constructor, an operation named after a
+        # built-in ability's, a constructor named after a special-cased
+        # type).  None is registered — the built-in, or the first
+        # declaration, stays the one every use resolves to — so none holds a
+        # name, and the check phase skips them too: re-checking would
+        # resolve their own bodies against that entry and emit bogus
         # secondary diagnostics.
         self._refused_decl_ids: set[int] = set()
         # ids of functions that ARE registered, under names of their own,
@@ -763,6 +766,10 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for op in decl.operations:
+            # #1433: an operation registration refused (E184, E185) is not
+            # checked, like any other refused declaration.
+            if id(op) in self._refused_decl_ids:
+                continue
             for param_te in op.param_types:
                 self._check_refinement_predicates(param_te)
             self._check_refinement_predicates(op.return_type)
@@ -794,7 +801,8 @@ class TypeChecker(
             for tv in decl.type_params:
                 self.env.type_params[tv] = TypeVar(tv)
         for ctor in decl.constructors:
-            if ctor.fields is not None:
+            # #1433: nor is a constructor registration refused (E184, E158).
+            if ctor.fields is not None and id(ctor) not in self._refused_decl_ids:
                 for field_te in ctor.fields:
                     self._check_refinement_predicates(field_te)
         self.env.type_params = saved_field_params

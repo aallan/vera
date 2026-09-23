@@ -1312,6 +1312,50 @@ def test_a_renamed_binder_takes_its_constraint_with_it() -> None:
         helper.forall_vars), (helper.forall_vars, helper.forall_constraints)
 
 
+# Registration refuses a member — an operation or a constructor — and the
+# check phase must not then type its signature, or a refused member reports
+# a second error the program does not owe.  Each refused member below
+# carries a refinement predicate that is not Bool, so checking it would add
+# an E126 beside the refusal.
+_NOT_BOOL = "{ @Int | 5 }"
+_REFUSED_MEMBER_CASES = {
+    "effect-operation-twice": (
+        f"effect E {{\n  op a(Int -> Int);\n  op a({_NOT_BOOL} -> Int);\n}}",
+        "E184"),
+    "ability-operation-twice": (
+        f"ability Sz<T> {{\n  op size(T -> Int);\n"
+        f"  op size({_NOT_BOOL} -> Int);\n}}",
+        "E184"),
+    "operation-in-two-abilities": (
+        f"ability Aa<T> {{\n  op sz(T -> Int);\n}}\n\n"
+        f"ability Bb<T> {{\n  op sz({_NOT_BOOL} -> Int);\n}}",
+        "E184"),
+    "operation-named-like-a-built-in": (
+        f"ability Mine<T> {{\n  op eq({_NOT_BOOL}, T -> Bool);\n}}",
+        "E185"),
+    "constructor-twice": (
+        f"public data D {{\n  A(Int),\n  A({_NOT_BOOL})\n}}",
+        "E184"),
+    "constructor-named-like-a-special-cased-type": (
+        f"public data D {{\n  Tuple({_NOT_BOOL})\n}}",
+        "E158"),
+    "built-in-effect-redeclared": (
+        f"effect IO {{\n  op print({_NOT_BOOL} -> Unit);\n}}",
+        "E152"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_REFUSED_MEMBER_CASES))
+def test_the_check_phase_skips_what_registration_refused(
+    tmp_path: Path, case: str,
+) -> None:
+    decls, code = _REFUSED_MEMBER_CASES[case]
+    errors = _check(tmp_path, {"main.vera": decls + "\n\n" + _main("1")})
+    assert [d.error_code for d in errors] == [code], (
+        case, [(d.error_code, d.location.line, d.description)
+               for d in errors])
+
+
 # A helper whose OWN name is a built-in's is refused (E151) and holds no
 # name.  A function that merely CONTAINS one is registered under its own
 # name: only its body goes unchecked, since a call to the stripped helper

@@ -2617,7 +2617,7 @@ Returns the value of the named attribute if the node is an `HtmlElement` with th
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
-<!-- vera:no-run category="non-scalar-entry" reason="its exported functions take Array, T parameters" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185 E185" reason="the built-in Eq and Ord abilities' interfaces, shown as declarations beside a use; a program declaring either is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2660,6 +2660,7 @@ Four abilities are built into the language. Each is auto-satisfied for primitive
 
 **Eq\<T\>** — Equality comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Eq ability's interface; a program declaring it is refused" -->
 ```
 ability Eq<T> {
   op eq(T, T -> Bool);
@@ -2672,6 +2673,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constr
 
 **Ord\<T\>** — Ordering comparison.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Ord ability's interface; a program declaring it is refused" -->
 ```
 ability Ord<T> {
   op compare(T, T -> Ordering);
@@ -2694,6 +2696,7 @@ Satisfied by: Int, Nat, Float64, Byte, String — exactly the orderable types on
 
 **Hash\<T\>** — Hashing.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Hash ability's interface; a program declaring it is refused" -->
 ```
 ability Hash<T> {
   op hash(T -> Int);
@@ -2706,6 +2709,7 @@ Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and composite types �
 
 **Show\<T\>** — String representation.
 
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E185" reason="the built-in Show ability's interface; a program declaring it is refused" -->
 ```
 ability Show<T> {
   op show(T -> String);
