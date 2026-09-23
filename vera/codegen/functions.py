@@ -1206,7 +1206,7 @@ class FunctionCompilationMixin:
         # review).  When this one reports a failed lift the function is
         # dropped while the FIRST pass's lifted closures stay committed, so
         # the module carries them as dead code.  Measured on a stubbed
-        # second-pass failure: `$anon_0`/`$anon_1` and their `elem` entries
+        # second-pass failure: `$rt.anon_0`/`$rt.anon_1` and their `elem` entries
         # remain, contiguous and still aligned with their `closure_id`s, the
         # parent and its callers drop with the usual [E602]/[E620] chain, and
         # the module VALIDATES — so the cost is output size in a path no
@@ -1229,7 +1229,7 @@ class FunctionCompilationMixin:
         # lowering an ``ensures(...)`` predicate, so the import / memory / GC
         # declaration was omitted and the orphaned `call`/`global.get` failed
         # WAT compilation (#808 for `vera.overflow_trap`; #823 for the other
-        # host-import families and `$alloc`/`$gc_sp`).  Nothing between the old
+        # host-import families and `$rt.alloc`/`$gc_sp`).  Nothing between the old
         # position and here reads these flags — they are consumed only at module
         # assembly — so the move is purely additive in correctness.
         if ctx.needs_alloc:
@@ -1289,7 +1289,7 @@ class FunctionCompilationMixin:
         #    epilogue (restore ``$gc_sp``, unwind shadow-stack
         #    pointer slots) runs only for allocating functions.
         #    ``return_call`` would leak shadow-stack slots once per
-        #    iteration and eventually trap on the next ``$alloc``.
+        #    iteration and eventually trap on the next ``$rt.alloc``.
         #    Pre-#549 this fell to the same revert-to-call path as
         #    postcondition-bearing functions; post-#549 we instead
         #    PATCH every ``return_call`` site to restore ``$gc_sp``

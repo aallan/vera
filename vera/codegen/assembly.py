@@ -129,8 +129,8 @@ class AssemblyMixin:
             # wrap-as-ADT scheme.  Any of them being used flips
             # the wrap-table flag — ``assembly.py`` then allocates
             # the 64 KiB side-table region, emits
-            # ``$register_wrapper``, adds Phase 2c to
-            # ``$gc_collect``, and (below, after all three blocks)
+            # ``$rt.register_wrapper``, adds Phase 2c to
+            # ``$rt.gc_collect``, and (below, after all three blocks)
             # imports the ``host_decref_handle`` helper.
             self._needs_wrap_table = True
 
@@ -177,7 +177,7 @@ class AssemblyMixin:
 
         # #573: emit ``host_decref_handle`` import after the
         # gating blocks above have all run.  Phase 2c of
-        # ``$gc_collect`` calls this for each unmarked wrapper.
+        # ``$rt.gc_collect`` calls this for each unmarked wrapper.
         # Must come after the per-type imports so the WAT
         # ``(import "vera" ...)`` declarations stay grouped by
         # subsystem, but before the GC infrastructure is emitted
@@ -412,7 +412,7 @@ class AssemblyMixin:
 
         # Memory (for string data and heap)
         if self._needs_memory or self.string_pool.has_strings():
-            parts.append('  (memory (export "memory") 1)')
+            parts.append('  (memory (export "vera.memory") 1)')
 
         # Data section (string constants)
         for value, offset, _length in self.string_pool.entries():
@@ -472,7 +472,7 @@ class AssemblyMixin:
                     "or @Bool value on the shadow stack from a heap pointer"
                 )
             parts.append(
-                f"  (global $heap_ptr (export \"heap_ptr\") "
+                f"  (global $heap_ptr (export \"vera.heap_ptr\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
             )
             # #692: $gc_sp and $gc_stack_limit are exported so host
@@ -481,7 +481,7 @@ class AssemblyMixin:
             # stack across allocations.  Without that, a Python-held
             # `arr_ptr` from `write_html` is invisible to the
             # conservative GC scan; if a sub-walk triggers
-            # `$gc_collect` the block gets reclaimed and the next
+            # `$rt.gc_collect` the block gets reclaimed and the next
             # write scribbles into freed memory → free-list
             # corruption → trap.  Same #570/#515/#593 bug class but
             # on the host side.  $gc_sp is (mut) — the host
@@ -489,7 +489,7 @@ class AssemblyMixin:
             # $gc_stack_limit is immutable — the host reads it to
             # detect overflow before pushing.
             parts.append(
-                f"  (global $gc_sp (export \"gc_sp\") (mut i32) "
+                f"  (global $gc_sp (export \"vera.gc_sp\") (mut i32) "
                 f"(i32.const {gc_stack_base}))"
             )
             parts.append(
@@ -498,7 +498,7 @@ class AssemblyMixin:
             )
             gc_stack_limit = gc_stack_base + gc_stack_size
             parts.append(
-                f"  (global $gc_stack_limit (export \"gc_stack_limit\") "
+                f"  (global $gc_stack_limit (export \"vera.gc_stack_limit\") "
                 f"i32 (i32.const {gc_stack_limit}))"
             )
             parts.append(
@@ -531,7 +531,7 @@ class AssemblyMixin:
             # #1382: origin of the transient object-base bitmap, rebuilt
             # at the top of every collection (see ``_emit_gc_collect``
             # Phase 0).  It lives immediately above ``$heap_ptr`` — scratch
-            # that the next ``$alloc`` bump is free to overwrite, because
+            # that the next ``$rt.alloc`` bump is free to overwrite, because
             # the bitmap is only live for the duration of one collection.
             parts.append(
                 "  (global $gc_bm_base (mut i32) (i32.const 0))"
@@ -553,7 +553,7 @@ class AssemblyMixin:
             parts.append(self._emit_alloc())
             if wrap_enabled:
                 parts.append(self._emit_register_wrapper())
-                # #573: export $register_wrapper so host helpers
+                # #573: export $rt.register_wrapper so host helpers
                 # (JSON / HTML parsers in `vera/codegen/api.py`)
                 # can register wrappers for Map allocations they
                 # build internally — otherwise JObject /
@@ -562,8 +562,8 @@ class AssemblyMixin:
                 # at the WASM layer (which now expects wrapper
                 # pointers, not raw handles, on the operand stack).
                 parts.append(
-                    '  (export "register_wrapper" '
-                    '(func $register_wrapper))'
+                    '  (export "vera.register_wrapper" '
+                    '(func $rt.register_wrapper))'
                 )
             parts.append(self._emit_gc_base_bitmap_helpers())
             parts.append(self._emit_gc_collect())
@@ -586,7 +586,7 @@ class AssemblyMixin:
                 f"(mut i32) (i32.const 0))"
             )
 
-        # Export $alloc when host functions need to allocate WASM memory,
+        # Export $rt.alloc when host functions need to allocate WASM memory,
         # or when the heap allocator is compiled in (e.g. String params need
         # allocation for CLI argument passing)
         if (
@@ -604,7 +604,7 @@ class AssemblyMixin:
             or self._db_ops_used
             or self._needs_alloc
         ):
-            parts.append('  (export "alloc" (func $alloc))')
+            parts.append('  (export "vera.alloc" (func $rt.alloc))')
 
         # Closure type declarations (for call_indirect)
         for sig_content, sig_name in self._closure_sigs.items():
@@ -627,21 +627,21 @@ class AssemblyMixin:
         for closure_wat in self._closure_fns_wat:
             parts.append(closure_wat)
 
-        # #773: generated structural-Eq helper functions ($eq_<type>, plus the
-        # shared $eq_String content comparator).  Deduped by name across the
+        # #773: generated structural-Eq helper functions ($rt.eq_<type>, plus the
+        # shared $rt.eq_String content comparator).  Deduped by name across the
         # whole module; sorted for deterministic output.
         for _name, eq_wat in sorted(self._adt_eq_helpers.items()):
             parts.append(eq_wat)
 
         # #1172: structural-size helpers for ADT decreases measures
-        # ($dec_size_<T>) — same dedupe-by-name/sorted discipline as the
+        # ($rt.dec_size_<T>) — same dedupe-by-name/sorted discipline as the
         # Eq helpers above.
         for _name, size_wat in sorted(self._dec_rank_helpers.items()):
             if size_wat:
                 parts.append(size_wat)
 
-        # #924: generated recursive show/hash helper functions ($show_<type> /
-        # $hash_<type>).  Deduped by name across the whole module; sorted for
+        # #924: generated recursive show/hash helper functions ($rt.show_<type> /
+        # $rt.hash_<type>).  Deduped by name across the whole module; sorted for
         # deterministic output.
         for _name, sh_wat in sorted(self._show_hash_helpers.items()):
             parts.append(sh_wat)
@@ -654,18 +654,18 @@ class AssemblyMixin:
     # -----------------------------------------------------------------
 
     def _emit_alloc(self) -> str:
-        """Emit the $alloc function with GC headers, free list, and grow.
+        """Emit the $rt.alloc function with GC headers, free list, and grow.
 
-        $alloc(payload_size) -> ptr  (ptr points past the 4-byte header)
+        $rt.alloc(payload_size) -> ptr  (ptr points past the 4-byte header)
 
         Algorithm:
           1. Try the free list (first-fit).
           2. Bump-allocate with a 4-byte object header.
-          3. If OOM: run $gc_collect, retry free list, else memory.grow.
+          3. If OOM: run $rt.gc_collect, retry free list, else memory.grow.
 
         Diagnostic mode: when ``VERA_EAGER_GC=1`` (case-insensitive,
         also accepts ``true``/``yes``/``on``) is set in the environment
-        at compile time, emit ``call $gc_collect`` as the first
+        at compile time, emit ``call $rt.gc_collect`` as the first
         instruction of the function body — immediately after the
         ``(local ...)`` declarations, since WAT requires locals at the
         top — so a collection runs on EVERY allocation.  This converts
@@ -680,12 +680,12 @@ class AssemblyMixin:
             "    ;; VERA_EAGER_GC=1 — force GC on every alloc to surface\n"
             "    ;; missing shadow-stack roots (debugging knob, see\n"
             "    ;; AssemblyMixin._emit_alloc docstring).\n"
-            "    call $gc_collect\n"
+            "    call $rt.gc_collect\n"
             if eager
             else ""
         )
         return (
-            "  (func $alloc (param $size i32) (result i32)\n"
+            "  (func $rt.alloc (param $size i32) (result i32)\n"
             "    (local $total i32)\n"
             "    (local $ptr i32)\n"
             "    (local $prev i32)\n"
@@ -780,7 +780,7 @@ class AssemblyMixin:
             "    i32.gt_u\n"
             "    if\n"
             "      ;; OOM — try GC\n"
-            "      call $gc_collect\n"
+            "      call $rt.gc_collect\n"
             "      ;; Retry free list after GC\n"
             "      i32.const 0\n"
             "      local.set $prev\n"
@@ -949,7 +949,7 @@ class AssemblyMixin:
         )
 
     def _emit_register_wrapper(self) -> str:
-        """Emit ``$register_wrapper(ptr, kind, handle)`` for #573.
+        """Emit ``$rt.register_wrapper(ptr, kind, handle)`` for #573.
 
         Appends a 16-byte entry to the wrap-table region:
 
@@ -961,7 +961,7 @@ class AssemblyMixin:
             offset 12: reserved (zero) — alignment / future use
 
         On overflow (4 096 simultaneously-live wrappers between
-        collections) the slow path triggers ``$gc_collect``, which
+        collections) the slow path triggers ``$rt.gc_collect``, which
         runs Phase 2c compaction — survivors are kept in place,
         dead entries are dropped, ``$gc_wrap_ptr`` is reset to the
         compacted end.  After the collect the overflow check is
@@ -971,7 +971,7 @@ class AssemblyMixin:
         ``gc_wraptable_size`` is the cure).
 
         The slow path roots the in-flight wrapper on the shadow
-        stack *before* calling ``$gc_collect`` because the wrapper
+        stack *before* calling ``$rt.gc_collect`` because the wrapper
         isn't in the wrap-table yet (that's what we're trying to
         do) and its body has just been allocated by the caller —
         without rooting, Phase 2b would mark it unreachable and
@@ -982,10 +982,10 @@ class AssemblyMixin:
         doesn't drift across calls.
 
         The destructor side (firing ``host_decref_handle`` for
-        unmarked wrappers) lives in ``$gc_collect`` Phase 2c.
+        unmarked wrappers) lives in ``$rt.gc_collect`` Phase 2c.
         """
         return (
-            "  (func $register_wrapper "
+            "  (func $rt.register_wrapper "
             "(param $ptr i32) (param $kind i32) (param $handle i32)\n"
             "    ;; Overflow check: try compaction first, only\n"
             "    ;; trap if still full afterwards (#573 / #579).\n"
@@ -1019,7 +1019,7 @@ class AssemblyMixin:
             "      global.set $gc_sp\n"
             "      ;; Compact: Phase 2c walks the wrap-table,\n"
             "      ;; drops unmarked entries, resets $gc_wrap_ptr.\n"
-            "      call $gc_collect\n"
+            "      call $rt.gc_collect\n"
             "      ;; Pop the temporary root.\n"
             "      global.get $gc_sp\n"
             "      i32.const 4\n"
@@ -1059,7 +1059,7 @@ class AssemblyMixin:
         )
 
     def _emit_phase_2c(self) -> str:
-        """Emit Phase 2c of ``$gc_collect`` for #573.
+        """Emit Phase 2c of ``$rt.gc_collect`` for #573.
 
         Walks the wrap-table side index of host-handle wrapper
         objects.  After Phase 2b has completed marking, every
@@ -1157,7 +1157,7 @@ class AssemblyMixin:
         )
 
     def _emit_gc_base_bitmap_helpers(self) -> str:
-        """Emit ``$gc_set_base`` / ``$gc_is_base`` for #1382.
+        """Emit ``$rt.gc_set_base`` / ``$rt.gc_is_base`` for #1382.
 
         The conservative mark phase classifies a word as a heap pointer
         from two cheap tests — heap range and ``(val - $gc_heap_start) &
@@ -1173,7 +1173,7 @@ class AssemblyMixin:
         The fix is to make the *write* conditional on the candidate
         actually being an object base.  Phase 1 already walks every
         object along the exact ``align_up(size + 4, 8)`` chain that
-        ``$alloc`` bumps by, so it knows every valid body address for
+        ``$rt.alloc`` bumps by, so it knows every valid body address for
         free; it records them here, one bit per 8-byte granule, and both
         the Phase 2 shadow-stack seed and the Phase 2b transitive scan
         consult the bit before enqueueing (and therefore before any mark
@@ -1198,7 +1198,7 @@ class AssemblyMixin:
             "    i32.add\n"
         )
         return (
-            "  (func $gc_set_base (param $p i32)\n"
+            "  (func $rt.gc_set_base (param $p i32)\n"
             "    (local $bi i32)\n"
             "    (local $ba i32)\n"
             + index
@@ -1214,7 +1214,7 @@ class AssemblyMixin:
             "    i32.or\n"
             "    i32.store8\n"
             "  )\n"
-            "  (func $gc_is_base (param $p i32) (result i32)\n"
+            "  (func $rt.gc_is_base (param $p i32) (result i32)\n"
             "    (local $bi i32)\n"
             + index
             + "    i32.load8_u\n"
@@ -1232,19 +1232,19 @@ class AssemblyMixin:
         )
 
     def _emit_gc_assert_base(self) -> str:
-        """Emit ``$gc_assert_base`` — the ``VERA_GC_CHECK_MARKS`` invariant.
+        """Emit ``$rt.gc_assert_base`` — the ``VERA_GC_CHECK_MARKS`` invariant.
 
         Traps unless ``$p`` is a real object body address, established the
         only way that does not itself depend on the bitmap: by walking the
         heap from ``$gc_heap_start`` along the same
-        ``align_up(size + 4, 8)`` chain ``$alloc`` bumps by.  Deliberately
+        ``align_up(size + 4, 8)`` chain ``$rt.alloc`` bumps by.  Deliberately
         base-independent, so the same assertion can be dropped into a
         pre-#1382 collector and will fire there — which is what makes it a
         red-first check rather than a restatement of the fix.  O(heap) per
         mark store: a debugging knob, never production.
         """
         return (
-            "\n  (func $gc_assert_base (param $p i32)\n"
+            "\n  (func $rt.gc_assert_base (param $p i32)\n"
             "    (local $w i32)\n"
             "    global.get $gc_heap_start\n"
             "    local.set $w\n"
@@ -1280,7 +1280,7 @@ class AssemblyMixin:
         )
 
     def _emit_gc_collect(self) -> str:
-        """Emit the $gc_collect function: mark-sweep garbage collector.
+        """Emit the $rt.gc_collect function: mark-sweep garbage collector.
 
         Three phases (plus Phase 2c when the wrap table is enabled):
           1. Clear all mark bits in the heap.
@@ -1302,7 +1302,7 @@ class AssemblyMixin:
         )
         # Worklist region sits right after shadow stack, sized to match
         return (
-            "  (func $gc_collect\n"
+            "  (func $rt.gc_collect\n"
             "    (local $ptr i32)\n"
             "    (local $header i32)\n"
             "    (local $obj_size i32)\n"
@@ -1414,7 +1414,7 @@ class AssemblyMixin:
             "      local.get $ptr\n"
             "      i32.const 4\n"
             "      i32.add\n"
-            "      call $gc_set_base\n"
+            "      call $rt.gc_set_base\n"
             "      ;; Advance: ptr += align_up(size + 4, 8)\n"
             "      local.get $ptr\n"
             "      i32.load\n"
@@ -1448,7 +1448,7 @@ class AssemblyMixin:
             "      ;; #578 invariant (do not weaken without revisiting\n"
             "      ;; the spurious-retention proof): wrapper-handle\n"
             "      ;; fields are stored at body+4 with bit 31 set\n"
-            "      ;; (`handle | 0x80000000`).  The $alloc heap-ceiling\n"
+            "      ;; (`handle | 0x80000000`).  The $rt.alloc heap-ceiling\n"
             "      ;; guard enforces heap_ptr < 0x80000000, so any\n"
             "      ;; tagged value (>= 2 GiB) fails `val < heap_ptr`\n"
             "      ;; below — they are structurally disjoint from\n"
@@ -1485,7 +1485,7 @@ class AssemblyMixin:
             "          ;; candidate, so a false positive that merely looks\n"
             "          ;; aligned would corrupt whatever it points into.\n"
             "          local.get $val\n"
-            "          call $gc_is_base\n"
+            "          call $rt.gc_is_base\n"
             "          i32.and\n"
             "          if\n"
             "            ;; Push onto worklist.  #348: pre-fix this\n"
@@ -1573,7 +1573,7 @@ class AssemblyMixin:
             "      end\n"
             + (
                 "      local.get $obj_ptr\n"
-                "      call $gc_assert_base\n"
+                "      call $rt.gc_assert_base\n"
                 if flag_enabled("VERA_GC_CHECK_MARKS")
                 else ""
             )
@@ -1637,7 +1637,7 @@ class AssemblyMixin:
             "            ;; candidate, so a false positive that merely looks\n"
             "            ;; aligned would corrupt whatever it points into.\n"
             "            local.get $val\n"
-            "            call $gc_is_base\n"
+            "            call $rt.gc_is_base\n"
             "            i32.and\n"
             "            if\n"
             "              ;; Not already marked? Push to worklist.\n"

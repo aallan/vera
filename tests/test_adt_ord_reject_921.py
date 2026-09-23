@@ -41,7 +41,7 @@ operands.  ``String`` IS orderable (spec §4.5, lexicographic), so it must be
 pair, both wrong-order AND an i32/i64 type mismatch that crashed WASM
 translation (``vera check`` / ``vera verify`` were green — the verifier already
 models String ordering via Z3 ``StringSort``).  Fixed by lowering String
-ordering to a byte-wise three-way ``$cmp_String`` helper (proper-prefix-is-less,
+ordering to a byte-wise three-way ``$rt.cmp_String`` helper (proper-prefix-is-less,
 matching Z3), so ``vera verify`` and ``vera run`` agree.  The
 ``TestStringOrdering927`` cases below WASM-crashed on the pre-fix compiler.
 """
@@ -634,7 +634,7 @@ public fn main(@Unit -> @Int)
     def test_string_order_ensures_verifies_and_runs(self) -> None:
         # SOUNDNESS differential: a TRUE string-order postcondition must
         # verify at Tier 1 (the verifier models String via Z3 StringSort) AND
-        # run without trapping — proving the WASM `$cmp_String` lowering agrees
+        # run without trapping — proving the WASM `$rt.cmp_String` lowering agrees
         # with Z3's ordering.
         src = """
 public fn apple_lt_banana(@Unit -> @Bool)

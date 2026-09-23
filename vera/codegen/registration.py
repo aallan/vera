@@ -132,8 +132,8 @@ class RegistrationMixin:
         # `compile_program` (core.py) calls `_register_fn` for prelude
         # decls and then immediately moves the entry from
         # `_fn_source_map` to `_prelude_fn_names`; the resolver tags
-        # those as `<builtin>`.  Built-in WASM helpers (`$alloc`,
-        # `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) never go
+        # those as `<builtin>`.  Built-in WASM helpers (`$rt.alloc`,
+        # `$rt.gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) never go
         # through this method at all — they're emitted directly into WAT
         # by the assembly module.
         #

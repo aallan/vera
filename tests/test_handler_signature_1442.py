@@ -379,7 +379,7 @@ class TestTheDecodersAreBoundsChecked:
         A ``String`` return forces a ``memory`` export and pulls in no
         host imports, so the module instantiates with an empty import
         list.  ``_FakeCaller`` supplies the only two surfaces the
-        readers use: ``caller["memory"]`` and the ``_context()`` every
+        readers use: ``caller["vera.memory"]`` and the ``_context()`` every
         wasmtime memory accessor calls on a store-like object.
         """
         result = _compile_ok(MEMORY_PROBE)
@@ -387,11 +387,11 @@ class TestTheDecodersAreBoundsChecked:
         store = wasmtime.Store(engine)
         module = wasmtime.Module(engine, result.wasm_bytes)
         instance = wasmtime.Instance(store, module, [])
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
 
         class _FakeCaller:
             def __getitem__(self, key: str) -> object:
-                if key == "memory":
+                if key == "vera.memory":
                     return memory
                 raise KeyError(key)
 
@@ -403,7 +403,7 @@ class TestTheDecodersAreBoundsChecked:
     def test_the_predicate_refuses_directly(self) -> None:
         """``_require_readable`` decides without reading, so start here."""
         size, caller = self._memory_and_caller()
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         for offset, nbytes, why in [
             (size + 4096, 4, "past the end"),
             (size - 2, 4, "straddling the end"),
@@ -492,7 +492,7 @@ class TestTheDecodersAreBoundsChecked:
             with pytest.raises(wasmtime.WasmtimeError, match="out of bounds"):
                 _md_read_string(caller, ptr, length)
         # The control: an in-range pair still decodes the bytes that are there.
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         memory.write(caller, b"hello, guest", 0)
         assert _md_read_string(caller, 0, 12) == "hello, guest"
         assert _md_read_string(caller, size - 4, 4) is not None  # exactly at the limit

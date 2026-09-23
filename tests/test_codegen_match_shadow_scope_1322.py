@@ -14,7 +14,7 @@ Two independent causes, both measured at the branch point:
    copied into a local and rooted, then the arm's binding copied *that* local
    and rooted it again — two extra roots for an address the producer had
    already rooted (a parameter in the prologue, an allocation at its
-   ``$alloc``, a call's result in the callee's epilogue).  The shadow stack
+   ``$rt.alloc``, a call's result in the callee's epilogue).  The shadow stack
    roots ADDRESSES, so the copies bought the mark phase nothing.  The issue's
    pair repro — ``match @String.0 { @String -> … }`` recursing inside the arm,
    allocating nothing at all — cost three roots per frame and trapped past

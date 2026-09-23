@@ -71,10 +71,10 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         assert "global $heap_ptr" in result.wat
-        assert 'export "heap_ptr"' in result.wat
+        assert 'export "vera.heap_ptr"' in result.wat
 
     def test_alloc_function_emitted(self) -> None:
-        """When ADTs are declared, $alloc function appears in WAT."""
+        """When ADTs are declared, $rt.alloc function appears in WAT."""
         source = """\
 private data Color { Red, Green, Blue }
 
@@ -83,7 +83,7 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "func $alloc" in result.wat
+        assert "func $rt.alloc" in result.wat
         assert "global.get $heap_ptr" in result.wat
         assert "global.set $heap_ptr" in result.wat
 
@@ -96,7 +96,7 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         assert "heap_ptr" not in result.wat
-        assert "$alloc" not in result.wat
+        assert "$rt.alloc" not in result.wat
 
     def test_heap_ptr_starts_after_strings(self) -> None:
         """Heap pointer initial value should be after string data + GC regions."""
@@ -113,10 +113,10 @@ public fn main(@Unit -> @Unit)
         # heap_ptr should start at 5 + 81920 = 81925.  Match the
         # declaration and its initializer in a single substring so a
         # stale `i32.const 81925` elsewhere in the WAT (e.g. a future
-        # constant in $alloc that happens to land on the same value)
+        # constant in $rt.alloc that happens to land on the same value)
         # can't satisfy the assertion on its own.
         assert (
-            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81925))'
+            '(global $heap_ptr (export "vera.heap_ptr") (mut i32) (i32.const 81925))'
             in result.wat
         )
 
@@ -133,7 +133,7 @@ public fn f(-> @Int)
         # Combined declaration + initializer match (see
         # test_heap_ptr_starts_after_strings for the rationale).
         assert (
-            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81920))'
+            '(global $heap_ptr (export "vera.heap_ptr") (mut i32) (i32.const 81920))'
             in result.wat
         )
 
@@ -182,7 +182,7 @@ public fn f(-> @Int)
         assert "global $gc_free_head" in result.wat
 
     def test_gc_collect_emitted(self) -> None:
-        """Programs with ADTs emit the $gc_collect function."""
+        """Programs with ADTs emit the $rt.gc_collect function."""
         source = """\
 private data Flag { On, Off }
 
@@ -191,7 +191,7 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "func $gc_collect" in result.wat
+        assert "func $rt.gc_collect" in result.wat
 
     def test_gc_no_overhead_without_alloc(self) -> None:
         """Pure programs without ADTs emit no GC infrastructure."""
@@ -204,7 +204,7 @@ public fn f(-> @Int)
         assert "gc_sp" not in result.wat
         assert "gc_collect" not in result.wat
         assert "gc_stack_base" not in result.wat
-        assert "$alloc" not in result.wat
+        assert "$rt.alloc" not in result.wat
 
     def test_gc_shadow_push_after_constructor(self) -> None:
         """Constructor allocation is followed by shadow stack push."""
@@ -349,7 +349,7 @@ public fn f(@Unit -> @Int)
         assert _run(source, fn="f") == 42
 
     def test_gc_collect_bounds_check_against_heap_ptr(self) -> None:
-        """Regression for #515: $gc_collect must bound the conservative
+        """Regression for #515: $rt.gc_collect must bound the conservative
         scan against $heap_ptr.
 
         The conservative-GC worklist push in Phase 2 accepts a shadow
@@ -360,7 +360,7 @@ public fn f(@Unit -> @Int)
         Conway-style code) can satisfy all three, in which case the
         marker reads garbage as obj_size and walks $obj_ptr+scan_ptr
         past $heap_ptr, trapping at the linear-memory boundary inside
-        $gc_collect itself.
+        $rt.gc_collect itself.
 
         Two layers of defence are now emitted:
           - Layer 2 (#1382): the candidate must have its bit set in the
@@ -400,7 +400,7 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         wat = result.wat
-        assert "func $gc_collect" in wat
+        assert "func $rt.gc_collect" in wat
 
         # Helper: extract the next N non-comment, non-blank tokens of
         # WAT after `marker_text`.  Comments start with `;;` (line) or
@@ -433,10 +433,10 @@ public fn f(-> @Int)
             return " ".join(tokens[:n])
 
         # Layer 2 (#1382): the candidate must be a real object base.
-        # The pattern is — local.get $val ; call $gc_is_base ; i32.and ;
+        # The pattern is — local.get $val ; call $rt.gc_is_base ; i32.and ;
         # if — ANDed onto the alignment test so the enqueue, and hence
         # the mark store, is reached only for a validated base.
-        layer2_expected = "local.get $val call $gc_is_base i32.and if"
+        layer2_expected = "local.get $val call $rt.gc_is_base i32.and if"
         layer2 = _opcodes_after(
             wat, "Layer 2 (issues #515, #1382)",
             len(layer2_expected.split()),
@@ -447,11 +447,11 @@ public fn f(-> @Int)
         # The gate is worthless unless BOTH candidate sites carry it —
         # the Phase 2 shadow-stack seed and the Phase 2b transitive
         # scan — and unless Phase 1 actually fills the bitmap they read.
-        assert wat.count("call $gc_is_base") == 2, (
+        assert wat.count("call $rt.gc_is_base") == 2, (
             "both candidate sites (Phase 2 seed, Phase 2b scan) must "
             "consult the object-base bitmap"
         )
-        assert wat.count("call $gc_set_base") == 1, (
+        assert wat.count("call $rt.gc_set_base") == 1, (
             "Phase 1's walk must record every object base"
         )
         assert "obj_ptr + obj_size walks past" not in wat, (
@@ -659,20 +659,20 @@ public fn main(@Unit -> @Int)
 
 
 # =====================================================================
-# GC infrastructure: $alloc multi-page grow (#487) + worklist (#348)
+# GC infrastructure: $rt.alloc multi-page grow (#487) + worklist (#348)
 # =====================================================================
 
 
 class TestLargeAllocGrow487:
-    """`#487`: `$alloc` grows by enough pages, not just 1.
+    """`#487`: `$rt.alloc` grows by enough pages, not just 1.
 
-    Pre-fix, when `heap_ptr + total > memory.size * 65536`, `$alloc`
+    Pre-fix, when `heap_ptr + total > memory.size * 65536`, `$rt.alloc`
     unconditionally called `memory.grow 1` regardless of how many
     pages were actually needed.  A single allocation request more
     than ~64 KB past the current memory boundary fell through to
     the bump-allocate and trapped on out-of-bounds memory access.
 
-    Post-fix, `$alloc` computes
+    Post-fix, `$rt.alloc` computes
     `pages_needed = ceil(shortage / 65536)` and grows by that many
     pages in a single call, so allocations of any practical size
     succeed (subject to `memory.grow` returning a valid value).
@@ -805,7 +805,7 @@ class TestWorklistOverflow348:
         Builds a 5 000-element `Array<Box>` — the exact shape the
         pre-fix worklist overflowed on, and past the ~4 000-element
         `array_map` shadow-stack ceiling that #570 removed — and
-        forces `$gc_collect` via the allocations themselves.  Every
+        forces `$rt.gc_collect` via the allocations themselves.  Every
         Box pointer in the array's payload is pushed onto the
         worklist during the mark phase.
         """
@@ -852,7 +852,7 @@ public fn main(-> @Int)
         # #692: $gc_stack_limit is now exported so host walkers
         # can check shadow-stack overflow before pushing.
         assert (
-            '(global $gc_stack_limit (export "gc_stack_limit") '
+            '(global $gc_stack_limit (export "vera.gc_stack_limit") '
             'i32 (i32.const 16384))'
         ) in result.wat
         assert "(global $gc_heap_start i32 (i32.const 81920))" in result.wat
@@ -875,8 +875,8 @@ public fn main(-> @Int)
 """
         result = _compile_ok(source)
         wat = result.wat
-        # Extract the $gc_collect function body for inspection.
-        gc_start = wat.index("(func $gc_collect")
+        # Extract the $rt.gc_collect function body for inspection.
+        gc_start = wat.index("(func $rt.gc_collect")
         gc_end = wat.index("\n  (func ", gc_start + 1) if "\n  (func " in wat[gc_start + 1 :] else len(wat)
         gc_collect = wat[gc_start:gc_end]
         # Match the exact overflow-guard opcode sequence:
@@ -902,7 +902,7 @@ public fn main(-> @Int)
         )
         matches = pattern.findall(gc_collect)
         assert len(matches) >= 2, (
-            f"Expected ≥2 worklist-overflow guard sequences in $gc_collect "
+            f"Expected ≥2 worklist-overflow guard sequences in $rt.gc_collect "
             f"(Phase 2 seed + Phase 2b scan), found {len(matches)}.  "
             f"Pre-fix shape used `i32.lt_u` + push; post-fix uses "
             f"`i32.ge_u` + `unreachable` — a regression here would "

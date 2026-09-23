@@ -1336,7 +1336,7 @@ class TestStructuralEqEnumerationIsUnobservable:
     Forcing `_generate_adt_eq_fn_body` back to the flat map leaves the whole
     tag-index battery green, so no behavioural cell can red on it.  That is
     not because the site is unreached — it runs, measured, as
-    `$eq_Ordering` — but because its output is insensitive for the only
+    `$rt.eq_Ordering` — but because its output is insensitive for the only
     shapes a program can build.  Each leg is asserted here, so if any of
     them changes the argument fails loudly instead of rotting.
     """
@@ -1395,7 +1395,7 @@ public fn cmp_eq(@Unit -> @Bool)
         boundary, where an entry-file declaration takes a constructor name
         an imported type also declares — the shape #1419's review calls
         finding A, which is miscompiled today and is not fixed by this PR.
-        What survives is the conclusion, for a different reason: no `$eq_`
+        What survives is the conclusion, for a different reason: no `$rt.eq_`
         helper is generated for that cross-namespace shape at all (the tag
         is what goes wrong there), so this enumeration is still not the site
         at fault, and no program reaches it with disagreeing tables.

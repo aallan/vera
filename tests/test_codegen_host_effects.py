@@ -1079,7 +1079,7 @@ class TestPostconditionHostImportPropagation823:
     declaration was omitted and the orphaned ``call``/``global.get`` failed WAT
     compilation.  #808 surfaced this (its new ``vera.overflow_trap`` was the
     first import to expose it) and fixed the general ordering for every
-    host-import family and ``$alloc`` (#823).
+    host-import family and ``$rt.alloc`` (#823).
 
     Each fixture's BODY is a plain slot — no arithmetic, no allocation — so the
     flag is set ONLY while lowering the postcondition.  These would compile fine

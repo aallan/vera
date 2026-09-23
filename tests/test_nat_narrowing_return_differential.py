@@ -556,7 +556,7 @@ class TestClosureNarrowingBoundary984:
         (Pre-#1032 this pinned ZERO guards of any kind, on the then-false
         assumption that a boundary guard existed at the call/return site.)"""
         statuses, wat = _statuses_and_wat(_CLOSURE_REFINED)
-        anon = wat[wat.index("(func $anon_"):]
+        anon = wat[wat.index("(func $rt.anon_"):]
         depth = 0
         for i, ch in enumerate(anon):
             if ch == "(":

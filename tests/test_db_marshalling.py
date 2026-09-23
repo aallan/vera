@@ -10,10 +10,10 @@ WASM boundary:
     ``execute`` returns ``Result<Int, String>`` (``_alloc_result_ok_i64``).
 
 These exercise the allocators directly through an :class:`InstanceCaller` wrapped
-around a *real compiled module* (so ``$alloc`` and the GC exports are live), and
+around a *real compiled module* (so ``$rt.alloc`` and the GC exports are live), and
 they run twice: once normally (layout correctness) and once under
-``VERA_EAGER_GC=1`` (rooting correctness — every ``$alloc`` fires a full
-``$gc_collect``, so an unrooted intermediate is swept and the read-back sees
+``VERA_EAGER_GC=1`` (rooting correctness — every ``$rt.alloc`` fires a full
+``$rt.gc_collect``, so an unrooted intermediate is swept and the read-back sees
 corruption).  The ABI mirrors the existing ``_alloc_*`` family:
 
   - ``Option<String>``: ADT, a 4-byte heap pointer — ``None`` is tag 0 at +0;
@@ -44,7 +44,7 @@ from vera.runtime.heap import (
     _write_i32,
 )
 
-# A pure, allocation-performing program: it exports ``$alloc`` and the GC
+# A pure, allocation-performing program: it exports ``$rt.alloc`` and the GC
 # globals (``$gc_sp`` / ``$gc_stack_limit``) and imports nothing, so it
 # instantiates with an empty import list and the heap allocators can be driven
 # directly against it.
@@ -58,7 +58,7 @@ _HARNESS_SRC = (
 def _gc_caller() -> InstanceCaller:
     """Compile + instantiate the harness module and wrap it in an
     ``InstanceCaller``.  Read ``VERA_EAGER_GC`` at COMPILE time (it is baked
-    into ``$alloc`` by ``AssemblyMixin._emit_alloc``), so a caller wanting the
+    into ``$rt.alloc`` by ``AssemblyMixin._emit_alloc``), so a caller wanting the
     eager-GC stress must ``monkeypatch.setenv`` *before* calling this."""
     res = codegen_compile(parse_to_ast(_HARNESS_SRC), source=_HARNESS_SRC)
     assert res.ok, res.diagnostics
@@ -110,7 +110,7 @@ class TestOptionStringArrayRoundTrip:
     def test_round_trip_eager_gc(
         self, cells: list[str | None], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Every $alloc fires $gc_collect; an unrooted intermediate (the backing
+        # Every $rt.alloc fires $rt.gc_collect; an unrooted intermediate (the backing
         # or a Some's string) is swept and the read-back corrupts.
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         caller = _gc_caller()
@@ -161,7 +161,7 @@ class TestOptionStringArrayRoundTrip:
         # `mem_size` only after the backing is placed, or `straddle` lands
         # inside a since-grown region and no longer straddles the end.
         backing, count = _alloc_array_of_options_of_string(caller, ["x"])
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         mem_size = memory.data_len(caller)
         straddle = mem_size - 8            # tag read OK (+4); +12 overruns

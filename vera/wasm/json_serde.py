@@ -59,7 +59,7 @@ AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
 # #706: map_alloc is ``_alloc_map_wrapper`` — it encodes the Python
 # dict into a fresh bucket-as-truth wrapper and returns the wrapper
 # pointer (no host store, no wrap-table registration).  It accepts
-# ``caller`` so it can call the exported ``$alloc`` to build the
+# ``caller`` so it can call the exported ``$rt.alloc`` to build the
 # wrapper + bucket in WASM memory.
 MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
@@ -302,7 +302,7 @@ def write_json(
     ``vera.codegen.api``).  Intermediate WASM heap pointers
     (string body, array backing, map wrapper) are pushed onto
     its shadow-stack window before any subsequent alloc that
-    could trigger ``$gc_collect``.  See #692 + the analogous
+    could trigger ``$rt.gc_collect``.  See #692 + the analogous
     notes in ``html_serde.write_html`` for the bug class.
 
     The returned root pointer is NOT pushed — the caller is

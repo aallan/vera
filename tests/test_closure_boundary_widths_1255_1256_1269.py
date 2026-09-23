@@ -223,9 +223,9 @@ public fn main(@Unit -> @Int)
 """
 
 _BOUNDARIES = [
-    pytest.param(_CLOSURE_RETURN, "anon_0", id="closure_return"),
-    pytest.param(_CLOSURE_PARAM, "anon_0", id="closure_param"),
-    pytest.param(_CLOSURE_CAPTURE, "anon_0", id="closure_capture"),
+    pytest.param(_CLOSURE_RETURN, "rt.anon_0", id="closure_return"),
+    pytest.param(_CLOSURE_PARAM, "rt.anon_0", id="closure_param"),
+    pytest.param(_CLOSURE_CAPTURE, "rt.anon_0", id="closure_capture"),
     pytest.param(_NAMED_FN, "roundtrip", id="named_fn_param_and_return"),
 ]
 
@@ -329,9 +329,9 @@ class TestPointerNessResolvesThroughTheAliasChain:
     @pytest.mark.parametrize(
         ("template", "fn", "expected"),
         [
-            pytest.param(_CLOSURE_RETURN, "anon_0", 0, id="closure_return"),
-            pytest.param(_CLOSURE_PARAM, "anon_0", 5, id="closure_param"),
-            pytest.param(_CLOSURE_CAPTURE, "anon_0", 5, id="closure_capture"),
+            pytest.param(_CLOSURE_RETURN, "rt.anon_0", 0, id="closure_return"),
+            pytest.param(_CLOSURE_PARAM, "rt.anon_0", 5, id="closure_param"),
+            pytest.param(_CLOSURE_CAPTURE, "rt.anon_0", 5, id="closure_capture"),
             pytest.param(_NAMED_FN, "roundtrip", 4,
                          id="named_fn_param_and_return"),
         ],
@@ -363,10 +363,10 @@ class TestPointerNessResolvesThroughTheAliasChain:
     @pytest.mark.parametrize(
         ("source", "fn"),
         [
-            pytest.param(_CONTROL_CLOSURE_RETURN, "anon_0",
+            pytest.param(_CONTROL_CLOSURE_RETURN, "rt.anon_0",
                          id="closure_return"),
-            pytest.param(_CONTROL_CLOSURE_PARAM, "anon_0", id="closure_param"),
-            pytest.param(_CONTROL_CLOSURE_CAPTURE, "anon_0",
+            pytest.param(_CONTROL_CLOSURE_PARAM, "rt.anon_0", id="closure_param"),
+            pytest.param(_CONTROL_CLOSURE_CAPTURE, "rt.anon_0",
                          id="closure_capture"),
             pytest.param(_CONTROL_NAMED_FN, "roundtrip", id="named_fn"),
         ],
@@ -392,10 +392,10 @@ class TestPointerNessResolvesThroughTheAliasChain:
         """`VERA_EAGER_GC=1`: a collection at EVERY allocation.
 
         Removing a push that was load-bearing shows up here and nowhere
-        else — with a collection forced at each `$alloc`, a value whose only
+        else — with a collection forced at each `$rt.alloc`, a value whose only
         root was the removed slot is reclaimed while still in use, and the
         program reads back something other than 37.  Read at compile time
-        (the knob bakes a `call $gc_collect` into `$alloc`), so it must be
+        (the knob bakes a `call $rt.gc_collect` into `$rt.alloc`), so it must be
         set before the compile.
 
         37 is the value at every boundary, and cannot coincide with a

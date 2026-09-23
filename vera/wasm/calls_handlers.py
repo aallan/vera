@@ -601,7 +601,7 @@ class CallsHandlersMixin:
         head is not in `_adt_type_names`, or it has no registered
         constructors).  Field offsets / WASM types are recomputed from the
         CONCRETE field types (type parameters substituted) exactly as the
-        construction site and `$eq_<type>` helper do, so a `String`
+        construction site and `$rt.eq_<type>` helper do, so a `String`
         instantiation lays out an i32_pair, not a bare pointer.
         """
         base, type_args = self._split_param_type(ptype)
@@ -692,25 +692,28 @@ class CallsHandlersMixin:
     # INLINE — the traversal would expand forever at COMPILE time.  #911
     # detected this via the full-ptype `_seen` guard and cleanly skipped
     # (E602), dropping the enclosing function.  #924 upgrades the skip to an
-    # actually-emitted, self-calling helper function `$show_<type>` /
-    # `$hash_<type>` — one per recursive type — that recurses over the finite
-    # VALUE at run time.  This mirrors the structural-`$eq_<type>` machinery
+    # actually-emitted, self-calling helper function `$rt.show_<type>` /
+    # `$rt.hash_<type>` — one per recursive type — that recurses over the finite
+    # VALUE at run time.  This mirrors the structural-`$rt.eq_<type>` machinery
     # (operators.py `_generate_adt_eq_fn` / `_request_adt_eq_helper`).
 
     def _show_hash_fn_name(self, kind: str, ptype: str) -> str:
-        """Mangle ``ptype`` into its ``$show_<type>`` / ``$hash_<type>`` name.
+        """Mangle ``ptype`` into its ``$rt.show_<type>`` / ``$rt.hash_<type>`` name.
 
         Uses the shared `mangle_type_name` escape — the same injective
-        convention the `$eq_<type>` helpers and mono-clone symbols use, so a
+        convention the `$rt.eq_<type>` helpers and mono-clone symbols use, so a
         `List<Int>` helper and a bare ADT literally named `List_LInt_R` cannot
         collide.
         """
-        return f"${kind}_{mangle_type_name(ptype)}"
+        mangled = mangle_type_name(ptype)
+        if kind == "show":
+            return f"$rt.show_{mangled}"
+        return f"$rt.hash_{mangled}"
 
     def _request_show_hash_helper(
         self, kind: str, ptype: str, node: ast.Expr,
     ) -> str | None:
-        """Ensure a recursive ``$show``/``$hash`` helper exists; return its name.
+        """Ensure a recursive ``$rt.show``/``$rt.hash`` helper exists; return its name.
 
         ``kind`` is ``"show"`` or ``"hash"``.  Deduped by name and guarded
         against re-entry via ``_show_hash_pending`` so a self- (or mutually-)
@@ -732,7 +735,7 @@ class CallsHandlersMixin:
     def _generate_show_hash_helper(
         self, kind: str, fn_name: str, ptype: str, node: ast.Expr,
     ) -> str | None:
-        """Generate the full WAT of a recursive ``$show``/``$hash`` helper.
+        """Generate the full WAT of a recursive ``$rt.show``/``$rt.hash`` helper.
 
         The helper takes the ADT pointer as ``$p`` (local 0) and returns the
         rendered String ``(result i32 i32)`` (show) or the i64 hash (hash).
@@ -741,7 +744,7 @@ class CallsHandlersMixin:
         local-allocation scope with an EMPTY ``_seen`` — the emitter renders one
         full level and adds ``ptype`` to ``_seen`` before descending, so the
         recursive field (same ``ptype``) routes back through this same helper (a
-        ``call $show_<type>`` self-reference) rather than re-expanding inline.
+        ``call $rt.show_<type>`` self-reference) rather than re-expanding inline.
         The emitters allocate into the swapped-in scope, set ``needs_alloc``
         when they build strings, and their shadow-stack rooting is wrapped by a
         GC prologue/epilogue that saves and restores ``$gc_sp`` around the frame.
@@ -935,7 +938,7 @@ class CallsHandlersMixin:
         # ADT (`List<Int>` whose `Cons` field is again `List<Int>`) recurs on
         # the SAME parameterized type.  #911 collapsed the recursive case to a
         # clean skip; #924 routes it to a GENERATED self-calling helper
-        # (`call $show_<type>`) so the finite value renders at run time.
+        # (`call $rt.show_<type>`) so the finite value renders at run time.
         if ptype in seen:
             fn_name = self._request_show_hash_helper("show", ptype, node)
             if fn_name is None:
@@ -1151,7 +1154,7 @@ class CallsHandlersMixin:
         local holding its address.
 
         A loop accumulator (`_show_adt` / `_show_array`) lives in a plain
-        local across many per-concat `$alloc`s — between iterations it is
+        local across many per-concat `$rt.alloc`s — between iterations it is
         neither on the operand stack nor a GC root, so a collection would
         sweep it.  This pushes ONE slot (via the standard `gc_shadow_push`,
         seeded with the initial accumulator ``init_ptr``) and captures its
@@ -1318,7 +1321,7 @@ class CallsHandlersMixin:
         # Full-ptype recursion guard (see `_show_adt`): distinguishes finite
         # same-base nesting (`Option<Option<Int>>`) from genuine self-reference
         # (`List<Int>`).  The former folds inline; the latter routes to a
-        # generated self-calling helper (`call $hash_<type>`) that folds the
+        # generated self-calling helper (`call $rt.hash_<type>`) that folds the
         # finite value at run time (#924).
         if ptype in seen:
             fn_name = self._request_show_hash_helper("hash", ptype, node)

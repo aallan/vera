@@ -67,7 +67,7 @@ const encoder = new TextEncoder();
 
 /** Get the WASM linear memory (never cache the buffer). */
 function mem() {
-  return wasm.memory;
+  return wasm['vera.memory'];
 }
 
 /** Read a UTF-8 string from WASM memory. */
@@ -111,9 +111,9 @@ function readF64(offset) {
   return new DataView(mem().buffer).getFloat64(offset, true);
 }
 
-/** Call the exported $alloc to allocate WASM heap memory. */
+/** Call the runtime's exported allocator (`vera.alloc`) for WASM heap memory. */
 function alloc(size) {
-  return wasm.alloc(size);
+  return wasm['vera.alloc'](size);
 }
 
 /** Allocate a UTF-8 string in WASM memory; returns [ptr, len]. */
@@ -132,30 +132,30 @@ function allocString(str) {
 /**
  * Root a freshly-allocated WASM heap pointer on the GC shadow stack
  * across fn(), then pop it.  No-op when the module has no GC
- * infrastructure (then $alloc never collects, so nothing can sweep ptr)
+ * infrastructure (then $rt.alloc never collects, so nothing can sweep ptr)
  * or when ptr is 0 (the GC's "not a heap object" sentinel).  Mirrors the
  * CLI _ShadowGuard discipline for host-side ADT builders; folded into
  * #706 to close a pre-existing rooting gap in these helpers.
  */
 function gcRooted(ptr, fn) {
-  if (ptr === 0 || !wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (ptr === 0 || !wasm || !wasm['vera.gc_sp'] || !wasm['vera.gc_stack_limit']) {
     return fn();
   }
-  const sp = wasm.gc_sp.value;
+  const sp = wasm['vera.gc_sp'].value;
   // #860, following #791: slot-complete bound.  The write below is FOUR
   // bytes at [sp..sp+3], so an sp with 1-3 bytes of headroom passed
   // `sp >= limit` and then spilled past the window.  Unreachable while
   // generated code advances $gc_sp in 4-byte steps from a 4-aligned base
   // — defence in depth, matching the CLI `_ShadowGuard.push` predicate.
-  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
+  if (sp < 0 || sp + 4 > wasm['vera.gc_stack_limit'].value) {
     throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
   }
   writeI32(sp, ptr | 0);
-  wasm.gc_sp.value = sp + 4;
+  wasm['vera.gc_sp'].value = sp + 4;
   try {
     return fn();
   } finally {
-    wasm.gc_sp.value = sp;
+    wasm['vera.gc_sp'].value = sp;
   }
 }
 
@@ -167,7 +167,7 @@ function gcRooted(ptr, fn) {
 // root-discipline problem as the CLI ``_ShadowGuard``: a
 // freshly-allocated wrapper held only in a JS local is invisible
 // to the conservative GC scan, so a sub-alloc that fires
-// ``$gc_collect`` can reclaim it.  The wrap-table region (below
+// ``$rt.gc_collect`` can reclaim it.  The wrap-table region (below
 // ``gc_heap_start``) is NOT walked by the mark phase, so
 // ``register_wrapper`` alone isn't enough — explicit shadow-stack
 // rooting is required.
@@ -193,7 +193,7 @@ function gcRooted(ptr, fn) {
 // trying to build multi-alloc values — that's a build-config bug
 // and should surface immediately, not as a downstream UAF.
 function gcShadowPush(value) {
-  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (!wasm || !wasm['vera.gc_sp'] || !wasm['vera.gc_stack_limit']) {
     throw new Error(
       '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
       'module was built without GC support — multi-alloc host builders ' +
@@ -202,27 +202,27 @@ function gcShadowPush(value) {
       'decimal_ops_used / md_ops_used / wrap-table-needing types).'
     );
   }
-  const sp = wasm.gc_sp.value;
+  const sp = wasm['vera.gc_sp'].value;
   // #860, following #791: slot-complete bound — see `gcRooted` above.
-  if (sp < 0 || sp + 4 > wasm.gc_stack_limit.value) {
+  if (sp < 0 || sp + 4 > wasm['vera.gc_stack_limit'].value) {
     throw new Error('GC shadow stack overflow in browser runtime');
   }
   writeI32(sp, value | 0);
-  wasm.gc_sp.value = sp + 4;
+  wasm['vera.gc_sp'].value = sp + 4;
 }
 function gcShadowPop() {
   // Symmetric guard with gcShadowPush — see comment above.  Both
   // checked against the same export-pair invariant (gc_sp and
   // gc_stack_limit travel together) so the pop won't underflow if
   // a future module ever exports one but not the other.
-  if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+  if (!wasm || !wasm['vera.gc_sp'] || !wasm['vera.gc_stack_limit']) {
     throw new Error(
       '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
       '$gc_stack_limit exports — push/pop must be balanced under ' +
       'the same export-pair invariant'
     );
   }
-  wasm.gc_sp.value -= 4;
+  wasm['vera.gc_sp'].value -= 4;
 }
 
 // #708 (PR #707): JS-side parallel of the CLI
@@ -242,16 +242,16 @@ function gcShadowPop() {
 // __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
 // the guard pops them all at the end without per-push bookkeeping.
 function gcGuard(fn) {
-  if (!wasm || !wasm.gc_sp) {
+  if (!wasm || !wasm['vera.gc_sp']) {
     // Module without GC infrastructure — just call.  This is fine
-    // because such modules can't fire $gc_collect either.
+    // because such modules can't fire $rt.gc_collect either.
     return fn();
   }
-  const savedSp = wasm.gc_sp.value;
+  const savedSp = wasm['vera.gc_sp'].value;
   try {
     return fn();
   } finally {
-    wasm.gc_sp.value = savedSp;
+    wasm['vera.gc_sp'].value = savedSp;
   }
 }
 
@@ -1167,7 +1167,7 @@ function extractCodeBlocks(block, lang) {
 // missed): these builders are multi-alloc walkers, so every
 // intermediate heap pointer held only in a JS local must be pushed
 // onto the WASM shadow stack (``gcShadowPush``) before any
-// subsequent ``alloc()`` that could fire ``$gc_collect``.  The
+// subsequent ``alloc()`` that could fire ``$rt.gc_collect``.  The
 // convention mirrors the CLI ``vera/wasm/markdown.py`` exactly:
 // **allocate fields first, root them, allocate the body last** —
 // that way the body's own pointer is never held in a JS local
@@ -1875,7 +1875,7 @@ function buildImportObject(module, moduleBytes) {
   // decode / encode the bucket directly (no JS-side mapStore).  Import
   // names stay type-specific: map_insert$ks_vi, map_get$ki_vb, etc.
 
-  // #573: host_decref_handle is called from Phase 2c of $gc_collect for
+  // #573: host_decref_handle is called from Phase 2c of $rt.gc_collect for
   // every wrapper-ADT object that became unmarked.  #706: Map / Set
   // wrappers are no longer registered (they are plain heap objects
   // reclaimed by ordinary mark-sweep), so only Decimal (kind=3) — which
@@ -2128,15 +2128,15 @@ function buildImportObject(module, moduleBytes) {
     // registration is skipped → ``host_decref_handle`` never fires →
     // permanent decimalStore leak per write.  That's a build-config
     // bug; raise rather than silently leak.
-    if (!wasm || typeof wasm.register_wrapper !== "function") {
+    if (!wasm || typeof wasm['vera.register_wrapper'] !== "function") {
       throw new Error(
-        '#707 browser runtime: $register_wrapper not exported; ' +
+        '#707 browser runtime: $rt.register_wrapper not exported; ' +
         'module was built without wrap-table support but is trying ' +
         'to wrap a host handle.  Recompile with wrap-table-needing ' +
         'types enabled (Map / Set / Decimal).'
       );
     }
-    wasm.register_wrapper(ptr, kind, rawHandle);
+    wasm['vera.register_wrapper'](ptr, kind, rawHandle);
     return ptr;
   }
 
@@ -2147,7 +2147,7 @@ function buildImportObject(module, moduleBytes) {
   // ``_alloc_map_wrapper``); there is no ``mapStore`` and no
   // ``wrapHandle``.  ``encodeEntries`` shadow-roots the new wrapper +
   // bucket across the per-entry string allocations, so a sub-alloc
-  // that fires ``$gc_collect`` mid-encode can't reclaim them.  The
+  // that fires ``$rt.gc_collect`` mid-encode can't reclaim them.  The
   // caller is responsible for storing the returned ptr promptly (it
   // is unrooted again on return — see writeJson's JObject branch,
   // the only consumer of this helper).
@@ -2823,7 +2823,7 @@ function buildImportObject(module, moduleBytes) {
       //
       // #708: allocate the JString body first, push it onto the
       // shadow stack, then allocate the string buffer.  The
-      // ``allocString`` call below can fire ``$gc_collect``; without
+      // ``allocString`` call below can fire ``$rt.gc_collect``; without
       // rooting the body, it gets reclaimed and the writes scribble
       // freed memory.
       const ptr = alloc(16);
@@ -4061,7 +4061,9 @@ export function getExports() {
   return Object.entries(wasm)
     .filter(([_, v]) => typeof v === 'function')
     .map(([k]) => k)
-    .filter(k => k !== 'alloc');
+    // The runtime's own exports live in the `vera.` namespace (#1494), which
+    // no Vera identifier can spell, so every other export is the program's.
+    .filter(k => !k.startsWith('vera.'));
 }
 
 export { VeraExit };

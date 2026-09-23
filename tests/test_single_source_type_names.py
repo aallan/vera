@@ -998,7 +998,7 @@ def test_one_argument_yields_one_diagnostic_per_consultor(
 
 # Found by this change's corpus differential: `ch07_state_old_composite.vera`
 # was the one program whose WAT moved, and it moved from `i32.eq` to a call to
-# the structural `$eq_Option_LInt_R` helper.  The rewrite's composite-`==`
+# the structural `$rt.eq_Option_LInt_R` helper.  The rewrite's composite-`==`
 # dispatch asks `_infer_vera_type` for the operand's Vera type and falls back
 # to a scalar compare when it gets nothing — which for `old(State<Option<Int>>)`
 # it always did, because that walker has no `OldExpr` arm.  So a Tier-3
@@ -1059,8 +1059,8 @@ def test_old_state_composite_compares_values_not_addresses() -> None:
     result = _compile_checked(_OLD_COMPOSITE_FRESH_ALLOCATION)
     assert _errors(result) == [], _errors(result)
     assert any(
-        n.startswith("eq_Option") for n in re.findall(
-            r"\(func \$([A-Za-z_0-9$<>, ]+?)\s", result.wat)
+        n.startswith("rt.eq_Option") for n in re.findall(
+            r"\(func \$([A-Za-z_0-9$<>,. ]+?)\s", result.wat)
     ), result.wat
     assert _run_checked(_OLD_COMPOSITE_FRESH_ALLOCATION) == 1
 

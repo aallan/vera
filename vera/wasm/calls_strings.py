@@ -180,7 +180,7 @@ class CallsStringsMixin:
         instructions.append(f"local.get {len_a}")
         instructions.append(f"local.get {len_b}")
         instructions.append("i32.add")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -287,7 +287,7 @@ class CallsStringsMixin:
         instructions.append(f"local.set {ptr_s}")
 
         # Root the source-string pointer on the GC shadow stack
-        # *before* the `call $alloc` below — the conservative
+        # *before* the `call $rt.alloc` below — the conservative
         # collector only sees pointers that are stored on the shadow
         # stack, not those that live solely in WAT locals.  ptr_s is
         # read at line ~301 (the byte-copy loop), so it must survive
@@ -332,7 +332,7 @@ class CallsStringsMixin:
 
         # Allocate new buffer
         instructions.append(f"local.get {new_len}")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -474,7 +474,7 @@ class CallsStringsMixin:
 
         # Allocate 1-byte buffer
         ins.append("i32.const 1")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {ptr}")
         ins.extend(gc_shadow_push(ptr))
 
@@ -525,7 +525,7 @@ class CallsStringsMixin:
         ins.extend(s_instrs)
         ins.append(f"local.set {len_s}")
         ins.append(f"local.set {ptr_s}")
-        # Root the source pointer before the output `call $alloc` below — a GC
+        # Root the source pointer before the output `call $rt.alloc` below — a GC
         # there would otherwise reclaim a GC-managed source string while
         # `ptr_s` still points into it, since the copy loop reads it *after*
         # the alloc (CR #756; matches the `gc_shadow_push(dst)` rooting).
@@ -544,7 +544,7 @@ class CallsStringsMixin:
 
         # Allocate output buffer
         ins.append(f"local.get {total_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -621,7 +621,7 @@ class CallsStringsMixin:
 
         # Allocate a 20-byte temporary buffer for digit reversal
         instructions.append("i32.const 20")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {buf}")
         instructions.extend(gc_shadow_push(buf))
 
@@ -729,7 +729,7 @@ class CallsStringsMixin:
         # (Avoids returning an interior pointer into the temp buffer,
         # which conservative GC would not recognise as a valid root.)
         instructions.append(f"local.get {slen}")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
         # Copy loop: dst[i] = buf[pos + i] for i in 0..slen
@@ -824,7 +824,7 @@ class CallsStringsMixin:
 
         # Allocate 1 byte
         instructions.append("i32.const 1")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -879,7 +879,7 @@ class CallsStringsMixin:
 
         # Allocate 32-byte output buffer
         instructions.append("i32.const 32")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {buf}")
         instructions.extend(gc_shadow_push(buf))
         instructions.append("i32.const 0")
@@ -1010,7 +1010,7 @@ class CallsStringsMixin:
         # Write integer digits using a temp buffer (reverse then copy)
         # Allocate 20-byte temp buffer for int digits
         instructions.append("i32.const 20")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {tbuf}")
         instructions.extend(gc_shadow_push(tbuf))
         instructions.append("i32.const 20")
@@ -1581,7 +1581,7 @@ class CallsStringsMixin:
 
         # Allocate same-size buffer
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1666,7 +1666,7 @@ class CallsStringsMixin:
         ins.append(f"local.set {ptr}")
 
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1759,7 +1759,7 @@ class CallsStringsMixin:
 
         # Allocate Option<Nat> (16 bytes)
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {out}")
 
         ins.append("block $done_io")
@@ -1937,7 +1937,7 @@ class CallsStringsMixin:
         ins.append("if")
         # Allocate and copy haystack as-is
         ins.append(f"  local.get {len_h}")
-        ins.append("  call $alloc")
+        ins.append("  call $rt.alloc")
         ins.append(f"  local.set {dst}")
         ins.extend(f"  {x}" for x in gc_shadow_push(dst))
         ins.append("  i32.const 0")
@@ -2052,7 +2052,7 @@ class CallsStringsMixin:
 
         # Allocate result
         ins.append(f"local.get {new_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -2237,12 +2237,12 @@ class CallsStringsMixin:
         ins.append("if")
         # Allocate array of 1 element (8 bytes)
         ins.append("  i32.const 8")
-        ins.append("  call $alloc")
+        ins.append("  call $rt.alloc")
         ins.append(f"  local.set {arr}")
         ins.extend(f"  {x}" for x in gc_shadow_push(arr))
         # Allocate copy of the string
         ins.append(f"  local.get {len_s}")
-        ins.append("  call $alloc")
+        ins.append("  call $rt.alloc")
         ins.append(f"  local.set {seg_ptr}")
         ins.extend(f"  {x}" for x in gc_shadow_push(seg_ptr))
         # Copy string bytes
@@ -2359,7 +2359,7 @@ class CallsStringsMixin:
         ins.append(f"local.get {seg_count}")
         ins.append("i32.const 8")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {arr}")
         ins.extend(gc_shadow_push(arr))
 
@@ -2423,7 +2423,7 @@ class CallsStringsMixin:
         ins.append(f"      local.set {seg_len}")
         # Allocate segment string
         ins.append(f"      local.get {seg_len}")
-        ins.append("      call $alloc")
+        ins.append("      call $rt.alloc")
         ins.append(f"      local.set {seg_ptr}")
         ins.extend(f"      {x}" for x in gc_shadow_push(seg_ptr))
         # Copy segment bytes
@@ -2494,7 +2494,7 @@ class CallsStringsMixin:
         ins.append("i32.sub")
         ins.append(f"local.set {seg_len}")
         ins.append(f"local.get {seg_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {seg_ptr}")
         ins.extend(gc_shadow_push(seg_ptr))
         # Copy last segment
@@ -2639,7 +2639,7 @@ class CallsStringsMixin:
 
         # Allocate result
         ins.append(f"local.get {total_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -2990,7 +2990,7 @@ class CallsStringsMixin:
         ins.extend(gc_shadow_push(ptr))
 
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -3087,7 +3087,7 @@ class CallsStringsMixin:
         ins.extend(gc_shadow_push(ptr))
 
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -3169,14 +3169,14 @@ class CallsStringsMixin:
         ins.extend(arg_instrs)
         ins.append(f"local.set {slen}")
         ins.append(f"local.set {ptr}")
-        # Root the source string across the destination $alloc below.
+        # Root the source string across the destination $rt.alloc below.
         # Without this, if the input is a heap-allocated string (e.g.
         # the result of string_concat or another non-literal producer),
         # GC triggered by the alloc could free it and leave the copy
         # loop reading from a freed buffer — Vera's WASM locals are
         # not GC roots, only the shadow stack is.  Per the byte-literal
         # / GC-root review heuristics, any pointer read after a
-        # ``call $alloc`` must be on the shadow stack first.
+        # ``call $rt.alloc`` must be on the shadow stack first.
         ins.extend(gc_shadow_push(ptr))
 
         ins.append("i32.const 0")
@@ -3248,7 +3248,7 @@ class CallsStringsMixin:
         ins.append(f"local.set {new_len}")
 
         ins.append(f"local.get {new_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -3399,9 +3399,9 @@ class CallsStringsMixin:
         ins.append("i32.sub")
         ins.append(f"local.set {pad_len}")
 
-        # dst = $alloc(out_len)
+        # dst = $rt.alloc(out_len)
         ins.append(f"local.get {out_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -3537,7 +3537,7 @@ class CallsStringsMixin:
     # collection triggered after this function returns.  Memory cost
     # is O(slen + count) — same as a shared-buffer scheme, since the
     # bytes are copied exactly once total — at the price of one
-    # ``$alloc`` per segment instead of one ``$alloc`` overall.
+    # ``$rt.alloc`` per segment instead of one ``$rt.alloc`` overall.
     #
     # Each function differs only in: (a) how it counts segments in
     # the first pass, and (b) how it advances through the data in
@@ -3557,7 +3557,7 @@ class CallsStringsMixin:
         Matches Vera's byte-oriented string model (same as
         string_char_code, string_slice etc.).
 
-        GC note: each 1-byte slice gets its own ``$alloc`` rather
+        GC note: each 1-byte slice gets its own ``$rt.alloc`` rather
         than slicing into a shared buffer.  Interior pointers
         (``shared_buf + offset``) fail the GC mark phase's alignment
         check (``(val - gc_heap_start) % 8 == 4``) at every offset
@@ -3584,16 +3584,16 @@ class CallsStringsMixin:
         ins.append(f"local.set {ptr_s}")
         ins.extend(gc_shadow_push(ptr_s))
 
-        # outer = $alloc(slen * 8)
+        # outer = $rt.alloc(slen * 8)
         ins.append(f"local.get {slen}")
         ins.append("i32.const 8")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {outer}")
         ins.extend(gc_shadow_push(outer))
 
         # For each idx in [0, slen):
-        #   slice_ptr = $alloc(1)
+        #   slice_ptr = $rt.alloc(1)
         #   slice_ptr[0] = ptr_s[idx]
         #   outer[idx*8 + 0] = slice_ptr
         #   outer[idx*8 + 4] = 1
@@ -3605,9 +3605,9 @@ class CallsStringsMixin:
         ins.append(f"    local.get {slen}")
         ins.append("    i32.ge_u")
         ins.append("    br_if $brk_sc_fill")
-        # slice_ptr = $alloc(1)
+        # slice_ptr = $rt.alloc(1)
         ins.append("    i32.const 1")
-        ins.append("    call $alloc")
+        ins.append("    call $rt.alloc")
         ins.append(f"    local.set {slice_ptr}")
         # slice_ptr[0] = ptr_s[idx]
         ins.append(f"    local.get {slice_ptr}")
@@ -3683,7 +3683,7 @@ class CallsStringsMixin:
         terminators; words discards them), but the loop skeleton is
         identical.
 
-        GC note: each segment gets its own ``$alloc`` rather than
+        GC note: each segment gets its own ``$rt.alloc`` rather than
         slicing into a shared backing buffer.  The GC mark phase's
         alignment check (``(val - gc_heap_start) % 8 == 4`` in
         ``vera/codegen/assembly.py``) rejects interior pointers, so
@@ -3733,9 +3733,9 @@ class CallsStringsMixin:
             emit_slice_serial[0] += 1
             n = emit_slice_serial[0]
             return [
-                # slice_ptr = $alloc(seg_len)
+                # slice_ptr = $rt.alloc(seg_len)
                 f"{indent}local.get {seg_len}",
-                f"{indent}call $alloc",
+                f"{indent}call $rt.alloc",
                 f"{indent}local.set {slice_ptr}",
                 # Copy data[seg_start .. seg_start+seg_len] -> slice_ptr
                 f"{indent}i32.const 0",
@@ -3778,10 +3778,10 @@ class CallsStringsMixin:
         ins.append(f"local.set {ptr_s}")
         ins.extend(gc_shadow_push(ptr_s))
 
-        # data = $alloc(slen); copy s -> data (stable byte-source kept
+        # data = $rt.alloc(slen); copy s -> data (stable byte-source kept
         # rooted on the shadow stack while we emit per-slice copies)
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {data}")
         ins.extend(gc_shadow_push(data))
         ins.append("i32.const 0")
@@ -3975,7 +3975,7 @@ class CallsStringsMixin:
         ins.append(f"local.get {count}")
         ins.append("i32.const 8")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {outer}")
         ins.extend(gc_shadow_push(outer))
 

@@ -494,7 +494,7 @@ def contains_shadow_push(instructions: Iterable[str]) -> bool:
 
     Several call sites indent the emitted lines before appending them, so the
     match is on the stripped line.  ``$gc_stack_limit`` is read nowhere else
-    inside a function body: its only other consumers are ``$register_wrapper``
+    inside a function body: its only other consumers are ``$rt.register_wrapper``
     and the collector in ``vera/codegen/assembly.py``, which are assembled as
     whole functions and never flow through an instruction list.
     """

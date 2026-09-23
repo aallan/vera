@@ -1685,7 +1685,7 @@ class MonomorphizationMixin:
         # the caller emits a clean E613 (the same degradation a structurally
         # non-Eq field already gets).  Uniform shapes recur at CONSTANT nesting
         # depth and never approach this bound; it stays in lockstep with
-        # codegen's `$eq_<type>` generator, bounded at the SAME cap.
+        # codegen's `$rt.eq_<type>` generator, bounded at the SAME cap.
         if type_name.count("<") >= DERIVED_HELPER_DEPTH_CAP:
             return False
         seen = _seen | {type_name}

@@ -15,7 +15,7 @@ Vera reads a small set of `VERA_*` environment variables.  This document is the 
 | [`VERA_DB_URL`](#vera_db_url) | Database connection for the `DB` effect | runtime | optional (defaults to `sqlite::memory:`) |
 | [`VERA_JS_COVERAGE`](#vera_js_coverage) | Opt-in V8 coverage during browser-parity tests | dev / CI | optional |
 | [`VERA_Z3_TIMEOUT_MS`](#vera_z3_timeout_ms) | Per-query Z3 budget in milliseconds — raises or lowers the Tier 1 / Tier 3 boundary | verify / test / language server | optional (defaults to `10000`) |
-| [`VERA_EAGER_GC`](#vera_eager_gc) | Force `$gc_collect` on every allocation — debugging knob for GC-rooting bugs | compile-time (dev) | optional |
+| [`VERA_EAGER_GC`](#vera_eager_gc) | Force `$rt.gc_collect` on every allocation — debugging knob for GC-rooting bugs | compile-time (dev) | optional |
 | [`VERA_GC_CHECK_MARKS`](#vera_gc_check_marks) | Trap if a GC mark store targets an address that is not an object body — debugging knob for conservative-scan false positives | compile-time (dev) | optional |
 | [`VERA_DEBUG_HOST_ERRORS`](#vera_debug_host_errors) | Re-raise a host callback's original exception instead of converting it — debugging knob for host-binding bugs | runtime (dev) | optional |
 
@@ -122,7 +122,7 @@ Read by `vera/codegen/assembly.py::AssemblyMixin._emit_alloc`; affects the WAT t
 
 This was the diagnostic that cracked [#593](https://github.com/aallan/vera/issues/593): the rebuilt minimum reproducer crashed at generation 0 under `VERA_EAGER_GC=1` rather than around generation 20 without it, and the much smaller stack trace pinpointed the missing return-value root in `_compile_lifted_closure`.
 
-**Cost.**  Programs run orders of magnitude slower with `$gc_collect` on every allocation — never enable it in production or in normal test runs.  It's a debugging knob, not a release-build option.  Tests that exercise this knob live in `tests/test_codegen_closures.py::TestClosureReturnShadowPushBalance`.
+**Cost.**  Programs run orders of magnitude slower with `$rt.gc_collect` on every allocation — never enable it in production or in normal test runs.  It's a debugging knob, not a release-build option.  Tests that exercise this knob live in `tests/test_codegen_closures.py::TestClosureReturnShadowPushBalance`.
 
 ## `VERA_GC_CHECK_MARKS`
 

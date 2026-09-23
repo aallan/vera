@@ -340,7 +340,7 @@ _NAT_ARG_UNGUARDED_BUILTINS: frozenset[str] = frozenset({"string_slice"})
 #: `_compile_fn`'s does, the element walk included.  So the general rule — a
 #: built-in has no prologue to guard in — has exactly this exception, and it
 #: is measured rather than reasoned: for `apply_fn(fn(@Array<Pos> -> @Int) …,
-#: launder([1]))` the element loop lands in `$anon_0` and a violating element
+#: launder([1]))` the element loop lands in `$rt.anon_0` and a violating element
 #: traps there, naming the closure's signature.
 #:
 #: Kept out of `_callee_guards_in_its_prologue` deliberately: that predicate

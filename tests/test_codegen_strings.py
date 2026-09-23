@@ -927,7 +927,7 @@ class TestStringUtilities:
     trim_start, trim_end.
 
     All inline WAT.  The Array<String>-returning ones (chars, lines,
-    words) allocate each slice independently via ``$alloc`` rather
+    words) allocate each slice independently via ``$rt.alloc`` rather
     than slicing into a shared backing buffer; the GC mark phase
     rejects interior pointers, so per-slice allocation is required
     for elements to stay reachable across collections triggered

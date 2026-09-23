@@ -237,7 +237,7 @@ _UNLOWERABLE_ARMS: list[tuple[str, str, str, str]] = [
     ("array-bool", "@Array<Int>", "[1, 2]", "true -> 100,"),
     ("array-int", "@Array<Int>", "[1, 2]", "1 -> 100,"),
     # #1380: a string literal over a STRING scrutinee left this table — it
-    # has a lowering now (`$eq_String`, the comparison `==` already uses),
+    # has a lowering now (`$rt.eq_String`, the comparison `==` already uses),
     # and `tests/test_codegen_match_literal_arms.py` runs it.  Its
     # ARRAY-scrutinee twin stays, and is the cell that keeps the admission
     # keyed on the scrutinee's Vera type rather than on its representation:
@@ -265,7 +265,7 @@ class TestPairScrutineeGuardIsAWhitelist:
     What the whitelist admits is "the forms that HAVE a lowering", which is
     why #1380 could add the string literal over a String scrutinee to it
     without weakening the rule: the arm compares two (ptr, len) pairs
-    through `$eq_String`.  Everything here is a form that still has no
+    through `$rt.eq_String`.  Everything here is a form that still has no
     lowering over the representation it is written against.
     """
 
@@ -421,7 +421,7 @@ class TestPairScrutineeRooting:
 
     Both pushes this class originally pinned are gone.  They rooted an
     ADDRESS the producer had already rooted (a parameter in the prologue, an
-    allocation at its ``$alloc``, a call's result in the callee's epilogue):
+    allocation at its ``$rt.alloc``, a call's result in the callee's epilogue):
     the scrutinee copy, and then the binder's copy of that copy.  The shadow
     stack roots addresses, not locals, so the duplicates bought the mark
     phase nothing while costing two slots for the whole frame — three roots

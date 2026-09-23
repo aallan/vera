@@ -294,7 +294,7 @@ class TestCompositePostconditionVerifies912:
 # exported — a bare generic fn cannot escape higher-order (that is a parse
 # error, E005), so it can never reach a `call_indirect`/table.  Every reachable
 # call dispatches to a MONOMORPHIZED clone `$id2$Int` whose `@Box<Int>.result ==
-# @Box<Int>.0` is lowered STRUCTURALLY (`call $eq_Box_LInt_R`, since `Box<Int>`
+# @Box<Int>.0` is lowered STRUCTURALLY (`call $rt.eq_Box_LInt_R`, since `Box<Int>`
 # is concrete and NOT matched by the free-var guard), correctly discharging the
 # Tier-1 proof.  The `rebox`-style test below is the direct witness: a result
 # that is a FRESHLY-constructed, structurally-equal, DIFFERENT-pointer box is
@@ -349,7 +349,7 @@ def _mono_clone_postcond_wat(source: str, clone: str) -> str:
 
     Slices from the clone's `(func $<clone>` header to the next `(func ` so a
     test can assert HOW its postcondition `==` was lowered (structural
-    `call $eq_...` vs scalar `i32.eq`).
+    `call $rt.eq_...` vs scalar `i32.eq`).
     """
     result = _compile(source)
     errors = [d for d in result.diagnostics if d.severity == "error"]
@@ -409,15 +409,15 @@ class TestGenericParamAdtPostcondition912:
     def test_reachable_mono_clone_postcondition_is_structural(self) -> None:
         # Pins the ACTUAL soundness invariant: the REACHABLE monomorphized clone
         # (`$rebox$Int`, the one `main` calls) lowers its postcondition `==`
-        # STRUCTURALLY (`call $eq_...`), never a scalar `i32.eq` pointer compare.
+        # STRUCTURALLY (`call $rt.eq_...`), never a scalar `i32.eq` pointer compare.
         # This is what makes the free-var scalar fallback on the dead BASE clone
         # harmless.  (The check keys on the postcondition dispatch: the mono
-        # clone must contain a structural `call $eq_` helper call.)
+        # clone must contain a structural `call $rt.eq_` helper call.)
         src = _REBOX.format(ensures="@Box<T>.result == @Box<T>.0")
         clone_wat = _mono_clone_postcond_wat(src, "rebox$Int")
-        assert "call $eq_" in clone_wat, (
+        assert "call $rt.eq_" in clone_wat, (
             "the reachable mono clone's postcondition `==` must be lowered "
-            f"structurally (call $eq_...), got:\n{clone_wat}"
+            f"structurally (call $rt.eq_...), got:\n{clone_wat}"
         )
 
 

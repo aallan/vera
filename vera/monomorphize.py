@@ -409,7 +409,7 @@ def declared_return_clone_key(te: ast.TypeExpr | None) -> str | None:
 
 # Source character -> its two-character `_X` escape code.  These, plus the
 # `", "` pair below, are the PRE-#1219 alphabet and their meanings are
-# FROZEN: every family name, Z3 sort, `$eq_` helper and mono clone the
+# FROZEN: every family name, Z3 sort, `$rt.eq_` helper and mono clone the
 # compiler already emits is named through them, so changing one renames
 # symbols across the corpus.  Anything else outside `[A-Za-z0-9_]` takes the
 # `_U<hex>_` escape below.
@@ -441,7 +441,7 @@ def mangle_type_name(type_name: str) -> str:
     """Escape a canonical Vera type name for embedding in a WAT identifier.
 
     The ONE escape convention for type names in WAT symbols (#775): the
-    structural-Eq helper namer (``$eq_<type>``, ``vera/wasm/operators.py``,
+    structural-Eq helper namer (``$rt.eq_<type>``, ``vera/wasm/operators.py``,
     #773), the mono-clone namer (:meth:`Monomorphizer._mangle_fn_name`), the
     Z3 sort namer (``vera/smt.py``) and the State/Exn cell-family symbols
     (``vera/codegen/assembly.py``) all delegate here, so the naming families

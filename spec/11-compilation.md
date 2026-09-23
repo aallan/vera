@@ -414,7 +414,7 @@ The WASM module includes a `funcref` table for indirect function calls:
 ```wat
 (type $closure_sig_0 (func (param i32) (param i64) (result i64)))
 (table N funcref)
-(elem (i32.const 0) func $anon_0 $anon_1 ...)
+(elem (i32.const 0) func $rt.anon_0 $rt.anon_1 ...)
 ```
 
 Each closure signature (unique combination of parameter and return types) gets a `$closure_sig_N` type declaration. The table is sized to hold all lifted functions, and the element section maps table indices to function names.
@@ -428,7 +428,7 @@ Anonymous functions are compiled as module-level WASM functions (not nested). Ea
 - Load instructions at the function entry to extract captured values from the environment
 
 ```wat
-(func $anon_0 (param $env i32) (param $p0 i64) (result i64)
+(func $rt.anon_0 (param $env i32) (param $p0 i64) (result i64)
     (local $l2 i64)
     local.get 0          ;; env pointer
     i64.load offset=8    ;; load captured value
@@ -524,7 +524,7 @@ Element sizes in linear memory:
 An array literal `[a, b, c]` compiles to:
 
 1. Compute `total_bytes = n * element_size`
-2. `call $alloc` to allocate contiguous memory
+2. `call $rt.alloc` to allocate contiguous memory
 3. Store each element at `ptr + i * element_size`
 4. Push `(ptr, n)` on the WASM stack
 

@@ -179,7 +179,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 }
 """
         result = _compile_ok(src)
-        assert "call $alloc" in result.wat
+        assert "call $rt.alloc" in result.wat
 
     def test_array_wat_has_bounds_check(self) -> None:
         """Array indexing WAT should contain unreachable for OOB."""
@@ -3830,7 +3830,7 @@ public fn main(-> @Int)
 
         Exercises the len==0 path: the loop's initial bounds check
         (``idx >= arr_len`` with both 0) must break out immediately,
-        no callback invocation, and the $alloc(0) must not trap.
+        no callback invocation, and the $rt.alloc(0) must not trap.
         Folding over the empty result with a sum-counter yields 0.
         """
         src = """\
@@ -3872,7 +3872,7 @@ public fn main(-> @Int)
 
         Exercises the len==0 path for the two-pass flatten: the
         first pass (summing inner lengths) exits at idx==0, total
-        stays at 0, $alloc(0) succeeds, the second pass is likewise
+        stays at 0, $rt.alloc(0) succeeds, the second pass is likewise
         empty.  No trap despite the zero-byte allocation.
         """
         src = """\

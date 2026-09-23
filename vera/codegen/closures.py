@@ -205,17 +205,17 @@ class ClosureLiftingMixin:
                 any_failed = True
                 continue
             new_closure_fns_wat.append(lifted_wat)
-            new_closure_table.append(f"$anon_{closure_id}")
+            new_closure_table.append(f"$rt.anon_{closure_id}")
 
             # #516 Stage 2 — record source location for trap mapping.
-            # The lifted WAT name is `$anon_N`; trap frames will see
-            # `anon_N` (no leading `$`) in func_name.  Use the source
+            # The lifted WAT name is `$rt.anon_N`; trap frames will see
+            # `rt.anon_N` (no leading `$`) in func_name.  Use the source
             # span of the original `fn(...) { ... }` expression so a
             # trap inside a closure points back to the syntactic
             # `fn` site, not to the synthetic top-level wrapper.
             if anon_fn.span is not None:
                 new_source_map.append((
-                    f"anon_{closure_id}",
+                    f"rt.anon_{closure_id}",
                     (
                         self.file or "<unknown>",
                         anon_fn.span.line,
@@ -306,7 +306,7 @@ class ClosureLiftingMixin:
         """Compile an anonymous function to a module-level WASM function.
 
         The lifted function signature:
-          (func $anon_N (param $env i32) (param ...) (result ...))
+          (func $rt.anon_N (param $env i32) (param ...) (result ...))
 
         The first parameter is the closure environment pointer.
         Captured values are loaded from the environment into locals.
@@ -367,7 +367,7 @@ class ClosureLiftingMixin:
         # #514: share the module-level sig dict and closure-ID counter
         # with the inner ctx so that any new sigs / IDs it registers
         # get module-unique names (avoids ``$closure_sig_0`` /
-        # ``$anon_0`` collisions when nested closures are lifted).
+        # ``$rt.anon_0`` collisions when nested closures are lifted).
         # Sigs are by-reference: writes inside the inner ctx land
         # directly in the module-level dict, no merge needed.
         ctx._closure_sigs = self._closure_sigs
@@ -782,7 +782,7 @@ class ClosureLiftingMixin:
         # a Byte write exactly as a named function's is, and only the named
         # path coerced it: `fn(@Bool -> @Byte) { 207 }` behind an `apply_fn`
         # emitted `i64.const 207` into an `(result i32)` and the lifted
-        # `$anon_0` failed WASM validation, on a check-green program, while
+        # `$rt.anon_0` failed WASM validation, on a check-green program, while
         # its named twin `fn g(@Bool -> @Byte) { 207 }` ran.  Same gate, same
         # place in the sequence: after the body, before anything that reads
         # the result at `ret_wt` (the #1032 refined-return guard below saves
@@ -1084,7 +1084,7 @@ class ClosureLiftingMixin:
                 gc_epilogue.append(f"local.get {gc_ret}")
 
         # Assemble the lifted function WAT (not exported)
-        fn_name = f"$anon_{closure_id}"
+        fn_name = f"$rt.anon_{closure_id}"
         header = f"  (func {fn_name}"
         if param_parts:
             header += " " + " ".join(param_parts)

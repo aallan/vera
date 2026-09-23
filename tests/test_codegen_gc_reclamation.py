@@ -236,7 +236,7 @@ class TestHostHandleReclamation573:
       codec thousands of times without corruption.
     * **wrap-table machinery present** — Map / Set / JSON / HTML /
       Decimal modules emit the ``host_decref_handle`` import,
-      ``$register_wrapper`` (with its #579 compaction slow path), and
+      ``$rt.register_wrapper`` (with its #579 compaction slow path), and
       export.  Post-#706 only Decimal actually registers; the infra is
       still gated on the broad ops predicate, so it is emitted (but
       unused) for non-Decimal modules too — conservative and
@@ -473,7 +473,7 @@ public fn main(@Unit -> @Bool)
     def test_json_only_module_includes_wrap_table(self) -> None:
         """A module that uses ONLY ``json_parse`` (no user-level
         ``map_*`` ops) still emits the wrap-table infrastructure
-        (``host_decref_handle`` import, ``$register_wrapper``, export).
+        (``host_decref_handle`` import, ``$rt.register_wrapper``, export).
 
         The ``_decref_used`` / ``_needs_wrap_table`` predicates flip on
         ``_json_ops_used`` / ``_html_ops_used`` (this was #573 finding
@@ -505,12 +505,12 @@ public fn main(@Unit -> @Int)
             "missing the host_decref_handle import (gated on "
             "_json_ops_used so the wrap-table machinery is present)."
         )
-        assert "$register_wrapper" in wat, (
+        assert "$rt.register_wrapper" in wat, (
             "#573 finding 5 regression: JSON-only program is "
-            "missing the $register_wrapper helper; the host must not "
+            "missing the $rt.register_wrapper helper; the host must not "
             "trap at instantiation reaching for the export."
         )
-        assert '(export "register_wrapper"' in wat, (
+        assert '(export "vera.register_wrapper"' in wat, (
             "#573 finding 5 regression: JSON-only program is "
             "missing the register_wrapper export."
         )
@@ -549,25 +549,25 @@ public fn main(@Unit -> @Int)
             "host_decref_handle import (gated on _html_ops_used so "
             "the wrap-table machinery is present)."
         )
-        assert "$register_wrapper" in wat, (
+        assert "$rt.register_wrapper" in wat, (
             "#573 finding 5 regression (HTML): missing "
-            "$register_wrapper helper."
+            "$rt.register_wrapper helper."
         )
-        assert '(export "register_wrapper"' in wat, (
+        assert '(export "vera.register_wrapper"' in wat, (
             "#573 finding 5 regression (HTML): missing "
             "register_wrapper export."
         )
         assert _run(src) == 1
 
     def test_register_wrapper_has_compaction_slow_path(self) -> None:
-        """``$register_wrapper`` triggers ``$gc_collect`` on
+        """``$rt.register_wrapper`` triggers ``$rt.gc_collect`` on
         overflow before trapping (#579).
 
         Pre-#579 the function trapped with ``unreachable`` the
         moment ``$gc_wrap_ptr >= $gc_wrap_end`` — even if
         compaction would have freed thousands of dead entries.
         Post-fix the slow path roots the in-flight wrapper on
-        the shadow stack, calls ``$gc_collect`` (which runs
+        the shadow stack, calls ``$rt.gc_collect`` (which runs
         Phase 2c compaction), pops the root, and re-checks; only
         if the table is still full does it trap.
 
@@ -575,7 +575,7 @@ public fn main(@Unit -> @Int)
         triggering the slow path under a real workload is hard:
         every wrapper IS also a heap allocation, so wrap-table-
         full and heap-full happen at similar cadences and
-        ``$alloc`` triggers GC first under normal conditions.
+        ``$rt.alloc`` triggers GC first under normal conditions.
         Asserting the slow-path WAT is present pins that the
         emitter wired up the compaction call correctly; if a
         future refactor reverts to the unconditional trap, this
@@ -593,21 +593,21 @@ public fn main(@Unit -> @Int)
 }
 """
         wat = _compile_ok(src).wat
-        # Locate the $register_wrapper function body.
+        # Locate the $rt.register_wrapper function body.
         fn_match = re.search(
-            r"\(func \$register_wrapper\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            r"\(func \$rt.register_wrapper\b.*?(?=\n  \(func |\n\s*\)\s*$)",
             wat, re.DOTALL,
         )
         assert fn_match is not None, (
-            "$register_wrapper not emitted in WAT — wrap-table "
+            "$rt.register_wrapper not emitted in WAT — wrap-table "
             "infrastructure may be missing despite a Map op being "
             "used"
         )
         body = fn_match.group(0)
         # Slow path must call $gc_collect.
-        assert "call $gc_collect" in body, (
-            "#579 regression: $register_wrapper has no "
-            "$gc_collect call in its overflow path.  Pre-#579 it "
+        assert "call $rt.gc_collect" in body, (
+            "#579 regression: $rt.register_wrapper has no "
+            "$rt.gc_collect call in its overflow path.  Pre-#579 it "
             "trapped unconditionally; post-fix it must compact "
             "first.  Without the slow path, programs hitting the "
             "wrap-table ceiling trap even when most entries are "
@@ -626,12 +626,12 @@ public fn main(@Unit -> @Int)
             r"i32\.const 4\s+"
             r"i32\.add\s+"
             r"global\.set \$gc_sp.*?"
-            r"call \$gc_collect",
+            r"call \$rt.gc_collect",
             body, re.DOTALL,
         )
         assert push_before_collect is not None, (
-            "#579 regression: $register_wrapper calls "
-            "$gc_collect but doesn't shadow-push $ptr first.  "
+            "#579 regression: $rt.register_wrapper calls "
+            "$rt.gc_collect but doesn't shadow-push $ptr first.  "
             "Without rooting, Phase 2b marks the in-flight "
             "wrapper unreachable, Phase 3 frees it, and the "
             "post-collect append writes to a freed object."
@@ -640,7 +640,7 @@ public fn main(@Unit -> @Int)
         # `i32.ge_u` operations (the initial overflow check, and
         # the post-compaction re-check).
         assert body.count("i32.ge_u") >= 2, (
-            "#579 regression: $register_wrapper has fewer than 2 "
+            "#579 regression: $rt.register_wrapper has fewer than 2 "
             "`i32.ge_u` ops; the post-compaction re-check is "
             "likely missing."
         )
@@ -654,7 +654,7 @@ public fn main(@Unit -> @Int)
         # Match both with the pop strictly preceding the
         # re-check (in the same slow-path region).
         balance_pattern = re.search(
-            r"call \$gc_collect.*?"
+            r"call \$rt\.gc_collect.*?"
             r"global\.get \$gc_sp\s+"
             r"i32\.const 4\s+"
             r"i32\.sub\s+"
@@ -667,7 +667,7 @@ public fn main(@Unit -> @Int)
         assert balance_pattern is not None, (
             "#579 regression: shadow-stack imbalance on trap "
             "path.  The pop of the temporary root must appear "
-            "between $gc_collect and the post-compaction "
+            "between $rt.gc_collect and the post-compaction "
             "re-check guard — otherwise the trap leaves $gc_sp "
             "one slot above its caller-entry level.  Today the "
             "trap is `unreachable` and the WASM module aborts, "

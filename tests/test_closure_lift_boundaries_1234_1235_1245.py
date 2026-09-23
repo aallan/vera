@@ -152,7 +152,7 @@ public fn main(@Unit -> @Nat)
 # `_compile_lifted_closure`'s own context during the first pass, so the
 # outer function context never sees it.  Without the hand-back the
 # return-refinement's closure reuses that id — mutation-measured as
-# `duplicate func identifier $anon_1` at whole-module WAT.  A body closure
+# `duplicate func identifier $rt.anon_1` at whole-module WAT.  A body closure
 # with NO nesting does not distinguish: the outer context allocated that id
 # itself and is already past it, so the test would pass either way.
 #
@@ -219,7 +219,7 @@ class TestAClosureInAReturnPositionPredicateIsLifted:
 
         The second pass has to resume from the id the first left.  Measured
         against the mutant that drops the hand-back: `duplicate func
-        identifier $anon_1` at whole-module WAT, because the nested closure's
+        identifier $rt.anon_1` at whole-module WAT, because the nested closure's
         id was allocated inside the first pass's own context and the outer
         one never saw it.  Three distinct lifted functions and a value of 23
         are the two halves of the assertion — a crossed id is either a
@@ -230,9 +230,9 @@ class TestAClosureInAReturnPositionPredicateIsLifted:
         wat = _compile(_TWO_CLOSURES_ONE_FUNCTION).wat or ""
         names = sorted(
             line.split()[1] for line in wat.splitlines()
-            if line.strip().startswith("(func $anon_")
+            if line.strip().startswith("(func $rt.anon_")
         )
-        assert names == ["$anon_0", "$anon_1", "$anon_2"], names
+        assert names == ["$rt.anon_0", "$rt.anon_1", "$rt.anon_2"], names
         _assert_call_indirect_iff_table(wat)
 
 

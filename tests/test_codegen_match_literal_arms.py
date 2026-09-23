@@ -23,7 +23,7 @@ omission, both measured on ``origin/release/v0.2.0`` (6dc41d40):
 
 The fix is one literal-comparison emitter keyed by that representation
 (i32 for ``Byte``/``Bool``, i64 for ``Int``/``Nat``, the pair for
-``String`` through the same ``$eq_String`` helper ``==`` already uses),
+``String`` through the same ``$rt.eq_String`` helper ``==`` already uses),
 and a dispatch that is exhaustive over the pattern forms the grammar
 has, so a form nobody wrote an arm for is refused loudly instead of
 falling through to whatever the last branch happened to be.
@@ -173,14 +173,14 @@ class TestComparisonWidthInTheWat:
         assert "i64.const 200" in wat and "i64.eq" in wat, wat[:400]
 
     def test_string_compares_through_the_shared_helper(self) -> None:
-        """The same `$eq_String` content comparison `==` uses.
+        """The same `$rt.eq_String` content comparison `==` uses.
 
         One place knows how a String is compared; a second byte-loop
         written for match arms could drift from it.
         """
         wat = self._wat("@String", STRING_ARMS, '"yes"')
-        assert "call $eq_String" in wat
-        assert wat.count("$eq_String") >= 2  # the helper and its call(s)
+        assert "call $rt.eq_String" in wat
+        assert wat.count("$rt.eq_String") >= 2  # the helper and its call(s)
 
 
 # =====================================================================

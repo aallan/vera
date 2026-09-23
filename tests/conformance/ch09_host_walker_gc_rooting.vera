@@ -4,7 +4,7 @@
 -- ``json_parse`` / ``md_parse`` could trap with
 -- ``Out-of-bounds memory access`` when the input was large
 -- enough that the host-side tree marshalling triggered a
--- ``$gc_collect`` mid-walk — intermediate WASM heap pointers
+-- ``$rt.gc_collect`` mid-walk — intermediate WASM heap pointers
 -- (``arr_ptr`` / ``name_ptr`` / ``wrapper_ptr``) lived in Python
 -- locals invisible to the conservative GC scan, so the GC
 -- reclaimed them and the next write corrupted the free list.
@@ -25,7 +25,7 @@
 -- the wrap-table — unrelated to the GC-rooting fix this test
 -- pins; the 500 case already exercises the GC pressure path
 -- (heap grows from 1 page to ~3 pages, fires multiple
--- ``$gc_collect`` cycles during ``write_html``'s walk).
+-- ``$rt.gc_collect`` cycles during ``write_html``'s walk).
 -- ================================================================
 public fn test_html_parse_many_elements(@Unit -> @Int)
   requires(true)

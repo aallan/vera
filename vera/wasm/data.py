@@ -347,7 +347,7 @@ class DataMixin:
         tmp = self.alloc_local("i32")
         return [
             f"i32.const {layout.total_size}",
-            "call $alloc",
+            "call $rt.alloc",
             f"local.tee {tmp}",
             f"i32.const {layout.tag}",
             "i32.store",
@@ -472,7 +472,7 @@ class DataMixin:
         tmp = self.alloc_local("i32")
         instructions: list[str] = [
             f"i32.const {total_size}",
-            "call $alloc",
+            "call $rt.alloc",
             f"local.tee {tmp}",
             f"i32.const {layout.tag}",
             "i32.store",
@@ -871,7 +871,7 @@ class DataMixin:
             # with no diagnostic at all.  Enumerating what IS lowerable
             # cannot fail that way when a pattern kind is added.
             #
-            # A STRING literal joined that list with #1380: `$eq_String`
+            # A STRING literal joined that list with #1380: `$rt.eq_String`
             # compares exactly a pair of (ptr, len) pairs, so the arm has a
             # real lowering — but only where the pair IS a string.  An
             # `Array<T>` has the same representation and none of the
@@ -902,7 +902,7 @@ class DataMixin:
             # NOT rooted (#1322).  ``ptr_local`` is a COPY of the address the
             # scrutinee expression just produced, and every producer of a heap
             # pointer already roots it: a parameter in the function prologue,
-            # an allocation at its ``$alloc`` site, a call's result in the
+            # an allocation at its ``$rt.alloc`` site, a call's result in the
             # callee's epilogue, a ``let`` at its binding.  The shadow stack
             # roots ADDRESSES, not locals, so a second push of the same
             # address buys the mark phase nothing — while costing a slot for
@@ -1283,7 +1283,7 @@ class DataMixin:
         from a `vera compile` that reported success.
 
         A `String` scrutinee is the (ptr, len) pair, compared through the
-        same `$eq_String` helper `==` uses, so the two spellings of "are
+        same `$rt.eq_String` helper `==` uses, so the two spellings of "are
         these strings equal" cannot drift apart.
         """
         if isinstance(pattern, ast.StringPattern):
@@ -1305,7 +1305,7 @@ class DataMixin:
                 f"local.get {scr_local + 1}",   # scrutinee len (consecutive)
                 f"i32.const {offset}",
                 f"i32.const {length}",
-                "call $eq_String",
+                "call $rt.eq_String",
             ]
 
         if scr_wasm_type not in self._SCALAR_LITERAL_COMPARE:
@@ -1970,7 +1970,7 @@ class DataMixin:
     ) -> list[str] | None:
         """Translate an array literal to (ptr, len) on the stack.
 
-        Allocates heap memory via $alloc, stores each element, then
+        Allocates heap memory via $rt.alloc, stores each element, then
         pushes (ptr, len) as an i32 pair.  Empty arrays push (0, 0).
         """
         n = len(expr.elements)
@@ -2032,7 +2032,7 @@ class DataMixin:
         instructions: list[str] = []
         # Allocate
         instructions.append(f"i32.const {total_bytes}")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {tmp_ptr}")
         instructions.extend(gc_shadow_push(tmp_ptr))
 

@@ -761,17 +761,20 @@ class TestResolveTrapFrames516:
         assert frames[0].is_builtin is False
 
     def test_builtin_helpers_tagged_as_builtin(self) -> None:
-        """alloc / gc_collect / contract_fail must NOT claim a source.
+        """The runtime's functions and the host imports claim no source.
 
-        A frame inside ``$gc_collect`` carries the WAT name
-        ``gc_collect``; the resolver must recognise it as runtime
+        A frame inside ``$rt.gc_collect`` carries the WAT name
+        ``rt.gc_collect``; the resolver must recognise it as runtime
         infrastructure and tag it accordingly rather than reporting
         a misleading file:line lookup miss as ``<unknown>``.
         """
         from vera.runtime.traps import _resolve_trap_frames
         src_map: dict[str, tuple[str, int, int]] = {}
 
-        for name in ("alloc", "gc_collect", "contract_fail"):
+        for name in (
+            "rt.alloc", "rt.gc_collect", "rt.eq_List", "rt.show_List",
+            "vera.contract_fail", "vera.print",
+        ):
             exc = self._make_exc(self._frame(name))
             frames = _resolve_trap_frames(exc, src_map)
             assert len(frames) == 1
@@ -780,14 +783,35 @@ class TestResolveTrapFrames516:
             assert frames[0].line_start is None
             assert frames[0].is_builtin is True, name
 
-    def test_builtin_prefix_matches(self) -> None:
-        """exn_* / vera.* / closure_sig_* are also runtime infrastructure."""
+    def test_user_fn_named_like_a_runtime_helper_keeps_its_source(
+        self,
+    ) -> None:
+        """#1494: a user function may be called ``alloc``, ``exn_count`` or
+        ``closure_sig_3``.  The runtime's own names are in the ``rt.`` and
+        ``vera.`` namespaces, so a bare name is never the runtime's, and a
+        source-map hit is the user's frame whatever it is called."""
         from vera.runtime.traps import _resolve_trap_frames
 
-        for name in ("exn_String", "vera.print", "closure_sig_3"):
-            exc = self._make_exc(self._frame(name))
-            frames = _resolve_trap_frames(exc, {})
-            assert frames[0].is_builtin is True, name
+        for name in ("alloc", "gc_collect", "exn_count", "closure_sig_3"):
+            src_map = {name: ("/tmp/u.vera", 2, 4)}
+            frames = _resolve_trap_frames(
+                self._make_exc(self._frame(name)), src_map,
+            )
+            assert frames[0].is_builtin is False, name
+            assert frames[0].file == "/tmp/u.vera", name
+
+    def test_lifted_closure_resolves_through_the_source_map(self) -> None:
+        """A lifted closure is the runtime's SYMBOL for user code: its
+        ``rt.anon_N`` frame resolves to the ``fn(...)`` site it was
+        registered with, not to ``<builtin>``."""
+        from vera.runtime.traps import _resolve_trap_frames
+
+        src_map = {"rt.anon_0": ("/tmp/c.vera", 7, 9)}
+        frames = _resolve_trap_frames(
+            self._make_exc(self._frame("rt.anon_0")), src_map,
+        )
+        assert frames[0].is_builtin is False
+        assert frames[0].line_start == 7
 
     def test_monomorphized_name_resolves_to_base(self) -> None:
         """`identity$Int` looks up `identity` after the rightmost `$`.
@@ -1689,7 +1713,7 @@ public fn add_one(@Int -> @Int)
         assert end >= 4
 
     def test_lifted_closure_registered_under_anon_id(self) -> None:
-        """Each ``fn(...) { ... }`` lifts to ``$anon_N`` with a source loc.
+        """Each ``fn(...) { ... }`` lifts to ``$rt.anon_N`` with a source loc.
 
         The trap-frame resolver looks up ``anon_N`` in the map; if
         registration broke, traps inside closures would fall through
@@ -1709,10 +1733,10 @@ public fn run(@Unit -> @Int)
         result = self._compile(source)
         anon_keys = [
             k for k in result.fn_source_map  # type: ignore[attr-defined]
-            if k.startswith("anon_")
+            if k.startswith("rt.anon_")
         ]
         assert anon_keys, (
-            "Expected at least one anon_N entry in fn_source_map; got: "
+            "Expected at least one rt.anon_N entry in fn_source_map; got: "
             f"{list(result.fn_source_map)}"  # type: ignore[attr-defined]
         )
 
@@ -1803,8 +1827,8 @@ public fn run(@Option<Int> -> @Int)
         """Compiler-emitted helpers (alloc, gc_collect) must NOT appear.
 
         If they did, the resolver would surface them as "user" frames
-        with bogus locations.  These WASM helpers (`$alloc`,
-        `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) are
+        with bogus locations.  These WASM helpers (`$rt.alloc`,
+        `$rt.gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) are
         emitted directly into WAT by the assembly module — they
         never go through `_register_fn` at all, which is why no
         entry exists.  Prelude-injected functions (a different class
@@ -1919,7 +1943,7 @@ class TestHostPrintInvalidUtf8589:
         wat = (
             "(module\n"
             '  (import "probe" "read" (func $read (param i32 i32)))\n'
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             '  (func (export "run")\n'
             "    i32.const 0\n"
@@ -2014,7 +2038,7 @@ class TestHostPrintInvalidUtf8589:
         wat_bytes = "".join(f"\\{b:02x}" for b in invalid_bytes)
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             ")\n"
         )
@@ -2022,7 +2046,7 @@ class TestHostPrintInvalidUtf8589:
         store = wasmtime.Store(engine)
         module = wasmtime.Module(engine, wat)
         instance = wasmtime.Instance(store, module, [])
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
 
         # In-bounds invalid bytes → safe-decoded str with U+FFFD.
@@ -2071,7 +2095,7 @@ class TestHostPrintInvalidUtf8589:
         wat = (
             "(module\n"
             '  (import "vera" "print" (func $print (param i32 i32)))\n'
-            '  (memory (export "memory") 1)\n'
+            '  (memory (export "vera.memory") 1)\n'
             f'  (data (i32.const 0) "{wat_bytes}")\n'
             '  (func (export "run")\n'
             "    i32.const 0\n"
@@ -2104,7 +2128,7 @@ class TestHostPrintInvalidUtf8589:
         def host_print_strict(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> None:
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             buf = memory.data_ptr(caller)
             bytes(buf[ptr:ptr + length]).decode("utf-8")  # strict — raises
@@ -2118,7 +2142,7 @@ class TestHostPrintInvalidUtf8589:
         def host_print_replace(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> None:
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             buf = memory.data_ptr(caller)
             decoded.append(
@@ -2780,7 +2804,7 @@ def _read_wasm_string_via_caller(ptr: int, length: int) -> str:
     """Invoke the production ``_read_wasm_string`` with a live ``Caller``.
 
     ``_read_wasm_string`` needs a mid-call ``wasmtime.Caller`` (it reads
-    ``caller["memory"]``), which only exists inside a host trampoline — so a
+    ``caller["vera.memory"]``), which only exists inside a host trampoline — so a
     guest ``run`` calls a void host ``probe`` that forwards the given
     ``(ptr, length)`` to the real reader over a fresh 1-page (65536-byte)
     memory.  Returns the decoded string, or propagates the reader's
@@ -2794,7 +2818,7 @@ def _read_wasm_string_via_caller(ptr: int, length: int) -> str:
     wat = (
         "(module\n"
         '  (import "probe" "go" (func $go))\n'
-        '  (memory (export "memory") 1)\n'
+        '  (memory (export "vera.memory") 1)\n'
         '  (func (export "run") call $go)\n'
         ")\n"
     )

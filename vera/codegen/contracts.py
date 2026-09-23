@@ -1786,7 +1786,7 @@ class ContractsMixin:
         arguments (an ``Int`` payload is an 8-byte i64, pushing the tail
         past the generic layout's offset), so a rank walk over the
         generic offsets reads a payload as a pointer.  Ranking those
-        needs per-instantiation helpers (the ``$eq_<type>`` pattern);
+        needs per-instantiation helpers (the ``$rt.eq_<type>`` pattern);
         until then a generic-typed measure gets no guard rather than a
         wrong one.  Other ADT-valued expressions (a call returning an
         ADT) are likewise not yet rankable.
@@ -1813,7 +1813,7 @@ class ContractsMixin:
     def _dec_rank_helper(self, adt_name: str) -> str | None:
         """Emit (once) and name the structural-size helper for *adt_name*.
 
-        ``$dec_size_<T>(ptr) -> i64`` counts constructors: 1 for the node
+        ``$rt.dec_size_<T>(ptr) -> i64`` counts constructors: 1 for the node
         plus the recursive size of every field whose declared type is
         itself a layout-backed ADT.  Scalar fields and erased
         type-parameter fields contribute nothing — the order is the
@@ -1823,7 +1823,7 @@ class ContractsMixin:
         ``field_types``) is unavailable — the caller then emits no guard.
         """
         mangled = mangle_type_name(adt_name)
-        fn_name = f"$dec_size_{mangled}"
+        fn_name = f"$rt.dec_size_{mangled}"
         if fn_name in self._dec_rank_helpers:
             return fn_name
         layouts = self._adt_layouts.get(adt_name)

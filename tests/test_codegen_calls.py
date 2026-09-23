@@ -343,7 +343,7 @@ public fn f(-> @Int)
         the GC epilogue (restore `$gc_sp`, unwind shadow stack)
         never runs.  For an allocating function with tail calls,
         that would leak shadow-stack slots once per iteration and
-        trap on the next `$alloc` once gc_sp passes the worklist
+        trap on the next `$rt.alloc` once gc_sp passes the worklist
         boundary.
 
         Pre-#549: the post-process reverted every `return_call` →
@@ -1340,7 +1340,7 @@ public fn main(@Unit -> @Int)
         large temporary arrays *before* reading the captured array's
         length.  If the capture root were pushed in the prologue
         (pre-fix, before loads), the shadow stack would carry zero —
-        and a `$gc_collect` triggered by these in-body allocations
+        and a `$rt.gc_collect` triggered by these in-body allocations
         could mark the captured array unreachable and sweep it,
         leaving the subsequent `array_length(@Array<Int>.0)` reading
         from freed memory.

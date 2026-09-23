@@ -995,7 +995,7 @@ def test_a_guarded_closure_boundary_carries_the_loop_it_claims(
     assert statuses["tier3_unguarded"] + statuses["violated"] >= 1, statuses
 
     loops = _element_loops(tmp_path, _CLOSURE_ONLY, "closure-only")
-    lifted = {fn: n for fn, n in loops.items() if fn.startswith("$anon")}
+    lifted = {fn: n for fn, n in loops.items() if fn.startswith("$rt.anon")}
     assert lifted, (
         f"the obligation claims a runtime check at the closure boundary and "
         f"the module carries no element loop in any lifted body: {loops}"

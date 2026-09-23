@@ -184,7 +184,7 @@ class OperatorsMixin:
             # i64 comparison table below emitted `i64.lt_s` on the pointer
             # word (both a wrong-order result AND an i32/i64 type mismatch that
             # crashed WASM translation).  `String` IS orderable (spec §4.5,
-            # lexicographic), so lower to a three-way `$cmp_String` helper
+            # lexicographic), so lower to a three-way `$rt.cmp_String` helper
             # (byte-wise, proper-prefix-is-less — matching Z3's `StringSort`
             # ordering the verifier already uses, so verify ↔ run agree) and
             # test its {-1,0,1} result against zero with the scalar i32 op.
@@ -196,7 +196,7 @@ class OperatorsMixin:
                 self._request_string_cmp_helper()
                 zero_cmp = self._CMP_OPS[op].replace("i64.", "i32.")
                 return left + right + [
-                    "call $cmp_String", "i32.const 0", zero_cmp,
+                    "call $rt.cmp_String", "i32.const 0", zero_cmp,
                 ]
             if ltype == "i32" and rtype == "i32":
                 # Byte operands use unsigned i32 comparison
@@ -372,10 +372,10 @@ class OperatorsMixin:
     # -----------------------------------------------------------------
     #
     # Structural `Eq` auto-derivation (§9.8).  A comparison site emits a `call`
-    # to a generated per-instantiation `$eq_<type>` helper; the helpers compare
+    # to a generated per-instantiation `$rt.eq_<type>` helper; the helpers compare
     # two heap pointers structurally, dispatching each field by its *Vera* type
     # — scalar `.eq`, String content comparison, or recursion into a nested
-    # ADT's own `$eq_` helper.  Generating real functions (rather than inline
+    # ADT's own `$rt.eq_` helper.  Generating real functions (rather than inline
     # expansion) is what lets a recursive ADT (e.g. `List<T>`) derive equality:
     # the nested-field call is a plain `call`, not an unbounded expansion.
     #
@@ -397,7 +397,7 @@ class OperatorsMixin:
 
         `_infer_vera_type` resolves a `ConstructorCall` to the BARE ADT name
         (`Option`, dropping `<Int>`).  For the direct structural-`==` derivation
-        the type argument is load-bearing — the generated `$eq_<type>` helper
+        the type argument is load-bearing — the generated `$rt.eq_<type>` helper
         must resolve the concrete field type — so recover it from the
         constructor's arguments, RECURSIVELY (#923): a nested-generic operand
         (`Cons(Cons(1, Nil), Nil)`) reconstructs the FULLY-qualified
@@ -535,7 +535,7 @@ class OperatorsMixin:
         Parses the top-level type arguments out of a rendered name
         (`"Box<T>"` → `["T"]`, `"Map<K, V>"` → `["K", "V"]`, respecting nesting)
         and returns True if any is a free type variable (`_type_arg_is_free_var`).
-        Such a name (`Box<T>`) cannot dispatch to a concrete `$eq_<type>` helper,
+        Such a name (`Box<T>`) cannot dispatch to a concrete `$rt.eq_<type>` helper,
         so the composite `==` falls back to the scalar lowering rather than
         crashing the derivability gate.
         """
@@ -580,7 +580,7 @@ class OperatorsMixin:
            error, E005, so it cannot be routed into a `call_indirect`/table).
            Every *reachable* call dispatches to a monomorphized clone
            (`$id2$Int`) whose `@Box<Int>.result == @Box<Int>.0` is lowered
-           STRUCTURALLY (`call $eq_Box_LInt_R`) — `Box<Int>` is concrete, so it
+           STRUCTURALLY (`call $rt.eq_Box_LInt_R`) — `Box<Int>` is concrete, so it
            is NOT matched here — correctly discharging the composite `==` at its
            Tier-1 proof.  (The `ensures` obligation IS proved at Tier 1, the
            verifier substituting `T:=Int`; that is exactly why the reachable
@@ -737,9 +737,9 @@ class OperatorsMixin:
         (``"Outer"``) for a concrete ADT or parameterized (``"Box<String>"``)
         for a generic instantiation.  Checks structural derivability (the same
         E613 gate the generic constraint path uses; see the section comment),
-        then requests the matching ``$eq_<type>`` helper (generating it, and
+        then requests the matching ``$rt.eq_<type>`` helper (generating it, and
         any nested-ADT helpers, on demand) and returns
-        ``left ++ right ++ [call $eq_<type>]``.
+        ``left ++ right ++ [call $rt.eq_<type>]``.
 
         ``node`` is the comparison's AST node, for the E613 diagnostic span
         when the operand type is not derivable.
@@ -753,7 +753,7 @@ class OperatorsMixin:
         return left + right + [f"call {fn_name}"]
 
     def _adt_eq_fn_name(self, type_name: str) -> str:
-        """Mangle a Vera type name into its ``$eq_<type>`` helper name.
+        """Mangle a Vera type name into its ``$rt.eq_<type>`` helper name.
 
         Injective over the type-name grammar: ``<`` / ``>`` / ``,`` / space are
         distinct escapes so ``Box<Int>`` and a bare ADT literally named
@@ -764,10 +764,10 @@ class OperatorsMixin:
         """
         from vera.monomorphize import mangle_type_name
 
-        return f"$eq_{mangle_type_name(type_name)}"
+        return f"$rt.eq_{mangle_type_name(type_name)}"
 
     def _request_adt_eq_helper(self, type_name: str) -> str | None:
-        """Ensure a ``$eq_<type>`` helper exists; return its function name.
+        """Ensure a ``$rt.eq_<type>`` helper exists; return its function name.
 
         Deduped by name and guarded against recursion via ``_adt_eq_pending``
         so a self-referential ADT emits exactly one helper.
@@ -792,7 +792,7 @@ class OperatorsMixin:
     def _generate_adt_eq_fn(
         self, fn_name: str, base: str, parsed: ast.NamedType,
     ) -> str | None:
-        """Generate the full WAT text of a ``$eq_<type>`` helper function.
+        """Generate the full WAT text of a ``$rt.eq_<type>`` helper function.
 
         Signature ``(param $l i32) (param $r i32) (result i32)`` → 1 if the two
         pointers are structurally equal, else 0.  Field dispatch is by Vera
@@ -1094,7 +1094,7 @@ class OperatorsMixin:
                 "local.get 1", f"i32.load offset={offset}",
                 "i32.eq",
             ]
-        # String: content comparison via the $eq_String helper.
+        # String: content comparison via the $rt.eq_String helper.
         if base == "String":
             self._request_string_eq_helper()
             return [
@@ -1102,7 +1102,7 @@ class OperatorsMixin:
                 "local.get 0", f"i32.load offset={offset + 4}",
                 "local.get 1", f"i32.load offset={offset}",
                 "local.get 1", f"i32.load offset={offset + 4}",
-                "call $eq_String",
+                "call $rt.eq_String",
             ]
         # Nested ADT: recurse into its own helper.
         if base in self._adt_type_names:
@@ -1117,15 +1117,15 @@ class OperatorsMixin:
         return None
 
     def _request_string_eq_helper(self) -> None:
-        """Ensure the standalone ``$eq_String`` content-comparison helper."""
-        fn_name = "$eq_String"
+        """Ensure the standalone ``$rt.eq_String`` content-comparison helper."""
+        fn_name = "$rt.eq_String"
         if fn_name in self._adt_eq_helpers:
             return
         self._adt_eq_helpers[fn_name] = self._emit_string_eq_fn()
 
     def _request_string_cmp_helper(self) -> None:
-        """Ensure the standalone ``$cmp_String`` three-way ordering helper (#927)."""
-        fn_name = "$cmp_String"
+        """Ensure the standalone ``$rt.cmp_String`` three-way ordering helper (#927)."""
+        fn_name = "$rt.cmp_String"
         if fn_name in self._adt_eq_helpers:
             return
         self._adt_eq_helpers[fn_name] = self._emit_string_cmp_fn()
@@ -1146,7 +1146,7 @@ class OperatorsMixin:
         ``vera run`` agree on String ordering.
         """
         return (
-            "  (func $cmp_String "
+            "  (func $rt.cmp_String "
             "(param $p1 i32) (param $l1 i32) (param $p2 i32) (param $l2 i32) "
             "(result i32)\n"
             "    (local $idx i32)\n"
@@ -1239,7 +1239,7 @@ class OperatorsMixin:
         String ADT field compares by content, not pointer.
         """
         return (
-            "  (func $eq_String "
+            "  (func $rt.eq_String "
             "(param $p1 i32) (param $l1 i32) (param $p2 i32) (param $l2 i32) "
             "(result i32)\n"
             "    (local $idx i32)\n"
