@@ -593,7 +593,7 @@ class TestCodedEvaluation:
     def test_the_named_failure_is_skipped(self) -> None:
         outcomes = evaluate_block(
             self._block(("E200",)),
-            [("check", lambda _c: doc_annotations.StageFailure("m", frozenset({"E200"})))],
+            [("check", lambda _c: doc_annotations.StageFailure("m", ("E200",)))],
         )
         assert outcomes[-1].status == "skipped"
 
@@ -601,11 +601,28 @@ class TestCodedEvaluation:
         outcomes = evaluate_block(
             self._block(("E200",)),
             [("check", lambda _c: doc_annotations.StageFailure(
-                "m", frozenset({"E200", "E121"})))],
+                "m", ("E121", "E200")))],
         )
         assert outcomes[-1].status == "failed"
         assert "E121 E200" in (outcomes[-1].error or "")
         assert "names E200" in (outcomes[-1].error or "")
+
+    def test_a_second_diagnostic_with_the_named_code_fails(self) -> None:
+        """Codes are a multiset, one entry per diagnostic: `E200` names one
+        E200, and a second is a different failure (PR #1484 re-review)."""
+        outcomes = evaluate_block(
+            self._block(("E200",)),
+            [("check", lambda _c: doc_annotations.StageFailure("m", ("E200", "E200")))],
+        )
+        assert outcomes[-1].status == "failed"
+        assert "E200 E200" in (outcomes[-1].error or "")
+
+    def test_a_repeated_code_names_each_diagnostic(self) -> None:
+        outcomes = evaluate_block(
+            self._block(("E200", "E200")),
+            [("check", lambda _c: doc_annotations.StageFailure("m", ("E200", "E200")))],
+        )
+        assert outcomes[-1].status == "skipped"
 
     def test_a_failure_carrying_only_some_named_codes_fails(self) -> None:
         """The marker names the failure exactly: when one of its codes
@@ -615,7 +632,7 @@ class TestCodedEvaluation:
         outcomes = evaluate_block(
             self._block(("E130", "E200")),
             [("check", lambda _c: doc_annotations.StageFailure(
-                "m", frozenset({"E200"})))],
+                "m", ("E200",)))],
         )
         assert outcomes[-1].status == "failed"
 

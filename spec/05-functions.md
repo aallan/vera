@@ -95,6 +95,7 @@ Multiple `requires` clauses are equivalent to a single `requires` with `&&`. The
 
 Parameters are bound left-to-right, with the leftmost parameter having the highest De Bruijn index and the rightmost parameter having index 0:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a signature shape, not a declaration" -->
 ```
 fn(@Int, @String, @Int -> @Bool)
 ```
@@ -235,6 +236,7 @@ A `where`-helper is a closed, param-rooted scope: its body resolves slot referen
 
 Anonymous functions (lambdas/closures) use the same `fn` keyword without a name:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an anonymous function, an expression rather than a declaration" -->
 ```
 fn(@Int -> @Int) effects(pure) {
   @Int.0 + 1

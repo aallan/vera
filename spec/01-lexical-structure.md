@@ -258,6 +258,7 @@ Rules:
 
 1. **Indentation**: 2 spaces per level. No tabs.
 2. **Braces**: opening brace on the same line, closing brace on its own line aligned with the construct:
+   <!-- vera:skip-parse category="FRAGMENT" reason="canonical formatting of an unnamed signature and its contracts, not a declaration" -->
    ```
    fn(@Int -> @Int)
      requires(@Int.0 > 0)

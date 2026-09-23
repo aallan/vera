@@ -136,7 +136,7 @@ See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 none" reason="prelude-injected Future<T> declaration shown without visibility" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="E158 E158 none" reason="prelude-injected Future<T> declaration shown without visibility" -->
 ```
 data Future<T> { Future(T) }
 ```
@@ -593,7 +593,7 @@ public fn handle(@Request -> @Response)
 
 **Built-in types** (prelude ADTs, injected when referenced; user definitions shadow them):
 
-<!-- vera:skip-check category="ILLUSTRATIVE" code="none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
+<!-- vera:skip-check category="ILLUSTRATIVE" code="none none" reason="prelude-injected Request/Response decls shown without visibility (#305)" -->
 ```
 data Request { Request(String, String, Map<String, String>, String) }
 data Response { Response(Int, Map<String, String>, String) }

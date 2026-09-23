@@ -485,7 +485,7 @@ The argument to `old` and `new` MUST be an *effect reference* — the name of a 
 
 When a function calls other functions, the effects compose via row union:
 
-<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls bar and baz, which the example describes but does not define" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E200 E200" reason="calls bar and baz, which the example describes but does not define" -->
 ```
 private fn foo(@Unit -> @Unit)
   requires(true)

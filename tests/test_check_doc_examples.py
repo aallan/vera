@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -802,7 +804,7 @@ class TestCheckWarnings:
             assert failure is None
         else:
             assert failure is not None
-            assert failure.codes == frozenset({code})
+            assert failure.codes == (code,)
             assert f"[{code}]" in failure.message
 
 
@@ -829,9 +831,11 @@ _SAMPLE_OPENINGS: dict[str, str] = {
 
 
 class TestGrammarSelection:
-    """An untagged fence or `<pre>` block is Vera when it opens a program,
-    as the compiler's own grammar says (#1484 review: the hand regex omitted
-    `ability`, so five spec blocks were never gated)."""
+    """An untagged fence or `<pre>` block is Vera when its first word is a
+    program keyword, as the compiler's own grammar says (#1484 review: the
+    hand regex omitted `ability`, so five spec blocks were never gated).
+    Selection reads that word and nothing else, so it never depends on the
+    block being valid (#1484 re-review: a wrong second token hid a block)."""
 
     def test_every_program_keyword_has_a_sample(self) -> None:
         assert set(_SAMPLE_OPENINGS) == set(_MOD.program_keywords())
@@ -843,20 +847,72 @@ class TestGrammarSelection:
 
     @pytest.mark.parametrize("text", [
         "fn(@Int -> @Int) effects(pure) { @Int.0 }",
+        "forall(@Nat, @Nat.0 < 3, fn(@Nat -> @Bool) effects(pure) { true })",
         "type the command below",
         "public class Foo {}",
     ])
-    def test_a_closure_or_prose_is_not_read(self, text: str) -> None:
+    def test_a_keyword_led_non_program_is_read_until_marked(
+        self, text: str, tmp_path: Path,
+    ) -> None:
+        """Selection is fail-closed (PR #1484 re-review): a block that opens
+        with a program keyword is read whether or not it is a program, and
+        fails until it is fixed or carries a marker with a reason."""
+        assert _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
+        (tmp_path / "bare").mkdir()
+        findings = _findings(_gate(tmp_path / "bare", f"```\n{text}\n```\n"))
+        assert len(findings.failures) == 1
+        assert "[parse]" in findings.failures[0]
+        assert "fix the block or mark it" in findings.failures[0]
+        (tmp_path / "marked").mkdir()
+        marker = '<!-- vera:skip-parse category="ILLUSTRATIVE" reason="not a program" -->\n'
+        marked = _gate(tmp_path / "marked", marker + f"```\n{text}\n```\n")
+        assert _findings(marked) == _MOD.Findings([], [], [])
+
+    # The re-review's nine mistaken openings: each opens with a program
+    # keyword, and the parser rejects its second token.  Selection must not
+    # depend on the block being valid, so every one is read.
+    @pytest.mark.parametrize("text", [
+        "fn Double(@Int -> @Int)",
+        "public type",
+        "public effect",
+        "public ability",
+        "effect logger {",
+        "import Vera.Math;",
+        "module Vera;",
+        "forall T fn",
+        "private import vera.math;",
+    ])
+    def test_a_mistaken_opening_is_read_and_fails(
+        self, text: str, tmp_path: Path,
+    ) -> None:
+        assert _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
+        findings = _findings(_gate(tmp_path, f"```\n{text}\n```\n"))
+        assert len(findings.failures) == 1
+        assert "[parse]" in findings.failures[0]
+        assert "fix the block or mark it" in findings.failures[0]
+
+    def test_a_wrong_second_token_does_not_hide_the_rest(
+        self, tmp_path: Path,
+    ) -> None:
+        """The re-review's repro: the `type` after `public` is the mistake,
+        and the refuted function below it must not go unread with it."""
+        text = "```\npublic type Pos = { @Int | @Int.0 > 0 };\n\n" + _OLD_CORRECT + "\n```\n"
+        findings = _findings(_gate(tmp_path, text))
+        assert len(findings.failures) == 1
+        assert "[parse]" in findings.failures[0]
+
+    @pytest.mark.parametrize("text", ["types are checked", "fnord", "publicly"])
+    def test_a_word_that_only_starts_like_a_keyword_is_not_read(
+        self, text: str,
+    ) -> None:
         assert not _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
 
     @pytest.mark.parametrize("text", ["fn foo bar", "data Foo = x"])
     def test_a_wrong_third_token_does_not_hide_the_block(
         self, text: str, tmp_path: Path,
     ) -> None:
-        """The parser accepts the first two tokens, so the block opens a
-        program and is gated, and the parse stage reports the third (PR
-        #1484 review: the contextual lexer rejects the third token while
-        reading it, which the count must not charge to the second)."""
+        """The block is gated, and the parse stage reports the third token
+        (PR #1484 review)."""
         assert _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
         findings = _findings(_gate(tmp_path, f"```\n{text}\n```\n"))
         assert len(findings.failures) == 1 and "[parse]" in findings.failures[0]
@@ -963,6 +1019,70 @@ public fn main(@Unit -> @Nat)
 }"""
 
 
+# The re-review's plant: an effectful export beside a runnable one.
+_FETCH = """\
+public fn fetch(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(<Http>)
+{
+  Http.get(@String.0)
+}
+
+"""
+
+_LOAD = """\
+public fn load(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.read_file(@String.0)
+}
+
+"""
+
+# A public function that reads a file only through a private helper.
+_LOADS_THROUGH_A_HELPER = """\
+private fn read_it(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.read_file(@String.0)
+}
+
+public fn has_data(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match read_it("data.txt") {
+    Ok(@String) -> true,
+    Err(@String) -> false
+  }
+}"""
+
+# Returns a heap value, which `vera run` prints as an address.
+_SOME_TWO = """\
+public fn some_two(@Unit -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(2)
+}"""
+
+_SOME_TRAP = """\
+public fn main(@Unit -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(string_char_code("abc", 7))
+}"""
+
+
 class TestRunDecision:
     """A block that reaches the run stage and exports a function names an
     invocation or says why it cannot run, so no example skips the run
@@ -981,13 +1101,32 @@ class TestRunDecision:
         assert len(findings.failures) == 1 and "exited" in findings.failures[0]
 
     def test_an_unpinned_run_still_catches_a_trap(self, tmp_path: Path) -> None:
-        marker = '<!-- vera:run fn="main" reason="the value is not the point" -->'
-        findings = _findings(_gate(tmp_path, _fence(_TRAPS_AT_RUN, marker)))
+        marker = '<!-- vera:run fn="main" reason="prints an address" -->'
+        findings = _findings(_gate(tmp_path, _fence(_SOME_TRAP, marker)))
         assert len(findings.failures) == 1 and "exited" in findings.failures[0]
 
     def test_an_unpinned_run_passes_a_clean_block(self, tmp_path: Path) -> None:
-        marker = '<!-- vera:run fn="two" reason="any output" -->'
-        assert _findings(_gate(tmp_path, _fence(_TWO, marker))) == _MOD.Findings([], [], [])
+        marker = '<!-- vera:run fn="some_two" reason="prints an address" -->'
+        assert _findings(_gate(tmp_path, _fence(_SOME_TWO, marker))) == _MOD.Findings([], [], [])
+
+    @pytest.mark.parametrize(("program", "fn"), [
+        (_TWO, "two"),
+        ("type Small = { @Int | @Int.0 < 10 };\n\n"
+         + _TWO.replace("-> @Int)", "-> @Small)").replace("@Int.result == 2", "true"),
+         "two"),
+        (_TWO.replace("-> @Int)", "-> @String)").replace("@Int.result == 2", "true")
+         .replace("{\n  2\n}", '{\n  "two"\n}'), "two"),
+    ])
+    def test_a_value_return_must_pin_its_output(
+        self, program: str, fn: str, tmp_path: Path,
+    ) -> None:
+        """`vera run` prints a scalar or a String as a value, alias and
+        refinement included, so its marker pins `stdout` (PR #1484
+        re-review: a reason let a wrong value pass)."""
+        marker = f'<!-- vera:run fn="{fn}" reason="prints an address" -->'
+        findings = _findings(_gate(tmp_path, _fence(program, marker)))
+        assert len(findings.problems) == 1
+        assert "pin its output with stdout" in findings.problems[0]
 
     def test_a_no_run_property_that_holds_passes(self, tmp_path: Path) -> None:
         program = _TWO.replace("{\n  2\n}", "{\n  ?\n}").replace(
@@ -1011,13 +1150,43 @@ class TestRunDecision:
         assert len(findings.problems) == 1
         assert "exports no public function" in findings.problems[0]
 
-    def test_no_run_beside_run_is_a_problem(self, tmp_path: Path) -> None:
+    def test_no_run_that_excuses_no_unrun_export_is_stale(
+        self, tmp_path: Path,
+    ) -> None:
         markers = (
             '<!-- vera:run fn="two" stdout="2" -->',
             '<!-- vera:no-run category="network" reason="both" -->',
         )
         findings = _findings(_gate(tmp_path, _fence(_TWO, *markers)))
-        assert len(findings.problems) == 1 and "beside vera:run" in findings.problems[0]
+        assert len(findings.problems) == 1 and "does not hold" in findings.problems[0]
+
+    @pytest.mark.parametrize(("head", "category"), [(_FETCH, "network"), (_LOAD, "fixture")])
+    def test_a_property_is_held_per_export(
+        self, head: str, category: str, tmp_path: Path,
+    ) -> None:
+        """The re-review's plant: the property holds of one export, and the
+        other export, which traps, must run rather than share the marker."""
+        marker = f'<!-- vera:no-run category="{category}" reason="r" -->'
+        findings = _findings(_gate(tmp_path, _fence(head + _TRAPS_AT_RUN, marker)))
+        assert len(findings.failures) == 1
+        assert "[run]" in findings.failures[0] and "main" in findings.failures[0]
+
+    def test_an_export_the_property_misses_can_run_beside_it(
+        self, tmp_path: Path,
+    ) -> None:
+        markers = (
+            '<!-- vera:run fn="two" stdout="2" -->',
+            '<!-- vera:no-run category="network" reason="fetches a URL" -->',
+        )
+        findings = _findings(_gate(tmp_path, _fence(_FETCH + _TWO, *markers)))
+        assert findings == _MOD.Findings([], [], [])
+
+    def test_a_property_reaches_through_the_blocks_own_calls(
+        self, tmp_path: Path,
+    ) -> None:
+        marker = '<!-- vera:no-run category="fixture" reason="reads data.txt" -->'
+        findings = _findings(_gate(tmp_path, _fence(_LOADS_THROUGH_A_HELPER, marker)))
+        assert findings == _MOD.Findings([], [], [])
 
     def test_an_unknown_no_run_category_is_a_problem(self, tmp_path: Path) -> None:
         marker = '<!-- vera:no-run category="too-slow" reason="r" -->'
@@ -1048,6 +1217,22 @@ class TestCodedMarkers:
         assert len(findings.failures) == 1
         assert "[check]" in findings.failures[0]
         assert "marker names E200" in findings.failures[0]
+
+    def test_a_second_diagnostic_with_the_same_code_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        """The re-review's plant: a misspelt built-in is a second E200 beside
+        the undefined helper, and `code="E200"` names one (PR #1484)."""
+        program = _TWO.replace("{\n  2\n}", '{\n  helper(()) + strng_length("x")\n}').replace(
+            "@Int.result == 2", "true"
+        )
+        one = '<!-- vera:skip-check category="INCOMPLETE" code="E200" reason="calls helper" -->'
+        findings = _findings(_gate(tmp_path, _fence(program, one)))
+        assert len(findings.failures) == 1
+        assert "E200 E200" in findings.failures[0]
+        (tmp_path / "two").mkdir()
+        two = one.replace('code="E200"', 'code="E200 E200"')
+        assert _findings(_gate(tmp_path / "two", _fence(program, two))) == _MOD.Findings([], [], [])
 
     @pytest.mark.parametrize("doc", ["spec/02-types.md", "spec/06-contracts.md"])
     def test_the_invariant_examples_are_marked_future(self, doc: str) -> None:
@@ -1143,6 +1328,49 @@ class TestDocumentedInvocations:
 # ---------------------------------------------------------------------------
 # The instrument's own pieces
 # ---------------------------------------------------------------------------
+
+
+# The document types agents read, stated here rather than read from the
+# gate, so a type dropped from DOCUMENT_SUFFIXES fails a cell.
+_AGENT_DOCUMENT_SUFFIXES = (".md", ".html", ".txt")
+
+
+class TestLiveEnumeration:
+    """The coverage rule through its own enumeration, `tracked_documents`,
+    not a list handed to it (PR #1484 re-review: dropping `.html` from
+    DOCUMENT_SUFFIXES left every cell green)."""
+
+    def test_every_agent_document_type_is_enumerated(self) -> None:
+        assert set(_AGENT_DOCUMENT_SUFFIXES) <= set(_MOD.DOCUMENT_SUFFIXES)
+
+    def test_a_tracked_document_of_each_type_must_be_classified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Under a git hook, as when pre-commit runs this suite, git exports
+        # GIT_DIR and GIT_INDEX_FILE for the repository being committed
+        # (githooks(5)).  A `git init` that inherits them re-initialises that
+        # repository as a bare one, and `git ls-files` reads it rather than
+        # the temporary one.  Every git call here must reach the temporary
+        # repository only, so the git variables are cleared first.
+        for name in [n for n in os.environ if n.startswith("GIT_")]:
+            monkeypatch.delenv(name)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        files = {
+            "page.html": f"<pre>\n{_TWO}\n</pre>\n",
+            "guide.md": _fence(_TWO),
+            "notes.txt": _fence(_TWO),
+        }
+        assert {Path(n).suffix for n in files} == set(_AGENT_DOCUMENT_SUFFIXES)
+        for name, text in files.items():
+            (repo / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "--", *files], cwd=repo, check=True)
+        tracked = _MOD.tracked_documents(repo)
+        assert tracked == sorted(files)
+        errors = _MOD.check_coverage(repo, [], {}, tracked)
+        for name in files:
+            assert any(e.startswith(f"{name} has Vera blocks") for e in errors), errors
 
 
 class TestInstrumentPieces:

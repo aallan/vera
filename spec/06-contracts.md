@@ -91,6 +91,7 @@ private fn sum_to(@Nat -> @Nat)
 
 An assertion is a predicate that MUST hold at the point where it appears in the function body:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int, @Int -> @Int)
   requires(@Int.0 > 0 && @Int.1 > 0)
@@ -121,6 +122,7 @@ One boundary is worth stating, because the Tier-1 claim inherits whatever the pr
 
 An assumption is a predicate that the compiler MUST accept as true without proof:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="an unnamed signature with its contracts, not a declaration" -->
 ```
 fn(@Int -> @Int)
   requires(true)
@@ -177,6 +179,7 @@ Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]
 
 Vera supports bounded quantification in contracts:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="a quantifier expression, not a declaration" -->
 ```
 forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] > 0
@@ -187,6 +190,7 @@ This reads: "for all `@Nat.0` in `[0, array_length(@Array<Int>.0))`, the array e
 
 The syntax is:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="the quantifier's form, with placeholder slots" -->
 ```
 forall(@IndexType, @BoundExpr, @PredicateFn)
 ```

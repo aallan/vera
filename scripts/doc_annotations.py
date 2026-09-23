@@ -18,10 +18,11 @@ attributes is a problem rather than something to ignore.
   ``vera:skip-verify`` — say the block is expected to FAIL that stage, and
   why.  ``category`` is one of :data:`CATEGORIES`, a closed vocabulary;
   ``reason`` is free text; both must say something.  ``code`` names the
-  error codes the failure is expected to carry (space-separated, ``none``
-  for a diagnostic that carries no code), and the stage must then fail with
-  those codes and no others, so a marker excuses the failure it describes
-  rather than any failure at its stage.  It is required at the check and
+  error codes the failure is expected to carry, one per diagnostic
+  (space-separated, a code repeated once for each diagnostic that carries
+  it, ``none`` for a diagnostic that carries no code), and the stage must
+  then fail with exactly those diagnostics, so a marker excuses the failure
+  it describes rather than any failure at its stage.  It is required at the check and
   verify stages, which report every error they find, and on a ``WRONG``
   marker, whose code is what the example teaches.  A block carries at most
   one skip marker per stage, and the gate stops at the first marked stage.
@@ -81,6 +82,7 @@ import html
 import re
 import shlex
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -463,7 +465,7 @@ class Annotation(NamedTuple):
     stage: str  # "parse" | "check" | "verify"
     category: str
     reason: str
-    codes: tuple[str, ...] = ()  # the codes the failure must carry; () = any
+    codes: tuple[str, ...] = ()  # one per diagnostic the failure carries; () = any
 
 
 class RunMarker(NamedTuple):
@@ -496,10 +498,11 @@ class CodeBlock(NamedTuple):
 
 
 class StageFailure(NamedTuple):
-    """Why a stage refused a block: a message, and the codes it carried."""
+    """Why a stage refused a block: a message, and the code of each
+    diagnostic it carried, sorted, repeats included."""
 
     message: str
-    codes: frozenset[str] = frozenset()
+    codes: tuple[str, ...] = ()
 
 
 class StageOutcome(NamedTuple):
@@ -860,9 +863,9 @@ def evaluate_block(
 
     - marked ``skip-<stage>``: the runner still runs.  A failure is the
       expected outcome (``"skipped"``) — unless the marker names codes and
-      the failure's codes differ from them, which is a different failure
-      from the one the marker excuses, or a marker gone out of date
-      (``"failed"``).  A pass means the marker is ``"stale"``.  Either way
+      the failure's codes differ from them, compared as a multiset (one
+      entry per diagnostic), which is a different failure from the one the
+      marker excuses, or a marker gone out of date (``"failed"``).  A pass means the marker is ``"stale"``.  Either way
       the pipeline stops there.
     - unmarked: success (``"ok"``) continues to the next stage; failure
       (``"failed"``) stops the pipeline.
@@ -875,7 +878,7 @@ def evaluate_block(
         if annotation is not None:
             if failure is None:
                 outcomes.append(StageOutcome(stage, "stale", None, annotation))
-            elif annotation.codes and failure.codes != set(annotation.codes):
+            elif annotation.codes and Counter(failure.codes) != Counter(annotation.codes):
                 carried = " ".join(sorted(failure.codes)) or "no code"
                 outcomes.append(StageOutcome(
                     stage, "failed",

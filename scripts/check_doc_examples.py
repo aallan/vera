@@ -24,9 +24,10 @@ A block that is deliberately wrong or partial carries a skip marker naming
 the stage it fails, with a category, a reason and — at the check and verify
 stages, and for a WRONG example — the codes the failure carries
 (``scripts/doc_annotations.py`` defines the grammar and the vocabularies).
-The gate still runs a marked stage and requires it to fail there, with those
-codes and no others: a marked block that passes carries a stale marker, and
-one that fails some other way fails the gate.  An unmarked block that fails
+The gate still runs a marked stage and requires it to fail there with
+exactly those codes, one per diagnostic, so a second diagnostic with a code
+the marker already names is a second failure: a marked block that passes
+carries a stale marker, and one that fails some other way fails the gate.  An unmarked block that fails
 a stage fails the gate.
 
 Every ``vera run examples/<name>.vera`` invocation a gated document names is
@@ -38,13 +39,16 @@ Which blocks are Vera
 A fence tagged ``vera`` always is: the author declared the language, so the
 block is held to the gate however it looks, and a fragment says so with a
 marker rather than being passed over by a guess.  An untagged fence, and an
-HTML ``<pre>`` block, is Vera when it opens a program: its first word, after
-comments, is one of the keywords in FIRST(``start``) of the compiler's own
-grammar, and the compiler's own parser accepts its first two tokens as the
-start of a program — so a top-level form the grammar gains is recognised
-without an edit here, and a closure such as ``fn(@Int -> @Int)`` is not
-mistaken for a declaration.  Any other language tag is not Vera, and a
-marker on such a block is a problem.
+HTML ``<pre>`` block, is Vera when its first word, after comments, is one of
+the keywords in FIRST(``start``) of the compiler's own grammar, so a
+top-level form the grammar gains is recognised without an edit here.  The
+rule is fail-closed: it reads the first word and nothing else, so whether a
+block is gated never depends on whether the block is valid, and a mistake in
+its second token fails at parse rather than hiding the block.  A
+keyword-led block that is not a program (a function type such as
+``fn(@Int -> @Int)``, a quantifier, another language's code) carries a
+``vera:skip-parse`` marker with its reason, or its own language tag.  Any
+other language tag is not Vera, and a marker on such a block is a problem.
 
 A ``vera:diagnostic`` pair (``scripts/check_diagnostic_examples.py``) marks
 its program as the expected failure at the pair's ``stage``, with the pair's
@@ -300,41 +304,15 @@ def program_keywords() -> frozenset[str]:
 
 _FIRST_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# How many tokens of a block the compiler's parser must accept before the
-# block counts as opening a program.  One is the keyword; the second tells a
-# declaration (`fn name`, `type Name`) from a closure or a function type
-# (`fn(...)`) and from prose that starts with a keyword (`type the ...`).
-_PREFIX_TOKENS = 2
 
-
-def opens_a_program(text: str) -> bool:
-    """Whether *text*, after comments, starts the way a program does: its
-    first word is in :func:`program_keywords`, and the compiler's own LALR
-    parser accepts its first two tokens as the start of a program."""
-    from lark.exceptions import UnexpectedInput
-
+def opens_with_a_program_keyword(text: str) -> bool:
+    """Whether the first word of *text*, after comments, is one of
+    :func:`program_keywords`.  Nothing after that word is read: selection is
+    fail-closed, so a block is gated whether or not it is valid."""
     from vera.lexical import blank_comments
-    from vera.parser import _get_parser
 
-    blanked = blank_comments(text)
-    m = _FIRST_WORD_RE.match(blanked.lstrip())
-    if m is None or m.group(0) not in program_keywords():
-        return False
-    interactive = _get_parser().parse_interactive(blanked)
-    accepted = 0
-    try:
-        # The loop `iter_parse` runs, with the feed made explicit and the
-        # count taken after it: the contextual lexer rejects a wrong token
-        # while reading it, so a rejection of the third token must not be
-        # charged to the second, and stopping at two never reads the third.
-        for token in interactive.lexer_thread.lex(interactive.parser_state):  # type: ignore[no-untyped-call]
-            interactive.feed_token(token)
-            accepted += 1
-            if accepted >= _PREFIX_TOKENS:
-                return True
-    except UnexpectedInput:
-        pass
-    return False
+    m = _FIRST_WORD_RE.match(blank_comments(text).lstrip())
+    return m is not None and m.group(0) in program_keywords()
 
 
 def selects(block: CodeBlock) -> bool:
@@ -344,7 +322,7 @@ def selects(block: CodeBlock) -> bool:
         return True
     if lang != "":
         return False
-    return opens_a_program(block.content)
+    return opens_with_a_program_keyword(block.content)
 
 
 def scan_document(path: Path) -> tuple[list[CodeBlock], list[str]]:
@@ -427,7 +405,7 @@ def parse_error(content: str) -> StageFailure | None:
         return StageFailure(
             f"[{d.error_code}] block line {d.location.line}: "
             f"{_first_line(d.description)}",
-            frozenset({d.error_code or "none"}),
+            (d.error_code or "none",),
         )
     except Exception as exc:  # noqa: BLE001 — any parser crash is this block's parse failure, reported
         return StageFailure(f"{type(exc).__name__}: {_first_line(str(exc))}")
@@ -469,9 +447,9 @@ def cli_stage_error(
     envelope's ``ok`` — so a command that exits 0 on an envelope saying
     otherwise (or the reverse) fails the stage instead of picking a side.
     When *benign_warnings* is given, every warning whose code it does not
-    name fails the stage too.  The failure carries the code of every error
-    and every failing warning, so a marker naming codes is held to all of
-    them.
+    name fails the stage too.  The failure carries one code per error and
+    failing warning, repeats included, so a marker naming codes is held to
+    each diagnostic.
     """
     code, data, raw = _cli_json(command, path)
     if not isinstance(data, dict):
@@ -494,7 +472,7 @@ def cli_stage_error(
         return None
     if code != 0 and not errors:
         return StageFailure(f"exited {code} with no diagnostic")
-    codes = frozenset(_code(d) for d in [*errors, *failing])
+    codes = tuple(sorted(_code(d) for d in [*errors, *failing]))
     if errors:
         return StageFailure(_diagnostic_text(errors[0]), codes)
     return StageFailure(
@@ -657,16 +635,37 @@ def cli_constructible(type_expr: Any, aliases: dict[str, Any], depth: int = 0) -
     return False
 
 
-def _signals(program: Any) -> tuple[set[str], set[tuple[str, str]], bool]:
-    """Every effect a block's functions declare, every qualified call it
-    makes, and whether it holds a typed hole."""
+def _reached(fn: Any, program: Any) -> list[Any]:
+    """*fn* and every top-level function of the block it reaches through
+    plain calls: what running *fn* can do."""
+    from vera import ast
+    from vera.obligations.cache import direct_callee_names
+
+    top = {
+        t.decl.name: t.decl
+        for t in program.declarations
+        if isinstance(t.decl, ast.FnDecl)
+    }
+    seen: dict[str, Any] = {fn.name: fn}
+    stack = [fn]
+    while stack:
+        for name in direct_callee_names(stack.pop()):
+            if name in top and name not in seen:
+                seen[name] = top[name]
+                stack.append(top[name])
+    return list(seen.values())
+
+
+def _signals(nodes: Any) -> tuple[set[str], set[tuple[str, str]], bool]:
+    """Every effect the functions under *nodes* declare, every qualified
+    call they make, and whether they hold a typed hole."""
     from vera import ast
     from vera.obligations.cache import walk_nodes
 
     effects: set[str] = set()
     calls: set[tuple[str, str]] = set()
     hole = False
-    for node in walk_nodes(program):
+    for node in walk_nodes(nodes):
         if isinstance(node, ast.FnDecl) and isinstance(node.effect, ast.EffectSet):
             effects |= {
                 ref.name for ref in node.effect.effects
@@ -679,10 +678,21 @@ def _signals(program: Any) -> tuple[set[str], set[tuple[str, str]], bool]:
     return effects, calls, hole
 
 
-def no_run_property_holds(category: str, program: Any) -> bool | None:
-    """Whether a no-run property holds of the block, or None when the gate
-    cannot tell.  A property that does not hold is a stale marker."""
-    effects, calls, hole = _signals(program)
+def no_run_property_holds(category: str, fn: Any, program: Any) -> bool | None:
+    """Whether a no-run property holds of the exported function *fn*, or
+    None when the gate cannot tell.
+
+    A property is held per export, over what running that export reaches
+    (#1484 re-review: one effectful function exempted a runnable one).  A
+    typed hole anywhere is the exception: `vera run` refuses the whole
+    program (E614), so no export of a block that holds one can run.
+    """
+    if category == "typed-hole":
+        return _signals(program)[2]
+    if category == "non-scalar-entry":
+        aliases = _aliases(program)
+        return any(not cli_constructible(p, aliases) for p in fn.params)
+    effects, calls, _hole = _signals(tuple(_reached(fn, program)))
     if category == "network":
         return "Http" in effects
     if category == "api-key":
@@ -691,16 +701,8 @@ def no_run_property_holds(category: str, program: Any) -> bool | None:
         return bool({("IO", "read_line"), ("IO", "read_char")} & calls)
     if category == "long-running":
         return ("IO", "sleep") in calls
-    if category == "typed-hole":
-        return hole
     if category == "fixture":
         return "DB" in effects or ("IO", "read_file") in calls
-    if category == "non-scalar-entry":
-        aliases = _aliases(program)
-        return all(
-            any(not cli_constructible(p, aliases) for p in fn.params)
-            for fn in exported_functions(program)
-        )
     return None
 
 
@@ -769,34 +771,75 @@ def gate_document(
 def _run_decision(
     doc: str, block: CodeBlock, problems: list[str],
 ) -> str | None:
-    """Hold a block that reached the run stage to a run decision: at least
-    one invocation, or one no-run marker whose property holds.  Returns the
-    coverage failure, if any; marker problems go to *problems*."""
+    """Hold a block that reached the run stage to a run decision.  Returns
+    the coverage failure, if any; marker problems go to *problems*.
+
+    A block that exports a function names at least one invocation or
+    carries a no-run marker.  Where it carries one, every export either
+    runs — a vera:run names it — or holds one of the markers' properties,
+    each held per export; a marker that holds of no export the block leaves
+    unrun is stale.  A run marker gives a reason in place of ``stdout`` only
+    for a function whose result `vera run` prints as an address: a scalar
+    or a String prints as a value, so its marker pins the output.
+    """
+    from vera.ast import format_type_expr
+
     where = f"{doc} line {block.line}"
     program = _program(block.content)
     exports = exported_functions(program)
-    if block.no_runs:
-        marker: NoRunMarker = block.no_runs[0]
-        if block.runs:
+    aliases = _aliases(program)
+    by_name = {fn.name: fn for fn in exports}
+    for run in block.runs:
+        fn = by_name.get(run.fn)
+        if run.stdout is None and fn is not None and cli_constructible(
+            fn.return_type, aliases,
+        ):
             problems.append(
-                f"{where}: vera:no-run beside vera:run — a block either names "
-                f"its invocations or says why it names none"
+                f"{doc} line {run.line}: vera:run fn={run.fn!r} gives a reason "
+                f"in place of stdout, but {run.fn} returns "
+                f"{format_type_expr(fn.return_type)}, which `vera run` prints "
+                f"as a value — pin its output with stdout"
             )
-        elif not exports:
+    if block.no_runs:
+        if not exports:
             problems.append(
                 f"{where}: vera:no-run on a block that exports no public "
                 f"function, so there is nothing to run — remove it"
             )
-        elif marker.category not in NO_RUN_PROPERTIES:
-            problems.append(
-                f"{where}: vera:no-run has the unknown category "
-                f"{marker.category!r} (one of {', '.join(NO_RUN_PROPERTIES)})"
+            return None
+        run_names = {run.fn for run in block.runs}
+        unrun = [fn for fn in exports if fn.name not in run_names]
+        known: list[NoRunMarker] = []
+        for marker in block.no_runs:
+            if marker.category not in NO_RUN_PROPERTIES:
+                problems.append(
+                    f"{where}: vera:no-run has the unknown category "
+                    f"{marker.category!r} (one of {', '.join(NO_RUN_PROPERTIES)})"
+                )
+                continue
+            known.append(marker)
+            if not any(
+                no_run_property_holds(marker.category, fn, program)
+                for fn in unrun
+            ):
+                problems.append(
+                    f"{where}: vera:no-run category={marker.category!r} does "
+                    f"not hold of any export the block leaves unrun "
+                    f"({NO_RUN_PROPERTIES[marker.category]}) — the marker is "
+                    f"stale; run the block instead"
+                )
+        uncovered = [
+            fn.name for fn in unrun
+            if known and not any(
+                no_run_property_holds(m.category, fn, program) for m in known
             )
-        elif no_run_property_holds(marker.category, program) is False:
-            problems.append(
-                f"{where}: vera:no-run category={marker.category!r} does not "
-                f"hold of this block ({NO_RUN_PROPERTIES[marker.category]}) — "
-                f"the marker is stale; run the block instead"
+        ]
+        if uncovered:
+            return (
+                f"exports {', '.join(uncovered)}, which no vera:run names and "
+                f"no vera:no-run property holds of — run each with a vera:run "
+                f"marker ({', '.join(m.category for m in known)} is held per "
+                f"exported function)"
             )
         return None
     if exports and not block.runs:
@@ -1102,7 +1145,19 @@ def collect(reports: list[DocReport]) -> Findings:
             last = r.outcomes[-1]
             where = f"{r.doc} line {r.block.line}"
             if last.status == "failed":
-                failures.append(f"{where} [{last.stage}]: {last.error}")
+                hint = ""
+                if last.annotation is None:
+                    hint = (
+                        f" — fix the block or mark it with vera:skip-"
+                        f"{last.stage} (a category and a reason)"
+                    )
+                    if r.block.lang == "":
+                        hint += (
+                            "; an untagged block that opens with a program "
+                            "keyword is read as Vera, so code in another "
+                            "language takes its own language tag"
+                        )
+                failures.append(f"{where} [{last.stage}]: {last.error}{hint}")
             elif last.status == "stale":
                 ann = last.annotation
                 if ann is None:
@@ -1133,10 +1188,10 @@ def summary_lines(report: DocReport) -> list[str]:
             marked.setdefault(last.stage, Counter())[last.annotation.category] += 1
     runs = sum(1 for r in report.results for _run, err in r.run_errors if err is None)
     no_runs = Counter(
-        r.block.no_runs[0].category
+        marker.category
         for r in report.results
-        if r.block.no_runs and len(r.outcomes) == 3
-        and all(o.status == "ok" for o in r.outcomes)
+        if len(r.outcomes) == 3 and all(o.status == "ok" for o in r.outcomes)
+        for marker in r.block.no_runs
     )
     lines = [
         f"{report.doc}: {len(report.results)} Vera block(s) "

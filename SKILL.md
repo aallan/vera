@@ -555,7 +555,7 @@ type Positive = { @Int | @Int.0 > 0 };
 
 ## Pattern Matching
 
-<!-- vera:skip-check category="INCOMPLETE" code="E322" reason="matches on Color, declared in the Data Types block above" -->
+<!-- vera:skip-check category="INCOMPLETE" code="E322 E322 E322" reason="matches on Color, declared in the Data Types block above" -->
 ```vera
 private fn to_int(@Color -> @Int)
   requires(true)
