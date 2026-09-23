@@ -294,7 +294,9 @@ public data Box<T> {
   Empty,
   Full(T)
 }
+```
 
+```
 -- in module `crates`, a compatible restatement
 public data Box<U> {
   Empty,
@@ -313,7 +315,9 @@ public data Box<T> {
   Empty,
   Full(T)
 }
+```
 
+```
 -- in module `crates`, an incompatible layout
 public data Box<T> {
   Full(T),
