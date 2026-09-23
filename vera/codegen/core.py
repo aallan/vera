@@ -37,6 +37,7 @@ from vera.prelude import (
     PRELUDE_FILE,
     PRELUDE_NAMESPACE,
     data_decl_shape,
+    is_prelude_symbol,
     mentioned_fn_names,
     prelude_adt_names,
     prelude_data_decls,
@@ -671,6 +672,11 @@ class CodeGenerator(
         # Pass 2.5 consults it so an imported fn shadowed by a local where-fn is
         # not emitted under a clashing bare name (#814).
         self._local_shadowed_fn_names: set[str] = set()
+        # #1498: (module path, name) of every module function that does NOT
+        # own the entry's bare name.  Each is emitted only as
+        # `mod$<path>$name` (Pass 2.6); Pass 2.5, which emits the bare-name
+        # owners, skips them.
+        self._qualified_module_fns: set[tuple[tuple[str, ...], str]] = set()
         # #890: fn/ADT/ctor names contributed ONLY by a transitively-reached
         # module (imported by an imported module, not by this program).  Their
         # bodies ARE compiled into the flat WASM module so an imported body can
@@ -806,9 +812,23 @@ class CodeGenerator(
         the `_in_prelude_fn` flag `_compile_fn` maintains.
         """
         if isinstance(node, ast.FnDecl):
-            if node.name.split("$")[0] in self._prelude_fn_names:
+            if self._is_prelude_symbol(node.name):
                 return True
         return self._in_prelude_fn
+
+    def _is_prelude_symbol(self, name: str) -> bool:
+        """Whether the emitted symbol *name* is the prelude's, or a clone of it.
+
+        Two spellings, one owner: a prelude function the program does not
+        override keeps its bare name (and its clones ``base$Types``), and one
+        the program does override keeps its own identity under
+        :func:`vera.prelude.prelude_symbol` (#1495), whose ``mod$<prelude>$``
+        prefix nothing else can spell.
+        """
+        return (
+            is_prelude_symbol(name)
+            or name.split("$")[0] in self._prelude_fn_names
+        )
 
     def _diag_location(
         self, node: ast.Node,
@@ -1428,7 +1448,7 @@ class CodeGenerator(
         """
         if origin is not None:
             return origin
-        if name.split("$")[0] in self._prelude_fn_names:
+        if self._is_prelude_symbol(name):
             return PRELUDE_NAMESPACE
         return None
 
@@ -2555,7 +2575,11 @@ class CodeGenerator(
             if isinstance(tld.decl, ast.FnDecl):
                 _dec_collect(tld.decl, tld.decl.name)
         for _path, idecl in self._imported_fn_decls:
-            _dec_collect(idecl, idecl.name)
+            # #1498: a qualified-only declaration is emitted (and guarded)
+            # under its `mod$…` name, collected from `_shadowed_module_fns`
+            # below; its bare name belongs to another owner.
+            if (_path, idecl.name) not in self._qualified_module_fns:
+                _dec_collect(idecl, idecl.name)
         for mdecl in mono_decls:
             _dec_collect(mdecl, mdecl.name)
         for _path, mangled, idecl in self._shadowed_module_fns:
@@ -2758,14 +2782,15 @@ class CodeGenerator(
         for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
-            # Skip if a local function already defined this name — a top-level
-            # local (fn_visibility) OR a local `where`-fn helper
-            # (_local_shadowed_fn_names).  Either flattens to a bare ``$name``
-            # that owns the namespace; emitting the imported body under the
-            # same bare name would duplicate it (the qualified target reaches
-            # the module via its ``mod$…`` emission instead, #814).
+            # Pass 2.5 emits the bare-name OWNERS only.  Every module function
+            # that does not own the entry's bare name — shadowed by an entry
+            # declaration, private, outside the filter, named after a prelude
+            # function, reached only transitively, or a hoisted helper of one
+            # of those — is emitted as ``mod$<path>$name`` in Pass 2.6 instead
+            # (#814, widened by #1498).  The ``fn_visibility`` test stays as
+            # the entry-side statement of the same rule.
             if (idecl.name in fn_visibility
-                    or idecl.name in self._local_shadowed_fn_names):
+                    or (path, idecl.name) in self._qualified_module_fns):
                 continue
             imported_seen.add(idecl.name)
             # #814 C2 (Pass 2.5 mirror): pass the originating module's

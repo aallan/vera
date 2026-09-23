@@ -45,6 +45,18 @@ reports that as a text difference — which is the class the PR #1323
 record called out as having been mis-described.  They are distinct
 verdicts here, and each names the direction.
 
+**``--run`` compares what each program DOES instead.**  A change that
+renames symbols moves nearly every program's WAT and no program's
+behaviour, so the WAT digest can no longer separate the two.  Under
+``--run`` each side runs ``vera run`` on every program with an empty
+standard input and fingerprints the outcome — exit status, standard
+output, and the first line of any error — and a mover is reported as
+``outcome differs`` with each side's reading.  A run that does not finish
+within the budget is an outcome too (a server waits for requests).  A
+program whose outcome depends on the clock, the environment or the
+network moves between any two runs, so a ``--run`` mover list is read
+program by program rather than taken as a verdict.
+
 The both-failed row is counted and printed rather than folded into
 agreement.  The corpus deliberately contains negative fixtures that fail
 to compile at every revision; they agree vacuously, and a reader of a
@@ -157,15 +169,18 @@ _ERROR_MARKER = re.compile(r"^(\[E\d+\]\s*)?Error\b")
 class Artifact(NamedTuple):
     """One program's compiled output at one revision.
 
-    ``digest`` is the SHA-256 of the WAT text and is ``None`` exactly
-    when ``ok`` is False — there is no artifact to compare, and the
-    reason lives in ``error``.
+    ``digest`` is the SHA-256 of the WAT text (or, under ``--run``, of the
+    run's outcome) and is ``None`` exactly when ``ok`` is False — there is no
+    artifact to compare, and the reason lives in ``error``.  ``summary`` is
+    the ``--run`` mode's human reading of the outcome the digest hashes, so a
+    mover's report says what each side DID rather than naming two digests.
     """
 
     ok: bool
     digest: str | None
     size: int
     error: str
+    summary: str = ""
 
 
 class Mover(NamedTuple):
@@ -252,6 +267,12 @@ def classify(
     if base.ok and head.ok:
         if base.digest == head.digest:
             return None
+        if base.summary or head.summary:
+            return (
+                "outcome-differs",
+                f"outcome differs (at {base_label}: {base.summary}; "
+                f"at HEAD: {head.summary})",
+            )
         return (
             "wat-differs",
             f"WAT differs (at {base_label}: {_short(base.digest)}, "
@@ -472,6 +493,62 @@ def compile_one(
     wat = result.stdout
     digest = hashlib.sha256(wat.encode("utf-8")).hexdigest()
     return Artifact(ok=True, digest=digest, size=len(wat), error="")
+
+
+def run_one(
+    python: str, compiler_root: Path, timeout: int, path: Path
+) -> Artifact:
+    """Run one program with one side's compiler and fingerprint the OUTCOME.
+
+    The ``--run`` mode's measurement, for a change that renames symbols: a
+    rename moves almost every program's WAT without moving what any program
+    does, so the WAT digest can no longer tell the two apart.  What ``vera
+    run`` DOES is compared instead — its exit status, its standard output,
+    and the first line of any error (a trap's kind, a refusal's code) —
+    under an empty standard input.  A run that does not finish in the budget
+    is an outcome like any other (a server waits for requests), so it is
+    fingerprinted rather than failed; only a side that could not start is a
+    failure.
+    """
+    try:
+        result = subprocess.run(
+            [python, "-m", "vera.cli", "run", str(path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(compiler_root),
+            env=_side_env(compiler_root),
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        outcome = f"did not finish in {timeout}s"
+        return Artifact(
+            ok=True, digest=hashlib.sha256(outcome.encode()).hexdigest(),
+            size=0, error="", summary=outcome,
+        )
+    except OSError as exc:  # the interpreter or checkout is not usable
+        return Artifact(
+            ok=False, digest=None, size=0, error=f"could not run: {exc}",
+        )
+
+    error = (
+        _first_error(result.stderr, path) if result.returncode != 0 else ""
+    )
+    outcome = "\n".join((f"exit {result.returncode}", error, result.stdout))
+    summary = f"exit {result.returncode}"
+    if error:
+        summary += f", {error}"
+    summary += f", {len(result.stdout)} bytes of output"
+    return Artifact(
+        ok=True,
+        digest=hashlib.sha256(outcome.encode("utf-8")).hexdigest(),
+        size=len(result.stdout),
+        error="",
+        summary=summary,
+    )
 
 
 def collect(
@@ -776,6 +853,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--json", action="store_true", dest="as_json",
         help="emit the verdict as JSON on stdout",
     )
+    parser.add_argument(
+        "--run", action="store_true",
+        help="compare what each program DOES under `vera run` — exit status, "
+             "standard output and first error line — instead of its WAT; "
+             "for a change that renames symbols and so moves every WAT",
+    )
     return parser.parse_args(argv)
 
 
@@ -845,16 +928,18 @@ def _run(
     )
 
     sides: dict[str, dict[str, Artifact]] = {}
+    measure = run_one if args.run else compile_one
+    verb = "Running" if args.run else "Compiling"
     for side, root in (("base", base_root), ("head", repo_root)):
         print(
-            f"Compiling {len(files)} programs with the {side} compiler "
+            f"{verb} {len(files)} programs with the {side} compiler "
             f"({root})...",
             file=sys.stderr,
         )
         sides[side] = collect(
             files,
             repo_root,
-            lambda path, root=root: compile_one(
+            lambda path, root=root: measure(
                 sys.executable, root, args.timeout, path
             ),
             jobs=args.jobs,

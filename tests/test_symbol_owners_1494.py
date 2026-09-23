@@ -1,10 +1,10 @@
 """Every emitted function symbol has exactly one owner (#1494, #1495, #1498).
 
 Code generation emits every function into ONE flat WebAssembly function
-namespace.  Five owners put functions there: the entry file, each imported
-module, the prelude, and the compiler's own runtime (the allocator and
-collector, the structural helpers it derives per type, the lifted closures).
-When two owners use one name, either the module fails to assemble
+namespace.  Four kinds of owner put functions there: the entry file, each
+imported module, the prelude, and the compiler's own runtime (the allocator
+and collector, the structural helpers it derives per type, the lifted
+closures).  When two owners use one name, either the module fails to assemble
 (``duplicate func identifier``, #1494; E608 on spec-legal cross-module
 shapes, #1498) or a call silently binds to the other owner's body (#1495,
 and a transitive module's function captured by the entry's namesake).
@@ -60,19 +60,13 @@ from vera import ast
 from vera.codegen import execute
 from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
-from vera.prelude import inject_prelude, overridable_builtin_names
+from vera.prelude import (
+    inject_prelude,
+    overridable_builtin_names,
+    prelude_symbol,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Cells whose fix lands in a later step of this change.  Strict, so a cell
-# that starts passing before its step lands turns the suite red; each step
-# deletes its marker, and the last deletes these.
-_PRELUDE_STEP = pytest.mark.xfail(
-    strict=True, reason="prelude identity (#1495) lands in a later step",
-)
-_MODULE_STEP = pytest.mark.xfail(
-    strict=True, reason="module ownership (#1498) lands in a later step",
-)
 
 # ---------------------------------------------------------------------------
 # Source builders
@@ -125,8 +119,9 @@ _CODEGEN_DIRS = (_VERA_PKG / "codegen", _VERA_PKG / "wasm")
 # The wasi-p2 emitter builds a SECOND core module (the adapter) whose
 # functions live in that module's own namespace.  Only what it adds to the
 # Vera core module shares the user's namespace, and those additions are
-# exactly the functions it EXPORTS from that module (`cabi_realloc`,
-# `__wasi_run`); an adapter function is never exported that way.
+# exactly what it defines AND exports from that module (`$rt.cabi_realloc`,
+# `$rt.wasi_run`, the `$rt.wasi_tbl` table and the `$rt.wasi_arena_ptr`
+# global); an adapter item is never exported that way.
 _WASI_EMITTER = _VERA_PKG / "codegen" / "wasi.py"
 
 # A runtime symbol is spelled `$rt.<name>` (before #1494, `$<name>`).  The
@@ -475,9 +470,9 @@ def test_every_runtime_export_is_claimed() -> None:
 
 
 def test_every_runtime_export_is_outside_the_user_namespace() -> None:
-    """No runtime export can be spelled by a Vera identifier (the ruling on
-    the export namespace): a user `public fn` of any name is exported under
-    its source name and cannot displace the runtime's host interface."""
+    """No runtime export can be spelled by a Vera identifier (spec §12.2.1,
+    the `vera.` export namespace): a user `public fn` of any name is exported
+    under its source name and cannot displace the runtime's host interface."""
     assert sorted(n for n in runtime_export_names() if _vera_spellable(n)) == []
 
 
@@ -589,9 +584,14 @@ PRELUDE_SNIPPETS: dict[str, tuple[str, int]] = {
         "fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0 + 2) }), 0)", 7,
     ),
     "result_unwrap_or": ('result_unwrap_or(parse_int("8"), 0)', 8),
+    # Bound through a `let`: a module body that nests `result_map` straight
+    # inside `result_unwrap_or` is dropped at compile whatever this change
+    # does — discovery binds `E` to the phantom default there, and the call
+    # site names another clone.  A separate defect, reported with this one.
     "result_map": (
-        'result_unwrap_or(result_map(parse_int("8"), '
-        "fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0)", 9,
+        'let @Result<Int, String> = result_map(parse_int("8"), '
+        "fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }); "
+        "result_unwrap_or(@Result<Int, String>.0, 0)", 9,
     ),
     "json_get": (_with_doc(_field("i", "1")), 1),
     "json_array_get": (_with_doc(_field(
@@ -700,6 +700,57 @@ class TestPreludeEnumeration:
         assert sum(len(v) for v in callers.values()) == 10
 
 
+class TestPreludeIdentity:
+    """The injection keeps an overridden prelude function under its own
+    identity, and the prelude's bodies call it there (#1495)."""
+
+    @staticmethod
+    def _injected(decl: str) -> dict[str, ast.FnDecl]:
+        program = parse_to_ast(decl + _probe("main", _JSON_CONTROL))
+        inject_prelude(program)
+        return {
+            tld.decl.name: tld.decl for tld in program.declarations
+            if isinstance(tld.decl, ast.FnDecl)
+        }
+
+    def test_an_overridden_function_keeps_its_own_symbol(self) -> None:
+        fns = self._injected(_fn("private", "json_get", "@Int.0"))
+        assert prelude_symbol("json_get") in fns
+        # The program's own declaration keeps the bare name.
+        assert fns["json_get"].params == (
+            ast.NamedType(name="Int", type_args=None),
+        )
+
+    def test_the_prelude_bodies_call_the_prelude_function(self) -> None:
+        fns = self._injected(_fn("private", "json_get", "@Int.0"))
+        names: set[str] = set()
+
+        def walk(node: object) -> None:
+            if isinstance(node, ast.FnCall):
+                names.add(node.name)
+            if dataclasses.is_dataclass(node):
+                for f in dataclasses.fields(node):
+                    val = getattr(node, f.name)
+                    items = val if isinstance(val, (list, tuple)) else (val,)
+                    for item in items:
+                        if dataclasses.is_dataclass(item):
+                            walk(item)
+
+        walk(fns["json_get_string"].body)
+        assert prelude_symbol("json_get") in names
+        assert "json_get" not in names
+
+    def test_the_prelude_symbol_is_the_module_qualified_spelling(self) -> None:
+        """One spelling: codegen's module-qualified name over the prelude's
+        namespace token is exactly `prelude_symbol`."""
+        from vera.codegen.modules import CrossModuleMixin
+        from vera.prelude import PRELUDE_NAMESPACE
+
+        assert CrossModuleMixin._module_qualified_wasm_name(
+            PRELUDE_NAMESPACE, "json_get",
+        ) == prelude_symbol("json_get")
+
+
 def _prelude_side(name: str) -> tuple[dict[str, str], str, str, dict[str, object]]:
     """Files, imports, exports and values that exercise the PRELUDE's `name`.
 
@@ -728,7 +779,6 @@ def _entry_prelude_variants() -> Iterator[object]:
         yield pytest.param(name, variant, id=f"{name}-{variant}")
 
 
-@_PRELUDE_STEP
 @pytest.mark.parametrize("name,variant", list(_entry_prelude_variants()))
 def test_entry_fn_named_after_prelude_fn(
     name: str, variant: str, tmp_path: Path,
@@ -762,7 +812,6 @@ def test_entry_fn_named_after_prelude_fn(
     _run_cell(tmp_path, files, {**expected, **prelude_expected})
 
 
-@_PRELUDE_STEP
 @pytest.mark.parametrize("name", sorted(PRELUDE_FNS))
 @pytest.mark.parametrize("vis", ["private", "public"])
 def test_module_fn_named_after_prelude_fn(
@@ -842,7 +891,16 @@ def _pair_files(
                 probes += _probe("side_entry_bare", _f_call(gen, "1"))
                 expected["side_entry_bare"] = 1 + tag
         else:
-            imports.append(f"import lib{key}(p{key});")
+            # Each status isolates its own reason.  A PRIVATE `f` is imported
+            # by a wildcard, so its visibility alone keeps it out of the
+            # entry's namespace; a FILTERED one is public and left out of a
+            # selective import.  A selective import for both would let the
+            # filter answer for visibility, and ownership that ignored
+            # visibility would pass every private cell.
+            imports.append(
+                f"import lib{key};" if st == "private"
+                else f"import lib{key}(p{key});"
+            )
             probes += _probe(f"side_{key}", f"p{key}(1)")
         expected[f"side_{key}"] = 1 + tag
     main = "\n".join(imports) + "\n\n"
@@ -852,17 +910,6 @@ def _pair_files(
         expected["side_entry"] = 8
     files["main.vera"] = main + probes
     return files, expected
-
-
-def _module_step_pending(sa: str, sb: str, gen: str, local: bool) -> bool:
-    """The pairs the module-ownership step fixes (see `_MODULE_STEP`)."""
-    nongeneric = {"a": gen[0] == "n", "b": gen[1] == "n"}
-    if not local:
-        return gen != "gg"
-    return any(
-        st == "transitive" and nongeneric[key]
-        for key, st in (("a", sa), ("b", sb))
-    )
 
 
 def _pair_cases() -> Iterator[object]:
@@ -877,11 +924,6 @@ def _pair_cases() -> Iterator[object]:
                             sa, sb, gen, order, local,
                             id=f"{sa}-{sb}-{gen}-{''.join(order)}"
                                f"{'-local' if local else ''}",
-                            marks=(
-                                [_MODULE_STEP]
-                                if _module_step_pending(sa, sb, gen, local)
-                                else []
-                            ),
                         )
 
 
@@ -921,7 +963,6 @@ def test_two_owners_stays_refused(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@_MODULE_STEP
 def test_1498_selective_import_other_module_uses_its_own(
     tmp_path: Path,
 ) -> None:
@@ -935,7 +976,6 @@ def test_1498_selective_import_other_module_uses_its_own(
     _run_cell(tmp_path, files, {"main": 101201})
 
 
-@_MODULE_STEP
 def test_1498_module_shadows_its_import(tmp_path: Path) -> None:
     files = {
         "deep.vera": _fn("public", "f", "@Int.0 + 100"),
@@ -946,7 +986,6 @@ def test_1498_module_shadows_its_import(tmp_path: Path) -> None:
     _run_cell(tmp_path, files, {"main": 111})
 
 
-@_MODULE_STEP
 def test_1498_two_private_helpers(tmp_path: Path) -> None:
     files = {
         "liba.vera": _fn("private", "h", "@Int.0 + 100")
@@ -959,7 +998,6 @@ def test_1498_two_private_helpers(tmp_path: Path) -> None:
     _run_cell(tmp_path, files, {"main": 101201})
 
 
-@_MODULE_STEP
 def test_transitive_call_is_not_captured_by_the_entry(tmp_path: Path) -> None:
     """`mid` calls `deep`'s `h`; the entry declares its own `h`."""
     files = {
@@ -971,6 +1009,28 @@ def test_transitive_call_is_not_captured_by_the_entry(tmp_path: Path) -> None:
     _run_cell(tmp_path, files, {"main": 8101})
 
 
+def test_a_repeated_import_admits_the_union_of_its_lists(
+    tmp_path: Path,
+) -> None:
+    """`import liba(f, gen); import liba(g);` admits all three, as the checker
+    reads it.  The code generator took the LAST list alone, so the generic
+    `gen` read as qualified-only and the entry's bare call to it had no
+    target: check and verify clean, then `not defined` at compile."""
+    lib = (
+        "module liba;\n\n" + _fn("public", "f", "@Int.0 + 100")
+        + _fn("public", "g", "@Int.0 + 200")
+        + _fn("public", "gen", "@Int.0 + 300", sig="@T, @Int -> @Int",
+              forall="T")
+    )
+    main = (
+        "import liba(f, gen);\nimport liba(g);\n\n"
+        + _probe("main", "f(1) * 1000000 + g(1) * 1000 + gen(true, 1)")
+    )
+    _run_cell(
+        tmp_path, {"liba.vera": lib, "main.vera": main}, {"main": 101201301},
+    )
+
+
 _WHERE = (
     "{vis} fn x(@Int -> @Int)\n  requires(true)\n  ensures(true)\n"
     "  effects(pure)\n{{\n  h(@Int.0)\n}}\nwhere {{\n"
@@ -979,9 +1039,7 @@ _WHERE = (
 )
 
 
-@pytest.mark.parametrize("entry_x", [
-    pytest.param(False, marks=_MODULE_STEP), True,
-], ids=["modules", "entry"])
+@pytest.mark.parametrize("entry_x", [False, True], ids=["modules", "entry"])
 def test_where_helpers_under_same_named_parents(
     entry_x: bool, tmp_path: Path,
 ) -> None:
@@ -1006,6 +1064,38 @@ def test_where_helpers_under_same_named_parents(
     _run_cell(tmp_path, files, {"main": value})
 
 
+@pytest.mark.parametrize("parent", ["owner", "private"])
+def test_a_where_helper_takes_its_parents_symbol(
+    parent: str, tmp_path: Path,
+) -> None:
+    """A hoisted helper's symbol is its parent's, extended (spec §8.9.1).
+
+    ``liba``'s ``x`` either owns the entry's bare name (public, imported by
+    name) or does not (private, reached through ``ax``), and its helper
+    ``h`` is emitted as ``<x's symbol>$where$h`` either way: ``x$where$h``
+    beside a bare ``x``, ``mod$liba$x$where$h`` beside ``mod$liba$x``.
+    Behaviour cannot tell the two spellings apart, because the parent's body
+    reaches its helper through its module's own renames whichever it is, so
+    the symbols are asserted directly.
+    """
+    vis, imports = (
+        ("public", "import liba(ax, x);\n\n") if parent == "owner"
+        else ("private", "import liba(ax);\n\n")
+    )
+    files = {
+        "liba.vera": _WHERE.format(vis=vis, tag=100)
+        + _fn("public", "ax", "x(@Int.0)"),
+        "main.vera": imports + _probe("main", "ax(1)"),
+    }
+    verify_errors, result, cg_errors = build_multi_module(tmp_path, files)
+    assert not cg_errors and not verify_errors, (cg_errors, verify_errors)
+    parent_symbol = "x" if parent == "owner" else "mod$liba$x"
+    names = wat_fn_names(result.wat)
+    assert parent_symbol in names, names
+    assert f"{parent_symbol}$where$h" in names, names
+    assert module_value(result, "main") == ("ok", 101)
+
+
 _JSON_CONTROL = (
     'match json_parse("{\\"a\\": \\"bc\\"}") {\n'
     '    Ok(@Json) -> match json_get_string(@Json.0, "a") {\n'
@@ -1016,15 +1106,9 @@ _JSON_CONTROL = (
 
 @pytest.mark.parametrize("decl", [
     "",
-    pytest.param(_fn("private", "json_get", "@Int.0"), marks=_PRELUDE_STEP),
-    pytest.param(
-        _fn("private", "json_as_string", "@Int.0"), marks=_PRELUDE_STEP,
-    ),
-    pytest.param(
-        _fn("private", "json_get", "None",
-            sig="@Json, @String -> @Option<Json>"),
-        marks=_PRELUDE_STEP,
-    ),
+    _fn("private", "json_get", "@Int.0"),
+    _fn("private", "json_as_string", "@Int.0"),
+    _fn("private", "json_get", "None", sig="@Json, @String -> @Option<Json>"),
 ], ids=["control", "json_get-int", "json_as_string-int", "json_get-same-sig"])
 def test_1495_table(decl: str, tmp_path: Path) -> None:
     _run_cell(
@@ -1083,7 +1167,6 @@ def _interface_result(tmp_path: Path) -> CompileResult:
     return result
 
 
-@_PRELUDE_STEP
 def test_interface_exports_keep_source_names(tmp_path: Path) -> None:
     result = _interface_result(tmp_path)
     assert result.exports == ["twice", "main"]
@@ -1095,8 +1178,24 @@ _NODE = shutil.which("node")
 _HARNESS = ROOT / "vera" / "browser" / "harness.mjs"
 
 
-@_PRELUDE_STEP
-@pytest.mark.skipif(_NODE is None, reason="Node.js not available")
+def _node_supports_exnref() -> bool:
+    """The same probe `tests/test_browser.py` gates its module on."""
+    if _NODE is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [_NODE, "--experimental-wasm-exnref", "-e", "0"],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+@pytest.mark.skipif(
+    not _node_supports_exnref(),
+    reason="Node.js not available or lacks --experimental-wasm-exnref support",
+)
 def test_interface_browser(tmp_path: Path) -> None:
     result = _interface_result(tmp_path)
     wasm = tmp_path / "m.wasm"

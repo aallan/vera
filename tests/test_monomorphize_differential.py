@@ -1703,24 +1703,22 @@ def test_generic_typearg_from_imported_function_return_is_discovered() -> None:
 
 
 def test_imported_private_shadow_fn_return_stays_symmetric() -> None:
-    """The imported-function `fn_ret_types` seeding must stay UNFILTERED — exactly
-    as codegen does — even when a resolved module has a private function whose
-    bare name shadows an imported public one.
+    """Both sides key an imported function's return type by the SAME owner.
 
-    Codegen harvests every resolved module's `_fn_ret_type_exprs` via `setdefault`
-    (`vera/codegen/modules.py`, "including private helpers", first-seen wins), so a
-    private `mk -> Bool` in module `a` (iterated first) wins the bare-name key over
-    the public `mk -> Int` in module `b`.  Both codegen AND the verifier then
-    discover the SAME `id_g` instantiation — the wrong one, but SYMMETRICALLY
-    wrong, so `vera verify` clean still implies the runtime matches (no false
-    Tier-1; the inference imprecision itself is the #769 family).
+    Module ``a`` has a private ``mk -> Bool`` and module ``b`` a public
+    ``mk -> Int``; the entry imports both and calls ``id_g(mk(()))``.  The
+    entry's bare ``mk`` is ``b``'s — ``a``'s is private, so it does not own
+    the entry's bare name (#1498) and is keyed under ``mod$a$mk`` on both
+    sides.  Both therefore discover ``id_g<Int>``.
 
-    A reviewer suggested filtering the verifier's seeding to import-public only;
-    that would make the verifier discover `id_g<Int>` while codegen stays on the
-    shadowed instantiation — an ASYMMETRY = the false Tier-1 it was meant to
-    avoid.  This pins the symmetry so that "fix" cannot land silently, while
-    asserting only agreement (not the incidental concrete type) so a later #769
-    precision fix that moves BOTH sides together still passes (PR #767 review)."""
+    Before #1498 both sides seeded every module function under its bare name,
+    first-seen-wins, so ``a``'s private ``mk`` won the key and both discovered
+    ``id_g<Bool>``: wrong, but SYMMETRICALLY wrong, which is what this cell
+    was written to keep (PR #767 review) — a one-sided fix is exactly the
+    asymmetry that lets a clone run unverified.  It asserts agreement rather
+    than the concrete type, so it stays the guard against either side moving
+    alone; ``test_a_module_generic_fed_by_a_qualified_only_function_agrees``
+    below pins the renamed call that the shared keying also has to follow."""
     a_src = (
         "private fn mk(@Unit -> @Bool)\n"
         "  requires(true) ensures(true) effects(pure)\n"
@@ -1773,9 +1771,9 @@ def test_imported_private_shadow_fn_return_stays_symmetric() -> None:
 
     assert len(cg) == 1 and cg == ver, (
         f"codegen ({cg}) and verifier ({ver}) must discover the SAME single "
-        f"id_g instantiation — the verifier's imported-fn seeding mirrors "
-        f"codegen's unfiltered first-seen-wins harvest; a public/import filter "
-        f"on the verifier side would diverge into a false Tier-1 (PR #767 review)"
+        f"id_g instantiation — both key an imported function's return type "
+        f"by the declaration that owns the bare name (#1498); keying it on one "
+        f"side only would diverge into a false Tier-1 (PR #767 review)"
     )
 
 
@@ -2189,3 +2187,74 @@ def test_discovery_scope_includes_the_prelude() -> None:
                 f"{sorted(scope)}"
             )
     _assert_scopes_agree("prelude", cg, ver)
+
+
+def test_a_module_generic_fed_by_a_qualified_only_function_agrees() -> None:
+    """#1498: both sides bind a module body's call to its own qualified-only
+    function before discovery, and key that function's return type the same.
+
+    Module ``a``'s private ``mk -> Int`` does not own the entry's bare name
+    (it is private, and the entry declares its own ``mk -> Bool``), so codegen
+    emits it as ``mod$a$mk`` and renames ``door``'s call to it.  The private
+    generic ``gid`` takes its type argument from that call alone.  The
+    verifier's discovery copy has to see the same renamed call AND a return
+    type keyed under the same symbol, or it types the call by the entry's
+    ``mk`` and discovers ``gid<Bool>`` while codegen emits ``gid<Int>``: a
+    clone that runs unverified.  ``Bool`` is also the phantom default, so the
+    entry's ``mk -> Bool`` makes the wrong answer concrete rather than an
+    accident of inference.
+    """
+    a_src = (
+        "private fn mk(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ 7 }\n\n"
+        "private forall<T> fn gid(@T -> @T)\n"
+        "  requires(true) ensures(@T.result == @T.0) effects(pure)\n"
+        "{ @T.0 }\n\n"
+        "public fn door(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ gid(mk(@Unit.0)) }\n"
+    )
+    main_src = (
+        "import a(door);\n\n"
+        "private fn mk(@Unit -> @Bool)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ true }\n\n"
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        "{ if mk(@Unit.0) then { door(@Unit.0) } else { 0 } }\n"
+    )
+
+    mods = [_resolved_module(("a",), a_src)]
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False, encoding="utf-8",
+    ) as f:
+        f.write(main_src)
+        f.flush()
+        mp = f.name
+    try:
+        prog = transform(parse_file(mp))
+        gen = CodeGenerator(source=main_src, file=mp, resolved_modules=mods)
+        gen.compile_program(prog)  # type: ignore[arg-type]
+        cg = {
+            (n, ct) for n, ct in getattr(gen, "_emitted_instances", set())
+            if n.endswith("gid")
+        }
+        verifier = ContractVerifier(
+            source=main_src, file=mp, resolved_modules=mods,
+        )
+        verifier.register_program(prog)  # type: ignore[arg-type]
+        ver = {
+            (n, ct)
+            for n, cts in verifier._instances.items()
+            for ct in cts
+            if n.endswith("gid")
+        }
+    finally:
+        os.unlink(mp)
+
+    assert cg == {("mod$a$gid", ("Int",))}, cg
+    assert cg <= ver, (
+        f"codegen emits {cg} and the verifier discovers {ver}: a clone the "
+        f"verifier does not discover runs unverified"
+    )

@@ -297,9 +297,7 @@ class FunctionCompilationMixin:
         # `_compile_fn` entry overwrites the flag, so it is always
         # current for the function whose diagnostics are being emitted;
         # the Pass-2 loops in `compile_program` reset it when done.
-        self._in_prelude_fn = (
-            decl.name.split("$")[0] in self._prelude_fn_names
-        )
+        self._in_prelude_fn = self._is_prelude_symbol(decl.name)
 
         # Check if function is compilable
         if not self._is_compilable(decl):

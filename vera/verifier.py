@@ -32,7 +32,10 @@ from vera.monomorphize import (
     UninferredTypeArg,
     collect_nested_generic_decls,
     declared_return_clone_key,
-    importer_occupied_bare_names,
+    FnOwnership,
+    fn_ownership,
+    merged_import_filters,
+    module_call_renames,
     module_qualified_generic_names,
     module_qualified_generic_targets,
     namespace_ctor_owners,
@@ -40,6 +43,7 @@ from vera.monomorphize import (
     pipe_desugared_call,
     public_generic_names,
     qualify_nested_generic_decls,
+    rename_module_calls,
     reroute_module_qualified_generic_calls,
     uninferred_type_arg_fix,
 )
@@ -1556,10 +1560,13 @@ class ContractVerifier:
         if not self._resolved_modules:
             return
 
-        # 1. Build import filter
-        for imp in program.imports:
-            self._import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
+        # 1. Build import filter, UNIONED across repeated imports of one
+        # module — the checker's reading, and the one codegen's ownership
+        # predicate reads (#1498).  Last-wins let a second `import m(g);` hide
+        # the `f` a first `import m(f);` admitted.
+        for path, names in merged_import_filters(program.imports).items():
+            self._import_names[path] = (
+                set(names) if names is not None else None
             )
 
         # Snapshot builtin function names
@@ -2375,17 +2382,26 @@ class ContractVerifier:
         # Only top-level imported fns matter: imported `where` helpers are
         # private to their parent and never callable from the importer, so they
         # can never drive importer-side inference.
+        # #1498: keyed exactly as codegen keys them — a declaration that owns
+        # the entry's bare name under that name, and every other one under its
+        # `mod$<path>$name` symbol, which is what its module's bodies call it
+        # once `_collect_instantiations` has renamed their calls.  A bare-name
+        # key for a qualified-only declaration answered for whichever
+        # declaration really owns the name: a private `mk -> Bool` in one
+        # module decided the entry's `id_g(mk(()))` for the public `mk -> Int`
+        # it imports from another.
+        ownership = self._fn_ownership(disc_program)
         for mod in self._resolved_modules:
             for tld in mod.program.declarations:
                 idecl = tld.decl
                 if isinstance(idecl, ast.FnDecl):
-                    fn_names.add(idecl.name)
+                    key = ownership.symbol(mod.path, idecl.name)
+                    fn_names.add(key)
                     iret = self._simple_type_name(idecl.return_type)
                     if iret is not None:
-                        fn_ret_types.setdefault(idecl.name, iret)
+                        fn_ret_types.setdefault(key, iret)
                     if idecl.return_type is not None:
-                        fn_ret_type_exprs.setdefault(
-                            idecl.name, idecl.return_type)
+                        fn_ret_type_exprs.setdefault(key, idecl.return_type)
 
         # #820: retain the raw alias TypeExprs so the closure-argument widening
         # obligation resolves a `SlotRef` closure's formal types the same way
@@ -2452,14 +2468,28 @@ class ContractVerifier:
             expr_types=self._expr_types,
         )
 
-    @staticmethod
-    def _local_fn_names(program: ast.Program) -> set[str]:
-        """The bare source names this program's own declarations occupy.
+    def _fn_ownership(self, program: ast.Program) -> FnOwnership:
+        """Which module functions own the entry's bare name (#1498).
 
-        Delegates to the SHARED
-        :func:`vera.monomorphize.importer_occupied_bare_names`, which codegen
-        drives too — the importer-side input to the qualified-only predicate,
-        so the two sides cannot classify an imported generic differently.
+        The same :class:`vera.monomorphize.FnOwnership` codegen builds, over
+        the same entry and resolved modules, so both sides key a module
+        function under the same symbol.
+        """
+        return fn_ownership(
+            program,
+            [(m.path, m.program, m.direct) for m in self._resolved_modules],
+            self._entry_held_bare_names(program),
+        )
+
+    @staticmethod
+    def _entry_held_bare_names(program: ast.Program) -> frozenset[str]:
+        """The bare names the entry holds before any import supplies one.
+
+        Delegates to the SHARED :func:`vera.prelude.entry_held_bare_names` —
+        the entry's own declarations and the prelude's functions, which no
+        import ever wins (§8.5.2.2, #1498) — which codegen drives too: the
+        importer-side input to the qualified-only predicate, so the two sides
+        cannot classify an imported generic differently.
 
         This used to be a private walk counting EVERY ``where``-helper, which
         was the pre-Pass-0 shape: codegen consults the name set only after the
@@ -2470,7 +2500,9 @@ class ContractVerifier:
         ``gen2$Bool``, the verifier verified ``mod$lib$gen2$Bool``, and each
         side's clone went uncovered by the other (measured on the F3 shape).
         """
-        return importer_occupied_bare_names(program)
+        from vera.prelude import entry_held_bare_names
+
+        return entry_held_bare_names(program)
 
     def _imported_generic_decls(
         self, program: ast.Program,
@@ -2500,7 +2532,7 @@ class ContractVerifier:
 
         First-seen-wins ``setdefault``, exactly as codegen.
         """
-        local_fn_names = self._local_fn_names(program)
+        local_fn_names = self._entry_held_bare_names(program)
         public: dict[str, ast.FnDecl] = {}
         private: dict[str, ast.FnDecl] = {}
         for mod in self._resolved_modules:
@@ -2575,7 +2607,7 @@ class ContractVerifier:
         """
         cached = self._qualified_targets_cache
         if cached is None:
-            local_fn_names = self._local_fn_names(program)
+            local_fn_names = self._entry_held_bare_names(program)
             qualified_by_path = {
                 m.path: module_qualified_generic_names(
                     m.program, self._import_names.get(m.path), local_fn_names,
@@ -2587,9 +2619,12 @@ class ContractVerifier:
                 m.path: public_generic_names(m.program)
                 for m in self._resolved_modules
             }
+            from vera.prelude import overridable_builtin_names
+
             cached = {
                 m.path: module_qualified_generic_targets(
                     m.program, qualified_by_path, public_by_path, m.path,
+                    prelude=overridable_builtin_names(),
                 )
                 for m in self._resolved_modules
             }
@@ -2643,7 +2678,13 @@ class ContractVerifier:
         """
         from dataclasses import replace as _replace
 
-        from vera.prelude import inject_prelude
+        from vera.prelude import (
+            entry_overridden_prelude_fns,
+            inject_prelude,
+            overridable_builtin_names,
+            prelude_call_targets,
+            reroute_prelude_calls,
+        )
 
         # Reset the imported-generic verify registries — register_program may
         # run repeatedly in a warm incremental session, and a stale entry would
@@ -2746,6 +2787,9 @@ class ContractVerifier:
         # applies — so a NON-generic caller of a private generic (`use_it` →
         # `inner`) seeds that instantiation for the importer to verify.
         qualified_module_programs = []
+        overridden_prelude_fns = entry_overridden_prelude_fns(program)
+        ownership = self._fn_ownership(program)
+        module_programs = {m.path: m.program for m in self._resolved_modules}
         for mod in self._resolved_modules:
             qmod = qualify_nested_generic_decls(
                 mod.program,
@@ -2761,6 +2805,38 @@ class ContractVerifier:
                         decl=self._reroute_to_module_qualified(
                             tld.decl, mod_qual_targets,
                         ),
+                    )
+                    if isinstance(tld.decl, ast.FnDecl) else tld
+                    for tld in qmod.declarations
+                ))
+            # #1495: and each bare call to a prelude function the ENTRY
+            # overrides, which in this module still names the PRELUDE's and so
+            # reaches `prelude_symbol(name)` — the same shared walk codegen's
+            # `_register_modules` runs, so both sides discover the same clones.
+            # #1498: and each bare call to a function that does not own the
+            # entry's bare name — the module's own, or its one import's — to
+            # that declaration's `mod$<path>$name`, the same renames codegen's
+            # `_register_modules` writes.
+            prelude_targets = prelude_call_targets(
+                mod.program, overridden_prelude_fns,
+            )
+            if prelude_targets:
+                qmod = replace(qmod, declarations=tuple(
+                    replace(
+                        tld,
+                        decl=reroute_prelude_calls(tld.decl, prelude_targets),
+                    )
+                    if isinstance(tld.decl, ast.FnDecl) else tld
+                    for tld in qmod.declarations
+                ))
+            call_renames = module_call_renames(
+                ownership, mod.program, mod.path, module_programs,
+                overridable_builtin_names(),
+            )
+            if call_renames:
+                qmod = replace(qmod, declarations=tuple(
+                    replace(
+                        tld, decl=rename_module_calls(tld.decl, call_renames),
                     )
                     if isinstance(tld.decl, ast.FnDecl) else tld
                     for tld in qmod.declarations
@@ -3055,7 +3131,7 @@ class ContractVerifier:
         verifier would discover a strict subset of codegen's emitted set (a new
         false Tier-1: a cross-module transitive clone runs unverified).
         """
-        local_fn_names = self._local_fn_names(program)
+        local_fn_names = self._entry_held_bare_names(program)
         ctor_to_adt = mono.ctx.ctor_to_adt
         # Build the (path → {name → decl}) map of shadowed imported generics,
         # mirroring codegen's ``_shadowed_imported_generic_decls`` — which holds

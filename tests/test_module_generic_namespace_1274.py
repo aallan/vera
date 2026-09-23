@@ -16,12 +16,12 @@ all reproduced below:
 * **A dangling ``$gen2``** where the module generic is public but outside the
   importer's import filter: it was registered in NO clone namespace at all.
 
-The rule the fix installs is the one non-generics already follow
-(``_register_shadowed_import``): a module function is reached under
-``mod$<path>$name`` exactly when its bare name in the importer's flat namespace
-does not denote that module's declaration — public **and** in-filter **and**
-unshadowed.  Generic and non-generic now share that one predicate
-(:func:`vera.monomorphize.module_qualified_generic_names`).
+The rule the fix installs is the one every module function follows
+(:func:`vera.monomorphize.owns_entry_bare_name`): a module function is reached
+under ``mod$<path>$name`` exactly when its bare name in the importer's flat
+namespace does not denote that module's declaration — public **and** in-filter
+**and** not a name the importer holds.  Generic and non-generic share that one
+predicate (#1498).
 
 Every cell asserts the verify verdict AND the runtime value in ONE test,
 against the standalone oracle: the library compiled ALONE answers 111, so 111
@@ -505,8 +505,9 @@ class TestTransitiveVisibility:
     for such a module — the same spelling that means "wildcard import" — so
     every public generic of a transitive module was read as a bare-name owner.
     Latent rather than live: the checker refuses a bare call to it from the
-    entry (`E200`), and two transitive namesakes are refused by the E608
-    collision rail (#1281), so no program observed the misclassification.  It is
+    entry (`E200`), and two transitive namesakes each take their own
+    ``mod$<path>$name`` (#1498), so no program observed the
+    misclassification.  It is
     corrected for parity, because the predicate is supposed to BE §8.6.4 and a
     reader who trusts it should not have to know which rail happens to cover a
     given shape.

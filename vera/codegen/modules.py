@@ -15,15 +15,28 @@ from vera import ast
 from vera.errors import Diagnostic, SourceLocation
 from vera.monomorphize import (
     canonicalize_type_aliases,
-    importer_occupied_bare_names,
+    fn_ownership,
+    merged_import_filters,
     module_qualified_generic_names,
     module_qualified_generic_targets,
+    module_qualified_symbol,
     namespace_fn_names,
     public_generic_names,
     qualify_contended_data_decls,
+    rename_module_calls,
 )
+from vera.monomorphize import module_call_renames as module_call_renames_for
 from vera.naming import display_adt_name
-from vera.prelude import PRELUDE_NAMESPACE, data_decl_shape, prelude_adt_names
+from vera.prelude import (
+    PRELUDE_NAMESPACE,
+    data_decl_shape,
+    entry_held_bare_names,
+    entry_overridden_prelude_fns,
+    overridable_builtin_names,
+    prelude_adt_names,
+    prelude_call_targets,
+    reroute_prelude_calls,
+)
 
 if TYPE_CHECKING:
     from vera.codegen.core import CodeGenerator
@@ -303,12 +316,13 @@ class CrossModuleMixin:
             for mod in self._resolved_modules
         ]
 
-        # 1. Build import filter: path -> set of names (or None for wildcard)
-        import_names: dict[tuple[str, ...], set[str] | None] = {}
-        for imp in program.imports:
-            import_names[imp.path] = (
-                set(imp.names) if imp.names is not None else None
-            )
+        # 1. Build import filter: path -> set of names (or None for wildcard),
+        # UNIONED across repeated imports of one module — the checker's reading
+        # and the one the ownership predicate below reads (#1498).
+        import_names: dict[tuple[str, ...], set[str] | None] = {
+            path: (set(names) if names is not None else None)
+            for path, names in merged_import_filters(program.imports).items()
+        }
 
         # #1253: per-namespace ADT bookkeeping, filled in the harvest loop and
         # folded into membership sets after it.
@@ -328,11 +342,21 @@ class CrossModuleMixin:
         # #1274 (F3): the GENERIC classification below reads the bare-name set
         # through the shared derivation instead, so the verifier — which holds
         # the pre-Pass-0 AST — computes the identical set from its own copy.
-        # `local_fn_names` above stays the post-hoist walk its other consumers
-        # (`_register_shadowed_import`, `importer_visible`) were written
-        # against; the two agree on every `$`-free name, which is asserted
-        # directly rather than assumed (tests/test_module_generic_namespace_1274).
-        importer_bare_names = importer_occupied_bare_names(program)
+        # `local_fn_names` above stays the post-hoist walk its other consumer
+        # (`importer_visible`) was written against; the two agree on every
+        # `$`-free name, which is asserted directly rather than assumed
+        # (tests/test_module_generic_namespace_1274).
+        # #1498: the bare names the ENTRY already holds — its own
+        # declarations AND the prelude's functions, which no import ever wins
+        # (§8.5.2.2).  A module declaration of one of them does not own the
+        # entry's bare name, generic or not, so it is emitted under its own
+        # `mod$<path>$name`.  The verifier builds the identical set.
+        importer_bare_names = entry_held_bare_names(program)
+        # The same filters, for the shared ownership predicate.  A last-wins
+        # reading let a second `import m(g);` hide the `f` a first
+        # `import m(f);` admitted, so `f` read as qualified-only and the
+        # entry's bare call to it had no target (#1498).
+        entry_filters = merged_import_filters(program.imports)
 
         # #1274 (F1): classify EVERY module's generics before rerouting ANY
         # module's bodies.  A module's bare call can name a generic it imported
@@ -343,28 +367,43 @@ class CrossModuleMixin:
         public_generics_by_path: dict[tuple[str, ...], set[str]] = {}
         for mod in self._resolved_modules:
             qualified_by_path[mod.path] = module_qualified_generic_names(
-                mod.program, import_names.get(mod.path), importer_bare_names,
+                mod.program, entry_filters.get(mod.path), importer_bare_names,
                 direct=mod.direct,
             )
             public_generics_by_path[mod.path] = public_generic_names(
                 mod.program,
             )
 
-        # #1281: every module's top-level generic names, whatever their
-        # visibility.  The collision rail below needs to know that BOTH sides
-        # of a name clash are generics before the ownership classification
-        # can say anything about them — a non-generic is emitted under the
-        # bare `$name` in Pass 2.5 and collides for real.
-        generics_by_path: dict[tuple[str, ...], frozenset[str]] = {
-            mod.path: frozenset(
-                tld.decl.name for tld in mod.program.declarations
-                if isinstance(tld.decl, ast.FnDecl) and tld.decl.forall_vars
-            )
-            for mod in self._resolved_modules
-        }
+        # #1498: ONE ownership predicate for EVERY module function, generic or
+        # not (spec §8.5.2.1, §11.4.5), shared with the verifier's discovery
+        # copy.  A module declaration keeps the bare `$name` only when the
+        # entry's bare name denotes it — imported directly, public, admitted by
+        # the entry's filter, and not a name the entry already holds.  Every
+        # other one is emitted as `mod$<path>$name`, and a hoisted `where`
+        # helper follows its parent, so two modules' same-named declarations
+        # can meet only where BOTH own the bare name: the ambiguity §8.5.2.2
+        # refuses (E155).
+        ownership = fn_ownership(
+            program,
+            [(m.path, m.program, m.direct) for m in self._resolved_modules],
+            importer_bare_names,
+        )
+        owns = ownership.owns
+        module_programs = {m.path: m.program for m in self._resolved_modules}
+        prelude_fn_names = overridable_builtin_names()
 
-        # Provenance tracking for collision detection
+        # #1495: the prelude functions the ENTRY overrides.  A module that does
+        # not declare one of these names still calls the PRELUDE's (the
+        # incumbent holds the name in every namespace, §8.5.2.2), which the
+        # entry's override has moved to `prelude_symbol(name)` — so each such
+        # bare call in a module body is rerouted there below, by the shared
+        # walk the verifier's discovery copy runs too.
+        overridden_prelude_fns = entry_overridden_prelude_fns(program)
+
+        # Provenance tracking for collision detection.  `bare_owners` holds the
+        # one module per name that owns the entry's bare name (#1498).
         fn_provenance: dict[str, tuple[str, ...]] = {}
+        bare_owners: dict[str, tuple[str, ...]] = {}
         adt_provenance: dict[str, tuple[str, ...]] = {}
         ctor_provenance: dict[str, tuple[tuple[str, ...], str]] = {}
 
@@ -458,28 +497,35 @@ class CrossModuleMixin:
             # bare `gen` must reroute to `mod$deep$gen`.
             module_qualified_targets = module_qualified_generic_targets(
                 mod.program, qualified_by_path, public_generics_by_path,
-                mod.path,
+                mod.path, prelude=prelude_fn_names,
             )
             # The REGISTRATION split below is about this module's OWN
             # declarations, so it reads this module's own classification —
             # never the imports' union, which answers a different question
             # (which bare CALLS from here must reroute, and to whom).
             module_own_qualified = qualified_by_path[mod.path]
+            prelude_targets = prelude_call_targets(
+                mod.program, overridden_prelude_fns,
+            )
+            module_call_renames = module_call_renames_for(
+                ownership, mod.program, mod.path, module_programs,
+                prelude_fn_names,
+            )
             for fn_name, sig in temp._fn_sigs.items():
-                # Collision detection: same name from different module
-                if fn_name in fn_provenance:
-                    prev_path = fn_provenance[fn_name]
-                    if prev_path != mod.path and not self._declarations_cannot_collide(
-                        fn_name, prev_path, mod.path,
-                        generics_by_path, qualified_by_path,
-                    ):
-                        self._emit_collision_error(
-                            program, fn_name, "Function",
-                            prev_path, mod.path, "E608",
-                        )
-                        continue
-                else:
-                    fn_provenance[fn_name] = mod.path
+                owner = owns(mod.path, fn_name)
+                # Collision detection (#1498): two declarations of one name
+                # collide only when BOTH own the entry's bare name, or when
+                # some namespace can name both — the ambiguity §8.5.2.2
+                # refuses.  Every other declaration has its own symbol.
+                clash = self._colliding_declarer(
+                    fn_name, mod.path, owner, fn_provenance, bare_owners,
+                )
+                if clash is not None:
+                    self._emit_collision_error(
+                        program, fn_name, "Function",
+                        clash, mod.path, "E608",
+                    )
+                    continue
 
                 is_public = vis_map.get(fn_name) == "public"
                 in_filter = (
@@ -504,8 +550,13 @@ class CrossModuleMixin:
                 # internals stop each from picking one, and it is pinned
                 # structurally — on this registry — in
                 # tests/test_module_generic_collision_1281.py.
-                if fn_name not in module_own_qualified:
+                if owner and fn_name not in module_own_qualified:
                     self._fn_sigs.setdefault(fn_name, sig)
+                elif not owner:
+                    # #1498: emitted as `mod$<path>$name` in Pass 2.6 and
+                    # never under the bare name, which belongs to another
+                    # owner (or to no module at all).
+                    self._qualified_module_fns.add((mod.path, fn_name))
                 # #890: track importer visibility.  A direct import contributes
                 # its public, in-filter names to the importer's namespace; a
                 # transitive-only module contributes nothing visible here even
@@ -563,7 +614,8 @@ class CrossModuleMixin:
                 # behind the other.  The per-owner
                 # `_module_fn_ret_type_exprs` key below is unaffected; a
                 # `m::f` spelling still classifies by its resolved target.
-                if fn_name not in module_own_qualified:
+                if (owns(mod.path, fn_name)
+                        and fn_name not in module_own_qualified):
                     self._fn_ret_type_exprs.setdefault(fn_name, canonical_ret)
                 # #841 (PR #842 review round 2): also key by (module
                 # path, name) so a module-qualified await classifies by
@@ -580,20 +632,27 @@ class CrossModuleMixin:
             # `_fn_nat_params` entry, so a cross-module call `f(@Int.0)`
             # would skip the `value >= 0` runtime guard the in-module call
             # gets.  Same `setdefault` first-seen-wins shape as `_fn_sigs`.
+            # #1498: the bare key only for a bare-name OWNER; a qualified-only
+            # declaration's entry is mirrored onto its `mod$…` symbol by
+            # `_register_shadowed_import`, and its bare key would answer for
+            # whichever declaration really owns the name.
             for fn_name, nat_params in temp._fn_nat_params.items():
-                self._fn_nat_params.setdefault(fn_name, nat_params)
+                if owns(mod.path, fn_name):
+                    self._fn_nat_params.setdefault(fn_name, nat_params)
 
             # #813: same harvest for the dual @Int-parameter bitmap, so a
             # cross-module call `f(@Nat.0)` into an imported `f(@Int -> …)`
             # keeps its runtime widening guard.
             for fn_name, int_params in temp._fn_int_params.items():
-                self._fn_int_params.setdefault(fn_name, int_params)
+                if owns(mod.path, fn_name):
+                    self._fn_int_params.setdefault(fn_name, int_params)
 
             # #865: same harvest for the @Byte-parameter bitmap, so a
             # cross-module call `f(3)` into an imported `f(@Byte -> …)`
             # coerces the int-literal argument to i32.const.
             for fn_name, byte_params in temp._fn_byte_params.items():
-                self._fn_byte_params.setdefault(fn_name, byte_params)
+                if owns(mod.path, fn_name):
+                    self._fn_byte_params.setdefault(fn_name, byte_params)
 
             # #1189: same harvest for the trap source map.  An imported body
             # is compiled into this WASM module (Pass 2.5/2.6) and can trap at
@@ -608,7 +667,8 @@ class CrossModuleMixin:
             # emission, and the module's shadowed body is emitted under
             # `mod$…` and mirrored in `_register_shadowed_import`.
             for fn_name, fn_loc in temp._fn_source_map.items():
-                self._fn_source_map.setdefault(fn_name, fn_loc)
+                if owns(mod.path, fn_name):
+                    self._fn_source_map.setdefault(fn_name, fn_loc)
 
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
@@ -806,6 +866,8 @@ class CrossModuleMixin:
                 routed = self._reroute_module_qualified_generic_calls(
                     tld.decl, module_qualified_targets,
                 )
+                routed = reroute_prelude_calls(routed, prelude_targets)
+                routed = rename_module_calls(routed, module_call_renames)
                 # #774: an imported PUBLIC generic is monomorphized by the
                 # importer (Pass 1.5) at its own call sites — it can't be
                 # emitted verbatim under a bare/mangled name in Pass 2.5, but
@@ -839,15 +901,13 @@ class CrossModuleMixin:
                             tld.decl.name, mod.path,
                         )
                     continue
-                is_public = (tld.visibility or "private") == "public"
-                in_filter = name_filter is None or tld.decl.name in name_filter
                 # #1029: the rerouted non-generic body carries the private-generic
                 # ModuleCalls the Pass-2.5 emission + shadowed-generic discovery
                 # (`_monomorphize_shadowed_module_generics`) both consume.
                 self._imported_fn_decls.append((mod.path, routed))
                 self._register_shadowed_import(
-                    mod.path, routed, temp, local_fn_names,
-                    qualified_eligible=is_public and in_filter,
+                    mod.path, routed, temp,
+                    owner=owns(mod.path, routed.name),
                 )
                 # #999: harvest this imported NON-generic fn's nested `forall`
                 # where-helpers (qualified to ``compute$where$gid`` above) as
@@ -882,8 +942,7 @@ class CrossModuleMixin:
                         continue
                     self._imported_fn_decls.append((mod.path, wfn))
                     self._register_shadowed_import(
-                        mod.path, wfn, temp, local_fn_names,
-                        qualified_eligible=False,
+                        mod.path, wfn, temp, owner=owns(mod.path, wfn.name),
                     )
 
         # #890: a name is transitive-only iff a transitive module contributes
@@ -1126,7 +1185,7 @@ class CrossModuleMixin:
         rather than picking (E156 at check, E609/E610 as the codegen
         backstop) — so nothing is renamed for such a name and the rail
         speaks as before.  This is the ADT twin of
-        :meth:`_declarations_cannot_collide`'s ambiguity condition, and it
+        :meth:`_colliding_declarer`'s ambiguity condition, and it
         is asked of EVERY namespace, not just the entry's: a rename is only
         sound while each namespace agrees which declaration a bare name
         denotes.
@@ -1556,100 +1615,48 @@ class CrossModuleMixin:
             self._module_type_alias_params.get(path_b, {}),
         )
 
-    def _declarations_cannot_collide(
+    def _colliding_declarer(
         self,
         name: str,
-        path_a: tuple[str, ...],
-        path_b: tuple[str, ...],
-        generics_by_path: dict[tuple[str, ...], frozenset[str]],
-        qualified_by_path: dict[tuple[str, ...], set[str]],
-    ) -> bool:
-        """May two modules' same-named declarations share the namespace?
+        path: tuple[str, ...],
+        owner: bool,
+        declarers: dict[str, tuple[str, ...]],
+        owners: dict[str, tuple[str, ...]],
+    ) -> tuple[str, ...] | None:
+        """The earlier module this declaration of *name* collides with, if any.
 
-        E608 exists because the flat compilation strategy emits an imported
-        function under one WASM name.  What decides whether two declarations
-        contend for it is OWNERSHIP of the bare name, which since #1274 is
-        per module: a declaration the entry's bare name denotes is emitted as
-        ``$name``, and one it does not (private, outside the filter, shadowed
-        by a local declaration, or reached only transitively) is emitted by
-        ``_register_shadowed_import`` as ``mod$<path>$name``.  Two
-        declarations in different owner namespaces overwrite nothing.
+        E608 exists because a flattened module holds one function per symbol.
+        Since #1498 every module declaration that does not own the entry's
+        bare name is emitted as ``mod$<path>$name`` — private, outside the
+        entry's filter, shadowed by an entry declaration, named after a
+        prelude function, reached only transitively, or a hoisted helper of
+        such a declaration — so two declarations of one name can share a
+        symbol only when BOTH own the bare name, and that is exactly the
+        ambiguity §8.5.2.2 refuses (E155).  This is that refusal's backstop,
+        and it answers for two cases:
 
-        Three conditions, and all three are load-bearing:
+        * **two owners** — the second module to claim the bare name collides
+          with the first (*owners* keeps the one claimant per name);
+        * **a namespace that can name both** — a module importing two
+          dependencies that each export the name, and declaring none itself
+          (#1281, #1304).  Both declarations may be qualified-only from the
+          entry's point of view, but the importing module's own bare call has
+          no one declaration to mean, so the pair stays refused here as it is
+          at check.
 
-        * **neither owns the bare name.**  Then both are shadowed emissions
-          and nothing shares ``$name``, whether or not either is generic.
-          This is exactly the shape §8.5.2.2's own diagnostic prescribes —
-          "declare 'pick' in this file … and use the module-qualified form
-          for the imported ones" — which the rail refused, so the remedy the
-          checker named did not compile (#1387).  #1281 relaxed this for
-          generics only; the ownership argument never depended on genericity.
-        * **one owner is survivable only between two top-level generics.**
-          The owner mangles to ``gen$Bool`` and the other to
-          ``mod$<path>$gen$Bool``, so the clone namespaces stay distinct.  A
-          non-generic owner takes the bare ``$name`` in Pass 2.5 and the
-          other would overwrite it — the collision this rail is for.
-        * **no namespace can name both.**  A module importing two
-          dependencies that each export ``gen``, and declaring none itself,
-          would resolve its own bare ``gen`` to one of them — and spec §8.5
-          refuses the name outright rather than saying which (#1304).  The
-          CHECKER is the layer that reports it (E155), because scope is a
-          check-phase question; this condition is the BACKSTOP behind it,
-          and it is deliberately the same predicate rather than a second
-          opinion about the same shape.  It matters that it stays: the two
-          generics are qualified-only from the entry's point of view, so the
-          ownership classification alone would relax the shape, and codegen's
-          ``module_qualified_generic_targets`` loop IS positional (last
-          import wins) — so a program reaching here with the name still
-          ambiguous would be compiled against a body picked by import order.
-
-        The ambiguity set comes from :meth:`_collect_namespace_fn_names`, the
-        same walk that decides which names each namespace can see for #1299
-        and the one the checker's refusal reads — one derivation of one
-        visibility rule, so the rail cannot relax somewhere the scope says it
-        must not, and the two layers cannot disagree about which shape is
-        ambiguous.
-
-        Reached only through a door that bypasses the checker, now that the
-        checker refuses the shape first: the direct-codegen collision tests
-        in ``tests/test_codegen_modules.py`` and, for this condition
-        specifically, ``build_multi_module_past_check`` in #1281's matrix.
+        *declarers* keeps the first module to declare each name.  A name that
+        is already owner-qualified (``mod$…``, a nested generic helper) needs
+        no case of its own: its path makes its first declarer its only one,
+        and it never owns a bare name.
         """
-        if name in self._ambiguous_imported_fn_names:
-            return False
-        # OWNERSHIP of the bare `$name`, per module.  Two ways to not own it,
-        # and both have to be asked: `qualified_by_path` classifies GENERICS
-        # only (it is `module_qualified_generic_names`), while a local
-        # declaration in the entry shadows EVERY module's version of the name
-        # — generic or not — which is what routes each through
-        # `_register_shadowed_import` to its own `mod$<path>$name`.  Reading
-        # only the first left a non-generic pair with `owners == 2` and the
-        # rail firing on the very shape §8.5.2.2 prescribes (#1387).
-        local: set[str] = getattr(self, "_local_shadowed_fn_names", set())
-        owners = sum(
-            name not in qualified_by_path.get(path, set())
-            and name not in local
-            for path in (path_a, path_b)
-        )
-        if owners == 0:
-            # NEITHER declaration owns the bare name, so neither is emitted
-            # under it: `_register_shadowed_import` gives each its own
-            # `mod$<path>$name`, whether it is generic or not.  This is the
-            # shape §8.5.2.2's diagnostic prescribes — declare the name
-            # locally and reach the imports through `m::name(...)` — and the
-            # rail refused it, so the remedy the checker named did not
-            # compile (#1387, and why #187's "no way to resolve the collision
-            # without renaming" was still literally true).
-            return True
-        # ONE owner is survivable only between two top-level GENERICS: the
-        # owner mangles to `gen$Bool` and the other to `mod$<path>$gen$Bool`,
-        # so the clone namespaces stay distinct.  A non-generic owner takes
-        # the bare `$name` in Pass 2.5 and the other would overwrite it.  TWO
-        # owners is the collision this rail exists for, whatever they are.
-        return owners == 1 and (
-            name in generics_by_path.get(path_a, frozenset())
-            and name in generics_by_path.get(path_b, frozenset())
-        )
+        first = declarers.setdefault(name, path)
+        if owner:
+            prior = owners.setdefault(name, path)
+            if prior != path:
+                return prior
+        if first != path and name in self._ambiguous_imported_fn_names:
+            return first
+        return None
 
     def _collect_namespace_fn_names(self, program: ast.Program) -> None:
         """Which FUNCTION names each namespace can name (#1299).
@@ -1753,26 +1760,26 @@ class CrossModuleMixin:
         mod_path: tuple[str, ...],
         decl: ast.FnDecl,
         temp: CodeGenerator,
-        local_fn_names: set[str],
         *,
-        qualified_eligible: bool,
+        owner: bool,
     ) -> None:
-        """Wire up a module function (top-level or where-fn) whose bare name a
-        LOCAL shadows (#814 §8.5.3 + C2).
+        """Wire up a module function that does NOT own the entry's bare name.
 
-        Only a SHADOWED name needs anything: the desugar and the intra-rename
-        map fall back to the bare name otherwise, which is already correct for
-        a non-shadowed module fn (emitted under its bare name).  For a shadowed
-        one we emit the module's version under a distinct ``mod$…`` name (Pass
-        2.6) and record an intra-rename so an imported body's bare sibling call
-        reaches the module's version, not the local shadow.  Only a top-level
-        public, in-filter declaration additionally gets a ``_module_qualified_
-        targets`` entry (the table the ``m::f`` desugar consults) — a where-fn
-        is private and never qualified-callable, so ``qualified_eligible`` is
-        ``False`` for it.
+        #814 introduced this for a declaration an entry declaration shadows;
+        #1498 widened it to every qualified-only one — private, outside the
+        entry's filter, named after a prelude function, reached only
+        transitively, or a hoisted helper of any of those (spec §8.5.2.1,
+        §11.4.5).  An OWNER keeps the bare name and needs nothing here.  A
+        qualified-only declaration is emitted in Pass 2.6 under a distinct
+        ``mod$…`` name, recorded as an intra-rename so its own module's bodies
+        reach it, and given a ``_module_qualified_targets`` entry so an
+        ``m::f`` call — the entry's, where it may name it, or another
+        module's, such as ``mid``'s ``deep::f`` — reaches it too.  The checker
+        has already refused every qualified call that may not name it, so the
+        entry is recorded for a private declaration as well.
         """
         fn_name = decl.name
-        if fn_name not in local_fn_names:
+        if owner:
             return
         mangled_sig = temp._fn_sigs.get(fn_name)
         if mangled_sig is None:
@@ -1780,12 +1787,13 @@ class CrossModuleMixin:
         mangled = self._module_qualified_wasm_name(mod_path, fn_name)
         self._fn_sigs.setdefault(mangled, mangled_sig)
         self._shadowed_module_fns.append((mod_path, mangled, decl))
+        self._qualified_module_fns.add((mod_path, fn_name))
         self._module_intra_renames.setdefault(mod_path, {})[fn_name] = mangled
         # Mirror the per-name side-tables onto the mangled name so a call that
         # resolves to it keeps the same inference/guards as the bare name:
         #  - @Nat-parameter guard bitmap → call-site ``value >= 0`` narrowing;
         #  - return-type expression → index / interpolation element-type
-        #    inference for a shadowed fn returning ``String`` / ``Array<T>``.
+        #    inference for a qualified-only fn returning ``String`` / ``Array<T>``.
         self._fn_nat_params.setdefault(
             mangled, temp._fn_nat_params.get(fn_name, ()))
         self._fn_int_params.setdefault(  # #813: dual widening-guard bitmap
@@ -1803,7 +1811,7 @@ class CrossModuleMixin:
             self._fn_source_map.setdefault(mangled, fn_loc)
         ret_te = temp._fn_ret_type_exprs.get(fn_name)
         if ret_te is not None:
-            # #1111 (PR #1175 review): the shadowed door's mirror of the
+            # #1111 (PR #1175 review): the qualified door's mirror of the
             # Pass-0 canonical harvest.  The mangled ``mod$…`` entry feeds
             # the same shared registry, so a raw alias-spelled return type
             # here would be re-resolved against the flat maps (the main
@@ -1815,8 +1823,7 @@ class CrossModuleMixin:
                     ret_te, temp._type_aliases, temp._type_alias_params,
                 ),
             )
-        if qualified_eligible:
-            self._module_qualified_targets[(mod_path, fn_name)] = mangled
+        self._module_qualified_targets[(mod_path, fn_name)] = mangled
 
     @staticmethod
     def _reroute_module_qualified_generic_calls(
@@ -1870,9 +1877,10 @@ class CrossModuleMixin:
 
         Uses ``$`` as the separator — illegal in Vera identifiers, so the
         result can never collide with a user function name — mirroring the
-        monomorphizer's ``name$TypeArg`` mangling convention.
+        monomorphizer's ``name$TypeArg`` mangling convention.  The one
+        spelling, shared with the verifier: :func:`module_qualified_symbol`.
         """
-        return "mod$" + "$".join(path) + "$" + name
+        return module_qualified_symbol(path, name)
 
     # -----------------------------------------------------------------
     # Name collision diagnostics

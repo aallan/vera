@@ -969,3 +969,66 @@ class TestBaseCheckoutCleanup:
 
         with mock.patch.object(_MOD.subprocess, "run", fake_run):
             _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")
+
+
+# ---------------------------------------------------------------------------
+# --run: what each program DOES, for a change that renames symbols (#1494)
+# ---------------------------------------------------------------------------
+
+
+class TestRunMode:
+    """The ``--run`` measurement.
+
+    A change that renames symbols moves nearly every program's WAT without
+    moving what any program does, so the WAT digest cannot separate the two.
+    ``--run`` compares the OUTCOME of ``vera run`` instead.  Each property is
+    exercised in both directions: a real run of one program agrees with
+    itself, and a program whose behaviour changes moves.
+    """
+
+    _SOURCE = (
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  {value}\n}\n"
+    )
+
+    def _run(self, tmp_path: Path, value: str) -> Any:
+        program = tmp_path / f"p{abs(hash(value))}.vera"
+        program.write_text(
+            self._SOURCE.replace("{value}", value), encoding="utf-8",
+        )
+        return _MOD.run_one(
+            _MOD.sys.executable, _ROOT, 120, program,
+        )
+
+    def test_the_flag_selects_the_run_measurement(self) -> None:
+        assert _MOD._parse_args(["--run"]).run is True
+        assert _MOD._parse_args([]).run is False
+
+    def test_the_same_outcome_is_not_a_mover(self, tmp_path: Path) -> None:
+        first = self._run(tmp_path, "40 + 2")
+        second = self._run(tmp_path, "40 + 2")
+        assert first.ok and second.ok
+        assert first.summary == "exit 0, 3 bytes of output"
+        assert _MOD.classify(first, second, "origin/main") is None
+
+    def test_a_different_outcome_is_a_mover(self, tmp_path: Path) -> None:
+        base = self._run(tmp_path, "40 + 2")
+        head = self._run(tmp_path, "40 + 3")
+        verdict = _MOD.classify(base, head, "origin/main")
+        assert verdict is not None
+        kind, reason = verdict
+        assert kind == "outcome-differs"
+        assert "at origin/main: exit 0" in reason
+        assert "at HEAD: exit 0" in reason
+
+    def test_a_trap_is_an_outcome_named_by_its_first_error(
+        self, tmp_path: Path,
+    ) -> None:
+        trapped = self._run(tmp_path, "1 / (1 - 1)")
+        assert trapped.ok
+        assert trapped.summary.startswith("exit ")
+        assert not trapped.summary.startswith("exit 0,")
+        assert _MOD.classify(
+            trapped, self._run(tmp_path, "1"), "origin/main",
+        ) is not None

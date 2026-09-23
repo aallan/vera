@@ -933,8 +933,19 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
         importer's `type Small = Int` the tag would take an i64 parameter or
         the value would be an `i64.const`, and the two bodies would differ.
         """
-        xmod = _fn_body(_compile_xmod(tmp_path).wat, "boom")
-        same = _fn_body(_compile_ok(_XMOD_SAME_MODULE).wat, "boom")
+        # A private function of an imported module does not own the entry's
+        # bare name, so it is emitted as `mod$xmodlib$boom`, after every
+        # bare-name function (#1498).  The comparison is of the body, so the
+        # symbol is normalised and each text is cut at the function's own
+        # closing line — the last function's slice otherwise runs on into
+        # the module's closing paren.
+        def own_body(text: str) -> str:
+            return text[:text.rfind("\n  )") + len("\n  )")]
+
+        xmod = own_body(_fn_body(
+            _compile_xmod(tmp_path).wat, "mod$xmodlib$boom",
+        )).replace("$mod$xmodlib$boom", "$boom")
+        same = own_body(_fn_body(_compile_ok(_XMOD_SAME_MODULE).wat, "boom"))
         assert xmod == same, (xmod, same)
         assert "i32.const 5" in xmod, xmod
 
@@ -984,4 +995,4 @@ class TestTheThrowPayloadResolvesInItsOwnModule:
         tags = re.findall(
             r"\(tag \$exn_\S+ \(param ([^)]*)\)\)", result.wat)
         assert tags == ["i64"], tags
-        assert "i64.const 5" in _fn_body(result.wat, "boom")
+        assert "i64.const 5" in _fn_body(result.wat, "mod$xmodlib$boom")

@@ -9,7 +9,11 @@ All prelude declarations are prepended to the program's AST.  User-
 defined declarations with the same name shadow the prelude versions:
 
 - A user ``data Option<T>`` replaces the prelude's ``data Option<T>``.
-- A user ``fn option_map`` replaces the prelude's combinator.
+- A user ``fn option_map`` takes the program's bare name ``option_map``;
+  the prelude's combinator stays in the program under its own identity,
+  ``mod$<prelude>$option_map`` (:func:`prelude_symbol`), and the prelude's
+  own bodies — and a module that does not declare the name — call that one
+  (#1495).  Every emitted function symbol has exactly one owner.
 - Option/Result combinators are skipped entirely if the user defines
   a non-standard variant (e.g. ``data Option<T> { None, Just(T) }``).
 """
@@ -19,10 +23,12 @@ from __future__ import annotations
 import functools
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from types import MappingProxyType
+from typing import cast
 
 from vera import ast
-from vera.monomorphize import canonicalize_type_aliases
+from vera.monomorphize import canonicalize_type_aliases, rewrite_fn_call_names
 
 
 # #851 — synthetic origin filename for prelude-injected declarations.
@@ -43,6 +49,29 @@ PRELUDE_FILE = "<prelude>"
 # case; `<` cannot begin a module-path segment (§8.1 restricts them to
 # identifiers), so it can never collide with a real module.
 PRELUDE_NAMESPACE: tuple[str, ...] = (PRELUDE_FILE,)
+
+# The prelude's OWNER-QUALIFIED symbol prefix (#1495): the module-qualified
+# spelling `mod$<path>$` over the prelude's namespace token, so it is the
+# name codegen's `_module_qualified_wasm_name(PRELUDE_NAMESPACE, name)` builds
+# and no other owner's symbol can ever spell it (`<` starts no identifier and
+# no module-path segment).
+PRELUDE_SYMBOL_PREFIX: str = "mod$" + "$".join(PRELUDE_NAMESPACE) + "$"
+
+
+def prelude_symbol(name: str) -> str:
+    """The emitted name of the prelude's ``name`` when the entry declares its own.
+
+    The entry's declaration takes the program's bare name (the #815 override
+    stays legal); the prelude's keeps its own identity under this name, so
+    the prelude's bodies — and any module whose namespace resolves ``name``
+    to the prelude — still reach the prelude's function (#1495).
+    """
+    return PRELUDE_SYMBOL_PREFIX + name
+
+
+def is_prelude_symbol(symbol: str) -> bool:
+    """Whether *symbol* is a prelude-qualified name (or a clone of one)."""
+    return symbol.startswith(PRELUDE_SYMBOL_PREFIX)
 
 
 # =====================================================================
@@ -492,9 +521,9 @@ def overridable_builtin_names() -> frozenset[str]:
 
     Each is a real Vera ``FnDecl`` injected by :func:`inject_prelude`, so a
     user override is sound — the verifier and codegen both reason about
-    whichever body is in the program — and ``inject_prelude`` deliberately
-    skips its own injection when the user defines one (see the loop in that
-    function).  These are therefore *exempt* from the E151 "redefines a
+    whichever body is in the program — and ``inject_prelude`` keeps its own
+    declaration under :func:`prelude_symbol` when the user defines one, so
+    the prelude's bodies still call the prelude's (#1495).  These are therefore *exempt* from the E151 "redefines a
     built-in" check (#815): the unsoundness that motivates E151 is the
     idealized-model-vs-runtime desync of the *opaque*, verifier-modelled
     built-ins (``abs`` / ``min`` / ``max`` / …), which have no Vera body to
@@ -517,6 +546,82 @@ def overridable_builtin_names() -> frozenset[str]:
     ):
         names.update(re.findall(r"\bfn\s+([a-z_][A-Za-z0-9_]*)", block))
     return frozenset(names)
+
+
+def entry_overridden_prelude_fns(program: ast.Program) -> frozenset[str]:
+    """The prelude functions *program* declares its own of (#1495).
+
+    Read off the entry program BEFORE :func:`inject_prelude` runs — after it,
+    an overridden prelude function is in the program under
+    :func:`prelude_symbol` and the non-overridden ones under their bare names,
+    so the question could no longer be asked of the declarations.  Codegen and
+    the verifier's discovery ask it of the same program, so both reroute a
+    module's call to the prelude's function identically.
+    """
+    return frozenset(
+        tld.decl.name for tld in program.declarations
+        if isinstance(tld.decl, ast.FnDecl)
+        and tld.decl.name in overridable_builtin_names()
+    )
+
+
+def entry_held_bare_names(program: ast.Program) -> frozenset[str]:
+    """The bare function names the ENTRY holds before any import supplies one.
+
+    Its own declarations (§8.5.2) and the prelude's functions, which are the
+    incumbent in every namespace and are never won by an import (§8.5.2.2).
+    A module declaration of one of these names does not own the entry's bare
+    name, so it is emitted as ``mod$<path>$name`` (#1498).  Codegen and the
+    verifier ask the same question of the same program, so the two sides
+    classify every module generic identically (#732).
+    """
+    from vera.monomorphize import importer_occupied_bare_names
+
+    return frozenset(importer_occupied_bare_names(program)) | (
+        overridable_builtin_names()
+    )
+
+
+def prelude_call_targets(
+    module_program: ast.Program, overridden: frozenset[str],
+) -> dict[str, str]:
+    """Bare name -> prelude symbol, for a module's calls to an overridden
+    prelude function (#1495).
+
+    A module's bare call resolves in the module's own namespace: a name the
+    module declares is its own, and otherwise a prelude function outranks
+    anything the module imports (§8.5.2.2, the incumbent holds the name).  So
+    every prelude function the ENTRY overrides and the module does not declare
+    is, in the module, the PRELUDE's — which the entry's override has moved
+    to :func:`prelude_symbol`.
+    """
+    from vera.monomorphize import importer_occupied_bare_names
+
+    own = importer_occupied_bare_names(module_program)
+    return {
+        name: prelude_symbol(name)
+        for name in sorted(overridden - own)
+    }
+
+
+def reroute_prelude_calls(
+    decl: ast.FnDecl, targets: Mapping[str, str],
+) -> ast.FnDecl:
+    """Rename *decl*'s bare calls in *targets* to the prelude's symbols.
+
+    The shared shadow-aware walk (a ``where`` helper of the same name owns the
+    bare call in its scope, spec §5), driven identically by codegen's module
+    registration and the verifier's discovery copy so the #732 differential
+    sees the same calls on both sides.
+    """
+    if not targets:
+        return decl
+    from vera.monomorphize import reroute_module_qualified_generic_calls
+
+    return reroute_module_qualified_generic_calls(
+        decl, frozenset(targets),
+        lambda call, args: replace(call, name=targets[call.name], args=args),
+    )
 
 
 # =====================================================================
@@ -952,10 +1057,15 @@ def inject_prelude(program: ast.Program) -> str:
       type with the same name (user definitions shadow the prelude).
     - Option combinators (``option_unwrap_or``, ``option_map``,
       ``option_and_then``) — injected unless the user defines a
-      non-standard ``Option<T>`` or shadows the function names.
+      non-standard ``Option<T>``.
     - Result combinators (``result_unwrap_or``, ``result_map``) —
-      injected unless the user defines a non-standard ``Result<T, E>``
-      or shadows the function names.
+      injected unless the user defines a non-standard ``Result<T, E>``.
+    - A combinator the program declares its own of is injected under its
+      own identity, :func:`prelude_symbol` (#1495): the program's
+      declaration takes the bare name, and every prelude body's call to it
+      is rewritten to the prelude's symbol, so a prelude body never runs the
+      program's override.  Codegen reroutes a module's calls the same way
+      (:func:`prelude_call_targets`).
     - The closure-parameter type aliases the injected combinators
       resolve through (``VeraOptionMapFn``, ``VeraArrayMapFn``, …) —
       injected exactly when those bodies are, and never skipped for a
@@ -970,9 +1080,8 @@ def inject_prelude(program: ast.Program) -> str:
     - Array combinator bodies — none currently.  All three
       (``array_map``, ``array_filter``, ``array_fold``) are emitted
       as iterative WASM by codegen (#480).  ``_ARRAY_COMBINATORS`` is
-      empty but still injected when non-empty and ``array_fn_names``
-      isn't a subset of user names, so adding a future recursive
-      helper stays a one-line change.
+      empty, and is injected like the Option and Result blocks when a
+      future helper gives it a body.
     """
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
@@ -993,41 +1102,34 @@ def inject_prelude(program: ast.Program) -> str:
     # Build source text for all prelude declarations
     source_parts: list[str] = [_PRELUDE_DATA]
 
-    option_fn_names = {"option_unwrap_or", "option_map", "option_and_then"}
-    result_fn_names = {"result_unwrap_or", "result_map"}
-    # array_map, array_filter, and array_fold are all built-ins
-    # emitted as iterative WASM (#480); none of them have prelude
-    # bodies any more.  The set stays explicit (rather than becoming
-    # an empty constant) so adding future array helpers that DO need
-    # prelude injection is a one-line change.
-    array_fn_names: set[str] = set()
-
     # The alias blocks ride the bodies that resolve through them — no
     # injection is ever skipped for SHADOWING, because their names are in
     # the reserved prelude namespace (#1221), which no user declaration may
     # take, so there is no shadowing case to skip an injection for.  The
     # combinator conditions below still apply: an absent alias is inert
     # when the bodies that would resolve through it are absent too.
-    if (inject_option_combinators
-            and not option_fn_names.issubset(user_names)):
+    # #1495: a block is injected by DEMAND alone, never skipped because the
+    # program declares its function names.  A declaration the program writes
+    # takes the program's bare name; the prelude's stays in the program under
+    # its own identity (see the extraction loop below), because the prelude's
+    # other bodies and any module that does not declare the name still call
+    # the prelude's.
+    if inject_option_combinators:
         source_parts.append(_OPTION_TYPE_ALIASES)
         source_parts.append(_OPTION_COMBINATORS)
 
-    if (inject_result_combinators
-            and not result_fn_names.issubset(user_names)):
+    if inject_result_combinators:
         source_parts.append(_RESULT_TYPE_ALIASES)
         source_parts.append(_RESULT_COMBINATORS)
 
     # Array operations — always inject the aliases (no ADT
-    # prerequisites); inject the combinator bodies only when needed.
-    # Decoupled after all three combinators migrated to iterative
-    # WASM (#480): ``array_fn_names`` is empty so the combinator-
-    # injection branch is a no-op for current programs.  When a future
-    # array helper lands as a prelude function (not a built-in), just
-    # add it to ``array_fn_names`` and populate ``_ARRAY_COMBINATORS``
-    # — its parameter aliases are already injected here.
+    # prerequisites).  All three array combinators are emitted as iterative
+    # WASM (#480), so ``_ARRAY_COMBINATORS`` is empty; a future array helper
+    # that lands as a prelude function goes in that block and is injected
+    # like the Option and Result blocks — its parameter aliases are already
+    # injected here.
     source_parts.append(_ARRAY_TYPE_ALIASES)
-    if _ARRAY_COMBINATORS and not array_fn_names.issubset(user_names):
+    if _ARRAY_COMBINATORS:  # pragma: no cover — no array combinator has a body
         source_parts.append(_ARRAY_COMBINATORS)
 
     # Json ADT and utility functions — inject only when Json is referenced
@@ -1059,7 +1161,7 @@ def inject_prelude(program: ast.Program) -> str:
         inject_json_combinators = (
             not user_has_json or _has_standard_json(program)
         )
-        if inject_json_combinators and not json_fn_names.issubset(user_names):
+        if inject_json_combinators:
             source_parts.append(_JSON_COMBINATORS)
 
     # HtmlNode ADT and html_attr — inject only when HtmlNode is referenced
@@ -1081,7 +1183,7 @@ def inject_prelude(program: ast.Program) -> str:
         inject_html_combinators = (
             not user_has_html or _has_standard_html(program)
         )
-        if inject_html_combinators and not html_fn_names.issubset(user_names):
+        if inject_html_combinators:
             source_parts.append(_HTML_COMBINATORS)
 
     # HttpServer handler types (#305) — inject only when referenced;
@@ -1094,7 +1196,16 @@ def inject_prelude(program: ast.Program) -> str:
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)
 
-    # Extract declarations, skipping those the user already defined.
+    # Extract declarations.  A data type or alias the user already defined is
+    # skipped: the user's shadows the prelude's for the whole program (§8.4.1).
+    # A FUNCTION the user defined is kept under its own identity instead (#1495):
+    # the user's declaration takes the bare name, and the prelude's own bodies
+    # are rewritten below to call the prelude's.
+    renames: dict[str, str] = {
+        tld.decl.name: prelude_symbol(tld.decl.name)
+        for tld in parsed.declarations
+        if isinstance(tld.decl, ast.FnDecl) and tld.decl.name in user_names
+    }
     new_decls: list[ast.TopLevelDecl] = []
     for tld in parsed.declarations:
         decl = tld.decl
@@ -1102,8 +1213,10 @@ def inject_prelude(program: ast.Program) -> str:
             if decl.name in user_data_names:
                 continue  # User's data type shadows the prelude's
         elif isinstance(decl, ast.FnDecl):
-            if decl.name in user_names:
-                continue  # User shadowed this function
+            if renames:
+                decl = cast("ast.FnDecl", rewrite_fn_call_names(decl, renames))
+                if decl.name in renames:
+                    decl = replace(decl, name=renames[decl.name])
         elif isinstance(decl, ast.TypeAliasDecl):
             if decl.name in user_names:
                 # User shadowed this type alias.  Only the user-facing
