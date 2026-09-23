@@ -1679,8 +1679,9 @@ class OperatorsMixin:
     ) -> list[str] | None:
         """Translate assert(expr) → trap if false.
 
-        Evaluates the condition; if it's false (i32.eqz), executes
-        unreachable (WASM trap).  Returns no value (Unit).
+        Evaluates the condition; if it's false (i32.eqz), signals
+        ``assertion_failed`` with the assertion's own text and traps
+        (#1479).  Returns no value (Unit).
         """
         cond = self.translate_expr(expr.expr, env)
         # #657 / #630 [E615]: keep as `return None` — translate_expr returns
@@ -1689,8 +1690,13 @@ class OperatorsMixin:
         # See vera/skip.py, "Reachable None via the [E615] channel".
         if cond is None:
             return None  # pragma: no cover
-        self._record_check("wasm/operators.py:_translate_assert", expr)
-        return cond + ["i32.eqz", "if", "unreachable", "end"]
+        trap = self._emit_trap(
+            "wasm/operators.py:_translate_assert", at=expr,
+            message=(
+                f"Assertion failed{self._at_line(expr)}: "
+                f"assert({ast.format_expr(expr.expr)})"
+            ))
+        return cond + ["i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _translate_assume(self) -> list[str]:
         """Translate assume(expr) → no-op at runtime.
@@ -2168,25 +2174,22 @@ class OperatorsMixin:
             local.get $rhs_tmp     ;; push rhs back (stack: [lhs, rhs])
             i64.lt_s               ;; lhs < rhs?
             if
-              unreachable          ;; trap; classified as "unreachable"
-            end                    ;;   by vera/codegen/api.py:_classify_trap
+              <vera.trap nat_underflow> unreachable
+            end
             local.get $lhs_tmp
             local.get $rhs_tmp
             i64.sub
 
-        The trap is the bare `unreachable` instruction so it's
-        classified by the existing trap taxonomy as
-        ``kind="unreachable"`` — adding a dedicated ``"underflow"``
-        kind with a specific Fix paragraph requires new
-        host-import scaffolding (mirroring how `vera.contract_fail`
-        works) and is left as a follow-up enhancement.  Users who
-        want a precise diagnostic should run ``vera verify`` first;
-        the guard's role is preventing silent corruption of @Nat
-        slots in programs that skipped verification.
+        The trap names itself (#1479): it signals ``nat_underflow`` with a
+        message quoting the two operands and the ``requires(lhs >= rhs)``
+        that discharges the site's ``nat_sub`` obligation, so a reader is
+        handed the clause to add rather than a bare ``unreachable``.
         """
         lhs_tmp = self.alloc_local("i64")
         rhs_tmp = self.alloc_local("i64")
-        self._record_check("wasm/operators.py:_emit_nat_sub_guard", at)
+        trap = self._emit_trap(
+            "wasm/operators.py:_emit_nat_sub_guard", at=at,
+            message=self._nat_sub_message(at))
         return [
             *left,
             *right,
@@ -2195,12 +2198,34 @@ class OperatorsMixin:
             f"local.get {rhs_tmp}",
             "i64.lt_s",
             "if",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {lhs_tmp}",
             f"local.get {rhs_tmp}",
             "i64.sub",
         ]
+
+    @staticmethod
+    def _at_line(at: ast.Node | None) -> str:
+        """`` (line N)`` for a trap message, or nothing for an unspanned
+        node — the backtrace names the function, and this names the line."""
+        if at is None or at.span is None:
+            return ""
+        return f" (line {at.span.line})"
+
+    def _nat_sub_message(self, at: ast.Node | None) -> str:
+        """The `nat_underflow` message: the two operands, and the clause that
+        discharges the subtraction."""
+        if isinstance(at, ast.BinaryExpr):
+            lhs, rhs = ast.format_expr(at.left), ast.format_expr(at.right)
+        else:  # pragma: no cover — every caller passes the subtraction
+            lhs, rhs = "lhs", "rhs"
+        return (
+            f"@Nat subtraction `{lhs} - {rhs}` would be negative"
+            f"{self._at_line(at)}: its right operand is larger than its "
+            f"left.  Add `requires({lhs} >= {rhs})` to the enclosing "
+            "function, or compute in @Int."
+        )
 
     def _emit_nat_bind_guard(
         self, value: list[str], *, at: ast.Node | None,
@@ -2220,28 +2245,23 @@ class OperatorsMixin:
             i64.const 0
             i64.lt_s           ;; value < 0?
             if
-              unreachable      ;; trap; classified "unreachable"
-            end                ;;   by vera/codegen/api.py:_classify_trap
+              <vera.trap nat_guard> unreachable
+            end
             local.get $tmp     ;; restore the (now-checked) value
 
-        The trap carries its OWN kind since #754: the guard calls
-        ``vera.nat_guard_trap`` immediately before the ``unreachable``, so
-        the runtime reports ``kind="nat_guard"`` with a Fix naming the
-        `requires(... >= 0)` that would discharge it, instead of the generic
-        "Reached `unreachable`" paragraph about non-exhaustive matches and
-        shadow-stack overflow — three causes, none of which is this one.
-        Modelled on #808's ``kind="overflow"`` signal, which solved the same
-        problem for the arithmetic guards.  The guard never fires on a value
-        the verifier proved non-negative, so a Tier-1-clean program pays
-        only dead instructions, never a trap.
+        The trap carries its OWN kind (#754): the guard signals
+        ``nat_guard`` through ``vera.trap`` immediately before the
+        ``unreachable``, so the runtime reports it with a Fix naming the
+        `requires(... >= 0)` that would discharge it rather than the generic
+        ``unreachable`` paragraph.  The guard never fires on a value the
+        verifier proved non-negative, so a Tier-1-clean program pays only
+        dead instructions, never a trap.
         """
-        # Beside the emission, not at module assembly: this flag is what
-        # declares the import, so a guard emitted without it would reference
-        # an undeclared `$vera.nat_guard_trap` (the #808 / #1376 discipline).
-        self._needs_nat_guard_trap = True
-        self._record_check("wasm/operators.py:_emit_nat_bind_guard", at)
-        return self._emit_negative_i64_guard(
-            value, signal="$vera.nat_guard_trap")
+        # `_emit_trap` raises the import's flag beside the emission, not at
+        # module assembly — a guard emitted without it would reference an
+        # undeclared `$vera.trap` (the #808 / #1376 discipline).
+        trap = self._emit_trap("wasm/operators.py:_emit_nat_bind_guard", at=at)
+        return self._emit_negative_i64_guard(value, trap=trap)
 
     def _emit_int_widen_guard(
         self, value: list[str], *, at: ast.Node | None,
@@ -2256,44 +2276,33 @@ class OperatorsMixin:
         when the i64 reads as negative — so the guard traps on ``value < 0``
         (the same negative-i64 mechanism as the nat-bind guard).  Emitted at the
         @Nat -> @Int coercion sites the verifier obligates (return, call
-        argument, let).  It calls ``$vera.widen_trap`` immediately before
-        the ``unreachable``, so the runtime classifies the trap as
-        ``kind="widen_guard"`` and names the ``requires(... <= i64.MAX)``
-        that discharges it (#1438, on the mechanism ``kind="overflow"``
-        got in #808); the guard never fires on a value the verifier proved
-        ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
+        argument, let).  It signals ``widen_guard`` through ``vera.trap``
+        immediately before the ``unreachable``, so the runtime names the
+        ``requires(... <= i64.MAX)`` that discharges it (#1438); the guard
+        never fires on a value the verifier proved ``<= i64.MAX``, so a
+        Tier-1-clean program pays only dead instructions.
         """
-        self._needs_widen_trap = True
-        self._record_check("wasm/operators.py:_emit_int_widen_guard", at)
-        return self._emit_negative_i64_guard(
-            value, signal="$vera.widen_trap")
+        trap = self._emit_trap(
+            "wasm/operators.py:_emit_int_widen_guard", at=at)
+        return self._emit_negative_i64_guard(value, trap=trap)
 
     def _emit_negative_i64_guard(
-        self, value: list[str], *, signal: str | None = None,
+        self, value: list[str], *, trap: list[str],
     ) -> list[str]:
         """Shared mechanism behind the @Int->@Nat narrowing guard (#552) and
         the @Nat->@Int widening guard (#813): leave *value* on the stack, but
         trap when it reads as a negative i64.  Both callers reduce to this
         same sign-bit check; they stay distinct entry points because they
-        are distinct BOUNDARIES with distinct remedies, which is what
-        *signal* carries.
-
-        *signal* is a host import called immediately before the
-        ``unreachable``, so the runtime classifies the trap by which guard
-        fired rather than by the instruction they share (#808's mechanism).
-        The narrowing entry point passes ``$vera.nat_guard_trap`` (#754) and
-        the widening one ``$vera.widen_trap`` (#1438); before #1438 the
-        widening guard passed ``None`` and its trap was reported as a bare
-        ``unreachable`` beside a Fix naming three causes, none of them a
-        widening.  The CALLER raises the corresponding
-        ``_needs_…`` flag — the import's declaration and its call must be
-        decided together, and only the caller knows which import it wants.
+        are distinct BOUNDARIES with distinct remedies, which is what *trap*
+        carries: the caller's own signal from ``_emit_trap``, naming its kind
+        (``nat_guard`` or ``widen_guard``) so the runtime reports the
+        boundary that failed rather than the instruction the two share.
 
             [value]
             local.tee $tmp     ;; leave value on stack, copy to temp
             i64.const 0
             i64.lt_s           ;; value < 0?
-            if <signal> unreachable end
+            if <trap> end
             local.get $tmp     ;; restore the (now-checked) value
         """
         tmp = self.alloc_local("i64")
@@ -2303,8 +2312,7 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",
             "if",
-            *([f"  call {signal}"] if signal is not None else []),
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {tmp}",
         ]
@@ -2782,30 +2790,31 @@ class OperatorsMixin:
 
         Each sequence computes the wrapping result, checks whether the true
         (unbounded) result left the i64 (@Int) / u64 (@Nat) range, and on
-        overflow calls ``vera.overflow_trap`` then ``unreachable`` so the trap
-        classifies as the precise ``kind="overflow"`` (#808) — carrying the
-        overflow Fix paragraph — rather than the generic ``unreachable``;
-        otherwise it leaves the wrapping result on the stack.  @Nat SUB never
-        reaches here (excluded by the caller; it is ``nat_sub`` underflow).
+        overflow signals ``overflow`` through ``vera.trap`` then traps, so
+        the runtime reports the overflow kind and its Fix paragraph (#808)
+        rather than the generic ``unreachable``; otherwise it leaves the
+        wrapping result on the stack.  @Nat SUB never reaches here (excluded
+        by the caller; it is ``nat_sub`` underflow).
+
+        The trap is emitted ONCE, here, and handed to the sequence, which
+        splices it at its single trap site — one check, one signal, one
+        entry in the per-module record (#1479).
         """
-        # #808: every guard below traps through `vera.overflow_trap` + an
-        # `unreachable`, so declare the host import.
-        self._needs_overflow_trap = True
-        self._record_check("wasm/operators.py:_emit_overflow_guard", at)
+        trap = self._emit_trap("wasm/operators.py:_emit_overflow_guard", at=at)
         if ovf == "Nat":
             if op == ast.BinOp.ADD:
-                return self._emit_nat_add_guard(left, right)
+                return self._emit_nat_add_guard(left, right, trap)
             # MUL (SUB is excluded by the caller).
-            return self._emit_nat_mul_guard(left, right)
+            return self._emit_nat_mul_guard(left, right, trap)
         # @Int.
         if op == ast.BinOp.ADD:
-            return self._emit_int_add_guard(left, right)
+            return self._emit_int_add_guard(left, right, trap)
         if op == ast.BinOp.SUB:
-            return self._emit_int_sub_guard(left, right)
-        return self._emit_int_mul_guard(left, right)
+            return self._emit_int_sub_guard(left, right, trap)
+        return self._emit_int_mul_guard(left, right, trap)
 
     def _emit_int_add_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int ADD, signed i64.  Overflow iff ``((a^r) & (b^r)) < 0`` —
         the Hacker's-Delight 2-12 test: ``a+b`` overflows iff ``a`` and ``b``
@@ -2835,13 +2844,12 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_int_sub_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int SUB, signed i64, ``a - b`` (left=minuend).  Overflow iff
         ``((a^b) & (a^r)) < 0``: ``a-b`` overflows iff ``a`` and ``b`` differ
@@ -2871,13 +2879,12 @@ class OperatorsMixin:
             "i64.const 0",
             "i64.lt_s",                      # stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_int_mul_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Int MUL, signed i64 — the dangerous one.  Division round-trip with
         the ``INT_MIN * -1`` special case.
@@ -2886,10 +2893,12 @@ class OperatorsMixin:
 
         The ``a == 0`` branch avoids ``r/0``; the ``a == -1`` pre-check avoids
         the native ``i64.div_s`` trap on ``INT_MIN / -1`` (testing ``b ==
-        INT_MIN`` instead).  Uses ``local.set r_tmp`` to clear the operand
-        stack before the nested ``if`` blocks (a value left under an ``if``
-        whose arms don't symmetrically consume it is a WASM validation error),
-        then pushes ``r`` at the end.  Leaves ``r`` on the stack."""
+        INT_MIN`` instead).  The two overflow conditions are folded into ONE
+        i32 flag by value-producing ``if`` blocks, and the flag gates the
+        single trap site — so the check signals once, whichever condition
+        fired.  ``local.set r_tmp`` clears the operand stack before the
+        nested blocks, and ``r`` is pushed at the end.  Leaves ``r`` on the
+        stack."""
         a_tmp = self.alloc_local("i64")
         b_tmp = self.alloc_local("i64")
         r_tmp = self.alloc_local("i64")
@@ -2904,36 +2913,32 @@ class OperatorsMixin:
             f"local.set {r_tmp}",          # stack empty
             f"local.get {a_tmp}",
             "i64.eqz",
-            "if",                            # a == 0 → safe, no checks
+            "if (result i32)",               # a == 0 → safe
+            "  i32.const 0",
             "else",
             f"  local.get {a_tmp}",
             "  i64.const -1",
             "  i64.eq",
-            "  if",                          # a == -1
+            "  if (result i32)",             # a == -1: overflow iff b == INT_MIN
             f"    local.get {b_tmp}",
             f"    i64.const {self._I64_MIN_CODEGEN}",
             "    i64.eq",
-            "    if",                        # b == INT_MIN → overflow
-            "      call $vera.overflow_trap",
-            "      unreachable",
-            "    end",
             "  else",                        # a != 0 && a != -1 → safe to divide
             f"    local.get {r_tmp}",
             f"    local.get {a_tmp}",
             "    i64.div_s",
             f"    local.get {b_tmp}",
-            "    i64.ne",
-            "    if",                        # r/a != b → overflow
-            "      call $vera.overflow_trap",
-            "      unreachable",
-            "    end",
+            "    i64.ne",                    # r/a != b → overflow
             "  end",
+            "end",
+            "if",                            # the one trap site
+            *(f"  {i}" for i in trap),
             "end",
             f"local.get {r_tmp}",          # stack: [r]
         ]
 
     def _emit_nat_add_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Nat ADD, unsigned u64.  Overflow iff ``r <u a`` — an unsigned sum
         wraps iff the carry-out makes the result smaller than an addend.
@@ -2956,13 +2961,12 @@ class OperatorsMixin:
             f"local.get {a_tmp}",
             "i64.lt_u",                      # r <u a ?  stack: [r, cond]
             "if",
-            "  call $vera.overflow_trap",
-            "  unreachable",
+            *(f"  {i}" for i in trap),
             "end",                           # stack: [r]
         ]
 
     def _emit_nat_mul_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], trap: list[str],
     ) -> list[str]:
         """@Nat MUL, unsigned u64.  Overflow iff ``a != 0 && r/u a != b``.
         No ``-1`` / INT_MIN hazard (unsigned div only traps on divide-by-zero,
@@ -2989,8 +2993,7 @@ class OperatorsMixin:
             f"  local.get {b_tmp}",
             "  i64.ne",
             "  if",                          # r/u a != b → overflow
-            "    call $vera.overflow_trap",
-            "    unreachable",
+            *(f"    {i}" for i in trap),
             "  end",
             "end",
             f"local.get {r_tmp}",          # stack: [r]

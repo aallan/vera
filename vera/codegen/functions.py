@@ -1229,7 +1229,7 @@ class FunctionCompilationMixin:
         # postconditions) dropped any flag a builtin or allocation set while
         # lowering an ``ensures(...)`` predicate, so the import / memory / GC
         # declaration was omitted and the orphaned `call`/`global.get` failed
-        # WAT compilation (#808 for `vera.overflow_trap`; #823 for the other
+        # WAT compilation (#808 for the overflow signal; #823 for the other
         # host-import families and `$alloc`/`$gc_sp`).  Nothing between the old
         # position and here reads these flags — they are consumed only at module
         # assembly — so the move is purely additive in correctness.
@@ -1250,17 +1250,14 @@ class FunctionCompilationMixin:
         self._db_ops_used.update(ctx._db_ops_used)  # #229
         self._random_ops_used.update(ctx._random_ops_used)
         self._math_ops_used.update(ctx._math_ops_used)
-        self._needs_overflow_trap = (
-            self._needs_overflow_trap or ctx._needs_overflow_trap
-        )
-        # #754: the narrowing guard's own trap signal, propagated at the
-        # SAME merge for the same reason — a guard emitted while lowering a
-        # postcondition or a lifted closure body sets it on that context.
-        self._needs_widen_trap = (
-            self._needs_widen_trap or ctx._needs_widen_trap
-        )
-        self._needs_nat_guard_trap = (
-            self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
+        # #1479: the trap signal and the contract channel, merged HERE —
+        # after the precondition, body, lifted-closure and postcondition
+        # phases — because a check lowered in any of them raises its flag on
+        # this context, and one merged earlier would leave a postcondition's
+        # `call $vera.trap` pointing at an undeclared import.
+        self._needs_trap = self._needs_trap or ctx._needs_trap
+        self._needs_contract_fail = (
+            self._needs_contract_fail or ctx._needs_contract_fail
         )
         # #1479: and the checks the body emitted, at the same seam, now that
         # the WASM function they sit in is known.
@@ -1370,18 +1367,25 @@ class FunctionCompilationMixin:
                 if target == decl.name:
                     if dec_self_tail is not None:
                         patched_dec.extend(
-                            ws + part for part in dec_self_tail)
+                            ws + part for part in dec_self_tail.instrs)
                         patched_dec.append(instr)
                         # #1479: the prefix is built once and spliced at
-                        # every self-tail site, so its check is recorded
+                        # every self-tail site, so its checks are recorded
                         # per splice — and on the generator, because this
                         # runs after `ctx`'s record was merged above.
+                        measure = next((c for c in decl.contracts
+                                        if isinstance(c, ast.Decreases)), None)
                         self._record_generator_check(
                             decl.name,
                             "codegen/contracts.py:_dec_self_tail_prefix",
-                            next((c for c in decl.contracts
-                                  if isinstance(c, ast.Decreases)), None),
+                            measure,
                         )
+                        for _ in range(dec_self_tail.bound_checks):
+                            self._record_generator_check(
+                                decl.name,
+                                "codegen/contracts.py:_dec_bound_check_pairs",
+                                measure,
+                            )
                     else:
                         patched_dec.append(
                             instr.replace("return_call ", "call ", 1))

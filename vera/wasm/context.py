@@ -29,7 +29,7 @@ from vera.skip import (
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
-from vera.trap_registry import TRAP_EMITTERS
+from vera.trap_registry import TRAP_EMITTERS, TRAP_KINDS, signal_instructions
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
@@ -327,22 +327,18 @@ class WasmContext(
         self._random_ops_used: set[str] = set()
         # Math host-import tracking (propagated to codegen core, #467)
         self._math_ops_used: set[str] = set()
-        # #808: the #798 integer-overflow guard calls $vera.overflow_trap so the
-        # trap classifies as kind="overflow" rather than bare "unreachable".
-        # Set in operators._emit_overflow_guard; merged into codegen core (which
-        # emits the import) in functions.py after each function is compiled (and
-        # in closures.py for lifted-closure bodies).
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so assembly.py declares the host
-        # import and the trap reports its own kind.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the @Nat -> @Int WIDENING guard's twin signal, raised
-        # the same way and merged at the same per-scope seams.  Missing
-        # one of those merges leaves a module calling an undeclared
-        # `$vera.widen_trap`, which fails to instantiate only on the
+        # #1479: set by `_emit_trap` beside every `vera.trap` call it emits
+        # — the one signal every named check raises, its kind a code rather
+        # than an import of its own — so assembly declares the import.
+        # Merged into the CodeGenerator at every per-scope seam (the function
+        # body after its postconditions in functions.py, each lifted closure
+        # in closures.py): a seam that drops it leaves a module calling an
+        # undeclared `$vera.trap`, which fails to instantiate only on the
         # shape that reaches that scope — the #808 / #823 failure mode.
-        self._needs_widen_trap: bool = False
+        self._needs_trap: bool = False
+        # #1479: the contract channel's twin, raised the same way by the
+        # contract checks `_emit_trap` emits and merged at the same seams.
+        self._needs_contract_fail: bool = False
         # #1479: every check this context emitted, as (TRAP_EMITTERS key,
         # the node its span comes from) in emission order.  The source of
         # `CompileResult.emitted_checks`: merged into the CodeGenerator at the
@@ -881,6 +877,53 @@ class WasmContext(
     def extra_locals_wat(self) -> list[str]:
         """Return WAT local declarations for non-parameter locals."""
         return [f"(local {name} {wt})" for name, wt in self._locals]
+
+    def _emit_trap(
+        self,
+        emitter: str,
+        *,
+        at: ast.Node | None,
+        message: str | None = None,
+    ) -> list[str]:
+        """The single emission path of a named check's trap (#1479).
+
+        Returns the instructions that raise *emitter*'s trap kind — the
+        signal, then the ``unreachable`` — for the caller to splice inside
+        the ``if`` that tests the check's condition.  Beside the emission it
+        raises the signal's ``_needs_...`` flag (merged at every per-scope
+        seam, so the import is declared wherever the call lands), interns
+        *message* into the data section, and records the check for the
+        per-module record.
+
+        *emitter* is the caller's own :data:`vera.trap_registry.TRAP_EMITTERS`
+        key, and the kind comes from its row rather than from the caller, so
+        an emitter cannot raise a kind its row does not state.  *message* is
+        required exactly for a kind whose sites carry their own
+        (``TrapKind.site_message``) and refused for one that reports its
+        canonical description.
+        """
+        row = TRAP_EMITTERS.get(emitter)
+        if row is None or not row.per_site or row.via not in (
+                "signal", "contract"):
+            raise CodegenInvariantError(
+                f"{emitter!r} is not a per-site signalling emitter in "
+                "vera.trap_registry.TRAP_EMITTERS", at,
+            )
+        kind = TRAP_KINDS[row.kind]
+        if kind.site_message != bool(message):
+            raise CodegenInvariantError(
+                f"{emitter}: trap kind {row.kind!r} "
+                + ("needs a site message" if kind.site_message
+                   else "reports its canonical description, not a message"),
+                at,
+            )
+        ptr, length = self.string_pool.intern(message) if message else (0, 0)
+        if row.kind == "contract_violation":
+            self._needs_contract_fail = True
+        else:
+            self._needs_trap = True
+        self._record_check(emitter, at)
+        return signal_instructions(row.kind, ptr, length)
 
     def _record_check(self, emitter: str, at: ast.Node | None) -> None:
         """Note one emitted check for the per-module record (#1479).

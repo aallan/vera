@@ -19,11 +19,10 @@ Contract parity with the core-path ``execute()``:
   directory via a ``preopen_dir(".", "/")`` mapping;
 * traps re-raise as :class:`WasmTrapError` with the same ``kind``
   taxonomy.  The component path loses structured trap frames (WASI.md
-  spike check 5), so ``frames`` is always empty; the ``contract_fail``
-  / ``overflow_trap`` / ``nat_guard_trap`` / ``widen_trap`` shim names
-  surviving in the
-  wasmtime backtrace text stand in for the core path's host-import side
-  channels.
+  spike check 5), so ``frames`` is always empty; the adapter function
+  names surviving in the wasmtime backtrace text — ``contract_fail``, and
+  the per-kind ``trap_kind_<name>`` functions ``vera.trap`` dispatches to
+  (#1479) — stand in for the core path's host-import side channels.
 
 Known divergence (inherent to WASI 0.2, documented in spec chapter
 13): ``wasi:cli/exit@0.2.0`` carries only ok/err, so ``IO.exit(n)``
@@ -39,6 +38,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -46,6 +46,11 @@ from vera.codegen.api import ExecuteResult, WasmTrapError
 from vera.codegen.wasi import emit_wasi_component
 from vera.runtime.text import safe_utf8_decode
 from vera.runtime.traps import _classify_trap
+from vera.trap_registry import TRAP_KINDS
+
+#: The adapter function a named trap executes its ``unreachable`` in, as the
+#: wasmtime backtrace renders it (``Adapter!trap_kind_nat_underflow``).
+_TRAP_KIND_FRAME = re.compile(r"!trap_kind_([a-z_]+)")
 
 if TYPE_CHECKING:
     from vera.codegen.api import CompileResult
@@ -184,36 +189,38 @@ def _component_trap_error(
     """Wrap a component trap in the core path's ``WasmTrapError`` shape.
 
     The core path's host-import side channels (``last_violation``,
-    ``last_overflow``, ``last_nat_guard``) don't exist inside a
-    component; the shim names in the wasmtime backtrace text
-    (``Main!vera.contract_fail``, ``Main!vera.overflow_trap``,
-    ``Main!vera.nat_guard_trap``) identify the same conditions, and the
-    violation message itself is the last thing the adapter wrote to
-    WASI stderr before trapping.
+    ``last_trap``) don't exist inside a component, so the adapter function
+    names in the wasmtime backtrace text identify the same conditions:
+    ``contract_fail`` for a contract, and ``trap_kind_<name>`` for a check
+    ``vera.trap`` named (#1479) — the adapter traps inside a function named
+    for the kind precisely so this can read it.  A message travels the one
+    way a component can send one: the adapter writes it to WASI stderr as
+    its last act before trapping, so the last chunk seen here IS the
+    message for a contract and for any kind whose sites carry their own
+    (``TrapKind.site_message``).  It is removed from the program's stderr
+    transcript, which restores the core path's stream separation.
     """
     msg = str(trap)
     stdout = safe_utf8_decode(bytes(out_buf))
     stderr = safe_utf8_decode(bytes(err_buf))
+
+    def _take_message(fallback: str) -> str:
+        nonlocal stderr
+        text = safe_utf8_decode(last_err_chunk) or fallback
+        if text and stderr.endswith(text):
+            stderr = stderr[: -len(text)]
+        return text
+
+    named = _TRAP_KIND_FRAME.search(msg)
     if "contract_fail" in msg:
-        violation = safe_utf8_decode(last_err_chunk) or "Contract violation"
-        # Restore core-path stream separation: the violation text
-        # travels in the diagnostic description, not in the program's
-        # stderr transcript.
-        if violation and stderr.endswith(violation):
-            stderr = stderr[: -len(violation)]
+        violation = _take_message("Contract violation")
         kind, description, fix = _classify_trap(trap, [violation])
-    elif "overflow_trap" in msg:
-        kind, description, fix = _classify_trap(trap, [], [True])
-    elif "widen_trap" in msg:
-        # #1438: the widening guard's shim name.  Tested BEFORE the
-        # narrowing one only because the two names are distinct; the order
-        # is not load-bearing, but keeping the more specific spelling first
-        # costs nothing and survives a future name that contains the other.
-        kind, description, fix = _classify_trap(trap, [], None, None, [True])
-    elif "nat_guard_trap" in msg:
-        # #754: the narrowing guard's shim name, read the same way — a
-        # component has no host-side channel, so the backtrace IS the channel.
-        kind, description, fix = _classify_trap(trap, [], None, [True])
+    elif named is not None and named.group(1) in TRAP_KINDS:
+        row = TRAP_KINDS[named.group(1)]
+        message = (_take_message(row.description) if row.site_message
+                   else "")
+        kind, description, fix = _classify_trap(
+            trap, [], [(row.code, message)])
     else:
         kind, description, fix = _classify_trap(trap, [])
     return WasmTrapError(

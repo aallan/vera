@@ -59,6 +59,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from vera.trap_registry import TRAP_KINDS, signal_instructions
+
 if TYPE_CHECKING:
     from vera.codegen.api import CompileResult
     from vera.codegen.memory import ConstructorLayout
@@ -138,7 +140,7 @@ def _op(
 
 
 #: Slot table.  Signatures mirror ``vera/codegen/assembly.py``
-#: (`_IO_IMPORTS` + the Random block + contract_fail/overflow_trap) and
+#: (`_IO_IMPORTS` + the Random block + contract_fail/trap) and
 #: are cross-checked against the parsed import lines at emit time.
 _OPS: dict[str, _OpSpec] = {
     "print": _op(
@@ -198,17 +200,20 @@ _OPS: dict[str, _OpSpec] = {
         ("io/error", "io/streams", "cli/stderr"),
         ("get-stderr", "bwf"), ("error",),
     ),
-    "overflow_trap": _op(15, "", ""),
-    # #754.  Slot 26, not 17: the SERVER world composes this table with
-    # `_MAP_OPS` (16-25) into one index space, so a cli-looking gap here is
-    # what keeps the two from sharing an `elem` index.  The cli table pads to
-    # match, which costs ten null funcrefs and no instructions.
-    "nat_guard_trap": _op(26, "", ""),
-    # #1438: the widening twin, at the next free slot past the composed
-    # `_MAP_OPS` range for the same reason — the server world puts both
-    # tables in ONE index space, so a slot reused here would collide there.
-    "widen_trap": _op(27, "", ""),
+    # #1479: the one signal every named check raises — its kind a code, its
+    # message (when the check carries one) an interned (ptr, len) the
+    # adapter writes to stderr before trapping.  One op for every kind, so
+    # naming a trap never takes a dispatch slot of its own.
+    "trap": _op(
+        15, "i32 i32 i32", "",
+        ("io/error", "io/streams", "cli/stderr"),
+        ("get-stderr", "bwf"), ("error",),
+    ),
 }
+
+#: The ops whose adapter implementation writes to stderr, and so needs the
+#: cached stderr handle and the chunked write loop.
+_STDERR_WRITERS = frozenset({"stderr", "contract_fail", "trap"})
 
 #: Entries the cli world's dispatch table holds — one past the highest slot
 #: in :data:`_OPS`, and the same number the core module imports.  Derived
@@ -902,21 +907,30 @@ def _transform_main(
         f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
         f"(mut i32) (i32.const {bump_start}))"
     )
-    out.append(_emit_cabi_realloc(arena_end))
+    out.append(_emit_cabi_realloc(arena_end, signal="trap" in used))
     for name in sorted(used, key=lambda n: _OPS[n].slot):
         out.append(_emit_shim(name, _OPS[name]))
     out.append(_emit_wasi_run(len(main_results)))
     return out, layout
 
 
-def _emit_cabi_realloc(arena_end: int) -> str:
+def _emit_cabi_realloc(arena_end: int, *, signal: bool) -> str:
     """Bump allocator over the GC-exempt arena (design study §4.2).
 
     Lives in MAIN because the canon lowers reference it and MAIN is
     the only memory-owning instance that precedes them.  OOM (bump
     past the fixed arena) traps — the canonical ABI permits realloc
-    to trap, and a clean ``unreachable`` beats silent corruption
-    (wrap-table precedent, #573).
+    to trap, and a clean trap beats silent corruption (wrap-table
+    precedent, #573).
+
+    With *signal* (the component has the ``trap`` op), the trap names
+    itself ``heap_exhausted`` through the ``$vera.trap`` shim (#1479),
+    with no message: this runs inside a canonical-ABI lowering, where the
+    adapter must not call a WASI import, and the kind's own description
+    needs no stderr write.  Without it the trap stays bare — a component
+    with no ``trap`` op has no lowering that calls this, since every op
+    whose result is copied through the arena allocates, and an allocating
+    module declares the signal.
     """
     return (
         '  (func $cabi_realloc (export "cabi_realloc") '
@@ -941,8 +955,12 @@ def _emit_cabi_realloc(arena_end: int) -> str:
         f"    i32.const {arena_end}\n"
         "    i32.gt_u\n"
         "    if\n"
-        "      unreachable\n"
-        "    end\n"
+        + (
+            "".join(f"      {i}\n"
+                    for i in signal_instructions("heap_exhausted"))
+            if signal else "      unreachable\n"
+        )
+        + "    end\n"
         "    local.get $p\n"
         "    local.get $new_size\n"
         "    i32.add\n"
@@ -1028,7 +1046,7 @@ def _adapter_fields(used: set[str], lay: _Layout) -> list[str]:
     # Cached process-lifetime std handles (never dropped).
     if "print" in used:
         fields.append("  (global $stdout_h (mut i32) (i32.const -1))")
-    if used & {"stderr", "contract_fail"}:
+    if used & _STDERR_WRITERS:
         fields.append("  (global $stderr_h (mut i32) (i32.const -1))")
     if used & {"read_line", "read_char"}:
         fields.append("  (global $stdin_h (mut i32) (i32.const -1))")
@@ -1122,8 +1140,7 @@ def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
     out: list[str] = []
     fs = bool(used & {"read_file", "write_file"})
     needs_arena_reset = bool(used & _ALLOC_OPS)
-    needs_write = bool(used & {"print", "stderr", "contract_fail",
-                               "write_file"})
+    needs_write = bool(used & (_STDERR_WRITERS | {"print", "write_file"}))
 
     if needs_arena_reset:
         out.append(
@@ -1185,7 +1202,7 @@ def _helper_funcs(used: set[str], lay: _Layout) -> list[str]:
         )
     if "print" in used:
         out.append(_ensure_handle("stdout", "$l_get_stdout"))
-    if used & {"stderr", "contract_fail"}:
+    if used & _STDERR_WRITERS:
         out.append(_ensure_handle("stderr", "$l_get_stderr"))
     if used & {"read_line", "read_char"}:
         out.append(_ensure_handle("stdin", "$l_get_stdin"))
@@ -1546,35 +1563,42 @@ def _op_contract_fail(lay: _Layout) -> str:
     )
 
 
-def _op_overflow_trap(lay: _Layout) -> str:
-    return (
-        "  (func $op_overflow_trap\n"
-        "    unreachable\n"
-        "  )"
+def _op_trap(lay: _Layout) -> str:
+    """#1479: the adapter's ``vera.trap``.  Writes the check's message, when
+    it carries one, to stderr — as ``contract_fail`` does — then traps inside
+    a function NAMED for the kind, ``$trap_kind_<name>``: a component has no
+    host-side channel for the core path's ``last_trap``, so the name in the
+    wasmtime backtrace is what ``vera.runtime.wasi_host`` reads the kind
+    from.  One function per signalled kind in ``TRAP_KINDS``; a code no kind
+    carries falls through to the final ``unreachable``, which a module this
+    compiler emitted never reaches."""
+    kinds = [k for k in TRAP_KINDS.values() if k.code]
+    dispatch = "".join(
+        "    local.get $k\n"
+        f"    i32.const {kind.code}\n"
+        "    i32.eq\n"
+        "    if\n"
+        f"      call $trap_kind_{kind.name}\n"
+        "    end\n"
+        for kind in kinds
     )
-
-
-def _op_nat_guard_trap(lay: _Layout) -> str:
-    """#754: the narrowing guard's signal.  Like `overflow_trap`, the shim
-    body is the trap itself — the SHIM NAME is what the host reads out of
-    the backtrace to classify it, since a component carries no host-side
-    channel the core path's `last_nat_guard` list could stand in for."""
-    return (
-        "  (func $op_nat_guard_trap\n"
-        "    unreachable\n"
-        "  )"
+    per_kind = "".join(
+        f"\n  (func $trap_kind_{kind.name} unreachable)" for kind in kinds
     )
-
-
-def _op_widen_trap(lay: _Layout) -> str:
-    """#1438: the widening guard's signal, on the same terms as its
-    narrowing twin above — the shim NAME is what the host reads out of the
-    backtrace, a component having no host-side channel to stand in for the
-    core path's sentinel list."""
     return (
-        "  (func $op_widen_trap\n"
-        "    unreachable\n"
+        "  (func $op_trap (param $k i32) (param $p i32) (param $l i32)\n"
+        "    local.get $l\n"
+        "    if\n"
+        "      call $ensure_stderr\n"
+        "      global.get $stderr_h\n"
+        "      local.get $p\n"
+        "      local.get $l\n"
+        "      call $write_or_trap\n"
+        "    end\n"
+        + dispatch
+        + "    unreachable\n"
         "  )"
+        + per_kind
     )
 
 
@@ -2450,9 +2474,7 @@ _OP_EMITTERS: dict[str, Callable[[_Layout], str]] = {
     "random_float": _op_random_float,
     "random_bool": _op_random_bool,
     "contract_fail": _op_contract_fail,
-    "overflow_trap": _op_overflow_trap,
-    "nat_guard_trap": _op_nat_guard_trap,
-    "widen_trap": _op_widen_trap,
+    "trap": _op_trap,
 }
 
 
@@ -2720,7 +2742,7 @@ _MAP_OPS: dict[str, _OpSpec] = {
 _SERVER_IO_OPS = frozenset({
     "print", "stderr", "time", "sleep",
     "random_int", "random_float", "random_bool",
-    "contract_fail", "overflow_trap", "nat_guard_trap", "widen_trap",
+    "contract_fail", "trap",
 })
 
 #: Stage-C ops the server world REJECTS, with the family/reason named
@@ -2993,7 +3015,7 @@ def _transform_main_server(
         f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
         f"(mut i32) (i32.const {bump_start}))"
     )
-    out.append(_emit_cabi_realloc(arena_end))
+    out.append(_emit_cabi_realloc(arena_end, signal="trap" in used))
     for name in sorted(used, key=lambda n: used[n].slot):
         out.append(_emit_shim(name, used[name]))
     return out, layout
@@ -4693,9 +4715,9 @@ def _server_helper_funcs(
     ]
     if "print" in names:
         out.append(_ensure_handle("stdout", "$l_get_stdout"))
-    if names & {"stderr", "contract_fail"}:
+    if names & _STDERR_WRITERS:
         out.append(_ensure_handle("stderr", "$l_get_stderr"))
-    if names & {"print", "stderr", "contract_fail"}:
+    if names & (_STDERR_WRITERS | {"print"}):
         out.append(_write_or_trap(lay))
     return out
 
@@ -4738,7 +4760,7 @@ def _server_adapter_fields(
     names = set(used)
     if "print" in names:
         fields.append("  (global $stdout_h (mut i32) (i32.const -1))")
-    if names & {"stderr", "contract_fail"}:
+    if names & _STDERR_WRITERS:
         fields.append("  (global $stderr_h (mut i32) (i32.const -1))")
 
     segments, statics_base, _bump = _build_server_statics(lay.arena_base)

@@ -34,7 +34,12 @@ from vera.checker import typecheck_with_artifacts
 from vera.codegen import compile as codegen_compile
 from vera.codegen.api import CompileResult
 from vera.parser import parse_to_ast
-from vera.trap_registry import TRAP_EMITTERS, TRAP_KINDS, EmittedCheck
+from vera.trap_registry import (
+    TRAP_EMITTERS,
+    TRAP_KINDS,
+    EmittedCheck,
+    signal_call_pattern,
+)
 
 
 def _compile(source: str, file: str = "prog.vera") -> CompileResult:
@@ -318,17 +323,12 @@ def test_the_record_matches_the_signals_in_the_module() -> None:
         "public fn f(@Pos, @Int, @Nat -> @Int)\n"
         "  requires(@Int.0 != 3) ensures(@Int.result != 4) effects(pure)\n"
         "{\n  let @Nat = @Int.0;\n  let @Int = @Nat.1;\n  @Int.0\n}\n")
-    signals = {
-        "contract_violation": "call $vera.contract_fail",
-        "nat_guard": "call $vera.nat_guard_trap",
-        "widen_guard": "call $vera.widen_trap",
-    }
     body = result.wat.split("(func $f")[1]
     recorded = Counter(c.kind for c in result.emitted_checks
                        if c.function == "f")
-    for kind, call in signals.items():
-        assert recorded[kind] == body.count(call) > 0, (
-            kind, recorded[kind], body.count(call))
+    for kind in ("contract_violation", "nat_guard", "widen_guard"):
+        emitted = len(signal_call_pattern(kind).findall(body))
+        assert recorded[kind] == emitted > 0, (kind, recorded[kind], emitted)
 
 
 def test_a_stubbed_closure_takes_its_checks_with_it() -> None:

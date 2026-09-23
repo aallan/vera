@@ -328,7 +328,7 @@ public fn main(-> @Int)
         assert out == ""
 
     def test_overflow_guard_traps_through_the_dispatch_table(self) -> None:
-        """overflow_trap is a non-WASI op planted in the same table;
+        """`trap` is a non-WASI op planted in the same table;
         the #798 guard must still stop a wrapping add."""
         result = _compile_ok("""\
 public fn main(-> @Int)

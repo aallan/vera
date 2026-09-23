@@ -2087,13 +2087,26 @@ class DataMixin:
         instructions.append(f"i32.const {n}")
         return instructions
 
+    def _index_message(self, expr: ast.IndexExpr) -> str:
+        """The `index_out_of_bounds` message: the access, and its bound."""
+        coll = ast.format_expr(expr.collection)
+        idx = ast.format_expr(expr.index)
+        return (
+            f"Array index out of bounds{self._at_line(expr)}: "
+            f"`{coll}[{idx}]` needs `0 <= {idx}` and "
+            f"`{idx} < array_length({coll})`."
+        )
+
     def _translate_index_expr(
         self, expr: ast.IndexExpr, env: WasmSlotEnv,
     ) -> list[str] | None:
         """Translate array indexing with bounds check.
 
-        Evaluates collection → (ptr, len), evaluates index,
-        performs bounds check (trap on OOB), then loads the element.
+        Evaluates collection → (ptr, len), evaluates index, checks
+        ``0 <= index < len`` in i64 — before the index is narrowed to the
+        i32 address arithmetic uses — signalling ``index_out_of_bounds``
+        with the access and its bound on failure (#1479), then loads the
+        element.
         """
         # The COLLECTION must actually be one (PR #1372 review).  The emit
         # below saves two words — the (ptr, len) pair every real array is —
@@ -2153,6 +2166,7 @@ class DataMixin:
         # Temp locals for ptr, len, index
         tmp_ptr = self.alloc_local("i32")
         tmp_len = self.alloc_local("i32")
+        tmp_idx64 = self.alloc_local("i64")
         tmp_idx = self.alloc_local("i32")
 
         instructions: list[str] = []
@@ -2160,18 +2174,24 @@ class DataMixin:
         instructions.extend(coll_instrs)
         instructions.append(f"local.set {tmp_len}")
         instructions.append(f"local.set {tmp_ptr}")
-        # Evaluate and wrap index from i64 to i32
+        # Bounds check in i64, BEFORE narrowing the index (#1479): an index
+        # of 2^32 + 1 wraps to 1, so a check made on the wrapped i32 passed
+        # it and read element 1.  `(u64)idx >= (u64)len` is false exactly
+        # for 0 <= idx < len — a negative i64 reads as a huge unsigned one.
         instructions.extend(idx_instrs)
+        instructions.append(f"local.tee {tmp_idx64}")
+        instructions.append(f"local.get {tmp_len}")
+        instructions.append("i64.extend_i32_u")
+        instructions.append("i64.ge_u")
+        instructions.append("if")
+        instructions.extend(
+            f"  {i}" for i in self._emit_trap(
+                "wasm/data.py:_translate_index_expr", at=expr,
+                message=self._index_message(expr)))
+        instructions.append("end")
+        instructions.append(f"local.get {tmp_idx64}")
         instructions.append("i32.wrap_i64")
         instructions.append(f"local.set {tmp_idx}")
-        # Bounds check: if (u32)idx >= (u32)len then trap
-        self._record_check("wasm/data.py:_translate_index_expr", expr)
-        instructions.append(f"local.get {tmp_idx}")
-        instructions.append(f"local.get {tmp_len}")
-        instructions.append("i32.ge_u")
-        instructions.append("if")
-        instructions.append("  unreachable")
-        instructions.append("end")
         # Compute address: ptr + idx * elem_size
         instructions.append(f"local.get {tmp_ptr}")
         if elem_size == 1:

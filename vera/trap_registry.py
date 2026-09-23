@@ -23,6 +23,7 @@ package for every trap it emits and compares the answer with these tables.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 #: The one host import a named check calls before its ``unreachable``.  Its
@@ -80,6 +81,104 @@ def _kinds(*rows: TrapKind) -> dict[str, TrapKind]:
     if len(codes) != len(set(codes)):  # pragma: no cover — table typo
         raise ValueError("two trap kinds share a signal code")
     return out
+
+
+# =====================================================================
+# The generic `unreachable` kind and the causes that reach it
+# =====================================================================
+
+@dataclass(frozen=True)
+class UnreachableCause:
+    """One cause the generic ``unreachable`` Fix paragraph names.
+
+    Every ``unreachable`` code generation emits either follows a signal that
+    names its own kind, or sits at a site on :data:`INTERNAL_TRAPS`, whose
+    entries each name one of these.  The paragraph is DERIVED from this
+    table, so it names exactly the causes that can reach it — no cause the
+    roster lacks, and no roster cause it omits.
+    """
+
+    key: str
+    text: str
+    """The sentences the paragraph carries for this cause."""
+
+
+UNREACHABLE_CAUSES: tuple[UnreachableCause, ...] = (
+    UnreachableCause(
+        "shadow_stack_overflow",
+        "GC shadow-stack overflow, which is what a DEEP RECURSION through a "
+        "function holding heap references hits: every live frame roots its "
+        "pointer parameters, its allocations, and the values it binds out "
+        "of them, and the shadow stack holds 4 096 roots in total (16 KiB — "
+        "`GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion that "
+        "traps at a depth close to 4 096 divided by a small integer is this "
+        "one: reduce the heap values live across the recursive call, or "
+        "restructure so the call is in tail position (#549 GC-aware TCO "
+        "restores `$gc_sp` at each hop, so the chain runs in constant shadow "
+        "space).",
+    ),
+    UnreachableCause(
+        "gc_worklist_overflow",
+        "The collector's mark worklist overflowed: more heap objects were "
+        "waiting to be marked at one time than its 16 384 entries hold "
+        "(`GC_WORKLIST_SIZE` in `vera/codegen/assembly.py`), which one very "
+        "wide live structure — an array or map holding more heap values "
+        "than that — can reach.  Split the structure, or hold fewer heap "
+        "values in it at once.",
+    ),
+    UnreachableCause(
+        "wrap_table_overflow",
+        "More than 4 096 host-backed values — `Map`, `Set`, `Decimal`, a "
+        "parsed JSON or HTML map, a pending async request — were alive at "
+        "once, and a collection freed none of them, so the table that "
+        "tracks their host handles had no room for another.  Let values you "
+        "no longer need become unreachable, or combine many small "
+        "containers into fewer larger ones.",
+    ),
+    UnreachableCause(
+        "wasi_io_failure",
+        "Under `--target wasi-p2`, a standard stream, file or HTTP body the "
+        "host provides failed part-way through an operation — a write to a "
+        "closed stdout, a read error on stdin — and the adapter stopped the "
+        "program rather than lose data.  The host's I/O failed, not the "
+        "program's logic: check what the program's input and output are "
+        "connected to.",
+    ),
+    UnreachableCause(
+        "compiler_bug",
+        "An internal consistency check failed: a garbage-collector "
+        "invariant (`VERA_GC_CHECK_MARKS`), a runtime tripwire, or code the "
+        "compiler places where execution cannot arrive — after a call that "
+        "never returns (`IO.exit`, a handler that always throws) or in a "
+        "function it dropped.  A well-typed program cannot reach any of "
+        "these, so reaching one is a bug in Vera: please file a minimal "
+        "reproducer at https://github.com/aallan/vera/issues/new.",
+    ),
+)
+
+_COUNT_WORDS = ("One", "Two", "Three", "Four", "Five", "Six", "Seven",
+                "Eight", "Nine")
+
+
+def unreachable_fix_paragraph(
+    causes: tuple[UnreachableCause, ...] = UNREACHABLE_CAUSES,
+) -> str:
+    """The generic ``unreachable`` Fix paragraph, derived from *causes*.
+
+    A trap reaches the generic kind only by executing an ``unreachable`` no
+    signal named, and every such site is on :data:`INTERNAL_TRAPS`; so the
+    paragraph can say exactly which causes those are, and that none of them
+    is a check on a value the program computed — each of those reports its
+    own kind.
+    """
+    head = (
+        f"{_COUNT_WORDS[len(causes) - 1]} causes reach this trap, and none "
+        "of them is a check on a value the program computed — every such "
+        "check reports its own kind."
+    )
+    body = "  ".join(
+        f"({n}) {cause.text}" for n, cause in enumerate(causes, start=1))
+    return f"{head}  {body}"
 
 
 TRAP_KINDS: dict[str, TrapKind] = _kinds(
@@ -199,14 +298,15 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
     ),
     TrapKind(
         "out_of_bounds", 0, "Out-of-bounds memory access",
-        "Most often caused by `Array<T>[i]` with `i` outside `[0, "
-        "array_length(arr))` or by `string_slice(s, start, end)` with "
-        "out-of-range indices.  Add a `requires(i < "
-        "array_length(arr))` precondition or guard the access "
-        "explicitly.  If the trapping frame is `gc_collect`, "
-        "`alloc`, or another runtime helper this is a compiler bug "
-        "rather than a user error — please file a minimal reproducer "
-        "at https://github.com/aallan/vera/issues/new.",
+        "A linear-memory load or store fell outside the module's memory.  "
+        "Every array index and `string_char_code` index is bounds-checked "
+        "before its access and reports `index_out_of_bounds` or "
+        "`string_index_out_of_bounds` instead, and `string_slice` clamps its "
+        "indices, so no check on a value your program computed reaches this "
+        "kind: a runtime helper (`gc_collect`, `alloc`, a host binding) read "
+        "or wrote outside memory, which is a bug in Vera rather than in the "
+        "program — please file a minimal reproducer at "
+        "https://github.com/aallan/vera/issues/new.",
     ),
     TrapKind(
         "stack_exhausted", 0, "WASM call stack exhausted",
@@ -228,22 +328,7 @@ TRAP_KINDS: dict[str, TrapKind] = _kinds(
     ),
     TrapKind(
         "unreachable", 0, "Reached `unreachable` WASM instruction",
-        "Three causes reach this trap.  (1) A non-exhaustive `match` "
-        "whose missing arm would have required user code — add the "
-        "missing arm explicitly rather than relying on a wildcard; the "
-        "type checker will tell you which constructors are uncovered.  "
-        "(2) A compiler-generated assertion, e.g. an ADT field offset "
-        "that didn't resolve.  (3) GC shadow-stack overflow, which is "
-        "what a DEEP RECURSION through a function holding heap "
-        "references hits: every live frame roots its pointer "
-        "parameters, its allocations, and the values it binds out of "
-        "them, and the shadow stack holds 4 096 roots in total (16 KiB "
-        "— `GC_STACK_SIZE` in `vera/codegen/assembly.py`).  A recursion "
-        "that traps at a depth close to 4 096 divided by a small "
-        "integer is this one: reduce the heap values live across the "
-        "recursive call, or restructure so the call is in tail position "
-        "(#549 GC-aware TCO restores `$gc_sp` at each hop, so the chain "
-        "runs in constant shadow space).",
+        unreachable_fix_paragraph(),
     ),
     TrapKind("host_error", 0, "Host binding error", "", site_message=True),
     TrapKind("unknown", 0, "Unclassified trap", ""),
@@ -392,13 +477,11 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
     ),
     # --- runtime functions: one per module, no source site --------------
     TrapEmitter(
-        "codegen/assembly.py:_emit_alloc", "heap_exhausted", (), "signal",
-        "none: the allocator is a runtime function", per_site=False,
-    ),
-    TrapEmitter(
-        "codegen/assembly.py:_emit_gc_collect", "heap_exhausted", (),
-        "signal", "none: the collector is a runtime function",
-        per_site=False,
+        "codegen/assembly.py:heap_trap", "heap_exhausted", (), "signal",
+        "none: renders the trap of `$alloc` (a request of 2 GiB or more, a "
+        "refused `memory.grow`, the 2 GiB heap ceiling) and of "
+        "`$gc_collect`'s mark-bitmap growth, runtime functions emitted once "
+        "per module", per_site=False,
     ),
     TrapEmitter(
         "codegen/wasi.py:_emit_cabi_realloc", "heap_exhausted", (), "signal",
@@ -406,6 +489,365 @@ TRAP_EMITTERS: dict[str, TrapEmitter] = _emitters(
         per_site=False,
     ),
 )
+
+
+# =====================================================================
+# The one rendering of a named trap
+# =====================================================================
+
+#: The import declaration a module carries when anything in it signals.
+TRAP_IMPORT_WAT = (
+    f'  (import "vera" "{TRAP_SIGNAL}" '
+    f"(func $vera.{TRAP_SIGNAL} (param i32 i32 i32)))"
+)
+
+
+def signal_instructions(kind: str, ptr: int = 0, length: int = 0) -> list[str]:
+    """The instructions that raise trap *kind*: the signal, then the trap.
+
+    The ONE place code generation writes the ``unreachable`` of a named
+    check.  ``contract_violation`` goes through :data:`CONTRACT_SIGNAL` with
+    the contract's text; every other kind through :data:`TRAP_SIGNAL` with
+    its code and the check's own message (``ptr``/``length`` of an interned
+    string, both zero for a kind whose sites carry none).  Callers splice
+    the result where the trap belongs — inside the ``if`` that tests the
+    check's condition — and raise the import's ``_needs_...`` flag beside
+    the splice; ``WasmContext._emit_trap`` does both and records the check.
+    """
+    row = TRAP_KINDS[kind]
+    if kind == "contract_violation":
+        return [
+            f"i32.const {ptr}",
+            f"i32.const {length}",
+            f"call $vera.{CONTRACT_SIGNAL}",
+            "unreachable",
+        ]
+    if not row.code:
+        raise ValueError(f"trap kind {kind!r} is not raised by a signal")
+    return [
+        f"i32.const {row.code}",
+        f"i32.const {ptr}",
+        f"i32.const {length}",
+        f"call $vera.{TRAP_SIGNAL}",
+        "unreachable",
+    ]
+
+
+def signal_call_pattern(kind: str) -> re.Pattern[str]:
+    """A pattern matching the signal :func:`signal_instructions` renders for
+    *kind*, whatever its indentation, line breaks or message pointer — the
+    way a test or an instrument asks "does this module raise *kind*?"
+    without restating the rendering."""
+    if kind == "contract_violation":
+        return re.compile(
+            rf"i32\.const \d+\s+i32\.const \d+\s+call \$vera\.{CONTRACT_SIGNAL}\b")
+    code = TRAP_KINDS[kind].code
+    if not code:
+        raise ValueError(f"trap kind {kind!r} is not raised by a signal")
+    return re.compile(
+        rf"i32\.const {code}\s+i32\.const \d+\s+i32\.const \d+\s+"
+        rf"call \$vera\.{TRAP_SIGNAL}\b")
+
+
+# =====================================================================
+# Every other trap site, by why it is not named
+# =====================================================================
+
+@dataclass(frozen=True)
+class InternalTrap:
+    """An ``unreachable`` code generation emits with no signal before it."""
+
+    site: str
+    """``<module under vera/>:<function or table>`` holding the literal."""
+
+    cause: str
+    """The :data:`UNREACHABLE_CAUSES` key the generic paragraph names it by."""
+
+    count: int
+    """How many such ``unreachable`` literals the site holds for this cause."""
+
+    note: str
+
+
+#: Every ``unreachable`` that reaches the generic kind.  A new bare
+#: ``unreachable`` anywhere in the code-generation package is a failure of
+#: the static scan until it is either named through :func:`signal_instructions`
+#: or entered here under one of the causes the generic paragraph lists.
+INTERNAL_TRAPS: tuple[InternalTrap, ...] = (
+    InternalTrap(
+        "wasm/helpers.py:gc_shadow_push", "shadow_stack_overflow", 1,
+        "the per-push bound on the GC shadow stack",
+    ),
+    InternalTrap(
+        "codegen/assembly.py:_emit_register_wrapper",
+        "shadow_stack_overflow", 1,
+        "rooting the in-flight wrapper before its slow-path collection",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_SHADOW_PUSH_FN", "shadow_stack_overflow", 1,
+        "the WASI adapter's copy of the shadow-stack push",
+    ),
+    InternalTrap(
+        "codegen/assembly.py:_emit_register_wrapper",
+        "wrap_table_overflow", 1,
+        "the wrapper table is still full after a collection",
+    ),
+    InternalTrap(
+        "codegen/assembly.py:_emit_gc_collect", "gc_worklist_overflow", 2,
+        "the mark worklist's bound, at the root seed and in the drain loop",
+    ),
+    InternalTrap(
+        "codegen/assembly.py:_emit_gc_assert_base", "compiler_bug", 1,
+        "the VERA_GC_CHECK_MARKS invariant (a debugging knob)",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_op_attach_bucket_to_wrapper", "compiler_bug", 1,
+        "the server world's bucket-as-truth tripwire (#706)",
+    ),
+    InternalTrap(
+        "wasm/calls.py:_translate_qualified_call", "compiler_bug", 1,
+        "after `IO.exit`, which never returns",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_op_exit", "compiler_bug", 1,
+        "after `wasi:cli/exit`, which never returns",
+    ),
+    InternalTrap(
+        "wasm/calls_handlers.py:_translate_handle_exn", "compiler_bug", 1,
+        "after a `handle[Exn]` whose body and clause both diverge",
+    ),
+    InternalTrap(
+        "codegen/core.py:_DROPPED_CLOSURE_BODY", "compiler_bug", 1,
+        "the body of a closure whose enclosing function was dropped; its "
+        "table slot survives and nothing can construct it",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_emit_cabi_realloc", "compiler_bug", 1,
+        "arena exhaustion in a component with no trap import, which "
+        "performs no lowering that calls `cabi_realloc`",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_write_or_trap", "wasi_io_failure", 1,
+        "a failed blocking write to a standard stream",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_read_byte", "wasi_io_failure", 1,
+        "a failed read from stdin",
+    ),
+    InternalTrap(
+        "codegen/wasi.py:_serve_handle", "wasi_io_failure", 7,
+        "the server world's request / response stream failures",
+    ),
+)
+
+#: The ``unreachable`` literals that ARE a signal: the WASI adapter's
+#: implementations of the two imports, which trap after writing the
+#: message.  Named, so they neither need a roster cause nor reach the
+#: generic kind.
+SIGNAL_SITES: tuple[tuple[str, int], ...] = (
+    ("codegen/wasi.py:_op_contract_fail", 1),
+    ("codegen/wasi.py:_op_trap", 2),
+)
+
+
+@dataclass(frozen=True)
+class NativeSite:
+    """A WASM instruction that traps by itself, at one site."""
+
+    site: str
+    instruction: str
+    count: int
+    reason: str
+    """Why it cannot trap (a safe site), or which kind it traps as."""
+
+    kind: str | None = None
+    """The trap kind a user-reachable native trap reports; None for a site
+    that cannot trap."""
+
+    emitter: str | None = None
+    """The :data:`TRAP_EMITTERS` key that emits (and records) a
+    user-reachable native trap; None for a safe site."""
+
+
+#: Natively trapping instructions a user program reaches.  Each is named by
+#: the host's own trap message rather than by a signal, and recorded as a
+#: check by its emitter.
+NATIVE_TRAP_SITES: tuple[NativeSite, ...] = (
+    NativeSite(
+        "wasm/inference.py:_ARITH_OPS", "i64.div_s", 1,
+        "`/` over @Int / @Nat: a zero divisor traps as divide_by_zero, "
+        "and `INT_MIN / -1` as overflow",
+        kind="divide_by_zero", emitter="wasm/operators.py:_translate_binary",
+    ),
+    NativeSite(
+        "wasm/inference.py:_ARITH_OPS", "i64.rem_s", 1,
+        "`%` over @Int / @Nat: a zero divisor traps as divide_by_zero",
+        kind="divide_by_zero", emitter="wasm/operators.py:_translate_binary",
+    ),
+)
+
+#: Natively trapping instructions that cannot trap where they are emitted.
+SAFE_NATIVE_SITES: tuple[NativeSite, ...] = (
+    NativeSite(
+        "wasm/operators.py:_ARITH_OPS_I32_BYTE", "i32.div_u", 1,
+        "`@Byte` is not a numeric type (`vera.types.NUMERIC_TYPES`), so the "
+        "checker refuses `/` on it and no user division lowers here",
+    ),
+    NativeSite(
+        "wasm/operators.py:_ARITH_OPS_I32_BYTE", "i32.rem_u", 1,
+        "`@Byte` is not a numeric type, so the checker refuses `%` on it",
+    ),
+    NativeSite(
+        "wasm/operators.py:_emit_int_mul_guard", "i64.div_s", 1,
+        "reached only when the left operand is neither 0 nor -1",
+    ),
+    NativeSite(
+        "wasm/operators.py:_emit_nat_mul_guard", "i64.div_u", 1,
+        "reached only when the left operand is not 0",
+    ),
+    NativeSite(
+        "wasm/calls_encoding.py:_translate_base64_encode", "i32.div_u", 1,
+        "divides by the constant 3",
+    ),
+    NativeSite(
+        "wasm/calls_encoding.py:_translate_base64_encode", "i32.rem_u", 1,
+        "divides by the constant 3",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_translate_string_repeat", "i32.rem_u", 1,
+        "the copy loop runs while the index is below length * count, which "
+        "is zero when the length is",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_translate_pad", "i32.rem_u", 2,
+        "the fill loop runs only for a non-empty fill string",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_to_string_core", "i64.rem_u", 1,
+        "divides by the constant 10",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_to_string_core", "i64.div_u", 1,
+        "divides by the constant 10",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_float_to_string_core", "i64.rem_u", 2,
+        "divides by the constant 10",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_float_to_string_core", "i64.div_u", 2,
+        "divides by the constant 10",
+    ),
+    NativeSite(
+        "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
+        "the fractional part scaled by 10^6 lies in [0, 10^6]",
+    ),
+    NativeSite(
+        "wasm/calls_math.py:_trunc_after_domain_check", "i64.trunc_f64_s", 1,
+        "preceded by the [-2^63, 2^63) domain check whose failure its "
+        "caller signals as float_conversion",
+    ),
+    NativeSite(
+        "codegen/wasi.py:_op_time", "i64.div_u", 1,
+        "divides by the constant 10^6",
+    ),
+    NativeSite(
+        "codegen/wasi.py:_op_random_int", "i64.rem_u", 2,
+        "a zero range (the full 2^64 span) returns before either remainder",
+    ),
+)
+
+#: Natively trapping instructions a user program reaches that trap where
+#: the language says they must not.  Each names the issue that tracks it;
+#: an entry here is a known defect, not a design.
+KNOWN_TRAP_DEFECTS: tuple[NativeSite, ...] = (
+    NativeSite(
+        "wasm/calls_strings.py:_float_to_string_core", "i64.trunc_f64_s", 1,
+        "#1482: the integer part of a finite value of magnitude 2^63 or "
+        "more does not fit the i64 the digit loop runs over, so the total "
+        "`float_to_string` traps (as overflow)",
+        kind="overflow",
+    ),
+)
+
+#: The WASM instructions that trap by themselves on an operand, which the
+#: static scan looks for.  Memory accesses, `call_indirect` and `throw`
+#: trap only on a compiler or runtime bug and are out of its scope.
+NATIVE_TRAPPING_INSTRUCTIONS: frozenset[str] = frozenset({
+    "i32.div_s", "i32.div_u", "i32.rem_s", "i32.rem_u",
+    "i64.div_s", "i64.div_u", "i64.rem_s", "i64.rem_u",
+    "i32.trunc_f32_s", "i32.trunc_f32_u", "i32.trunc_f64_s",
+    "i32.trunc_f64_u", "i64.trunc_f32_s", "i64.trunc_f32_u",
+    "i64.trunc_f64_s", "i64.trunc_f64_u",
+})
+
+
+# =====================================================================
+# How each host names a native trap
+# =====================================================================
+
+#: wasmtime's trap reason, as a lower-cased substring, to the kind it is —
+#: first match wins (wasmtime and the WASI 0.2 host).
+WASMTIME_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
+    ("integer divide by zero", "divide_by_zero"),
+    ("out of bounds memory access", "out_of_bounds"),
+    ("call stack exhausted", "stack_exhausted"),
+    ("unreachable", "unreachable"),
+    ("integer overflow", "overflow"),
+)
+
+#: V8's ``WebAssembly.RuntimeError`` message to the kind it is (the browser
+#: runtime).  A ``RangeError`` from call-stack exhaustion is
+#: ``stack_exhausted`` there, whatever its message.
+BROWSER_NATIVE_TRAPS: tuple[tuple[str, str], ...] = (
+    ("divide by zero", "divide_by_zero"),
+    ("remainder by zero", "divide_by_zero"),
+    ("divide result unrepresentable", "overflow"),
+    ("float unrepresentable in integer range", "overflow"),
+    ("memory access out of bounds", "out_of_bounds"),
+    ("unreachable", "unreachable"),
+)
+
+
+def browser_trap_table() -> dict[str, object]:
+    """The browser runtime's copy of the kind table, as JSON-ready data.
+
+    ``vera/browser/runtime.mjs`` carries this between its generated-table
+    markers; ``tests/test_named_traps_1479.py`` regenerates it and requires
+    the file to hold exactly this, so the browser cannot name a trap
+    differently from wasmtime and the WASI host.
+    """
+    return {
+        "kinds": {
+            name: {
+                "code": kind.code,
+                "description": kind.description,
+                "fix": kind.fix,
+                "siteMessage": kind.site_message,
+            }
+            for name, kind in sorted(TRAP_KINDS.items())
+        },
+        "native": [list(pair) for pair in BROWSER_NATIVE_TRAPS],
+    }
+
+
+def _validate() -> None:
+    """Import-time consistency of the tables above."""
+    cause_keys = {cause.key for cause in UNREACHABLE_CAUSES}
+    for entry in INTERNAL_TRAPS:
+        if entry.cause not in cause_keys:
+            raise ValueError(
+                f"{entry.site}: cause {entry.cause!r} is not one the generic "
+                "unreachable paragraph names")
+    for site in (*NATIVE_TRAP_SITES, *KNOWN_TRAP_DEFECTS):
+        if site.kind not in TRAP_KINDS:
+            raise ValueError(f"{site.site}: unknown trap kind {site.kind!r}")
+    for site in NATIVE_TRAP_SITES:
+        if site.emitter not in TRAP_EMITTERS:
+            raise ValueError(f"{site.site}: unknown emitter {site.emitter!r}")
+
+
+_validate()
 
 
 # =====================================================================

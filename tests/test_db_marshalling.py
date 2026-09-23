@@ -32,6 +32,7 @@ from typing import ClassVar
 import pytest
 import wasmtime
 
+from tests.codegen_helpers import instantiate_with_trap_signal
 from vera.codegen import compile as codegen_compile
 from vera.parser import parse_to_ast
 from vera.runtime.heap import (
@@ -45,9 +46,9 @@ from vera.runtime.heap import (
 )
 
 # A pure, allocation-performing program: it exports ``$alloc`` and the GC
-# globals (``$gc_sp`` / ``$gc_stack_limit``) and imports nothing, so it
-# instantiates with an empty import list and the heap allocators can be driven
-# directly against it.
+# globals (``$gc_sp`` / ``$gc_stack_limit``) and imports only the trap signal
+# its allocator names heap exhaustion through (#1479), so it instantiates with
+# that one stub and the heap allocators can be driven directly against it.
 _HARNESS_SRC = (
     "public fn main(-> @String)\n"
     "  requires(true) ensures(true) effects(pure)\n"
@@ -65,7 +66,7 @@ def _gc_caller() -> InstanceCaller:
     engine = wasmtime.Engine()
     store = wasmtime.Store(engine)
     module = wasmtime.Module(engine, res.wasm_bytes)
-    instance = wasmtime.Instance(store, module, [])
+    instance = instantiate_with_trap_signal(store, module)
     return InstanceCaller(store, instance)
 
 

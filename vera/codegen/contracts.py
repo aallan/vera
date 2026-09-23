@@ -17,6 +17,7 @@ from vera.narrowing import (
     measure_component_needs_range_check,
 )
 from vera.skip import CodegenSkip
+from vera.trap_registry import signal_call_pattern, signal_instructions
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import (
     bind_slot_value_from_field,
@@ -94,6 +95,21 @@ class _ElementGuardSite:
     #: The element's RESOLVED base name, which is what names the host
     #: import's type tag for a projected carrier.
     element_base: str
+
+
+@dataclass(frozen=True)
+class SelfTailPrefix:
+    """The self-tail ``decreases`` prefix and the checks it holds (#1479).
+
+    Built once and spliced before every self-recursive ``return_call`` —
+    possibly never, possibly several times — so its checks are recorded
+    per splice, by the caller that splices it: the prefix's own
+    lexicographic-decrease check, and ``bound_checks`` measure-range
+    checks.
+    """
+
+    instrs: list[str]
+    bound_checks: int
 
 
 class ContractsMixin:
@@ -267,20 +283,10 @@ class ContractsMixin:
             return None
         if cond is None:
             return None
-        ptr, length = self.string_pool.intern(message)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        ctx._record_check("codegen/contracts.py:_emit_refinement_check", at)
-        return [
-            *cond,
-            "i32.eqz",
-            "if",
-            f"  i32.const {ptr}",
-            f"  i32.const {length}",
-            "  call $vera.contract_fail",
-            "  unreachable",
-            "end",
-        ]
+        trap = ctx._emit_trap(
+            "codegen/contracts.py:_emit_refinement_check", at=at,
+            message=message)
+        return [*cond, "i32.eqz", "if", *(f"  {i}" for i in trap), "end"]
 
     def _emit_boundary_refinement_guard(
         self,
@@ -983,16 +989,10 @@ class ContractsMixin:
 
             # Report which contract failed before trapping
             msg = self._format_contract_message(decl, contract)
-            ptr, length = self.string_pool.intern(msg)
-            self._needs_contract_fail = True
-            self._needs_memory = True
-            ctx._record_check(
-                "codegen/contracts.py:_compile_preconditions", contract)
-            instrs.append(f"  i32.const {ptr}")
-            instrs.append(f"  i32.const {length}")
-            instrs.append("  call $vera.contract_fail")
-
-            instrs.append("  unreachable")
+            instrs.extend(
+                f"  {i}" for i in ctx._emit_trap(
+                    "codegen/contracts.py:_compile_preconditions",
+                    at=contract, message=msg))
             instrs.append("end")
         return instrs
 
@@ -1139,16 +1139,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                ctx._record_check(
-                    "codegen/contracts.py:_compile_postconditions", ensures)
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
             # Push result back
@@ -1164,16 +1158,10 @@ class ContractsMixin:
                 instrs.append("if")
 
                 msg = self._format_contract_message(decl, ensures)
-                ptr, length = self.string_pool.intern(msg)
-                self._needs_contract_fail = True
-                self._needs_memory = True
-                ctx._record_check(
-                    "codegen/contracts.py:_compile_postconditions", ensures)
-                instrs.append(f"  i32.const {ptr}")
-                instrs.append(f"  i32.const {length}")
-                instrs.append("  call $vera.contract_fail")
-
-                instrs.append("  unreachable")
+                instrs.extend(
+                    f"  {i}" for i in ctx._emit_trap(
+                        "codegen/contracts.py:_compile_postconditions",
+                        at=ensures, message=msg))
                 instrs.append("end")
 
         return instrs
@@ -1340,6 +1328,8 @@ class ContractsMixin:
         measured: list[int],
         name: str,
         indent: str = "",
+        *,
+        record: bool = True,
     ) -> list[str]:
         """Trap when a measure component leaves the range the guard compares
         in (#1222) — the chain path's entry point, over components it has
@@ -1386,7 +1376,7 @@ class ContractsMixin:
             if k < len(measured)
         ]
         return self._dec_bound_check_pairs(
-            locals_, name, indent, ctx=ctx, at=contract)
+            locals_, name, indent, ctx=ctx, at=contract, record=record)
 
     def _dec_bound_check_pairs(
         self,
@@ -1396,6 +1386,7 @@ class ContractsMixin:
         *,
         ctx: WasmContext,
         at: ast.Node | None,
+        record: bool = True,
     ) -> list[str]:
         """The emission itself: one range check per component local.
 
@@ -1411,20 +1402,24 @@ class ContractsMixin:
                 f"the termination check compares in: a @Nat above i64.MAX "
                 f"reads as negative, so the metric cannot be compared"
             )
-            ptr, length = self.string_pool.intern(msg)
-            self._needs_contract_fail = True
-            self._needs_memory = True
-            ctx._record_check(
-                "codegen/contracts.py:_dec_bound_check_pairs", at)
+            if record:
+                trap = ctx._emit_trap(
+                    "codegen/contracts.py:_dec_bound_check_pairs", at=at,
+                    message=msg)
+            else:
+                # Inside the self-tail prefix, which is spliced once per
+                # self-recursive `return_call` — possibly never, possibly
+                # twice — so the check is recorded at each splice rather
+                # than here (#1479).
+                ptr, length = self.string_pool.intern(msg)
+                ctx._needs_contract_fail = True
+                trap = signal_instructions("contract_violation", ptr, length)
             checks.extend([
                 f"{indent}local.get {local}",
                 f"{indent}i64.const 0",
                 f"{indent}i64.lt_s",
                 f"{indent}if",
-                f"{indent}  i32.const {ptr}",
-                f"{indent}  i32.const {length}",
-                f"{indent}  call $vera.contract_fail",
-                f"{indent}  unreachable",
+                *(f"{indent}  {i}" for i in trap),
                 f"{indent}end",
             ])
         return checks
@@ -1511,7 +1506,7 @@ class ContractsMixin:
         ctx: WasmContext,
         decl: ast.FnDecl,
         env: WasmSlotEnv,
-    ) -> tuple[list[str], list[str], list[str] | None]:
+    ) -> tuple[list[str], list[str], SelfTailPrefix | None]:
         """Compile the entry check-and-set of the termination guard (#1172).
 
         For a function carrying a ``decreases`` clause, emits at entry:
@@ -1650,15 +1645,10 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
-        ptr, length = self.string_pool.intern(msg)
-        self._needs_contract_fail = True
-        self._needs_memory = True
-        ctx._record_check(
-            "codegen/contracts.py:_compile_decreases_entry", contract)
-        entry.append(f"    i32.const {ptr}")
-        entry.append(f"    i32.const {length}")
-        entry.append("    call $vera.contract_fail")
-        entry.append("    unreachable")
+        entry.extend(
+            f"    {i}" for i in ctx._emit_trap(
+                "codegen/contracts.py:_compile_decreases_entry",
+                at=contract, message=msg))
         entry.append("  end")
         entry.append("end")
 
@@ -1685,7 +1675,7 @@ class ContractsMixin:
         decl: ast.FnDecl,
         contract: ast.Decreases,
         restore: list[str],
-    ) -> list[str] | None:
+    ) -> SelfTailPrefix | None:
         """The instruction prefix for a SELF-recursive ``return_call``.
 
         At the site, the callee's arguments are already on the operand
@@ -1748,8 +1738,12 @@ class ContractsMixin:
             prefix.append(f"local.set {measured[k]}")
         # #1222, at the site too: a self-tail hop evaluates the measure here
         # and compares it the same way, so it needs the same backstop.
-        prefix.extend(self._dec_measure_bound_check(
-            ctx, contract, measured, name))
+        # Rendered unrecorded: its checks are recorded at each splice.
+        bound = self._dec_measure_bound_check(
+            ctx, contract, measured, name, record=False)
+        bound_checks = len(signal_call_pattern("contract_violation").findall(
+            "\n".join(bound)))
+        prefix.extend(bound)
         prefix.append(f"global.get $dec_active_{name}")
         prefix.append("if")
 
@@ -1783,11 +1777,16 @@ class ContractsMixin:
             f"termination metric must strictly decrease and stay "
             f"non-negative on every recursive call"
         )
+        # Rendered here and RECORDED at each splice (`_compile_fn` splices
+        # this prefix before every self-recursive `return_call`, possibly
+        # several times, after `ctx`'s record is merged) — so the signal is
+        # rendered directly rather than through `ctx._emit_trap`, which
+        # would record it once here whatever the splice count (#1479).
         ptr, length = self.string_pool.intern(msg)
-        prefix.append(f"    i32.const {ptr}")
-        prefix.append(f"    i32.const {length}")
-        prefix.append("    call $vera.contract_fail")
-        prefix.append("    unreachable")
+        ctx._needs_contract_fail = True
+        prefix.extend(
+            f"    {i}" for i in signal_instructions(
+                "contract_violation", ptr, length))
         prefix.append("  end")
         prefix.append("end")
         prefix.extend(restore)
@@ -1795,7 +1794,7 @@ class ContractsMixin:
         for _kinds, locs in param_layout:
             for loc in locs:
                 prefix.append(f"local.get {loc}")
-        return prefix
+        return SelfTailPrefix(prefix, bound_checks)
 
     #: Field types that contribute nothing to a structural rank — safe to
     #: step over.  Everything else either recurses (a concrete layout

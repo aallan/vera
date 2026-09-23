@@ -79,6 +79,11 @@ _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
 # its header line — a dropped closure's stub is `(func $anon_N unreachable)`,
 # a definition that holds none of the checks its body was compiled with.
 _WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
+# The whole body of a closure whose enclosing function was dropped: its table
+# slot must survive, and nothing can construct it.  Stated once, for the stub
+# `_drop_dangling_callers` writes and for the record, which must not credit
+# the stub with the checks its body was compiled with.
+_DROPPED_CLOSURE_BODY = "unreachable"
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -237,16 +242,12 @@ class CodeGenerator(
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
-        # #808: set when an overflow guard emits a `vera.overflow_trap` call,
-        # so assembly.py declares the host import.
-        self._needs_overflow_trap: bool = False
-        # #754: set when a @Int -> @Nat narrowing guard emits a
-        # `vera.nat_guard_trap` call, so `_assemble_module` declares the
-        # host import.
-        self._needs_nat_guard_trap: bool = False
-        # #1438: the widening guard's twin, on the generator that
-        # assembles the module.
-        self._needs_widen_trap: bool = False
+        # #1479: set (merged from each `WasmContext` at the per-scope seams)
+        # when any check calls `vera.trap`, the one signal every named check
+        # raises, so `_assemble_module` declares the import.  The allocator
+        # calls it too, so an allocating module declares it whatever this
+        # says (see `_assemble_module`).
+        self._needs_trap: bool = False
         # #1479: every check emitted into this module, as (WASM function,
         # TRAP_EMITTERS key, the node its span comes from).  Filled from
         # each `WasmContext`'s record at the per-scope merges, and directly
@@ -960,7 +961,7 @@ class CodeGenerator(
         """
         defined = {
             m.group(1) for m in _WAT_FN_DEF_RE.finditer(wat)
-            if m.group(2).strip() != "unreachable)"
+            if m.group(2).strip() != f"{_DROPPED_CLOSURE_BODY})"
         }
         out: list[EmittedCheck] = []
         for function, emitter, node in self._emitted_checks:
@@ -1426,7 +1427,7 @@ class CodeGenerator(
         exports[:] = [e for e in exports if e not in dropped_set]
         self._closure_fns_wat = [
             (
-                f"  (func ${match.group(1)} unreachable)"
+                f"  (func ${match.group(1)} {_DROPPED_CLOSURE_BODY})"
                 if (match := _WAT_FN_NAME_RE.match(closure_wat)) is not None
                 and match.group(1) in direct_cause
                 else closure_wat

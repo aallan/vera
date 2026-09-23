@@ -685,12 +685,22 @@ public fn main(@Unit -> @Int)
         # Step 1: total < 2 GiB precheck (rejects pathologically
         # large single allocations and prevents underflow in
         # step 2's subtraction).
+        # #1479: the trap inside each `if` names itself — the allocator
+        # signals `heap_exhausted` through `vera.trap` (no site message)
+        # before its `unreachable`.
+        from vera.trap_registry import TRAP_KINDS
+        heap_trap = (
+            rf"\s+i32\.const {TRAP_KINDS['heap_exhausted'].code}"
+            r"\s+i32\.const 0\s+i32\.const 0"
+            r"\s+call \$vera\.trap"
+            r"\s+unreachable"
+        )
         step1 = re.search(
             r"local\.get \$total"
             r"\s+i32\.const 0x80000000"
             r"\s+i32\.ge_u"
             r"\s+if"
-            r"\s+unreachable"
+            + heap_trap +
             r"\s+end",
             alloc_body,
             re.DOTALL,
@@ -711,7 +721,7 @@ public fn main(@Unit -> @Int)
             r"\s+i32\.sub"
             r"\s+i32\.ge_u"
             r"\s+if"
-            r"\s+unreachable"
+            + heap_trap +
             r"\s+end",
             rest,
             re.DOTALL,

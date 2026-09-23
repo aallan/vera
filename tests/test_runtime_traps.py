@@ -101,13 +101,13 @@ class TestClassifyTrap:
         )
         assert kind == "out_of_bounds"
         assert "out-of-bounds" in description.lower()
-        # Fix paragraph names the two most-likely causes (array
-        # indexing, string slicing) and the runtime-helper escape
-        # hatch (file an issue if the trap is inside `gc_collect` /
-        # `alloc` / etc.).
-        assert "array_length" in fix
-        assert "string_slice" in fix
-        assert "gc_collect" in fix or "compiler bug" in fix
+        # #1479: array and `string_char_code` indices are bounds-checked
+        # before the access and report their own kinds, so the paragraph
+        # points the reader at those kinds and at the runtime helpers a
+        # raw memory fault can only come from.
+        assert "index_out_of_bounds" in fix
+        assert "string_index_out_of_bounds" in fix
+        assert "gc_collect" in fix and "bug in Vera" in fix
 
     def test_call_stack_exhausted(self) -> None:
         kind, description, fix = _classify_trap(
@@ -131,9 +131,13 @@ class TestClassifyTrap:
         )
         assert kind == "unreachable"
         assert "unreachable" in description.lower()
-        # Fix paragraph names the most-likely cause (non-exhaustive
-        # match) and the resolution path (add the missing arm).
-        assert "match" in fix.lower()
+        # #1479: the paragraph is derived from the internal roster, so it
+        # names the runtime's own limits and says that no check on a
+        # program value reaches this kind — not a non-exhaustive `match`,
+        # which the checker refuses and code generation never traps on.
+        assert "shadow-stack" in fix
+        assert "none of them is a check on a value" in fix
+        assert "non-exhaustive" not in fix
 
     def test_integer_overflow(self) -> None:
         kind, description, fix = _classify_trap(
@@ -147,19 +151,33 @@ class TestClassifyTrap:
         assert "requires" in fix
 
     def test_overflow_channel_beats_unreachable_substring(self) -> None:
-        # #808: the overflow guard signals `last_overflow` then traps via a bare
-        # `unreachable`, so the raw exception message still says "unreachable".
-        # `_classify_trap` must consult `last_overflow` BEFORE the substring
-        # scan — otherwise the "unreachable" arm shadows it to kind="unreachable".
-        # No end-to-end test can pin this ordering (one trap sets one channel),
-        # so assert it directly at the helper level.
+        # #808 / #1479: a named check signals `vera.trap` (the `last_trap`
+        # channel) then traps via `unreachable`, so the raw exception message
+        # still says "unreachable".  `_classify_trap` must consult the
+        # channel BEFORE the substring scan — otherwise the "unreachable" arm
+        # shadows it.  No end-to-end test can pin this ordering (one trap
+        # sets one channel), so assert it directly at the helper level.
         kind, description, _ = _classify_trap(
             _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
             [],
-            [True],  # last_overflow set
+            [(1, "")],  # vera.trap(overflow) with no site message
         )
         assert kind == "overflow"
         assert "overflow" in description.lower()
+
+    def test_a_signalled_kind_reports_its_site_message(self) -> None:
+        # #1479: a kind whose sites carry their own message reports it as
+        # the description, with the kind's own Fix beneath.
+        from vera.trap_registry import TRAP_KINDS
+        kind, description, fix = _classify_trap(
+            _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
+            [],
+            [(TRAP_KINDS["assertion_failed"].code,
+              "Assertion failed (line 3): assert(@Int.0 > 0)")],
+        )
+        assert kind == "assertion_failed"
+        assert description == "Assertion failed (line 3): assert(@Int.0 > 0)"
+        assert fix == TRAP_KINDS["assertion_failed"].fix
 
     def test_contract_violation_beats_overflow_channel(self) -> None:
         # Precedence when BOTH channels are set: the contract message is more
@@ -169,7 +187,7 @@ class TestClassifyTrap:
         kind, _, _ = _classify_trap(
             _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
             ["Contract violation: ensures(...) failed"],
-            [True],
+            [(1, "")],
         )
         assert kind == "contract_violation"
 
@@ -1577,13 +1595,11 @@ public fn main(@Unit -> @Int)
         the user — the test catches the omission immediately.  The
         canonical kind list comes from the ``WasmTrapError``
         docstring; if a future kind is added there, the table must
-        gain a row to keep this test passing.  ``widen_guard`` is
-        the most recent such row: #1438 gave the ``@Nat`` ->
-        ``@Int`` widening guard a ``vera.widen_trap`` signal of its
-        own, so it no longer classifies as ``unreachable`` and
-        borrows that kind's non-exhaustive-match paragraph — it
-        needs, and here must have, its own ``requires(... <=
-        i64.MAX)`` remedy.
+        gain a row to keep this test passing.  The six #1479 rows
+        are the most recent: each check that trapped as a bare
+        ``unreachable`` (or, for a Float64 conversion, as ``unknown``)
+        now signals its own kind through ``vera.trap`` and needs, and
+        here must have, its own remedy.
         """
         from vera.runtime.traps import _TRAP_FIX_PARAGRAPHS
         expected_kinds = {
@@ -1596,6 +1612,14 @@ public fn main(@Unit -> @Int)
             "overflow",
             "nat_guard",
             "widen_guard",
+            # #1479: the five checks that trapped as a bare `unreachable`,
+            # and the Float64 -> Int conversions that trapped as `unknown`.
+            "nat_underflow",
+            "assertion_failed",
+            "index_out_of_bounds",
+            "string_index_out_of_bounds",
+            "float_conversion",
+            "heap_exhausted",
             "unknown",
         }
         assert set(_TRAP_FIX_PARAGRAPHS.keys()) == expected_kinds, (

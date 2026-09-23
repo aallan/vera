@@ -11,11 +11,13 @@ produce it, and never the remedy the user needs (`requires(... <= i64.MAX)`).
 Its narrowing twin was given a dedicated kind in #754 by calling a host
 import immediately before the `unreachable`, so the runtime classifies on
 which guard fired rather than on the instruction they share.  This is the
-same mechanism at the other boundary, and the cost is the same fan-in: a
-`_needs_widen_trap` flag merged at every per-scope seam, an import declared
-and bound in each runtime, and a WASI dispatch slot.  A missed seam is not
-a wrong message — it is a module that calls an undeclared import and fails
-to instantiate, and only on the shape that reaches that scope.
+same mechanism at the other boundary — since #1479 through the one
+`vera.trap` import every named check shares, its kind a code — and the
+fan-in is the same: a `_needs_trap` flag merged at every per-scope seam, an
+import declared and bound in each runtime, and a WASI dispatch slot.  A
+missed seam is not a wrong message — it is a module that calls an
+undeclared import and fails to instantiate, and only on the shape that
+reaches that scope.
 
 So there is a cell per runtime: wasmtime here, the browser bundle in
 `test_browser.py::test_widen_trap_parity`, and the WASI component below.
@@ -27,6 +29,7 @@ from __future__ import annotations
 from tests.codegen_helpers import _compile_ok
 from vera.codegen.api import execute
 from vera.runtime.traps import WasmTrapError
+from vera.trap_registry import signal_call_pattern
 
 #: `u64.MAX`'s bit pattern — what a `@Nat` above `i64.MAX` IS at the
 #: boundary the guard watches, and what reinterprets to `-1` without it.
@@ -109,20 +112,21 @@ class TestTheWideningGuardNamesItself:
         """The per-scope seam, pinned where dropping it actually shows.
 
         A closure body is compiled in its own translation context, so its
-        `_needs_widen_trap` has to be merged back into the generator that
+        `_needs_trap` has to be merged back into the generator that
         assembles the module.  Miss that merge and the module CALLS
-        `$vera.widen_trap` without declaring it: measured, the failure is
-        `WAT compilation failed: unknown func: failed to find name
-        `$vera.widen_trap``, and it takes down every program whose widening
-        happens inside a closure while leaving the same widening at top
-        level working.  That asymmetry is what makes it easy to ship — the
-        obvious fixture passes.
+        `$vera.trap` without declaring it — `WAT compilation failed: unknown
+        func` — taking down every program whose widening happens inside a
+        closure while leaving the same widening at top level working.  Since
+        #1479 a closure's module also declares the signal for its allocator,
+        so the seam is held by `tests/test_named_traps_1479.py`'s fan-in cell
+        with a check no allocation declares; this cell stays as the
+        widening-specific instance.
 
         The value is deliberately IN range: the property is that the module
         links and runs, not that the guard fires.
         """
         result = _compile_ok(_WIDEN_IN_CLOSURE)
-        assert "$vera.widen_trap" in result.wat, (
+        assert signal_call_pattern("widen_guard").search(result.wat), (
             "no widening guard inside the closure, so the seam this cell "
             "pins is not exercised"
         )
@@ -135,10 +139,11 @@ class TestTheWideningGuardNamesItself:
         """The third runtime, where the channel is the backtrace.
 
         A component has no host-side sentinel list to write into, so the
-        classification reads the SHIM NAME out of the trap's backtrace —
-        which means the shim has to exist and be reachable at its own
-        dispatch slot, not colliding with the `Map` ops the server world
-        composes into the same index space.
+        classification reads a NAME out of the trap's backtrace — since
+        #1479 the adapter function `$trap_kind_widen_guard` the `vera.trap`
+        op dispatches to — which means the op has to exist and be reachable
+        at its own dispatch slot, not colliding with the `Map` ops the
+        server world composes into the same index space.
 
         The property is read from a program that WIDENS and does not trap:
         the guard is emitted, so the import is declared, so the component
@@ -152,7 +157,7 @@ class TestTheWideningGuardNamesItself:
         from tests.test_wasi_target import _run_component
 
         result = _compile_ok(_WIDEN_MAIN)
-        assert "$vera.widen_trap" in result.wat, (
+        assert signal_call_pattern("widen_guard").search(result.wat), (
             "the widening guard emitted no signal, so this cell would "
             "instantiate a component with nothing to wire"
         )

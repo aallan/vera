@@ -109,10 +109,11 @@ Host data larger than the arena (for example an argv list over
 | `IO.time` | `wasi:clocks/wall-clock.now` |
 | `Random.random_int` / `random_float` / `random_bool` | `wasi:random/random.get-random-u64` (rejection-sampled for unbiased ranges) |
 
-The runtime trap channels (`contract_fail`, `overflow_trap`) are also
-implemented by the adapter: a contract-violation message is written to
-WASI stderr before the trap fires, and integer-overflow traps keep
-their classification (Section 13.6).
+The runtime trap channels (`contract_fail`, `trap`; Section 11.8.5)
+are also implemented by the adapter: a contract-violation message, or a
+named check's own message, is written to WASI stderr before the trap
+fires, and a named check traps inside an adapter function named for its
+kind, so every kind keeps its classification (Section 13.6).
 
 ## 13.5 Entry Points
 
@@ -141,9 +142,9 @@ pinned by tests:
 - **No structured trap frames.**  A trap's backtrace does not cross
   the component boundary as data (spike check 5 in `WASI.md`); the
   trap *kind* and message are preserved — contract violations
-  classify as `contract_violation` with the full violation text,
-  overflow as `overflow` — but the `frames` list in the JSON trap
-  envelope is empty.
+  classify as `contract_violation` with the full violation text, and
+  every check `vera.trap` names as its own kind with its own message —
+  but the `frames` list in the JSON trap envelope is empty.
 - **Environment is a launch-time snapshot.**  The component receives
   its environment once via `get-environment`; the core target reads
   `os.environ` live.  Observable only if the host environment mutates

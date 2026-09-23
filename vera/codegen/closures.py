@@ -957,21 +957,14 @@ class ClosureLiftingMixin:
         # its host imports on the closure ctx (the _scan_io_ops AnonFn
         # branch also covers these — same belt-and-braces as #808).
         self._async_ops_used.update(ctx._async_ops_used)
-        # #808: a #798 integer-overflow guard inside a lifted closure body sets
-        # this on the closure ctx; OR it into the module ``self`` so
-        # ``_assemble_module`` emits the ``vera.overflow_trap`` import (same
-        # propagation the per-function merge does in functions.py).
-        self._needs_overflow_trap = (
-            self._needs_overflow_trap or ctx._needs_overflow_trap
-        )
-        # #754: the narrowing guard's own trap signal, propagated at the
-        # SAME merge for the same reason — a guard emitted while lowering a
-        # postcondition or a lifted closure body sets it on that context.
-        self._needs_widen_trap = (
-            self._needs_widen_trap or ctx._needs_widen_trap
-        )
-        self._needs_nat_guard_trap = (
-            self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
+        # #1479: a check inside a lifted closure body raises its signal's
+        # flag on the closure ctx; OR it into the module ``self`` so
+        # ``_assemble_module`` declares the import (the same propagation the
+        # per-function merge does in functions.py).  A closure whose only
+        # check is here links only through this merge.
+        self._needs_trap = self._needs_trap or ctx._needs_trap
+        self._needs_contract_fail = (
+            self._needs_contract_fail or ctx._needs_contract_fail
         )
         # #1479: the checks the closure body emitted, under the lifted
         # function's own name.
