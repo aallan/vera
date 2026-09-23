@@ -398,6 +398,78 @@ have no distinguishing spelling, so a use could reach only one of them,
 chosen by declaration order, which the program does not state (§0.2.2); the
 other could never be used.
 
+Two `where` helpers named `h` in one block are the shape the rule refuses. The
+second is reported (E184) at its own declaration, naming the first's line, and
+the call in `f` resolves to the first:
+
+<!-- vera:skip-check category="WRONG" reason="two where helpers of one name in one block: E184 at the second" -->
+```
+private fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  h(@Int.0)
+}
+where {
+  fn h(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0 + 1
+  }
+
+  fn h(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0 + 2
+  }
+}
+```
+
+A `where` block nested in a helper is a different namespace, so reusing a name
+there is not a duplicate. Inside `h` the call reaches `h`'s own `k`, the nearer
+one, and `g(1)` is 11:
+
+```
+private fn g(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  h(@Int.0)
+}
+where {
+  fn h(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    k(@Int.0)
+  }
+  where {
+    fn k(@Int -> @Int)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      @Int.0 + 10
+    }
+  }
+
+  fn k(@Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    @Int.0 + 1
+  }
+}
+```
+
 | Namespace | One declaration of a name per | Rule |
 |-----------|-------------------------------|------|
 | Functions | file | E184 |

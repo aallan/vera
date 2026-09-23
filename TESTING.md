@@ -317,7 +317,7 @@ Almost all programs are at the `run` level — they compile and execute, produci
 
 ### Skipped tests
 
-`pytest tests/ -v` skips 128 conformance-stage tests — 124 level-limited and 4 environment-gated.  The MECHANISM is the level rule in every case: a program declared at `check` skips its `verify` and `run` stages, one declared at `verify` skips its `run` — 54 × 2 + 20, which is what the suite reports.  What the two tables below split is WHY each program sits at the level it does: 124 are pinned there by the feature under test, and 4 by an environment CI does not have (outbound HTTP, an API key), which is why those four are listed separately even though they skip by the same rule.  Each skip is listed once; the tables do not overlap.  (The suite's remaining skips are platform- or tool-gated and documented beside the tests that declare them.)
+`pytest tests/ -v` skips 138 conformance-stage tests — 134 level-limited and 4 environment-gated.  The MECHANISM is the level rule in every case: a program declared at `check` skips its `verify` and `run` stages, one declared at `verify` skips its `run` — 59 × 2 + 20, which is what the suite reports.  What the two tables below split is WHY each program sits at the level it does: 134 are pinned there by the feature under test, and 4 by an environment CI does not have (outbound HTTP, an API key), which is why those four are listed separately even though they skip by the same rule.  Each skip is listed once; the tables do not overlap.  (The suite's remaining skips are platform- or tool-gated and documented beside the tests that declare them.)
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -335,6 +335,8 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch02_generic_over_unit_rejected]` | `ch02_generic_over_unit_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_verify[ch02_map_unit_value_rejected]` | `ch02_map_unit_value_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E135`): verify stage not run |
 | `test_run[ch02_map_unit_value_rejected]` | `ch02_map_unit_value_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch02_nonregular_data_rejected]` | `ch02_nonregular_data_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E129`): verify stage not run |
+| `test_run[ch02_nonregular_data_rejected]` | `ch02_nonregular_data_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_run[ch03_slot_let_chains]` | `ch03_slot_let_chains.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch03_slot_noncommutative]` | `ch03_slot_noncommutative.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch07_invisible_import_op_name_lib]` | `ch07_invisible_import_op_name_lib.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
@@ -400,6 +402,14 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch08_reserved_vera_prefix_ability_rejected]` | `ch08_reserved_vera_prefix_ability_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_verify[ch08_reserved_vera_prefix_constructor_rejected]` | `ch08_reserved_vera_prefix_constructor_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E154`): verify stage not run |
 | `test_run[ch08_reserved_vera_prefix_constructor_rejected]` | `ch08_reserved_vera_prefix_constructor_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch08_builtin_adt_redefinition_rejected]` | `ch08_builtin_adt_redefinition_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E158`): verify stage not run |
+| `test_run[ch08_builtin_adt_redefinition_rejected]` | `ch08_builtin_adt_redefinition_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch08_builtin_tuple_redefinition_rejected]` | `ch08_builtin_tuple_redefinition_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E158`): verify stage not run |
+| `test_run[ch08_builtin_tuple_redefinition_rejected]` | `ch08_builtin_tuple_redefinition_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch08_builtin_ctor_redefinition_rejected]` | `ch08_builtin_ctor_redefinition_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E158`): verify stage not run |
+| `test_run[ch08_builtin_ctor_redefinition_rejected]` | `ch08_builtin_ctor_redefinition_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
+| `test_verify[ch08_sibling_ctor_collision_rejected]` | `ch08_sibling_ctor_collision_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E159`): verify stage not run |
+| `test_run[ch08_sibling_ctor_collision_rejected]` | `ch08_sibling_ctor_collision_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_verify[ch08_ambiguous_import_rejected]` | `ch08_ambiguous_import_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E155`): verify stage not run |
 | `test_run[ch08_ambiguous_import_rejected]` | `ch08_ambiguous_import_rejected.vera` | `check` | `run` | `check`-level negative test: no `run` stage |
 | `test_verify[ch08_ambiguous_import_swapped_rejected]` | `ch08_ambiguous_import_swapped_rejected.vera` | `check` | `verify` | `check`-level negative test (`expected_error: E155`): verify stage not run |
