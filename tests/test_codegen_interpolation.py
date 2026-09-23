@@ -1225,9 +1225,9 @@ public fn good(-> @Unit)
         # been at table index 0, shifting `good`'s closure to index
         # 1 while its closure_id stored in the closure struct
         # remained 1 (because `_next_closure_id` is module-monotonic)
-        # — call_indirect would target index 1 expecting `$anon_1`
+        # — call_indirect would target index 1 expecting `$rt.anon_1`
         # but actually find `good`'s closure (originally meant for
-        # index 1 with $anon_2 closure_id).  In this specific
+        # index 1 with $rt.anon_2 closure_id).  In this specific
         # fixture either trap or wrong output; the `_run_io` below
         # exercises the path.
         from vera.codegen import execute

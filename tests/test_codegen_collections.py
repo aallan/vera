@@ -545,7 +545,7 @@ class TestWrapperHandleTagging578:
     Surfaced by CodeRabbit on PR #577 (#573 phase 1-3).  After
     #573, every `Map<K, V>` / `Set<T>` / `Decimal` value is a
     pointer to an 8-byte wrapper ADT on the GC heap: tag (i32) at
-    offset 0, handle (i32) at offset 4.  Phase 2b of `$gc_collect`
+    offset 0, handle (i32) at offset 4.  Phase 2b of `$rt.gc_collect`
     does a conservative word-by-word scan of every reachable
     object's payload, checking whether each i32 word looks like a
     heap pointer (in heap range, 8-byte aligned).
@@ -564,7 +564,7 @@ class TestWrapperHandleTagging578:
 
     Post-#578 the handle is stored as `handle | 0x80000000` so
     the in-heap field is always >= 2 GiB, structurally outside
-    any heap-range check (the `$alloc` heap-ceiling guard
+    any heap-range check (the `$rt.alloc` heap-ceiling guard
     enforces `heap_ptr < 0x80000000`).  The unwrap site ANDs
     with 0x7FFFFFFF to recover the raw handle.
 
@@ -637,7 +637,7 @@ public fn main(@Unit -> @Decimal)
         )
 
     def test_alloc_emits_heap_ceiling_guard(self) -> None:
-        """$alloc traps if heap_ptr + total would exceed 0x80000000.
+        """$rt.alloc traps if heap_ptr + total would exceed 0x80000000.
 
         The structural counterpart to the wrap-site tag: the
         guard ensures `heap_ptr < 0x80000000` always, so tagged
@@ -666,11 +666,11 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(source)
-        # Locate $alloc via boundary-safe regex (not `find()`,
+        # Locate $rt.alloc via boundary-safe regex (not `find()`,
         # which could false-match an `$alloc_xxx` symbol).
-        alloc_match = re.search(r"\(func \$alloc\b", result.wat)
+        alloc_match = re.search(r"\(func \$rt.alloc\b", result.wat)
         assert alloc_match is not None, (
-            "`$alloc` function not found in WAT"
+            "`$rt.alloc` function not found in WAT"
         )
         alloc_start = alloc_match.start()
         next_fn = re.search(
@@ -697,9 +697,9 @@ public fn main(@Unit -> @Int)
         )
         assert step1 is not None, (
             f"Heap-ceiling step 1 (total < 2 GiB precheck) not "
-            f"found in $alloc body.  Without it, step 2's "
+            f"found in $rt.alloc body.  Without it, step 2's "
             f"`i32.sub` could underflow on a pathological total. "
-            f"$alloc body:\n{alloc_body[:2000]}"
+            f"$rt.alloc body:\n{alloc_body[:2000]}"
         )
         # Step 2: heap_ptr >= 0x80000000 - total → trap.  Pinned
         # AFTER step 1 by anchoring the search from step 1's end.
@@ -718,11 +718,11 @@ public fn main(@Unit -> @Int)
         )
         assert step2 is not None, (
             f"Heap-ceiling step 2 (overflow-safe subtraction "
-            f"check) not found after step 1 in $alloc body.  An "
+            f"check) not found after step 1 in $rt.alloc body.  An "
             f"`i32.add` form would be vulnerable to wraparound "
             f"(heap_ptr=0xFFFFFFFF, total=10 wraps to 0x09, below "
             f"the ceiling, silent bypass).  Step 2 must use "
-            f"`i32.sub` for overflow safety.  $alloc body:\n"
+            f"`i32.sub` for overflow safety.  $rt.alloc body:\n"
             f"{alloc_body[:2000]}"
         )
 

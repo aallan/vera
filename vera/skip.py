@@ -95,8 +95,8 @@ if TYPE_CHECKING:
 
 
 # #933: nesting-depth cap for the structural derived-helper machinery — the
-# Eq-derivability gate (`_adt_satisfies_eq`), the `$eq_<type>` generator, and
-# the `$show_<type>` / `$hash_<type>` generators.  A UNIFORMLY-recursive ADT
+# Eq-derivability gate (`_adt_satisfies_eq`), the `$rt.eq_<type>` generator, and
+# the `$rt.show_<type>` / `$rt.hash_<type>` generators.  A UNIFORMLY-recursive ADT
 # (`List<T>` whose tail is again `List<T>`) recurs on the SAME parameterized
 # type and is cut off by each site's own same-type `_seen` guard at depth ~1.
 # A POLYMORPHICALLY-recursive (non-uniform) ADT (`Box<T>` with a `Box<Box<T>>`
@@ -115,7 +115,7 @@ if TYPE_CHECKING:
 # reach (a few levels — `List<List<List<Int>>>` is depth 3), not from Python's
 # frame budget: it fires on TYPE COMPLEXITY, independent of the interpreter
 # recursion limit.  A generous 32 sits ~10x above any realistic user type yet
-# trips long before the deepest generator (`$show_<type>`, whose per-level
+# trips long before the deepest generator (`$rt.show_<type>`, whose per-level
 # helper-restart costs ~15 Python frames) approaches the 1000-frame default.
 # A ``RecursionError`` catch at the codegen compile boundary backstops the cap
 # for any future generator with a larger per-level frame cost.

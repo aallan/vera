@@ -488,7 +488,7 @@ public fn main(-> @Unit)
         assert exec_result.stdout == ""
 
     def test_alloc_exported(self) -> None:
-        """WAT exports $alloc when IO ops that allocate are used."""
+        """WAT exports $rt.alloc when IO ops that allocate are used."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -498,17 +498,17 @@ public fn main(-> @Unit)
 }
 """
         result = _compile_ok(source)
-        assert '(export "alloc"' in result.wat
+        assert '(export "vera.alloc"' in result.wat
 
     def test_alloc_not_exported_for_print_only(self) -> None:
-        """WAT does not export $alloc when only IO.print is used."""
+        """WAT does not export $rt.alloc when only IO.print is used."""
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("hello") }
 """
         result = _compile_ok(source)
-        assert '(export "alloc"' not in result.wat
+        assert '(export "vera.alloc"' not in result.wat
 
 
 # =====================================================================

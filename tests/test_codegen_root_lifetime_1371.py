@@ -449,7 +449,7 @@ class TestCallResultsAreRootedWhereTheyLand1379:
     function's epilogue re-roots its return into the caller's shadow stack, so
     user calls were covered; a HOST import has no epilogue and was not.  In
     the emitted WAT the gap is literal: `call $vera.decimal_from_string`
-    followed directly by the sibling argument's `call $alloc`, with no push
+    followed directly by the sibling argument's `call $rt.alloc`, with no push
     between.
 
     Four Decimal builtins returned host-allocated heap results with a bare
@@ -842,7 +842,7 @@ def _audit_host_call_rooting(wat: str) -> tuple[set[str], list[tuple[str, str]]]
     A call site is rooted when its result is captured into a local and that
     local is shadow-pushed within the window before the next allocation —
     OR, for the #573 wrap/unwrap builtins, when the raw HANDLE the host
-    returned is consumed by a `$register_wrapper` sequence whose wrapper
+    returned is consumed by a `$rt.register_wrapper` sequence whose wrapper
     pointer is pushed instead.  That second case is not an exemption: the
     handle is not a heap pointer, and rooting it would root the wrong thing.
     """
@@ -859,22 +859,22 @@ def _audit_host_call_rooting(wat: str) -> tuple[set[str], list[tuple[str, str]]]
         window = lines[i + 1:i + 41]
         # Truncate at the first allocation that could collect this result.
         # The rule is that the result is rooted BEFORE anything can collect
-        # it, so a push emitted after an intervening `call $alloc` is the
+        # it, so a push emitted after an intervening `call $rt.alloc` is the
         # defect this pins and an untruncated window would accept it.
         #
         # The #573 wrap/unwrap builtins need the boundary one allocation
-        # later: the host returned a raw HANDLE, and the `$alloc` right after
+        # later: the host returned a raw HANDLE, and the `$rt.alloc` right after
         # the call IS the wrapping — it is what BUILDS the value to be
         # rooted, not something that can collect it.  So when the window
         # wraps, the boundary is the first allocation AFTER
-        # `$register_wrapper`.  Truncating at the wrap's own `$alloc`
+        # `$rt.register_wrapper`.  Truncating at the wrap's own `$rt.alloc`
         # reported all twelve Decimal call sites as unrooted.
         wrap_at = next(
             (n for n, e in enumerate(window)
-             if e.startswith("call $register_wrapper")), None)
+             if e.startswith("call $rt.register_wrapper")), None)
         first = 0 if wrap_at is None else wrap_at + 1
         for stop in range(first, len(window)):
-            if window[stop].startswith("call $alloc"):
+            if window[stop].startswith("call $rt.alloc"):
                 window = window[:stop]
                 break
         captured: list[int] = []
@@ -892,7 +892,7 @@ def _audit_host_call_rooting(wat: str) -> tuple[set[str], list[tuple[str, str]]]
         pushed = {int(x) for x in _PUSH_OF.findall(text)}
         if ptr_local in pushed:
             continue
-        if "call $register_wrapper" in text and pushed:
+        if "call $rt.register_wrapper" in text and pushed:
             continue
         unrooted.append((name, f"local {ptr_local} is never pushed"))
     return observed, unrooted

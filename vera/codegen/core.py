@@ -37,6 +37,7 @@ from vera.prelude import (
     PRELUDE_FILE,
     PRELUDE_NAMESPACE,
     data_decl_shape,
+    is_prelude_symbol,
     mentioned_fn_names,
     prelude_adt_names,
     prelude_data_decls,
@@ -476,7 +477,7 @@ class CodeGenerator(
         # count, driving the per-function ``$dec_prev_<f>_<k>`` /
         # ``$dec_active_<f>`` globals emission in assembly;
         # ``_dec_rank_helpers`` collects the per-ADT structural-size
-        # functions (``$dec_size_<T>``) the ADT-measure comparisons call.
+        # functions (``$rt.dec_size_<T>``) the ADT-measure comparisons call.
         self._dec_guard_fns: dict[str, int] = {}
         self._dec_rank_helpers: dict[str, str] = {}
         # #1172: names of EVERY decreases-carrying function that can be a
@@ -503,10 +504,10 @@ class CodeGenerator(
         #   _fn_decl_by_wat_name: WAT symbol name -> FnDecl for every
         #     compile attempt, so a dropped caller's [E620] warning can
         #     point at the caller's own declaration.
-        #   _closure_parents: lifted-closure WAT name ($anon_N) -> the
+        #   _closure_parents: lifted-closure WAT name ($rt.anon_N) -> the
         #     top-level WAT symbol whose compile committed it.  A parent
         #     references its closures only via a function-table INDEX
-        #     (never by `$anon_N` name), so the caller-drop scan needs
+        #     (never by `$rt.anon_N` name), so the caller-drop scan needs
         #     this explicit construction edge.
         #   _closure_lift_skips (#1185): WAT symbol names of the functions
         #     `_compile_fn` dropped because their closure LIFT rolled back.
@@ -530,12 +531,12 @@ class CodeGenerator(
         # table is suppressed (see `_drop_dangling_callers`).
         self._closure_lift_skips: list[str] = []
         # #773: generated structural-Eq helper functions, keyed by their
-        # `$eq_<type>` name → WAT text.  Accumulated across every function /
+        # `$rt.eq_<type>` name → WAT text.  Accumulated across every function /
         # closure body (merged from each WasmContext) and emitted once at
         # module assembly.
         self._adt_eq_helpers: dict[str, str] = {}
-        # #924: generated recursive show/hash helper functions ($show_<type> /
-        # $hash_<type>), merged from each WasmContext and emitted once at
+        # #924: generated recursive show/hash helper functions ($rt.show_<type> /
+        # $rt.hash_<type>), merged from each WasmContext and emitted once at
         # module assembly — the same propagate-then-emit shape as _adt_eq_helpers.
         self._show_hash_helpers: dict[str, str] = {}
         # #573: wrap-table flag — see ``WasmContext`` for the long
@@ -544,8 +545,8 @@ class CodeGenerator(
         # in use (currently just Map; Set / Decimal extend the
         # gating in their own follow-ups).  When true, the WAT
         # module gets a 64 KiB wrap-table region, the
-        # ``$register_wrapper`` helper, and Phase 2c of
-        # ``$gc_collect``.
+        # ``$rt.register_wrapper`` helper, and Phase 2c of
+        # ``$rt.gc_collect``.
         self._needs_wrap_table: bool = False
         self._next_closure_id: int = 0
 
@@ -554,7 +555,7 @@ class CodeGenerator(
         # end_line) so wasmtime trap frames can be resolved to a source
         # location at runtime.  Populated by `_register_fn` for top-level
         # user functions (including monomorphized clones, registered in
-        # Pass 1.5) and by the closure-lifting pass for `$anon_N`
+        # Pass 1.5) and by the closure-lifting pass for `$rt.anon_N`
         # helpers; entries for prelude-injected FnDecls are removed
         # immediately after registration in `compile_program` (see the
         # post-`inject_prelude` loop) and migrated to
@@ -570,7 +571,7 @@ class CodeGenerator(
         # strips the rightmost `$` suffix and looks up the base name,
         # since `$` cannot appear in user-written Vera identifiers and so
         # any `$` in a WAT name was inserted by the compiler's manglers.
-        # Built-in WASM helpers (`$alloc`, `$gc_collect`,
+        # Built-in WASM helpers (`$rt.alloc`, `$rt.gc_collect`,
         # `$contract_fail`, `$exn_*`, `$vera.*`) never appear here at
         # all — they're emitted directly into WAT by the assembly
         # module without going through `_register_fn`, and the
@@ -671,6 +672,11 @@ class CodeGenerator(
         # Pass 2.5 consults it so an imported fn shadowed by a local where-fn is
         # not emitted under a clashing bare name (#814).
         self._local_shadowed_fn_names: set[str] = set()
+        # #1498: (module path, name) of every module function that does NOT
+        # own the entry's bare name.  Each is emitted only as
+        # `mod$<path>$name` (Pass 2.6); Pass 2.5, which emits the bare-name
+        # owners, skips them.
+        self._qualified_module_fns: set[tuple[tuple[str, ...], str]] = set()
         # #890: fn/ADT/ctor names contributed ONLY by a transitively-reached
         # module (imported by an imported module, not by this program).  Their
         # bodies ARE compiled into the flat WASM module so an imported body can
@@ -806,9 +812,23 @@ class CodeGenerator(
         the `_in_prelude_fn` flag `_compile_fn` maintains.
         """
         if isinstance(node, ast.FnDecl):
-            if node.name.split("$")[0] in self._prelude_fn_names:
+            if self._is_prelude_symbol(node.name):
                 return True
         return self._in_prelude_fn
+
+    def _is_prelude_symbol(self, name: str) -> bool:
+        """Whether the emitted symbol *name* is the prelude's, or a clone of it.
+
+        Two spellings, one owner: a prelude function the program does not
+        override keeps its bare name (and its clones ``base$Types``), and one
+        the program does override keeps its own identity under
+        :func:`vera.prelude.prelude_symbol` (#1495), whose ``mod$<prelude>$``
+        prefix nothing else can spell.
+        """
+        return (
+            is_prelude_symbol(name)
+            or name.split("$")[0] in self._prelude_fn_names
+        )
 
     def _diag_location(
         self, node: ast.Node,
@@ -1428,7 +1448,7 @@ class CodeGenerator(
         """
         if origin is not None:
             return origin
-        if name.split("$")[0] in self._prelude_fn_names:
+        if self._is_prelude_symbol(name):
             return PRELUDE_NAMESPACE
         return None
 
@@ -2555,7 +2575,11 @@ class CodeGenerator(
             if isinstance(tld.decl, ast.FnDecl):
                 _dec_collect(tld.decl, tld.decl.name)
         for _path, idecl in self._imported_fn_decls:
-            _dec_collect(idecl, idecl.name)
+            # #1498: a qualified-only declaration is emitted (and guarded)
+            # under its `mod$…` name, collected from `_shadowed_module_fns`
+            # below; its bare name belongs to another owner.
+            if (_path, idecl.name) not in self._qualified_module_fns:
+                _dec_collect(idecl, idecl.name)
         for mdecl in mono_decls:
             _dec_collect(mdecl, mdecl.name)
         for _path, mangled, idecl in self._shadowed_module_fns:
@@ -2758,14 +2782,15 @@ class CodeGenerator(
         for path, idecl in self._imported_fn_decls:
             if idecl.name in imported_seen:
                 continue
-            # Skip if a local function already defined this name — a top-level
-            # local (fn_visibility) OR a local `where`-fn helper
-            # (_local_shadowed_fn_names).  Either flattens to a bare ``$name``
-            # that owns the namespace; emitting the imported body under the
-            # same bare name would duplicate it (the qualified target reaches
-            # the module via its ``mod$…`` emission instead, #814).
+            # Pass 2.5 emits the bare-name OWNERS only.  Every module function
+            # that does not own the entry's bare name — shadowed by an entry
+            # declaration, private, outside the filter, named after a prelude
+            # function, reached only transitively, or a hoisted helper of one
+            # of those — is emitted as ``mod$<path>$name`` in Pass 2.6 instead
+            # (#814, widened by #1498).  The ``fn_visibility`` test stays as
+            # the entry-side statement of the same rule.
             if (idecl.name in fn_visibility
-                    or idecl.name in self._local_shadowed_fn_names):
+                    or (path, idecl.name) in self._qualified_module_fns):
                 continue
             imported_seen.add(idecl.name)
             # #814 C2 (Pass 2.5 mirror): pass the originating module's

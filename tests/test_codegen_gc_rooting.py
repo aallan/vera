@@ -532,7 +532,7 @@ class TestHostWalkerGCRooting692:
     """Pin the #692 fix: host-side tree walkers (``write_html`` /
     ``write_json`` / ``write_md_block``) must root intermediate
     WASM heap pointers on the shadow stack across recursion, so a
-    ``$gc_collect`` triggered by sub-allocs does not reclaim them
+    ``$rt.gc_collect`` triggered by sub-allocs does not reclaim them
     and corrupt the free list.
 
     The bug was reported externally with the current `FAQ.md`
@@ -548,9 +548,9 @@ class TestHostWalkerGCRooting692:
         """500 ``<a>x</a>`` siblings — exercises ``write_html``'s
         element branch (arr_ptr, name_ptr, wrapper_ptr) across
         500 iterations.  Heap grows from 1 page to ~3 pages,
-        firing multiple ``$gc_collect`` cycles during the walk.
+        firing multiple ``$rt.gc_collect`` cycles during the walk.
         Pre-#692-fix this trapped with ``Out-of-bounds memory
-        access`` at ``0xfffffffd`` from inside ``$alloc``."""
+        access`` at ``0xfffffffd`` from inside ``$rt.alloc``."""
         src = """
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -639,7 +639,7 @@ public fn main(@Unit -> @Unit)
         accumulating pushes across all iterations.  The
         shadow-stack budget per match in practice (including the
         ``_alloc_map_wrapper`` and ``_register_wrapper`` calls
-        and the WAT-side ``$alloc`` accounting) is materially
+        and the WAT-side ``$rt.alloc`` accounting) is materially
         higher than the four nominal pushes (name, wrapper, arr,
         s_ptr) of write_html element-branch — 100 matches
         empirically overflowed the 4096-entry stack.  30 still
@@ -695,11 +695,11 @@ class TestMapHostStoreGCReachability695:
     """Regression suite for #695 / #705 — pre-fix, ``Map<K, T_heap>``
     and ``Set<T_heap>`` values stored in Python-side ``_map_store`` /
     ``_set_store`` were invisible to the conservative GC scan, so a
-    ``$gc_collect`` between map / set construction and value access
+    ``$rt.gc_collect`` between map / set construction and value access
     reclaimed the heap blocks pointed to from the dict.
 
     Empirically pre-fix: with ``VERA_EAGER_GC=1`` (forces a
-    ``$gc_collect`` on every alloc), the reproducer printed ``0``
+    ``$rt.gc_collect`` on every alloc), the reproducer printed ``0``
     instead of the JArray's actual length ``10`` — silent
     use-after-free, no trap.  The ``0`` came from the free-list's
     next-pointer overwriting the freed block's first word, which
@@ -777,7 +777,7 @@ public fn main(-> @Unit)
         conservative scan never visits.
 
         With ``VERA_EAGER_GC=1`` the ``Option`` alloc inside
-        ``json_get`` triggers ``$gc_collect`` between ``json_parse``
+        ``json_get`` triggers ``$rt.gc_collect`` between ``json_parse``
         returning and the array length being read, freeing the
         JArray block.  ``json_array_length`` reads from the freed
         block and returns 0 instead of 10.
@@ -833,7 +833,7 @@ public fn main(-> @Unit)
         array mirror, the JArray's heap pointer is held only via
         ``_map_store[handle]["arr"]`` (a Python int) until the
         ``map_get`` retrieves it; ``VERA_EAGER_GC=1`` triggers a
-        ``$gc_collect`` during the intervening Option / Json
+        ``$rt.gc_collect`` during the intervening Option / Json
         accessor allocs and reclaims the JArray block.
 
         Closes the scope gap discussed on #705: the user-level
@@ -1301,7 +1301,7 @@ class TestHostImportPairLetRooting846:
 
     ``VERA_EAGER_GC`` is read at COMPILE time (``AssemblyMixin.
     _emit_alloc``), so ``monkeypatch.setenv`` before ``_compile_ok``
-    bakes a collect into every ``$alloc``.
+    bakes a collect into every ``$rt.alloc``.
     """
 
     def test_eager_gc_io_args_let_survives_intervening_alloc(
@@ -1472,10 +1472,10 @@ class TestShadowGuardPushBound791:
         (the same protocol the #305 serve driver uses)."""
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
-            f'  (global (export "gc_sp") (mut i32) '
+            '  (memory (export "vera.memory") 1)\n'
+            f'  (global (export "vera.gc_sp") (mut i32) '
             f"(i32.const {self._STACK_BASE}))\n"
-            f'  (global (export "gc_stack_limit") i32 '
+            f'  (global (export "vera.gc_stack_limit") i32 '
             f"(i32.const {self._STACK_LIMIT}))\n"
             ")\n"
         )
@@ -1492,7 +1492,7 @@ class TestShadowGuardPushBound791:
         Pre-fix (``sp >= limit``) the check passed and the write
         spilled ``4 - headroom`` bytes past the window."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT - headroom)
         with _ShadowGuard(caller) as guard:
@@ -1502,7 +1502,7 @@ class TestShadowGuardPushBound791:
                 guard.push(0x1234)
         # No partial write may have leaked: the whole candidate slot
         # (including the bytes past `limit`) must still be zero.
-        memory = caller["memory"]
+        memory = caller["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         spill = bytes(memory.read(
             caller,
@@ -1517,13 +1517,13 @@ class TestShadowGuardPushBound791:
         over-tightening to ``sp + 4 >= limit``), write the pointer
         little-endian at ``sp``, and advance ``gc_sp`` to ``limit``."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT - 4)
         with _ShadowGuard(caller) as guard:
             assert guard.push(0x1234) == 0x1234
             assert sp_global.value(caller) == self._STACK_LIMIT
-            memory = caller["memory"]
+            memory = caller["vera.memory"]
             assert isinstance(memory, wasmtime.Memory)
             slot = bytes(memory.read(
                 caller, self._STACK_LIMIT - 4, self._STACK_LIMIT,
@@ -1534,7 +1534,7 @@ class TestShadowGuardPushBound791:
         """``sp == limit`` (zero headroom) was already rejected by the
         old bound — pin that the boundary behaviour is unchanged."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, self._STACK_LIMIT)
         with _ShadowGuard(caller) as guard:
@@ -1550,7 +1550,7 @@ class TestShadowGuardPushBound791:
         ctypes buffer at a negative offset — a write BEFORE the
         linear-memory base, i.e. host-memory corruption."""
         caller = self._make_caller()
-        sp_global = caller["gc_sp"]
+        sp_global = caller["vera.gc_sp"]
         assert isinstance(sp_global, wasmtime.Global)
         sp_global.set_value(caller, -8)
         with _ShadowGuard(caller) as guard:

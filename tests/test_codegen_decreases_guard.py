@@ -665,8 +665,8 @@ class TestReviewRegressions1179:
 
     def test_partial_rank_walk_rolls_back_nested_helpers(self) -> None:
         """A mutually-recursive ADT pair where the OUTER walk fails after
-        a nested helper committed: pre-fix `$dec_size_B` survived with a
-        `call $dec_size_A` to a name the failed walk deleted, and
+        a nested helper committed: pre-fix `$rt.dec_size_B` survived with a
+        `call $rt.dec_size_A` to a name the failed walk deleted, and
         `wat2wasm` killed the whole compile (`unknown func`) on a
         check-green program.  The walk must roll back every helper it
         committed, degrade to no-guard, and leave the module valid."""
@@ -701,7 +701,7 @@ public fn main(-> @Int)
 """
         assert _run(source, fn="main") == 1
         result = _compile_ok(source)
-        assert not re.search(r"\$dec_size_", result.wat), (
+        assert not re.search(r"\$rt.dec_size_", result.wat), (
             "a failed rank walk must roll back nested helpers, not "
             "commit an orphan that dangles at wat2wasm"
         )
@@ -820,7 +820,7 @@ class TestGenericAdtMeasure:
         GENERIC layout's offsets, which concrete construction does not
         use (an i64 payload pushes the tail), reading a payload as a
         pointer (a wild trap).  Ranking a parameterized measure needs
-        per-instantiation helpers (the ``$eq_<type>`` pattern) — until
+        per-instantiation helpers (the ``$rt.eq_<type>`` pattern) — until
         then such a measure gets no guard, and the emitted module must
         contain none."""
         source = """\

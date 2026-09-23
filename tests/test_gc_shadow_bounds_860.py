@@ -13,7 +13,7 @@ the invariant holds — defence in depth for the GC trust root, not a live-bug
 regression:
 
 * ``gc_shadow_push`` in ``vera/wasm/helpers.py`` — the WAT emitter;
-* the ``$register_wrapper`` slow-path root push in
+* the ``$rt.register_wrapper`` slow-path root push in
   ``vera/codegen/assembly.py``;
 * ``gcRooted`` and ``gcShadowPush`` in ``vera/browser/runtime.mjs``.
 
@@ -63,10 +63,10 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         body = "\n".join(f"    {i}" for i in gc_shadow_push(0))
         wat = (
             "(module\n"
-            '  (memory (export "memory") 1)\n'
-            f'  (global $gc_sp (export "gc_sp") (mut i32) '
+            '  (memory (export "vera.memory") 1)\n'
+            f'  (global $gc_sp (export "vera.gc_sp") (mut i32) '
             f"(i32.const {self._STACK_BASE}))\n"
-            f'  (global $gc_stack_limit (export "gc_stack_limit") i32 '
+            f'  (global $gc_stack_limit (export "vera.gc_stack_limit") i32 '
             f"(i32.const {self._STACK_LIMIT}))\n"
             '  (func (export "push") (param i32)\n'
             f"{body}\n"
@@ -89,14 +89,14 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         GC worklist region the mark phase reads.
         """
         store, instance = self._instance()
-        sp = instance.exports(store)["gc_sp"]
+        sp = instance.exports(store)["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT - headroom)
         push = instance.exports(store)["push"]
         assert isinstance(push, wasmtime.Func)
         with pytest.raises(wasmtime.Trap):
             push(store, 0x1234)
-        memory = instance.exports(store)["memory"]
+        memory = instance.exports(store)["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         spill = bytes(memory.read(
             store,
@@ -116,14 +116,14 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         """
         store, instance = self._instance()
         exports = instance.exports(store)
-        sp = exports["gc_sp"]
+        sp = exports["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT - 4)
         push = exports["push"]
         assert isinstance(push, wasmtime.Func)
         push(store, 0x1234)
         assert sp.value(store) == self._STACK_LIMIT
-        memory = exports["memory"]
+        memory = exports["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)
         assert bytes(memory.read(
             store, self._STACK_LIMIT - 4, self._STACK_LIMIT,
@@ -133,7 +133,7 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
         """``sp == limit`` was rejected by the old bound too — pin it."""
         store, instance = self._instance()
         exports = instance.exports(store)
-        sp = exports["gc_sp"]
+        sp = exports["vera.gc_sp"]
         assert isinstance(sp, wasmtime.Global)
         sp.set_value(store, self._STACK_LIMIT)
         push = exports["push"]
@@ -144,7 +144,7 @@ class TestEmittedShadowPushBoundIsSlotComplete860:
 
 # The slot-START form, in the emitted WAT: read `$gc_sp`, compare it
 # straight against `$gc_stack_limit`.  Whitespace-tolerant so indentation
-# inside `$register_wrapper` does not hide a match.
+# inside `$rt.register_wrapper` does not hide a match.
 _SLOT_START_WAT = re.compile(
     r"global\.get \$gc_sp\s+global\.get \$gc_stack_limit\s+i32\.ge_u",
 )
@@ -157,12 +157,14 @@ _SLOT_COMPLETE_WAT = re.compile(
 
 # The slot-START form in JavaScript: `sp` compared straight against the
 # limit global's value.
-_SLOT_START_JS = re.compile(r"sp\s*>=\s*wasm\.gc_stack_limit\.value")
+_SLOT_START_JS = re.compile(
+    r"sp\s*>=\s*wasm\['vera\.gc_stack_limit'\]\.value")
 
 # The slot-COMPLETE form in JavaScript, matching `_ShadowGuard.push`'s
 # predicate (negative `sp` rejected outright).
 _SLOT_COMPLETE_JS = re.compile(
-    r"sp\s*<\s*0\s*\|\|\s*sp\s*\+\s*4\s*>\s*wasm\.gc_stack_limit\.value",
+    r"sp\s*<\s*0\s*\|\|\s*sp\s*\+\s*4\s*>\s*"
+    r"wasm\['vera\.gc_stack_limit'\]\.value",
 )
 
 
@@ -170,7 +172,7 @@ def _fn_body(wat: str, name: str) -> str:
     """The WAT text of ``$name``, up to the next top-level ``(func``.
 
     Scoping the assertion to one function is the whole point of the
-    ``$register_wrapper`` cell: every allocating function in a module carries
+    ``$rt.register_wrapper`` cell: every allocating function in a module carries
     a shadow bound, so a module-wide search is answered by any of them.
     """
     start = wat.index(f"(func ${name} ")
@@ -180,7 +182,7 @@ def _fn_body(wat: str, name: str) -> str:
 
 
 # A program that needs BOTH the shadow stack and the wrap table, so the
-# emitted module carries `$register_wrapper` (whose slow path holds the
+# emitted module carries `$rt.register_wrapper` (whose slow path holds the
 # fourth bound) alongside ordinary `gc_shadow_push` sites.
 _WRAP_TABLE_SOURCE = """\
 public fn f(@Unit -> @Int)
@@ -207,8 +209,8 @@ class TestEveryShadowBoundIsSlotComplete860:
 
     def test_emitted_module_has_no_slot_start_bound(self) -> None:
         wat = _compile_ok(_WRAP_TABLE_SOURCE).wat
-        assert "$register_wrapper" in wat, (
-            "fixture no longer emits $register_wrapper — the fourth bound "
+        assert "$rt.register_wrapper" in wat, (
+            "fixture no longer emits $rt.register_wrapper — the fourth bound "
             "is not in the artefact under test"
         )
         assert not _SLOT_START_WAT.search(wat), (
@@ -223,7 +225,7 @@ class TestEveryShadowBoundIsSlotComplete860:
 
         Counted per SITE, not module-wide: a module-wide count of two is
         satisfied by two ordinary ``gc_shadow_push`` bounds while
-        ``$register_wrapper``'s slow path keeps the old shape, which is
+        ``$rt.register_wrapper``'s slow path keeps the old shape, which is
         exactly the site a module-wide count was meant to cover.  So the
         wrapper's body is extracted and asked on its own.
         """
@@ -231,13 +233,13 @@ class TestEveryShadowBoundIsSlotComplete860:
         assert _SLOT_COMPLETE_WAT.search(wat), (
             "no slot-complete bound anywhere in the emitted module"
         )
-        wrapper = _fn_body(wat, "register_wrapper")
+        wrapper = _fn_body(wat, "rt.register_wrapper")
         assert _SLOT_COMPLETE_WAT.search(wrapper), (
-            "$register_wrapper's slow-path root push does not carry the "
+            "$rt.register_wrapper's slow-path root push does not carry the "
             f"slot-complete bound:\n{wrapper}"
         )
         assert not _SLOT_START_WAT.search(wrapper), (
-            f"$register_wrapper still carries a slot-start bound:\n{wrapper}"
+            f"$rt.register_wrapper still carries a slot-start bound:\n{wrapper}"
         )
 
     def test_browser_runtime_has_no_slot_start_bound(self) -> None:

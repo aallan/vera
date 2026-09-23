@@ -136,7 +136,7 @@ class TestGcMarkStoreTargetsObjectBases1382:
     def test_zero_size_objects_are_recorded_as_bases(self) -> None:
         """Phase 1 records EVERY object base, including zero-size ones.
 
-        ``_translate_array_reverse`` emits ``$alloc(len * sizeof(T))`` with
+        ``_translate_array_reverse`` emits ``$rt.alloc(len * sizeof(T))`` with
         no zero guard, so ``array_reverse([])`` allocates a payload of size
         0 — a real object whose header word is ``0``.  That is the shape
         the obvious cheap patch for #1382 keys on ("skip the mark store
@@ -151,7 +151,7 @@ class TestGcMarkStoreTargetsObjectBases1382:
         test therefore passes whether or not zero-size bases are recorded
         (verified by mutation: omitting them keeps every behavioural case
         in this file green).  What can be pinned is the emitted code —
-        the ``$gc_set_base`` call must be unconditional, reached straight
+        the ``$rt.gc_set_base`` call must be unconditional, reached straight
         from the walk with no size test in between.
         """
         src = _PAD_FN % "x" + _REVERSE_OF_MAP_VALUES
@@ -169,10 +169,10 @@ class TestGcMarkStoreTargetsObjectBases1382:
                 break
         assert opcodes[:7] == [
             "local.get", "$ptr", "i32.const", "4", "i32.add",
-            "call", "$gc_set_base",
+            "call", "$rt.gc_set_base",
         ], (
             f"Phase 1's base recording is no longer unconditional: {opcodes[:7]!r}. "
-            f"A size test in front of $gc_set_base would drop zero-size "
+            f"A size test in front of $rt.gc_set_base would drop zero-size "
             f"objects — legitimate allocations — from the base set."
         )
 
@@ -229,7 +229,7 @@ def _gc_harness(
     """Instantiate a real compiled module for direct GC poking.
 
     The WAT is the collector this PR emits, not a hand-rolled stand-in;
-    the program is chosen to need `$alloc` (hence the whole GC) while
+    the program is chosen to need `$rt.alloc` (hence the whole GC) while
     importing nothing, so it instantiates with no host functions.
     """
     monkeypatch.setenv("VERA_EAGER_GC", "1")
@@ -258,10 +258,10 @@ class _Gc:
     ) -> None:
         e = instance.exports(store)
         self.store = store
-        self.mem = e["memory"]
-        self.alloc = e["alloc"]
-        self.sp = e["gc_sp"]
-        self.heap_ptr = e["heap_ptr"]
+        self.mem = e["vera.memory"]
+        self.alloc = e["vera.alloc"]
+        self.sp = e["vera.gc_sp"]
+        self.heap_ptr = e["vera.heap_ptr"]
 
     def read_u32(self, addr: int) -> int:
         buf = self.mem.data_ptr(self.store)

@@ -220,7 +220,7 @@ def test_two_level_nested_unequal() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Recursive generic ADT: List<T> — the case that forces real $eq_ functions
+# Recursive generic ADT: List<T> — the case that forces real $rt.eq_ functions
 # (inline expansion cannot terminate on a self-referential type), and deep
 # type-param substitution (the Cons tail is declared `List<T>`, not a bare
 # param, so `T` must substitute inside the parameterized field type).
@@ -271,7 +271,7 @@ def test_generic_wrapping_generic_string() -> None:
     """Deep substitution through a nested generic: P<String> wraps Box<T>.
 
     The field of `MkP` is declared `Box<T>` — substituting `T -> String`
-    must recurse into `$eq_Box<String>` (String content comparison), not a
+    must recurse into `$rt.eq_Box<String>` (String content comparison), not a
     pointer compare.
     """
     source = """\
@@ -534,7 +534,7 @@ def test_tuple_eq_rejected_both_paths() -> None:
 
     `Tuple`'s registered layout is a variadic zero-field placeholder (real
     layouts are recomputed per construction), so treating it as a fieldless
-    enum generated an ALWAYS-TRUE `$eq_Tuple` — `Tuple(1, 2) == Tuple(3, 4)`
+    enum generated an ALWAYS-TRUE `$rt.eq_Tuple` — `Tuple(1, 2) == Tuple(3, 4)`
     returned true through both the Eq-constrained generic and the direct
     `==` (PR #870 review, Critical).  Both must be a loud E613 instead.
     """
@@ -715,7 +715,7 @@ public fn diff(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
 
 # Nested-ADT field: two `MkInner(1)` are DISTINCT heap allocations with equal
 # content, so an equal result on `same` proves the derived Eq compares by VALUE
-# (recurses into `$eq_Inner`), not by the wrapper pointer — the run differential
+# (recurses into `$rt.eq_Inner`), not by the wrapper pointer — the run differential
 # that a pointer-identity mis-compile would fail (`same` would be 0).  This
 # exercises the constructor path in isolation from builtin-return inference
 # (the pre-#769 String-returning-builtin gap that `string_concat` args once

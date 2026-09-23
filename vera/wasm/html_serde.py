@@ -30,10 +30,10 @@ helper from ``vera.codegen.api._ShadowGuard`` — that pushes
 intermediate WASM heap pointers (``name_ptr``, ``wrapper_ptr``,
 ``arr_ptr``) onto the GC shadow stack across sub-tree recursion and
 the final node body alloc.  Without this rooting, an alloc that
-triggers ``$gc_collect`` mid-walk reclaims those Python-held
+triggers ``$rt.gc_collect`` mid-walk reclaims those Python-held
 pointers and a subsequent write into freed memory corrupts the
 free list (concrete trap: ``Out-of-bounds memory access`` at
-``0xfffffffd`` from inside ``$alloc``'s free-list traversal).
+``0xfffffffd`` from inside ``$rt.alloc``'s free-list traversal).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def write_html(
     the WASM shadow-stack window for this walk.  Intermediate
     pointers (name, wrapper, arr) are pushed onto it via
     ``guard.push(ptr)`` before any subsequent alloc that could
-    trigger ``$gc_collect``.  See module docstring + #692.
+    trigger ``$rt.gc_collect``.  See module docstring + #692.
 
     The returned root pointer is NOT pushed onto the guard — the
     caller (parent ``write_html`` writing into its child array,

@@ -3,7 +3,7 @@
 Memory read/write, shadow-stack GC rooting, wrapper-ADT handle tagging,
 the Map/Set bucket codec, and Result/Option/Array allocation -- all
 parameterised by the `wasmtime.Caller` (memory is reached via
-`caller["memory"]` / `caller["alloc"]`), so they are plain module-level
+`caller["vera.memory"]` / `caller["vera.alloc"]`), so they are plain module-level
 functions.  Extracted from `execute()` in `vera/codegen/api.py` (#421).
 """
 
@@ -66,7 +66,7 @@ def _read_wasm_string(
     file-content consumers then surface their own "not found" errors when the
     replacement chars match nothing — a strict improvement over a traceback.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     mem_size = memory.data_len(caller)
     if length < 0 or ptr < 0 or ptr + length > mem_size:
@@ -113,7 +113,7 @@ def _write_bytes(
     O(n) Python-level assignments and turned bucket-array writes into
     an O(N²) hot path on large Map / Set chains (#706).
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     memory.write(caller, data, offset)
 
@@ -124,8 +124,8 @@ def _write_i32(
     _write_bytes(caller, offset, struct.pack("<I", value & 0xFFFF_FFFF))
 
 def _call_alloc(caller: wasmtime.Caller, size: int) -> int:
-    """Call the exported $alloc to allocate WASM heap memory."""
-    alloc_fn = caller["alloc"]
+    """Call the runtime's exported allocator (`vera.alloc`) for WASM heap memory."""
+    alloc_fn = caller["vera.alloc"]
     assert isinstance(alloc_fn, wasmtime.Func)  # noqa: S101
     ptr = alloc_fn(caller, size)
     assert isinstance(ptr, int)  # noqa: S101
@@ -197,7 +197,7 @@ def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
     Bounds-checked via :func:`_require_readable` before the raw slice
     (#1442) — see there for why the check cannot live in the ctypes read.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -211,7 +211,7 @@ def _read_bytes_at(
     Bounds-checked via :func:`_require_readable` before the raw slice
     (#1442) — see there for why the check cannot live in the ctypes read.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, length, "byte-range")
     buf = memory.data_ptr(caller)
@@ -236,15 +236,15 @@ _BUCKET_INITIAL_CAPACITY = 8
 # #692: Host-side shadow-stack rooting for multi-alloc walkers
 # ------------------------------------------------------------------
 #
-# The conservative GC scan in ``$gc_collect`` (Phase 2a) only walks
+# The conservative GC scan in ``$rt.gc_collect`` (Phase 2a) only walks
 # the WASM shadow stack (``$gc_sp`` .. ``$gc_stack_limit``) when
 # tracing roots.  Host code that holds WASM heap pointers in
 # Python locals across multiple ``_call_alloc`` calls is therefore
 # invisible to GC — if one of those allocs triggers
-# ``$gc_collect`` (because bump-alloc would overflow current
+# ``$rt.gc_collect`` (because bump-alloc would overflow current
 # memory), the Python-held pointers are reclaimed and the next
 # write scribbles into freed memory → free-list corruption →
-# ``Out-of-bounds memory access`` trap from inside ``$alloc``.
+# ``Out-of-bounds memory access`` trap from inside ``$rt.alloc``.
 # Same #570/#515/#593 bug class but on the host side.
 #
 # ``_ShadowGuard`` provides exception-safe push/pop discipline.
@@ -260,7 +260,7 @@ _BUCKET_INITIAL_CAPACITY = 8
 
 class _ShadowGuard:
     """Push intermediate WASM heap pointers onto the GC shadow
-    stack so they survive any ``$gc_collect`` that fires during
+    stack so they survive any ``$rt.gc_collect`` that fires during
     a multi-alloc host walker.  Exception-safe — ``__exit__``
     resets ``$gc_sp`` to the entry value on both success and
     exception paths.  See #692."""
@@ -272,7 +272,7 @@ class _ShadowGuard:
         # Lookup-failure path: a host walker should never run
         # against a module that didn't export ``$gc_sp`` /
         # ``$gc_stack_limit`` (assembly.py exports both whenever
-        # ``$gc_collect`` is emitted, and any host walker
+        # ``$rt.gc_collect`` is emitted, and any host walker
         # requires the GC).  But hand-crafted ``.wat`` fixtures
         # or future host imports that bypass the codegen flow
         # could trigger the KeyError below.  Re-raise as a
@@ -281,8 +281,8 @@ class _ShadowGuard:
         # rather than a bare ``KeyError`` becoming a generic
         # "python exception" trap.
         try:
-            sp_global = caller["gc_sp"]
-            limit_global = caller["gc_stack_limit"]
+            sp_global = caller["vera.gc_sp"]
+            limit_global = caller["vera.gc_stack_limit"]
         except KeyError as exc:
             raise RuntimeError(
                 "#692: host walker requires the module to "
@@ -336,7 +336,7 @@ class _ShadowGuard:
         # NOT work here because wasmtime-py's ``data_ptr``
         # returns an LP_c_ubyte, which lacks the buffer
         # protocol that ``pack_into`` requires.
-        memory = self._caller["memory"]
+        memory = self._caller["vera.memory"]
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(self._caller)
         packed = struct.pack("<I", ptr & 0xFFFF_FFFF)
@@ -404,14 +404,14 @@ def _call_register_wrapper(
 ) -> None:
     """Register a wrapper ADT with the WASM-side wrap table.
 
-    Calls the exported ``$register_wrapper`` so Phase 2c of
-    ``$gc_collect`` will fire ``host_decref_handle(kind, handle)``
+    Calls the exported ``$rt.register_wrapper`` so Phase 2c of
+    ``$rt.gc_collect`` will fire ``host_decref_handle(kind, handle)``
     when ``ptr`` becomes unreachable.  No-op when the WAT
     module didn't enable the wrap table (i.e. no Map / Set /
     Decimal use); host-side JSON / HTML parsers can call this
     unconditionally and it'll just skip.
     """
-    register_fn = caller["register_wrapper"]
+    register_fn = caller["vera.register_wrapper"]
     if register_fn is None:  # pragma: no cover — wrap table disabled
         return
     assert isinstance(register_fn, wasmtime.Func)  # noqa: S101
@@ -425,7 +425,7 @@ def _validate_wrap_handle(
     Wrapper ADTs store ``raw_handle | 0x80000000`` at body offset 4 so
     the in-heap field is structurally outside the conservative-scan
     heap-range check (`heap_ptr` is hard-capped at 0x80000000 by the
-    `$alloc` heap-ceiling guard).  The unwrap site recovers the raw
+    `$rt.alloc` heap-ceiling guard).  The unwrap site recovers the raw
     handle with ``& 0x7FFFFFFF``.  Both directions break silently
     outside ``[0, 0x80000000)``:
 
@@ -501,7 +501,7 @@ def _wrap_handle(
     # in-heap field can't be mistaken for a heap pointer by
     # the conservative GC scan.  Mirrors the WAT-side
     # ``_emit_wrap_handle`` in
-    # ``vera/wasm/calls_containers.py``.  ``$register_wrapper``
+    # ``vera/wasm/calls_containers.py``.  ``$rt.register_wrapper``
     # still gets the RAW handle — the wrap table uses it for
     # ``host_decref_handle`` calls.
     _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
@@ -1074,7 +1074,7 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     derives from guest memory contents rather than from an allocator,
     which is exactly the shape that must not be trusted to a raw slice.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -1090,7 +1090,7 @@ def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
     ``read_json`` sibling of :func:`_read_i32` above, and reached the
     same way.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 8, "f64")
     buf = memory.data_ptr(caller)
@@ -1224,7 +1224,7 @@ def _read_wasm_array_of_options_of_string(
         )
     if count == 0:
         return []
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     mem_size = memory.data_len(caller)
 
@@ -1334,7 +1334,7 @@ class InstanceCaller:
     """Adapt a (Store, Instance) pair to the ``caller`` protocol.
 
     The heap helpers above take a ``wasmtime.Caller`` and use exactly
-    two of its capabilities: export lookup (``caller["memory"]``) and
+    two of its capabilities: export lookup (``caller["vera.memory"]``) and
     being passed back to wasmtime calls as the store context
     (``memory.write(caller, ...)``, ``alloc_fn(caller, size)``).  The
     #305 serve driver runs OUTSIDE any host import — there is no

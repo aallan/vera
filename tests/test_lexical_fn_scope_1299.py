@@ -232,9 +232,9 @@ class TestPrivateImportRoute:
         not carry the assertion.
 
         Asserted on ``main``'s body ALONE, because the module's own ``touch``
-        legitimately calls ``$get`` in the same WAT — the narrowing is
-        per-namespace, not a deletion, and a module-wide assertion could not
-        tell those two apart.
+        legitimately calls its private ``get`` in the same WAT — the
+        narrowing is per-namespace, not a deletion, and a module-wide
+        assertion could not tell those two apart.
         """
         _, result, _ = build_multi_module(
             tmp_path,
@@ -244,8 +244,10 @@ class TestPrivateImportRoute:
         assert wat_calls(main_body, "vera.state_get_Int")
         assert not wat_calls(main_body, "get")
         # The module's own body is the control: its private helper is still
-        # in ITS scope, so that call must survive untouched.
-        assert wat_calls(wat_fn_body(result.wat, "touch"), "get")
+        # in ITS scope, so that call must survive — to the helper's own
+        # symbol, `mod$lib$get`, since a private declaration does not own the
+        # entry's bare name (#1498).
+        assert wat_calls(wat_fn_body(result.wat, "touch"), "mod$lib$get")
 
     def test_rename_control_answers_the_same(self, tmp_path: Path) -> None:
         """The same program with the invisible declaration renamed.  It must

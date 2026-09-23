@@ -1182,9 +1182,13 @@ class TestStockWasmtimeCli:
 # =====================================================================
 
 class TestReservedMarkerScan:
-    """The reserved-identifier check must inspect WAT identifiers, not
-    data-segment payloads — a program PRINTING "$wasi_tbl" is fine; a
-    program DEFINING a fn named wasi_tbl is a real collision."""
+    """The component's additions to the core module can never meet a
+    program's names.  They live in the runtime's `rt.` namespace (#1494),
+    which no Vera identifier can spell, so a program PRINTING "$wasi_tbl",
+    DEFINING a fn named `wasi_tbl`, or defining one that merely shares the
+    prefix all compile and run.  Before #1494 the emitter refused the second
+    with a raw ValueError, although a function and a table never share an
+    index space."""
 
     def test_literal_containing_marker_is_accepted(self) -> None:
         result = _compile_ok("""\
@@ -1197,7 +1201,7 @@ public fn main(-> @Unit)
         _, out, _ = _run_component(result)
         assert out == "$wasi_tbl is a nice name"
 
-    def test_identifier_collision_is_still_rejected(self) -> None:
+    def test_fn_named_after_the_dispatch_table_runs(self) -> None:
         result = _compile_ok("""\
 private fn wasi_tbl(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1211,15 +1215,14 @@ public fn main(-> @Int)
   wasi_tbl()
 }
 """)
-        with pytest.raises(ValueError, match="reserved identifier"):
-            emit_wasi_component(result)
+        value, _, _ = _run_component(result)
+        assert value == 1
 
     def test_longer_identifier_sharing_the_prefix_is_accepted(
         self,
     ) -> None:
-        """`$wasi_tblish` contains `$wasi_tbl` but is a DIFFERENT
-        identifier — the check requires an identifier boundary after
-        each exact marker (CR review round 2, PR #849)."""
+        """`$wasi_tblish` shares a prefix with the component's table name
+        and is a different identifier (CR review round 2, PR #849)."""
         result = _compile_ok("""\
 private fn wasi_tblish(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1490,7 +1493,7 @@ public fn handle(@Request -> @Response)
         assert '(export "wasi:http/incoming-handler@0.2.0"' in wat
         assert "wasi:cli/run" not in wat
         assert '(export "main"' not in wat
-        assert "__wasi_run" not in wat
+        assert "wasi_run" not in wat
 
     def test_lift_is_from_the_adapter(self) -> None:
         """The serve wrapper lives in the ADAPTER (design §1.2) — the
@@ -1503,7 +1506,9 @@ public fn handle(@Request -> @Response)
         """Map family lands at slots 16+; the table must grow from the
         cli world's (design §1.3)."""
         wat = _emit_server(HTTP_SERVER_EXAMPLE)
-        assert '(table $wasi_tbl (export "wasi_tbl") 32 32 funcref)' in wat
+        assert (
+            '(table $rt.wasi_tbl (export "vera.wasi_tbl") 32 32 funcref)'
+        ) in wat
 
     def test_no_two_ops_share_a_dispatch_slot(self) -> None:
         """The two op tables compose into ONE index space in this world.
@@ -1670,7 +1675,7 @@ class TestCliWorldPin:
         # is one past the highest cli slot, so adding an op (#754 did) moves
         # it, and a literal here would only record when someone last looked.
         assert (
-            f'(table $wasi_tbl (export "wasi_tbl") '
+            f'(table $rt.wasi_tbl (export "vera.wasi_tbl") '
             f'{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)'
         ) in wat
         assert "wasi:http" not in wat

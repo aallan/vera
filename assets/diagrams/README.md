@@ -74,7 +74,7 @@ reuse the arrow marker, and update the `<title>` and any paired
 | `effect-handlers.svg` | `spec/07` | handler suspend/resume sequence |
 | `wasmtime-embedding.svg` | `spec/12` | Engine → Module → Linker → Store → call chain |
 | `memory-layout.svg` | `spec/12` | linear-memory segments + allocation header |
-| `gc-cycle.svg` | `spec/12` | `$alloc` decision flow + mark-sweep phases |
+| `gc-cycle.svg` | `spec/12` | `$rt.alloc` decision flow + mark-sweep phases |
 | `wasi-component.svg` | `spec/13` | component wrapping `$Main`/`$Adapter` + dispatch table |
 | `checker-passes.svg` | `vera/README.md` | the three checker passes over the TypeEnv |
 | `z3-refutation.svg` | `vera/README.md` | contract → assert ¬goal → unsat/sat/unknown |

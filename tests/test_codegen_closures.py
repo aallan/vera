@@ -615,7 +615,7 @@ public fn test(@Unit -> @Int)
 # discovered during that translation registered on the inner ctx's
 # ``_pending_closures`` list — never bubbled back to the outer lifting
 # loop. Result: only the outermost closure was lifted, the inner's
-# ``$anon_N`` function was missing from the table, and the call_indirect
+# ``$rt.anon_N`` function was missing from the table, and the call_indirect
 # either trapped (``unreachable``) at runtime or failed WASM validation
 # (``i64 vs i32 type mismatch``) depending on the inner's return type.
 #
@@ -771,7 +771,7 @@ public fn test(@Unit -> @Int)
     def test_nested_closure_emits_anon_for_inner(self) -> None:
         """White-box: the emitted WAT must contain a lifted function
         for the inner closure too. Pre-fix this would have only
-        ``$anon_0`` and the table would be size 1.
+        ``$rt.anon_0`` and the table would be size 1.
         """
         src = """\
 public fn test(@Unit -> @Int)
@@ -793,11 +793,11 @@ public fn test(@Unit -> @Int)
         result = _compile_ok(src)
         wat = result.wat
         # Both closures must have lifted functions.  Count distinct
-        # ``$anon_N`` lifted-function definitions rather than asserting
+        # ``$rt.anon_N`` lifted-function definitions rather than asserting
         # specific names — the worklist's allocation order is an
         # implementation detail that may change as the lifting pass
         # evolves.  Two outermost closures in this fixture, so >= 2.
-        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        anon_funcs = re.findall(r"\(func \$rt.anon_\d+", wat)
         assert len(anon_funcs) >= 2, (
             f"Expected >= 2 lifted closure functions in WAT, got "
             f"{len(anon_funcs)} ({anon_funcs}) — #514 worklist regression"
@@ -821,7 +821,7 @@ public fn test(@Unit -> @Int)
         ``_closure_sigs`` and ``_next_closure_id`` by reference; a
         regression that re-initialised either of those between
         top-level functions would surface as an ID collision (two
-        ``$anon_0`` definitions, rejected by the WAT parser as
+        ``$rt.anon_0`` definitions, rejected by the WAT parser as
         duplicate function identifiers) or a sig collision (two
         ``$closure_sig_0`` for different contents, same rejection).
 
@@ -867,14 +867,14 @@ public fn second(@Unit -> @Int)
         # Four lifted functions total — one outer + one inner per
         # top-level function.  Names must all be distinct (no
         # ID-counter reset across top-level functions).
-        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        anon_funcs = re.findall(r"\(func \$rt.anon_\d+", wat)
         assert len(anon_funcs) >= 4, (
             f"Expected >= 4 lifted closures across two top-level fns, "
             f"got {len(anon_funcs)} ({anon_funcs}) — #514 cross-fn "
             "shared-state regression"
         )
         assert len(set(anon_funcs)) == len(anon_funcs), (
-            f"Duplicate $anon_N identifiers in WAT — closure-ID counter "
+            f"Duplicate $rt.anon_N identifiers in WAT — closure-ID counter "
             f"was reset between top-level functions: {anon_funcs}"
         )
         # All four must be in the function table so they're invokable.
@@ -1255,25 +1255,25 @@ public fn main(@Unit -> @Unit)
 """
         result = _compile_ok(src)
         wat = result.wat
-        # Find any ``$anon_X`` returning ``(result i32 i32)`` whose body
-        # has no ``call $alloc`` but contains the canonical
+        # Find any ``$rt.anon_X`` returning ``(result i32 i32)`` whose body
+        # has no ``call $rt.alloc`` but contains the canonical
         # ``gc_shadow_push`` increment sequence — i.e. a non-allocating
         # closure that still pushes a return-value root.  The fix for
         # #593 requires this for every i32-pair-returning lifted
         # closure regardless of body allocations.
         pattern = re.compile(
-            r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
+            r"\(func \$rt.anon_\d+ \(param \$env i32\)[^)]*\) "
             r"\(result i32 i32\)(.*?)\n  \)",
             re.DOTALL,
         )
         candidate_bodies = [m.group(1) for m in pattern.finditer(wat)]
         assert candidate_bodies, (
-            "Expected at least one $anon_X with i32-pair return in WAT"
+            "Expected at least one $rt.anon_X with i32-pair return in WAT"
         )
         non_alloc_with_push = [
             body for body in candidate_bodies
             if _has_gc_shadow_push(body)
-            and "call $alloc" not in body
+            and "call $rt.alloc" not in body
         ]
         assert non_alloc_with_push, (
             "No non-allocating i32-pair-returning closure with a "
@@ -1322,25 +1322,25 @@ public fn test(@Unit -> @Int)
 """
         result = _compile_ok(src)
         wat = result.wat
-        # Find any ``$anon_X`` returning ``(result i32)`` (i.e. an ADT
-        # or non-pair pointer) whose body has no ``call $alloc`` but
+        # Find any ``$rt.anon_X`` returning ``(result i32)`` (i.e. an ADT
+        # or non-pair pointer) whose body has no ``call $rt.alloc`` but
         # contains the canonical ``gc_shadow_push`` increment sequence
         # — the i32 ADT identity-style closure.  At least the
         # ``fn(@Box -> @Box) { @Box.0 }`` lift must match.
         pattern = re.compile(
-            r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
+            r"\(func \$rt.anon_\d+ \(param \$env i32\)[^)]*\) "
             r"\(result i32\)(?!\s*\(result)(.*?)\n  \)",
             re.DOTALL,
         )
         candidate_bodies = [m.group(1) for m in pattern.finditer(wat)]
         assert candidate_bodies, (
-            "Expected at least one $anon_X with i32 (single, non-pair) "
+            "Expected at least one $rt.anon_X with i32 (single, non-pair) "
             "return in WAT"
         )
         non_alloc_with_push = [
             body for body in candidate_bodies
             if _has_gc_shadow_push(body)
-            and "call $alloc" not in body
+            and "call $rt.alloc" not in body
         ]
         assert non_alloc_with_push, (
             "No non-allocating i32-ADT-returning closure with a "
@@ -1401,14 +1401,14 @@ public fn test(@Unit -> @Int)
     ) -> None:
         """Pin the eager-GC diagnostic mechanism itself.
 
-        ``VERA_EAGER_GC=1`` is meant to force ``call $gc_collect`` as
-        the first instruction of ``$alloc``'s body (after the local
+        ``VERA_EAGER_GC=1`` is meant to force ``call $rt.gc_collect`` as
+        the first instruction of ``$rt.alloc``'s body (after the local
         declarations).  If the env-var-reading code in
         ``AssemblyMixin._emit_alloc`` silently regresses to a no-op,
         the eager-GC behavioural tests above still pass — they
         degenerate to the non-eager case and produce the same correct
         output.  This test fails noisily in that scenario by checking
-        the WAT for ``$alloc`` directly.
+        the WAT for ``$rt.alloc`` directly.
         """
         src = """\
 public fn test(@Unit -> @Int)
@@ -1417,31 +1417,31 @@ public fn test(@Unit -> @Int)
   array_length(array_range(0, 3))
 }
 """
-        # Without the env var, $alloc's body has no call $gc_collect
-        # before the size-invariant check (it does call $gc_collect on
+        # Without the env var, $rt.alloc's body has no call $rt.gc_collect
+        # before the size-invariant check (it does call $rt.gc_collect on
         # the OOM slow path, but not at the top of the body).
         plain = _compile_ok(src).wat
-        plain_alloc = re.search(r"\(func \$alloc.*?\n  \)", plain, re.DOTALL)
-        assert plain_alloc is not None, "Could not locate $alloc in plain WAT"
+        plain_alloc = re.search(r"\(func \$rt\.alloc.*?\n  \)", plain, re.DOTALL)
+        assert plain_alloc is not None, "Could not locate $rt.alloc in plain WAT"
         # Strip the OOM slow path: anything before the size-invariant
         # ``i32.const 0x80000000`` check is the function header + locals
         # + (under eager-GC) the unconditional gc_collect.
         plain_prologue = plain_alloc.group(0).split("0x80000000", 1)[0]
-        assert "call $gc_collect" not in plain_prologue, (
-            "Plain-mode $alloc should not have call $gc_collect before "
+        assert "call $rt.gc_collect" not in plain_prologue, (
+            "Plain-mode $rt.alloc should not have call $rt.gc_collect before "
             "the size-invariant check"
         )
 
         # With VERA_EAGER_GC=1, the prologue must contain call
-        # $gc_collect (the eager_prefix in _emit_alloc).
+        # $rt.gc_collect (the eager_prefix in _emit_alloc).
         with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
             eager = _compile_ok(src).wat
-        eager_alloc = re.search(r"\(func \$alloc.*?\n  \)", eager, re.DOTALL)
-        assert eager_alloc is not None, "Could not locate $alloc in eager WAT"
+        eager_alloc = re.search(r"\(func \$rt\.alloc.*?\n  \)", eager, re.DOTALL)
+        assert eager_alloc is not None, "Could not locate $rt.alloc in eager WAT"
         eager_prologue = eager_alloc.group(0).split("0x80000000", 1)[0]
-        assert "call $gc_collect" in eager_prologue, (
-            "VERA_EAGER_GC=1 did not inject call $gc_collect into "
-            "$alloc's prologue.  Either the env-var-reading code in "
+        assert "call $rt.gc_collect" in eager_prologue, (
+            "VERA_EAGER_GC=1 did not inject call $rt.gc_collect into "
+            "$rt.alloc's prologue.  Either the env-var-reading code in "
             "AssemblyMixin._emit_alloc regressed, or the eager_prefix "
             "is being inserted in the wrong place."
         )
@@ -1465,10 +1465,10 @@ public fn test(@Unit -> @Int)
 """
         with mock.patch.dict(os.environ, {"VERA_EAGER_GC": flag_value}):
             wat = _compile_ok(src).wat
-        alloc = re.search(r"\(func \$alloc.*?\n  \)", wat, re.DOTALL)
+        alloc = re.search(r"\(func \$rt\.alloc.*?\n  \)", wat, re.DOTALL)
         assert alloc is not None
         prologue = alloc.group(0).split("0x80000000", 1)[0]
-        assert "call $gc_collect" in prologue, (
+        assert "call $rt.gc_collect" in prologue, (
             f"VERA_EAGER_GC={flag_value!r} did not enable eager mode"
         )
 

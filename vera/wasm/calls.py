@@ -880,7 +880,7 @@ class CallsMixin:
             instructions.append(f"call $vera.{wasm_name}")
         elif call.qualifier == "DB":
             # #229 — DB.query / DB.execute → `call $vera.db_<op>`; both return
-            # a Result ADT heap pointer, so $alloc is required.
+            # a Result ADT heap pointer, so $rt.alloc is required.
             wasm_name = f"db_{call.name}"
             self._db_ops_used.add(wasm_name)
             self.needs_alloc = True
@@ -889,7 +889,7 @@ class CallsMixin:
             # #465 — op names already begin with `random_`, so the
             # WASM import keeps the same name (`vera.random_int`,
             # `vera.random_float`, `vera.random_bool`).  None of the
-            # Random ops allocate or return heap data, so $alloc is
+            # Random ops allocate or return heap data, so $rt.alloc is
             # not required.
             self._random_ops_used.add(call.name)
             instructions.append(f"call $vera.{call.name}")

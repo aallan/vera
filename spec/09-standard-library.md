@@ -2684,7 +2684,7 @@ Fields are separated by `, ` (comma + space). A `String` field renders as its ra
 
 `hash` on a composite is deterministic: it seeds with the constructor tag (or, for an `Array`, its length) and folds each field/element hash in FNV-style, so distinct constructors and distinct field values hash differently.
 
-A directly self-referential recursive ADT (`List<T>`, `Tree<T>`) `show`/`hash`es via a **generated self-calling helper function** ([#924](https://github.com/aallan/vera/issues/924)) — one `$show_<type>` / `$hash_<type>` per recursive type, recursing over the finite value at run time (mirroring how structural `Eq` derives one `$eq_<type>` helper). A composite whose element/field types still cannot be resolved at the `show`/`hash` site — e.g. a *generic* mutually-recursive ADT whose type argument is buried in a nested generic field (`Grove(Rose<T>, Forest<T>)`), the same type-argument-recovery limitation `Eq` shares — is skipped rather than mis-rendered.
+A directly self-referential recursive ADT (`List<T>`, `Tree<T>`) `show`/`hash`es via a **generated self-calling helper function** ([#924](https://github.com/aallan/vera/issues/924)) — one `$rt.show_<type>` / `$rt.hash_<type>` per recursive type, recursing over the finite value at run time (mirroring how structural `Eq` derives one `$rt.eq_<type>` helper). A composite whose element/field types still cannot be resolved at the `show`/`hash` site — e.g. a *generic* mutually-recursive ADT whose type argument is buried in a nested generic field (`Grove(Rose<T>, Forest<T>)`), the same type-argument-recovery limitation `Eq` shares — is skipped rather than mis-rendered.
 
 ### 9.8.3 Compilation Strategy
 

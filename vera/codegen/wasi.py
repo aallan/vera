@@ -25,7 +25,7 @@ Topology (from the #237 design study, adapted — see PR notes):
                (server) funcref dispatch table that MAIN itself defines
                and exports (defined after the closure table, so closure
                call sites keep table 0); plus a GC-exempt scratch arena,
-               ``cabi_realloc``, and (cli world) the ``__wasi_run``
+               ``rt.cabi_realloc``, and (cli world) the ``rt.wasi_run``
                entry wrapper.
     LOWERS   — ``canon lower`` of the WASI imports against MAIN's
                memory + realloc (which therefore must come first).
@@ -593,9 +593,9 @@ _IMPORT_RE = re.compile(
     r'((?: \(param(?: (?:i32|i64|f32|f64))+\))?'
     r'(?: \(result(?: (?:i32|i64|f32|f64))+\))?)\)\)$'
 )
-_MEMORY_RE = re.compile(r'^  \(memory \(export "memory"\) (\d+)\)$')
+_MEMORY_RE = re.compile(r'^  \(memory \(export "vera\.memory"\) (\d+)\)$')
 _HEAP_PTR_RE = re.compile(
-    r'^  \(global \$heap_ptr \(export "heap_ptr"\) '
+    r'^  \(global \$heap_ptr \(export "vera\.heap_ptr"\) '
     r'\(mut i32\) \(i32\.const (\d+)\)\)$'
 )
 _GC_HEAP_START_RE = re.compile(
@@ -746,37 +746,6 @@ def _module_body(wat: str) -> list[str]:
     return lines[1:-1]
 
 
-def _check_reserved_idents(body: list[str]) -> None:
-    """Reserved-identifier collision check (shared by both worlds).
-
-    Scan only non-data lines (a data segment's payload is a string
-    literal — a Vera program printing "$wasi_tbl" is not a collision),
-    and require an identifier boundary after each exact marker so a
-    LONGER identifier like `$wasi_tblish` is not a collision either
-    (CR review, PR #849).  `$wasi_sig_` is the one deliberate prefix
-    family (the shim type names `$wasi_sig_<op>`).
-    """
-    ident_lines = "\n".join(
-        line for line in body if not line.lstrip().startswith("(data")
-    )
-    for marker, is_prefix in (
-        ("$wasi_tbl", False), ("$wasi_arena_ptr", False),
-        ("$cabi_realloc", False), ("$__wasi_run", False),
-        ("$wasi_sig_", True),
-    ):
-        pattern = re.escape(marker)
-        if not is_prefix:
-            # WAT identifiers extend through [0-9A-Za-z_$.] in the
-            # names the Vera code generator emits; anything else
-            # (whitespace, parens, quote, end) terminates the id.
-            pattern += r"(?![0-9A-Za-z_$.])"
-        if re.search(pattern, ident_lines):
-            raise ValueError(
-                f"program defines the reserved identifier {marker!r}; "
-                "--target wasi-p2 cannot compile it"
-            )
-
-
 def _transform_main(
     wat: str, used: dict[str, str],
 ) -> tuple[list[str], _Layout]:
@@ -787,13 +756,12 @@ def _transform_main(
     inserts the GC-exempt arena (shifting ``gc_heap_start`` /
     ``heap_ptr`` up when the GC runtime is present), raises the memory
     min so the arena is addressable at instantiation, and appends
-    ``cabi_realloc`` + the ``__wasi_run`` wrapper.
+    ``rt.cabi_realloc`` + the ``rt.wasi_run`` wrapper.
 
     Returns the module *fields* (no outer ``(module`` / ``)``) and the
     computed layout.
     """
     body = _module_body(wat)
-    _check_reserved_idents(body)
 
     kept: list[str] = []
     mem_idx = -1
@@ -842,7 +810,7 @@ def _transform_main(
         arena_base = (gc_start_val + 7) & ~7
         new_start = arena_base + _ARENA_SIZE
         kept[heap_ptr_idx] = (
-            f'  (global $heap_ptr (export "heap_ptr") '
+            f'  (global $heap_ptr (export "vera.heap_ptr") '
             f"(mut i32) (i32.const {new_start}))"
         )
         kept[gc_start_idx] = (
@@ -855,10 +823,10 @@ def _transform_main(
     pages = (arena_end + 65535) // 65536
     if mem_idx >= 0:
         kept[mem_idx] = (
-            f'  (memory (export "memory") {max(mem_min, pages)})'
+            f'  (memory (export "vera.memory") {max(mem_min, pages)})'
         )
     else:
-        kept.append(f'  (memory (export "memory") {pages})')
+        kept.append(f'  (memory (export "vera.memory") {pages})')
 
     # --- entry-point shape ------------------------------------------
     if not main_fn_line:
@@ -895,11 +863,11 @@ def _transform_main(
     # --- appended machinery -----------------------------------------
     out = list(kept)
     out.append(
-        f'  (table $wasi_tbl (export "wasi_tbl") '
+        f'  (table $rt.wasi_tbl (export "vera.wasi_tbl") '
         f"{_CLI_TABLE_SIZE} {_CLI_TABLE_SIZE} funcref)"
     )
     out.append(
-        f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
+        f'  (global $rt.wasi_arena_ptr (export "vera.wasi_arena_ptr") '
         f"(mut i32) (i32.const {bump_start}))"
     )
     out.append(_emit_cabi_realloc(arena_end))
@@ -919,11 +887,11 @@ def _emit_cabi_realloc(arena_end: int) -> str:
     (wrap-table precedent, #573).
     """
     return (
-        '  (func $cabi_realloc (export "cabi_realloc") '
+        '  (func $rt.cabi_realloc (export "vera.cabi_realloc") '
         "(param $old i32) (param $old_size i32) "
         "(param $align i32) (param $new_size i32) (result i32)\n"
         "    (local $p i32)\n"
-        "    global.get $wasi_arena_ptr\n"
+        "    global.get $rt.wasi_arena_ptr\n"
         "    local.get $align\n"
         "    i32.add\n"
         "    i32.const 1\n"
@@ -946,7 +914,7 @@ def _emit_cabi_realloc(arena_end: int) -> str:
         "    local.get $p\n"
         "    local.get $new_size\n"
         "    i32.add\n"
-        "    global.set $wasi_arena_ptr\n"
+        "    global.set $rt.wasi_arena_ptr\n"
         "    local.get $old\n"
         "    if\n"
         "      local.get $p\n"
@@ -963,7 +931,7 @@ def _emit_shim(name: str, spec: _OpSpec) -> str:
     """Same-named ``call_indirect`` shim replacing a ``vera.*`` import.
 
     The shim keeps the ``$vera.<op>`` identifier so every call site in
-    the compiled module is untouched; the explicit ``$wasi_tbl`` table
+    the compiled module is untouched; the explicit ``$rt.wasi_tbl`` table
     reference keeps closure ``call_indirect`` sites (implicit table 0)
     unaffected.
     """
@@ -973,11 +941,11 @@ def _emit_shim(name: str, spec: _OpSpec) -> str:
         for i in range(len(spec.params.split()) if spec.params else 0)
     )
     return (
-        f"  (type $wasi_sig_{spec.slot} (func{sig}))\n"
+        f"  (type $rt.wasi_sig_{spec.slot} (func{sig}))\n"
         f"  (func $vera.{name}{sig}\n"
         f"{forwards}"
         f"    i32.const {spec.slot}\n"
-        f"    call_indirect $wasi_tbl (type $wasi_sig_{spec.slot})\n"
+        f"    call_indirect $rt.wasi_tbl (type $rt.wasi_sig_{spec.slot})\n"
         "  )"
     )
 
@@ -991,7 +959,7 @@ def _emit_wasi_run(n_results: int) -> str:
     """
     drops = "    drop\n" * n_results
     return (
-        '  (func $__wasi_run (export "__wasi_run") (result i32)\n'
+        '  (func $rt.wasi_run (export "vera.wasi_run") (result i32)\n'
         "    call $main\n"
         f"{drops}"
         "    i32.const 0\n"
@@ -2496,26 +2464,26 @@ def _assemble_component(
     parts.extend("  " + line if line else line for line in main_fields)
     parts.append("  )")
     parts.append("  (core instance $main (instantiate $Main))")
-    parts.append('  (alias core export $main "memory" (core memory $mem))')
+    parts.append('  (alias core export $main "vera.memory" (core memory $mem))')
     parts.append(
-        '  (alias core export $main "cabi_realloc" (core func $realloc))'
+        '  (alias core export $main "vera.cabi_realloc" (core func $realloc))'
     )
     parts.append(
-        '  (alias core export $main "wasi_tbl" (core table $tbl))'
+        '  (alias core export $main "vera.wasi_tbl" (core table $tbl))'
     )
     parts.append(
-        '  (alias core export $main "wasi_arena_ptr" '
+        '  (alias core export $main "vera.wasi_arena_ptr" '
         "(core global $g_arena))"
     )
     if lay.has_alloc:
         parts.append(
-            '  (alias core export $main "alloc" (core func $f_alloc))'
+            '  (alias core export $main "vera.alloc" (core func $f_alloc))'
         )
         parts.append(
-            '  (alias core export $main "gc_sp" (core global $g_sp))'
+            '  (alias core export $main "vera.gc_sp" (core global $g_sp))'
         )
         parts.append(
-            '  (alias core export $main "gc_stack_limit" '
+            '  (alias core export $main "vera.gc_stack_limit" '
             "(core global $g_lim))"
         )
 
@@ -2557,7 +2525,7 @@ def _assemble_component(
 
     parts.append(
         "  (func $run_l (result (result)) "
-        '(canon lift (core func $main "__wasi_run")))'
+        '(canon lift (core func $main "vera.wasi_run")))'
     )
     parts.append('  (instance $run_inst (export "run" (func $run_l)))')
     parts.append('  (export "wasi:cli/run@0.2.0" (instance $run_inst))')
@@ -2909,7 +2877,7 @@ def _transform_main_server(
     """Post-process the compiled core module for the server world.
 
     Differences from the cli ``_transform_main`` (design §1.4): no
-    ``main`` requirement and no ``__wasi_run`` (the entry is the
+    ``main`` requirement and no ``rt.wasi_run`` (the entry is the
     exported ``handle``, already validated on the CompileResult); the
     wrap-table region is ACCEPTED (map programs carry it — arena
     placement is unchanged, ``align8(gc_heap_start)`` sits above the
@@ -2919,7 +2887,6 @@ def _transform_main_server(
     GC-heap headroom past the arena (live-validated by the prototype).
     """
     body = _module_body(wat)
-    _check_reserved_idents(body)
 
     kept: list[str] = []
     mem_idx = -1
@@ -2961,7 +2928,7 @@ def _transform_main_server(
     new_start = arena_base + _ARENA_SIZE
     arena_end = new_start
     kept[heap_ptr_idx] = (
-        f'  (global $heap_ptr (export "heap_ptr") '
+        f'  (global $heap_ptr (export "vera.heap_ptr") '
         f"(mut i32) (i32.const {new_start}))"
     )
     kept[gc_start_idx] = (
@@ -2969,7 +2936,7 @@ def _transform_main_server(
     )
     pages = (arena_end + 65535) // 65536 + 1
     kept[mem_idx] = (
-        f'  (memory (export "memory") {max(mem_min, pages)})'
+        f'  (memory (export "vera.memory") {max(mem_min, pages)})'
     )
 
     _segments, statics_base, bump_start = _build_server_statics(arena_base)
@@ -2986,11 +2953,11 @@ def _transform_main_server(
 
     out = list(kept)
     out.append(
-        f'  (table $wasi_tbl (export "wasi_tbl") '
+        f'  (table $rt.wasi_tbl (export "vera.wasi_tbl") '
         f"{_SERVER_TABLE_SIZE} {_SERVER_TABLE_SIZE} funcref)"
     )
     out.append(
-        f'  (global $wasi_arena_ptr (export "wasi_arena_ptr") '
+        f'  (global $rt.wasi_arena_ptr (export "vera.wasi_arena_ptr") '
         f"(mut i32) (i32.const {bump_start}))"
     )
     out.append(_emit_cabi_realloc(arena_end))
@@ -4789,19 +4756,19 @@ def _assemble_server_component(
     parts.extend("  " + line if line else line for line in main_fields)
     parts.append("  )")
     parts.append("  (core instance $main (instantiate $Main))")
-    parts.append('  (alias core export $main "memory" (core memory $mem))')
+    parts.append('  (alias core export $main "vera.memory" (core memory $mem))')
     parts.append(
-        '  (alias core export $main "cabi_realloc" (core func $realloc))'
+        '  (alias core export $main "vera.cabi_realloc" (core func $realloc))'
     )
-    parts.append('  (alias core export $main "wasi_tbl" (core table $tbl))')
+    parts.append('  (alias core export $main "vera.wasi_tbl" (core table $tbl))')
     parts.append(
-        '  (alias core export $main "wasi_arena_ptr" '
+        '  (alias core export $main "vera.wasi_arena_ptr" '
         "(core global $g_arena))"
     )
-    parts.append('  (alias core export $main "alloc" (core func $f_alloc))')
-    parts.append('  (alias core export $main "gc_sp" (core global $g_sp))')
+    parts.append('  (alias core export $main "vera.alloc" (core func $f_alloc))')
+    parts.append('  (alias core export $main "vera.gc_sp" (core global $g_sp))')
     parts.append(
-        '  (alias core export $main "gc_stack_limit" '
+        '  (alias core export $main "vera.gc_stack_limit" '
         "(core global $g_lim))"
     )
     parts.append('  (alias core export $main "handle" (core func $f_handle))')

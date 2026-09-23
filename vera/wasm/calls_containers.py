@@ -14,7 +14,7 @@ call-result rule in ``WasmContext._root_landed_value`` (#1379) rather
 than by a per-site push here.  Decimal is the one type that keeps the
 value-typed Python store and the #573 wrap/unwrap scheme: its
 call-sites still wrap a raw handle in an ADT (tag at offset 0, handle
-at offset 4), register it with ``$register_wrapper``, and unwrap via
+at offset 4), register it with ``$rt.register_wrapper``, and unwrap via
 ``i32.load offset=4`` before the host call.
 """
 
@@ -89,7 +89,7 @@ class CallsContainersMixin:
         Post-condition: ``wrapper_temp`` holds the wrapper-ADT
         pointer (a GC-managed i32 heap pointer).  The wrapper has
         been registered with the wrap table so Phase 2c of
-        ``$gc_collect`` will fire ``host_decref_handle(kind,
+        ``$rt.gc_collect`` will fire ``host_decref_handle(kind,
         handle)`` when the wrapper becomes unreachable.
 
         ``kind`` is one of the ``_WRAP_KIND_*`` constants.
@@ -110,11 +110,11 @@ class CallsContainersMixin:
             raise NotImplementedError(
                 f"#573: unknown wrap kind {kind}",
             )
-        # Allocate 8-byte body.  $alloc returns the body pointer
+        # Allocate 8-byte body.  $rt.alloc returns the body pointer
         # (header lives at body_ptr - 4).
         seq = [
             f"i32.const {_WRAPPER_BODY_SIZE}",
-            "call $alloc",
+            "call $rt.alloc",
             f"local.tee {wrapper_temp}",
             # Store tag at body[0].
             f"i32.const {tag_value}",
@@ -122,11 +122,11 @@ class CallsContainersMixin:
             # Store TAGGED handle at body[4].  #578: OR with
             # 0x80000000 so the in-heap field cannot be mistaken
             # for a heap pointer by the conservative GC scan.
-            # The heap-ceiling guard in $alloc enforces
+            # The heap-ceiling guard in $rt.alloc enforces
             # heap_ptr < 0x80000000, so a value with bit 31 set
             # is guaranteed outside the heap-range check.  The
             # raw handle is recovered by ANDing with 0x7FFFFFFF
-            # at the unwrap site.  Note: ``$register_wrapper``
+            # at the unwrap site.  Note: ``$rt.register_wrapper``
             # below still receives the RAW handle — the wrap
             # table needs it for ``host_decref_handle`` calls
             # during Phase 2c.
@@ -142,11 +142,11 @@ class CallsContainersMixin:
             f"local.get {wrapper_temp}",
             "i32.const 0",
             "i32.store offset=8",
-            # Register with wrap table: $register_wrapper(ptr, kind, handle).
+            # Register with wrap table: $rt.register_wrapper(ptr, kind, handle).
             f"local.get {wrapper_temp}",
             f"i32.const {kind}",
             f"local.get {handle_temp}",
-            "call $register_wrapper",
+            "call $rt.register_wrapper",
         ]
         # #573: shadow-push the wrapper so any subsequent
         # allocation within the same function frame can't sweep
@@ -154,7 +154,7 @@ class CallsContainersMixin:
         # ``decimal_add(decimal_from_int(a), decimal_from_int(b))``
         # is unsafe — the inner ``decimal_from_int`` returns a
         # wrapper which sits on the operand stack while the
-        # second ``decimal_from_int`` invokes ``$alloc``; if GC
+        # second ``decimal_from_int`` invokes ``$rt.alloc``; if GC
         # fires there, the first wrapper is unmarked (it's on
         # the operand stack and in a WASM local but neither is
         # GC-visible) and Phase 2c evicts its host-store entry.

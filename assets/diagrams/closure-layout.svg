@@ -67,7 +67,7 @@
   <!-- funcref table -->
   <g>
     <rect x="564" y="322" width="320" height="38" rx="10" fill="#ede8f2" stroke="#e8e6e1"/>
-    <text class="m t" x="724" y="341" text-anchor="middle" font-size="11.5px">(table funcref) · (elem $anon_0 $anon_1 …)</text>
+    <text class="m t" x="724" y="341" text-anchor="middle" font-size="11.5px">(table funcref) · (elem $rt.anon_0 …)</text>
     <text class="f d" x="724" y="354" text-anchor="middle" font-size="9px">one slot per lifted function; one $closure_sig_N per unique signature</text>
   </g>
   <line class="edge" x1="724" y1="298" x2="724" y2="318" marker-end="url(#arr)"/>

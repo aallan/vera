@@ -67,7 +67,7 @@
   <text class="f note" x="36" y="180">WASM cannot scan its own call stack, so the</text>
   <text class="f note" x="36" y="194">compiler pushes live heap pointers explicitly:</text>
   <text class="f note" x="36" y="208">pointer params at entry, fresh allocations</text>
-  <text class="f note" x="36" y="222">after each <tspan class="m" font-size="10px">call $alloc</tspan>, restored at exit.</text>
+  <text class="f note" x="36" y="222">after each <tspan class="m" font-size="10px">call $rt.alloc</tspan>, restored at exit.</text>
 
   <!-- allocation inset (right, under offsets) -->
   <text class="f noteh" x="640" y="292">one allocation</text>

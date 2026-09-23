@@ -1480,8 +1480,15 @@ public fn main(@Int -> @Int)
         assert errors[0].error_code == "E608"
         assert result.ok is False
 
-    def test_private_helper_collision(self) -> None:
-        """Private helpers with same name across modules produce E608."""
+    def test_private_helpers_of_one_name_each_run_their_own(self) -> None:
+        """Two modules' private ``helper`` each keep their own symbol (#1498).
+
+        Neither owns the entry's bare name, so each is emitted as
+        ``mod$<path>$helper`` and each module's bare call reaches its own.
+        This was E608, although spec §11.16 says two declarations neither of
+        which owns the bare name cannot overwrite each other.  The two bodies
+        differ, so a call bound to the other module's helper shows.
+        """
         mod_a = self._resolved(("mod_a",), """\
 public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1496,7 +1503,7 @@ public fn triple(@Int -> @Int)
 { helper(@Int.0) + helper(@Int.0) + helper(@Int.0) }
 private fn helper(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 }
+{ @Int.0 * 10 }
 """)
         result = self._compile_mod("""\
 import mod_a(double);
@@ -1506,10 +1513,9 @@ public fn main(@Int -> @Int)
 { double(@Int.0) + triple(@Int.0) }
 """, [mod_a, mod_b])
         errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert any(
-            e.error_code == "E608" and "helper" in e.description
-            for e in errors
-        )
+        assert errors == []
+        # double(2) = 2 + 2 via mod_a's helper; triple(2) = 3 * 20 via mod_b's.
+        assert execute(result, fn_name="main", args=[2]).value == 4 + 60
 
     def test_adt_type_collision(self) -> None:
         """Same ADT name in two modules produces E609."""

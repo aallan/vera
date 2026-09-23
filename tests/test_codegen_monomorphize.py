@@ -771,7 +771,7 @@ class TestCompositeShowHash:
 
     Before #911 these were ``vera check``-green but dropped at codegen
     (``show()/hash() not supported for type ...`` → function skipped).
-    Structural traversal mirrors the ``$eq_<type>`` machinery: render each
+    Structural traversal mirrors the ``$rt.eq_<type>`` machinery: render each
     field by its own ``show`` (recursively); fold field hashes with the tag.
     """
 
@@ -1019,9 +1019,9 @@ private fn nest(@Int -> @Option<Option<Int>>)
     #
     # `List<Int> = Cons(Int, List<Int>)` recurs on the SAME parameterized
     # type.  The inline #911 traversal cannot render unbounded depth, so it
-    # requests a GENERATED recursive helper ($show_List_LInt_R /
-    # $hash_List_LInt_R) that calls itself for the recursive field —
-    # mirroring the $eq_<type> machinery (#773).  Codegen terminates (one
+    # requests a GENERATED recursive helper ($rt.show_List_LInt_R /
+    # $rt.hash_List_LInt_R) that calls itself for the recursive field —
+    # mirroring the $rt.eq_<type> machinery (#773).  Codegen terminates (one
     # helper per recursive type), and the helper terminates at runtime by
     # recursing over the finite value.
 
@@ -1102,7 +1102,7 @@ public fn main(-> @Bool)
         """A deep (100-element) recursive value renders without shadow overflow.
 
         The generated helper recurses once per Cons cell; each level builds
-        strings via `$alloc`.  100 levels confirms the recursion terminates
+        strings via `$rt.alloc`.  100 levels confirms the recursion terminates
         (finite data) and the shadow-stack rooting holds — no `unreachable` /
         overflow.  Run under eager GC in the dedicated CLI test below.
         """
@@ -1154,8 +1154,8 @@ private fn build(@Nat -> @List<Nat>)
     def test_mutually_recursive_show(self) -> None:
         """A (non-generic) mutually-recursive ADT pair renders via helpers.
 
-        `Forest` ↔ `Rose` reference each other; the generated `$show_Forest`
-        and `$show_Rose` helpers cross-call.  (The GENERIC mutual case — where
+        `Forest` ↔ `Rose` reference each other; the generated `$rt.show_Forest`
+        and `$rt.show_Rose` helpers cross-call.  (The GENERIC mutual case — where
         the type argument is buried in a nested generic field, `Grove(Rose<T>,
         Forest<T>)` — is now also supported via nested type-argument descent;
         see `test_generic_mutually_recursive_*` below and #934.)
@@ -1191,7 +1191,7 @@ private data Rose<T> { Bloom(T, Forest<T>) }
 
         Pre-fix: the site fell back to a bare-pointer `i32.eq` of two freshly
         allocated structs → a SILENT `0`.  Post-fix: the recovered
-        `Forest<Int>` routes to `$eq_Forest<Int>` → `1`.
+        `Forest<Int>` routes to `$rt.eq_Forest<Int>` → `1`.
         """
         source = self._GENERIC_MUTUAL_DECLS + """
 public fn main(-> @Int)
@@ -1487,8 +1487,8 @@ public fn main(-> @Bool)
         # Compiles with `main` exported and every clause true at run time.
         wat = _compile_ok(source).wat
         # Exactly one helper per distinct type — no runaway duplication.
-        assert wat.count("(func $show_List_LInt_R ") == 1
-        assert wat.count("(func $show_List_LList_LInt_R_R ") == 1
+        assert wat.count("(func $rt.show_List_LInt_R ") == 1
+        assert wat.count("(func $rt.show_List_LList_LInt_R_R ") == 1
         assert _run(source, fn="main") == 1
 
     def test_recursion_error_backstop_degrades_to_clean_skip(
@@ -2454,7 +2454,7 @@ class TestMangleInjectivity:
         """Widening the escape moves NO symbol that existed before it.
 
         The five pre-#1219 codes (``__``/``_L``/``_R``/``_C``/``_S``) keep
-        their exact meanings, so every family, Z3 sort, ``$eq_`` helper and
+        their exact meanings, so every family, Z3 sort, ``$rt.eq_`` helper and
         mono clone the corpus already emits keeps its name.  ``", "`` in
         particular stays ONE ``_C`` rather than becoming per-character
         ``_C_S``; only a comma NOT followed by a space — which no canonical

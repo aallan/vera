@@ -77,7 +77,7 @@ class CallsEncodingMixin:
 
         # Allocate output buffer
         ins.append(f"local.get {out_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -374,7 +374,7 @@ class CallsEncodingMixin:
         ins.append("i32.eqz")
         ins.append("if")
         ins.append("  i32.const 16")
-        ins.append("  call $alloc")
+        ins.append("  call $rt.alloc")
         ins.append(f"  local.tee {out}")
         ins.append("  i32.const 0")
         ins.append("  i32.store")          # tag = 0 (Ok)
@@ -436,7 +436,7 @@ class CallsEncodingMixin:
         ins.append(f"local.get {out_len}")
         ins.append("i32.const 1")
         ins.append("i32.or")              # at least 1 byte for alloc
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -672,7 +672,7 @@ class CallsEncodingMixin:
 
         # --- Ok path: wrap (dst, out_len) in Result -------------------
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")            # tag = 0 (Ok)
@@ -688,7 +688,7 @@ class CallsEncodingMixin:
         # --- Err path: invalid length ---------------------------------
         ins.append("end")  # block $err_len_bd
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")            # tag = 1 (Err)
@@ -704,7 +704,7 @@ class CallsEncodingMixin:
         # --- Err path: invalid character ------------------------------
         ins.append("end")  # block $err_chr_bd
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")            # tag = 1 (Err)
@@ -858,7 +858,7 @@ class CallsEncodingMixin:
 
         # Allocate output buffer
         ins.append(f"local.get {out_len}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1044,7 +1044,7 @@ class CallsEncodingMixin:
         ins.append("i32.eqz")
         ins.append("if")
         ins.append("  i32.const 16")
-        ins.append("  call $alloc")
+        ins.append("  call $rt.alloc")
         ins.append(f"  local.tee {out}")
         ins.append("  i32.const 0")
         ins.append("  i32.store")              # tag = 0 (Ok)
@@ -1060,7 +1060,7 @@ class CallsEncodingMixin:
 
         # Allocate output buffer (at most slen bytes — decoding shrinks)
         ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1263,7 +1263,7 @@ class CallsEncodingMixin:
 
         # --- Ok path ---
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")                # tag = 0 (Ok)
@@ -1279,7 +1279,7 @@ class CallsEncodingMixin:
         # --- Err path ---
         ins.append("end")  # block $err_ud
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")                # tag = 1 (Err)
@@ -1669,7 +1669,7 @@ class CallsEncodingMixin:
 
         # ---- Step 4: Allocate UrlParts (48 bytes) ----
         ins.append("i32.const 48")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {up}")
         ins.append("i32.const 0")
         ins.append("i32.store")              # tag = 0 (UrlParts constructor)
@@ -1803,7 +1803,7 @@ class CallsEncodingMixin:
 
         # ---- Step 5: Allocate Result (16 bytes), Ok(UrlParts) ----
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")              # tag = 0 (Ok)
@@ -1816,7 +1816,7 @@ class CallsEncodingMixin:
         # ---- Err path ----
         ins.append("end")  # block $err_up
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")              # tag = 1 (Err)
@@ -2042,7 +2042,7 @@ class CallsEncodingMixin:
 
         # ---- Pass 2: allocate and write ----
         ins.append(f"local.get {total}")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 

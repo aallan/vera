@@ -221,8 +221,8 @@ public fn main(-> @Int)
     def test_query_survives_eager_gc(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # The S2 rooting holds through the REAL host path: baked into $alloc,
-        # every allocation in the grid marshalling fires $gc_collect, yet the
+        # The S2 rooting holds through the REAL host path: baked into $rt.alloc,
+        # every allocation in the grid marshalling fires $rt.gc_collect, yet the
         # row count reads back correct.
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run(self._QUERY_ROWS) == 2

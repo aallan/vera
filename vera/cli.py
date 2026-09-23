@@ -1436,7 +1436,7 @@ def cmd_run(
         print(f"Error: {exc}", file=sys.stderr)
         # #516 Stage 2 — print the source backtrace after the error
         # line.  Outermost (most recent) frame first.  Built-in /
-        # runtime helpers ($alloc, $gc_collect, $contract_fail) show
+        # runtime helpers ($rt.alloc, $rt.gc_collect, $vera.contract_fail) show
         # as "<builtin>" rather than a misleading file:line.  Filter
         # the leading run of built-in frames so the user sees their
         # own code at the top — those frames are usually noise (the

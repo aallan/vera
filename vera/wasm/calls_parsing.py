@@ -160,7 +160,7 @@ class CallsParsingMixin:
 
         # -- Ok path: allocate 16 bytes, tag=0, Nat at offset 8 ----------
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")           # tag = 0 (Ok)
@@ -195,7 +195,7 @@ class CallsParsingMixin:
         ins.append("end")
         ins.append(f"local.set {byte}")  # reuse byte for err string len
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")           # tag = 1 (Err)
@@ -422,7 +422,7 @@ class CallsParsingMixin:
 
         # -- Ok path: allocate 16 bytes, tag=0, Int at offset 8 -----------
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")           # tag = 0 (Ok)
@@ -454,7 +454,7 @@ class CallsParsingMixin:
         ins.append("end")
         ins.append(f"local.set {byte}")
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")           # tag = 1 (Err)
@@ -604,7 +604,7 @@ class CallsParsingMixin:
         ins.append("  if")
         # Matched "true" → Ok(1)
         ins.append("    i32.const 16")
-        ins.append("    call $alloc")
+        ins.append("    call $rt.alloc")
         ins.append(f"    local.tee {out}")
         ins.append("    i32.const 0")
         ins.append("    i32.store")          # tag = 0 (Ok)
@@ -663,7 +663,7 @@ class CallsParsingMixin:
         ins.append("  if")
         # Matched "false" → Ok(0)
         ins.append("    i32.const 16")
-        ins.append("    call $alloc")
+        ins.append("    call $rt.alloc")
         ins.append(f"    local.tee {out}")
         ins.append("    i32.const 0")
         ins.append("    i32.store")          # tag = 0 (Ok)
@@ -682,7 +682,7 @@ class CallsParsingMixin:
 
         # -- Err path: allocate 16 bytes, tag=1, String at offsets 4,8 ----
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")           # tag = 1 (Err)
@@ -980,7 +980,7 @@ class CallsParsingMixin:
 
         # -- Ok path: allocate 16 bytes, tag=0, f64 at offset 8 -----------
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")             # tag = 0 (Ok)
@@ -1017,7 +1017,7 @@ class CallsParsingMixin:
         ins.append("end")
         ins.append(f"local.set {byte}")  # reuse byte for err len
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")             # tag = 1 (Err)

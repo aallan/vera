@@ -18,13 +18,26 @@ A compiled Vera module is a standalone WASM module containing:
 
 ### 12.2.1 Exports
 
-Every compilable top-level function is exported by name. The entry point for `vera run` is resolved as follows:
+Every compilable top-level `public` function of the compiled file is exported under its source name. The entry point for `vera run` is resolved as follows:
 
 1. If `--fn <name>` is provided, call that function.
 2. Otherwise, if a function named `main` exists, call `main`.
 3. Otherwise, call the first exported function.
 
 Functions whose parameter or return types have no WASM representation (e.g., `Array<T>` return values, higher-kinded types) are skipped during compilation with a warning — they do not appear in the module's exports. Functions with `String` parameters are supported: the compiler emits a bump allocator and the host CLI allocates string arguments in linear memory before calling the function.
+
+The module's **host interface** — what the runtime itself exports for the host to drive it — lives in the `vera.` export namespace, which no Vera identifier can spell. A program may therefore name a function after any of these (`memory`, `alloc`, …) and still export it under its source name: the program's exports and the runtime's can never collide.
+
+| Export | Kind | Present when | Used by the host to |
+|--------|------|--------------|---------------------|
+| `vera.memory` | memory | the module holds string data or allocates | read and write linear memory |
+| `vera.alloc` | func `(param i32) (result i32)` | a host function returns heap data, or an export takes a `String` or `Array` | allocate a payload of the given size |
+| `vera.heap_ptr` | global `(mut i32)` | the GC runtime is present | read the bump pointer (the peak-heap statistic) |
+| `vera.gc_sp` | global `(mut i32)` | the GC runtime is present | root host-held pointers on the shadow stack across allocations |
+| `vera.gc_stack_limit` | global `i32` | the GC runtime is present | bound those pushes |
+| `vera.register_wrapper` | func | a `Map` value is in use | register a host-handle wrapper with the collector |
+
+An embedder that drives a compiled core module directly binds exactly these names. The wasmtime runner, the browser runtime and the wasi-p2 component (§13) all do; the component's own additions to the core module are in the same namespace (`vera.cabi_realloc`, `vera.wasi_run`, `vera.wasi_tbl`, `vera.wasi_arena_ptr`), wired by the canonical options Vera writes itself.
 
 ### 12.2.2 Imports
 
@@ -69,9 +82,9 @@ Imports are only emitted when the program actually uses the corresponding host-b
 
 ### 12.2.3 Linear Memory
 
-The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
+The module exports one page (64 KiB) of linear memory as `"vera.memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_file`, `IO.write_file`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
+When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_file`, `IO.write_file`, `IO.args`, `IO.get_env` — the module also exports its allocator as `vera.alloc` so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `vera.alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -153,7 +166,7 @@ The output is captured in a buffer so the caller can inspect it programmatically
 **Behaviour:**
 1. Read one line from standard input (up to and including the newline character).
 2. Strip the trailing newline.
-3. Call the exported `$alloc` function to allocate memory in the WASM module.
+3. Call the exported allocator (`vera.alloc`) to allocate memory in the WASM module.
 4. Copy the UTF-8 bytes into linear memory.
 5. Return the `(ptr, len)` pair.
 
@@ -175,7 +188,7 @@ The `execute()` function accepts an optional `stdin` parameter. If provided, `re
 3. On success: construct a `Result.Ok` ADT on the WASM heap containing the file contents as a String (tag=0, str\_ptr, str\_len). Return the heap pointer.
 4. On failure: construct a `Result.Err` ADT containing the error message (tag=1, str\_ptr, str\_len). Return the heap pointer.
 
-The host allocates memory via the exported `$alloc` function.
+The host allocates memory via the exported allocator (`vera.alloc`).
 
 #### 12.4.1.4 IO.write\_file
 
@@ -338,7 +351,7 @@ For the `MdInline` and `MdBlock` ADT definitions, see Section 9.3.5 and Section 
 3. On success: construct a `Result.Ok` ADT containing the `MdDocument` tree on the WASM heap. Return the heap pointer.
 4. On failure: construct a `Result.Err` ADT containing the error message. Return the heap pointer.
 
-The host allocates all tree nodes (including nested `MdBlock` and `MdInline` values) via the exported `$alloc` function.
+The host allocates all tree nodes (including nested `MdBlock` and `MdInline` values) via the exported allocator (`vera.alloc`).
 
 #### 12.4.4.2 md\_render
 
@@ -352,7 +365,7 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 **Behaviour:**
 1. Read the `MdBlock` tree from WASM linear memory by tag dispatch.
 2. Render it to canonical Markdown text.
-3. Allocate memory for the result string via `$alloc`.
+3. Allocate memory for the result string via `vera.alloc`.
 4. Return the `(ptr, len)` pair.
 
 #### 12.4.4.3 md\_has\_heading
@@ -390,12 +403,12 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 **Behaviour:**
 1. Read the `MdBlock` tree from WASM linear memory.
 2. Recursively find all fenced code blocks whose language matches the given string.
-3. Allocate backing storage for the result array via `$alloc`.
+3. Allocate backing storage for the result array via `vera.alloc`.
 4. Return `(backing_ptr, count)`.
 
 ### 12.4.5 Random Operations
 
-The `Random` effect provides three host-backed operations for non-deterministic value generation. None allocate or return heap data, so modules that use only `Random` (alongside e.g. arithmetic) don't need `$alloc` exported.
+The `Random` effect provides three host-backed operations for non-deterministic value generation. None allocate or return heap data, so modules that use only `Random` (alongside e.g. arithmetic) don't need `vera.alloc` exported.
 
 #### 12.4.5.1 Random.random\_int
 
@@ -469,11 +482,11 @@ Header (i32 at ptr - 4):
   bits 17-31: reserved
 ```
 
-The internal `$alloc(payload_size)` function:
+The internal `$rt.alloc(payload_size)` function (exported as `vera.alloc`):
 
 1. Computes `total = align_up(payload_size + 4, 8)` (header + payload, 8-byte aligned).
 2. Searches the free list for a first-fit block with `header.size >= payload_size`. If found, unlinks it and returns the payload pointer.
-3. If `heap_ptr + total` exceeds available memory, triggers `$gc_collect` and retries the free list.
+3. If `heap_ptr + total` exceeds available memory, triggers `$rt.gc_collect` and retries the free list.
 4. If still insufficient, calls `memory.grow` to extend linear memory.
 5. Stores the header at `heap_ptr`, advances `heap_ptr` by `total`, and returns `heap_ptr_old + 4`.
 
@@ -495,9 +508,9 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 
 The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
 
-![Allocation and collection: $alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
+![Allocation and collection: $rt.alloc aligns the request, tries the free list, bumps if there is room, and otherwise runs the three collector phases — clear marks, mark from shadow-stack roots with conservative scanning, sweep unmarked blocks onto the free list — before retrying and finally growing memory.](../assets/diagrams/gc-cycle.svg)
 
-**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Four globals track the shadow stack and GC state:
+**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $rt.alloc` (newly allocated objects), and manages save/restore at function exit. Four globals track the shadow stack and GC state:
 
 | Global | Type | Purpose |
 |--------|------|---------|
@@ -506,15 +519,15 @@ The runtime implements a conservative mark-sweep garbage collector entirely in W
 | `$gc_heap_start` | `i32` | Heap start address (`data_end + 8192`) |
 | `$gc_free_head` | `mut i32` | Free list head pointer |
 
-**Collection phases.** The `$gc_collect` function performs three phases:
+**Collection phases.** The `$rt.gc_collect` function performs three phases:
 
 1. **Clear marks:** Walk the heap linearly from `$gc_heap_start` to `$heap_ptr`, clearing the mark bit in each object header.
 2. **Mark:** Seed a worklist from shadow stack entries that point into the heap. Drain the worklist iteratively: for each object, set its mark bit, then conservatively scan every i32-aligned word in the payload. Any word that looks like a valid heap pointer (correct range and alignment) is pushed onto the worklist.
-3. **Sweep:** Walk the heap again, linking unmarked objects into the free list for reuse by `$alloc`.
+3. **Sweep:** Walk the heap again, linking unmarked objects into the free list for reuse by `$rt.alloc`.
 
 **Conservative scanning.** The collector treats any i32 word whose value falls within the heap range and has correct payload alignment as a potential pointer. This eliminates the need for type descriptors or GC maps. False positives merely retain dead objects (harmless for mark-sweep).
 
-**Memory growth.** If collection does not free enough space, `$alloc` calls `memory.grow` to extend linear memory beyond the initial 64 KiB page. If memory growth fails, the program traps.
+**Memory growth.** If collection does not free enough space, `$rt.alloc` calls `memory.grow` to extend linear memory beyond the initial 64 KiB page. If memory growth fails, the program traps.
 
 ## 12.6 Execution Flow
 

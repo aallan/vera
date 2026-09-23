@@ -1763,9 +1763,9 @@ public fn fire(@String -> @Future<Result<String, String>>)
 { async(Http.get(@String.0)) }
 """)
         wat = result.wat
-        assert "call $register_wrapper" in wat
+        assert "call $rt.register_wrapper" in wat
         import re
-        assert re.search(r"i32\.const 4\s*\n\s*local\.get \d+\s*\n\s*call \$register_wrapper", wat), (
+        assert re.search(r"i32\.const 4\s*\n\s*local\.get \d+\s*\n\s*call \$rt.register_wrapper", wat), (
             "expected register_wrapper with kind 4 for the Future wrapper")
 
     def test_await_of_generic_fn_with_concrete_future_return(self) -> None:

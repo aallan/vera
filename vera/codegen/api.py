@@ -1128,7 +1128,7 @@ def execute(
         for modules compiled without the GC runtime (no ``heap_ptr``
         export).
         """
-        hp = instance.exports(store).get("heap_ptr")
+        hp = instance.exports(store).get("vera.heap_ptr")
         if not isinstance(hp, wasmtime.Global):
             return 0
         val = hp.value(store)
@@ -1179,17 +1179,17 @@ def execute(
             )
             raise RuntimeError(msg)
 
-        memory_export = instance.exports(store).get("memory")
-        alloc_export = instance.exports(store).get("alloc")
+        memory_export = instance.exports(store).get("vera.memory")
+        alloc_export = instance.exports(store).get("vera.alloc")
 
         def _alloc_string_arg(s: str) -> tuple[int, int]:
             if not isinstance(memory_export, wasmtime.Memory):
                 raise RuntimeError(
-                    "Cannot allocate String argument: module has no 'memory' export"
+                    "Cannot allocate String argument: module has no 'vera.memory' export"
                 )
             if not isinstance(alloc_export, wasmtime.Func):
                 raise RuntimeError(
-                    "Cannot allocate String argument: module has no 'alloc' export"
+                    "Cannot allocate String argument: module has no 'vera.alloc' export"
                 )
             encoded = s.encode("utf-8")
             ptr = alloc_export(store, len(encoded))
@@ -1458,7 +1458,7 @@ def execute(
             and isinstance(raw_result[1], int)
         ):
             ptr, length = raw_result[0], raw_result[1]
-            memory_export = instance.exports(store).get("memory")
+            memory_export = instance.exports(store).get("vera.memory")
             if isinstance(memory_export, wasmtime.Memory):
                 # `_read_string_export` decodes via `safe_utf8_decode`
                 # (errors="replace") rather than the previous try/except →

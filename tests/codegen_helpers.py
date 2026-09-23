@@ -359,7 +359,7 @@ def _assert_no_host_imports_for_inline_builtins(wat: str) -> None:
 # =====================================================================
 # Historically (#573) every map_new / map_insert / map_remove
 # allocated an entry in `_map_store` (in `vera/codegen/api.py`) that a
-# Phase-2c `$gc_collect` walk evicted via `host_decref_handle` once the
+# Phase-2c `$rt.gc_collect` walk evicted via `host_decref_handle` once the
 # owning wrapper was unmarked.
 #
 # Post-#706 (bucket-as-truth): Map and Set hold no Python store at all

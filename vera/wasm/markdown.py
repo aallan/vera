@@ -20,7 +20,7 @@ vera/codegen/registration.py.
 ``vera.codegen.api`` — an active context manager owning the
 WASM shadow-stack window for this walk.  Intermediate heap
 pointers (strings, child arrays) are pushed onto it before
-any subsequent alloc that could trigger ``$gc_collect``.
+any subsequent alloc that could trigger ``$rt.gc_collect``.
 The convention applied throughout this module is **allocate
 fields first, root them, allocate the body last** — that way
 the body's own pointer is never held in a Python local
@@ -470,7 +470,7 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     friends), so an offset here is guest data, not an allocator's
     answer, and a raw ctypes slice would read the guard page.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 4, "i32")
     buf = memory.data_ptr(caller)
@@ -484,7 +484,7 @@ def _read_i64(caller: wasmtime.Caller, offset: int) -> int:
     Bounds-checked through ``heap._require_readable`` (#1442), as
     :func:`_read_i32` above and for the same reason.
     """
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, offset, 8, "i64")
     buf = memory.data_ptr(caller)
@@ -515,7 +515,7 @@ def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     """
     if length == 0:
         return ""  # pragma: no cover
-    memory = caller["memory"]
+    memory = caller["vera.memory"]
     assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     _require_readable(memory, caller, ptr, length, "string")
     return _slice_and_decode(memory, caller, ptr, length)

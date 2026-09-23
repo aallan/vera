@@ -59,7 +59,7 @@ class ClosuresMixin:
 
         # Allocate closure struct
         instructions.append(f"i32.const {total_size}")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {tmp}")
         instructions.extend(gc_shadow_push(tmp))
 

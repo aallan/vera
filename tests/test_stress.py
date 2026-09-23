@@ -42,8 +42,8 @@ pytestmark = pytest.mark.stress
 
 
 # Eager-GC lane (#596 acceptance criterion).  Setting
-# `VERA_EAGER_GC=1` at compile time emits a `call $gc_collect`
-# as the first instruction of the runtime's `$alloc` function,
+# `VERA_EAGER_GC=1` at compile time emits a `call $rt.gc_collect`
+# as the first instruction of the runtime's `$rt.alloc` function,
 # forcing a full GC pass on every allocation.  This converts
 # latent missing-shadow-root bugs from "fires occasionally at
 # scale" into "fires on the very next allocation," so a stress
@@ -75,7 +75,7 @@ def _run(
 
     When ``eager_gc=True``, sets ``VERA_EAGER_GC=1`` in the
     environment for the duration of the compile call so the
-    runtime's ``$alloc`` function emits a forced GC pass per
+    runtime's ``$rt.alloc`` function emits a forced GC pass per
     allocation.  Callers must pass a ``monkeypatch`` fixture so
     the env var is scoped to the test and cleaned up automatically.
     """
@@ -207,7 +207,7 @@ def test_deep_tail_recursion_with_allocating_arg(
     Runs under both default and eager-GC modes (#596).  Eager GC
     fires a collection on every per-iteration array alloc, so a
     mis-rooted TCO frame would either trap immediately on the next
-    `$alloc` or corrupt the accumulator within hundreds of
+    `$rt.alloc` or corrupt the accumulator within hundreds of
     iterations rather than completing cleanly.
     """
     src = """

@@ -288,8 +288,8 @@ class WasmContext(
         # / JSON / HTML migrations track this same flag in
         # follow-ups.  When true, `assembly.py` allocates a
         # 64 KiB wrap-table region in linear memory, emits the
-        # `$register_wrapper` helper, and adds a Phase-2c walk
-        # to `$gc_collect` that fires `host_decref_handle` for
+        # `$rt.register_wrapper` helper, and adds a Phase-2c walk
+        # to `$rt.gc_collect` that fires `host_decref_handle` for
         # unmarked wrappers.
         self._needs_wrap_table: bool = False
         # Set host-import tracking (propagated to codegen core)
@@ -348,7 +348,7 @@ class WasmContext(
         # argument, so a sibling never sees another's.
         self._pending_component_type: object | None = None
         # #773: structural-Eq helper functions this context generated, keyed by
-        # the mangled `$eq_<type>` function name → its full WAT text.  Each
+        # the mangled `$rt.eq_<type>` function name → its full WAT text.  Each
         # helper takes two i32 ADT pointers and returns i32 (1 = equal).  A
         # nested-ADT field recurses by calling another entry here (generated on
         # demand, deduped by name so a recursive/self-referential ADT emits one
@@ -379,7 +379,7 @@ class WasmContext(
         # leaves every name unchanged.
         self._eq_full_type_names: dict[str, str] = {}
         # #924: generated recursive show/hash helper functions, keyed by the
-        # mangled `$show_<type>` / `$hash_<type>` function name → its full WAT
+        # mangled `$rt.show_<type>` / `$rt.hash_<type>` function name → its full WAT
         # text.  A directly- (or mutually-) recursive ADT's `show`/`hash`
         # cannot render inline (unbounded depth), so it emits a self-calling
         # helper — one per recursive type — that recurses over the finite
@@ -389,7 +389,7 @@ class WasmContext(
         self._show_hash_helpers: dict[str, str] = {}
         self._show_hash_pending: set[str] = set()
         # #933: nesting-depth bound for the derived-helper generators
-        # (`$show_<type>` / `$hash_<type>` / `$eq_<type>`).  A UNIFORMLY-
+        # (`$rt.show_<type>` / `$rt.hash_<type>` / `$rt.eq_<type>`).  A UNIFORMLY-
         # recursive ADT (`List<T>` whose tail is again `List<T>`) recurs on the
         # SAME parameterized type and is caught by the per-generator `_seen` /
         # `_..._pending` guards at generation depth 1 — one helper per type.  A
@@ -668,7 +668,7 @@ class WasmContext(
         by Pass 1.5 monomorphization BEFORE any body is translated.  The direct
         ``==`` path inside a generic clone body (`_translate_binary`) consults it
         so a `@T` slot whose substituted type is the TRUNCATED one-level clone
-        name (`List<List>`) resolves its Eq derivability and its `$eq_<type>`
+        name (`List<List>`) resolves its Eq derivability and its `$rt.eq_<type>`
         helper on the FULLY-nested name (`List<List<Int>>`) — matching the
         constraint gate.  The clone SYMBOL stays the truncated name (#772).
         """
@@ -1160,7 +1160,7 @@ class WasmContext(
         Only ``i32`` / ``i32_pair`` results of call-shaped expressions are
         rooted.  A ``SlotRef`` or literal NAMES a value its binder already
         rooted rather than producing one, and a constructor or array literal
-        pushed at its own ``$alloc`` and so took the branch above.
+        pushed at its own ``$rt.alloc`` and so took the branch above.
         """
         if not isinstance(
             expr, (ast.FnCall, ast.QualifiedCall, ast.ModuleCall)

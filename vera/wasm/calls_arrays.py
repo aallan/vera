@@ -214,7 +214,7 @@ class CallsArraysMixin:
         instructions.append(f"local.get {old_bytes}")
         instructions.append(f"i32.const {elem_size}")
         instructions.append("i32.add")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -332,7 +332,7 @@ class CallsArraysMixin:
         instructions.append(f"  local.get {n_i32}")
         instructions.append("  i32.const 8")
         instructions.append("  i32.mul")
-        instructions.append("  call $alloc")
+        instructions.append("  call $rt.alloc")
         instructions.append(f"  local.set {dst}")
         instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
 
@@ -456,7 +456,7 @@ class CallsArraysMixin:
 
         # Allocate
         instructions.append(f"  local.get {total_bytes}")
-        instructions.append("  call $alloc")
+        instructions.append("  call $rt.alloc")
         instructions.append(f"  local.set {dst}")
         instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
 
@@ -634,7 +634,7 @@ class CallsArraysMixin:
 
         # Allocate
         instructions.append(f"  local.get {total_bytes}")
-        instructions.append("  call $alloc")
+        instructions.append("  call $rt.alloc")
         instructions.append(f"  local.set {dst}")
         instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
 
@@ -746,7 +746,7 @@ class CallsArraysMixin:
 
             ;; evaluate arr → (ptr, len), save + GC-root arr_ptr
             ;; evaluate fn → i32 closure handle, save + GC-root fn_tmp
-            ;; call $alloc(len * sizeof(B)), save as dst, GC-root dst
+            ;; call $rt.alloc(len * sizeof(B)), save as dst, GC-root dst
             ;; loop idx in [0, len):
             ;;   push fn (env); load arr[idx]; push fn.func_table_idx
             ;;   call_indirect (type $closure_sig_N)
@@ -818,7 +818,7 @@ class CallsArraysMixin:
         instructions: list[str] = []
 
         # Evaluate arr → (ptr, len), save.  Shadow-push arr_ptr before
-        # fn_instrs and the dst $alloc: both can trigger GC, so the
+        # fn_instrs and the dst $rt.alloc: both can trigger GC, so the
         # input array must stay rooted across them.
         instructions.extend(arr_instrs)
         instructions.append(f"local.set {arr_len}")
@@ -832,7 +832,7 @@ class CallsArraysMixin:
         instructions.append(f"local.get {arr_len}")
         instructions.append(f"i32.const {b_size}")
         instructions.append("i32.mul")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -972,7 +972,7 @@ class CallsArraysMixin:
 
             ;; evaluate arr → (ptr, len), save + GC-root arr_ptr
             ;; evaluate fn → i32 handle, save + GC-root fn_tmp
-            ;; call $alloc(len * sizeof(T)), save as dst, GC-root dst
+            ;; call $rt.alloc(len * sizeof(T)), save as dst, GC-root dst
             ;; write_idx = 0
             ;; loop idx in [0, len):
             ;;   push fn (env); load src[idx]; push fn_idx;
@@ -1029,7 +1029,7 @@ class CallsArraysMixin:
         instructions.append(f"local.get {arr_len}")
         instructions.append(f"i32.const {t_size}")
         instructions.append("i32.mul")
-        instructions.append("call $alloc")
+        instructions.append("call $rt.alloc")
         instructions.append(f"local.set {dst}")
         instructions.extend(gc_shadow_push(dst))
 
@@ -1447,7 +1447,7 @@ class CallsArraysMixin:
     # ===================================================================
     # Shared pattern, mirroring _translate_array_map / _filter / _fold:
     #   - Evaluate arr (and callback, if any), save into locals
-    #   - GC-shadow-push live pointers before any $alloc that might GC
+    #   - GC-shadow-push live pointers before any $rt.alloc that might GC
     #   - Emit a WAT block/loop over idx in [0, len)
     #   - Invoke the callback via call_indirect, typed by a registered
     #     closure signature
@@ -1491,11 +1491,11 @@ class CallsArraysMixin:
         ins.append(f"local.set {arr_ptr}")
         ins.extend(gc_shadow_push(arr_ptr))
 
-        # dst = $alloc(len * sizeof(T))
+        # dst = $rt.alloc(len * sizeof(T))
         ins.append(f"local.get {arr_len}")
         ins.append(f"i32.const {t_size}")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1641,7 +1641,7 @@ class CallsArraysMixin:
         ins.append(f"local.get {arr_len}")
         ins.append(f"i32.const {b_size}")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -1755,7 +1755,7 @@ class CallsArraysMixin:
 
         Walks until ``pred`` returns true, then breaks out returning 1.
         If the loop completes, returns 0.  No dst allocation (the
-        result is a scalar); no $alloc call needed at all.
+        result is a scalar); no $rt.alloc call needed at all.
         """
         return self._translate_array_any_all_common(
             arr_arg, fn_arg, env,
@@ -1953,7 +1953,7 @@ class CallsArraysMixin:
         # Allocate the Option<T> box (always 16 bytes).  Default to
         # None; overwrite to Some on match.
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {out}")
         ins.extend(gc_shadow_push(out))
         ins.append(f"local.get {out}")
@@ -2229,11 +2229,11 @@ class CallsArraysMixin:
         ins.append("  end")
         ins.append("end")
 
-        # dst = $alloc(total * sizeof(T))
+        # dst = $rt.alloc(total * sizeof(T))
         ins.append(f"local.get {total}")
         ins.append(f"i32.const {t_size}")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 
@@ -2377,7 +2377,7 @@ class CallsArraysMixin:
 
         Insertion sort sketch (T scalar, ascending)::
 
-            dst = $alloc(n * sizeof(T))
+            dst = $rt.alloc(n * sizeof(T))
             copy arr → dst
             for i in 1..n:
                 tmp = dst[i]
@@ -2429,11 +2429,11 @@ class CallsArraysMixin:
         ins.append(f"local.set {fn_tmp}")
         ins.extend(gc_shadow_push(fn_tmp))
 
-        # dst = $alloc(arr_len * sizeof(T))
+        # dst = $rt.alloc(arr_len * sizeof(T))
         ins.append(f"local.get {arr_len}")
         ins.append(f"i32.const {t_size}")
         ins.append("i32.mul")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {dst}")
         ins.extend(gc_shadow_push(dst))
 

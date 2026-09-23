@@ -258,7 +258,7 @@ public fn make_red(-> @Color)
 { Red }
 """
         result = _compile_ok(source)
-        assert "call $alloc" in result.wat
+        assert "call $rt.alloc" in result.wat
 
     def test_wat_contains_store_with_offset(self) -> None:
         """WAT output for Some(x) contains field store with offset."""

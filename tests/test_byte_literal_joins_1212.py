@@ -283,7 +283,7 @@ public fn main(@Unit -> @Int)
 # (`_compile_fn`: `i32.wrap_i64` when the body infers i64 into an i32
 # result); the lifted-closure path had no such step, so `fn(@Bool -> @Byte)`
 # behind an `apply_fn` emitted `i64.const` into an `(result i32)` and
-# `$anon_0` failed WASM validation on a check-green program — while its
+# `$rt.anon_0` failed WASM validation on a check-green program — while its
 # named twin ran.  Both the bare literal and the join spelling reach it.
 _CLOSURE_RETURN_LIT = """
 public fn f(@Bool -> @Int)

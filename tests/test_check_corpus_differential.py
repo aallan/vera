@@ -29,6 +29,7 @@ compiler that moved under it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import io
 import json
@@ -969,3 +970,201 @@ class TestBaseCheckoutCleanup:
 
         with mock.patch.object(_MOD.subprocess, "run", fake_run):
             _MOD.release_base_checkout(tmp_path / "repo", tmp_path / "base")
+
+
+# ---------------------------------------------------------------------------
+# --run: what each program DOES, for a change that renames symbols (#1494)
+# ---------------------------------------------------------------------------
+
+
+class TestRunMode:
+    """The ``--run`` measurement.
+
+    A change that renames symbols moves nearly every program's WAT without
+    moving what any program does, so the WAT digest cannot separate the two.
+    ``--run`` compares the OUTCOME of ``vera run`` instead.  Each property is
+    exercised in both directions: a real run of one program agrees with
+    itself, and a program whose behaviour changes moves.
+    """
+
+    _SOURCE = (
+        "public fn main(@Unit -> @Int)\n"
+        "  requires(true)\n  ensures(true)\n  effects(pure)\n"
+        "{\n  {value}\n}\n"
+    )
+
+    def _run(self, tmp_path: Path, value: str) -> Any:
+        program = tmp_path / f"p{abs(hash(value))}.vera"
+        program.write_text(
+            self._SOURCE.replace("{value}", value), encoding="utf-8",
+        )
+        return _MOD.run_one(
+            _MOD.sys.executable, _ROOT, 120, program,
+        )
+
+    def test_the_flag_selects_the_run_measurement(self) -> None:
+        assert _MOD._parse_args(["--run"]).run is True
+        assert _MOD._parse_args([]).run is False
+
+    def test_the_same_outcome_is_not_a_mover(self, tmp_path: Path) -> None:
+        first = self._run(tmp_path, "40 + 2")
+        second = self._run(tmp_path, "40 + 2")
+        assert first.ok and second.ok
+        assert first.summary.startswith("exit 0, 3 bytes of output (sha256 ")
+        assert first.summary.endswith(", starting '42\\n')"), first.summary
+        assert first.summary == second.summary
+        assert _MOD.classify(first, second, "origin/main") is None
+
+    def test_a_different_outcome_is_a_mover(self, tmp_path: Path) -> None:
+        base = self._run(tmp_path, "40 + 2")
+        head = self._run(tmp_path, "40 + 3")
+        verdict = _MOD.classify(base, head, "origin/main")
+        assert verdict is not None
+        kind, reason = verdict
+        assert kind == "outcome-differs"
+        assert "at origin/main: exit 0" in reason
+        assert "at HEAD: exit 0" in reason
+
+    def test_outputs_of_one_length_read_differently(
+        self, tmp_path: Path,
+    ) -> None:
+        """``42`` and ``43`` are both three bytes.  The report gives each
+        side's reading, so the two readings must differ as the digests do,
+        not only in length (PR #1507 review)."""
+        base = self._run(tmp_path, "40 + 2")
+        head = self._run(tmp_path, "40 + 3")
+        assert "3 bytes of output" in base.summary
+        assert "3 bytes of output" in head.summary
+        assert base.summary != head.summary
+        assert "'42" in base.summary and "'43" in head.summary
+
+    def test_a_trap_is_an_outcome_named_by_its_first_error(
+        self, tmp_path: Path,
+    ) -> None:
+        trapped = self._run(tmp_path, "1 / (1 - 1)")
+        assert trapped.ok
+        assert trapped.summary.startswith("exit 1, Error: Integer division "
+                                          "by zero"), trapped.summary
+        assert _MOD.classify(
+            trapped, self._run(tmp_path, "1"), "origin/main",
+        ) is not None
+
+    def test_the_run_canary_passes_a_working_side(self) -> None:
+        assert _MOD.run_canary_error(
+            _MOD.sys.executable, _ROOT, "head", 120,
+        ) is None
+
+    def test_a_side_whose_run_cannot_start_is_refused(self) -> None:
+        """A ``vera run`` that fails before reading any program would fail
+        every program identically on both sides — agreement, under --run —
+        so the canary refuses it (PR #1507 review)."""
+        broken = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout="",
+            stderr="usage: vera [-h] ...\nvera: error: unrecognized arguments\n",
+        )
+        with mock.patch.object(_MOD, "_vera_run", return_value=broken):
+            problem = _MOD.run_canary_error(
+                _MOD.sys.executable, _ROOT, "base", 120,
+            )
+        assert problem is not None
+        assert "base side" in problem and "exit 2" in problem
+
+    def test_a_side_that_runs_the_wrong_value_is_refused(self) -> None:
+        wrong = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="41\n", stderr="",
+        )
+        with mock.patch.object(_MOD, "_vera_run", return_value=wrong):
+            assert _MOD.run_canary_error(
+                _MOD.sys.executable, _ROOT, "head", 120,
+            ) is not None
+
+    def test_the_report_names_the_run_measurement(self) -> None:
+        """Under --run every report surface says what was compared: the
+        summary, the mover instructions (``vera run``, never ``vera compile
+        --wat``), the clean verdict and the JSON envelope (PR #1507 review).
+        """
+        info = _MOD.RunInfo(
+            base_ref="origin/main", base_sha="0" * 40,
+            base_root="/base", head_root="/head", mode="run",
+        )
+        mover = _MOD.Comparison(
+            compared=2, identical=1,
+            movers=[_MOD.Mover("p.vera", "outcome-differs", "outcome differs")],
+            both_failed=0, unreported=[],
+        )
+        summary = "\n".join(_MOD.summary_lines(info, mover))
+        assert "programs run at both revisions" in summary
+        assert "identical outcome: 1" in summary
+        assert "WAT" not in summary
+        failures = "\n".join(_MOD.failure_lines(info, mover))
+        assert "vera run <program>" in failures
+        assert "compile" not in failures
+        assert _MOD.json_payload(info, mover)["mode"] == "run"
+        clean = mover._replace(identical=2, movers=[])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert _MOD.emit(info, clean, as_json=False) == 0
+        assert "run outcome is identical" in out.getvalue()
+
+    def test_run_mode_checks_the_run_canary_before_the_corpus(
+        self, tmp_path: Path,
+    ) -> None:
+        """The wiring: under --run a side whose ``vera run`` fails the
+        canary stops the run before any program is measured, and a run that
+        passes it reports in run mode."""
+        args = _MOD._parse_args(["--run", "--json"])
+        program = tmp_path / "p.vera"
+        program.write_text("-- unused\n", encoding="utf-8")
+        head, base = tmp_path / "head", tmp_path / "base"
+
+        def imports_its_own(_python: str, root: Path) -> str:
+            return str(root / "vera" / "__init__.py")
+
+        def canary(
+            _python: str, root: Path, _side: str, _timeout: int,
+        ) -> str | None:
+            return "BROKEN RUN" if root == base else None
+
+        def measured(*_a: object, **_k: object) -> dict[str, object]:
+            raise AssertionError("the corpus was measured after a failed canary")
+
+        err = io.StringIO()
+        with (
+            mock.patch.object(_MOD, "probe_compiler", imports_its_own),
+            mock.patch.object(_MOD, "run_canary_error", canary),
+            mock.patch.object(_MOD, "collect", measured),
+            contextlib.redirect_stderr(err),
+        ):
+            assert _MOD._run(args, head, [program], "0" * 40, base) == 1
+        assert "BROKEN RUN" in err.getvalue()
+
+        artifact = _MOD.Artifact(
+            ok=True, digest="d", size=0, error="",
+            summary="exit 0, 0 bytes of output",
+        )
+        out = io.StringIO()
+        with (
+            mock.patch.object(_MOD, "probe_compiler", imports_its_own),
+            mock.patch.object(_MOD, "run_canary_error", return_value=None),
+            mock.patch.object(
+                _MOD, "collect", return_value={"p.vera": artifact},
+            ),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            assert _MOD._run(args, head, [program], "0" * 40, base) == 0
+        assert json.loads(out.getvalue())["mode"] == "run"
+
+    def test_the_compile_report_is_unchanged(self) -> None:
+        info = _MOD.RunInfo(
+            base_ref="origin/main", base_sha="0" * 40,
+            base_root="/base", head_root="/head",
+        )
+        assert info.mode == "compile"
+        empty = _MOD.Comparison(
+            compared=1, identical=1, movers=[], both_failed=0, unreported=[],
+        )
+        summary = "\n".join(_MOD.summary_lines(info, empty))
+        assert "programs compiled at both revisions" in summary
+        assert "identical WAT: 1" in summary
+        assert _MOD.json_payload(info, empty)["mode"] == "compile"

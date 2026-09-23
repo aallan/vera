@@ -34,7 +34,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Modules | `module`/`import` with explicit `public`/`private` visibility | Programs split across files; `vera check` resolves the module graph; re-exports are tracked in [#127](https://github.com/aallan/vera/issues/127) |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |
-| Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$alloc`, `$gc_collect`, shadow stack); no host GC; models focus on logic |
+| Memory | Conservative mark-sweep GC in WASM | Implemented entirely in generated WASM (`$rt.alloc`, `$rt.gc_collect`, shadow stack); no host GC; models focus on logic |
 | Target | WebAssembly (native + browser + WASI P2 components) | Portable, sandboxed, no ambient capabilities; `vera run` uses wasmtime; `vera compile --target browser` emits a JS bundle; `--target wasi-p2` emits an experimental WASI Preview 2 component for stock wasip2 hosts (`--world server` for `wasmtime serve`) |
 | Compiler | Python reference implementation | Correctness over performance; clean separation of phases; see [vera/README.md](vera/README.md) |
 | Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar is shared between spec and implementation; no ambiguity |

@@ -45,7 +45,7 @@ component
 │       call_indirect shim through a funcref dispatch table
 │       that $Main defines and exports
 │     · a GC-exempt scratch arena + cabi_realloc (Section 13.3)
-│     · a __wasi_run entry wrapper
+│     · an rt.wasi_run entry wrapper
 ├── canon-lowered WASI imports (against $Main's memory + realloc)
 ├── core module $Adapter   — implements every vera.* op with its
 │     exact core signature over the lowered WASI functions, and

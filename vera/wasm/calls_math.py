@@ -325,7 +325,7 @@ class CallsMathMixin:
 
         # Allocate 16 bytes (largest variant: Some(i64))
         ins.append("i32.const 16")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {out}")
 
         # Check: val >= 0?
@@ -387,7 +387,7 @@ class CallsMathMixin:
 
         # Allocate 8 bytes (both variants fit in 8)
         ins.append("i32.const 8")
-        ins.append("call $alloc")
+        ins.append("call $rt.alloc")
         ins.append(f"local.set {out}")
 
         # Check: 0 <= val <= 255

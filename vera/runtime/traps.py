@@ -51,10 +51,10 @@ class TrapFrame:
     for built-ins and unknown-name frames."""
 
     is_builtin: bool
-    """``True`` for ``alloc`` / ``gc_collect`` / ``contract_fail`` /
-    ``exn_*`` / ``vera.*`` runtime helpers and for prelude /
-    inject_prelude functions; ``False`` for user-named frames
-    (including ``<unknown>`` lookups)."""
+    """``True`` for the runtime's own functions (``rt.*``: the allocator,
+    the collector, the derived helpers), for host imports (``vera.*``)
+    and for prelude / inject_prelude functions; ``False`` for user-named
+    frames (including ``<unknown>`` lookups)."""
 
     def to_dict(self) -> dict[str, object]:
         """Serialise to a JSON-compatible dict for envelope output.
@@ -199,10 +199,14 @@ def _resolve_trap_frames(
       leading ``$`` defensively (current wasmtime-py strips it
       already; a future version that doesn't would otherwise
       silently break every lookup below).
-    * Built-in WAT helpers (``alloc`` / ``gc_collect`` /
-      ``contract_fail``) plus anything starting with ``exn_`` /
-      ``vera.`` / ``closure_sig_`` are tagged ``is_builtin=True``,
-      ``file="<builtin>"``.
+    * A name the source map holds EXACTLY is a user frame, and is
+      resolved first: a user function may share a name the prelude or
+      the runtime also uses (#1494), and a lifted closure (``rt.anon_N``)
+      is the runtime's symbol for user code with a source location.
+    * The runtime's own functions live in the ``rt.`` namespace and host
+      imports in ``vera.`` (#1494) — neither can be spelled by a Vera
+      identifier, so a prefix test is exact.  Both are tagged
+      ``is_builtin=True``, ``file="<builtin>"``.
     * Prelude / inject_prelude functions are tagged the same way,
       via the ``prelude_fn_names`` parameter (positive source of
       truth populated by the post-prelude registration loop).  The
@@ -231,17 +235,12 @@ def _resolve_trap_frames(
     if not raw_frames:
         return []
 
-    # WAT names that the codegen emits as runtime-only infrastructure.
-    # Treat any frame matching one of these (or any name starting with
-    # one of the prefixes below) as a built-in with no source location.
-    _BUILTIN_NAMES = {
-        "alloc", "gc_collect", "contract_fail",
-    }
-    _BUILTIN_PREFIXES = (
-        "exn_",        # generated exception throwers ($exn_String etc.)
-        "vera.",       # host imports ($vera.print, $vera.state_get_*, ...)
-        "closure_sig_",  # synthetic closure signatures
-    )
+    # The runtime's own functions (`$rt.alloc`, `$rt.gc_collect`, the
+    # derived `$rt.eq_<T>` / `$rt.show_<T>` helpers, …) and the host imports
+    # (`$vera.print`, …).  Both namespaces contain a `.`, which no Vera
+    # identifier and no compiler mangling of one can, so a prefix test is
+    # exact and a user function can never be mistaken for either (#1494).
+    _BUILTIN_PREFIXES = ("rt.", "vera.")
 
     resolved: list[TrapFrame] = []
     try:
@@ -272,6 +271,22 @@ def _resolve_trap_frames(
         if name.startswith("$"):
             name = name[1:]
 
+        # An exact source-map hit is a user frame, whatever the name looks
+        # like: a user function may share a name the prelude or the runtime
+        # also uses, and a lifted closure (`rt.anon_N`) is registered here
+        # with the source span of its `fn(...)` expression.
+        exact = fn_source_map.get(name)
+        if exact is not None:
+            file_path, line_start, line_end = exact
+            resolved.append(TrapFrame(
+                func=name,
+                file=file_path,
+                line_start=line_start,
+                line_end=line_end,
+                is_builtin=False,
+            ))
+            continue
+
         # Prelude / built-in injection check.  Match either the exact
         # WAT name or, for monomorphized generics, the base name (the
         # part before the rightmost `$`).  This mirrors the source-
@@ -290,8 +305,7 @@ def _resolve_trap_frames(
                     is_prelude = True
 
         is_builtin = (
-            name in _BUILTIN_NAMES
-            or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
+            any(name.startswith(p) for p in _BUILTIN_PREFIXES)
             or is_prelude
         )
         if is_builtin:
@@ -304,12 +318,12 @@ def _resolve_trap_frames(
             ))
             continue
 
-        # Try the exact name first; on miss, try the base name (the
-        # part before the rightmost `$`) for monomorphized generics.
-        # `$` cannot appear in user-written Vera identifiers, so any
-        # `$` in a WAT name was inserted by the monomorphizer.
-        loc = fn_source_map.get(name)
-        if loc is None and "$" in name:
+        # The exact name missed above; try the base name (the part
+        # before the rightmost `$`) for monomorphized generics.  `$`
+        # cannot appear in user-written Vera identifiers, so any `$` in
+        # a WAT name was inserted by the compiler's manglers.
+        loc = None
+        if "$" in name:
             base = name.rsplit("$", 1)[0]
             loc = fn_source_map.get(base)
 

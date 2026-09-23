@@ -37,7 +37,7 @@
     <text class="f d" x="78" y="184">· each <tspan class="m" font-size="9.5px">(import "vera" "op")</tspan> becomes a same-named</text>
     <text class="f d" x="90" y="198">call_indirect shim through a dispatch table it exports</text>
     <text class="f d" x="78" y="216">· GC-exempt scratch arena + <tspan class="m" font-size="9.5px">cabi_realloc</tspan> (§13.3)</text>
-    <text class="f d" x="78" y="234">· a <tspan class="m" font-size="9.5px">__wasi_run</tspan> entry wrapper</text>
+    <text class="f d" x="78" y="234">· an <tspan class="m" font-size="9.5px">rt.wasi_run</tspan> entry wrapper</text>
     <text class="f d" x="78" y="258" font-style="italic" fill="#a9a49b">its memory and realloc are what the lowerings target</text>
   </g>
 

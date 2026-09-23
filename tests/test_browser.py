@@ -1379,7 +1379,7 @@ public fn main(-> @Unit)
     def test_string_lines(self, tmp_path: Path) -> None:
         """lines splits on \\n, \\r\\n, \\r (Python splitlines
         semantics).  Also exercises the empty-input path
-        (``string_lines("")``) so the ``$alloc(0)`` branch in
+        (``string_lines("")``) so the ``$rt.alloc(0)`` branch in
         ``_translate_structural_split`` is covered under the browser
         runtime — Node's WASM linker has stricter zero-size handling
         than wasmtime in some past versions.
@@ -2418,7 +2418,7 @@ class TestBrowserMapHostStoreGCReachability695:
 
     These tests compile the same three #695 / #705 reproducers with
     ``VERA_EAGER_GC=1`` set in the environment (which the codegen
-    reads to inject a forced ``$gc_collect`` on every ``$alloc``),
+    reads to inject a forced ``$rt.gc_collect`` on every ``$rt.alloc``),
     then run the compiled WASM under Node.js using the browser
     runtime in ``vera/browser/runtime.mjs``.  The expected output
     matches the CLI side — any divergence (truncated JArray length,
@@ -2704,7 +2704,7 @@ class TestBrowserMdBuilderRooting744:
     and held it in a JS local across the child / string allocations,
     and the array helpers held their backing buffers unrooted across
     the per-element recursion.  With ``VERA_EAGER_GC=1`` (codegen
-    injects a forced ``$gc_collect`` on every ``$alloc``) the
+    injects a forced ``$rt.gc_collect`` on every ``$rt.alloc``) the
     unreferenced body / backing block is swept and reused mid-build,
     corrupting the tree — observed as ``readMdBlock`` throwing
     ``Unknown MdBlock tag`` or the walk trapping out-of-bounds.
