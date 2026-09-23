@@ -58,6 +58,7 @@ from vera.codegen import compile as codegen_compile
 from vera.codegen.assembly import AssemblyMixin
 from vera.environment import TypeEnv
 from vera.errors import Diagnostic, VeraError
+from vera.monomorphize import MonoContext, Monomorphizer
 from vera.parser import parse_to_ast
 from vera.resolver import ModuleResolver
 from vera.skip import CodegenInvariantError
@@ -955,6 +956,88 @@ CELLS: list[Cell] = [
                          forall="forall<T> "))
        + "\n" + _main("f(true) + f(5) * 100"),
        "legal", value=4040),
+    # The other half of capture: a helper binder NAMED LIKE a type the
+    # parent is instantiated at.  The parent's `U -> Int` put an `Int` into
+    # the helper, where its own `forall<Int>` bound it, so the helper's
+    # later instantiation rewrote the parent's type as well — a load
+    # failure, or, when the captured name sits inside a type argument, a
+    # wrong answer from a structural `eq` read at the wrong width.
+    _c("tparam/helper-binder-named-like-the-parent-instance", "type_parameter",
+       "nested_scope",
+       _fn("f", sig="@U -> @U", body="h(true, @U.0)", forall="forall<U> ",
+           where=_helper("h", sig="@Int, @U -> @U", body="@U.0",
+                         forall="forall<Int> "))
+       + "\n" + _main("f(5)"),
+       "legal", value=5),
+    _c("tparam/helper-binder-named-like-the-parent-instance-own-slot",
+       "type_parameter", "nested_scope",
+       _fn("f", sig="@U -> @Int",
+           body="if h(true, @U.0) then { 11 } else { 22 }",
+           forall="forall<U> ",
+           where=_helper("h", sig="@Int, @U -> @Int", body="@Int.0",
+                         forall="forall<Int> "))
+       + "\n" + _main("f(5)"),
+       "legal", value=11),
+    # Called at the captured type itself: the helper's own `Int` and the
+    # parent's merge in the helper's clone, and `@Int.0` must still name
+    # the helper's own parameter.
+    _c("tparam/helper-binder-named-like-the-parent-instance-called-at-it",
+       "type_parameter", "nested_scope",
+       _fn("f", sig="@U -> @Int", body="h(7, @U.0)", forall="forall<U> ",
+           where=_helper("h", sig="@Int, @U -> @Int", body="@Int.0",
+                         forall="forall<Int> "))
+       + "\n" + _main("f(5)"),
+       "legal", value=7),
+    # The binder's ability constraint is renamed with it.
+    _c("tparam/helper-binder-named-like-the-parent-instance-constrained",
+       "type_parameter", "nested_scope",
+       _fn("f", sig="@U -> @Int",
+           body="if h(true, true, @U.0) then { 1 } else { 0 }",
+           forall="forall<U> ",
+           where=_helper("h", sig="@Int, @Int, @U -> @Bool",
+                         body="eq(@Int.1, @Int.0)",
+                         forall="forall<Int where Eq<Int>> "))
+       + "\n" + _main("f(5)"),
+       "legal", value=1),
+    _c("tparam/helper-binder-named-like-an-adt-instance", "type_parameter",
+       "nested_scope",
+       "public data Box {\n  B(Int)\n}\n\n"
+       + _fn("f", sig="@U -> @U", body="h(1, @U.0)", forall="forall<U> ",
+             where=_helper("h", sig="@Box, @U -> @U", body="@U.0",
+                           forall="forall<Box> "))
+       + "\n" + _main("match f(B(7)) {\n    B(@Int) -> @Int.0\n  }"),
+       "legal", value=7),
+    _c("tparam/helper-binder-captures-a-type-argument", "type_parameter",
+       "nested_scope",
+       _fn("f", sig="@U, @U -> @Bool", body="h(true, @U.1, @U.0)",
+           forall="forall<U where Eq<U>> ",
+           where=_helper("h", sig="@Int, @U, @U -> @Bool",
+                         body="eq(@U.1, @U.0)", forall="forall<Int> "))
+       + "\n"
+       + _main("if f(Some(1), Some(4294967297)) then { 1 } else { 0 }"),
+       "legal", value=0),
+    _c("tparam/nested-helper-binder-named-like-the-parent-instance",
+       "type_parameter", "nested_scope",
+       _fn("f", sig="@U -> @U", body="g(@U.0)", forall="forall<U> ",
+           where=_helper("g", sig="@U -> @U", body="h(true, @U.0)",
+                         where="".join(
+                             "  " + line + "\n" for line in _helper(
+                                 "h", sig="@Int, @U -> @U", body="@U.0",
+                                 forall="forall<Int> ",
+                             ).splitlines())))
+       + "\n" + _main("f(5)"),
+       "legal", value=5),
+    # The renamed binder is a type VARIABLE: a sibling generic called at it
+    # is not an instantiation, any more than one called at a source binder.
+    _c("tparam/helper-binder-named-like-the-parent-instance-calls-a-sibling",
+       "type_parameter", "nested_scope",
+       _fn("f", sig="@U -> @U", body="h(true, @U.0)", forall="forall<U> ",
+           where=_helper("h", sig="@Int, @U -> @U", body="k(@Int.0, @U.0)",
+                         forall="forall<Int> ") + "\n"
+           + _helper("k", sig="@W, @U -> @U", body="@U.0",
+                     forall="forall<W> "))
+       + "\n" + _main("f(5)"),
+       "legal", value=5),
     _c("tparam/helper-own-parameter", "type_parameter", "nested_scope",
        _fn("f", sig="@T -> @Int", body="h(7)", forall="forall<T> ",
            where=_helper("h", sig="@U -> @Int", body="41",
@@ -1184,6 +1267,112 @@ def test_a_legal_spelling_verifies_compiles_and_runs(
         cell.id if cell.pinned is None else
         f"{cell.id} is pinned at a known defect — {cell.pinned}.  If the "
         f"value moved to the correct one, the issue is fixed: flip the cell")
+
+
+_CAPTURE = [c for c in _LEGAL if "-binder-" in c.id]
+
+
+@pytest.mark.parametrize("cell", _CAPTURE, ids=[c.id for c in _CAPTURE])
+def test_a_helper_binder_renamed_apart_leaves_no_trace(
+    tmp_path: Path, cell: Cell,
+) -> None:
+    """The renaming that stops a parent's substitution capturing a helper
+    binder is internal to the monomorphiser.  No clone is minted at the
+    renamed binder, which is a type variable and not an instantiation, so
+    no function symbol carries it and no skip warning names one."""
+    _, result, _ = build_multi_module(tmp_path, cell.files)
+    assert "shadowed" not in result.wat, (cell.id, re.findall(
+        r"\(func \$(\S*shadowed\S*)", result.wat))
+    skips = [(d.error_code, d.description) for d in result.diagnostics
+             if d.error_code in {"E602", "E604", "E605"}]
+    assert skips == [], (cell.id, skips)
+
+
+def test_a_renamed_binder_takes_its_constraint_with_it() -> None:
+    """A constraint names a binder of its own function, the rule the
+    checker enforces as E181, and a clone keeps to it: the ability gate and
+    the constrained-variable inference both look the constraint's variable
+    up among the helper's binders.  Renaming the binder without its
+    constraint leaves the constraint naming nothing."""
+    cell = next(c for c in CELLS if c.id == (
+        "tparam/helper-binder-named-like-the-parent-instance-constrained"))
+    program = parse_to_ast(cell.files["main.vera"])
+    parent = next(tld.decl for tld in program.declarations
+                  if isinstance(tld.decl, ast.FnDecl) and tld.decl.name == "f")
+    ctx = MonoContext(
+        generic_decls={}, ctor_to_adt={}, ctor_tp_indices={},
+        adt_tp_counts={}, type_aliases={}, type_alias_params={},
+        fn_ret_types={},
+    )
+    clone = Monomorphizer(ctx).monomorphize_fn(parent, ("Int",))
+    (helper,) = clone.where_fns or ()
+    assert helper.forall_vars is not None
+    assert helper.forall_vars != ("Int",), helper.forall_vars
+    assert [c.type_var for c in helper.forall_constraints or ()] == list(
+        helper.forall_vars), (helper.forall_vars, helper.forall_constraints)
+
+
+# A helper whose OWN name is a built-in's is refused (E151) and holds no
+# name.  A function that merely CONTAINS one is registered under its own
+# name: only its body goes unchecked, since a call to the stripped helper
+# would resolve against the built-in (#815).  Each program below must report
+# the E151 and exactly the E184 it owes, and nothing else: no E178 for a
+# call to the containing helper, and no type error from checking a body that
+# calls its refused helper, whose signature differs from the built-in's.
+_NESTED_E151 = _helper("string_length", sig="@String -> @Int", body="1")
+_NESTED_E151_OTHER_SIG = _helper("string_length", body="@Int.0")
+_CONTAINING_HELPER_CASES = {
+    "repeats-the-containing-helper": (
+        _fn("f", body="h(@Int.0)",
+            where=_helper("h", where=_NESTED_E151) + "\n"
+            + _helper("h", body="@Int.0 + 1"))
+        + "\n" + _main("f(1)"),
+        [("E151", r"^  fn string_length\("), ("E184", r"^  fn h\(")],
+    ),
+    "repeats-inside-the-containing-helper": (
+        _fn("f", body="h(@Int.0)",
+            where=_helper("h", body="k(@Int.0)", where=_NESTED_E151 + "\n"
+                          + _helper("k") + "\n"
+                          + _helper("k", body="@Int.0 + 1")))
+        + "\n" + _main("f(1)"),
+        [("E151", r"^  fn string_length\("), ("E184", r"^  fn k\(")],
+    ),
+    "calls-the-containing-helper": (
+        _fn("f", body="h(@Int.0, true)",
+            where=_helper("h", sig="@Int, @Bool -> @Int",
+                          where=_NESTED_E151))
+        + "\n" + _main("f(1)"),
+        [("E151", r"^  fn string_length\(")],
+    ),
+    "a-helper-calls-its-refused-helper": (
+        _fn("f", body="h(@Int.0)",
+            where=_helper("h", body="string_length(@Int.0)",
+                          where=_NESTED_E151_OTHER_SIG))
+        + "\n" + _main("f(1)"),
+        [("E151", r"^  fn string_length\(")],
+    ),
+    "a-function-calls-its-refused-helper": (
+        _fn("f", body="string_length(@Int.0)",
+            where=_NESTED_E151_OTHER_SIG)
+        + "\n" + _main("f(1)"),
+        [("E151", r"^  fn string_length\(")],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_CONTAINING_HELPER_CASES))
+def test_a_helper_containing_a_refused_helper_keeps_its_name(
+    tmp_path: Path, case: str,
+) -> None:
+    """Each expected diagnostic sits on the LAST match of its pattern: the
+    one E151 on the nested helper, and each E184 on the surplus."""
+    source, expected = _CONTAINING_HELPER_CASES[case]
+    errors = _check(tmp_path, {"main.vera": source})
+    got = sorted((d.error_code, d.location.line) for d in errors)
+    want = sorted((code, _lines_of(pattern, source)[-1])
+                  for code, pattern in expected)
+    assert got == want, (case, [(d.error_code, d.location.line,
+                                 d.description) for d in errors])
 
 
 def test_the_verifier_obligates_a_call_the_first_list_admits(

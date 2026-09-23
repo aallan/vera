@@ -52,8 +52,11 @@ from vera.types import PRIMITIVES, REMOVED_ALIASES, SpanTypeTable
 
 # Identifier tokens inside a rendered type name (`Map<String, Int>` →
 # `Map`, `String`, `Int`).  #1271 matches type-variable names against these
-# rather than by substring, so `Unit` never reads as a mention of `U`.
-_TYPE_NAME_TOKENS = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+# rather than by substring, so `Unit` never reads as a mention of `U`.  A
+# `$`-joined name is ONE token: an owner-qualified type (`libm$Shape`, #1317)
+# names one type, and a `where` helper binder renamed apart
+# (`Int$shadowed`, #1433) is one type variable.
+_TYPE_NAME_TOKENS = re.compile(r"[A-Za-z_][A-Za-z_0-9$]*")
 
 
 def substitute_type_vars(
@@ -352,6 +355,30 @@ def _unshadowed(
     if not binders or not any(b in mapping for b in binders):
         return mapping
     return {k: v for k, v in mapping.items() if k not in binders}
+
+
+def _capturing_binders(
+    mapping: dict[str, str], binders: tuple[str, ...] | None,
+) -> dict[str, str]:
+    """Fresh names for the *binders* a substitution by *mapping* would
+    capture (#1433): each one a replacement type in *mapping* spells.
+
+    A helper's ``forall<Int>`` binds ``Int`` inside the helper, so the
+    ``Int`` a parent's ``U -> Int`` puts in place of the helper's ``@U``
+    would name the helper's parameter instead of the type.  A fresh name
+    ends in ``$shadowed``: ``$`` cannot appear in a source identifier, so it
+    spells no declared type, and no replacement spells it either, because a
+    renamed binder is a type variable and never an instantiation
+    (``_binds_a_type_var``).  Over-reading a replacement only renames a
+    binder that did not need it, which is harmless.
+    """
+    if not binders or not mapping:
+        return {}
+    spelled = {
+        tok for value in mapping.values()
+        for tok in _TYPE_NAME_TOKENS.findall(value)
+    }
+    return {b: f"{b}$shadowed" for b in binders if b in spelled}
 
 
 def substitute_type_param_names(name: str, mapping: dict[str, str]) -> str:
@@ -3855,6 +3882,11 @@ class Monomorphizer:
         mapping = dict(zip(decl.forall_vars, concrete_types))
         mangled = self._mangle_fn_name(decl.name, concrete_types)
 
+        # #1433: rename every `where` helper binder the substitution would
+        # capture first, so the reindex walk and the substitution below both
+        # read the renamed declaration and agree node for node.
+        decl = self._rename_capturing_binders(decl, mapping)
+
         # Scope-aware De Bruijn reindexing (#769 gap 3): resolve every
         # SlotRef against the full binding scope at its reference site and
         # recompute its index in the collapsed (post-substitution) namespace.
@@ -3868,6 +3900,60 @@ class Monomorphizer:
         return replace(
             substituted, name=mangled,
             forall_vars=None, forall_constraints=None,
+        )
+
+    def _rename_capturing_binders(
+        self, fn: ast.FnDecl, mapping: dict[str, str],
+    ) -> ast.FnDecl:
+        """*fn* with each ``where`` helper binder that *mapping* would
+        capture renamed, at every depth (#1433).
+
+        *mapping* is the substitution in force inside *fn*.  Each helper
+        sees it without the type variables the helper rebinds
+        (:func:`_unshadowed`), and a binder the remaining replacements spell
+        (:func:`_capturing_binders`) is renamed with every use of it — its
+        type positions, slot and result references, and ability constraints
+        — through the helper and into the nested helpers that do not rebind
+        it.  Returns *fn* itself when nothing is renamed.
+        """
+        helpers = fn.where_fns or ()
+        if not helpers or not mapping:
+            return fn
+        renamed: list[ast.FnDecl] = []
+        for helper in helpers:
+            active = _unshadowed(mapping, helper.forall_vars)
+            fresh = _capturing_binders(active, helper.forall_vars)
+            if fresh:
+                helper = self._rename_binders(helper, fresh)
+            renamed.append(self._rename_capturing_binders(helper, active))
+        if all(new is old for new, old in zip(renamed, helpers)):
+            return fn
+        return replace(fn, where_fns=tuple(renamed))
+
+    def _rename_binders(
+        self, helper: ast.FnDecl, fresh: dict[str, str],
+    ) -> ast.FnDecl:
+        """*helper* with its ``forall`` binders renamed by *fresh*.
+
+        Every use inside the helper names the binder, which shadows any type
+        of its name there, so the renaming is the ordinary substitution of
+        the old name by the new one; a nested helper rebinding the name
+        keeps its own (:func:`_unshadowed`).  A slot reference keeps its
+        index: the renamed bindings are exactly the ones it counted.
+        """
+        body = self._substitute_in_ast(helper, fresh)
+        assert isinstance(body, ast.FnDecl)  # noqa: S101
+        constraints = helper.forall_constraints
+        if constraints:
+            constraints = tuple(
+                replace(c, type_var=fresh.get(c.type_var, c.type_var))
+                for c in constraints
+            )
+        return replace(
+            body,
+            forall_vars=tuple(
+                fresh.get(b, b) for b in helper.forall_vars or ()),
+            forall_constraints=constraints,
         )
 
     def _substituted_slot_name(

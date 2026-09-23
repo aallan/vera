@@ -410,9 +410,12 @@ class RegistrationMixin:
         # built-in and cascades bogus arity/type errors. Mark the parent so its
         # body is skipped in the check phase too. The return value still
         # reflects only whether ``decl``'s own name shadows a built-in, so the
-        # parent itself is still registered under its (legitimate) name.
+        # parent itself is still registered under its (legitimate) name — and
+        # keeps it (#1433): the mark is not a refusal, so a bare call still
+        # reaches the parent and a second declaration of its name is still a
+        # duplicate.
         if nested_rejected:
-            self._refused_decl_ids.add(id(decl))
+            self._unchecked_body_ids.add(id(decl))
         return rejected
 
     def _check_reserved_type_name(

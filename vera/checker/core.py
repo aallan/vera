@@ -427,13 +427,22 @@ class TypeChecker(
         # the hint).  Parent TYPE params stay in scope through the loop.
         self._where_helper_outer_tnames: list[frozenset[str]] = []
         # ids of declarations registration refused: a FnDecl redefining a
-        # built-in (E151, #815), and the surplus declaration of a name its
-        # namespace already holds (E184, #1433).  Neither is registered —
-        # the built-in, or the first declaration, stays the one every use
-        # resolves to — so the check phase skips them too: re-checking would
-        # resolve their own bodies against that entry and emit bogus
+        # built-in (E151, #815), an ability redeclaring a built-in one
+        # (E185), and the surplus declaration of a name its namespace
+        # already holds (E184, #1433).  None is registered — the built-in,
+        # or the first declaration, stays the one every use resolves to — so
+        # none holds a name, and the check phase skips them too: re-checking
+        # would resolve their own bodies against that entry and emit bogus
         # secondary diagnostics.
         self._refused_decl_ids: set[int] = set()
+        # ids of functions that ARE registered, under names of their own,
+        # but whose bodies the check phase skips: each has a `where` helper
+        # refused for redefining a built-in (#815), so a call to that helper
+        # would resolve against the built-in and cascade bogus diagnostics.
+        # Kept apart from `_refused_decl_ids` because such a function still
+        # holds its name (#1433): a bare call reaches it, and a second
+        # declaration of the name is a duplicate.
+        self._unchecked_body_ids: set[int] = set()
         # #991 checker leg (PR #1013 review): lexically-scoped where-helper
         # resolution, mirroring the verifier and codegen.  ``env.functions``
         # is flat and last-wins, so a bare call to a same-named helper in a
@@ -720,8 +729,10 @@ class TypeChecker(
             # (E151) or a name's surplus declaration (E184) — is already
             # reported and not registered; skip checking its body so it isn't
             # re-checked against the canonical entry (which would emit bogus
-            # diagnostics).
-            if id(tld.decl) in self._refused_decl_ids:
+            # diagnostics).  So is the body of a function whose helper was
+            # refused, for the same reason one scope down.
+            if (id(tld.decl) in self._refused_decl_ids
+                    or id(tld.decl) in self._unchecked_body_ids):
                 continue
             self._check_decl(tld.decl)
 
@@ -1079,8 +1090,11 @@ class TypeChecker(
                     # redefining a built-in (E151) or repeating a name its
                     # block already declares (E184).  It is not registered,
                     # so re-checking would resolve its body against the
-                    # canonical entry.
-                    if id(wfn) in self._refused_decl_ids:
+                    # canonical entry.  A helper whose OWN helper was refused
+                    # is registered, but its body is skipped for the same
+                    # reason.
+                    if (id(wfn) in self._refused_decl_ids
+                            or id(wfn) in self._unchecked_body_ids):
                         continue
                     self._check_fn(wfn)
             finally:

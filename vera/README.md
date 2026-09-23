@@ -85,7 +85,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | 1,410 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 535 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 534 | | Cross-module registration (C7b/C7c), plus the per-module body check that makes a module's diagnostics independent of which file `vera check` was given (#1244) and the #1304 refusal of a bare function, data-type or constructor name two imports both supply (E155/E156/E157) | |
-| `  registration.py` | 1,459 | | Pass 1 forward declarations, ability registration | |
+| `  registration.py` | 1,592 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 1,485 | | Expression synthesis (bidirectional), operators, statements | |
 | `  eq_ability.py` | 226 | | Eq ability derivation checks | |
 | `  sql.py` | 309 | | SQL literal-provenance resolution + placeholder counting (#309) | `resolve_literal_string()`, `count_placeholders()` |
@@ -773,7 +773,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (17
 
 ## Test Suite
 
-Testing spans a **pytest suite** of 16,505 tests across 225 files: compiler-internals unit tests plus a **conformance suite** (254 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
+Testing spans a **pytest suite** of 16,527 tests across 225 files: compiler-internals unit tests plus a **conformance suite** (254 programs in `tests/conformance/` validating every language feature against the spec) and **example programs** (43 end-to-end demos). The conformance suite is the definitive specification artifact; most programs target a single feature, though some (slot references, match, contracts) span several, and each serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 
