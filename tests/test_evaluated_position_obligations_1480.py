@@ -786,7 +786,10 @@ def test_an_opaque_tail_argument_leaves_the_measure_to_its_guard() -> None:
     v = _verify(OPAQUE_TAIL_ARGUMENT)
     tail = _at(OPAQUE_TAIL_ARGUMENT, "f(@Nat.0)")
     assert _records(v, "nat_sub", tail) == ["tier3"]
-    assert _run(OPAQUE_TAIL_ARGUMENT, "main", []).trap_kind is not None
+    # `0` also fails `f`'s precondition, which the compiled call checks
+    # only after the measure, so the trap must be the measure's own.
+    ran = _run(OPAQUE_TAIL_ARGUMENT, "main", [])
+    assert _not_the_callers_precondition(ran), ran
 
 
 # The termination proof reads the same walk, so every binder it crossed
