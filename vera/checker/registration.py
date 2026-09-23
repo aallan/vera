@@ -799,7 +799,11 @@ class RegistrationMixin:
 
         Twice in one list — ``forall<T, T>`` — binds one name twice into
         ``env.type_params``, so every ``@T`` names both and the list's arity
-        is not the number of types a use supplies.
+        is not the number of types a use supplies.  The binders of one list
+        share the declaration's position, so each report names its binder's
+        place in the list: two identical reports would be one after the
+        checker's exact-duplicate dedup, and ``forall<T, T, T>`` has two
+        surplus binders to remove.
 
         Once in a ``where`` helper's list and once in an ENCLOSING function's
         (``enclosing``) is the same namespace, because the enclosing
@@ -814,13 +818,15 @@ class RegistrationMixin:
             else decl.type_params
         ) or ()
         enclosing = enclosing or {}
-        seen: set[str] = set()
-        for tv in binders:
+        first_at: dict[str, int] = {}
+        for at, tv in enumerate(binders, start=1):
             outer = enclosing.get(tv)
-            if tv in seen:
+            if tv in first_at:
                 self._report_duplicate_name(
-                    decl, noun="type parameter", name=tv, scope=owner,
+                    decl, noun="type parameter", name=tv,
+                    scope=f"{owner} (position {at} of its list)",
                     first=None,
+                    first_scope=f"{owner} (position {first_at[tv]})",
                 )
             elif outer is not None:
                 self._report_duplicate_name(
@@ -839,19 +845,20 @@ class RegistrationMixin:
                         f"enclosing '{tv}'."
                     ),
                 )
-            seen.add(tv)
+            first_at.setdefault(tv, at)
 
     def _distinct_ops(
         self, decl: ast.EffectDecl | ast.AbilityDecl, kind: str,
-    ) -> Iterator[ast.OpDecl]:
+    ) -> list[ast.OpDecl]:
         """``decl``'s operations, with E184 for each surplus one.
 
         An effect or ability is a namespace of operations: a second ``op a``
         replaced the first in the registry, so every call and every handler
         clause for ``a`` met only the later signature.  The surplus is
-        reported and not yielded, so the first is the one registered.
+        reported and left out, so the first is the one registered.
         """
         first_ops: dict[str, ast.OpDecl] = {}
+        distinct: list[ast.OpDecl] = []
         for op in decl.operations:
             first = first_ops.setdefault(op.name, op)
             if first is not op:
@@ -860,7 +867,8 @@ class RegistrationMixin:
                     scope=f"{kind} '{decl.name}'", first=first,
                 )
                 continue
-            yield op
+            distinct.append(op)
+        return distinct
 
     def _report_duplicate_name(
         self,

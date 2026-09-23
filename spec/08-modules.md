@@ -425,10 +425,13 @@ program reaches. The same name in a *different* namespace is not a duplicate:
 - **A sibling scope.** Two functions' `where` blocks, two effects' or two
   abilities' operation lists, and two declarations' type-parameter lists are
   different namespaces.
+- **Another kind of namespace.** A `data` type and its constructors are
+  two namespaces, so `data Box { Box(Int) }` declares each name once; an
+  effect, an ability and a data type may likewise share a name.
 - **Another file.** A local declaration shadows an imported one (§8.5.2).
-  Aliases, effects and abilities are not importable (§8.4.1), so a module's
-  declaration of one never meets the importer's. Two imports supplying one
-  name are §8.5.2.2's rule (E155, E156, E157).
+  Aliases and effects are module-local (§8.4.1) and abilities are not
+  importable, so a module's declaration of one never meets the importer's.
+  Two imports supplying one name are §8.5.2.2's rule (E155, E156, E157).
 - **The prelude.** A declaration in the entry file shadows the prelude's
   (§8.4.1). A built-in function or effect cannot be redeclared (E151, E152),
   and `Future` and `Tuple` are reserved (E158).

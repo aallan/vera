@@ -8,7 +8,7 @@ declared name into was a table written last-wins with no duplicate check, so a
 second declaration replaced the first, left it unreachable, and the program
 failed later and elsewhere.  Measured at the base, beside the reported shape:
 two top-level functions of one name died the same way (and inside a module
-silently ran the second), two clauses for one operation ran the later one,
+silently ran the first), two clauses for one operation ran the later one,
 two ``data`` declarations of one name surfaced as an exhaustiveness error
 about the wrong one, a constructor listed twice in one ``data`` compiled, and
 a helper's ``forall<T>`` under a ``forall<T>`` parent was verify-clean and
@@ -28,8 +28,9 @@ Three instruments, each aimed at a different way the fix could be incomplete:
   the prelude, and against another namespace — and asserts the check-time
   outcome of each: refused with its code (E184, or the code of the rule that
   owns that shape: E159, E155-E157, E151, E152), or legal, in which case the
-  program must also verify, compile, and run to a value that could only come
-  from the declaration the rule says wins.  A spelling the grammar cannot
+  program must also verify, compile, and run to its value — for a shadowing
+  cell, one only the declaration the rule says wins can give.  A spelling
+  the grammar cannot
   express is recorded in :data:`NOT_SPELLABLE`, and the claim is checked by
   parsing it.
 * **The backstop cells** drive codegen's ``duplicate func identifier`` rail
@@ -43,7 +44,7 @@ import dataclasses
 import re
 import types
 import typing
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -291,7 +292,6 @@ class Cell:
     count: int = 1
     surplus: tuple[str, str] | None = None
     one_line: bool = False
-    notes: dict[str, str] = field(default_factory=dict)
 
 
 def _c(id: str, namespace: str, spelling: str, main: str, expect: str,
@@ -642,6 +642,14 @@ CELLS: list[Cell] = [
        + "\n" + _main("idf(1)"),
        "E184", surplus=("main.vera", r"^public forall<T, T> fn idf\("),
        one_line=True),
+    # Three binders, two surplus: each report names its binder's place in
+    # the list, or the checker's exact-duplicate dedup would keep one.
+    _c("tparam/forall-three-times", "type_parameter", "same_scope",
+       _fn("idf", sig="@T -> @T", body="@T.0", forall="forall<T, T, T> ")
+       + "\n" + _main("idf(1)"),
+       "E184", count=2,
+       surplus=("main.vera", r"^public forall<T, T, T> fn idf\("),
+       one_line=True),
     _c("tparam/data-twice", "type_parameter", "same_scope",
        "public data Box<T, T> { B(T) }\n\n" + _main("1"),
        "E184", surplus=("main.vera", r"^public data Box\b"),
@@ -732,8 +740,8 @@ NOT_SPELLABLE: dict[tuple[str, str], tuple[str, str | None]] = {
         "an ability's operations are one flat list",
         "ability Sz {\n  ability Len {\n    op size(Int -> Int);\n  }\n}\n"),
     ("import", "nested_scope"): (
-        "imports precede every declaration of a file",
-        _fn("f") + "\nimport libf;\n"),
+        "imports are file-level, before every declaration",
+        _fn("f") + "where {\n  import libf;\n}\n"),
     ("import", "across_modules"): (
         "an import list belongs to one file; what two files' imports "
         "supplying one name means is the function, type and constructor "
@@ -848,8 +856,8 @@ def test_a_refused_spelling_is_refused_at_check(
 def test_a_legal_spelling_verifies_compiles_and_runs(
     tmp_path: Path, cell: Cell,
 ) -> None:
-    """Not a duplicate — and the program works, with the declaration the
-    rule says wins: each value could only come from that one."""
+    """Not a duplicate — and the program works.  For a shadowing cell the
+    value is one only the declaration the rule says wins can give."""
     verify_errors, result, cg_errors = build_multi_module(
         tmp_path, cell.files,
     )
@@ -889,6 +897,27 @@ def test_a_type_name_repeated_across_kinds_says_what_the_first_was(
     (diag,) = _check(tmp_path, cell.files)
     assert diag.description == "Duplicate data type 'Foo' in this file."
     assert "at line 1, as a type alias." in diag.rationale
+
+
+def test_a_repeated_type_parameter_names_its_place_in_the_list(
+    tmp_path: Path,
+) -> None:
+    """Binders in one list share a line, so the place in the list is what
+    tells the two surplus reports apart — and what an author needs to find
+    them."""
+    cell = next(c for c in CELLS if c.id == "tparam/forall-three-times")
+    first, second = _check(tmp_path, cell.files)
+    assert first.description == (
+        "Duplicate type parameter 'T' in function 'idf' (position 2 of its "
+        "list)."
+    )
+    assert second.description == (
+        "Duplicate type parameter 'T' in function 'idf' (position 3 of its "
+        "list)."
+    )
+    assert first.rationale.startswith(
+        "'T' is already declared in function 'idf' (position 1)."
+    )
 
 
 def test_a_helper_rebinding_a_parent_parameter_names_the_parent(
