@@ -1008,6 +1008,59 @@ def test_an_assumed_let_value_discharges_the_call() -> None:
     assert v.ok, v.errors
 
 
+def test_an_unassumed_let_value_leaves_the_call_refuted() -> None:
+    """The twin that makes the cell above non-vacuous: without the `assume`
+    the call is reached and its precondition is NOT established.  It is
+    E501, not E532: translation binds #1199's opaque stand-in for the
+    effect operation's result, and a precondition over that stand-in is
+    the caller's to establish — the posture the `assume` is the repair
+    for."""
+    src = ASSUMED_LET.replace("  assume(@Int.0 > 0);\n", "")
+    assert "assume" not in src
+    v = _verify(src)
+    call = _at(src, "need_pos(@Int.0)")
+    assert _records(v, "call_pre", call) == ["violated/E501"]
+    assert ("E501", *call) in v.errors
+
+
+# The same, for a value of an array type: the walk binds a placeholder of the
+# array's own sort, so an `assume` about its length reaches the call's check.
+ASSUMED_ARRAY_LET = """\
+private fn need_len(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn g(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = map_values(map_insert(map_new(), 1, 2));
+  assume(array_length(@Array<Int>.0) > 0);
+  need_len(@Array<Int>.0)
+}
+"""
+
+
+def test_an_assumed_array_let_discharges_the_call() -> None:
+    v = _verify(ASSUMED_ARRAY_LET)
+    call = _at(ASSUMED_ARRAY_LET, "need_len(@Array<Int>.0)")
+    assert _records(v, "call_pre", call) == []
+    assert v.ok, v.errors
+    twin = ASSUMED_ARRAY_LET.replace(
+        "  assume(array_length(@Array<Int>.0) > 0);\n", "")
+    assert "assume" not in twin
+    # Without it the call is reached and left to its callee's check: there
+    # is no #1199 stand-in for an array, so no refutation either.
+    tv = _verify(twin)
+    assert _records(tv, "call_pre", _at(twin, "need_len(@Array<Int>.0)")) \
+        == ["tier3/E532"]
+
+
 # The termination proof reads the same walk, so every binder it crossed
 # wrongly was a `decreases` proved over the wrong value.  Each program below
 # was reported `decreases`/verified while its runtime measure guard trapped

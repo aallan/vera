@@ -464,19 +464,6 @@ def _calls_in(node: object) -> Iterator[ast.Node]:
             stack.append(getattr(item, f.name))
 
 
-def _desugar_pipe(expr: ast.BinaryExpr) -> ast.FnCall | ast.ModuleCall | None:
-    """`left |> f(a, …)` as the call `f(left, a, …)`, spelled as the SMT
-    layer desugars it — the pipe's span, so the site key is one (#727)."""
-    right = expr.right
-    if isinstance(right, ast.FnCall):
-        return ast.FnCall(name=right.name, args=(expr.left, *right.args),
-                          span=expr.span)
-    if isinstance(right, ast.ModuleCall):
-        return ast.ModuleCall(path=right.path, name=right.name,
-                              args=(expr.left, *right.args), span=expr.span)
-    return None
-
-
 #: `@Nat` builtins that plant NO guard, and why — the CALLEE half of the guard
 #: question (#1362, narrowed in #757's completion).
 #:
@@ -6323,8 +6310,18 @@ class ContractVerifier:
                     # No outer to shadow, but the slot still names a value
                     # later code reads — a call's argument, an `assume`'s
                     # subject — so it is bound to an unknown value of its
-                    # declared type rather than left unbound (#1480 review).
+                    # declared type rather than left unbound (#1480 review):
+                    # a scalar, an array or an ADT, as a destructure's
+                    # component is (`_shadow_destructured_slots`).
                     val = self._fresh_slot_var(smt, stmt.type_expr)
+                    if val is None:
+                        resolved = self._resolve_type(stmt.type_expr)
+                        if self._is_array_type(resolved):
+                            val = self._declare_array_var(
+                                smt, smt._fresh_name("shadow"), resolved)
+                        elif self._is_adt_type(resolved):
+                            val = smt.declare_adt(
+                                smt._fresh_name("shadow"), resolved)
                 if val is not None:
                     self._opaque_shadows.append(val)
         if val is not None and type_name is not None:
@@ -7885,11 +7882,11 @@ class ContractVerifier:
             )
             if expr.op == ast.BinOp.PIPE:
                 # `left |> f(a)` is the call `f(left, a)`: its precondition
-                # is obligated on that call, spelled as the SMT layer
-                # desugars it (the span keys the site, #727).  The partial
-                # `f(a)` the walk just visited has one argument too few and
-                # obligates nothing.
-                piped = _desugar_pipe(expr)
+                # is obligated on that call, spelled by the one shared
+                # desugaring, which keeps the pipe's span (the site key,
+                # #727).  The partial `f(a)` the walk just visited has one
+                # argument too few and obligates nothing.
+                piped = pipe_desugared_call(expr)
                 if piped is not None:
                     self._obligate_call_site(
                         piped, smt, slot_env, assumptions)

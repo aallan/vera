@@ -360,7 +360,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 416 T1 / 140 T3 / 556 total (current).
+        """All examples together: 417 T1 / 139 T3 / 556 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -736,8 +736,12 @@ private fn sum(@List<Int> -> @Int)
         # `@Nat.0 - 1`, and the `@Float64` bound by an untranslatable `match`
         # before it is now an opaque value in its slot rather than a missing
         # one, so every argument translates (one T3 -> T1): 416/140/556.
-        assert t1 == 416, f"Expected 416 T1, got {t1}"
-        assert t3 == 140, f"Expected 140 T3, got {t3}"
+        # A `let` whose value does not translate then binds an unknown
+        # value of an ARRAY's own sort too, so `life.vera`'s
+        # `@Array<Bool>.0[@Nat.0]` is proved from the bounds guard written
+        # over that same `let` (one T3 -> T1): 417/139/556.
+        assert t1 == 417, f"Expected 417 T1, got {t1}"
+        assert t3 == 139, f"Expected 139 T3, got {t3}"
         assert total == 556, f"Expected 556 total, got {total}"
         # Zero is the load-bearing value, not a vacuous one: every corpus
         # narrowing is now covered by an emitted guard, so any reappearance
