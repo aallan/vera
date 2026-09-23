@@ -10,10 +10,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Compiler code coverage** | 95% Python, 87% JavaScript (CI minimum: 80%) |
 | **Conformance programs** | 253 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 43, all validated through `vera check` + `vera verify` |
-| **Spec code blocks** | 189 parseable blocks from 14 spec chapters: 92 parse, 86 type-check, 85 verify (the rest carry inline `vera:skip` annotations, #538) |
-| **README code blocks** | 4 Vera blocks (4 validated, 0 annotated) |
-| **FAQ code blocks** | 3 Vera blocks in FAQ.md (2 validated, 1 annotated snippet) |
-| **HTML code blocks** | 5 Vera blocks in docs/index.html (5 validated: parse + check + verify) |
+| **Spec code blocks** | 237 Vera blocks from 14 spec chapters: 98 parse, 92 check, 91 verify, and 2 `vera:run` invocations (the rest carry inline `vera:skip` markers, #538) |
+| **SKILL.md code blocks** | 121 Vera blocks: 62 parse, 54 check, 54 verify, and 2 `vera:run` invocations (the rest carry `vera:skip` markers) |
+| **README code blocks** | 4 Vera blocks, all passing parse + check + verify |
+| **FAQ code blocks** | 3 Vera blocks in FAQ.md: 2 pass parse + check + verify, 1 marked fragment |
+| **HTML code blocks** | 5 Vera blocks in docs/index.html and the same 5 in docs/index.md, all passing parse + check + verify |
+| **Other documentation code blocks** | EXAMPLES.md 15 and PYPI_README.md 1 pass parse + check + verify (PYPI_README's with a `vera:run` invocation); DE_BRUIJN.md 15, of which 14 pass and 1 is its `vera:diagnostic` example, plus a `vera:run` invocation.  One gate, `check_doc_examples.py`, holds every document above |
 | **Contract verification** | 413 of 543 obligations (76.1%) across the 43 examples verified statically (Tier 1) — the denominator grew with the auto-synthesised primitive-op obligations of the soundness campaign |
 | **CI matrix** | 13 combinations (Python 3.11/3.12/3.13 × ubuntu-latest/macos-15/macos-26/windows-latest, plus an advisory ubuntu-24.04-arm × 3.12 cell) + browser parity (Node.js 22) + wheel-availability preflight |
 
