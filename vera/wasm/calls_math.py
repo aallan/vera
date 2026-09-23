@@ -100,7 +100,7 @@ class CallsMathMixin:
         return instructions
 
     def _translate_floor(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate floor(@Float64) → @Int.
 
@@ -113,11 +113,12 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.floor")
+        self._record_check("wasm/calls_math.py:_translate_floor", at)
         instructions.append("i64.trunc_f64_s")
         return instructions
 
     def _translate_ceil(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate ceil(@Float64) → @Int.
 
@@ -130,11 +131,12 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.ceil")
+        self._record_check("wasm/calls_math.py:_translate_ceil", at)
         instructions.append("i64.trunc_f64_s")
         return instructions
 
     def _translate_round(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate round(@Float64) → @Int.
 
@@ -148,6 +150,7 @@ class CallsMathMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         instructions.append("f64.nearest")
+        self._record_check("wasm/calls_math.py:_translate_round", at)
         instructions.append("i64.trunc_f64_s")
         return instructions
 
@@ -267,7 +270,7 @@ class CallsMathMixin:
         return instructions
 
     def _translate_float_to_int(
-        self, arg: ast.Expr, env: WasmSlotEnv,
+        self, arg: ast.Expr, env: WasmSlotEnv, *, at: ast.Node | None,
     ) -> list[str] | None:
         """Translate float_to_int(@Float64) → @Int.
 
@@ -279,6 +282,7 @@ class CallsMathMixin:
             return None
         instructions: list[str] = []
         instructions.extend(arg_instrs)
+        self._record_check("wasm/calls_math.py:_translate_float_to_int", at)
         instructions.append("i64.trunc_f64_s")
         return instructions
 
@@ -299,7 +303,7 @@ class CallsMathMixin:
         """
         instrs = self.translate_expr(arg, env)
         if instrs is not None and self._narrows_into_nat(arg):
-            instrs = self._emit_nat_bind_guard(instrs)
+            instrs = self._emit_nat_bind_guard(instrs, at=arg)
         return instrs
 
     def _translate_int_to_nat(

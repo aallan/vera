@@ -835,7 +835,8 @@ class FunctionCompilationMixin:
                 msg = self._format_refinement_message(
                     decl, param_te, "parameter")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, value_local, msg, env)
+                    ctx, predicate, base_name, value_local, msg, env,
+                    at=param_te)
                 if guard is not None:
                     refine_guard_instrs.extend(guard)
         except (AdtEqNotDerivableError, CodegenSkip) as exc:
@@ -1110,7 +1111,7 @@ class FunctionCompilationMixin:
             and ctx._result_is_nat(decl.body)
         )
         if widen_guarded:
-            body_instrs = ctx._emit_int_widen_guard(body_instrs)
+            body_instrs = ctx._emit_int_widen_guard(body_instrs, at=decl.body)
 
         # #758/#983: an @Int body narrowing into a @Nat return can be negative
         # (`to_nat(0 - 5)` = -5), so trap rather than store a negative in the
@@ -1261,6 +1262,12 @@ class FunctionCompilationMixin:
         self._needs_nat_guard_trap = (
             self._needs_nat_guard_trap or ctx._needs_nat_guard_trap
         )
+        # #1479: and the checks the body emitted, at the same seam, now that
+        # the WASM function they sit in is known.
+        self._emitted_checks.extend(
+            (decl.name, emitter, node)
+            for emitter, node in ctx._emitted_checks
+        )
         # #773: structural-Eq helper functions generated while lowering this
         # body (deduped by name across the whole module at assembly).
         self._adt_eq_helpers.update(ctx._adt_eq_helpers)
@@ -1365,6 +1372,16 @@ class FunctionCompilationMixin:
                         patched_dec.extend(
                             ws + part for part in dec_self_tail)
                         patched_dec.append(instr)
+                        # #1479: the prefix is built once and spliced at
+                        # every self-tail site, so its check is recorded
+                        # per splice — and on the generator, because this
+                        # runs after `ctx`'s record was merged above.
+                        self._record_generator_check(
+                            decl.name,
+                            "codegen/contracts.py:_dec_self_tail_prefix",
+                            next((c for c in decl.contracts
+                                  if isinstance(c, ast.Decreases)), None),
+                        )
                     else:
                         patched_dec.append(
                             instr.replace("return_call ", "call ", 1))

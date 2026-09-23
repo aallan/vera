@@ -221,6 +221,8 @@ class ContractsMixin:
         value_local: int,
         message: str,
         base_env: WasmSlotEnv,
+        *,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
@@ -268,6 +270,7 @@ class ContractsMixin:
         ptr, length = self.string_pool.intern(message)
         self._needs_contract_fail = True
         self._needs_memory = True
+        ctx._record_check("codegen/contracts.py:_emit_refinement_check", at)
         return [
             *cond,
             "i32.eqz",
@@ -286,6 +289,7 @@ class ContractsMixin:
         value_local: int,
         message_head: str,
         env: WasmSlotEnv,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """The two guard halves — classify then lower — as ONE call, for a
         boundary that reaches this layer from inside expression translation
@@ -313,6 +317,8 @@ class ContractsMixin:
         *message_head* is everything before the predicate in the trap text,
         so the message reads in the same shape as every other boundary's
         (``Refinement violation in <where>\\n  <role>: <predicate> failed``).
+        *at* is the node the per-module record locates the check at (#1479):
+        the value the boundary binds.
         """
         parts = self._refinement_guard_parts(te)
         if parts is None:
@@ -320,7 +326,7 @@ class ContractsMixin:
         predicate, base_name = parts
         message = f"{message_head}: {ast.format_expr(predicate)} failed"
         return self._emit_refinement_check(
-            ctx, predicate, base_name, value_local, message, env,
+            ctx, predicate, base_name, value_local, message, env, at=at,
         )
 
     def _resolve_type_alias(self, te: ast.TypeExpr) -> ast.TypeExpr:
@@ -503,6 +509,9 @@ class ContractsMixin:
         # locals that belong to the guard either way, so a declined site
         # costs two unused locals and no module-level state.
         prepared: list[tuple[_ElementGuardSite, int, int, list[str]]] = []
+        # #1479: a declining position discards the checks already lowered,
+        # so their entries in the per-module record go with them.
+        mark = len(ctx._emitted_checks)
         for site in sites:
             idx = ctx.alloc_local("i32")
             elem = ctx.alloc_local(site.load_wt)
@@ -512,14 +521,16 @@ class ContractsMixin:
                 f"{ast.format_expr(site.predicate)} failed"
             )
             check = self._emit_refinement_check(
-                ctx, site.predicate, site.base_name, elem, msg, env)
+                ctx, site.predicate, site.base_name, elem, msg, env, at=te)
             if check is None:
+                del ctx._emitted_checks[mark:]
                 return []
             prepared.append((site, idx, elem, check))
         instrs: list[str] = []
         for site, idx, elem, check in prepared:
             if site.projection is None:
                 if len_local is None:  # pragma: no cover — caller invariant
+                    del ctx._emitted_checks[mark:]
                     return []
                 prologue: list[str] = []
                 seq_ptr, seq_len = ptr_local, len_local
@@ -527,6 +538,7 @@ class ContractsMixin:
                 projected = self._project_element_sequence(
                     ctx, site, ptr_local)
                 if projected is None:
+                    del ctx._emitted_checks[mark:]
                     return []
                 seq_ptr, seq_len, prologue = projected
             instrs.extend(prologue)
@@ -770,7 +782,8 @@ class ContractsMixin:
                     f"{ast.format_expr(predicate)} failed"
                 )
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, binding.slot_local, msg, env)
+                    ctx, predicate, base_name, binding.slot_local, msg, env,
+                    at=te)
                 if guard is not None:
                     instrs.extend(guard)
             if site.nested is not None:
@@ -973,6 +986,8 @@ class ContractsMixin:
             ptr, length = self.string_pool.intern(msg)
             self._needs_contract_fail = True
             self._needs_memory = True
+            ctx._record_check(
+                "codegen/contracts.py:_compile_preconditions", contract)
             instrs.append(f"  i32.const {ptr}")
             instrs.append(f"  i32.const {length}")
             instrs.append("  call $vera.contract_fail")
@@ -1055,7 +1070,8 @@ class ContractsMixin:
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 top = self._emit_refinement_check(
-                    ctx, predicate, base_name, ptr_l, msg, env)
+                    ctx, predicate, base_name, ptr_l, msg, env,
+                    at=decl.return_type)
                 if top is None and not pair_guard:
                     return []
                 if top is not None:
@@ -1108,7 +1124,8 @@ class ContractsMixin:
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, result_local, msg, env)
+                    ctx, predicate, base_name, result_local, msg, env,
+                    at=decl.return_type)
                 if guard is not None:
                     instrs.extend(guard)
 
@@ -1125,6 +1142,8 @@ class ContractsMixin:
                 ptr, length = self.string_pool.intern(msg)
                 self._needs_contract_fail = True
                 self._needs_memory = True
+                ctx._record_check(
+                    "codegen/contracts.py:_compile_postconditions", ensures)
                 instrs.append(f"  i32.const {ptr}")
                 instrs.append(f"  i32.const {length}")
                 instrs.append("  call $vera.contract_fail")
@@ -1148,6 +1167,8 @@ class ContractsMixin:
                 ptr, length = self.string_pool.intern(msg)
                 self._needs_contract_fail = True
                 self._needs_memory = True
+                ctx._record_check(
+                    "codegen/contracts.py:_compile_postconditions", ensures)
                 instrs.append(f"  i32.const {ptr}")
                 instrs.append(f"  i32.const {length}")
                 instrs.append("  call $vera.contract_fail")
@@ -1364,13 +1385,17 @@ class ContractsMixin:
             measured[k] for k in self._dec_nat_measure_indices(ctx, contract)
             if k < len(measured)
         ]
-        return self._dec_bound_check_pairs(locals_, name, indent)
+        return self._dec_bound_check_pairs(
+            locals_, name, indent, ctx=ctx, at=contract)
 
     def _dec_bound_check_pairs(
         self,
         locals_: list[int],
         name: str,
         indent: str = "",
+        *,
+        ctx: WasmContext,
+        at: ast.Node | None,
     ) -> list[str]:
         """The emission itself: one range check per component local.
 
@@ -1389,6 +1414,8 @@ class ContractsMixin:
             ptr, length = self.string_pool.intern(msg)
             self._needs_contract_fail = True
             self._needs_memory = True
+            ctx._record_check(
+                "codegen/contracts.py:_dec_bound_check_pairs", at)
             checks.extend([
                 f"{indent}local.get {local}",
                 f"{indent}i64.const 0",
@@ -1476,7 +1503,8 @@ class ContractsMixin:
             instrs.extend(value)
             instrs.append(f"local.set {local}")
             locals_.append(local)
-        return instrs + self._dec_bound_check_pairs(locals_, name)
+        return instrs + self._dec_bound_check_pairs(
+            locals_, name, ctx=ctx, at=contract)
 
     def _compile_decreases_entry(
         self,
@@ -1625,6 +1653,8 @@ class ContractsMixin:
         ptr, length = self.string_pool.intern(msg)
         self._needs_contract_fail = True
         self._needs_memory = True
+        ctx._record_check(
+            "codegen/contracts.py:_compile_decreases_entry", contract)
         entry.append(f"    i32.const {ptr}")
         entry.append(f"    i32.const {length}")
         entry.append("    call $vera.contract_fail")

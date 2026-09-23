@@ -41,7 +41,9 @@ from vera.prelude import (
     prelude_adt_names,
     prelude_data_decls,
 )
+from vera.skip import CodegenInvariantError
 from vera.slots import family_fallback_name
+from vera.trap_registry import TRAP_EMITTERS, EmittedCheck
 from vera.wasm import StringPool
 from vera.wasm.helpers import CellNames
 from vera.wasm.async_fusion import (
@@ -73,6 +75,10 @@ if TYPE_CHECKING:
 # function symbol); `throw $tag` references an exception tag, not a
 # function; `ref.func` is never emitted.
 _WAT_FN_NAME_RE = re.compile(r"\s*\(func \$([^\s()]+)")
+# #1479: every function DEFINITION in the assembled module, with the rest of
+# its header line — a dropped closure's stub is `(func $anon_N unreachable)`,
+# a definition that holds none of the checks its body was compiled with.
+_WAT_FN_DEF_RE = re.compile(r"^\s*\(func \$([^\s()]+)(.*)$", re.MULTILINE)
 _WAT_CALL_RE = re.compile(r"\b(?:return_call|call)\s+\$([^\s()]+)")
 # #1185: an INDIRECT call names no function symbol at all — it dispatches
 # on the module's function table — so `_WAT_CALL_RE` is blind to it and
@@ -241,6 +247,13 @@ class CodeGenerator(
         # #1438: the widening guard's twin, on the generator that
         # assembles the module.
         self._needs_widen_trap: bool = False
+        # #1479: every check emitted into this module, as (WASM function,
+        # TRAP_EMITTERS key, the node its span comes from).  Filled from
+        # each `WasmContext`'s record at the per-scope merges, and directly
+        # for a check the generator splices in after a merge; assembled into
+        # `CompileResult.emitted_checks` once the module's final function
+        # set is known.
+        self._emitted_checks: list[tuple[str, str, ast.Node | None]] = []
         self._needs_memory: bool = False
         # (cell, wasm_type).  `CellNames` rather than a bare family
         # (#1238 review F2): the wasi target names the unsupported
@@ -918,6 +931,60 @@ class CodeGenerator(
         self._error_once_sites.add(key)
         self._error(
             node, description, rationale=rationale, error_code=error_code)
+
+    def _record_generator_check(
+        self, function: str, emitter: str, at: ast.Node | None,
+    ) -> None:
+        """Note a check the generator splices into *function* itself (#1479).
+
+        The counterpart of ``WasmContext._record_check`` for an emission made
+        after that context's record was merged — the self-tail ``decreases``
+        prefix, spliced at each ``return_call`` once the body is lowered.
+        """
+        if emitter not in TRAP_EMITTERS:
+            raise CodegenInvariantError(
+                f"trap emitter {emitter!r} is not in "
+                "vera.trap_registry.TRAP_EMITTERS", at,
+            )
+        self._emitted_checks.append((function, emitter, at))
+
+    def _assemble_emitted_checks(self, wat: str) -> list[EmittedCheck]:
+        """The per-module record: every recorded check whose function the
+        assembled module *wat* still defines (#1479).
+
+        Keyed on the final text rather than on the compile's bookkeeping, so
+        a function dropped after it compiled — an ``[E620]`` caller, a
+        closure stubbed to ``unreachable`` because its enclosing function
+        failed — takes its checks with it, and nothing the module lacks is
+        claimed.
+        """
+        defined = {
+            m.group(1) for m in _WAT_FN_DEF_RE.finditer(wat)
+            if m.group(2).strip() != "unreachable)"
+        }
+        out: list[EmittedCheck] = []
+        for function, emitter, node in self._emitted_checks:
+            if function not in defined:
+                continue
+            row = TRAP_EMITTERS[emitter]
+            prelude = function.split("$")[0] in self._prelude_fn_names
+            source = (self._fn_source_map.get(function)
+                      or self._fn_source_map.get(function.rsplit("$", 1)[0]))
+            span = node.span if node is not None else None
+            out.append(EmittedCheck(
+                emitter=emitter,
+                kind=row.kind,
+                obligations=row.obligations,
+                function=function,
+                line=span.line if span is not None else 0,
+                column=span.column if span is not None else 0,
+                end_line=span.end_line if span is not None else 0,
+                end_column=span.end_column if span is not None else 0,
+                file=(None if prelude
+                      else source[0] if source is not None else self.file),
+                prelude=prelude,
+            ))
+        return out
 
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
@@ -3121,6 +3188,7 @@ class CodeGenerator(
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
             dropped_fns=dropped_fns,
+            emitted_checks=self._assemble_emitted_checks(wat),
         )
 
     def _user_dropped_fns(

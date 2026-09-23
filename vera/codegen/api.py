@@ -68,6 +68,7 @@ if TYPE_CHECKING:
 
     from vera.errors import Diagnostic
     from vera.resolver import ResolvedModule
+    from vera.trap_registry import EmittedCheck
     from vera.types import ModuleArtifacts, Type
 
 
@@ -184,6 +185,14 @@ class CompileResult:
     # Names are the emitted WASM symbol names, so they compare directly
     # against `exports` and against a `--fn` request.
     dropped_fns: dict[str, "Diagnostic | None"] = field(default_factory=dict)
+    # #1479 — the per-module record of runtime checks: one
+    # `vera.trap_registry.EmittedCheck` per check the module contains, with
+    # the trap kind it reports, the verifier obligation kinds it is the
+    # runtime half of, the WASM function it sits in and its source span.
+    # Only functions the assembled module still defines contribute, so the
+    # record never claims a check the module lacks.  Empty for a compile
+    # that failed before assembly.
+    emitted_checks: list["EmittedCheck"] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

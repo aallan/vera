@@ -373,6 +373,8 @@ class CallsStringsMixin:
         arg_s: ast.Expr,
         arg_idx: ast.Expr,
         env: WasmSlotEnv,
+        *,
+        at: ast.Node | None,
     ) -> list[str] | None:
         """Translate char_code(s, idx) → Nat (i64).
 
@@ -413,6 +415,7 @@ class CallsStringsMixin:
         instructions.extend(idx_instrs)
         instructions.append(f"local.set {idx_i64}")
 
+        self._record_check("wasm/calls_strings.py:_translate_char_code", at)
         # Bounds check #475 finding 3: trap on idx < 0 || idx >= len_s_i64
         # while still in i64 — narrowing first would let huge
         # positive i64 values wrap to small (possibly in-range) i32
@@ -458,7 +461,7 @@ class CallsStringsMixin:
         # #757: runtime-guard an @Int -> @Nat narrowing of the char code
         # before it is wrapped to i32 and stored as a byte (CR #756).
         if self._narrows_into_nat(arg):
-            n_instrs = self._emit_nat_bind_guard(n_instrs)
+            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg)
 
         self.needs_alloc = True
 
@@ -508,7 +511,7 @@ class CallsStringsMixin:
         # a huge i32 and overallocate).  Builtin translators bypass
         # `_fn_nat_params`, so the guard is applied per-translator (CR #756).
         if self._narrows_into_nat(arg_n):
-            n_instrs = self._emit_nat_bind_guard(n_instrs)
+            n_instrs = self._emit_nat_bind_guard(n_instrs, at=arg_n)
 
         self.needs_alloc = True
 
@@ -3348,7 +3351,8 @@ class CallsStringsMixin:
         # would wrap to a huge i32 and overallocate).  Per-translator because
         # builtins bypass `_fn_nat_params` (CR #756).
         if self._narrows_into_nat(arg_target):
-            target_instrs = self._emit_nat_bind_guard(target_instrs)
+            target_instrs = self._emit_nat_bind_guard(
+                target_instrs, at=arg_target)
 
         self.needs_alloc = True
 

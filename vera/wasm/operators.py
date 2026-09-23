@@ -81,6 +81,9 @@ class OperatorsMixin:
             # its `path`, exactly as the direct spelling of the same call does.
             return self.translate_expr(desugared, env)
 
+        # #1479: where the operands' checks start in the per-module record,
+        # for the Byte lowering below, which discards these translations.
+        checks_mark = len(self._emitted_checks)
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         # #657 / #630 [E615]: keep as `return None` — do NOT "clean up" to
@@ -108,9 +111,17 @@ class OperatorsMixin:
         if (op in self._ARITH_OPS or op in self._CMP_OPS) and (
                 self._is_byte_expr(expr.left)
                 or self._is_byte_expr(expr.right)):
+            # The Byte lowering translates both operands AGAIN, so the checks
+            # recorded for `left` and `right` above belong to instructions it
+            # throws away — an index or a guard inside a Byte operand would
+            # otherwise be recorded twice and emitted once (#1479).
+            operand_checks = self._emitted_checks[checks_mark:]
+            del self._emitted_checks[checks_mark:]
             byte_result = self._translate_byte_binop(expr, env)
             if byte_result is not None:
                 return byte_result
+            del self._emitted_checks[checks_mark:]
+            self._emitted_checks.extend(operand_checks)
 
         # Arithmetic
         if op in self._ARITH_OPS:
@@ -130,7 +141,7 @@ class OperatorsMixin:
             # safety net for `vera compile` / `vera run` paths that
             # skipped verification.
             if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
-                return self._emit_nat_sub_guard(left, right)
+                return self._emit_nat_sub_guard(left, right, at=expr)
             # #798: @Int/@Nat add/sub/mul wrap at the i64/u64 boundary; emit a
             # runtime overflow guard mirroring the verifier's `int_overflow`
             # obligation (vera/verifier.py:_check_overflow_obligation).  The
@@ -164,7 +175,13 @@ class OperatorsMixin:
             ovf = self._overflow_arith_codegen_type(expr) or "Int"
             if (op in (ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL)
                     and not (op == ast.BinOp.SUB and ovf == "Nat")):
-                return self._emit_overflow_guard(left, right, op, ovf)
+                return self._emit_overflow_guard(
+                    left, right, op, ovf, at=expr)
+            if op in (ast.BinOp.DIV, ast.BinOp.MOD):
+                # `i64.div_s` / `i64.rem_s` trap by themselves on a zero
+                # divisor, so the instruction IS the check (#1479).
+                self._record_check(
+                    "wasm/operators.py:_translate_binary", expr)
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -1460,10 +1477,12 @@ class OperatorsMixin:
         # gate drives the FIX-1 tail-call collector, so the two stay in lockstep.
         if self._is_hetero_int_widen_join(expr):
             if self._result_is_nat(expr.then_branch):
-                then = self._emit_int_widen_guard(then)
+                then = self._emit_int_widen_guard(
+                    then, at=expr.then_branch)
             if (expr.else_branch is not None
                     and self._result_is_nat(expr.else_branch)):
-                else_ = self._emit_int_widen_guard(else_)
+                else_ = self._emit_int_widen_guard(
+                    else_, at=expr.else_branch)
 
         # i32_pair → two i32 results (ptr, len)
         if result_type == "i32_pair":
@@ -1670,6 +1689,7 @@ class OperatorsMixin:
         # See vera/skip.py, "Reachable None via the [E615] channel".
         if cond is None:
             return None  # pragma: no cover
+        self._record_check("wasm/operators.py:_translate_assert", expr)
         return cond + ["i32.eqz", "if", "unreachable", "end"]
 
     def _translate_assume(self) -> list[str]:
@@ -2136,7 +2156,7 @@ class OperatorsMixin:
         return False
 
     def _emit_nat_sub_guard(
-        self, left: list[str], right: list[str],
+        self, left: list[str], right: list[str], *, at: ast.Node | None,
     ) -> list[str]:
         """Emit a guarded `i64.sub` that traps on underflow.
 
@@ -2166,6 +2186,7 @@ class OperatorsMixin:
         """
         lhs_tmp = self.alloc_local("i64")
         rhs_tmp = self.alloc_local("i64")
+        self._record_check("wasm/operators.py:_emit_nat_sub_guard", at)
         return [
             *left,
             *right,
@@ -2181,7 +2202,9 @@ class OperatorsMixin:
             "i64.sub",
         ]
 
-    def _emit_nat_bind_guard(self, value: list[str]) -> list[str]:
+    def _emit_nat_bind_guard(
+        self, value: list[str], *, at: ast.Node | None,
+    ) -> list[str]:
         """Emit a guarded value that traps if it is a negative i64.
 
         The binding-site analogue of :py:meth:`_emit_nat_sub_guard`
@@ -2216,10 +2239,13 @@ class OperatorsMixin:
         # declares the import, so a guard emitted without it would reference
         # an undeclared `$vera.nat_guard_trap` (the #808 / #1376 discipline).
         self._needs_nat_guard_trap = True
+        self._record_check("wasm/operators.py:_emit_nat_bind_guard", at)
         return self._emit_negative_i64_guard(
             value, signal="$vera.nat_guard_trap")
 
-    def _emit_int_widen_guard(self, value: list[str]) -> list[str]:
+    def _emit_int_widen_guard(
+        self, value: list[str], *, at: ast.Node | None,
+    ) -> list[str]:
         """Emit a guarded value that traps if a @Nat exceeds i64.MAX (#813).
 
         The @Nat -> @Int widening dual of :py:meth:`_emit_nat_bind_guard`: a
@@ -2238,6 +2264,7 @@ class OperatorsMixin:
         ``<= i64.MAX``, so a Tier-1-clean program pays only dead instructions.
         """
         self._needs_widen_trap = True
+        self._record_check("wasm/operators.py:_emit_int_widen_guard", at)
         return self._emit_negative_i64_guard(
             value, signal="$vera.widen_trap")
 
@@ -2360,7 +2387,7 @@ class OperatorsMixin:
         tail leaf keeps its ``return_call`` untouched.
         """
         if id(expr) in self._nat_return_leaf_ids:
-            return self._emit_nat_bind_guard(instrs)
+            return self._emit_nat_bind_guard(instrs, at=expr)
         return instrs
 
     def _collect_hetero_widen_arm_calls(self, body: ast.Expr) -> set[int]:
@@ -2748,6 +2775,8 @@ class OperatorsMixin:
         right: list[str],
         op: ast.BinOp,
         ovf: str,
+        *,
+        at: ast.Node | None,
     ) -> list[str]:
         """Dispatch to the per-(op, type) guarded arithmetic sequence (#798).
 
@@ -2762,6 +2791,7 @@ class OperatorsMixin:
         # #808: every guard below traps through `vera.overflow_trap` + an
         # `unreachable`, so declare the host import.
         self._needs_overflow_trap = True
+        self._record_check("wasm/operators.py:_emit_overflow_guard", at)
         if ovf == "Nat":
             if op == ast.BinOp.ADD:
                 return self._emit_nat_add_guard(left, right)

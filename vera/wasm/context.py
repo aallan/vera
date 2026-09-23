@@ -29,6 +29,7 @@ from vera.skip import (
     CodegenSkip,
 )
 from vera.slots import bare_call_denotes_user_fn
+from vera.trap_registry import TRAP_EMITTERS
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
@@ -342,6 +343,12 @@ class WasmContext(
         # `$vera.widen_trap`, which fails to instantiate only on the
         # shape that reaches that scope — the #808 / #823 failure mode.
         self._needs_widen_trap: bool = False
+        # #1479: every check this context emitted, as (TRAP_EMITTERS key,
+        # the node its span comes from) in emission order.  The source of
+        # `CompileResult.emitted_checks`: merged into the CodeGenerator at the
+        # same per-scope seams as the `_needs_*` flags above, which is where
+        # the WASM function the checks sit in is known.
+        self._emitted_checks: list[tuple[str, ast.Node | None]] = []
         # R-1412 F3: the component type an enclosing construction hands to
         # the argument it is translating, for a NESTED literal whose own
         # span carries no recorded target.  Saved and restored around each
@@ -492,7 +499,10 @@ class WasmContext(
         # compile at all today), and the closed failure is what a future
         # thread-through would meet rather than a silently unguarded payload.
         self._refinement_guard_emitter: (
-            Callable[[ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None]
+            Callable[
+                [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+                list[str] | None,
+            ]
             | None
         ) = None
         # Closure signature registry: sig_key -> (type_name, param/result WAT)
@@ -753,12 +763,15 @@ class WasmContext(
     def set_refinement_guard_emitter(
         self,
         emitter: Callable[
-            [ast.TypeExpr, int, str, WasmSlotEnv], list[str] | None
+            [ast.TypeExpr, int, str, WasmSlotEnv, ast.Node | None],
+            list[str] | None,
         ],
     ) -> None:
         """Install the §2.6.5 refinement-predicate guard lowering (#1268).
 
-        *emitter* takes ``(type_expr, value_local, message, env)`` and returns
+        *emitter* takes ``(type_expr, value_local, message, env, at)`` —
+        *at* the node the per-module record locates the check at (#1479) —
+        and returns
         the WAT that traps via ``$vera.contract_fail`` when the value in
         *value_local* violates *type_expr*'s predicate — or ``None`` when the
         type is unrefined, or refined over a base codegen emits no guard for
@@ -868,6 +881,23 @@ class WasmContext(
     def extra_locals_wat(self) -> list[str]:
         """Return WAT local declarations for non-parameter locals."""
         return [f"(local {name} {wt})" for name, wt in self._locals]
+
+    def _record_check(self, emitter: str, at: ast.Node | None) -> None:
+        """Note one emitted check for the per-module record (#1479).
+
+        *emitter* is the :data:`vera.trap_registry.TRAP_EMITTERS` key of the
+        function emitting the check, and *at* the node its span is taken
+        from (``TrapEmitter.span`` says which node that is).  Called beside
+        the emission, never ahead of it, so a translation abandoned before
+        its check is emitted records nothing; a function dropped after it
+        compiled is filtered out when the record is assembled.
+        """
+        if emitter not in TRAP_EMITTERS:
+            raise CodegenInvariantError(
+                f"trap emitter {emitter!r} is not in "
+                "vera.trap_registry.TRAP_EMITTERS", at,
+            )
+        self._emitted_checks.append((emitter, at))
 
     # -----------------------------------------------------------------
     # #1212 — the @Byte write boundary's literal width
@@ -1545,14 +1575,14 @@ class WasmContext(
                 # target is guarded too (CR #756).
                 if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
-                    stmt_instrs.extend(
-                        self._emit_nat_bind_guard(val_instrs))
+                    stmt_instrs.extend(self._emit_nat_bind_guard(
+                        val_instrs, at=stmt.value))
                 elif (self._resolve_base_type_name(type_name) == "Int"
                         and self._result_is_nat(stmt.value)):
                     # #813: guard a @Nat -> @Int let widening — a @Nat value
                     # above i64.MAX reinterprets to a negative @Int.
-                    stmt_instrs.extend(
-                        self._emit_int_widen_guard(val_instrs))
+                    stmt_instrs.extend(self._emit_int_widen_guard(
+                        val_instrs, at=stmt.value))
                 else:
                     # A `@Byte` target's literals were already marked before
                     # the translation above, so `val_instrs` is the i32
