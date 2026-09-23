@@ -214,7 +214,7 @@ class TestTheIssueExamples:
             assert len(failures) == 2
             assert all("[run, marker line" in f and "exited" in f for f in failures)
         else:
-            assert "[E502]" in verdict
+            assert "E502" in verdict.codes
             assert len(failures) == 1
             assert "[verify]" in failures[0] and "[E502]" in failures[0]
 
@@ -845,10 +845,21 @@ class TestGrammarSelection:
         "fn(@Int -> @Int) effects(pure) { @Int.0 }",
         "type the command below",
         "public class Foo {}",
-        "fn          let         if          then",
     ])
     def test_a_closure_or_prose_is_not_read(self, text: str) -> None:
         assert not _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
+
+    @pytest.mark.parametrize("text", ["fn foo bar", "data Foo = x"])
+    def test_a_wrong_third_token_does_not_hide_the_block(
+        self, text: str, tmp_path: Path,
+    ) -> None:
+        """The parser accepts the first two tokens, so the block opens a
+        program and is gated, and the parse stage reports the third (PR
+        #1484 review: the contextual lexer rejects the third token while
+        reading it, which the count must not charge to the second)."""
+        assert _MOD.selects(_MOD.CodeBlock(1, "", text, ()))
+        findings = _findings(_gate(tmp_path, f"```\n{text}\n```\n"))
+        assert len(findings.failures) == 1 and "[parse]" in findings.failures[0]
 
     def test_an_untagged_ability_block_is_gated(self, tmp_path: Path) -> None:
         """The reviewer's repro: an untagged fence opening with `ability`

@@ -320,15 +320,21 @@ def opens_a_program(text: str) -> bool:
     m = _FIRST_WORD_RE.match(blanked.lstrip())
     if m is None or m.group(0) not in program_keywords():
         return False
-    fed = 0
+    interactive = _get_parser().parse_interactive(blanked)
+    accepted = 0
     try:
-        for _token in _get_parser().parse_interactive(blanked).iter_parse():
-            fed += 1  # yielded; it is fed to the parser on the next step
-            if fed > _PREFIX_TOKENS:
+        # The loop `iter_parse` runs, with the feed made explicit and the
+        # count taken after it: the contextual lexer rejects a wrong token
+        # while reading it, so a rejection of the third token must not be
+        # charged to the second, and stopping at two never reads the third.
+        for token in interactive.lexer_thread.lex(interactive.parser_state):  # type: ignore[no-untyped-call]
+            interactive.feed_token(token)
+            accepted += 1
+            if accepted >= _PREFIX_TOKENS:
                 return True
     except UnexpectedInput:
-        return fed - 1 >= _PREFIX_TOKENS
-    return fed >= _PREFIX_TOKENS
+        pass
+    return False
 
 
 def selects(block: CodeBlock) -> bool:

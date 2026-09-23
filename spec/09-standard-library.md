@@ -491,6 +491,7 @@ The `<Async>` effect enables asynchronous computation via `async(expr)` and `awa
 
 **Built-in functions:**
 
+<!-- vera:skip-parse category="FRAGMENT" reason="async/await signatures (no body)" -->
 ```
 fn async<T>(@T.0 -> @Future<T>) effects(<Async>)
 fn await<T>(@Future<T>.0 -> @T) effects(<Async>)

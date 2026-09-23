@@ -607,6 +607,18 @@ class TestCodedEvaluation:
         assert "E121 E200" in (outcomes[-1].error or "")
         assert "names E200" in (outcomes[-1].error or "")
 
+    def test_a_failure_carrying_only_some_named_codes_fails(self) -> None:
+        """The marker names the failure exactly: when one of its codes
+        stops appearing — the #686 half of an `E130 E200` marker, once the
+        invariant clause lands — the marker is out of date and fails (PR
+        #1484 review)."""
+        outcomes = evaluate_block(
+            self._block(("E130", "E200")),
+            [("check", lambda _c: doc_annotations.StageFailure(
+                "m", frozenset({"E200"})))],
+        )
+        assert outcomes[-1].status == "failed"
+
     def test_a_failure_with_no_code_fails_a_coded_marker(self) -> None:
         outcomes = evaluate_block(
             self._block(("E200",)), [("check", lambda _c: "no code at all")]

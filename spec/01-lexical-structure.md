@@ -54,6 +54,7 @@ A label written on a **function parameter** or on the **return slot** is preserv
 
 The following identifiers are reserved keywords and MUST NOT be used as function names:
 
+<!-- vera:skip-parse category="FRAGMENT" reason="the reserved-keyword table, not a program" -->
 ```
 fn          let         if          then        else
 match       data        type        module      import

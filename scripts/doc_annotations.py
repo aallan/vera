@@ -860,9 +860,10 @@ def evaluate_block(
 
     - marked ``skip-<stage>``: the runner still runs.  A failure is the
       expected outcome (``"skipped"``) — unless the marker names codes and
-      the failure carries a code it does not name, which is a different
-      failure from the one the marker excuses (``"failed"``).  A pass means
-      the marker is ``"stale"``.  Either way the pipeline stops there.
+      the failure's codes differ from them, which is a different failure
+      from the one the marker excuses, or a marker gone out of date
+      (``"failed"``).  A pass means the marker is ``"stale"``.  Either way
+      the pipeline stops there.
     - unmarked: success (``"ok"``) continues to the next stage; failure
       (``"failed"``) stops the pipeline.
     """
@@ -874,9 +875,7 @@ def evaluate_block(
         if annotation is not None:
             if failure is None:
                 outcomes.append(StageOutcome(stage, "stale", None, annotation))
-            elif annotation.codes and not (
-                failure.codes and failure.codes <= set(annotation.codes)
-            ):
+            elif annotation.codes and failure.codes != set(annotation.codes):
                 carried = " ".join(sorted(failure.codes)) or "no code"
                 outcomes.append(StageOutcome(
                     stage, "failed",
